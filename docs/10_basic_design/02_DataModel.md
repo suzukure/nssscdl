@@ -13,7 +13,7 @@
 - `Student` — 生徒本人を表す。
 - `LessonSlot` — 公開・管理対象となる固定レッスン時間枠を表す。
 - `SlotOccupancy` — LessonSlotの現在の占有を表す共通レコード。
-- `StudentReservation` — 生徒による個人レッスン予約の業務レコード。キャンセル等の履歴も保持する。
+- `StudentReservation` — 生徒による個人レッスン予約の業務レコード。キャンセル等の履歴、自動分類値、現在の実効分類を保持する。
 - `ReservationAbsence` — 予約に対する欠席状態。キャンセルとは別概念として扱う。
 - `ReservationMonthlyCountOverride` — 管理者による月間回数算入の例外。
 - `ReservationClassificationOverride` — 管理者による標準／追加区分の明示Override。
@@ -24,7 +24,7 @@
 
 `StudentReservation`、`AdminHold`、`GroupLesson` は「枠を占有する」という点では共通するが、業務上は異なる意味を持つため同一状態として扱わない。
 
-また、Reservation周辺でも、予約ライフサイクル、欠席、月間回数算入、標準／追加区分、明示Overrideを同一状態へ統合しない。
+また、Reservation周辺でも、予約ライフサイクル、欠席、月間回数算入、自動分類、実効classification、明示Overrideを同一状態へ統合しない。
 
 ## 3. Student・LessonSlot・StudentReservation の関係
 
@@ -77,7 +77,10 @@ WHERE student_id = ?
 
 ### 3.4 Reservation周辺の分離
 
-`StudentReservation` は予約ライフサイクル状態と現在の実効classificationを保持する。
+`StudentReservation` は予約ライフサイクル状態に加え、次の2つの分類値を保持する。
+
+- `automatic_classification` — 自動分類ロジックによる `standard` / `additional`。Lesson開始前は再計算され得るが、Lesson開始後は自動では変更しない。
+- `classification` — 現在の実効classification。月間算入対象では自動分類またはClassificationOverrideの結果、算入対象外ではNULL。
 
 一方、次の状態・例外は別Entityとして保持する。
 
@@ -97,9 +100,11 @@ StudentReservation 1 ───── 0..1 ReservationAbsence
 
 `classification` は月間算入対象Reservationにのみ適用する。月間算入対象外では仕様上「分類対象外（not applicable）」とし、物理的には `StudentReservation.classification = NULL` とする。`not_applicable` をclassificationの第3値としては保存しない。
 
+`automatic_classification` は実効classificationとは別に保持する。月間算入対象外となって `classification = NULL` になっても、最後に確定している自動分類値は保持する。これにより、開始済みReservationが後から欠席・月間回数除外となっても過去の自動分類を遡及書換えせず、再び算入対象となった場合に確定済み自動分類を復元根拠として利用できる。
+
 `ReservationClassificationOverride` は対象Reservationが一時的に分類対象外となっても明示解除されるまで保持し、再び算入対象となった際に再適用する。
 
-### 3.5 生徒・月単位の標準回数
+### 3.5 生徒・月単位の標準回数と開始境界
 
 標準レッスン回数は `StudentMonthlyLessonConfig` で管理する。
 
@@ -115,6 +120,15 @@ UNIQUE(student_id, schedule_month_id)
 ```
 
 個別設定がない場合は初期既定値3回を適用する。
+
+`standard_count` は自動分類でstandardを割り当てる基準数である。Lesson開始済みReservationの自動分類は固定し、再計算時には現在も算入対象で `automatic_classification = standard` の開始済みReservation数を消費済み自動標準枠として数える。
+
+```text
+remaining_standard_slots
+  = max(standard_count - started_countable_auto_standard_count, 0)
+```
+
+この残り枠だけを、予定日時順の未開始・算入対象Reservationへ割り当てる。
 
 ## 4. SlotOccupancy の役割
 
@@ -280,6 +294,7 @@ Student
 - 生徒の予約履歴は `StudentReservation` を基点に取得する。
 - 予約カレンダーの現在状態は `LessonSlot` と `SlotOccupancy` を基点に取得する。
 - 月間算入可否はReservation状態・欠席・月間算入Overrideから導出する。
+- `automatic_classification` は自動分類の確定値／再計算対象値として保持し、Lesson開始済みでは自動更新しない。
 - 月間算入対象では `StudentReservation.classification` の `standard` / `additional` を現在の実効区分として参照する。
 - 月間算入対象外では仕様上「分類対象外」とし、保存上のclassificationはNULLとする。画面ではNULLそのものではなく、キャンセル・欠席・回数算入対象外等の業務状態を表示する。
 - 実効区分の根拠となる明示Overrideは別Entityとして保持する。
@@ -295,10 +310,12 @@ Student
 - `SlotOccupancy` は現在占有、`StudentReservation` は予約履歴として責務を分離する。
 - 生徒予約による占有では `SlotOccupancy` が現在有効なReservationを参照する。
 - `StudentReservation.status = confirmed` は予約成立後にキャンセルされていないことを表し、Lesson終了後も時間経過だけでは変更しない。
-- Reservationライフサイクル、欠席、月間算入、標準／追加区分、明示Overrideを別概念として扱う。
+- Reservationライフサイクル、欠席、月間算入、自動分類、実効classification、明示Overrideを別概念として扱う。
 - 月間算入可否をReservation本体へ重複保存せず、業務状態とOverrideから導出する。
+- `automatic_classification` は `standard` / `additional` の自動分類値を保持し、Lesson開始済みReservationでは後続の自動再分類により変更しない。
 - 月間算入対象Reservationのみ実効classificationを `standard` / `additional` として保持し、対象外は「分類対象外」としてNULLにする。
 - `ReservationClassificationOverride` は一時的な分類対象外への遷移で自動削除しない。
+- 開始済みReservationの分類変更が必要な場合は自動再分類ではなく明示Overrideとして監査可能に扱う。
 - `Student` に予約一覧のCacheを業務上の正本として持たせない。
 - 競合判定ではCommit時の最新状態を再検証する。
 - 性能上の根拠なく初期段階から重複保存を導入しない。
@@ -341,6 +358,7 @@ Student
 - 予約履歴と現在占有の分離は `OI-BD-001` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 - Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 - Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
+- 過去Reservationのclassification自動再計算を行わない境界は `OI-BD-004` で検討し、Lesson開始時刻を確定境界として本書および `04_ReservationModel.md` に確定結果を反映する。
 
 ## 10. 図
 
