@@ -3,7 +3,7 @@ hide methods
 hide stereotypes
 skinparam classAttributeIconSize 0
 
-title 基本データモデル（概念）
+title 基本データモデル（論理）
 
 class Student {
   id
@@ -17,30 +17,36 @@ class LessonSlot {
   end_at
 }
 
-abstract class SlotOccupancy {
+class SlotOccupancy {
   id
-  slot_id
+  slot_id <<UNIQUE>>
+  occupancy_type
+  created_at
+  created_by
 }
 
 class StudentReservation {
+  occupancy_id <<UNIQUE>>
   student_id
   classification
   status
 }
 
 class AdminHold {
+  occupancy_id <<UNIQUE>>
   reason
 }
 
 class GroupLesson {
+  occupancy_id <<UNIQUE>>
   recurrence_source
 }
 
 Student "1" -- "0..*" StudentReservation : books >
 LessonSlot "1" -- "0..1" SlotOccupancy : occupied by >
-SlotOccupancy <|-- StudentReservation
-SlotOccupancy <|-- AdminHold
-SlotOccupancy <|-- GroupLesson
+SlotOccupancy "1" -- "0..1" StudentReservation : detail >
+SlotOccupancy "1" -- "0..1" AdminHold : detail >
+SlotOccupancy "1" -- "0..1" GroupLesson : detail >
 
 note right of Student
   予約ID一覧は保持しない。
@@ -50,9 +56,18 @@ note right of Student
 end note
 
 note bottom of SlotOccupancy
-  概念上の共通概念。
-  独立テーブルとして実装するかは
-  後続のデータモデル検討で確定する。
+  D1の実テーブルとして永続化する。
+  slot_id の UNIQUE 制約により
+  1枠につき最大1占有をDBレベルで保証する。
+
+  occupancy_type は
+  student_reservation / admin_hold /
+  group_lesson のいずれか。
+end note
+
+note bottom of StudentReservation
+  SlotOccupancy と対応する詳細レコードは
+  同一の論理トランザクション境界で作成する。
 end note
 
 @enduml
