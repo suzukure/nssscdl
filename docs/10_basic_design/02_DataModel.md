@@ -14,10 +14,17 @@
 - `LessonSlot` — 公開・管理対象となる固定レッスン時間枠を表す。
 - `SlotOccupancy` — LessonSlotの現在の占有を表す共通レコード。
 - `StudentReservation` — 生徒による個人レッスン予約の業務レコード。キャンセル等の履歴も保持する。
+- `ReservationAbsence` — 予約に対する欠席状態。キャンセルとは別概念として扱う。
+- `ReservationMonthlyCountOverride` — 管理者による月間回数算入の例外。
+- `ReservationClassificationOverride` — 管理者による標準／追加区分の明示Override。
+- `SchoolCancellationDetail` — スクール都合キャンセル固有の理由カテゴリ・補足。
+- `StudentMonthlyLessonConfig` — 生徒・月単位の標準レッスン回数設定。
 - `AdminHold` — スクール管理者による運営上の枠確保。
 - `GroupLesson` — グループレッスンとしての枠占有。
 
 `StudentReservation`、`AdminHold`、`GroupLesson` は「枠を占有する」という点では共通するが、業務上は異なる意味を持つため同一状態として扱わない。
+
+また、Reservation周辺でも、予約ライフサイクル、欠席、月間回数算入、標準／追加区分、明示Overrideを同一状態へ統合しない。
 
 ## 3. Student・LessonSlot・StudentReservation の関係
 
@@ -65,6 +72,43 @@ WHERE student_id = ?
 予約日時等を取得する場合は `StudentReservation.lesson_slot_id` から `LessonSlot` をJoinする。
 
 `student_id` に適切なIndexを設け、Student側へ予約一覧を重複保存しない。
+
+### 3.4 Reservation周辺の分離
+
+`StudentReservation` は予約ライフサイクル状態と現在の実効classificationを保持する。
+
+一方、次の状態・例外は別Entityとして保持する。
+
+```text
+StudentReservation 1 ───── 0..1 ReservationAbsence
+                   ├───── 0..1 ReservationMonthlyCountOverride
+                   ├───── 0..1 ReservationClassificationOverride
+                   └───── 0..1 SchoolCancellationDetail
+```
+
+- `ReservationAbsence` — 欠席。キャンセル状態とは独立する。
+- `ReservationMonthlyCountOverride` — 月間回数への算入例外。標準／追加区分のOverrideではない。
+- `ReservationClassificationOverride` — standard / additional の明示Override。
+- `SchoolCancellationDetail` — `school_cancelled` 固有の理由詳細。
+
+現在の実効月間算入可否は、Reservationライフサイクル、欠席、`ReservationMonthlyCountOverride` から導出し、重複する真偽値をReservation本体へ正本として保存しない。
+
+### 3.5 生徒・月単位の標準回数
+
+標準レッスン回数は `StudentMonthlyLessonConfig` で管理する。
+
+```text
+Student 1 ───── 0..* StudentMonthlyLessonConfig
+ScheduleMonth 1 ───── 0..* StudentMonthlyLessonConfig
+```
+
+論理的一意性は次のとおり。
+
+```text
+UNIQUE(student_id, schedule_month_id)
+```
+
+個別設定がない場合は初期既定値3回を適用する。
 
 ## 4. SlotOccupancy の役割
 
@@ -207,6 +251,8 @@ D1での具体的なTransaction API・SQL構成は予約整合性／Transaction�
 - 枠から予約履歴を検索する経路: `StudentReservation.lesson_slot_id`
 - 枠から現在占有を検索・一意保証する経路: `SlotOccupancy.slot_id`（UNIQUE）
 - 現在占有からReservationを参照する経路: `SlotOccupancy.reservation_id`
+- Reservationから欠席・各Override・スクール都合詳細を参照する経路: 各 `reservation_id`（UNIQUE）
+- 生徒・月別標準回数を参照する経路: `StudentMonthlyLessonConfig(student_id, schedule_month_id)`（UNIQUE）
 - AdminHold / GroupLessonから占有を参照する経路: 各 `occupancy_id`
 - 時系列で予約・枠を取得する経路: `LessonSlot.lesson_date`、`start_time` または相当列
 
@@ -219,12 +265,16 @@ D1での具体的なTransaction API・SQL構成は予約整合性／Transaction�
 ```text
 Student
   └─ StudentReservation * ── LessonSlot
-                                │
-                                └─ 0..1 SlotOccupancy
+          │                     │
+          ├─ Absence            └─ 0..1 SlotOccupancy
+          ├─ MonthlyCountOverride
+          └─ ClassificationOverride
 ```
 
 - 生徒の予約履歴は `StudentReservation` を基点に取得する。
 - 予約カレンダーの現在状態は `LessonSlot` と `SlotOccupancy` を基点に取得する。
+- 月間算入可否はReservation状態・欠席・月間算入Overrideから導出する。
+- 現在の標準／追加区分は `StudentReservation.classification` を参照し、その根拠となる明示Overrideは別Entityとして保持する。
 - 同じ関係をStudentやLessonSlotへ予約ID配列として重複保存しない。
 
 ## 7. 整合性上の原則
@@ -236,6 +286,9 @@ Student
 - 同時占有防止の最終保証点として `SlotOccupancy.slot_id` のUNIQUE制約を用いる。
 - `SlotOccupancy` は現在占有、`StudentReservation` は予約履歴として責務を分離する。
 - 生徒予約による占有では `SlotOccupancy` が現在有効なReservationを参照する。
+- Reservationライフサイクル、欠席、月間算入、標準／追加区分、明示Overrideを別概念として扱う。
+- 月間算入可否をReservation本体へ重複保存せず、業務状態とOverrideから導出する。
+- 実効classificationはReservation本体に保持し、明示Overrideの有無・値は別Entityで保持する。
 - `Student` に予約一覧のCacheを業務上の正本として持たせない。
 - 競合判定ではCommit時の最新状態を再検証する。
 - 性能上の根拠なく初期段階から重複保存を導入しない。
@@ -245,24 +298,38 @@ Student
 - POL-001 必要最小限・低運用負荷
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
+- POL-010 既定ルールと例外を分離する
 - POL-013 重要な管理操作の説明性と監査可能性
 - BR-051 二重予約禁止
 - BR-054 キャンセル後の枠
+- BR-056 月間標準回数
+- BR-057 追加レッスン分類
+- BR-058 自動再分類
+- BR-059 明示Override優先
 - BR-060 月間回数除外
+- BR-061 欠席
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
+- BR-066 予約状態と月間算入の分離
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
+- REQ-104 標準／追加区分変更通知
 - REQ-302 臨時休業
 - REQ-304 管理者確保枠
+- REQ-307 月間標準回数設定
+- REQ-308 月間回数除外
+- REQ-309 標準／追加再分類
+- REQ-310 区分Override
 - REQ-313 スクール都合キャンセル
+- REQ-315 欠席記録
 - REQ-911 競合・整合性
 
 ## 9. 設計判断記録
 
 - `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録する。
 - 予約履歴と現在占有の分離は `OI-BD-001` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
+- Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 
 ## 10. 図
 
