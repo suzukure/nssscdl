@@ -1,37 +1,37 @@
-# 01. System Architecture
+# 01. システムアーキテクチャ
 
-## 1. Purpose
+## 1. 目的
 
-This document defines the C4 Level 2 container architecture for the initial release. It translates the requirements baseline into deployable/runtime boundaries without defining detailed internal components.
+本書は、初期リリースにおけるC4 Level 2のContainer Architectureを定義する。要求仕様ベースラインを、詳細な内部Componentを定義せずに、デプロイ境界およびRuntime境界へ落とし込む。
 
-## 2. Architecture decision
+## 2. アーキテクチャ判断
 
-The initial release uses a **single Application Worker** as the application deployment unit.
+初期リリースでは、アプリケーションのデプロイ単位として **単一のApplication Worker** を使用する。
 
-Web UI, HTTP API, authentication/session endpoints, booking and cancellation processing, schedule/admin functions, notification orchestration, and scheduled job handlers are deployed together in the same Cloudflare Worker.
+Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理、Schedule／管理者機能、通知Orchestration、Scheduled Job Handlerを、同一のCloudflare Workerへまとめてデプロイする。
 
-This is a deployment-boundary decision only. Internal source code remains separated by responsibility; component-level structure is deferred to detailed design (C4 Level 3).
+これはデプロイ境界に関する判断であり、内部ソースコードまで単一責務へまとめることを意味しない。コード上は責務ごとに分離し、Component Levelの構造は詳細設計（C4 Level 3）で定義する。
 
-The decision is recorded in `docs/adr/ADR-001-single-application-worker.md`.
+この判断は `docs/adr/ADR-001-single-application-worker.md` に記録する。
 
-## 3. C4 Level 2 containers
+## 3. C4 Level 2 Container
 
 ### 3.1 Application Worker
 
-**Technology:** Cloudflare Workers
+**技術:** Cloudflare Workers
 
-**Responsibilities:**
+**責務:**
 
-- Deliver the student and school-admin web application.
-- Accept and validate HTTP requests.
-- Execute authentication and session flows.
-- Execute booking, cancellation, schedule, profile, and administrative use cases.
-- Enforce authorization and business rules before state changes.
-- Orchestrate outbound email requests and receive relevant provider callbacks.
-- Run scheduled handlers such as reminders, cleanup, holiday-master refresh, and backup-related orchestration where applicable.
-- Read and write authoritative business state in D1.
+- 生徒・スクール管理者向けWeb Applicationを配信する。
+- HTTP Requestを受け付け、検証する。
+- 認証・Session Flowを実行する。
+- 予約、キャンセル、Schedule、Profile、管理者向けUse Caseを実行する。
+- 状態変更前に認可と業務ルールを検証する。
+- 外部メール送信要求をOrchestrationし、必要なProvider Callbackを受け取る。
+- Reminder、Cleanup、祝日Master更新、Backup関連処理等のScheduled Handlerを実行する。
+- D1上の正式な業務状態を読み書きする。
 
-**Not separate containers in the initial release:**
+**初期リリースでは独立Containerにしないもの:**
 
 - Frontend Worker
 - API Worker
@@ -39,72 +39,72 @@ The decision is recorded in `docs/adr/ADR-001-single-application-worker.md`.
 - Batch / Scheduled Job Worker
 - Notification Worker
 
-### 3.2 Main Database
+### 3.2 メインデータベース
 
-**Technology:** Cloudflare D1
+**技術:** Cloudflare D1
 
-**Responsibilities:**
+**責務:**
 
-- Store authoritative application business state.
-- Store students, authentication linkage data needed by the application, sessions/tokens as designed, schedules/slots, reservations, classifications, notification state, holiday master, and audit information.
-- Support consistency controls required to prevent double booking and silent state overwrite.
+- アプリケーションの正式な業務状態を保存する。
+- 生徒、アプリケーションに必要な認証紐付け情報、設計に従ったSession / Token、Schedule / Slot、Reservation、Classification、通知状態、祝日Master、監査情報を保存する。
+- 二重予約や無言の状態上書きを防止するために必要な整合性制御を支える。
 
-D1 schema and transaction/concurrency design are separate basic-design topics.
+D1 SchemaおよびTransaction / Concurrency設計は、別の基本設計項目として扱う。
 
 ### 3.3 Backup Storage
 
-**Technology:** Cloudflare R2
+**技術:** Cloudflare R2
 
-**Responsibilities:**
+**責務:**
 
-- Retain long-term backup artifacts required by the backup/retention requirements.
-- Remain logically separate from the production transactional store.
+- Backup / Retention要件で必要となる長期Backup Artifactを保持する。
+- Production Transaction Storeとは論理的に分離する。
 
-Exact backup generation and restore mechanics are defined in the backup/recovery design.
+具体的なBackup生成・Restore方式はBackup / Recovery設計で定義する。
 
-## 4. External systems
+## 4. 外部システム
 
-### 4.1 Google Authentication
+### 4.1 Google認証
 
-Provides Google-based user authentication. Google-specific integration is isolated from domain logic so that provider dependencies remain localized.
+Googleを利用した利用者認証を提供する。Google固有のIntegrationはDomain Logicから分離し、Provider依存を局所化する。
 
 ### 4.2 Resend
 
-Provides outbound email delivery and relevant delivery/failure callbacks. Successful or failed delivery does not replace or roll back committed business state.
+外部メール配信と、必要な配信／失敗Callbackを提供する。メール配信の成功・失敗によって、Commit済みの業務状態を置き換えたりRollbackしたりしない。
 
 ### 4.3 Cloudflare Turnstile
 
-Provides bot-abuse mitigation for public authentication-related entry points such as Magic Link issuance.
+Magic Link発行等の公開認証入口に対するBot Abuse Mitigationを提供する。
 
-## 5. Main interaction rules
+## 5. 主な連携ルール
 
-1. Student and school-admin interactions enter through the Application Worker.
-2. The Application Worker validates identity, authorization, request state, and business rules before changing D1.
-3. Successfully committed D1 business state is authoritative; external-provider results do not silently reverse it.
-4. Operations subject to concurrency rules must revalidate current state at commit time and must not silently overwrite a previously committed conflicting state.
-5. Outbound external integrations are invoked only after or around business-state transitions in a way that preserves idempotency and internal-state authority.
-6. Scheduled processing executes through handlers in the same Application Worker; it is not a separate deployment unit in the initial release.
+1. 生徒・スクール管理者からの操作はApplication Workerを入口とする。
+2. Application Workerは、D1の状態を変更する前にIdentity、Authorization、Request State、業務ルールを検証する。
+3. 正常CommitされたD1上の業務状態を正とし、外部Providerの結果によって無言で取り消さない。
+4. Concurrency Ruleの対象となる操作ではCommit時に最新状態を再検証し、先にCommit済みの競合状態を無言で上書きしない。
+5. 外部連携は、Idempotencyと内部状態の正本性を維持できる形で、業務状態遷移の前後または周辺で呼び出す。
+6. Scheduled Processingは同一Application Worker内のHandlerで実行し、初期リリースでは独立したデプロイ単位にしない。
 
-## 6. Deployment and failure boundary
+## 6. デプロイ境界・障害境界
 
-The Application Worker is one deployment and rollback unit. Therefore a Worker deployment can affect web requests, API requests, and scheduled handlers at the same time.
+Application Workerは1つのデプロイ・Rollback単位である。このため、1回のWorkerデプロイがWeb Request、API Request、Scheduled Handlerへ同時に影響する可能性がある。
 
-D1, R2, Google Authentication, Resend, and Turnstile remain separate platform/service boundaries and can fail independently. Their failure handling must follow the requirements for authoritative internal state, external retry, notification failure handling, and availability/recovery.
+D1、R2、Google認証、Resend、Turnstileはそれぞれ別のPlatform / Service境界であり、独立して障害が発生し得る。障害時の扱いは、内部業務状態の正本性、外部Retry、通知失敗、可用性／Recoveryに関する要求に従う。
 
-## 7. Related requirements and policies
+## 7. 関連要求・方針
 
-- POL-001 Necessary minimum / low operational burden
-- POL-002 Free-tier priority without weakening Must requirements
-- POL-003 Separation of business state and external integration
-- POL-007 Localization of external-provider dependencies
-- POL-008 Committed-state priority during conflicts
-- CON-001 Cloudflare platform
-- CON-002 Email provider
-- CON-003 Authentication
-- CON-009 Backup mechanism independence
+- POL-001 必要最小限・低運用負荷
+- POL-002 無料枠優先・Must要件優先
+- POL-003 業務状態と外部連携の分離
+- POL-007 外部Provider依存の局所化
+- POL-008 競合時の確定状態優先
+- CON-001 Cloudflare Platform
+- CON-002 Email Provider
+- CON-003 認証
+- CON-009 Backup方式非依存
 
-## 8. Diagram
+## 8. 図
 
-PlantUML source: `docs/diagrams/plantuml/c4-container.puml`
+PlantUML Source: `docs/diagrams/plantuml/c4-container.puml`
 
-Rendered SVG: `docs/diagrams/rendered/c4-container.svg` (generated automatically)
+生成SVG: `docs/diagrams/rendered/c4-container.svg`（自動生成）
