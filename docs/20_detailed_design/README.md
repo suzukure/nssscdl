@@ -1,3 +1,3 @@
-# Detailed design
+# 詳細設計
 
-Detailed design documents live here. This phase uses C4 Level 3 (Component) where appropriate, plus API, database, job, and sequence details.
+詳細設計文書をこのディレクトリに格納する。このフェーズでは、必要に応じてC4 Level 3（Component）を使用し、あわせてAPI、データベース、Job、Sequence等の詳細を定義する。

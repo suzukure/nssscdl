@@ -1,26 +1,26 @@
 # nssscdl
 
-Schedule system for Net Shogi School.
+Net Shogi School向けのスケジュールシステムです。
 
-This repository is the source of truth for project requirements, design documents, source code, database migrations, tests, and operational documentation.
+このリポジトリを、プロジェクトの要求仕様、設計文書、ソースコード、データベースマイグレーション、テスト、運用文書の正本とします。
 
-## Repository structure
+## リポジトリ構成
 
-- `docs/00_requirements/` — requirements baseline
-- `docs/10_basic_design/` — basic design / C4 Level 2
-- `docs/20_detailed_design/` — detailed design / C4 Level 3
-- `docs/30_operations/` — operations and recovery procedures
-- `docs/adr/` — Architecture Decision Records
-- `docs/diagrams/` — shared diagrams
-- `src/` — application source code
-- `migrations/` — database migrations
-- `tests/` — automated tests
-- `scripts/` — maintenance and validation scripts
-- `config/` — project configuration
-- `.github/` — CI/CD and GitHub templates
+- `docs/00_requirements/` — 要求仕様ベースライン
+- `docs/10_basic_design/` — 基本設計 / C4 Level 2
+- `docs/20_detailed_design/` — 詳細設計 / C4 Level 3
+- `docs/30_operations/` — 運用・復旧手順
+- `docs/adr/` — Architecture Decision Record（ADR）
+- `docs/diagrams/` — 共通図表
+- `src/` — アプリケーションソースコード
+- `migrations/` — データベースマイグレーション
+- `tests/` — 自動テスト
+- `scripts/` — 保守・検証スクリプト
+- `config/` — プロジェクト設定
+- `.github/` — CI/CDおよびGitHub関連設定
 
-## Document lifecycle
+## 文書のライフサイクル
 
-ChatGPT and local workspaces may be used as working areas, but committed content in this repository is the canonical project record.
+ChatGPTやローカルワークスペースは作業領域として利用できるが、このリポジトリへCommitされた内容をプロジェクトの正式な記録とする。
 
-The requirements baseline is stored under `docs/00_requirements/`.
+要求仕様のベースラインは `docs/00_requirements/` に格納する。

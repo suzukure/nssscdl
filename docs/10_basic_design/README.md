@@ -1,23 +1,23 @@
-# Basic design
+# 基本設計
 
-Basic design documents live here. This phase uses C4 Level 2 (Container) as the primary architecture view.
+基本設計文書をこのディレクトリに格納する。このフェーズでは、C4 Level 2（Container）を主要なアーキテクチャビューとして使用する。
 
-## Documents
+## 文書一覧
 
-- `01_SystemArchitecture.md` — C4 Level 2 container architecture and deployment boundaries
-- `02_DataModel.md` — conceptual/logical data model and data ownership/query principles
-- `03_ScheduleModel.md` — monthly publication, concrete lesson-slot date/time, and slot availability model
-- `04_ReservationModel.md` — reservation history, current slot occupancy, cancellation, and rebooking model
+- `01_SystemArchitecture.md` — C4 Level 2のコンテナ構成とデプロイ境界
+- `02_DataModel.md` — 概念／論理データモデル、データ所有、Query方針
+- `03_ScheduleModel.md` — 月間公開、具体的なレッスン枠日時、枠利用可否モデル
+- `04_ReservationModel.md` — 予約履歴、現在の枠占有、キャンセル、再予約モデル
 
-## Planned topics
+## 今後の検討項目
 
-- Continue data model: reservation classification/counting, remaining entities, and D1 physical details
-- Reservation consistency / transaction design
-- API overview
-- Authentication and session design
-- Schedule generation and change design, including disabled reasons and admin workflow
-- Notifications and scheduled jobs
-- Backup / recovery
-- Deployment and environment design
+- データモデルの継続検討：残りのEntityおよびD1物理詳細
+- 予約整合性／Transaction設計
+- API概要
+- 認証・Session設計
+- Schedule生成・変更設計（利用不可理由、管理者Workflowを含む）
+- 通知・Scheduled Job
+- Backup / Recovery
+- Deployment・Environment設計
 
-Open design decisions from this phase are managed as GitHub Issues using the `OI-BD-xxx` identifier scheme. Final decisions are reflected back into these design documents or ADRs before the Issue is closed.
+このフェーズで未決の設計事項は、`OI-BD-xxx` 形式の識別子を持つGitHub Issueで管理する。最終決定はIssueをCloseする前に、本ディレクトリの設計文書またはADRへ反映する。
