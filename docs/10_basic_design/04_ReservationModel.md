@@ -219,13 +219,46 @@ Overrideの解除・変更履歴はAuditLogへ記録する。
 
 ## 9. 標準／追加区分とOverride
 
-### 9.1 自動分類
+### 9.1 用語上の注意: 標準回数は「実効standard件数の上限」ではない
 
-月間回数への算入対象となるReservationについて、生徒の対象月の標準回数と予定日時順に基づき、標準／追加を再計算する。
+`StudentMonthlyLessonConfig.standard_count`（以下、標準回数N）は、**自動分類によってstandardを割り当てる基準数**を表す。
 
-現在の実効結果は `StudentReservation.classification` に保存する。
+標準回数Nを「最終的にstandardと表示されるReservationの最大件数」と解釈してはならない。
 
-### 9.2 ReservationClassificationOverride
+分類では次の2段階を明確に分ける。
+
+```text
+1. 自動分類
+   算入対象Reservationを予定日時順に並べ、先頭N件をstandard、以降をadditionalとする。
+
+2. 明示Classification Override
+   自動分類結果を組み替えず、対象Reservationの実効classificationだけを個別に上書きする。
+```
+
+文書・実装上、必要に応じて次の呼び分けを用いる。
+
+- **自動standard** — 標準回数Nの範囲で自動分類されたstandard
+- **例外standard** — 自動分類ではadditionalだが、ClassificationOverrideにより実効standardとなったReservation
+- **実効classification** — 自動分類とOverrideを適用した後の、画面・通知等が参照する最終区分
+
+この呼び分けは保存用の追加状態を意味するものではなく、仕様理解のための説明用語である。
+
+### 9.2 自動分類
+
+月間回数への算入対象となるReservationについて、生徒の対象月の標準回数Nと予定日時順に基づき、標準／追加を再計算する。
+
+```text
+算入対象Reservation
+    ↓ 予定日時順
+先頭N件      → 自動standard
+N+1件目以降  → additional
+```
+
+自動分類は `ReservationClassificationOverride` の有無や値を考慮せずに行う。つまりClassificationOverrideは、自動標準枠N件の消費・割当てには影響しない。
+
+自動分類後、OverrideがないReservationについては自動分類結果を `StudentReservation.classification` の実効値とする。
+
+### 9.3 ReservationClassificationOverride
 
 管理者が特定Reservationの標準／追加区分を明示指定した場合、その明示指定を別Entityとして保持する。
 
@@ -240,11 +273,51 @@ StudentReservation 1 ───── 0..1 ReservationClassificationOverride
 - `changed_at`
 - `changed_by`
 
-Overrideが存在する場合、その値を自動分類より優先し、`StudentReservation.classification` へ実効値として反映する。
+Overrideが存在する場合、その値を対象Reservationの自動分類結果より優先し、`StudentReservation.classification` へ実効値として反映する。
 
-Overrideを解除した場合は自動分類を再実行し、現在の実効classificationを更新する。
+**ClassificationOverrideは対象Reservationだけに作用し、自動分類の順序・標準回数Nの消費・他Reservationの自動分類結果を変更しない。**
+
+したがって、自動分類でstandardとなったN件に加えて、additionalからstandardへOverrideされたReservationが存在することがある。この状態は「標準回数を超過した」のではなく、**「自動standard N件に、管理者が認めた例外standardが加わっている」**と解釈する。
+
+例: 標準回数N = 3の場合
+
+```text
+自動分類
+A → standard
+B → standard
+C → standard
+D → additional
+
+D に ClassificationOverride = standard を設定
+
+実効classification
+A → standard  （自動standard）
+B → standard  （自動standard）
+C → standard  （自動standard）
+D → standard  （例外standard）
+```
+
+このとき仕様上の説明は「standardが4件で標準回数3件を超えている」ではなく、**「自動standard 3件 + 例外standard 1件」**とする。
+
+Overrideを設定・変更しても、それだけを理由に他Reservationを再分類しない。
+
+Overrideを解除した場合は対象月の自動分類を再評価し、対象Reservationを含む現在の実効classificationを自動分類結果へ戻す。ただし、月間算入対象集合や標準回数N自体に変化がなければ、他Reservationの自動分類順序は変化しない。
 
 区分変更前後、Actor、日時はAuditLogへ記録する。
+
+### 9.4 自動分類を再計算する入力
+
+他Reservationを含む自動分類の再計算を引き起こすのは、自動分類の入力条件が変化した場合である。
+
+代表例:
+
+- Reservationの新規成立
+- 生徒キャンセル／スクール都合キャンセル
+- 欠席の設定・解除
+- `ReservationMonthlyCountOverride` の設定・解除
+- `StudentMonthlyLessonConfig.standard_count` の変更
+
+`ReservationClassificationOverride` の設定・変更・解除は、自動分類の入力条件そのものではない。
 
 ## 10. SchoolCancellationDetail
 
@@ -297,6 +370,8 @@ UNIQUE(student_id, schedule_month_id)
 
 初期既定値は3回とする。個別設定が存在しない生徒・月では既定値3回を適用し、管理者が変更した月について個別設定を保持する方式を基本とする。
 
+ここで `standard_count` は「自動分類でstandardを割り当てる基準数」であり、ClassificationOverride適用後の実効standard件数に対する上限ではない。
+
 標準回数変更後は対象月の算入対象Reservationを再分類する。
 
 ## 12. 状態組み合わせと整合性
@@ -319,7 +394,7 @@ UNIQUE(student_id, schedule_month_id)
 - `SlotOccupancy` がキャンセル済みReservationを現在占有として参照する。
 - `ReservationClassificationOverride` が対象Reservation以外の実効classificationを直接書き換える。
 
-`ReservationMonthlyCountOverride` と `ReservationClassificationOverride` は意味上独立した例外として保持する。組み合わせによる再分類・表示の詳細ルールは再分類処理設計で定義する。
+`ReservationMonthlyCountOverride` と `ReservationClassificationOverride` は意味上独立した例外として保持する。前者は自動分類の算入対象集合を変化させ得るが、後者は自動分類後の対象Reservationの実効区分だけを変更する。
 
 ## 13. AdminHold / GroupLessonとの関係
 
@@ -341,6 +416,7 @@ LessonSlot
 - 枠再開放を伴うキャンセルではReservation状態変更とSlotOccupancy解放を同一の論理Transaction境界で整合させる。
 - スクール都合キャンセルではReservation状態、`SchoolCancellationDetail`、SlotOccupancy／LessonSlot変更を一連の業務操作として整合させる。
 - 月間算入条件や標準回数が変化した場合、影響するReservation群の分類再計算を同じ確定操作の整合範囲で扱う。
+- ClassificationOverrideの設定・変更・解除では、対象Reservationの実効classification更新と監査記録を整合させるが、Overrideのみを理由に他Reservationの自動分類を組み替えない。
 - Commit直前に最新状態を再検証し、先行Commitを無言で上書きしない。
 
 具体的なD1制約、Transaction API、再計算のロック／競合エラー処理は `BookingAndConcurrency` 設計で確定する。
@@ -391,4 +467,4 @@ LessonSlot
 ## 17. Open Item
 
 - `OI-BD-001` — 予約履歴と現在占有の分離。確定・反映済み。
-- `OI-BD-002` — Reservationの状態・月間算入・区分Overrideの分離。本書に確定結果を反映する。
+- `OI-BD-002` — Reservationの状態・月間算入・区分Overrideの分離。確定・反映済み。
