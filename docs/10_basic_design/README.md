@@ -9,7 +9,7 @@ Basic design documents live here. This phase uses C4 Level 2 (Container) as the 
 
 ## Planned topics
 
-- Continue data model: SlotOccupancy physical realization and remaining entities
+- Continue data model: remaining entities and D1 physical details
 - Reservation consistency / transaction design
 - API overview
 - Authentication and session design
