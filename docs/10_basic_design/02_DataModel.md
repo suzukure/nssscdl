@@ -54,8 +54,10 @@ LessonSlot 1 ───── 0..* StudentReservation
 LessonSlot #100
 ├─ Reservation #501 : student_cancelled
 ├─ Reservation #502 : school_cancelled
-└─ Reservation #503 : active
+└─ Reservation #503 : confirmed
 ```
+
+`confirmed` は予約成立後にキャンセルされていない状態を表し、Lesson終了後も時間経過だけでは別状態へ遷移しない。
 
 過去に成立した予約がキャンセルされた後、同じ枠が再予約された場合でも、過去のReservationを削除・上書きせず新しいReservationを作成する。
 
@@ -92,6 +94,10 @@ StudentReservation 1 ───── 0..1 ReservationAbsence
 - `SchoolCancellationDetail` — `school_cancelled` 固有の理由詳細。
 
 現在の実効月間算入可否は、Reservationライフサイクル、欠席、`ReservationMonthlyCountOverride` から導出し、重複する真偽値をReservation本体へ正本として保存しない。
+
+`classification` は月間算入対象Reservationにのみ適用する。月間算入対象外では仕様上「分類対象外（not applicable）」とし、物理的には `StudentReservation.classification = NULL` とする。`not_applicable` をclassificationの第3値としては保存しない。
+
+`ReservationClassificationOverride` は対象Reservationが一時的に分類対象外となっても明示解除されるまで保持し、再び算入対象となった際に再適用する。
 
 ### 3.5 生徒・月単位の標準回数
 
@@ -176,7 +182,7 @@ UNIQUE(slot_id)
 LessonSlot #100
 ├─ Reservation #501 : cancelled
 ├─ Reservation #502 : cancelled
-└─ Reservation #503 : active
+└─ Reservation #503 : confirmed
         ▲
         │
    SlotOccupancy
@@ -195,7 +201,7 @@ LessonSlot #100
 ```text
 予約中
 LessonSlot #100
-├─ Reservation #501 : active
+├─ Reservation #501 : confirmed
 └─ SlotOccupancy -> Reservation #501
 
       ↓ 開始前キャンセル
@@ -208,7 +214,7 @@ LessonSlot #100
 
 LessonSlot #100
 ├─ Reservation #501 : student_cancelled
-├─ Reservation #502 : active
+├─ Reservation #502 : confirmed
 └─ SlotOccupancy -> Reservation #502
 ```
 
@@ -274,7 +280,9 @@ Student
 - 生徒の予約履歴は `StudentReservation` を基点に取得する。
 - 予約カレンダーの現在状態は `LessonSlot` と `SlotOccupancy` を基点に取得する。
 - 月間算入可否はReservation状態・欠席・月間算入Overrideから導出する。
-- 現在の標準／追加区分は `StudentReservation.classification` を参照し、その根拠となる明示Overrideは別Entityとして保持する。
+- 月間算入対象では `StudentReservation.classification` の `standard` / `additional` を現在の実効区分として参照する。
+- 月間算入対象外では仕様上「分類対象外」とし、保存上のclassificationはNULLとする。画面ではNULLそのものではなく、キャンセル・欠席・回数算入対象外等の業務状態を表示する。
+- 実効区分の根拠となる明示Overrideは別Entityとして保持する。
 - 同じ関係をStudentやLessonSlotへ予約ID配列として重複保存しない。
 
 ## 7. 整合性上の原則
@@ -286,9 +294,11 @@ Student
 - 同時占有防止の最終保証点として `SlotOccupancy.slot_id` のUNIQUE制約を用いる。
 - `SlotOccupancy` は現在占有、`StudentReservation` は予約履歴として責務を分離する。
 - 生徒予約による占有では `SlotOccupancy` が現在有効なReservationを参照する。
+- `StudentReservation.status = confirmed` は予約成立後にキャンセルされていないことを表し、Lesson終了後も時間経過だけでは変更しない。
 - Reservationライフサイクル、欠席、月間算入、標準／追加区分、明示Overrideを別概念として扱う。
 - 月間算入可否をReservation本体へ重複保存せず、業務状態とOverrideから導出する。
-- 実効classificationはReservation本体に保持し、明示Overrideの有無・値は別Entityで保持する。
+- 月間算入対象Reservationのみ実効classificationを `standard` / `additional` として保持し、対象外は「分類対象外」としてNULLにする。
+- `ReservationClassificationOverride` は一時的な分類対象外への遷移で自動削除しない。
 - `Student` に予約一覧のCacheを業務上の正本として持たせない。
 - 競合判定ではCommit時の最新状態を再検証する。
 - 性能上の根拠なく初期段階から重複保存を導入しない。
@@ -330,6 +340,7 @@ Student
 - `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録する。
 - 予約履歴と現在占有の分離は `OI-BD-001` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 - Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
+- Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 
 ## 10. 図
 
