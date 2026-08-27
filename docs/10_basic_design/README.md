@@ -2,4 +2,19 @@
 
 Basic design documents live here. This phase uses C4 Level 2 (Container) as the primary architecture view.
 
-Planned topics include system/container design, data model, API overview, authentication, notifications, backup/recovery, and C4 diagrams.
+## Documents
+
+- `01_SystemArchitecture.md` — C4 Level 2 container architecture and deployment boundaries
+
+## Planned topics
+
+- Data model
+- Reservation consistency / transaction design
+- API overview
+- Authentication and session design
+- Schedule generation and change design
+- Notifications and scheduled jobs
+- Backup / recovery
+- Deployment and environment design
+
+Open design decisions from this phase are managed as GitHub Issues using the `OI-BD-xxx` identifier scheme. Final decisions are reflected back into these design documents or ADRs before the Issue is closed.
