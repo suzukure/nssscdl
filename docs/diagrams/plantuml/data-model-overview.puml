@@ -34,6 +34,7 @@ class StudentReservation {
   lesson_slot_id
   student_id
   status
+  automatic_classification
   classification
   created_at
   updated_at
@@ -152,11 +153,15 @@ note bottom of StudentReservation
   Reservationを表し、Lesson終了後も
   時間経過だけでは変更しない。
 
-  classification は月間算入対象のみ:
+  automatic_classification:
     standard / additional
+  Lesson開始前は再計算対象。
+  Lesson開始後は自動では変更しない。
 
-  算入対象外は仕様上「分類対象外」。
-  保存上は classification = NULL。
+  classification は実効値。
+  算入対象なら自動値またはOverride、
+  算入対象外は仕様上「分類対象外」で
+  保存上 classification = NULL。
 end note
 
 note bottom of ReservationAbsence
@@ -164,7 +169,8 @@ note bottom of ReservationAbsence
   キャンセル済みReservationへは
   設定しない。
 
-  欠席中は分類対象外となる。
+  欠席中はclassification対象外。
+  automatic_classificationは保持する。
 end note
 
 note bottom of ReservationMonthlyCountOverride
@@ -172,13 +178,17 @@ note bottom of ReservationMonthlyCountOverride
   初期リリースでは excluded を扱う。
   標準/追加区分のOverrideではない。
 
-  excluded 中は分類対象外となる。
+  excluded 中はclassification対象外。
+  automatic_classificationは保持する。
 end note
 
 note bottom of ReservationClassificationOverride
   standard / additional の
   管理者明示Override。
-  自動分類より優先する。
+  実効classificationで自動分類より優先。
+
+  automatic_classificationや
+  自動標準枠の消費には影響しない。
 
   対象Reservationが一時的に
   分類対象外になっても自動削除せず、
@@ -188,6 +198,11 @@ end note
 note bottom of StudentMonthlyLessonConfig
   UNIQUE(student_id, schedule_month_id)
   行がなければ既定 standard_count = 3
+
+  standard_count は自動分類の基準数。
+  開始済みで算入対象の
+  automatic standard を消費済み枠として、
+  残り枠だけを未開始Reservationへ割当てる。
 end note
 
 note bottom of SlotOccupancy
