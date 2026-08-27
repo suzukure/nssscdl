@@ -1,0 +1,75 @@
+name: Render PlantUML diagrams
+
+on:
+  push:
+    paths:
+      - 'docs/diagrams/plantuml/**/*.puml'
+      - '.github/workflows/render-plantuml.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Graphviz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y graphviz
+
+      - name: Download pinned PlantUML
+        run: |
+          curl --fail --location --silent --show-error \
+            --output plantuml.jar \
+            https://github.com/plantuml/plantuml/releases/download/v1.2026.6/plantuml-1.2026.6.jar
+          echo '89948f14c93756c7a3fb7b69078ff37e8489fd79dd430c582b931e2f65358690  plantuml.jar' | sha256sum --check
+
+      - name: Render SVG files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          src_root='docs/diagrams/plantuml'
+          dst_root='docs/diagrams/rendered'
+
+          find "$dst_root" -type f -name '*.svg' -delete
+
+          while IFS= read -r -d '' file; do
+            rel="${file#${src_root}/}"
+            dest="${dst_root}/${rel%.puml}.svg"
+            mkdir -p "$(dirname "$dest")"
+
+            java -jar plantuml.jar -tsvg "$file"
+            mv "${file%.puml}.svg" "$dest"
+          done < <(find "$src_root" -type f -name '*.puml' -print0)
+
+      - name: Commit rendered SVG files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add docs/diagrams/rendered
+
+          if git diff --cached --quiet; then
+            echo 'Rendered diagrams are already up to date.'
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Render PlantUML diagrams [skip ci]'
+          git push
