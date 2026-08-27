@@ -1,0 +1,16 @@
+{
+  "POL_count": 13,
+  "BR_count": 64,
+  "REQ_count": 63,
+  "AC_count": 192,
+  "POL_duplicate_defs": [],
+  "BR_duplicate_defs": [],
+  "REQ_duplicate_defs": [],
+  "AC_duplicate_defs": [],
+  "dangling_trace_POL": [],
+  "dangling_trace_BR": [],
+  "dangling_trace_REQ": [],
+  "dangling_trace_AC": [],
+  "REQ_without_AC": [],
+  "REQ_missing_from_trace": []
+}
