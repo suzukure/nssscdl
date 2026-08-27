@@ -7,10 +7,11 @@ Basic design documents live here. This phase uses C4 Level 2 (Container) as the 
 - `01_SystemArchitecture.md` — C4 Level 2 container architecture and deployment boundaries
 - `02_DataModel.md` — conceptual/logical data model and data ownership/query principles
 - `03_ScheduleModel.md` — monthly publication, concrete lesson-slot date/time, and slot availability model
+- `04_ReservationModel.md` — reservation history, current slot occupancy, cancellation, and rebooking model
 
 ## Planned topics
 
-- Continue data model: remaining entities and D1 physical details
+- Continue data model: reservation classification/counting, remaining entities, and D1 physical details
 - Reservation consistency / transaction design
 - API overview
 - Authentication and session design
