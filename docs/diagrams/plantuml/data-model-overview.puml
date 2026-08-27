@@ -142,29 +142,47 @@ end note
 
 note bottom of StudentReservation
   予約の業務事実・履歴の正本。
-  status は予約ライフサイクルのみ。
-  欠席・月間算入・Overrideとは分離する。
 
-  classification は現在の実効値:
+  status:
+    confirmed
+    student_cancelled
+    school_cancelled
+
+  confirmed はキャンセルされていない
+  Reservationを表し、Lesson終了後も
+  時間経過だけでは変更しない。
+
+  classification は月間算入対象のみ:
     standard / additional
+
+  算入対象外は仕様上「分類対象外」。
+  保存上は classification = NULL。
 end note
 
 note bottom of ReservationAbsence
   欠席はキャンセルとは別概念。
   キャンセル済みReservationへは
   設定しない。
+
+  欠席中は分類対象外となる。
 end note
 
 note bottom of ReservationMonthlyCountOverride
   月間回数への算入例外。
   初期リリースでは excluded を扱う。
   標準/追加区分のOverrideではない。
+
+  excluded 中は分類対象外となる。
 end note
 
 note bottom of ReservationClassificationOverride
   standard / additional の
   管理者明示Override。
   自動分類より優先する。
+
+  対象Reservationが一時的に
+  分類対象外になっても自動削除せず、
+  再び算入対象になれば再適用する。
 end note
 
 note bottom of StudentMonthlyLessonConfig
