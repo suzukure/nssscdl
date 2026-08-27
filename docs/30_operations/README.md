@@ -1,3 +1,3 @@
-# Operations
+# 運用
 
-Operational documentation lives here, including deployment, monitoring, incident response, backup/restore, and account recovery procedures.
+運用文書をこのディレクトリに格納する。デプロイ、監視、インシデント対応、Backup / Restore、アカウントRecovery等の手順を扱う。
