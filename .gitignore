@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+*.pem
+*.key
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Runtime / local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Backups and user data
+backups/
+*.backup
+*.dump
+
+# Logs
+*.log
