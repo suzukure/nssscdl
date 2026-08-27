@@ -29,19 +29,21 @@ class LessonSlot {
   availability_status
 }
 
+class StudentReservation {
+  id
+  lesson_slot_id
+  student_id
+  classification
+  status
+}
+
 class SlotOccupancy {
   id
   slot_id <<UNIQUE>>
   occupancy_type
+  reservation_id
   created_at
   created_by
-}
-
-class StudentReservation {
-  occupancy_id <<UNIQUE>>
-  student_id
-  classification
-  status
 }
 
 class AdminHold {
@@ -56,8 +58,9 @@ class GroupLesson {
 
 ScheduleMonth "1" -- "0..*" LessonSlot : contains >
 Student "1" -- "0..*" StudentReservation : books >
-LessonSlot "1" -- "0..1" SlotOccupancy : occupied by >
-SlotOccupancy "1" -- "0..1" StudentReservation : detail >
+LessonSlot "1" -- "0..*" StudentReservation : reservation history >
+LessonSlot "1" -- "0..1" SlotOccupancy : current occupancy >
+SlotOccupancy "0..1" --> "0..1" StudentReservation : current reservation >
 SlotOccupancy "1" -- "0..1" AdminHold : detail >
 SlotOccupancy "1" -- "0..1" GroupLesson : detail >
 
@@ -79,7 +82,6 @@ note right of LessonSlot
   の場合のみ新規予約可能。
 
   通常ルール上存在しない枠は
-  disabledとして生成せず、
   LessonSlot自体を生成しない。
 
   UNIQUE(schedule_month_id,
@@ -94,8 +96,17 @@ note right of Student
   からQueryで導出する。
 end note
 
+note bottom of StudentReservation
+  予約の業務事実・履歴の正本。
+  lesson_slot_id を直接保持する。
+
+  同じLessonSlotにキャンセル済み等の
+  過去Reservationが複数存在してよい。
+  過去Reservationを再利用・上書きしない。
+end note
+
 note bottom of SlotOccupancy
-  D1の実テーブルとして永続化する。
+  LessonSlotに属する現在占有レコード。
   slot_id の UNIQUE 制約により
   1枠につき最大1占有をDBレベルで保証する。
 
@@ -103,16 +114,9 @@ note bottom of SlotOccupancy
   student_reservation / admin_hold /
   group_lesson のいずれか。
 
-  LessonSlotの利用可否とは別軸で扱う。
-end note
-
-note bottom of StudentReservation
-  SlotOccupancy と対応する詳細レコードは
-  同一の論理トランザクション境界で作成する。
-
-  予約済み枠をdisabledにする場合は
-  スクール都合キャンセルと占有解放を
-  整合した業務操作として行う。
+  student_reservation の場合だけ
+  reservation_id から現在有効な
+  StudentReservationを参照する。
 end note
 
 @enduml
