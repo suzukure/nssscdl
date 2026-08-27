@@ -26,6 +26,7 @@ class LessonSlot {
   lesson_date
   start_time
   end_time
+  availability_status
 }
 
 class SlotOccupancy {
@@ -71,6 +72,16 @@ note right of LessonSlot
   lesson_date / start_time / end_time
   を日時の正本として保存する。
 
+  availability_status:
+    enabled / disabled
+
+  enabled かつ SlotOccupancyなし
+  の場合のみ新規予約可能。
+
+  通常ルール上存在しない枠は
+  disabledとして生成せず、
+  LessonSlot自体を生成しない。
+
   UNIQUE(schedule_month_id,
          lesson_date,
          start_time)
@@ -91,11 +102,17 @@ note bottom of SlotOccupancy
   occupancy_type は
   student_reservation / admin_hold /
   group_lesson のいずれか。
+
+  LessonSlotの利用可否とは別軸で扱う。
 end note
 
 note bottom of StudentReservation
   SlotOccupancy と対応する詳細レコードは
   同一の論理トランザクション境界で作成する。
+
+  予約済み枠をdisabledにする場合は
+  スクール都合キャンセルと占有解放を
+  整合した業務操作として行う。
 end note
 
 @enduml
