@@ -1,0 +1,58 @@
+@startuml
+hide methods
+hide stereotypes
+skinparam classAttributeIconSize 0
+
+title 基本データモデル（概念）
+
+class Student {
+  id
+  name
+  contact_email
+}
+
+class LessonSlot {
+  id
+  start_at
+  end_at
+}
+
+abstract class SlotOccupancy {
+  id
+  slot_id
+}
+
+class StudentReservation {
+  student_id
+  classification
+  status
+}
+
+class AdminHold {
+  reason
+}
+
+class GroupLesson {
+  recurrence_source
+}
+
+Student "1" -- "0..*" StudentReservation : books >
+LessonSlot "1" -- "0..1" SlotOccupancy : occupied by >
+SlotOccupancy <|-- StudentReservation
+SlotOccupancy <|-- AdminHold
+SlotOccupancy <|-- GroupLesson
+
+note right of Student
+  予約ID一覧は保持しない。
+  生徒別予約一覧は
+  StudentReservation.student_id
+  からQueryで導出する。
+end note
+
+note bottom of SlotOccupancy
+  概念上の共通概念。
+  独立テーブルとして実装するかは
+  後続のデータモデル検討で確定する。
+end note
+
+@enduml
