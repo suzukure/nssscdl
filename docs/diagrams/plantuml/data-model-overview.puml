@@ -11,10 +11,21 @@ class Student {
   contact_email
 }
 
+class ScheduleMonth {
+  id
+  year
+  month
+  published_at
+  created_at
+  updated_at
+}
+
 class LessonSlot {
   id
-  start_at
-  end_at
+  schedule_month_id
+  lesson_date
+  start_time
+  end_time
 }
 
 class SlotOccupancy {
@@ -42,11 +53,28 @@ class GroupLesson {
   recurrence_source
 }
 
+ScheduleMonth "1" -- "0..*" LessonSlot : contains >
 Student "1" -- "0..*" StudentReservation : books >
 LessonSlot "1" -- "0..1" SlotOccupancy : occupied by >
 SlotOccupancy "1" -- "0..1" StudentReservation : detail >
 SlotOccupancy "1" -- "0..1" AdminHold : detail >
 SlotOccupancy "1" -- "0..1" GroupLesson : detail >
+
+note right of ScheduleMonth
+  UNIQUE(year, month)
+  published_at = NULL : 未公開
+  published_at != NULL : 公開済み
+end note
+
+note right of LessonSlot
+  枠番号ではなく、実際の
+  lesson_date / start_time / end_time
+  を日時の正本として保存する。
+
+  UNIQUE(schedule_month_id,
+         lesson_date,
+         start_time)
+end note
 
 note right of Student
   予約ID一覧は保持しない。
