@@ -33,8 +33,44 @@ class StudentReservation {
   id
   lesson_slot_id
   student_id
-  classification
   status
+  classification
+  created_at
+  updated_at
+}
+
+class ReservationAbsence {
+  reservation_id <<UNIQUE>>
+  recorded_at
+  recorded_by
+}
+
+class ReservationMonthlyCountOverride {
+  reservation_id <<UNIQUE>>
+  override_mode
+  changed_at
+  changed_by
+}
+
+class ReservationClassificationOverride {
+  reservation_id <<UNIQUE>>
+  classification
+  changed_at
+  changed_by
+}
+
+class SchoolCancellationDetail {
+  reservation_id <<UNIQUE>>
+  reason_category
+  comment
+}
+
+class StudentMonthlyLessonConfig {
+  student_id
+  schedule_month_id
+  standard_count
+  updated_at
+  updated_by
 }
 
 class SlotOccupancy {
@@ -63,6 +99,14 @@ LessonSlot "1" -- "0..1" SlotOccupancy : current occupancy >
 SlotOccupancy "0..1" --> "0..1" StudentReservation : current reservation >
 SlotOccupancy "1" -- "0..1" AdminHold : detail >
 SlotOccupancy "1" -- "0..1" GroupLesson : detail >
+
+StudentReservation "1" -- "0..1" ReservationAbsence : absence >
+StudentReservation "1" -- "0..1" ReservationMonthlyCountOverride : monthly count override >
+StudentReservation "1" -- "0..1" ReservationClassificationOverride : classification override >
+StudentReservation "1" -- "0..1" SchoolCancellationDetail : school cancellation >
+
+Student "1" -- "0..*" StudentMonthlyLessonConfig : monthly config >
+ScheduleMonth "1" -- "0..*" StudentMonthlyLessonConfig : applies to >
 
 note right of ScheduleMonth
   UNIQUE(year, month)
@@ -98,11 +142,34 @@ end note
 
 note bottom of StudentReservation
   予約の業務事実・履歴の正本。
-  lesson_slot_id を直接保持する。
+  status は予約ライフサイクルのみ。
+  欠席・月間算入・Overrideとは分離する。
 
-  同じLessonSlotにキャンセル済み等の
-  過去Reservationが複数存在してよい。
-  過去Reservationを再利用・上書きしない。
+  classification は現在の実効値:
+    standard / additional
+end note
+
+note bottom of ReservationAbsence
+  欠席はキャンセルとは別概念。
+  キャンセル済みReservationへは
+  設定しない。
+end note
+
+note bottom of ReservationMonthlyCountOverride
+  月間回数への算入例外。
+  初期リリースでは excluded を扱う。
+  標準/追加区分のOverrideではない。
+end note
+
+note bottom of ReservationClassificationOverride
+  standard / additional の
+  管理者明示Override。
+  自動分類より優先する。
+end note
+
+note bottom of StudentMonthlyLessonConfig
+  UNIQUE(student_id, schedule_month_id)
+  行がなければ既定 standard_count = 3
 end note
 
 note bottom of SlotOccupancy
