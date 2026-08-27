@@ -1,0 +1,30 @@
+@startuml
+!include <C4/C4_Container>
+
+LAYOUT_WITH_LEGEND()
+
+title Lesson Reservation System - C4 Level 2 Container Diagram
+
+Person(student, "Student", "Books and cancels private lessons and checks current reservation state.")
+Person(admin, "School Administrator", "Manages schedules, students, exceptions, cancellations, and operational support.")
+
+System_Boundary(system, "Lesson Reservation System") {
+    Container(app, "Application Worker", "Cloudflare Workers", "Single deployment unit for Web UI, HTTP API, authentication/session handling, booking/cancellation, schedule/admin functions, notification orchestration, and scheduled handlers.")
+    ContainerDb(db, "Main Database", "Cloudflare D1", "Authoritative transactional business state, including students, schedules, reservations, notification state, holiday master, sessions/tokens as designed, and audit data.")
+    Container(backup, "Backup Storage", "Cloudflare R2", "Long-term backup artifacts retained separately from the production transactional store.")
+}
+
+System_Ext(google, "Google Authentication", "External authentication provider for Google sign-in.")
+System_Ext(resend, "Resend", "Outbound email delivery and delivery/failure callbacks.")
+System_Ext(turnstile, "Cloudflare Turnstile", "Bot-abuse mitigation for public authentication entry points.")
+
+Rel(student, app, "Uses", "HTTPS")
+Rel(admin, app, "Uses", "HTTPS")
+Rel(app, db, "Reads and writes authoritative business state", "D1 binding")
+Rel(app, backup, "Writes/reads backup artifacts as defined by backup design", "R2 binding")
+Rel(app, google, "Authenticates users", "HTTPS/OAuth")
+Rel(app, resend, "Sends email / receives callbacks", "HTTPS")
+Rel(app, turnstile, "Verifies bot-mitigation tokens", "HTTPS")
+
+SHOW_LEGEND()
+@enduml
