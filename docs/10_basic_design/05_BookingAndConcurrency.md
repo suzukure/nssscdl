@@ -4,9 +4,7 @@
 
 本書は、予約・キャンセル・月間再分類等の重要業務Commandについて、D1上でどの状態変更を同一の整合範囲として扱い、競合・監査・通知をどのように整合させるかを定義する。
 
-本論点は `OI-BD-006` で検討する。未確定事項は確定仕様として扱わず、確定した判断だけを本文へ反映する。
-
-本書はC4 Level 2の基本設計としてTransaction境界と実行原則を定義する。個別DDL、Index、Trigger、Guard用SQL、CTE、Application Component構造等は詳細設計（Level 3）で具体化する。
+本論点は `OI-BD-006` で検討する。本書はC4 Level 2の基本設計としてTransaction境界と実行原則を定義する。個別DDL、Index、Trigger、Guard用SQL、CTE、Application Component構造等は詳細設計（Level 3）で具体化する。
 
 ## 2. 既存の前提
 
@@ -108,12 +106,7 @@ Commit必須条件が不成立の場合は、DB Transaction全体が失敗する
 
 月間再分類、複数Reservation取消、複数NotificationIntent生成等を、不要な1件ずつのSELECT / UPDATEループへ分解しない。
 
-可能な限り、次のような集合指向SQLを使用する。
-
-- 条件付き一括UPDATE
-- `INSERT ... SELECT`
-- multi-row INSERT
-- CTE等を用いた集合計算
+可能な限り、条件付き一括UPDATE、`INSERT ... SELECT`、multi-row INSERT、CTE等の集合指向SQLを使用する。
 
 これによりD1 Query数、Transaction時間、競合Windowを抑える。初期リリースは無料枠優先であるため、1 Worker invocationあたりのD1 Query上限も設計制約として考慮する。
 
@@ -140,11 +133,11 @@ D1のConstraint Error、SQL Error、Stack Trace、Provider固有Error Message等
 - **Conflict**: 先行Commitにより最新業務状態が変化した。HTTP APIでは原則 `409 Conflict`。
 - **Validation / Business Rejection**: 入力不正、権限不足、期限超過等、競合以外の利用者操作不成立。適切な4xxへ変換する。
 - **Technical Failure**: D1接続不能、予期しないApplication Error等。5xx / 503等へ変換する。
-- **Integrity Anomaly**: 永続化済みInvariant違反。通常Conflictとは区別し、Fail Closedする。
+- **Integrity Anomaly**: 永続化済みInvariant違反。通常Conflictとは区別し、Fail Closedする。利用者向けHTTP APIでは原則 `503 Service Unavailable` とする。
 
 利用者には、内部技術情報ではなく「何が成立しなかったか」「必要なら何を再確認・再操作すべきか」が分かるMessageと最新業務状態を提示する。
 
-D1 Constraint名、SQL文、Stack Trace、Provider Message等の詳細は技術Log / Monitoring側へ記録し、公開Application Contractをこれらの文字列へ依存させない。
+D1 Constraint名、SQL文、Stack Trace、Provider Message、内部Invariant Code等の詳細は技術Log / Monitoring側へ記録し、公開Application Contractをこれらの文字列へ依存させない。
 
 ### 4.2 Conflict後は最新状態を返す
 
@@ -346,6 +339,14 @@ Purge用Entity、列、Scheduled Job等は認証・アカウント設計／詳�
 
 生徒削除に伴うsystem cancellation自体には専用キャンセルNotificationIntentを生成しない。
 
+### 9.6 生徒削除中にInvariant違反を検出した場合
+
+削除対象の将来Reservationまたは対応するSlotOccupancyに永続化済みInvariant違反を検出した場合、その対象だけを飛ばして残りの生徒削除を正常Commitしない。
+
+生徒削除Transaction全体をFail Closedとし、Rollback後にIntegrity Incidentを独立記録する。削除TransactionがCommitされていないため、対象生徒を削除済み扱い、Session無効化済み扱い、または一部予約だけ取消済み扱いにしない。
+
+整合性修復中にも即時の利用停止が必要な場合は、生徒削除と混同せず既存のSecurity Suspensionを封じ込め手段として使用できる。
+
 ## 10. AuditLog
 
 ### 10.1 成功Commandと同一Transaction
@@ -385,6 +386,7 @@ Audit Eventは少なくとも次を必要最小限で表現できるようにす
 - Reservationへ影響するSchedule変更
 - AdminHold / GroupLesson等の現在占有変更
 - Security Suspension等の重要管理Command
+- Integrity Incidentの明示Repair Command
 
 ### 10.4 Conflict・拒否
 
@@ -487,10 +489,143 @@ Reservation履歴一覧から現在占有を推測しない。
 
 通常の利用者競合と永続化済みInvariant違反を区別する。後者を通常Commandの副作用として無言で自動修復しない。
 
-具体的な監視、異常コード、通知、修復手順は未確定事項として別途定義する。
+### 12.4 検知経路はCommand Guardと定期Integrity Scanの二系統とする
+
+Invariant違反は、予約・キャンセル等の重要Command内でのGuardに加え、Scheduled Handlerによる定期Integrity Scanでも検知する。
+
+```text
+重要Command
+  → Commit-time Invariant Guard
+
+Scheduled Handler
+  → 未来LessonSlot Integrity Scan
+```
+
+初期リリースでは定期Scanを1時間ごとに実行することを既定とする。対象規模が小さいため、未来Slotを集合SQLで検査する方式を基本とする。具体的なCron式、分割、Query最適化は詳細設計で定義する。
+
+Commandを誰も実行しないSlotでも不整合を検知できることを目的とする。
+
+### 12.5 Integrity IncidentはRollback後に独立して永続化する
+
+永続化済みInvariant違反を検出した場合、論理的な `IntegrityIncident` としてD1上で追跡可能にする。
+
+少なくとも次の情報をPII最小で表現できるようにする。
+
+- `incident_id`
+- `anomaly_code`
+- `target_type`
+- `target_id`
+- `status = open / resolved`
+- `first_detected_at`
+- `last_detected_at`
+- `occurrence_count`
+- `detected_by = command / scheduled_scan`
+
+異常を検出した業務TransactionはRollbackするため、IntegrityIncidentの記録をその失敗Transaction内へ含めない。
+
+```text
+業務Transaction
+  → Invariant違反
+  → ROLLBACK
+
+Rollback後
+  → IntegrityIncidentを独立記録
+```
+
+Incident記録自体が失敗しても、利用者へのFail Closed判定をSuccessへ変更しない。この場合はTechnical Log / Monitoringをfallbackとする。
+
+### 12.6 初期Invariant Code
+
+初期リリースでは少なくとも次の内部異常コードを定義する。
+
+| Code | 意味 |
+|---|---|
+| `INV-SLOT-001` | 同一Slotに複数の現在Occupancyが存在する |
+| `INV-SLOT-002` | student_reservation OccupancyのReservation参照が欠落または不正 |
+| `INV-SLOT-003` | Occupancyが参照するReservationが `confirmed` ではない |
+| `INV-SLOT-004` | Occupancyの `slot_id` とReservationの `lesson_slot_id` が不一致 |
+| `INV-SLOT-005` | 未来の有効な `confirmed` Reservationに対応Occupancyがない |
+| `INV-SLOT-006` | `disabled` SlotにOccupancyが存在する |
+
+これらは保守用内部コードであり、利用者画面や公開APIへ直接表示しない。詳細設計でコードを追加する場合も既存コードの意味を安定させる。
+
+### 12.7 利用者向けはIntegrity Anomalyとして503系へ抽象化する
+
+永続化済みInvariant違反は、先行Commitによる通常競合ではないため `409 Conflict` として扱わない。
+
+利用者向けHTTP APIでは原則 `503 Service Unavailable` とし、安定したApplication Error表現へ変換する。論理的な初期Application Errorは `INTEGRITY_STATE_UNAVAILABLE` とする。
+
+利用者へは、例えば「現在この枠の状態を安全に確認できないため操作を完了できません。時間をおいて再度お試しください。」等、状態と次の行動が理解できる案内を表示する。
+
+内部Invariant Code、対象内部ID、SQL、Stack Trace等はPOL-014 / BR-133 / REQ-914に従い露出しない。
+
+### 12.8 Fail Closed範囲は影響対象を最小単位とする
+
+1件のSlot不整合だけを理由に予約機能全体を自動停止しない。
+
+例えばSlot Aだけに不整合がある場合、Slot Aは予約・関連変更をFail Closedとするが、Invariantが正常に成立している他Slotは通常利用可能とする。
+
+一方、次のような場合は重大Incidentへ昇格し、予約機能全体の停止を含む保守判断の対象とする。
+
+- 複数の無関係なSlotで同種異常が発生した。
+- DeploymentやMigration後にIntegrity Incidentが急増した。
+- DB全体の確定状態を信用できない兆候がある。
+
+自動的な全サービス停止の具体Thresholdは詳細設計・運用設計で定義する。
+
+### 12.9 Incidentと通知は重複集約する
+
+同一の次の組をIntegrity Incidentのfingerprintとする。
+
+```text
+anomaly_code
++ target_type
++ target_id
+```
+
+同じfingerprintで `open` Incidentが既に存在する場合、新規Incidentを無制限に作成せず `last_detected_at` と `occurrence_count` を更新する。
+
+保守担当者への通知は次を基本とする。
+
+- 最初の検知: 通知する。
+- 同一open Incidentの再検知: 集約し、Alert Stormを避ける。
+- resolved後の再発: 新たな通知対象とする。
+- 複数対象への拡大・急増: 重大Incidentへ昇格する。
+
+これはBR-110およびREQ-942の重大障害監視・集約通知方針に従う。
+
+### 12.10 修復は明示的なRepair Commandとして行う
+
+通常の予約・キャンセルCommandの副作用としてInvariant違反を無言で自動修復しない。
+
+修復は次の手順を基本とする。
+
+```text
+1. 対象をFail Closed
+2. 最新DB状態・AuditLog等を調査
+3. 正しい業務状態を一意に判断
+4. 明示的なRepair Commandで修復
+5. Repair操作をAuditLogへ記録
+6. Invariantを再Scan
+7. 全Invariant成立時のみIncidentをresolved
+```
+
+正しい状態を一意に判断できない場合は推測して修復しない。必要に応じスクール管理者が業務上の事実を確認し、明示的な判断を行ったうえでRepairする。
+
+直接D1へ手作業SQLを流すことを通常の修復経路とせず、保守用Commandまたは検証済みScriptを通じて修復し、誰が・いつ・何を・なぜ修復したかをAuditLogで追跡可能にする。
+
+### 12.11 保持方針
+
+Integrity IncidentとRepair Auditの保持を分離する。
+
+- `open` Integrity Incident: 解決まで保持する。
+- `resolved` Incidentの技術診断情報: Technical / Error Logと同様に原則30日程度を基本とする。
+- Repair Commandの正式AuditLog: REQ-940に従い原則1年保持する。
+- PII削除要求は上記保持期間より優先する。
 
 ## 13. 関連要求・方針
 
+- POL-001 必要最小限・低運用負荷
 - POL-002 無料枠優先・Must要件優先
 - POL-003 業務状態と外部連携の分離
 - POL-004 個人情報最小化
@@ -506,6 +641,7 @@ Reservation履歴一覧から現在占有を推測しない。
 - BR-064 予約済み枠の休業化
 - BR-067 未来枠の現在予約状態の一貫性
 - BR-100 生徒削除
+- BR-110 重大障害通知
 - BR-111〜BR-116 通知
 - BR-123〜BR-125 生徒削除時処理
 - BR-132 監査
@@ -522,16 +658,23 @@ Reservation履歴一覧から現在占有を推測しない。
 - REQ-913 無料枠運用
 - REQ-914 障害・エラー時利用者表示
 - REQ-940 監査Logging
+- REQ-942 監視・重大Incident
 - REQ-951 Provider分離
 - CON-001 Cloudflare Platform
 
-## 14. 未確定事項
+## 14. 詳細設計へ送る事項
 
-`OI-BD-006` で残る未確定事項は次のみとする。
+`OI-BD-006` の基本設計論点はすべて確定済みとする。
 
-- Invariant違反の具体的な監視・異常コード・通知・修復手順
+以下は本基本設計の原則を維持した上で詳細設計（C4 Level 3）または運用設計で具体化する。
 
-個別DDL、Index、具体的Guard SQL、CTE、Application Error Code、HTTP Response Schema、Command Idempotency Key等は、本基本設計の原則を維持した上で詳細設計へ送る。
+- 個別DDL、Index、具体的Guard SQL、CTE
+- Application Error Codeの追加値、HTTP Response Schema、Correlation ID
+- Command Idempotency Key
+- Integrity Scanの具体Cron式、分割・Query最適化
+- Integrity Incidentの物理Schema・Index
+- 重大Incidentへ昇格する具体Threshold
+- Repair Command / Scriptの具体実装・権限制御・Runbook
 
 ## 15. 設計判断記録
 
@@ -545,3 +688,5 @@ Reservation履歴一覧から現在占有を推測しない。
 - NotificationIntentを通知義務として業務状態と同一Transactionへ含め、外部送信とDelivery状態を分離する方針は2026-08-28に確定した。
 - D1重要Write Commandで `withSession("first-primary").batch()` とPrepared Statementを基本とし、Transaction内Guard、集合指向SQL、安定したApplication Errorへの変換、Writeの盲目的Retry禁止を採用する方針は2026-08-28に確定した。
 - 利用者向け内部エラー非露出の方針は要求仕様v1.4の `POL-014` / `BR-133` / `REQ-914` として上位要求化し、本書4章をその実現設計としてトレースする。
+- Invariant違反について、Command Guardと1時間ごとのIntegrity Scanの二系統検知、IntegrityIncidentの独立永続化、内部異常コード、原則503への抽象化、影響対象単位のFail Closed、Alert集約、明示Repair、再Scan後の解決判定を2026-08-28に確定した。
+- 上記確定により `OI-BD-006` の基本設計論点はすべて完了した。
