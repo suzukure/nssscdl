@@ -37,6 +37,7 @@ class StudentReservation {
   automatic_classification
   classification
   created_at
+  cancelled_at
   updated_at
 }
 
@@ -69,7 +70,6 @@ class SchoolCancellationDetail {
 class SystemCancellationDetail {
   reservation_id <<UNIQUE>>
   reason_code
-  cancelled_at
 }
 
 class StudentMonthlyLessonConfig {
@@ -161,6 +161,11 @@ note bottom of StudentReservation
   Reservationを表し、Lesson終了後も
   時間経過だけでは変更しない。
 
+  cancelled_at:
+    confirmed -> NULL
+    *_cancelled -> 必須
+  updated_at は取消日時の代用にしない。
+
   system_cancelled は生徒削除等の
   システム処理由来の取消を表す。
 
@@ -210,6 +215,7 @@ note bottom of SchoolCancellationDetail
   school_cancelled 固有の理由詳細。
   スクール都合の理由カテゴリと
   必要な補足を保持する。
+  取消日時はReservation.cancelled_at。
 end note
 
 note bottom of SystemCancellationDetail
@@ -217,6 +223,7 @@ note bottom of SystemCancellationDetail
   初期 reason_code:
     student_deleted
 
+  取消日時はReservation.cancelled_at。
   利用者・スクール管理者の
   明示キャンセルとは区別する。
 end note
@@ -243,6 +250,10 @@ note bottom of SlotOccupancy
   student_reservation の場合だけ
   reservation_id から現在有効な
   StudentReservationを参照する。
+
+  キャンセル済みReservationは参照しない。
+  Reservation占有終了と枠の予約可否は
+  別に判定する。
 end note
 
 @enduml
