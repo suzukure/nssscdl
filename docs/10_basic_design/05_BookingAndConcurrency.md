@@ -17,6 +17,7 @@
 - Lesson開始済みReservationの `automatic_classification` は通常の自動再分類で遡及変更しない。
 - 競合時は先に正常Commitされた状態を優先し、後続操作は最新状態を再検証する。
 - Commit済みの内部業務状態を正とし、メール等の外部連携失敗を理由にRollbackしない。
+- 重要操作ではActor IDを保持し、PIIを最小化して監査可能にする。
 
 ## 3. 確定済み判断
 
@@ -325,6 +326,102 @@ Preview対象集合 != Commit直前対象集合
 
 将来 `student_deleted` 以外のsystem cancellation理由を追加し、一部Reservationだけを取消す仕様を導入する場合は、その理由ごとに月間再分類要否を改めて設計する。
 
+### 3.18 成功した重要業務CommandとAuditLogの同一Transaction
+
+成功した重要業務Commandでは、業務状態変更と、そのCommandの成功を表す `AuditLog` を同一の原子的D1 Transactionに含める。
+
+```text
+重要業務状態変更
+  +
+AuditLog(success)
+  ↓
+同一Transaction
+  ↓
+COMMIT / ROLLBACK
+```
+
+AuditLogの作成だけをCommit後のBest Effort処理へ分離しない。AuditLog書込みに失敗した場合は、その重要業務Command全体を正常Commitしない。
+
+これにより、重要業務状態は確定済みだが、誰が・いつ・何を行ったか追跡できない状態を正常状態として許容しない。特にReservation取消の具体ActorはReservation本体へ重複保存せずAuditLog等へ分離する既存設計と整合させる。
+
+### 3.19 監査単位はDB行ではなく業務Command
+
+AuditLogはSQL文やテーブル行更新ごとに作成するのではなく、利用者・管理者・システムが実行した意味のある業務Commandを基本単位とする。
+
+例えば予約確定で `StudentReservation` 作成、`SlotOccupancy` 作成、複数Reservationのclassification更新が発生しても、これらを無関係な複数操作として監査しない。
+
+1つのAudit EventにはREQ-940に従い、少なくとも次の論理情報を必要最小限で表現できるようにする。
+
+- 時刻
+- 操作種別
+- Actor IDまたはシステム主体
+- 主対象種別・対象ID
+- 最小限のBefore / After
+- 結果
+- 同一Commandにより派生変更した対象を追跡するための情報
+
+具体的な列、JSON表現、子テーブル化は詳細設計で確定する。
+
+### 3.20 同一Transaction監査対象となる代表的操作
+
+少なくとも次の成功操作は、業務状態変更とAuditLogを同一Transactionで整合させる。
+
+- 予約成立
+- 生徒キャンセル
+- スクール都合キャンセル
+- 生徒削除および `student_deleted` system cancellation
+- 月間標準回数変更
+- 月間回数除外の設定・解除
+- ClassificationOverrideの設定・変更・解除
+- 欠席の設定・解除
+- Reservationへ影響するSchedule変更
+- AdminHold / GroupLesson等の現在占有変更
+
+この原則は予約系だけに限定せず、Security Suspension、生徒削除、プロフィール代理変更、登録モード変更等、POL-013 / BR-132 / REQ-940で監査対象となる他の重要管理Commandにも適用する。
+
+### 3.21 派生変更は元Commandとの因果関係を維持する
+
+1つのCommandにより複数の業務状態が変化した場合、派生変更がどの元Commandによって発生したかを追跡可能にする。
+
+例えば生徒キャンセルにより別Reservationが `additional → standard` へ変化した場合、別の独立利用者操作として扱わず、生徒キャンセルCommandから生じた派生変更として関連付ける。
+
+生徒削除で複数Reservationが `system_cancelled` になる場合も、各Reservation取消を相互に無関係な操作として記録せず、生徒削除Commandによる影響集合として追跡できるようにする。
+
+### 3.22 Conflict・拒否の監査は成功Transactionと分離する
+
+Conflictや業務条件不成立により業務状態を変更しない場合、成功した業務Transactionは存在しない。そのためBR-132で必要とされる競合却下等のAuditLogは、拒否結果確定後に独立した監査記録として永続化する。
+
+```text
+最新状態再検証
+  ↓
+Conflict / 拒否
+  ↓
+業務状態変更なし
+  ↓
+必要なAuditLogを独立記録
+```
+
+拒否監査の書込み失敗によって利用者への結果をSuccessへ変更したり、競合済み業務状態を書き換えたりしない。監査書込み失敗自体は技術Log / Monitoring対象とする。
+
+通常の入力Validation Error、存在しないURLへのアクセス等をすべて1年間の業務Auditへ記録することは要求しない。どのConflict・拒否を業務Audit対象とするかは、BR-132の「必要な競合却下」に従い後続設計で具体化する。
+
+### 3.23 Business Auditと技術Logを分離する
+
+業務監査Logと技術・Error・Security Logを別目的の記録として扱う。
+
+- Business Audit: 重要業務操作を追跡する正式監査記録。REQ-940に従い原則1年保持する。
+- Technical / Error / Security Log: 例外、外部API失敗、内部障害、診断情報等。REQ-940に従い原則30日程度とする。
+
+Cloudflare等の技術Logだけを、重要業務操作のAuditLogの代替正本とはしない。
+
+### 3.24 AuditLogのAppend-onlyとPII最小化
+
+通常のApplication Commandから過去のAuditLogをUPDATEして監査事実を書き換えない。訂正等が必要な場合は、原則として新しいAudit Eventを追加して経緯を残す。
+
+AuditLogの削除・匿名化は、保持期限到達またはPII削除要求等の明示的Retention / Purge処理に限定する。
+
+REQ-940に従い氏名・メール等のPIIを必要なく複製せず、内部ID、操作種別、時刻、必要最小限のBefore / Afterを基本とする。PII削除要求はAuditLogの保持期間より優先するため、削除対象生徒を識別可能な情報が監査記録に含まれる場合は必要な削除・匿名化を行う。監査事実をどこまで非識別化して保持するかの具体方式はPII設計で定義する。
+
 ## 4. 未来Slotの現在状態に関するInvariant
 
 本節は、要求仕様 `BR-067 未来枠の現在予約状態の一貫性` を、現在採用しているデータモデルとTransaction設計で実現するための基本設計である。将来実装方式やデータモデルを変更する場合も、BR-067の業務上の一貫性要求は維持する。
@@ -403,6 +500,7 @@ StudentReservation #501
 - POL-003 業務状態と外部連携の分離
 - POL-004 個人情報最小化
 - POL-005 通知は即時性、システム画面は確実性
+- POL-006 ロール分離と最小権限
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-013 重要な管理操作の説明性と監査可能性
@@ -424,6 +522,7 @@ StudentReservation #501
 - BR-123 削除時即時無効化
 - BR-124 直接管理PII削除
 - BR-125 将来予約処理
+- BR-132 監査
 - REQ-002 予約可能枠表示
 - REQ-003 予約
 - REQ-004 生徒キャンセル
@@ -432,19 +531,24 @@ StudentReservation #501
 - REQ-110 重要業務状態のシステム表示
 - REQ-207 Session管理
 - REQ-302 不定休・臨時休業
+- REQ-303 月曜営業Override
 - REQ-307 月間標準回数設定
 - REQ-309 標準／追加再分類
+- REQ-310 区分Override
 - REQ-311 生徒削除
 - REQ-312 削除時予約処理
 - REQ-313 スクール都合キャンセル
+- REQ-315 欠席記録
+- REQ-316 セキュリティ利用停止管理
+- REQ-317 プロフィール代理支援
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
+- REQ-940 監査Logging
 
 ## 6. 未確定事項
 
 以下は `OI-BD-006` で引き続き検討し、現時点では確定仕様として扱わない。
 
-- AuditLogを業務Transactionへ含める範囲
 - 通知Intentの永続化境界と外部送信の分離
 - D1で使用する具体的なTransaction API、SQL順序、競合エラー表現
 - Invariant違反の具体的な監視・異常コード・修復手順
@@ -458,5 +562,8 @@ StudentReservation #501
 - 生徒削除起因のsystem cancellationについて、即時利用不能、Session無効化、全将来Reservationの取消、SystemCancellationDetail、classification NULL化、SlotOccupancy終了、PII Purge必要状態を同一の原子的Transaction境界として扱う方針は2026-08-28に確定した。
 - PIIの実削除・匿名化は24時間以内の後続処理へ分離し、Purge必要状態を永続化する方針は2026-08-28に確定した。
 - 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再確認する方針は2026-08-28に確定した。
+- 成功した重要業務CommandのAuditLogを業務状態変更と同一Transactionへ含め、監査単位を業務Commandとし、派生変更との因果関係を追跡可能にする方針は2026-08-28に確定した。
+- Conflict等の業務状態を変更しない拒否は必要に応じ独立Auditとして記録し、Business Auditと技術Logを分離する方針は2026-08-28に確定した。
+- AuditLogは通常操作からAppend-onlyとし、PII最小化、1年保持、PII削除優先を適用する方針は2026-08-28に確定した。
 - 未来Slotの現在占有を `SlotOccupancy` の正本から一意に判断し、Reservationとの双方向整合Invariantを維持し、Invariant違反時はFail Closedとする方針は2026-08-28に確定した。
 - 上記未来Slot一貫性方針は要求仕様v1.3で `BR-067` として要求化し、本節をその実現設計としてトレースする。
