@@ -214,3 +214,6 @@ Backup内PIIは定義された復旧Retentionの範囲でのみ残存を許容�
 
 ### BR-132 監査
 重要な管理操作、重要状態変更、必要な競合却下はPIIを最小化して監査可能とする。
+
+### BR-133 利用者向けエラー表現
+操作失敗時は、何が成立しなかったかと利用者が次に取れる行動を理解できる形で示す。Database、SQL、外部Provider、Stack Trace、内部Exception等のシステム内部エラー文字列を利用者向けMessageや公開API Contractの正本としない。
