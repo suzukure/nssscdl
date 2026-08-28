@@ -66,6 +66,12 @@ class SchoolCancellationDetail {
   comment
 }
 
+class SystemCancellationDetail {
+  reservation_id <<UNIQUE>>
+  reason_code
+  cancelled_at
+}
+
 class StudentMonthlyLessonConfig {
   student_id
   schedule_month_id
@@ -105,6 +111,7 @@ StudentReservation "1" -- "0..1" ReservationAbsence : absence >
 StudentReservation "1" -- "0..1" ReservationMonthlyCountOverride : monthly count override >
 StudentReservation "1" -- "0..1" ReservationClassificationOverride : classification override >
 StudentReservation "1" -- "0..1" SchoolCancellationDetail : school cancellation >
+StudentReservation "1" -- "0..1" SystemCancellationDetail : system cancellation >
 
 Student "1" -- "0..*" StudentMonthlyLessonConfig : monthly config >
 ScheduleMonth "1" -- "0..*" StudentMonthlyLessonConfig : applies to >
@@ -148,10 +155,14 @@ note bottom of StudentReservation
     confirmed
     student_cancelled
     school_cancelled
+    system_cancelled
 
   confirmed はキャンセルされていない
   Reservationを表し、Lesson終了後も
   時間経過だけでは変更しない。
+
+  system_cancelled は生徒削除等の
+  システム処理由来の取消を表す。
 
   automatic_classification:
     standard / additional
@@ -193,6 +204,21 @@ note bottom of ReservationClassificationOverride
   対象Reservationが一時的に
   分類対象外になっても自動削除せず、
   再び算入対象になれば再適用する。
+end note
+
+note bottom of SchoolCancellationDetail
+  school_cancelled 固有の理由詳細。
+  スクール都合の理由カテゴリと
+  必要な補足を保持する。
+end note
+
+note bottom of SystemCancellationDetail
+  system_cancelled 固有の理由詳細。
+  初期 reason_code:
+    student_deleted
+
+  利用者・スクール管理者の
+  明示キャンセルとは区別する。
 end note
 
 note bottom of StudentMonthlyLessonConfig
