@@ -2,355 +2,360 @@
 
 ## 1. 目的
 
-本書は、予約・キャンセル・月間再分類等の業務操作について、D1上でどの状態変更を同一の整合範囲として扱うかを定義する。
+本書は、予約・キャンセル・月間再分類等の重要業務Commandについて、D1上でどの状態変更を同一の整合範囲として扱い、競合・監査・通知をどのように整合させるかを定義する。
 
-本論点は `OI-BD-006` で検討する。未確定事項は本書で確定仕様として扱わず、確定した判断だけを本文へ反映する。
+本論点は `OI-BD-006` で検討する。未確定事項は確定仕様として扱わず、確定した判断だけを本文へ反映する。
+
+本書はC4 Level 2の基本設計としてTransaction境界と実行原則を定義する。個別DDL、Index、Trigger、Guard用SQL、CTE、Application Component構造等は詳細設計（Level 3）で具体化する。
 
 ## 2. 既存の前提
 
-以下は既存基本設計・ADRで確定済みである。
+以下は既存要求・基本設計・ADRで確定済みである。
 
 - `StudentReservation` は予約履歴の正本とする。
 - `SlotOccupancy` は `LessonSlot` の現在占有の正本とする。
-- `SlotOccupancy.slot_id` のUNIQUE制約を現在占有の一意性の最終保証点とする。
+- `SlotOccupancy.slot_id` のUNIQUE制約を現在占有一意性のDBレベル最終保証点とする。
+- 生徒予約の現在占有参照方向は `SlotOccupancy.reservation_id → StudentReservation` とし、`StudentReservation` は `lesson_slot_id` を履歴として保持する。
 - 予約履歴と現在占有を分離する。
 - Lesson開始済みReservationの `automatic_classification` は通常の自動再分類で遡及変更しない。
 - 競合時は先に正常Commitされた状態を優先し、後続操作は最新状態を再検証する。
 - Commit済みの内部業務状態を正とし、メール等の外部連携失敗を理由にRollbackしない。
-- 重要操作ではActor IDを保持し、PIIを最小化して監査可能にする。
+- 重要操作はActor IDを含む必要最小限のAuditLogで監査可能にする。
+- 通知義務が発生する業務では、外部送信そのものと「通知すべき事実」を分離する。
 
-## 3. 確定済み判断
+## 3. D1 Transaction共通方針
 
-### 3.1 スクール都合キャンセル後のSlot状態
+### 3.1 実行API
 
-スクール都合キャンセルでは、Reservationを取消したことだけを理由に `LessonSlot` を暗黙に `enabled + unoccupied` へ遷移させない。
-
-スクール都合キャンセルを確定する業務Commandでは、少なくとも次を同一の整合範囲として扱う。
-
-- `StudentReservation.status = school_cancelled`
-- `StudentReservation.cancelled_at` の記録
-- `SchoolCancellationDetail` の記録
-- 元Reservationによる `SlotOccupancy` の終了
-- キャンセル後のSlot状態の明示確定
-
-キャンセル後のSlot状態は、業務目的に応じて少なくとも次のいずれかとして明示的に確定する。
-
-1. `LessonSlot.availability_status = disabled` とする。
-2. `LessonSlot.availability_status = enabled` のまま `AdminHold` 等の別占有へ置換する。
-3. 明示的に再開放し、`LessonSlot.availability_status = enabled` かつ `SlotOccupancy` なしとする。
-
-次の遷移は禁止する。
+重要なWrite Commandは、現在のCloudflare D1 APIでは原則として次の形を使用する。
 
 ```text
-school_cancelled
-    ↓
-元ReservationのSlotOccupancyだけを終了
-    ↓
-結果として暗黙に enabled + unoccupied
-    ↓
-意図せず生徒が再予約可能
+D1DatabaseSession = DB.withSession("first-primary")
+
+D1DatabaseSession.batch([
+  Prepared Statement,
+  Prepared Statement,
+  ...
+])
 ```
 
-「明示的に再開放する」は有効な業務選択肢であるが、スクール都合キャンセルの副作用として自動的に選択してはならない。
+`first-primary` によりCommandの最初のQueryをPrimary起点とし、そのSession内で最新確定状態を基準に処理する。Read Replicationを使用しない構成でも、重要Write CommandがPrimaryの最新状態を基準とする設計意図を明示する。
 
-また `disabled` のSlotへ新たな `SlotOccupancy` を作成しない。AdminHold等へ置換する場合は `enabled + 対応するSlotOccupancy` として確定する。
+D1の `batch()` が提供するSQL Transaction境界を使用し、Application Workerから `BEGIN TRANSACTION` / `COMMIT` を文字列として手動送信する方式を通常業務Commandの基本方式としない。
 
-### 3.2 スクール都合キャンセルと外部通知の境界
+Cloudflare側APIが将来変更される場合は、少なくとも「同一DB上の複数StatementをAll-or-NothingでCommitできる」「最終判定を最新確定状態に対して行える」という本書の保証を維持する同等方式へ置換する。
 
-スクール都合キャンセルに伴うメール送信等の外部処理は、確定済みの内部業務状態をRollbackする条件としない。
+### 3.2 Prepared Statementを使用する
 
-したがって、メール送信失敗が発生しても、確定済みの以下の状態を取消さない。
+予約・キャンセル・再分類・AuditLog・NotificationIntent等の通常業務SQLは `prepare()` / `bind()` によるPrepared Statementを使用する。
 
-- `school_cancelled`
-- `cancelled_at`
-- `SchoolCancellationDetail`
-- Reservation占有終了
-- 明示確定済みのキャンセル後Slot状態
+通常業務Commandで `exec()` に動的値を組み込んで実行する方式は採用しない。`exec()` はMigrationや明示的なMaintenance等、用途を限定して扱う。
 
-一方、スクール都合キャンセルによって発生するアプリ内未確認通知とメール送信の `NotificationIntent` は、3.25〜3.31の方針に従って業務状態と同一Transactionで永続化する。Resend等への実送信はCommit後に分離する。
+### 3.3 Commit条件はTransaction内で最終判定する
 
-### 3.3 予約確定Commandの原子的Transaction境界
-
-予約確定Commandでは、少なくとも次を1つの原子的なD1 Transactionとして扱う。
-
-- 新規 `StudentReservation` の作成
-- 対象 `LessonSlot` に対する `SlotOccupancy` の確保
-- 同一生徒・同一月について必要となる自動分類の再計算
-- 新規Reservationおよび影響する未開始Reservationの `automatic_classification` / `classification` 更新
-
-上記の一部だけが正常Commitされる状態を許容しない。
+次の方式だけに依存してはならない。
 
 ```text
-StudentReservation は作成済み
-AND SlotOccupancy は未作成
+Transaction外でSELECT
+  ↓
+Worker上で「予約可能」と判定
+  ↓
+時間差
+  ↓
+batchで無条件INSERT / UPDATE
+```
+
+Transaction外のPreviewや事前SELECTは利用者表示・準備には使用できるが、正常Commit可否の最終判断には使用しない。
+
+予約成立条件、キャンセル成立条件、classification、現在占有その他の競合条件は、原子的Transaction内で最新確定状態に対して再検証する。
+
+### 3.4 Guard不成立を正常Commitさせない
+
+`UPDATE ... WHERE ...` が0件更新でもSQL自体は成功し得るため、「Guard対象が0件だったが後続AuditLogやNotificationIntentだけCommitされた」という状態を許容しない。
+
+Commit必須条件が不成立の場合は、DB Transaction全体が失敗するGuard方式を使用する。
+
+具体方式はLevel 3で確定するが、候補には次を含む。
+
+- UNIQUE / FOREIGN KEY / CHECK等のDB制約
+- 条件付きStatementとDB側Assertion
+- Trigger
+- SQLite上で意図的にTransactionを失敗させるGuard Statement
+
+`SlotOccupancy.slot_id UNIQUE` は二重占有に対する最終Guardの1つである。一方、月公開済み、Lesson開始前、Preview classification一致等、単純なUNIQUE制約だけでは表現できない条件もTransaction内Guardで扱う。
+
+### 3.5 SQLの論理実行順序
+
+重要Command内の論理順序は原則として次とする。
+
+```text
+1. Commit-time Guard / Invariant確認
+2. 主たる業務状態変更
+3. 現在占有等の関連状態変更
+4. 必要な派生状態変更・再分類
+5. AuditLog
+6. 必須のアプリ内通知
+7. NotificationIntent
+8. COMMIT
+```
+
+具体的なStatement順序は、Foreign Key、Trigger、Guard実装等に応じLevel 3で調整できる。ただし途中状態をTransaction外の確定状態として露出させず、確定すべき業務状態・Audit・通知義務をAll-or-NothingでCommitする原則は変更しない。
+
+キャンセルで「キャンセル済みReservationを現在占有として参照しない」制約を強化する場合、必要に応じ `SlotOccupancy` 終了をReservation status変更より先に実行する等、DB制約と矛盾しない順序にする。
+
+### 3.6 派生処理は集合単位を基本とする
+
+月間再分類、複数Reservation取消、複数NotificationIntent生成等を、不要な1件ずつのSELECT / UPDATEループへ分解しない。
+
+可能な限り、次のような集合指向SQLを使用する。
+
+- 条件付き一括UPDATE
+- `INSERT ... SELECT`
+- multi-row INSERT
+- CTE等を用いた集合計算
+
+これによりD1 Query数、Transaction時間、競合Windowを抑える。初期リリースは無料枠優先であるため、1 Worker invocationあたりのD1 Query上限も設計制約として考慮する。
+
+### 3.7 Write Commandを盲目的に自動Retryしない
+
+重要Write CommandでD1応答が不明瞭になった場合、同一batchを無条件に自動再実行しない。
+
+特に「D1側ではCommit済みだがWorkerが正常応答を受け取れなかった」可能性を考慮する。
+
+結果が不明な場合は最新確定状態を再取得し、業務結果を判定することを基本とする。Command Idempotency Key等の追加方式が必要かはAPI詳細設計で判断する。
+
+## 4. 競合・エラー表現
+
+### 4.1 D1やProviderの生エラーをApplication Contractにしない
+
+D1のConstraint Error、SQL Error、Stack Trace、Provider固有Error Message等を、そのまま利用者画面または公開APIの利用者向けMessageとして返さない。
+
+内部エラーはApplication側で分類し、安定したApplication Errorへ変換する。
+
+初期の基本区分は次とする。
+
+- **Conflict**: 先行Commitにより最新業務状態が変化した。HTTP APIでは原則 `409 Conflict`。
+- **Validation / Business Rejection**: 入力不正、権限不足、期限超過等、競合以外の利用者操作不成立。適切な4xxへ変換する。
+- **Technical Failure**: D1接続不能、予期しないApplication Error等。5xx / 503等へ変換する。
+- **Integrity Anomaly**: 永続化済みInvariant違反。通常Conflictとは区別し、Fail Closedする。
+
+利用者には、内部技術情報ではなく「何が成立しなかったか」「必要なら何を再確認・再操作すべきか」が分かるMessageと最新業務状態を提示する。
+
+D1 Constraint名、SQL文、Stack Trace、Provider Message等の詳細は技術Log / Monitoring側へ記録し、公開Application Contractをこれらの文字列へ依存させない。
+
+### 4.2 Conflict後は最新状態を返す
+
+競合によりTransactionをRollbackした後、必要に応じPrimaryの最新状態を再読込し、利用者へ最新状態を提示する。
+
+例:
+
+```text
+予約状況が変更されました。
+現在この枠は予約済みです。
 ```
 
 または、
 
 ```text
-StudentReservation / SlotOccupancy は作成済み
-AND 月間classificationは再計算前の旧状態
+予約内容が変更されました。
+現在の区分は additional です。内容を再確認してください。
 ```
 
-といった状態を正常Commitとして残してはならない。
+Application固有Error Codeの具体値、HTTP Response Schema、Correlation ID等はAPI詳細設計で確定する。
 
-### 3.4 予約確定時の最新状態再検証
+## 5. 予約確定Command
 
-予約成立条件と新規Reservationのclassificationは、Preview時の状態を正本とせず、Commit直前の最新D1状態から再検証する。
+### 5.1 原子的Transaction境界
 
-少なくとも次の条件を最新状態で再評価する。
+予約確定では、少なくとも次を1つのTransactionでCommitする。
 
-- 対象生徒が現在も予約操作可能であること。
-- 対象月が公開済みであること。
-- `LessonSlot.availability_status = enabled` であること。
-- 信頼できるServer時刻でLesson開始前であること。
-- 対象Slotに現在の `SlotOccupancy` が存在しないこと。
-- 同一生徒・同一月のReservation、欠席、月間算入Override、`StudentMonthlyLessonConfig.standard_count` 等から最新の自動classificationを算出できること。
+- 新規 `StudentReservation` 作成
+- 対象 `LessonSlot` の `SlotOccupancy` 確保
+- 同一生徒・同一月の必要な自動再分類
+- 新規および影響する未開始Reservationの `automatic_classification` / `classification` 更新
+- AuditLog
+- 予約確認NotificationIntent
+- 既存Reservationのclassificationが変化した場合の区分変更NotificationIntent
 
-Preview後に先行Commitされた他予約、管理者変更、標準回数変更その他の業務変更は、後続の予約確定Commandから見た最新状態として扱う。
+Reservationだけ作成されOccupancyがない状態、Reservation / Occupancyは確定したが月間classificationが旧状態、必要なAuditLogまたはNotificationIntentだけ欠落した状態を正常Commitとして許容しない。
 
-### 3.5 PreviewとCommit直前classificationの不一致
+### 5.2 Commit直前再検証
 
-利用者が最終確認した新規予約のclassificationと、Commit直前の最新状態から算出したclassificationが異なる場合、予約を成立させずConflictとして再確認へ戻す。
+少なくとも次を最新確定状態で検証する。
 
-```text
-Preview: standard
-Commit直前: additional
-    → Conflict
+- 対象生徒が現在も予約操作可能
+- 対象月が公開済み
+- `LessonSlot.availability_status = enabled`
+- Server Commit基準時刻でLesson開始前
+- 対象Slotに現在の `SlotOccupancy` がない
+- 同一生徒・同一月のReservation、欠席、月間算入Override、標準回数等
+- 未来SlotのInvariant
 
-Preview: additional
-Commit直前: standard
-    → Conflict
-```
+### 5.3 Preview classificationとの差分
 
-利用者に有利な変更か不利な変更かで処理を分けず、最終確認したclassificationと実際にCommitするclassificationを一致させる。
+利用者が最終確認した新規予約classificationとCommit直前の最新classificationが異なる場合、予約を成立させずConflictとして再確認へ戻す。
 
-Conflict時は最新状態と最新classificationを明示し、利用者が再度内容を確認してから確定操作を行う。
+- `standard → additional`
+- `additional → standard`
 
-### 3.6 新規予約による既存Reservationの再分類
+の両方向へ同じルールを適用する。
 
-新規予約の成立によって同一生徒・同一月の既存未開始Reservationのclassificationが変化する場合、その再分類も新規予約成立と同じTransactionでCommitする。
+### 5.4 既存Reservation再分類
 
-新規Reservationだけを先にCommitし、既存Reservationのclassification更新を後続Transactionへ分離してはならない。
+新規予約により同一生徒・同一月の既存未開始Reservationのclassificationが変化する場合、その再分類も新規予約と同じTransactionでCommitする。
 
-開始済みReservationの `automatic_classification` は既存設計どおり遡及変更しない。
+開始済みReservationの `automatic_classification` は遡及変更しない。同一生徒・同一月の異なるSlotへの同時予約も、Slot競合とは別に月間分類競合として扱う。
 
-同一生徒が同一月の異なるSlotをほぼ同時に予約した場合も、各Slotの占有競合とは別に月間自動分類が競合し得るため、同一生徒・同一月の最新状態を再評価する。
+## 6. 生徒キャンセルCommand
 
-### 3.7 生徒キャンセルCommandの原子的Transaction境界
+### 6.1 原子的Transaction境界
 
-生徒キャンセルCommandでは、少なくとも次を1つの原子的なD1 Transactionとして扱う。
+生徒キャンセルでは、少なくとも次を1つのTransactionでCommitする。
 
-- 対象 `StudentReservation.status` を `confirmed` から `student_cancelled` へ変更
-- `StudentReservation.cancelled_at` にキャンセル確定時刻を記録
-- 対象Reservationの `classification` をNULLへ変更
+- `StudentReservation.status = student_cancelled`
+- `cancelled_at`
+- 対象Reservationの `classification = NULL`
 - 対象Reservationの `automatic_classification` は保持
-- 対象Reservationによる `SlotOccupancy` を終了
-- 同一生徒・同一月について必要となる未開始Reservationの自動再分類
+- 元Reservationによる `SlotOccupancy` 終了
+- 同一生徒・同一月の必要な未開始Reservation再分類
 - 再分類対象Reservationの `automatic_classification` / `classification` 更新
+- AuditLog
+- 再分類による区分変更NotificationIntent
 
-次の部分成功を正常Commitとして許容しない。
+生徒本人のキャンセル自体に対する専用キャンセルNotificationIntentは初期リリースでは作成しない。
 
-```text
-Reservationは student_cancelled
-AND 対応するSlotOccupancyが残存
-```
+### 6.2 開始前／開始後
 
-```text
-Reservationは student_cancelled
-AND 対象Reservation.classificationがstandard/additionalのまま
-```
+開始前、開始後〜終了時刻のどちらでも、キャンセル成立時には元Reservationによる `SlotOccupancy` を終了する。
 
-```text
-キャンセルは確定済み
-AND 必要な月間再分類が旧状態のまま
-```
+- 開始前: Slotがenabledで他条件を満たせば再予約可能。
+- 開始後〜終了: OccupancyがなくてもServer時刻ルールにより新規予約不可。
 
-### 3.8 生徒キャンセルの開始前／開始後の扱い
+開始後キャンセルを表現するためにOccupancyを残さず、LessonSlotを自動disabled化せず、専用closed状態も追加しない。
 
-開始前と開始後〜終了時刻の生徒キャンセルで、Reservation占有終了の扱いは分けない。キャンセル成立時にはいずれも元Reservationによる `SlotOccupancy` を終了する。
+### 6.3 最新状態再検証
 
-違いは、その後の新規予約可否である。
+少なくとも次をCommit時に再検証する。
 
-```text
-開始前キャンセル
-  → SlotOccupancy終了
-  → LessonSlotがenabledで他条件を満たす
-  → 新規予約可能
-```
+- 対象Reservationが操作中生徒自身のもの
+- `status = confirmed`
+- Server Commit基準時刻がLesson終了時刻を超えていない
+- 現在の `SlotOccupancy` が対象Reservationを参照
+- Slot ID一致
 
-```text
-開始後〜終了時刻のキャンセル
-  → SlotOccupancy終了
-  → Server時刻がLesson開始時刻以降
-  → 新規予約不可
-```
+先にスクール都合キャンセル、システム起因キャンセル等が正常Commitされていれば上書きしない。最初に正常Commitされた取消種別を正本とする。
 
-開始後キャンセルを表現するために、元ReservationのSlotOccupancyを残したり、LessonSlotを自動的にdisabledへ変更したり、専用のclosed状態を追加したりしない。
+## 7. Server Commit基準時刻
 
-### 3.9 生徒キャンセル時の最新状態再検証
+予約期限、キャンセル期限、開始前／開始後、再分類の開始済み境界、system cancellation対象判定には、同一Command内で一貫した信頼できるServer Commit基準時刻を用いる。
 
-生徒キャンセルはCommit直前の最新状態で少なくとも次を再検証する。
+Client時刻・画面表示時刻を業務期限判定の正本としない。
 
-- 対象Reservationが操作中の生徒自身のReservationであること。
-- `StudentReservation.status = confirmed` であること。
-- Server Commit基準時刻がLesson終了時刻を超えていないこと。
-- 現在の `SlotOccupancy` が対象Reservationを現在占有として参照していること。
-- `SlotOccupancy.slot_id` と `StudentReservation.lesson_slot_id` が一致すること。
+利用者が開始前に操作を開始しても最終判定時に開始時刻を越えていれば、その時点の業務ルールを適用する。開始済みReservationの `automatic_classification` は通常の再分類で変更しない。
 
-Preview／確認後にスクール都合キャンセル、システム起因キャンセルその他の先行操作が正常Commitされ、対象Reservationが既に `confirmed` でない場合は、生徒キャンセルで上書きしない。
+## 8. スクール都合キャンセルCommand
 
-先に正常Commitされた取消種別を正本とし、後続CommandはConflictまたは最新状態に応じた拒否として扱う。
+### 8.1 キャンセル後Slot状態を明示する
 
-### 3.10 Server Commit基準時刻の統一
+スクール都合キャンセルでは、Reservation取消だけを理由に暗黙の `enabled + unoccupied` へ遷移させない。
 
-キャンセル期限、開始前／開始後の判定、再分類対象Reservationの開始境界判定には、同一Command内で一貫したServer Commit基準時刻を用いる。
+少なくとも次を同一Transactionで確定する。
 
-Client時刻や画面表示時刻を業務期限判定の正本としない。
+- `StudentReservation.status = school_cancelled`
+- `cancelled_at`
+- `SchoolCancellationDetail`
+- 元Reservationの `SlotOccupancy` 終了
+- キャンセル後Slot状態
+- AuditLog
+- アプリ内未確認通知
+- メールNotificationIntent
+- 必要な再分類・区分変更NotificationIntent
 
-例えば、利用者が開始前に確定操作を行っても、最終判定時点でLesson開始時刻を越えていれば、キャンセル自体が終了時刻前なら成立するが開始後キャンセルとして扱う。
+キャンセル後Slot状態は業務目的に応じ次のいずれかへ明示的に遷移させる。
 
-再分類では、この同じ基準時刻で開始済みとなっているReservationの `automatic_classification` を変更しない。
+1. `disabled + 占有なし`
+2. `enabled + AdminHold等の別占有`
+3. 明示的に再開放した `enabled + 占有なし`
 
-### 3.11 生徒キャンセルとclassification
+「何も指定しなかった結果として空き枠になる」挙動を禁止する。`disabled` のSlotへ新たなOccupancyを作成しない。
 
-キャンセル対象Reservationは月間算入対象外となるため、次の状態へ変更する。
+### 8.2 外部通知
 
-```text
-classification = NULL
-automatic_classification = 保持
-```
+Resend等への外部メール送信はCommit後に行う。送信失敗によって確定済みのschool cancellation、Slot状態、アプリ内通知等をRollbackしない。
 
-キャンセルにより自動標準枠の割当てが変化する場合は、同一生徒・同一月の未開始Reservationだけを必要に応じて再分類する。
+## 9. 生徒削除起因system cancellation
 
-開始済みReservationの `automatic_classification` を遡及変更しない。
+### 9.1 即時Transaction境界
 
-既存未開始Reservationの実効classificationが変化した場合はREQ-104の区分変更通知対象となる。区分変更の業務状態と、その変更を通知すべき `NotificationIntent` は同じTransactionで確定する。外部メール送信はCommit後に分離する。
+初期リリースでは主として `SystemCancellationDetail.reason_code = student_deleted` を扱う。
 
-### 3.12 生徒削除Commandの即時Transaction境界
+生徒削除の正常Commitでは、少なくとも次を同一TransactionでAll-or-Nothingに確定する。
 
-初期リリースのsystem cancellationは、主として生徒削除に伴う `reason_code = student_deleted` を対象とする。
+- 対象生徒を通常利用不能な削除確定状態へ遷移
+- 既存Session無効化
+- Server Commit基準時刻 `T` で将来と判定される全 `confirmed` Reservationを `system_cancelled` 化
+- 各 `cancelled_at = T`
+- 各 `SystemCancellationDetail(reason_code = student_deleted)`
+- 各 `classification = NULL`
+- 各 `automatic_classification` は保持
+- 対応する `SlotOccupancy` 終了
+- 開始前Slotを最新状態から予約可否判定可能な状態へ戻す
+- PII Purge必要状態の永続化
+- AuditLog
 
-生徒削除Commandの正常Commitでは、少なくとも次を1つの原子的なD1 Transactionの整合範囲として扱う。
+複数の将来Reservationは対象集合全体を1つの整合単位とし、一部だけ取消して生徒削除をCommitしない。
 
-- 対象生徒を以後Login・新規予約・キャンセル等の通常操作ができない削除確定状態へ遷移させる。
-- 対象生徒の既存Sessionを無効化する。
-- 同一のServer Commit基準時刻で将来と判定される `confirmed` Reservationをすべて `system_cancelled` へ変更する。
-- 各対象Reservationの `cancelled_at` を同一の基準時刻で記録する。
-- 各対象Reservationに `SystemCancellationDetail.reason_code = student_deleted` を作成する。
-- 各対象Reservationの `classification` をNULLへ変更し、`automatic_classification` は保持する。
-- 各対象Reservationを参照する `SlotOccupancy` を終了する。
-- 開始前かつ他の予約可能条件を満たすSlotを、最新状態から予約可能として判定できる状態へ戻す。
-- 直接管理PIIのPurgeが必要であることを、後続処理が失われない形で永続化する。
+### 9.2 対象時刻
 
-次のような部分成功を正常Commitとして許容しない。
+削除対象は少なくとも次を満たすReservationとする。
 
 ```text
-生徒は削除確定済み
-AND 将来Reservationがconfirmedのまま
-```
-
-```text
-Reservationはsystem_cancelled
-AND 対応するSlotOccupancyが残存
-```
-
-```text
-一部の将来Reservationだけsystem_cancelled
-AND 他の将来Reservationはconfirmed
-```
-
-### 3.13 PII Purgeは後続処理へ分離する
-
-氏名、連絡先メール、Google紐付け等の直接管理PIIの実削除・匿名化は、生徒削除の即時Transactionには含めない。
-
-REQ-311ではSession無効化を即時、直接管理PIIの削除・匿名化を24時間以内としているため、次の2段階に分離する。
-
-```text
-生徒削除Transaction
-  → 即時利用不能
-  → 将来予約取消
-  → SlotOccupancy終了
-  → PII Purge必要状態を永続化
-  → COMMIT
-
-後続Purge処理
-  → 直接管理PIIを削除／匿名化
-  → Purge完了状態を記録
-```
-
-生徒削除TransactionのCommit後にWorkerが停止してもPII Purge要求を失わないよう、Purge待ちであることはD1上の永続状態として追跡可能にする。具体的なEntity、列、Scheduled Jobは認証・アカウント設計および詳細設計で定義する。
-
-### 3.14 将来ReservationはAll-or-Nothingで処理する
-
-削除対象生徒に複数の将来Reservationが存在する場合、対象集合全体を1つの整合単位として扱う。
-
-すべての対象Reservationについて `system_cancelled`、`cancelled_at`、`SystemCancellationDetail`、`classification = NULL`、必要な `SlotOccupancy` 終了まで成立して初めて生徒削除を正常Commitする。
-
-競合等により一部Reservationだけを処理できない場合、そのReservationだけを飛ばして残りの生徒削除を成立させない。
-
-### 3.15 system cancellationの基準時刻
-
-生徒削除Commandでは1つの信頼できるServer Commit基準時刻 `T` を用いる。
-
-削除対象となる将来Reservationは、少なくとも次を満たすものとする。
-
-```text
-StudentReservation.status = confirmed
+status = confirmed
 AND LessonSlot.start_time > T
 ```
 
-同じ `T` を将来予約判定、`cancelled_at`、Lesson開始境界判定へ一貫して使用する。
+開始済み・過去Reservationを `student_deleted` を理由に遡及キャンセルしない。
 
-`T` 時点ですでに開始済みまたは過去のReservationは `student_deleted` によるsystem cancellation対象へ遡及的に含めない。
+### 9.3 Preview後の競合
 
-### 3.16 削除確認後の影響範囲変更はConflictとする
-
-生徒削除は不可逆性の高い重要管理操作であるため、管理者が確認したPreview時の将来Reservation対象集合とCommit直前の最新対象集合が異なる場合は、削除を正常Commitしない。
-
-例えば、確認後に生徒自身のキャンセル、スクール都合キャンセル、予約成立その他の先行Commitによって対象集合または状態が変化していれば、最新の削除影響を再表示し管理者の再確認を求める。
+管理者が確認したPreview時の将来Reservation対象集合とCommit直前の対象集合が異なる場合はConflictとする。
 
 ```text
 Preview対象集合 != Commit直前対象集合
-    → Conflict
-    → 部分適用しない
-    → 最新影響を再表示
-    → 再確認
+  → 部分適用しない
+  → 最新影響を表示
+  → 再確認
 ```
 
-### 3.17 student_deletedとclassification
+### 9.4 PII Purge
 
-`student_deleted` では同一生徒の将来 `confirmed` Reservationをすべて取消すため、正常Commit後にその生徒の未開始 `confirmed` Reservationは残らない。
+氏名、連絡先メール、Google紐付け等の直接管理PIIの実削除・匿名化は即時生徒削除Transactionに含めない。
 
-したがって初期リリースの `student_deleted` 処理では、対象Reservationを `classification = NULL` とし `automatic_classification` を保持すればよく、残存する未開始Reservationへの通常の月間自動再分類は原則発生しない。
+生徒削除Commit時にPurge必要状態をD1へ永続化し、Worker停止等があっても要求を失わない。PII実削除・匿名化は24時間以内の後続処理とする。
 
-将来 `student_deleted` 以外のsystem cancellation理由を追加し、一部Reservationだけを取消す仕様を導入する場合は、その理由ごとに月間再分類要否を改めて設計する。
+Purge用Entity、列、Scheduled Job等は認証・アカウント設計／詳細設計で確定する。
 
-### 3.18 成功した重要業務CommandとAuditLogの同一Transaction
+### 9.5 classification
 
-成功した重要業務Commandでは、業務状態変更と、そのCommandの成功を表す `AuditLog` を同一の原子的D1 Transactionに含める。
+`student_deleted` では同一生徒の将来confirmed Reservationをすべて取消すため、正常Commit後に未開始confirmed Reservationは残らない。
 
-```text
-重要業務状態変更
-  +
-AuditLog(success)
-  ↓
-同一Transaction
-  ↓
-COMMIT / ROLLBACK
-```
+対象Reservationは `classification = NULL` とし、`automatic_classification` を保持する。初期リリースでは残存未開始Reservationへの通常の月間再分類は原則不要とする。
 
-AuditLogの作成だけをCommit後のBest Effort処理へ分離しない。AuditLog書込みに失敗した場合は、その重要業務Command全体を正常Commitしない。
+生徒削除に伴うsystem cancellation自体には専用キャンセルNotificationIntentを生成しない。
 
-これにより、重要業務状態は確定済みだが、誰が・いつ・何を行ったか追跡できない状態を正常状態として許容しない。特にReservation取消の具体ActorはReservation本体へ重複保存せずAuditLog等へ分離する既存設計と整合させる。
+## 10. AuditLog
 
-### 3.19 監査単位はDB行ではなく業務Command
+### 10.1 成功Commandと同一Transaction
 
-AuditLogはSQL文やテーブル行更新ごとに作成するのではなく、利用者・管理者・システムが実行した意味のある業務Commandを基本単位とする。
+成功した重要業務Commandでは、業務状態変更と `AuditLog(success)` を同一Transactionに含める。
 
-例えば予約確定で `StudentReservation` 作成、`SlotOccupancy` 作成、複数Reservationのclassification更新が発生しても、これらを無関係な複数操作として監査しない。
+AuditLog作成失敗時は重要業務Command全体を正常Commitしない。
 
-1つのAudit EventにはREQ-940に従い、少なくとも次の論理情報を必要最小限で表現できるようにする。
+### 10.2 監査単位
+
+監査単位はSQL文やDB行ではなく、意味のある業務Commandとする。
+
+Audit Eventは少なくとも次を必要最小限で表現できるようにする。
 
 - 時刻
 - 操作種別
@@ -358,266 +363,132 @@ AuditLogはSQL文やテーブル行更新ごとに作成するのではなく、
 - 主対象種別・対象ID
 - 最小限のBefore / After
 - 結果
-- 同一Commandにより派生変更した対象を追跡するための情報
+- 同一Commandによる派生変更との因果関係
 
-具体的な列、JSON表現、子テーブル化は詳細設計で確定する。
+再分類や複数system cancellation等は元Commandから追跡可能にする。
 
-### 3.20 同一Transaction監査対象となる代表的操作
+### 10.3 代表的な同一Transaction監査対象
 
-少なくとも次の成功操作は、業務状態変更とAuditLogを同一Transactionで整合させる。
+少なくとも次を対象とする。
 
 - 予約成立
 - 生徒キャンセル
 - スクール都合キャンセル
-- 生徒削除および `student_deleted` system cancellation
+- 生徒削除 / student_deleted system cancellation
 - 月間標準回数変更
-- 月間回数除外の設定・解除
-- ClassificationOverrideの設定・変更・解除
-- 欠席の設定・解除
+- 月間回数除外設定・解除
+- ClassificationOverride設定・変更・解除
+- 欠席設定・解除
 - Reservationへ影響するSchedule変更
 - AdminHold / GroupLesson等の現在占有変更
+- Security Suspension等の重要管理Command
 
-この原則は予約系だけに限定せず、Security Suspension、生徒削除、プロフィール代理変更、登録モード変更等、POL-013 / BR-132 / REQ-940で監査対象となる他の重要管理Commandにも適用する。
+### 10.4 Conflict・拒否
 
-### 3.21 派生変更は元Commandとの因果関係を維持する
+業務状態を変更しないConflictや重要な拒否は、必要なものだけを成功Transactionとは別のAudit記録として永続化する。
 
-1つのCommandにより複数の業務状態が変化した場合、派生変更がどの元Commandによって発生したかを追跡可能にする。
+拒否Audit失敗によって利用者結果をSuccessへ変更したり、業務状態を書き換えたりしない。監査書込み失敗自体は技術Log / Monitoring対象とする。
 
-例えば生徒キャンセルにより別Reservationが `additional → standard` へ変化した場合、別の独立利用者操作として扱わず、生徒キャンセルCommandから生じた派生変更として関連付ける。
+### 10.5 Business Auditと技術Log
 
-生徒削除で複数Reservationが `system_cancelled` になる場合も、各Reservation取消を相互に無関係な操作として記録せず、生徒削除Commandによる影響集合として追跡できるようにする。
+- Business Audit: 重要業務操作の正式監査記録。原則1年保持。
+- Technical / Error / Security Log: 例外、Provider失敗、診断情報等。原則30日程度。
 
-### 3.22 Conflict・拒否の監査は成功Transactionと分離する
+技術LogをBusiness Auditの代替正本としない。
 
-Conflictや業務条件不成立により業務状態を変更しない場合、成功した業務Transactionは存在しない。そのためBR-132で必要とされる競合却下等のAuditLogは、拒否結果確定後に独立した監査記録として永続化する。
+AuditLogは通常Application CommandからAppend-onlyとし、保持期限またはPII Purge以外で過去の監査事実を上書きしない。氏名・メール等を必要なく複製せず、PII削除要求を保持期間より優先する。
 
-```text
-最新状態再検証
-  ↓
-Conflict / 拒否
-  ↓
-業務状態変更なし
-  ↓
-必要なAuditLogを独立記録
-```
+## 11. NotificationIntentと外部送信
 
-拒否監査の書込み失敗によって利用者への結果をSuccessへ変更したり、競合済み業務状態を書き換えたりしない。監査書込み失敗自体は技術Log / Monitoring対象とする。
+### 11.1 通知義務を同一Transactionで永続化する
 
-通常の入力Validation Error、存在しないURLへのアクセス等をすべて1年間の業務Auditへ記録することは要求しない。どのConflict・拒否を業務Audit対象とするかは、BR-132の「必要な競合却下」に従い後続設計で具体化する。
+業務Commandの正常Commitによって通知義務が発生する場合、その「送るべき通知が存在する」という内部事実を `NotificationIntent` として、業務状態および必要なAuditLogと同一Transactionに含める。
 
-### 3.23 Business Auditと技術Logを分離する
+NotificationIntent作成失敗時は、その通知を必須とする業務Command全体を正常Commitしない。
 
-業務監査Logと技術・Error・Security Logを別目的の記録として扱う。
+### 11.2 外部送信はCommit後
 
-- Business Audit: 重要業務操作を追跡する正式監査記録。REQ-940に従い原則1年保持する。
-- Technical / Error / Security Log: 例外、外部API失敗、内部障害、診断情報等。REQ-940に従い原則30日程度とする。
+Resend等の外部Providerへの実送信はD1 Transactionに含めず、必ず正常Commit後に行う。Commit前にメールを送信しない。
 
-Cloudflare等の技術Logだけを、重要業務操作のAuditLogの代替正本とはしない。
+外部送信失敗、Timeout、Provider障害等によって確定済み業務状態をRollbackしない。
 
-### 3.24 AuditLogのAppend-onlyとPII最小化
-
-通常のApplication Commandから過去のAuditLogをUPDATEして監査事実を書き換えない。訂正等が必要な場合は、原則として新しいAudit Eventを追加して経緯を残す。
-
-AuditLogの削除・匿名化は、保持期限到達またはPII削除要求等の明示的Retention / Purge処理に限定する。
-
-REQ-940に従い氏名・メール等のPIIを必要なく複製せず、内部ID、操作種別、時刻、必要最小限のBefore / Afterを基本とする。PII削除要求はAuditLogの保持期間より優先するため、削除対象生徒を識別可能な情報が監査記録に含まれる場合は必要な削除・匿名化を行う。監査事実をどこまで非識別化して保持するかの具体方式はPII設計で定義する。
-
-### 3.25 NotificationIntentは通知義務の内部業務状態として同一Transactionに含める
-
-業務Commandの正常Commitによってメール通知義務が発生する場合、その「送るべき通知が存在する」という内部事実を `NotificationIntent` として、業務状態および必要なAuditLogと同一の原子的D1 Transactionに含める。
-
-```text
-業務状態変更
-  +
-AuditLog
-  +
-NotificationIntent
-  ↓
-同一D1 Transaction
-  ↓
-COMMIT / ROLLBACK
-```
-
-`NotificationIntent` の永続化だけをCommit後のBest Effort処理へ分離しない。NotificationIntentの作成に失敗した場合、その通知を必須とする業務Command全体を正常Commitしない。
-
-これにより、予約等の業務状態だけが確定し、その直後にWorkerが停止したため通知要求そのものが失われる状態を正常状態として許容しない。
-
-NotificationIntentの永続化失敗と、Commit後の外部メール送信失敗は明確に区別する。前者は業務Transaction失敗、後者は確定済み業務状態をRollbackしない外部連携失敗として扱う。
-
-### 3.26 外部メール送信はCommit後に分離する
-
-Resend等の外部Providerへの実送信はD1 Transactionへ含めず、必ず業務Transactionの正常Commit後に行う。
-
-```text
-D1 Transaction
-  業務状態
-  AuditLog
-  NotificationIntent
-    ↓
-COMMIT
-
-COMMIT後
-    ↓
-Provider Adapter
-    ↓
-Resend等へ実送信
-```
-
-Commit前にメールを送信してはならない。外部送信成功後にD1 Transactionが失敗し、「確定メールは届いたが対応する確定業務状態が存在しない」という状態を作らない。
-
-外部送信の失敗、Timeout、Provider障害等は、確定済みの予約・キャンセル・classification変更その他の内部業務状態をRollbackする理由としない。
-
-### 3.27 NotificationIntentとDelivery状態を分離する
-
-通知すべき業務事実と、外部Providerへの配送結果を別責務として扱う。
+### 11.3 IntentとDeliveryを分離する
 
 ```text
 NotificationIntent
   = 何を、誰に通知すべきかという内部通知義務
 
 NotificationDelivery
-  = 外部Providerへ実際に送信を試み、どうなったかという配送状態
+  = Providerへ送信を試み、どうなったかという配送状態
 ```
 
-`NotificationIntent` は業務Domain側の通知義務を表し、`NotificationDelivery` はProvider受理、失敗、試行時刻、Provider Message ID等の配送情報を扱う。
+Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で扱い、Provider固有情報をReservation等のDomain Entityへ直接混在させない。
 
-正確なEntity名、列、Enum、IntentとDeliveryの多重度は通知設計または詳細設計で確定する。Provider固有情報を予約・キャンセル等のDomain Entityへ直接混在させない。
+### 11.4 通知先
 
-### 3.28 通常の予約系Intentは論理的な通知先を保持する
+予約確認、区分変更、スクール都合キャンセル等の通常予約系Intentは、`recipient_student_id` 等の内部識別子による論理的通知先を基本とし、メールアドレスを必要なくIntentへ複製しない。
 
-予約確認、区分変更、スクール都合キャンセル等の通常の予約系NotificationIntentでは、原則として `recipient_student_id` 等の内部識別子で論理的な通知先を表し、連絡先メールアドレスをIntentへ必要なく複製しない。
+実送信時に有効な連絡先を解決し、実際に送った宛先をDelivery側へ必要最小限記録する。
 
-外部送信時に、その通知で有効とされる連絡先を解決し、実際にどの宛先へ送ったかをDelivery側へ必要最小限で記録する。
+旧連絡先へのSecurity Notice等、特定メールアドレス自体に業務意味がある通知は、認証・通知設計で宛先Snapshot等を別途定義する。
 
-ただし、旧連絡先へのSecurity Notice等、特定のメールアドレス自体が通知の業務意味を持つ通知はこの一般則だけでは扱わず、認証・通知設計で宛先Snapshot等の必要性を別途定義する。
+### 11.5 複数Intent
 
-### 3.29 1つの業務Commandから必要なNotificationIntentを原子的に生成する
+1つの業務Commandから複数通知義務が発生する場合、必要なNotificationIntentを同じTransactionで原子的に生成する。
 
-1つの業務Commandにより複数の通知義務が発生する場合、必要なNotificationIntentを同じ業務Transactionでまとめて生成する。
+対象Intentの一部だけ欠落した状態を正常Commitとして許容しない。
 
-例えば生徒キャンセルによる再分類で、複数の既存未開始Reservationが `additional → standard` または `standard → additional` に変化した場合、対象Reservationごとの区分変更NotificationIntentを、キャンセル・再分類・AuditLogと同じTransactionで確定する。
+### 11.6 Retry
 
-```text
-生徒キャンセル
-  +
-必要な再分類
-  +
-AuditLog
-  +
-区分変更NotificationIntent × 必要件数
-  ↓
-COMMIT
-```
+一時的送信失敗や再試行のたびに新しいNotificationIntentを作成せず、同一Intentに対するDelivery Attemptとして扱う。
 
-通知対象となるIntentの一部だけを生成できない状態を正常Commitとして許容しない。
+Intent ID等から安定した冪等性識別子を導出できるようにする。Provider受理後はApplication Workerから盲目的に同一メールを重複再送せず、最終Permanent Failureは通知失敗管理対象とする。
 
-一方、初期リリースでは生徒本人の `student_cancelled` 自体および `student_deleted` によるsystem cancellationには専用キャンセル通知を生成しない。通知義務の有無はBR-112〜BR-116等の要求に従う。
+## 12. 未来Slotの現在状態Invariant
 
-### 3.30 スクール都合キャンセルのアプリ内通知も同一Transactionに含める
+本節は `BR-067 未来枠の現在予約状態の一貫性` の現在の実現設計である。将来データモデルを変更してもBR-067自体は維持する。
 
-スクール都合キャンセルでは、メールだけでなくアプリ内未確認通知も業務要件であるため、少なくとも次を同一Transactionで整合させる。
+### 12.1 現在状態の正本
 
-- `school_cancelled`、`cancelled_at`、`SchoolCancellationDetail`
-- 元Reservation占有終了および明示的な後続Slot状態
-- AuditLog
-- アプリ内未確認通知
-- メール送信用NotificationIntent
+「現在予約可能か」「何によって占有されているか」「生徒予約なら誰か」は `LessonSlot + SlotOccupancy` を基点に判定する。
 
-Resend等への実送信だけをCommit後に分離する。
-
-したがってメールProviderが障害中でも、正常Commit後にはスクール都合キャンセルの業務状態、アプリ内通知、送信待ちまたは失敗管理可能なNotificationIntentがD1上に残る。
-
-### 3.31 Retryは同じNotificationIntentを冪等に配送する
-
-一時的な送信失敗や再試行のたびに新しいNotificationIntentを作成しない。同じIntentに対するDelivery Attemptとして扱い、重複送信を避ける。
-
-```text
-NotificationIntent #1001
-  ↓
-Attempt 1: temporary failure
-  ↓
-Attempt 2: accepted
-```
-
-Intent ID等から安定した冪等性識別子を導出できるようにし、安全に再試行できる外部送信だけをREQ-912に従ってRetryする。
-
-Providerが受理した後の配信RetryはProvider側の配送処理・Callbackを正とし、Application Workerから盲目的に同一メールを再送しない。最終的なPermanent FailureはREQ-105の通知失敗管理対象とし、管理者が確認・必要に応じ手動再送できる状態へ遷移させる。
-
-## 4. 未来Slotの現在状態に関するInvariant
-
-本節は、要求仕様 `BR-067 未来枠の現在予約状態の一貫性` を、現在採用しているデータモデルとTransaction設計で実現するための基本設計である。将来実装方式やデータモデルを変更する場合も、BR-067の業務上の一貫性要求は維持する。
-
-### 4.1 現在占有の正本
-
-サービスの根幹となる「このSlotは現在空いているか」「現在何によって占有されているか」「生徒予約なら誰が予約しているか」は、過去のReservation履歴から推測せず、`LessonSlot` と `SlotOccupancy` を基点に判定する。
-
-生徒予約による現在予約者は次の一意な経路で取得する。
+現在予約者は次の経路で取得する。
 
 ```text
 LessonSlot
-  ↓
-SlotOccupancy
-  occupancy_type = student_reservation
-  reservation_id = R
-  ↓
-StudentReservation R
-  student_id = S
-  ↓
-Student S
+  → SlotOccupancy
+  → StudentReservation
+  → Student
 ```
 
-同一Slotにはキャンセル済みを含む複数のReservation履歴が存在できるため、`StudentReservation WHERE lesson_slot_id = ? AND status = confirmed` の検索結果を現在占有の正本として扱わない。
+Reservation履歴一覧から現在占有を推測しない。
 
-### 4.2 未来Slotで常時成立させるInvariant
+### 12.2 常時成立させるInvariant
 
-少なくとも未来の `LessonSlot` について、次を常時成立させる。
+未来Slotでは少なくとも次を成立させる。
 
-1. `SlotOccupancy.slot_id` はUNIQUEであり、1つのSlotに現在占有は最大1件である。
-2. `SlotOccupancy.occupancy_type = student_reservation` の場合、`reservation_id` は必須である。
-3. `reservation_id` が参照する `StudentReservation` は存在し、`status = confirmed` である。
-4. `StudentReservation.lesson_slot_id = SlotOccupancy.slot_id` である。
-5. `student_cancelled` / `school_cancelled` / `system_cancelled` のReservationを `SlotOccupancy` が参照しない。
-6. 未来の `confirmed` StudentReservationが現在そのSlotを有効に占有している場合、対応する `SlotOccupancy` が必ず存在する。
-7. `LessonSlot.availability_status = disabled` の場合、現在占有を残さない。
-8. `LessonSlot.availability_status = enabled` かつ `SlotOccupancy` が存在しない場合でも、公開状態、Server時刻、その他予約条件を満たす場合にのみ新規予約可能とする。
+1. `SlotOccupancy.slot_id` はUNIQUE。
+2. `occupancy_type = student_reservation` では `reservation_id` 必須。
+3. 参照先StudentReservationは存在し `status = confirmed`。
+4. `StudentReservation.lesson_slot_id = SlotOccupancy.slot_id`。
+5. キャンセル済みReservationを現在占有として参照しない。
+6. 未来の有効なconfirmed Reservationが現在Slotを占有する場合、対応するSlotOccupancyが存在する。
+7. `LessonSlot.availability_status = disabled` では現在占有を残さない。
+8. `enabled + SlotOccupancyなし` でも、公開状態・Server時刻等の他条件を満たす場合にのみ予約可能。
 
-これにより、少なくとも次の矛盾を正常状態として許容しない。
+### 12.3 Invariant違反時はFail Closed
 
-```text
-予約済みなのに空きとして表示される
-```
+永続化済みInvariant違反を検出した場合、矛盾を都合よく解釈して新規予約を成立させない。
 
-```text
-空きとして扱っているのに現在予約者が存在する
-```
+例えばキャンセル済みReservationをSlotOccupancyが参照している場合、Occupancyを無視して空き扱いにしない。
 
-```text
-キャンセル済みReservationが現在予約者として残る
-```
+通常の利用者競合と永続化済みInvariant違反を区別する。後者を通常Commandの副作用として無言で自動修復しない。
 
-### 4.3 Invariant違反時のFail Closed
+具体的な監視、異常コード、通知、修復手順は未確定事項として別途定義する。
 
-現在予約状態に関するInvariant違反を検出した場合、Application Workerは矛盾を都合よく解釈して新規予約処理を続行してはならない。
+## 13. 関連要求・方針
 
-例えば、次の状態を検出した場合、Reservationのstatusだけを見てSlotOccupancyを無視し「空き」として扱わない。
-
-```text
-SlotOccupancy
-  occupancy_type = student_reservation
-  reservation_id = #501
-
-StudentReservation #501
-  status = student_cancelled
-```
-
-このような状態では新規予約を拒否するFail Closedを基本とし、データ整合性異常として記録・検知対象とする。
-
-通常の利用者競合と、既に永続化されたInvariant違反は区別する。後者を通常Commandの副作用として無言で自動修復し、そのまま予約を成立させない。
-
-具体的な異常コード、監視通知、修復手順は後続設計で定義する。
-
-## 5. 関連要求・方針
-
+- POL-002 無料枠優先・Must要件優先
 - POL-003 業務状態と外部連携の分離
 - POL-004 個人情報最小化
 - POL-005 通知は即時性、システム画面は確実性
@@ -626,79 +497,45 @@ StudentReservation #501
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-013 重要な管理操作の説明性と監査可能性
-- BR-050 予約即時確定
-- BR-051 二重予約禁止
-- BR-052 予約期限
-- BR-053 生徒キャンセル期限
-- BR-054 キャンセル後の枠
-- BR-055 追加レッスン事前表示
-- BR-056 月間標準回数
-- BR-057 追加レッスン分類
-- BR-058 自動再分類
-- BR-059 明示Override優先
-- BR-060 月間回数除外
+- BR-050〜BR-060 予約・キャンセル・月間分類
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-067 未来枠の現在予約状態の一貫性
 - BR-100 生徒削除
-- BR-111 利用者通知とシステム表示の役割分担
-- BR-112 予約確認通知
-- BR-113 リマインド
-- BR-114 通知失敗
-- BR-115 区分変更通知
-- BR-116 スクール都合キャンセル通知
-- BR-123 削除時即時無効化
-- BR-124 直接管理PII削除
-- BR-125 将来予約処理
+- BR-111〜BR-116 通知
+- BR-123〜BR-125 生徒削除時処理
 - BR-132 監査
-- REQ-002 予約可能枠表示
-- REQ-003 予約
-- REQ-004 生徒キャンセル
-- REQ-101 予約確認メール
-- REQ-102 24時間Reminder
-- REQ-103 スクール都合キャンセル通知
-- REQ-104 標準／追加区分変更通知
-- REQ-105 通知失敗管理
-- REQ-110 重要業務状態のシステム表示
+- REQ-002 / REQ-003 / REQ-004 予約・キャンセル
+- REQ-101〜REQ-105 通知
+- REQ-103 / REQ-104 / REQ-110 通知・システム表示
 - REQ-207 Session管理
-- REQ-302 不定休・臨時休業
-- REQ-303 月曜営業Override
-- REQ-307 月間標準回数設定
-- REQ-309 標準／追加再分類
-- REQ-310 区分Override
-- REQ-311 生徒削除
-- REQ-312 削除時予約処理
-- REQ-313 スクール都合キャンセル
-- REQ-315 欠席記録
-- REQ-316 セキュリティ利用停止管理
-- REQ-317 プロフィール代理支援
+- REQ-302 / REQ-307 / REQ-309 / REQ-310 / REQ-313 / REQ-315 / REQ-316 / REQ-317 管理操作
+- REQ-311 / REQ-312 生徒削除
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-912 外部API Retry
+- REQ-913 無料枠運用
+- REQ-914 障害時利用者表示
 - REQ-940 監査Logging
 - REQ-951 Provider分離
+- CON-001 Cloudflare Platform
 
-## 6. 未確定事項
+## 14. 未確定事項
 
-以下は `OI-BD-006` で引き続き検討し、現時点では確定仕様として扱わない。
+`OI-BD-006` で残る未確定事項は次のみとする。
 
-- D1で使用する具体的なTransaction API、SQL順序、競合エラー表現
-- Invariant違反の具体的な監視・異常コード・修復手順
+- Invariant違反の具体的な監視・異常コード・通知・修復手順
 
-## 7. 設計判断記録
+個別DDL、Index、具体的Guard SQL、CTE、Application Error Code、HTTP Response Schema、Command Idempotency Key等は、本基本設計の原則を維持した上で詳細設計へ送る。
 
-- 本書の検討Issue: GitHub Issue `#21` / `OI-BD-006`
+## 15. 設計判断記録
+
 - スクール都合キャンセル後のSlot状態は2026-08-28に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
-- 生徒削除起因のsystem cancellationについて、即時利用不能、Session無効化、全将来Reservationの取消、SystemCancellationDetail、classification NULL化、SlotOccupancy終了、PII Purge必要状態を同一の原子的Transaction境界として扱う方針は2026-08-28に確定した。
-- PIIの実削除・匿名化は24時間以内の後続処理へ分離し、Purge必要状態を永続化する方針は2026-08-28に確定した。
-- 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再確認する方針は2026-08-28に確定した。
-- 成功した重要業務CommandのAuditLogを業務状態変更と同一Transactionへ含め、監査単位を業務Commandとし、派生変更との因果関係を追跡可能にする方針は2026-08-28に確定した。
-- Conflict等の業務状態を変更しない拒否は必要に応じ独立Auditとして記録し、Business Auditと技術Logを分離する方針は2026-08-28に確定した。
-- AuditLogは通常操作からAppend-onlyとし、PII最小化、1年保持、PII削除優先を適用する方針は2026-08-28に確定した。
-- NotificationIntentを通知義務の内部状態として業務状態・AuditLogと同一Transactionで永続化し、外部Providerへの実送信はCommit後に分離する方針は2026-08-28に確定した。
-- NotificationIntentとDelivery状態を分離し、複数通知義務は元業務Commandと同じTransactionで原子的に生成する方針は2026-08-28に確定した。
-- Retryでは新しいIntentを作らず、同一Intentを冪等に配送し、Provider受理後は盲目的に重複再送しない方針は2026-08-28に確定した。
-- 未来Slotの現在占有を `SlotOccupancy` の正本から一意に判断し、Reservationとの双方向整合Invariantを維持し、Invariant違反時はFail Closedとする方針は2026-08-28に確定した。
-- 上記未来Slot一貫性方針は要求仕様v1.3で `BR-067` として要求化し、本節をその実現設計としてトレースする。
+- 生徒削除起因system cancellationの即時Transaction境界、PII Purge分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
+- 未来Slotの現在占有Invariant、ADR-002参照方向、Fail Closed方針は2026-08-28に確定した。
+- 未来Slot一貫性は要求仕様v1.3の `BR-067` として要求化済みである。
+- AuditLogを成功した重要業務Commandと同一Transactionへ含め、監査単位を業務Commandとし、Conflict監査を分離する方針は2026-08-28に確定した。
+- NotificationIntentを通知義務として業務状態と同一Transactionへ含め、外部送信とDelivery状態を分離する方針は2026-08-28に確定した。
+- D1重要Write Commandで `withSession("first-primary").batch()` とPrepared Statementを基本とし、Transaction内Guard、集合指向SQL、安定したApplication Errorへの変換、Writeの盲目的Retry禁止を採用する方針は2026-08-28に確定した。
