@@ -102,6 +102,10 @@ StudentReservation 1 ───── 0..1 ReservationAbsence
 
 `StudentReservation.status` の初期ライフサイクル値は少なくとも `confirmed`、`student_cancelled`、`school_cancelled`、`system_cancelled` とする。`system_cancelled` は、生徒本人またはスクール管理者による明示キャンセルではなく、生徒削除等のシステム処理に伴って自動取消されたReservationを表す。
 
+取消日時は取消種別にかかわらず `StudentReservation.cancelled_at` に保持する。`confirmed` では `cancelled_at = NULL`、`student_cancelled` / `school_cancelled` / `system_cancelled` では `cancelled_at` を必須とする。`updated_at` は取消後の別更新でも変化し得るため、取消日時の代用にはしない。
+
+取消の大分類は `status` から一意に導出できるため、`cancelled_by_type` のような重複属性は持たない。どの生徒・スクール管理者・システム処理が取消操作を実行したかという具体ActorはAuditLog等の監査情報へ分離し、Reservation本体へ取消主体IDを重複保存しない。
+
 現在の実効月間算入可否は、Reservationライフサイクル、欠席、`ReservationMonthlyCountOverride` から導出し、重複する真偽値をReservation本体へ正本として保存しない。
 
 `classification` は月間算入対象Reservationにのみ適用する。月間算入対象外では仕様上「分類対象外（not applicable）」とし、物理的には `StudentReservation.classification = NULL` とする。`not_applicable` をclassificationの第3値としては保存しない。
@@ -214,9 +218,25 @@ LessonSlot #100
 
 この整合性をDB制約のみでどこまで表現するか、Application WorkerのTransactionでどこまで担保するかは物理設計で確定する。
 
-### 4.5 キャンセルと再予約
+### 4.5 キャンセル、現在占有の終了、再予約可否
 
-枠を再開放するキャンセルでは、対象 `StudentReservation` の状態を変更して履歴として残し、対応する `SlotOccupancy` を解放する。
+現在の `SlotOccupancy` がある `StudentReservation` を参照している状態でそのReservationのキャンセルが成立した場合、そのReservationによる現在占有は終了させる。キャンセル済みReservationを `SlotOccupancy.reservation_id` から参照し続けてはならない。
+
+ここで、**「Reservationによる現在占有を終了すること」と「LessonSlotが新規予約可能になること」は別概念**とする。
+
+```text
+Reservationキャンセル
+    ↓
+そのReservationによる現在占有を終了
+    ↓
+LessonSlotを新規予約可能にするかは別判定
+    ├─ availability_status
+    ├─ Lesson開始時刻
+    ├─ 新しいAdminHold / GroupLesson等の占有
+    └─ 各キャンセル種別固有の業務処理
+```
+
+開始前の生徒キャンセルでは、Reservationによる占有を解放したうえで、営業・公開・availability等の条件を満たせば新規予約可能へ戻す。
 
 ```text
 予約中
@@ -224,7 +244,7 @@ LessonSlot #100
 ├─ Reservation #501 : confirmed
 └─ SlotOccupancy -> Reservation #501
 
-      ↓ 開始前キャンセル
+      ↓ 開始前の生徒キャンセル
 
 LessonSlot #100
 ├─ Reservation #501 : student_cancelled
@@ -238,9 +258,11 @@ LessonSlot #100
 └─ SlotOccupancy -> Reservation #502
 ```
 
-生徒削除等による `system_cancelled` でも、対象が未開始で枠再開放条件を満たす場合は同様に `SlotOccupancy` を解放する。
+生徒削除等による `system_cancelled` でも、対象が未開始で枠再開放条件を満たす場合は、元Reservationによる `SlotOccupancy` を解放して新規予約可能へ戻せる。
 
-開始時刻以降はSlotOccupancyの有無とは別に時刻条件によって新規予約を禁止するため、開始後キャンセル等で占有を解放しても過去・開始済み枠が再予約可能になることはない。
+スクール都合キャンセルでは元Reservationによる占有は終了するが、その後のSlotは休業化、AdminHoldへの置換、または条件を満たす場合の再開放など、スクール側の業務変更に従う。したがって `school_cancelled` になったことだけを理由にLessonSlotを自動的に予約可能へ戻さない。
+
+開始時刻以降はSlotOccupancyの有無とは別に時刻条件によって新規予約を禁止するため、開始後キャンセル等でReservationによる占有を終了しても過去・開始済み枠が再予約可能になることはない。
 
 ### 4.6 AdminHold / GroupLesson
 
@@ -303,6 +325,8 @@ Student
 
 - 生徒の予約履歴は `StudentReservation` を基点に取得する。
 - 予約カレンダーの現在状態は `LessonSlot` と `SlotOccupancy` を基点に取得する。
+- 取消日時は `StudentReservation.cancelled_at` を正本とし、種別固有Detailへ重複保存しない。
+- 取消種別は `StudentReservation.status` から導出し、具体ActorはAuditLog等の監査情報から取得する。
 - 月間算入可否はReservation状態・欠席・月間算入Overrideから導出する。
 - `automatic_classification` は自動分類の確定値／再計算対象値として保持し、Lesson開始済みでは自動更新しない。
 - 月間算入対象では `StudentReservation.classification` の `standard` / `additional` を現在の実効区分として参照する。
@@ -320,8 +344,12 @@ Student
 - 同時占有防止の最終保証点として `SlotOccupancy.slot_id` のUNIQUE制約を用いる。
 - `SlotOccupancy` は現在占有、`StudentReservation` は予約履歴として責務を分離する。
 - 生徒予約による占有では `SlotOccupancy` が現在有効なReservationを参照する。
+- キャンセル済みReservationを現在占有として参照しない。取消成立時には元Reservationによる現在占有を終了するが、その後LessonSlotが予約可能になるかはSlotのavailability、時刻、後続占有、キャンセル種別固有処理から別に判定する。
 - `StudentReservation.status = confirmed` は予約成立後にキャンセルされていないことを表し、Lesson終了後も時間経過だけでは変更しない。
+- `confirmed` では `StudentReservation.cancelled_at = NULL` とし、`student_cancelled` / `school_cancelled` / `system_cancelled` では `cancelled_at` を必須とする。
+- `updated_at` を取消日時の代用にしない。
 - `student_cancelled`、`school_cancelled`、`system_cancelled` は取消の業務意味が異なるため別状態として扱う。
+- 取消種別は `status` から導出し、重複する `cancelled_by_type` を持たない。具体ActorはAuditLog等へ分離する。
 - `system_cancelled` のReservationには `SystemCancellationDetail` を必須とし、初期リリースの `reason_code` は少なくとも `student_deleted` を持つ。
 - Reservationライフサイクル、欠席、月間算入、自動分類、実効classification、明示Overrideを別概念として扱う。
 - 月間算入可否をReservation本体へ重複保存せず、業務状態とOverrideから導出する。
@@ -352,6 +380,7 @@ Student
 - BR-064 予約済み枠の休業化
 - BR-066 予約状態と月間算入の分離
 - BR-100 生徒削除
+- BR-116 スクール都合キャンセル通知
 - BR-125 将来予約処理
 - REQ-003 予約
 - REQ-004 生徒キャンセル
@@ -377,6 +406,7 @@ Student
 - Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 - 過去Reservationのclassification自動再計算を行わない境界は `OI-BD-004` で検討し、Lesson開始時刻を確定境界として本書および `04_ReservationModel.md` に確定結果を反映する。
 - 生徒削除等のシステム処理由来の自動取消は、直接確定した設計判断として `StudentReservation.status = system_cancelled` と `SystemCancellationDetail` に分離して表現する。初期 `reason_code` は `student_deleted` とする。
+- Reservation取消日時・取消主体の保持方法は `OI-BD-005` で検討し、取消日時を `StudentReservation.cancelled_at` に共通化、取消種別を `status` から導出、具体ActorをAuditLog等へ分離する方針として確定・反映する。
 
 ## 10. 図
 
