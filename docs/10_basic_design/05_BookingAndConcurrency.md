@@ -67,7 +67,7 @@ school_cancelled
 - Reservation占有終了
 - 明示確定済みのキャンセル後Slot状態
 
-通知要求の永続化範囲と実送信の境界は、`OI-BD-006` の残論点として別途確定する。
+一方、スクール都合キャンセルによって発生するアプリ内未確認通知とメール送信の `NotificationIntent` は、3.25〜3.31の方針に従って業務状態と同一Transactionで永続化する。Resend等への実送信はCommit後に分離する。
 
 ### 3.3 予約確定Commandの原子的Transaction境界
 
@@ -225,7 +225,7 @@ automatic_classification = 保持
 
 開始済みReservationの `automatic_classification` を遡及変更しない。
 
-既存未開始Reservationの実効classificationが変化した場合はREQ-104の区分変更通知対象となる。通知Intentの永続化境界は別途確定するが、区分変更自体は生徒キャンセルTransactionと同じCommitで確定する。
+既存未開始Reservationの実効classificationが変化した場合はREQ-104の区分変更通知対象となる。区分変更の業務状態と、その変更を通知すべき `NotificationIntent` は同じTransactionで確定する。外部メール送信はCommit後に分離する。
 
 ### 3.12 生徒削除Commandの即時Transaction境界
 
@@ -422,6 +422,127 @@ AuditLogの削除・匿名化は、保持期限到達またはPII削除要求等
 
 REQ-940に従い氏名・メール等のPIIを必要なく複製せず、内部ID、操作種別、時刻、必要最小限のBefore / Afterを基本とする。PII削除要求はAuditLogの保持期間より優先するため、削除対象生徒を識別可能な情報が監査記録に含まれる場合は必要な削除・匿名化を行う。監査事実をどこまで非識別化して保持するかの具体方式はPII設計で定義する。
 
+### 3.25 NotificationIntentは通知義務の内部業務状態として同一Transactionに含める
+
+業務Commandの正常Commitによってメール通知義務が発生する場合、その「送るべき通知が存在する」という内部事実を `NotificationIntent` として、業務状態および必要なAuditLogと同一の原子的D1 Transactionに含める。
+
+```text
+業務状態変更
+  +
+AuditLog
+  +
+NotificationIntent
+  ↓
+同一D1 Transaction
+  ↓
+COMMIT / ROLLBACK
+```
+
+`NotificationIntent` の永続化だけをCommit後のBest Effort処理へ分離しない。NotificationIntentの作成に失敗した場合、その通知を必須とする業務Command全体を正常Commitしない。
+
+これにより、予約等の業務状態だけが確定し、その直後にWorkerが停止したため通知要求そのものが失われる状態を正常状態として許容しない。
+
+NotificationIntentの永続化失敗と、Commit後の外部メール送信失敗は明確に区別する。前者は業務Transaction失敗、後者は確定済み業務状態をRollbackしない外部連携失敗として扱う。
+
+### 3.26 外部メール送信はCommit後に分離する
+
+Resend等の外部Providerへの実送信はD1 Transactionへ含めず、必ず業務Transactionの正常Commit後に行う。
+
+```text
+D1 Transaction
+  業務状態
+  AuditLog
+  NotificationIntent
+    ↓
+COMMIT
+
+COMMIT後
+    ↓
+Provider Adapter
+    ↓
+Resend等へ実送信
+```
+
+Commit前にメールを送信してはならない。外部送信成功後にD1 Transactionが失敗し、「確定メールは届いたが対応する確定業務状態が存在しない」という状態を作らない。
+
+外部送信の失敗、Timeout、Provider障害等は、確定済みの予約・キャンセル・classification変更その他の内部業務状態をRollbackする理由としない。
+
+### 3.27 NotificationIntentとDelivery状態を分離する
+
+通知すべき業務事実と、外部Providerへの配送結果を別責務として扱う。
+
+```text
+NotificationIntent
+  = 何を、誰に通知すべきかという内部通知義務
+
+NotificationDelivery
+  = 外部Providerへ実際に送信を試み、どうなったかという配送状態
+```
+
+`NotificationIntent` は業務Domain側の通知義務を表し、`NotificationDelivery` はProvider受理、失敗、試行時刻、Provider Message ID等の配送情報を扱う。
+
+正確なEntity名、列、Enum、IntentとDeliveryの多重度は通知設計または詳細設計で確定する。Provider固有情報を予約・キャンセル等のDomain Entityへ直接混在させない。
+
+### 3.28 通常の予約系Intentは論理的な通知先を保持する
+
+予約確認、区分変更、スクール都合キャンセル等の通常の予約系NotificationIntentでは、原則として `recipient_student_id` 等の内部識別子で論理的な通知先を表し、連絡先メールアドレスをIntentへ必要なく複製しない。
+
+外部送信時に、その通知で有効とされる連絡先を解決し、実際にどの宛先へ送ったかをDelivery側へ必要最小限で記録する。
+
+ただし、旧連絡先へのSecurity Notice等、特定のメールアドレス自体が通知の業務意味を持つ通知はこの一般則だけでは扱わず、認証・通知設計で宛先Snapshot等の必要性を別途定義する。
+
+### 3.29 1つの業務Commandから必要なNotificationIntentを原子的に生成する
+
+1つの業務Commandにより複数の通知義務が発生する場合、必要なNotificationIntentを同じ業務Transactionでまとめて生成する。
+
+例えば生徒キャンセルによる再分類で、複数の既存未開始Reservationが `additional → standard` または `standard → additional` に変化した場合、対象Reservationごとの区分変更NotificationIntentを、キャンセル・再分類・AuditLogと同じTransactionで確定する。
+
+```text
+生徒キャンセル
+  +
+必要な再分類
+  +
+AuditLog
+  +
+区分変更NotificationIntent × 必要件数
+  ↓
+COMMIT
+```
+
+通知対象となるIntentの一部だけを生成できない状態を正常Commitとして許容しない。
+
+一方、初期リリースでは生徒本人の `student_cancelled` 自体および `student_deleted` によるsystem cancellationには専用キャンセル通知を生成しない。通知義務の有無はBR-112〜BR-116等の要求に従う。
+
+### 3.30 スクール都合キャンセルのアプリ内通知も同一Transactionに含める
+
+スクール都合キャンセルでは、メールだけでなくアプリ内未確認通知も業務要件であるため、少なくとも次を同一Transactionで整合させる。
+
+- `school_cancelled`、`cancelled_at`、`SchoolCancellationDetail`
+- 元Reservation占有終了および明示的な後続Slot状態
+- AuditLog
+- アプリ内未確認通知
+- メール送信用NotificationIntent
+
+Resend等への実送信だけをCommit後に分離する。
+
+したがってメールProviderが障害中でも、正常Commit後にはスクール都合キャンセルの業務状態、アプリ内通知、送信待ちまたは失敗管理可能なNotificationIntentがD1上に残る。
+
+### 3.31 Retryは同じNotificationIntentを冪等に配送する
+
+一時的な送信失敗や再試行のたびに新しいNotificationIntentを作成しない。同じIntentに対するDelivery Attemptとして扱い、重複送信を避ける。
+
+```text
+NotificationIntent #1001
+  ↓
+Attempt 1: temporary failure
+  ↓
+Attempt 2: accepted
+```
+
+Intent ID等から安定した冪等性識別子を導出できるようにし、安全に再試行できる外部送信だけをREQ-912に従ってRetryする。
+
+Providerが受理した後の配信RetryはProvider側の配送処理・Callbackを正とし、Application Workerから盲目的に同一メールを再送しない。最終的なPermanent FailureはREQ-105の通知失敗管理対象とし、管理者が確認・必要に応じ手動再送できる状態へ遷移させる。
+
 ## 4. 未来Slotの現在状態に関するInvariant
 
 本節は、要求仕様 `BR-067 未来枠の現在予約状態の一貫性` を、現在採用しているデータモデルとTransaction設計で実現するための基本設計である。将来実装方式やデータモデルを変更する場合も、BR-067の業務上の一貫性要求は維持する。
@@ -501,6 +622,7 @@ StudentReservation #501
 - POL-004 個人情報最小化
 - POL-005 通知は即時性、システム画面は確実性
 - POL-006 ロール分離と最小権限
+- POL-007 外部Provider依存の局所化
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-013 重要な管理操作の説明性と監査可能性
@@ -519,6 +641,12 @@ StudentReservation #501
 - BR-064 予約済み枠の休業化
 - BR-067 未来枠の現在予約状態の一貫性
 - BR-100 生徒削除
+- BR-111 利用者通知とシステム表示の役割分担
+- BR-112 予約確認通知
+- BR-113 リマインド
+- BR-114 通知失敗
+- BR-115 区分変更通知
+- BR-116 スクール都合キャンセル通知
 - BR-123 削除時即時無効化
 - BR-124 直接管理PII削除
 - BR-125 将来予約処理
@@ -526,8 +654,11 @@ StudentReservation #501
 - REQ-002 予約可能枠表示
 - REQ-003 予約
 - REQ-004 生徒キャンセル
+- REQ-101 予約確認メール
+- REQ-102 24時間Reminder
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
+- REQ-105 通知失敗管理
 - REQ-110 重要業務状態のシステム表示
 - REQ-207 Session管理
 - REQ-302 不定休・臨時休業
@@ -543,13 +674,14 @@ StudentReservation #501
 - REQ-317 プロフィール代理支援
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
+- REQ-912 外部API Retry
 - REQ-940 監査Logging
+- REQ-951 Provider分離
 
 ## 6. 未確定事項
 
 以下は `OI-BD-006` で引き続き検討し、現時点では確定仕様として扱わない。
 
-- 通知Intentの永続化境界と外部送信の分離
 - D1で使用する具体的なTransaction API、SQL順序、競合エラー表現
 - Invariant違反の具体的な監視・異常コード・修復手順
 
@@ -565,5 +697,8 @@ StudentReservation #501
 - 成功した重要業務CommandのAuditLogを業務状態変更と同一Transactionへ含め、監査単位を業務Commandとし、派生変更との因果関係を追跡可能にする方針は2026-08-28に確定した。
 - Conflict等の業務状態を変更しない拒否は必要に応じ独立Auditとして記録し、Business Auditと技術Logを分離する方針は2026-08-28に確定した。
 - AuditLogは通常操作からAppend-onlyとし、PII最小化、1年保持、PII削除優先を適用する方針は2026-08-28に確定した。
+- NotificationIntentを通知義務の内部状態として業務状態・AuditLogと同一Transactionで永続化し、外部Providerへの実送信はCommit後に分離する方針は2026-08-28に確定した。
+- NotificationIntentとDelivery状態を分離し、複数通知義務は元業務Commandと同じTransactionで原子的に生成する方針は2026-08-28に確定した。
+- Retryでは新しいIntentを作らず、同一Intentを冪等に配送し、Provider受理後は盲目的に重複再送しない方針は2026-08-28に確定した。
 - 未来Slotの現在占有を `SlotOccupancy` の正本から一意に判断し、Reservationとの双方向整合Invariantを維持し、Invariant違反時はFail Closedとする方針は2026-08-28に確定した。
 - 上記未来Slot一貫性方針は要求仕様v1.3で `BR-067` として要求化し、本節をその実現設計としてトレースする。
