@@ -18,13 +18,14 @@
 - `ReservationMonthlyCountOverride` — 管理者による月間回数算入の例外。
 - `ReservationClassificationOverride` — 管理者による標準／追加区分の明示Override。
 - `SchoolCancellationDetail` — スクール都合キャンセル固有の理由カテゴリ・補足。
+- `SystemCancellationDetail` — 生徒削除等のシステム処理由来キャンセル固有の原因情報。
 - `StudentMonthlyLessonConfig` — 生徒・月単位の標準レッスン回数設定。
 - `AdminHold` — スクール管理者による運営上の枠確保。
 - `GroupLesson` — グループレッスンとしての枠占有。
 
 `StudentReservation`、`AdminHold`、`GroupLesson` は「枠を占有する」という点では共通するが、業務上は異なる意味を持つため同一状態として扱わない。
 
-また、Reservation周辺でも、予約ライフサイクル、欠席、月間回数算入、自動分類、実効classification、明示Overrideを同一状態へ統合しない。
+また、Reservation周辺でも、予約ライフサイクル、取消種別、欠席、月間回数算入、自動分類、実効classification、明示Overrideを同一状態へ統合しない。
 
 ## 3. Student・LessonSlot・StudentReservation の関係
 
@@ -54,7 +55,8 @@ LessonSlot 1 ───── 0..* StudentReservation
 LessonSlot #100
 ├─ Reservation #501 : student_cancelled
 ├─ Reservation #502 : school_cancelled
-└─ Reservation #503 : confirmed
+├─ Reservation #503 : system_cancelled
+└─ Reservation #504 : confirmed
 ```
 
 `confirmed` は予約成立後にキャンセルされていない状態を表し、Lesson終了後も時間経過だけでは別状態へ遷移しない。
@@ -82,19 +84,23 @@ WHERE student_id = ?
 - `automatic_classification` — 自動分類ロジックによる `standard` / `additional`。Lesson開始前は再計算され得るが、Lesson開始後は自動では変更しない。
 - `classification` — 現在の実効classification。月間算入対象では自動分類またはClassificationOverrideの結果、算入対象外ではNULL。
 
-一方、次の状態・例外は別Entityとして保持する。
+一方、次の状態・例外・理由詳細は別Entityとして保持する。
 
 ```text
 StudentReservation 1 ───── 0..1 ReservationAbsence
                    ├───── 0..1 ReservationMonthlyCountOverride
                    ├───── 0..1 ReservationClassificationOverride
-                   └───── 0..1 SchoolCancellationDetail
+                   ├───── 0..1 SchoolCancellationDetail
+                   └───── 0..1 SystemCancellationDetail
 ```
 
 - `ReservationAbsence` — 欠席。キャンセル状態とは独立する。
 - `ReservationMonthlyCountOverride` — 月間回数への算入例外。標準／追加区分のOverrideではない。
 - `ReservationClassificationOverride` — standard / additional の明示Override。
 - `SchoolCancellationDetail` — `school_cancelled` 固有の理由詳細。
+- `SystemCancellationDetail` — `system_cancelled` 固有の原因詳細。初期リリースでは少なくとも `reason_code = student_deleted` を扱う。
+
+`StudentReservation.status` の初期ライフサイクル値は少なくとも `confirmed`、`student_cancelled`、`school_cancelled`、`system_cancelled` とする。`system_cancelled` は、生徒本人またはスクール管理者による明示キャンセルではなく、生徒削除等のシステム処理に伴って自動取消されたReservationを表す。
 
 現在の実効月間算入可否は、Reservationライフサイクル、欠席、`ReservationMonthlyCountOverride` から導出し、重複する真偽値をReservation本体へ正本として保存しない。
 
@@ -194,8 +200,8 @@ UNIQUE(slot_id)
 
 ```text
 LessonSlot #100
-├─ Reservation #501 : cancelled
-├─ Reservation #502 : cancelled
+├─ Reservation #501 : student_cancelled
+├─ Reservation #502 : system_cancelled
 └─ Reservation #503 : confirmed
         ▲
         │
@@ -231,6 +237,8 @@ LessonSlot #100
 ├─ Reservation #502 : confirmed
 └─ SlotOccupancy -> Reservation #502
 ```
+
+生徒削除等による `system_cancelled` でも、対象が未開始で枠再開放条件を満たす場合は同様に `SlotOccupancy` を解放する。
 
 開始時刻以降はSlotOccupancyの有無とは別に時刻条件によって新規予約を禁止するため、開始後キャンセル等で占有を解放しても過去・開始済み枠が再予約可能になることはない。
 
@@ -271,7 +279,7 @@ D1での具体的なTransaction API・SQL構成は予約整合性／Transaction�
 - 枠から予約履歴を検索する経路: `StudentReservation.lesson_slot_id`
 - 枠から現在占有を検索・一意保証する経路: `SlotOccupancy.slot_id`（UNIQUE）
 - 現在占有からReservationを参照する経路: `SlotOccupancy.reservation_id`
-- Reservationから欠席・各Override・スクール都合詳細を参照する経路: 各 `reservation_id`（UNIQUE）
+- Reservationから欠席・各Override・スクール都合／システム起因取消詳細を参照する経路: 各 `reservation_id`（UNIQUE）
 - 生徒・月別標準回数を参照する経路: `StudentMonthlyLessonConfig(student_id, schedule_month_id)`（UNIQUE）
 - AdminHold / GroupLessonから占有を参照する経路: 各 `occupancy_id`
 - 時系列で予約・枠を取得する経路: `LessonSlot.lesson_date`、`start_time` または相当列
@@ -288,7 +296,9 @@ Student
           │                     │
           ├─ Absence            └─ 0..1 SlotOccupancy
           ├─ MonthlyCountOverride
-          └─ ClassificationOverride
+          ├─ ClassificationOverride
+          ├─ SchoolCancellationDetail
+          └─ SystemCancellationDetail
 ```
 
 - 生徒の予約履歴は `StudentReservation` を基点に取得する。
@@ -297,6 +307,7 @@ Student
 - `automatic_classification` は自動分類の確定値／再計算対象値として保持し、Lesson開始済みでは自動更新しない。
 - 月間算入対象では `StudentReservation.classification` の `standard` / `additional` を現在の実効区分として参照する。
 - 月間算入対象外では仕様上「分類対象外」とし、保存上のclassificationはNULLとする。画面ではNULLそのものではなく、キャンセル・欠席・回数算入対象外等の業務状態を表示する。
+- `school_cancelled` と `system_cancelled` は別状態として表示・解釈し、それぞれの理由詳細を対応するDetail Entityから取得する。
 - 実効区分の根拠となる明示Overrideは別Entityとして保持する。
 - 同じ関係をStudentやLessonSlotへ予約ID配列として重複保存しない。
 
@@ -310,6 +321,8 @@ Student
 - `SlotOccupancy` は現在占有、`StudentReservation` は予約履歴として責務を分離する。
 - 生徒予約による占有では `SlotOccupancy` が現在有効なReservationを参照する。
 - `StudentReservation.status = confirmed` は予約成立後にキャンセルされていないことを表し、Lesson終了後も時間経過だけでは変更しない。
+- `student_cancelled`、`school_cancelled`、`system_cancelled` は取消の業務意味が異なるため別状態として扱う。
+- `system_cancelled` のReservationには `SystemCancellationDetail` を必須とし、初期リリースの `reason_code` は少なくとも `student_deleted` を持つ。
 - Reservationライフサイクル、欠席、月間算入、自動分類、実効classification、明示Overrideを別概念として扱う。
 - 月間算入可否をReservation本体へ重複保存せず、業務状態とOverrideから導出する。
 - `automatic_classification` は `standard` / `additional` の自動分類値を保持し、Lesson開始済みReservationでは後続の自動再分類により変更しない。
@@ -338,6 +351,8 @@ Student
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-066 予約状態と月間算入の分離
+- BR-100 生徒削除
+- BR-125 将来予約処理
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
@@ -348,6 +363,8 @@ Student
 - REQ-308 月間回数除外
 - REQ-309 標準／追加再分類
 - REQ-310 区分Override
+- REQ-311 生徒削除
+- REQ-312 削除時予約処理
 - REQ-313 スクール都合キャンセル
 - REQ-315 欠席記録
 - REQ-911 競合・整合性
@@ -359,6 +376,7 @@ Student
 - Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 - Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
 - 過去Reservationのclassification自動再計算を行わない境界は `OI-BD-004` で検討し、Lesson開始時刻を確定境界として本書および `04_ReservationModel.md` に確定結果を反映する。
+- 生徒削除等のシステム処理由来の自動取消は、直接確定した設計判断として `StudentReservation.status = system_cancelled` と `SystemCancellationDetail` に分離して表現する。初期 `reason_code` は `student_deleted` とする。
 
 ## 10. 図
 
