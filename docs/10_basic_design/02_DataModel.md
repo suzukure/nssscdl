@@ -23,6 +23,8 @@
 - `AdminHold` — スクール管理者による運営上の枠確保。
 - `GroupLesson` — グループレッスンとしての枠占有。
 
+`IntegrityIncident` は上記の予約・占有業務Entityとは責務を分離した**運用・整合性監視Entity**として扱う。これは予約状態・現在占有の正本ではなく、永続化済みInvariant違反の検知・集約・解決状態を追跡するための運用記録である。論理属性と運用ルールは `05_BookingAndConcurrency.md` を正とし、物理Schemaは詳細設計で確定する。
+
 `StudentReservation`、`AdminHold`、`GroupLesson` は「枠を占有する」という点では共通するが、業務上は異なる意味を持つため同一状態として扱わない。
 
 また、Reservation周辺でも、予約ライフサイクル、取消種別、欠席、月間回数算入、自動分類、実効classification、明示Overrideを同一状態へ統合しない。
@@ -291,7 +293,7 @@ COMMIT
 
 途中で失敗した場合、現在占有とReservationが食い違う中間状態を残さない。
 
-D1での具体的なTransaction API・SQL構成は予約整合性／Transaction設計で確定する。
+D1での具体的なTransaction API・SQL構成は `05_BookingAndConcurrency.md` を正とする。
 
 ## 5. Index基本方針
 
@@ -306,7 +308,7 @@ D1での具体的なTransaction API・SQL構成は予約整合性／Transaction�
 - AdminHold / GroupLessonから占有を参照する経路: 各 `occupancy_id`
 - 時系列で予約・枠を取得する経路: `LessonSlot.lesson_date`、`start_time` または相当列
 
-複合Indexは実際のQueryパターンとD1の実行計画を踏まえて物理設計時に確定する。
+複合Indexは実際のQueryパターンとD1の実行計画を踏まえて物理設計時に確定する。`IntegrityIncident` のfingerprint・status・検知時刻等に対する物理Indexは `05_BookingAndConcurrency.md` の方針に従い詳細設計で確定する。
 
 ## 6. 保存モデルと表示モデルの分離
 
@@ -334,6 +336,7 @@ Student
 - `school_cancelled` と `system_cancelled` は別状態として表示・解釈し、それぞれの理由詳細を対応するDetail Entityから取得する。
 - 実効区分の根拠となる明示Overrideは別Entityとして保持する。
 - 同じ関係をStudentやLessonSlotへ予約ID配列として重複保存しない。
+- `IntegrityIncident` は利用者向け予約状態の代替正本ではなく、保守・監視用の状態として通常表示モデルから分離する。
 
 ## 7. 整合性上の原則
 
@@ -359,15 +362,18 @@ Student
 - 開始済みReservationの分類変更が必要な場合は自動再分類ではなく明示Overrideとして監査可能に扱う。
 - `Student` に予約一覧のCacheを業務上の正本として持たせない。
 - 競合判定ではCommit時の最新状態を再検証する。
+- 永続化済みInvariant違反を検出した場合はFail Closedとし、`IntegrityIncident` はその異常を追跡するための運用記録としてのみ使用する。Incidentの存在を根拠に予約・占有状態を推測または上書きしない。
 - 性能上の根拠なく初期段階から重複保存を導入しない。
 
 ## 8. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
+- POL-004 個人情報最小化
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-010 既定ルールと例外を分離する
 - POL-013 重要な管理操作の説明性と監査可能性
+- POL-014 利用者向けエラー情報の安全な抽象化
 - BR-051 二重予約禁止
 - BR-054 キャンセル後の枠
 - BR-056 月間標準回数
@@ -379,9 +385,13 @@ Student
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-066 予約状態と月間算入の分離
+- BR-067 未来枠の現在予約状態の一貫性
 - BR-100 生徒削除
+- BR-110 重大障害通知
 - BR-116 スクール都合キャンセル通知
 - BR-125 将来予約処理
+- BR-132 監査
+- BR-133 利用者向けエラー表現
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
@@ -397,6 +407,9 @@ Student
 - REQ-313 スクール都合キャンセル
 - REQ-315 欠席記録
 - REQ-911 競合・整合性
+- REQ-914 障害・エラー時利用者表示
+- REQ-940 監査Logging
+- REQ-942 監視・重大Incident
 
 ## 9. 設計判断記録
 
@@ -407,9 +420,12 @@ Student
 - 過去Reservationのclassification自動再計算を行わない境界は `OI-BD-004` で検討し、Lesson開始時刻を確定境界として本書および `04_ReservationModel.md` に確定結果を反映する。
 - 生徒削除等のシステム処理由来の自動取消は、直接確定した設計判断として `StudentReservation.status = system_cancelled` と `SystemCancellationDetail` に分離して表現する。初期 `reason_code` は `student_deleted` とする。
 - Reservation取消日時・取消主体の保持方法は `OI-BD-005` で検討し、取消日時を `StudentReservation.cancelled_at` に共通化、取消種別を `status` から導出、具体ActorをAuditLog等へ分離する方針として確定・反映する。
+- `OI-BD-006` で、永続化済みInvariant違反を追跡する運用Entityとして `IntegrityIncident` を導入する。これは予約・占有の正本ではなく、Command Guard / 定期Scanによる検知、重複集約、保守通知、Repair後の解決判定を支える運用状態である。
 
 ## 10. 図
 
 PlantUML source: `docs/diagrams/plantuml/data-model-overview.puml`
 
 Rendered SVG: `docs/diagrams/rendered/data-model-overview.svg`（自動生成）
+
+`IntegrityIncident` は予約・占有の中核業務関係図には含めず、運用・監視データモデルとして詳細設計で物理関係を具体化する。
