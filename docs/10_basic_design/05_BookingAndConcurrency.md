@@ -228,6 +228,8 @@ automatic_classification = 保持
 
 ## 4. 未来Slotの現在状態に関するInvariant
 
+本節は、要求仕様 `BR-067 未来枠の現在予約状態の一貫性` を、現在採用しているデータモデルとTransaction設計で実現するための基本設計である。将来実装方式やデータモデルを変更する場合も、BR-067の業務上の一貫性要求は維持する。
+
 ### 4.1 現在占有の正本
 
 サービスの根幹となる「このSlotは現在空いているか」「現在何によって占有されているか」「生徒予約なら誰が予約しているか」は、過去のReservation履歴から推測せず、`LessonSlot` と `SlotOccupancy` を基点に判定する。
@@ -317,6 +319,8 @@ StudentReservation #501
 - BR-060 月間回数除外
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
+- BR-067 未来枠の現在予約状態の一貫性
+- REQ-002 予約可能枠表示
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-103 スクール都合キャンセル通知
@@ -346,3 +350,4 @@ StudentReservation #501
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
 - 未来Slotの現在占有を `SlotOccupancy` の正本から一意に判断し、Reservationとの双方向整合Invariantを維持し、Invariant違反時はFail Closedとする方針は2026-08-28に確定した。
+- 上記未来Slot一貫性方針は要求仕様v1.3で `BR-067` として要求化し、本節をその実現設計としてトレースする。
