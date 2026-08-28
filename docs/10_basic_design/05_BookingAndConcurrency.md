@@ -22,6 +22,7 @@
 - Commit済みの内部業務状態を正とし、メール等の外部連携失敗を理由にRollbackしない。
 - 重要操作はActor IDを含む必要最小限のAuditLogで監査可能にする。
 - 通知義務が発生する業務では、外部送信そのものと「通知すべき事実」を分離する。
+- 利用者向け画面および公開APIへ内部技術エラーを直接露出せず、安定したApplication Errorへ抽象化する。
 
 ## 3. D1 Transaction共通方針
 
@@ -125,6 +126,8 @@ Commit必須条件が不成立の場合は、DB Transaction全体が失敗する
 結果が不明な場合は最新確定状態を再取得し、業務結果を判定することを基本とする。Command Idempotency Key等の追加方式が必要かはAPI詳細設計で判断する。
 
 ## 4. 競合・エラー表現
+
+本節は要求仕様v1.4の `POL-014 利用者向けエラー情報の安全な抽象化`、`BR-133 利用者向けエラー表現`、`REQ-914 障害・エラー時利用者表示` を、D1 TransactionとAPI境界で実現するための基本設計である。
 
 ### 4.1 D1やProviderの生エラーをApplication Contractにしない
 
@@ -497,6 +500,7 @@ Reservation履歴一覧から現在占有を推測しない。
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-013 重要な管理操作の説明性と監査可能性
+- POL-014 利用者向けエラー情報の安全な抽象化
 - BR-050〜BR-060 予約・キャンセル・月間分類
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
@@ -505,6 +509,7 @@ Reservation履歴一覧から現在占有を推測しない。
 - BR-111〜BR-116 通知
 - BR-123〜BR-125 生徒削除時処理
 - BR-132 監査
+- BR-133 利用者向けエラー表現
 - REQ-002 / REQ-003 / REQ-004 予約・キャンセル
 - REQ-101〜REQ-105 通知
 - REQ-103 / REQ-104 / REQ-110 通知・システム表示
@@ -515,7 +520,7 @@ Reservation履歴一覧から現在占有を推測しない。
 - REQ-911 競合整合性
 - REQ-912 外部API Retry
 - REQ-913 無料枠運用
-- REQ-914 障害時利用者表示
+- REQ-914 障害・エラー時利用者表示
 - REQ-940 監査Logging
 - REQ-951 Provider分離
 - CON-001 Cloudflare Platform
@@ -539,3 +544,4 @@ Reservation履歴一覧から現在占有を推測しない。
 - AuditLogを成功した重要業務Commandと同一Transactionへ含め、監査単位を業務Commandとし、Conflict監査を分離する方針は2026-08-28に確定した。
 - NotificationIntentを通知義務として業務状態と同一Transactionへ含め、外部送信とDelivery状態を分離する方針は2026-08-28に確定した。
 - D1重要Write Commandで `withSession("first-primary").batch()` とPrepared Statementを基本とし、Transaction内Guard、集合指向SQL、安定したApplication Errorへの変換、Writeの盲目的Retry禁止を採用する方針は2026-08-28に確定した。
+- 利用者向け内部エラー非露出の方針は要求仕様v1.4の `POL-014` / `BR-133` / `REQ-914` として上位要求化し、本書4章をその実現設計としてトレースする。
