@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-本書は、生徒予約の履歴とLessonSlotの現在占有を分離し、さらに予約ライフサイクル、欠席、月間回数算入、自動分類、実効classification、管理者Overrideを業務上異なる概念として一貫して扱うための論理データモデルを定義する。
+本書は、生徒予約の履歴とLessonSlotの現在占有を分離し、さらに予約ライフサイクル、取消種別、欠席、月間回数算入、自動分類、実効classification、管理者Overrideを業務上異なる概念として一貫して扱うための論理データモデルを定義する。
 
 ## 2. 基本方針
 
@@ -14,6 +14,7 @@
 - `ReservationMonthlyCountOverride` — 管理者による月間回数算入の例外。
 - `ReservationClassificationOverride` — 管理者による標準／追加区分の明示Override。
 - `SchoolCancellationDetail` — スクール都合キャンセル固有の理由カテゴリ・補足。
+- `SystemCancellationDetail` — 生徒削除等のシステム処理由来キャンセル固有の原因情報。
 - `StudentMonthlyLessonConfig` — 生徒・月単位の標準レッスン回数設定。
 
 `StudentReservation` を削除して空きを表現せず、キャンセル後も履歴として残す。一方、再予約可能な枠については `SlotOccupancy` を解放する。
@@ -23,6 +24,7 @@
 ```text
 予約ライフサイクル ≠ 欠席
 予約ライフサイクル ≠ 月間回数算入
+取消種別           ≠ 取消原因詳細
 月間回数算入       ≠ 自動分類
 自動分類           ≠ 実効classification
 自動分類           ≠ 明示Classification Override
@@ -46,7 +48,8 @@ LessonSlot 1 ───── 0..* StudentReservation
 LessonSlot #100
 ├─ Reservation #501 : student_cancelled
 ├─ Reservation #502 : school_cancelled
-└─ Reservation #503 : confirmed
+├─ Reservation #503 : system_cancelled
+└─ Reservation #504 : confirmed
 ```
 
 これは二重予約ではなく、同じSlotに対する時系列の予約履歴を表す。
@@ -93,8 +96,9 @@ UNIQUE(slot_id)
 初期リリースで少なくとも識別すべきライフサイクル状態は次のとおり。
 
 - `confirmed` — 正常に成立し、キャンセルされていない予約
-- `student_cancelled` — 生徒キャンセル済み
+- `student_cancelled` — 生徒本人によるキャンセル済み
 - `school_cancelled` — スクール都合キャンセル済み
+- `system_cancelled` — 生徒削除等のシステム処理に伴う自動取消済み
 
 `confirmed` は「これから実施される予約」だけを意味しない。Lesson終了後もキャンセルされていなければ `confirmed` のままとし、時間経過だけを理由に `completed` 等へ遷移させない。
 
@@ -102,7 +106,9 @@ UNIQUE(slot_id)
 
 要求仕様上の表示語「予約済み」はこの非キャンセル状態に対応する。内部状態名を `confirmed` とすることは要求仕様上の表示語を変更するものではない。
 
-生徒削除等のシステム起因取消を独立した状態コードとして持つか、取消原因を別属性で持つかは、削除処理の物理・詳細設計で確定する。ただし生徒キャンセルやスクール都合キャンセルを無言で同一状態へ潰さない。
+`student_cancelled`、`school_cancelled`、`system_cancelled` は、いずれもReservationが取消済みである点は共通するが、業務上の取消主体・意味が異なるため統合しない。
+
+`system_cancelled` は利用者またはスクール管理者の明示キャンセルではなく、システム処理の一環として自動的にReservationを取消したことを表す。具体的な原因は `SystemCancellationDetail` に保持し、初期リリースでは生徒削除に伴う `student_deleted` を少なくとも定義する。
 
 ### 5.3 automatic_classificationの責務
 
@@ -149,9 +155,9 @@ additional
 
 ## 6. キャンセルと再予約
 
-### 6.1 開始前キャンセル
+### 6.1 生徒キャンセル
 
-開始前キャンセルでは、Reservation履歴を残したまま現在占有を解放する。
+開始前の生徒キャンセルでは、Reservation履歴を残したまま現在占有を解放する。
 
 ```text
 Before
@@ -177,7 +183,31 @@ LessonSlot #100
 
 枠を再開放する場合は現在占有を解放し、枠を休業化・管理者確保へ変更する場合は、その業務変更と整合する形でSlot状態・SlotOccupancyを更新する。
 
-### 6.3 開始時刻以降
+### 6.3 システム起因キャンセル
+
+生徒削除等、利用者またはスクール管理者の明示キャンセルではないシステム処理由来の取消では `StudentReservation.status = system_cancelled` とする。
+
+初期リリースでは、生徒削除時に対象となる将来の `confirmed` Reservationを `system_cancelled` へ遷移させ、対応する `SystemCancellationDetail.reason_code = student_deleted` を記録する。
+
+```text
+Student削除
+    ↓
+将来の confirmed Reservation
+    ↓
+status = system_cancelled
+SystemCancellationDetail.reason_code = student_deleted
+    ↓
+月間回数から除外
+classification = NULL
+    ↓
+開始前で再開放可能な枠は SlotOccupancy を解放
+```
+
+`system_cancelled` を `student_cancelled` や `school_cancelled` に読み替えない。特に、生徒削除による自動取消を生徒本人の意思によるキャンセルとして記録してはならず、スクール都合キャンセル固有の理由カテゴリや通知処理も流用しない。
+
+システム起因キャンセル後は月間回数の算入対象外とし、classificationは「分類対象外」とする。`automatic_classification` は履歴上の自動分類値として保持する。
+
+### 6.4 開始時刻以降
 
 開始時刻以降の新規予約禁止はSlotOccupancyとは別の時刻ルールとして判定する。
 
@@ -242,7 +272,7 @@ AND ReservationMonthlyCountOverrideによる除外なし
     → 月間回数から除外
 ```
 
-生徒キャンセル、スクール都合キャンセル、欠席は初期リリースでは算入しない。
+生徒キャンセル、スクール都合キャンセル、システム起因キャンセル、欠席は初期リリースでは算入しない。
 
 ### 8.2 ReservationMonthlyCountOverride
 
@@ -277,6 +307,7 @@ Overrideの解除・変更履歴はAuditLogへ記録する。
 
 - `status = student_cancelled`
 - `status = school_cancelled`
+- `status = system_cancelled`
 - `ReservationAbsence` あり
 - `ReservationMonthlyCountOverride.override_mode = excluded`
 
@@ -291,7 +322,7 @@ Overrideの解除・変更履歴はAuditLogへ記録する。
     → 保存上: classification = NULL
 ```
 
-利用者画面ではNULLや `not_applicable` を機械的に表示するのではなく、生徒キャンセル、スクール都合キャンセル、欠席、回数算入対象外など、そのReservationが分類対象外である理由となる業務状態を表示する。
+利用者画面ではNULLや `not_applicable` を機械的に表示するのではなく、生徒キャンセル、スクール都合キャンセル、システム起因キャンセル、欠席、回数算入対象外など、そのReservationが分類対象外である理由となる業務状態を表示する。
 
 分類対象外への遷移は `automatic_classification` を消去することを意味しない。
 
@@ -440,7 +471,7 @@ D → standard  （例外standard）
 
 DのOverrideは自動標準枠を消費しない。
 
-対象Reservationがキャンセル・欠席・月間算入除外によって分類対象外となった場合でも、`ReservationClassificationOverride` 自体は明示的に解除されるまで保持する。この間、`classification` はNULLだが、Overrideに表された管理者の意思は失わない。
+対象Reservationがキャンセル・欠席・月間回数除外によって分類対象外となった場合でも、`ReservationClassificationOverride` 自体は明示的に解除されるまで保持する。この間、`classification` はNULLだが、Overrideに表された管理者の意思は失わない。
 
 開始済みReservationを後からstandard/additionalへ変更する必要がある場合も、自動再分類ではなくClassificationOverrideとして明示的に実施し、監査する。これによって他Reservationを連鎖的に再分類しない。
 
@@ -453,7 +484,7 @@ Overrideを解除した場合、算入対象なら `classification` を保持済
 未開始Reservationの自動分類再計算を引き起こす代表例は次のとおり。
 
 - Reservationの新規成立
-- 生徒キャンセル／スクール都合キャンセル
+- 生徒キャンセル／スクール都合キャンセル／システム起因キャンセル
 - 欠席の設定・解除
 - `ReservationMonthlyCountOverride` の設定・解除
 - `StudentMonthlyLessonConfig.standard_count` の変更
@@ -485,9 +516,43 @@ StudentReservation 1 ───── 0..1 SchoolCancellationDetail
 
 `SchoolCancellationDetail` が存在する場合、対象Reservationは `school_cancelled` でなければならない。逆に `school_cancelled` のReservationには理由詳細を必須とする。
 
-## 11. StudentMonthlyLessonConfig
+## 11. SystemCancellationDetail
 
 ### 11.1 決定
+
+システム起因キャンセル固有の原因情報を `SystemCancellationDetail` として保持する。
+
+```text
+StudentReservation 1 ───── 0..1 SystemCancellationDetail
+```
+
+最小論理属性:
+
+- `reservation_id` — 対象Reservation。UNIQUE
+- `reason_code` — システム起因取消の具体原因
+- `cancelled_at` — システム起因取消が確定した日時
+
+初期リリースで少なくとも次の `reason_code` を持つ。
+
+- `student_deleted` — 生徒削除処理に伴う将来予約の自動取消
+
+### 11.2 意味と整合性
+
+`system_cancelled` は取消種別、`SystemCancellationDetail.reason_code` は具体的な取消原因として責務を分離する。
+
+```text
+StudentReservation.status = system_cancelled
+        ↓
+SystemCancellationDetail.reason_code = student_deleted
+```
+
+`SystemCancellationDetail` が存在する場合、対象Reservationは `system_cancelled` でなければならない。逆に `system_cancelled` のReservationには `SystemCancellationDetail` を必須とする。
+
+初期リリースでは生徒削除が代表用途であるが、将来別のシステム処理由来の取消が必要になった場合は、Reservationのstatusを増やすのではなく、業務意味が同じ「システム起因取消」である限り `reason_code` の追加を基本とする。
+
+## 12. StudentMonthlyLessonConfig
+
+### 12.1 決定
 
 生徒・月単位の標準レッスン回数はReservationとは別の `StudentMonthlyLessonConfig` として管理する。
 
@@ -516,7 +581,7 @@ UNIQUE(student_id, schedule_month_id)
 
 標準回数変更前には、開始済みReservationの自動分類が維持されることと、変更によって影響する未開始Reservationの分類変化をプレビューする。確定後は開始済みを変更せず、未開始Reservationだけを再分類する。
 
-## 12. 状態組み合わせと整合性
+## 13. 状態組み合わせと整合性
 
 代表的な組み合わせは次のとおり。
 
@@ -527,12 +592,15 @@ UNIQUE(student_id, schedule_month_id)
 | confirmed | なし | excluded | 保持 | 分類対象外（NULL） | 管理者除外・算入対象外 |
 | student_cancelled | なし | 任意 | 保持 | 分類対象外（NULL） | 生徒キャンセル・算入対象外 |
 | school_cancelled | なし | 任意 | 保持 | 分類対象外（NULL） | スクール都合キャンセル・算入対象外 |
+| system_cancelled | なし | 任意 | 保持 | 分類対象外（NULL） | システム起因キャンセル・算入対象外 |
 
 次を不正状態として扱う。
 
 - キャンセル済みReservationへ `ReservationAbsence` を設定する。
 - `school_cancelled` なのに `SchoolCancellationDetail` が存在しない。
 - `SchoolCancellationDetail` が存在するのにReservationが `school_cancelled` ではない。
+- `system_cancelled` なのに `SystemCancellationDetail` が存在しない。
+- `SystemCancellationDetail` が存在するのにReservationが `system_cancelled` ではない。
 - `SlotOccupancy` がキャンセル済みReservationを現在占有として参照する。
 - 月間算入対象外Reservationにstandard / additionalの実効classificationを保持する。
 - 月間算入対象ReservationのclassificationがNULLのまま確定状態になる。
@@ -541,7 +609,7 @@ UNIQUE(student_id, schedule_month_id)
 
 `ReservationMonthlyCountOverride` と `ReservationClassificationOverride` は意味上独立した例外として保持する。前者は未開始Reservationの自動分類対象集合や、開始済み自動standardの消費数を変化させ得る。後者は対象Reservationの実効区分だけを変更し、自動標準枠には影響しない。
 
-## 13. AdminHold / GroupLessonとの関係
+## 14. AdminHold / GroupLessonとの関係
 
 `SlotOccupancy` は生徒予約専用ではない。
 
@@ -555,12 +623,14 @@ LessonSlot
 
 現在の占有種別は1つだけであり、異なる占有種別を同時に成立させない。
 
-## 14. Transaction上の原則
+## 15. Transaction上の原則
 
 - Reservation作成と現在占有確保は同一の論理Transaction境界で整合させる。
 - Reservation作成時には、その月の最新状態で `automatic_classification` と実効classificationを確定する。
 - 枠再開放を伴うキャンセルではReservation状態変更とSlotOccupancy解放を同一の論理Transaction境界で整合させる。
 - スクール都合キャンセルではReservation状態、`SchoolCancellationDetail`、SlotOccupancy／LessonSlot変更を一連の業務操作として整合させる。
+- システム起因キャンセルではReservation状態、`SystemCancellationDetail`、必要なSlotOccupancy解放を一連の業務操作として整合させる。
+- 生徒削除では、対象となる将来Reservationの `system_cancelled` 化、`SystemCancellationDetail(reason_code = student_deleted)` の作成、開始前枠のSlotOccupancy解放を削除処理の整合範囲で扱う。
 - 月間算入条件や標準回数が変化した場合、開始済みReservationの `automatic_classification` は保持したまま、消費済み自動標準枠の再評価と未開始Reservationの再分類を同じ確定操作の整合範囲で扱う。
 - 分類対象外への遷移では、対象ReservationのclassificationをNULLへ更新する処理も同じ確定操作の整合範囲で扱う。
 - ClassificationOverrideの設定・変更・解除では、対象Reservationの実効classification更新と監査記録を整合させるが、Overrideのみを理由に他Reservationの自動分類を組み替えない。
@@ -568,11 +638,12 @@ LessonSlot
 
 具体的なD1制約、Transaction API、再計算のロック／競合エラー処理は `BookingAndConcurrency` 設計で確定する。
 
-## 15. 主要整合性条件
+## 16. 主要整合性条件
 
 - `StudentReservation.lesson_slot_id`、`student_id` は必須とする。
 - 同じ `LessonSlot` を参照するReservation履歴は複数存在してよい。
 - `StudentReservation.status = confirmed` は予約の実施前後では変化せず、キャンセルされていないことを表す。
+- `StudentReservation.status = system_cancelled` はシステム処理由来の取消にのみ用い、生徒本人・スクール都合の明示キャンセルには用いない。
 - `StudentReservation.automatic_classification` は `standard` または `additional` とする。
 - 開始済みReservationの `automatic_classification` は通常の自動再分類では変更しない。
 - 月間算入対象Reservationの `StudentReservation.classification` は `standard` または `additional` とする。
@@ -587,9 +658,11 @@ LessonSlot
 - `ReservationMonthlyCountOverride.reservation_id` はUNIQUEとする。
 - `ReservationClassificationOverride.reservation_id` はUNIQUEとする。
 - `SchoolCancellationDetail.reservation_id` はUNIQUEとする。
+- `SystemCancellationDetail.reservation_id` はUNIQUEとする。
+- `system_cancelled` には `SystemCancellationDetail` を必須とし、初期リリースでは少なくとも `reason_code = student_deleted` を扱えること。
 - `StudentMonthlyLessonConfig` は `(student_id, schedule_month_id)` でUNIQUEとする。
 
-## 16. 関連要求・方針
+## 17. 関連要求・方針
 
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
@@ -606,6 +679,8 @@ LessonSlot
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-066 予約状態と月間算入の分離
+- BR-100 生徒削除
+- BR-125 将来予約処理
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
@@ -614,13 +689,16 @@ LessonSlot
 - REQ-308 月間回数除外
 - REQ-309 標準／追加再分類
 - REQ-310 区分Override
+- REQ-311 生徒削除
+- REQ-312 削除時予約処理
 - REQ-313 スクール都合キャンセル
 - REQ-315 欠席記録
 - REQ-911 競合・整合性
 
-## 17. Open Item
+## 18. Open Item / 設計判断
 
 - `OI-BD-001` — 予約履歴と現在占有の分離。確定・反映済み。
 - `OI-BD-002` — Reservationの状態・月間算入・区分Overrideの分離。確定・反映済み。
 - `OI-BD-003` — Reservation非算入時のclassificationとライフサイクル意味。確定・反映済み。
 - `OI-BD-004` — 過去Reservationのclassification自動再計算を行わない境界。Lesson開始時刻を確定境界として確定・反映済み。
+- 生徒削除等のシステム処理由来の自動取消は、直接確定した設計判断として `system_cancelled` と `SystemCancellationDetail` に分離する。初期 `reason_code` は `student_deleted` とする。
