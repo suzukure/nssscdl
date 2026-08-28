@@ -35,7 +35,7 @@
 キャンセル後のSlot状態は、業務目的に応じて少なくとも次のいずれかとして明示的に確定する。
 
 1. `LessonSlot.availability_status = disabled` とする。
-2. `AdminHold` 等の別占有へ置換する。
+2. `LessonSlot.availability_status = enabled` のまま `AdminHold` 等の別占有へ置換する。
 3. 明示的に再開放し、`LessonSlot.availability_status = enabled` かつ `SlotOccupancy` なしとする。
 
 次の遷移は禁止する。
@@ -52,21 +52,9 @@ school_cancelled
 
 「明示的に再開放する」は有効な業務選択肢であるが、スクール都合キャンセルの副作用として自動的に選択してはならない。
 
-### 3.2 整合性上の理由
+また `disabled` のSlotへ新たな `SlotOccupancy` を作成しない。AdminHold等へ置換する場合は `enabled + 対応するSlotOccupancy` として確定する。
 
-生徒の新規予約可否は、既存設計上少なくとも次から導出する。
-
-```text
-LessonSlot.availability_status = enabled
-AND SlotOccupancy が存在しない
-AND 公開・営業・開始時刻等の条件を満たす
-```
-
-このため、スクール都合キャンセルで元Reservationの占有だけを終了し、`LessonSlot` を `enabled` のまま残すと、業務上再開放する意思がない場合でも予約可能になる。
-
-これは、スクール都合キャンセル後の枠を自動再開放しない既存方針、および業務上異なる状態を分離する `POL-009` に反するため禁止する。
-
-### 3.3 外部通知との境界
+### 3.2 スクール都合キャンセルと外部通知の境界
 
 スクール都合キャンセルに伴うメール送信等の外部処理は、確定済みの内部業務状態をRollbackする条件としない。
 
@@ -80,7 +68,7 @@ AND 公開・営業・開始時刻等の条件を満たす
 
 通知要求の永続化範囲と実送信の境界は、`OI-BD-006` の残論点として別途確定する。
 
-### 3.4 予約確定Commandの原子的Transaction境界
+### 3.3 予約確定Commandの原子的Transaction境界
 
 予約確定Commandでは、少なくとも次を1つの原子的なD1 Transactionとして扱う。
 
@@ -90,8 +78,6 @@ AND 公開・営業・開始時刻等の条件を満たす
 - 新規Reservationおよび影響する未開始Reservationの `automatic_classification` / `classification` 更新
 
 上記の一部だけが正常Commitされる状態を許容しない。
-
-例えば、次のような状態を正常状態として残してはならない。
 
 ```text
 StudentReservation は作成済み
@@ -105,9 +91,9 @@ StudentReservation / SlotOccupancy は作成済み
 AND 月間classificationは再計算前の旧状態
 ```
 
-予約成立後にD1を参照したとき、その時点の月間分類まで含めて整合した状態になっていなければならない。
+といった状態を正常Commitとして残してはならない。
 
-### 3.5 Commit直前の最新状態再検証
+### 3.4 予約確定時の最新状態再検証
 
 予約成立条件と新規Reservationのclassificationは、Preview時の状態を正本とせず、Commit直前の最新D1状態から再検証する。
 
@@ -122,11 +108,9 @@ AND 月間classificationは再計算前の旧状態
 
 Preview後に先行Commitされた他予約、管理者変更、標準回数変更その他の業務変更は、後続の予約確定Commandから見た最新状態として扱う。
 
-### 3.6 PreviewとCommit直前classificationの不一致
+### 3.5 PreviewとCommit直前classificationの不一致
 
 利用者が最終確認した新規予約のclassificationと、Commit直前の最新状態から算出したclassificationが異なる場合、予約を成立させずConflictとして再確認へ戻す。
-
-これは次の両方向へ同一ルールを適用する。
 
 ```text
 Preview: standard
@@ -138,46 +122,182 @@ Commit直前: standard
     → Conflict
 ```
 
-利用者に有利な変更か不利な変更かで処理を分けず、**最終確認したclassificationと実際にCommitするclassificationを一致させる**ことを原則とする。
+利用者に有利な変更か不利な変更かで処理を分けず、最終確認したclassificationと実際にCommitするclassificationを一致させる。
 
 Conflict時は最新状態と最新classificationを明示し、利用者が再度内容を確認してから確定操作を行う。
 
-### 3.7 新規予約による既存Reservationの再分類
+### 3.6 新規予約による既存Reservationの再分類
 
-新規予約の成立によって同一生徒・同一月の既存未開始Reservationのclassificationが変化する場合、その既存Reservationの再分類も新規予約成立と同じTransactionでCommitする。
-
-例えば標準回数 `N = 3` で、既存の未開始Reservationが次の状態であるとする。
-
-```text
-9/10 A standard
-9/20 B standard
-9/25 C standard
-```
-
-ここへより早い日時の予約Dを追加する場合、最新状態での再分類結果が次であれば、D作成とCの区分変更を同じTransactionで確定する。
-
-```text
-9/05 D standard
-9/10 A standard
-9/20 B standard
-9/25 C additional
-```
+新規予約の成立によって同一生徒・同一月の既存未開始Reservationのclassificationが変化する場合、その再分類も新規予約成立と同じTransactionでCommitする。
 
 新規Reservationだけを先にCommitし、既存Reservationのclassification更新を後続Transactionへ分離してはならない。
 
 開始済みReservationの `automatic_classification` は既存設計どおり遡及変更しない。
 
-### 3.8 同一Slot以外の競合
+同一生徒が同一月の異なるSlotをほぼ同時に予約した場合も、各Slotの占有競合とは別に月間自動分類が競合し得るため、同一生徒・同一月の最新状態を再評価する。
 
-予約競合は同一 `LessonSlot` の占有競合だけではない。
+### 3.7 生徒キャンセルCommandの原子的Transaction境界
 
-同一生徒が同一月の異なるSlotをほぼ同時に予約した場合、各Slotの `SlotOccupancy.slot_id UNIQUE` は互いに競合しないが、自動standard枠の割当ては互いに影響する。
+生徒キャンセルCommandでは、少なくとも次を1つの原子的なD1 Transactionとして扱う。
 
-したがって予約確定Commandでは、対象Slotの現在占有だけでなく、同一生徒・同一月の最新分類状態を再評価し、先行Commit後の状態を基準に後続Commandのclassificationを決定する。
+- 対象 `StudentReservation.status` を `confirmed` から `student_cancelled` へ変更
+- `StudentReservation.cancelled_at` にキャンセル確定時刻を記録
+- 対象Reservationの `classification` をNULLへ変更
+- 対象Reservationの `automatic_classification` は保持
+- 対象Reservationによる `SlotOccupancy` を終了
+- 同一生徒・同一月について必要となる未開始Reservationの自動再分類
+- 再分類対象Reservationの `automatic_classification` / `classification` 更新
 
-後続Commandの新規ReservationのclassificationがPreview時から変化した場合は、3.6のConflictルールを適用する。
+次の部分成功を正常Commitとして許容しない。
 
-## 4. 関連要求・方針
+```text
+Reservationは student_cancelled
+AND 対応するSlotOccupancyが残存
+```
+
+```text
+Reservationは student_cancelled
+AND 対象Reservation.classificationがstandard/additionalのまま
+```
+
+```text
+キャンセルは確定済み
+AND 必要な月間再分類が旧状態のまま
+```
+
+### 3.8 生徒キャンセルの開始前／開始後の扱い
+
+開始前と開始後〜終了時刻の生徒キャンセルで、Reservation占有終了の扱いは分けない。キャンセル成立時にはいずれも元Reservationによる `SlotOccupancy` を終了する。
+
+違いは、その後の新規予約可否である。
+
+```text
+開始前キャンセル
+  → SlotOccupancy終了
+  → LessonSlotがenabledで他条件を満たす
+  → 新規予約可能
+```
+
+```text
+開始後〜終了時刻のキャンセル
+  → SlotOccupancy終了
+  → Server時刻がLesson開始時刻以降
+  → 新規予約不可
+```
+
+開始後キャンセルを表現するために、元ReservationのSlotOccupancyを残したり、LessonSlotを自動的にdisabledへ変更したり、専用のclosed状態を追加したりしない。
+
+### 3.9 生徒キャンセル時の最新状態再検証
+
+生徒キャンセルはCommit直前の最新状態で少なくとも次を再検証する。
+
+- 対象Reservationが操作中の生徒自身のReservationであること。
+- `StudentReservation.status = confirmed` であること。
+- Server Commit基準時刻がLesson終了時刻を超えていないこと。
+- 現在の `SlotOccupancy` が対象Reservationを現在占有として参照していること。
+- `SlotOccupancy.slot_id` と `StudentReservation.lesson_slot_id` が一致すること。
+
+Preview／確認後にスクール都合キャンセル、システム起因キャンセルその他の先行操作が正常Commitされ、対象Reservationが既に `confirmed` でない場合は、生徒キャンセルで上書きしない。
+
+先に正常Commitされた取消種別を正本とし、後続CommandはConflictまたは最新状態に応じた拒否として扱う。
+
+### 3.10 Server Commit基準時刻の統一
+
+キャンセル期限、開始前／開始後の判定、再分類対象Reservationの開始境界判定には、同一Command内で一貫したServer Commit基準時刻を用いる。
+
+Client時刻や画面表示時刻を業務期限判定の正本としない。
+
+例えば、利用者が開始前に確定操作を行っても、最終判定時点でLesson開始時刻を越えていれば、キャンセル自体が終了時刻前なら成立するが開始後キャンセルとして扱う。
+
+再分類では、この同じ基準時刻で開始済みとなっているReservationの `automatic_classification` を変更しない。
+
+### 3.11 生徒キャンセルとclassification
+
+キャンセル対象Reservationは月間算入対象外となるため、次の状態へ変更する。
+
+```text
+classification = NULL
+automatic_classification = 保持
+```
+
+キャンセルにより自動標準枠の割当てが変化する場合は、同一生徒・同一月の未開始Reservationだけを必要に応じて再分類する。
+
+開始済みReservationの `automatic_classification` を遡及変更しない。
+
+既存未開始Reservationの実効classificationが変化した場合はREQ-104の区分変更通知対象となる。通知Intentの永続化境界は別途確定するが、区分変更自体は生徒キャンセルTransactionと同じCommitで確定する。
+
+## 4. 未来Slotの現在状態に関するInvariant
+
+### 4.1 現在占有の正本
+
+サービスの根幹となる「このSlotは現在空いているか」「現在何によって占有されているか」「生徒予約なら誰が予約しているか」は、過去のReservation履歴から推測せず、`LessonSlot` と `SlotOccupancy` を基点に判定する。
+
+生徒予約による現在予約者は次の一意な経路で取得する。
+
+```text
+LessonSlot
+  ↓
+SlotOccupancy
+  occupancy_type = student_reservation
+  reservation_id = R
+  ↓
+StudentReservation R
+  student_id = S
+  ↓
+Student S
+```
+
+同一Slotにはキャンセル済みを含む複数のReservation履歴が存在できるため、`StudentReservation WHERE lesson_slot_id = ? AND status = confirmed` の検索結果を現在占有の正本として扱わない。
+
+### 4.2 未来Slotで常時成立させるInvariant
+
+少なくとも未来の `LessonSlot` について、次を常時成立させる。
+
+1. `SlotOccupancy.slot_id` はUNIQUEであり、1つのSlotに現在占有は最大1件である。
+2. `SlotOccupancy.occupancy_type = student_reservation` の場合、`reservation_id` は必須である。
+3. `reservation_id` が参照する `StudentReservation` は存在し、`status = confirmed` である。
+4. `StudentReservation.lesson_slot_id = SlotOccupancy.slot_id` である。
+5. `student_cancelled` / `school_cancelled` / `system_cancelled` のReservationを `SlotOccupancy` が参照しない。
+6. 未来の `confirmed` StudentReservationが現在そのSlotを有効に占有している場合、対応する `SlotOccupancy` が必ず存在する。
+7. `LessonSlot.availability_status = disabled` の場合、現在占有を残さない。
+8. `LessonSlot.availability_status = enabled` かつ `SlotOccupancy` が存在しない場合でも、公開状態、Server時刻、その他予約条件を満たす場合にのみ新規予約可能とする。
+
+これにより、少なくとも次の矛盾を正常状態として許容しない。
+
+```text
+予約済みなのに空きとして表示される
+```
+
+```text
+空きとして扱っているのに現在予約者が存在する
+```
+
+```text
+キャンセル済みReservationが現在予約者として残る
+```
+
+### 4.3 Invariant違反時のFail Closed
+
+現在予約状態に関するInvariant違反を検出した場合、Application Workerは矛盾を都合よく解釈して新規予約処理を続行してはならない。
+
+例えば、次の状態を検出した場合、Reservationのstatusだけを見てSlotOccupancyを無視し「空き」として扱わない。
+
+```text
+SlotOccupancy
+  occupancy_type = student_reservation
+  reservation_id = #501
+
+StudentReservation #501
+  status = student_cancelled
+```
+
+このような状態では新規予約を拒否するFail Closedを基本とし、データ整合性異常として記録・検知対象とする。
+
+通常の利用者競合と、既に永続化されたInvariant違反は区別する。後者を通常Commandの副作用として無言で自動修復し、そのまま予約を成立させない。
+
+具体的な異常コード、監視通知、修復手順は後続設計で定義する。
+
+## 5. 関連要求・方針
 
 - POL-003 業務状態と外部連携の分離
 - POL-005 通知は即時性、システム画面は確実性
@@ -187,16 +307,21 @@ Conflict時は最新状態と最新classificationを明示し、利用者が再�
 - BR-050 予約即時確定
 - BR-051 二重予約禁止
 - BR-052 予約期限
+- BR-053 生徒キャンセル期限
+- BR-054 キャンセル後の枠
 - BR-055 追加レッスン事前表示
 - BR-056 月間標準回数
 - BR-057 追加レッスン分類
 - BR-058 自動再分類
 - BR-059 明示Override優先
+- BR-060 月間回数除外
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - REQ-003 予約
+- REQ-004 生徒キャンセル
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
+- REQ-110 重要業務状態のシステム表示
 - REQ-302 不定休・臨時休業
 - REQ-307 月間標準回数設定
 - REQ-309 標準／追加再分類
@@ -204,18 +329,20 @@ Conflict時は最新状態と最新classificationを明示し、利用者が再�
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 
-## 5. 未確定事項
+## 6. 未確定事項
 
 以下は `OI-BD-006` で引き続き検討し、現時点では確定仕様として扱わない。
 
-- 生徒キャンセルのTransaction境界
 - system cancellationのTransaction境界
 - AuditLogを業務Transactionへ含める範囲
 - 通知Intentの永続化境界と外部送信の分離
 - D1で使用する具体的なTransaction API、SQL順序、競合エラー表現
+- Invariant違反の具体的な監視・異常コード・修復手順
 
-## 6. 設計判断記録
+## 7. 設計判断記録
 
 - 本書の検討Issue: GitHub Issue `#21` / `OI-BD-006`
 - スクール都合キャンセル後のSlot状態は2026-08-28に確定した。
-- 予約確定CommandのTransaction境界、Commit直前再検証、classification差分Conflict、新規予約による既存未開始Reservation再分類の同一Commit化は2026-08-28に確定した。
+- 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
+- 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
+- 未来Slotの現在占有を `SlotOccupancy` の正本から一意に判断し、Reservationとの双方向整合Invariantを維持し、Invariant違反時はFail Closedとする方針は2026-08-28に確定した。
