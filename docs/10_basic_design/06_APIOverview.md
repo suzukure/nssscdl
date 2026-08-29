@@ -8,7 +8,7 @@
 
 本段階は基本設計であり、個別Request / Response Schema、全Endpoint一覧、Correlation ID、Idempotency Key、Cookie属性、CSRF対策の具体方式等は詳細設計で確定する。
 
-本判断は `OI-BD-007` で確定した。
+API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定した。
 
 ## 2. APIの位置づけ
 
@@ -99,7 +99,7 @@ POST /api/me/reservations
 POST /api/me/reservations/{reservationId}/cancel
 ```
 
-上記はAPI形状の基本例であり、全Endpointの最終一覧は後続設計で確定する。個別Endpoint設計では、特別な理由がない限り本節のSelf Scope原則を参照し、`student_id` 非入力方針を重複定義しない。
+上記はAPI形状の基本例であり、Request / Responseの厳密なSchemaは詳細設計で確定する。個別Endpoint設計では、特別な理由がない限り本節のSelf Scope原則を参照し、`student_id` 非入力方針を重複定義しない。
 
 ### 4.2 管理者向けAPI
 
@@ -299,7 +299,173 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - Magic Link Flow詳細
 - Session失効・更新方式
 
-## 11. 詳細設計へ送る事項
+## 11. 生徒向けAPI基本形
+
+本節は `OI-BD-008` で確定した、生徒本人向け主要API Flowの基本設計を示す。
+
+厳密なJSON Schema、Field名、Pagination、Expected Stateの具体表現等は詳細設計で確定するが、Endpointの責務と業務境界は本節を基本とする。
+
+### 11.1 Schedule取得
+
+基本形を次とする。
+
+```text
+GET /api/me/schedule-months/{month}
+```
+
+生徒向け未来Slotの「新規予約可能か」と「現在何によって占有されているか」を別々の独立ロジックで返さず、`BR-067` に従って同一の確定業務状態から1つのSlot Viewを導出する。
+
+初期のSlot Viewは少なくとも次の意味を表現する。
+
+| Slot View | 意味 |
+|---|---|
+| `bookable` | 認証済み生徒本人が現在新規予約可能 |
+| `reserved_by_me` | 認証済み生徒本人のconfirmed Reservationが現在占有 |
+| `group_lesson` | グループレッスンとして占有 |
+| `unavailable` | その他の予約不可状態 |
+
+`reserved_by_me` と `bookable` が同一Slotについて同時成立するような矛盾した表示状態を作らない。
+
+`unavailable` には、他生徒予約済み、AdminHold、休業、開始済み等、生徒に詳細を公開する必要がない予約不可状態を含めてよい。他生徒のStudent ID、Reservation ID、氏名、メール等は返さない。
+
+`reserved_by_me` では本人画面に必要なReservation識別子やclassificationを関連情報として返してよい。
+
+日時は `REQ-907` に従いAsia/Tokyoの業務時刻として一意に解釈できる形で表現する。具体Wire Formatは詳細設計で確定する。
+
+### 11.2 予約Preview
+
+基本形を次とする。
+
+```text
+POST /api/me/reservations/preview
+```
+
+Self Scope原則に従い、対象本人を指定する `student_id` 等はRequestに含めない。Clientが指定する主な業務対象は `LessonSlot` の識別子とする。
+
+Serverは認証済みSessionから内部生徒IDを解決し、Preview時点の確定状態を用いて少なくとも次を評価する。
+
+- 対象生徒が現在予約操作可能であること
+- 対象月が公開済みであること
+- 対象Slotが現在予約可能であること
+- 信頼できるServer時刻でLesson開始前であること
+- 対象Slotに現在占有がないこと
+- 同一生徒・同一月の最新状態から新規予約のclassificationを算出できること
+- 新規予約によって既存未開始Reservationのclassificationが変化する場合、その影響差分を算出できること
+
+Previewは、少なくとも日時、新規予約のPreview時classification、`AC-003-021` に該当する既存Reservationの区分影響、およびConfirm時の再確認に必要なExpected State相当情報を画面へ提供できる形とする。
+
+### 11.3 予約確定
+
+基本形を次とする。
+
+```text
+POST /api/me/reservations
+```
+
+Requestは論理的に、対象 `LessonSlot` とPreviewで利用者が確認したExpected State相当情報を持つ。対象本人を指定する `student_id` は持たない。
+
+Reservation所有者は4.1のSelf Scope原則に従い、認証済みSessionから解決した内部生徒IDをServer側で設定する。
+
+Confirm時はPreview結果を正本として信用せず、`05_BookingAndConcurrency.md` に従いTransaction内で最新確定状態を再検証・再計算する。
+
+次のような重要状態がPreviewから変化している場合は予約を成立させず、原則 `409 Conflict` として最新Previewの再確認へ戻す。
+
+- 対象Slotの予約可否
+- 新規予約のclassification
+- 新規予約によって区分変更される既存未開始Reservationの対象集合
+- その既存Reservationの変更前後classification
+
+classificationは `standard → additional` と `additional → standard` の両方向について同じConflict Ruleを適用する。
+
+予約確定成功時は、新規Resource作成としてHTTP `201 Created` を基本とする。
+
+成功ResponseではDB更新件数ではなく、少なくともReservation識別子、Lesson日時、確定classification、現在のSlot状態、および同一Transactionでclassificationが変更された既存未開始Reservationの画面表示に必要な差分を返せる形とする。
+
+### 11.4 予約確定Conflict時の情報
+
+他予約または管理者変更等が先にCommitされていた場合は、先行Commitを優先する。
+
+Conflict Responseでは他生徒の情報を公開せず、生徒本人が再確認するために安全な最新Slot Viewおよび必要に応じて最新classification等を返せる形とする。
+
+例えば他生徒予約済みであれば `unavailable` であることは示してよいが、その予約者のStudent ID、Reservation ID、氏名等は返さない。
+
+### 11.5 生徒キャンセル
+
+基本形を次とする。
+
+```text
+POST /api/me/reservations/{reservationId}/cancel
+```
+
+生徒キャンセルは、初期基本設計では専用Preview APIを設けない。UI上で確認表示を行うことは妨げないが、予約確定のようなPreview / Confirmの2 API構成は必須としない。
+
+対象Reservationは4.1のSelf Scope原則に従い、認証済み生徒本人が操作可能なReservationであることをServer側で検証する。
+
+他生徒のReservation IDを指定した場合、他生徒Resourceの存在有無を不要に漏洩しないため、生徒APIでは本人の対象として存在しない場合と同様に扱うことを基本とする。具体的なApplication Error表現は詳細設計で確定する。
+
+本人Reservationについても、既に別種別でキャンセル済み、キャンセル可能期限外、先行する状態変更済み等で現在のCommandを成立させられない場合は、確定状態を上書きしない。
+
+成功Responseは、キャンセル後Reservation状態、現在のSlot View、および同一月でclassificationが変更された未開始Reservationの画面表示に必要な差分を返せる形とする。
+
+### 11.6 予約履歴
+
+基本形を次とする。
+
+```text
+GET /api/me/reservations
+```
+
+Self Scope原則に従い、対象本人を切り替える `student_id` Query Parameter等は設けない。
+
+予約履歴のApplication View Modelでは、業務上異なる概念を不用意に1つの状態へ統合しない。
+
+少なくとも次の概念を分離して表現できる形とする。
+
+```text
+reservationState
+  confirmed
+  student_cancelled
+  school_cancelled
+  system_cancelled
+
+attendanceState
+  absent / none
+
+classification
+  standard / additional / 対象外
+```
+
+UI向けに複合的な表示Labelへ変換することは許容するが、API内部でキャンセル・欠席・classification等の意味を失う形へ統合しない。
+
+### 11.7 生徒向け主要Flow
+
+主要Flowは次を基本とする。
+
+```text
+GET Schedule
+    ↓
+Slot選択
+    ↓
+POST Reservation Preview
+    ↓
+日時・新規classification・既存予約への区分影響を確認
+    ↓
+POST Reservation Confirm
+    ↓
+201 確定業務状態
+
+後日
+    ↓
+GET Reservations
+    ↓
+POST Reservation Cancel
+    ↓
+キャンセル後の確定業務状態
+```
+
+Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生徒Identityは4.1のSelf Scope原則を共通適用する。
+
+## 12. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -317,7 +483,7 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 
-## 12. 関連要求・方針
+## 13. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -325,10 +491,20 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - POL-006 ロール分離と最小権限
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
+- POL-011 セルフサービスを基本とし必要な利用支援を可能とする
 - POL-013 重要な管理操作の説明性と監査可能性
 - POL-014 利用者向けエラー情報の安全な抽象化
+- BR-050 予約即時確定
+- BR-051 二重予約禁止
+- BR-052 予約期限
+- BR-053 生徒キャンセル期限
+- BR-054 キャンセル後の枠
 - BR-055 追加レッスン事前表示
+- BR-056 月間標準回数
+- BR-057 追加レッスン分類
 - BR-058 自動再分類
+- BR-062 予約履歴
+- BR-066 予約状態と月間算入の分離
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
@@ -345,6 +521,7 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - REQ-309 標準／追加再分類
 - REQ-311 生徒削除
 - REQ-313 スクール都合キャンセル
+- REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-914 障害・エラー時利用者表示
 - REQ-940 監査Logging
@@ -352,9 +529,10 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 13. 設計判断記録
+## 14. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
+- 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
