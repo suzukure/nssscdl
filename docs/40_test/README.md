@@ -15,6 +15,7 @@
 
 - `01_TestPlan.md` — テスト計画、範囲、環境、データ、開始／終了基準、優先度
 - `02_FunctionalTestSpecification.md` — 機能要求に対するテストケース仕様
+- `02a_ReservationOwnershipTestSpecification.md` — 要求v1.5で追加された生徒本人予約の所有者同一性テスト
 - `03_NonFunctionalTestSpecification.md` — 非機能要求に対するテストケース仕様
 - `04_RequirementsTestTraceability.md` — REQ / AC とテストケースの対応、CON / OOS の確認方法
 
