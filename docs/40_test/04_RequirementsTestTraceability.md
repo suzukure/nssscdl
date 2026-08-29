@@ -14,8 +14,8 @@ POL/BRを本書へ重複転記しないことで、要求変更時の二重管�
 | 指標 | 値 |
 |---|---:|
 | 対象REQ | 63 |
-| 対象AC | 194 |
-| 機能TC | 102 |
+| 対象AC | 196 |
+| 機能TC | 104 |
 | 非機能TC | 41 |
 | AC Coverage | 100% |
 | AC未対応 | 0 |
@@ -50,6 +50,8 @@ POL/BRを本書へ重複転記しないことで、要求変更時の二重管�
 | AC-003-016 | `TC-F-003-05` |
 | AC-003-017 | `TC-F-003-05` |
 | AC-003-018 | `TC-F-003-05` |
+| AC-003-019 | `TC-F-003-06` |
+| AC-003-020 | `TC-F-003-07` |
 
 ### REQ-004 生徒キャンセル
 | AC | Test Case |
@@ -485,7 +487,7 @@ CON/OOSは正機能として新しい要求を作らず、Configuration/Static R
 | `TC-SG-CON-009` | CON-009 | Backup方式非固定 | Requirements review | 方式名そのものではなくREQ-909/910のRPO・世代・Restore能力で合否判定する。 | TC-NF-909-*, TC-NF-910-* |
 | `TC-SG-CON-010` | CON-010 | 通知Channel | Scope guard | 利用者通知ChannelがEmail/System内表示で、LINE/Facebook/SMS/Pushを初期機能として要求・提供していないことを確認する。 | TC-F-103-*, TC-F-110-01 |
 | `TC-SG-OOS-001` | OOS-001 | 決済・請求・会計 | Negative UI/API inspection | 予約/通知で料金・請求・決済・会計機能が初期リリースの業務フローに現れないことを確認する。 | TC-F-003-01, TC-F-101-01 |
-| `TC-SG-OOS-002` | OOS-002 | 管理者代理予約 | Negative authorization/UI inspection | A1が生徒本人の代理で新規個人Lesson予約を作成する機能を初期リリースで提供しないことを確認する。 | REQ-003は生徒予約として試験 |
+| `TC-SG-OOS-002` | OOS-002 | 管理者代理予約 | Negative authorization/UI inspection | A1が生徒本人の代理で新規個人Lesson予約を作成する機能を初期リリースで提供しないことを確認する。 | REQ-003は認証済み生徒本人の自己予約として試験し、TC-F-003-06/07で所有者同一性を確認 |
 | `TC-SG-OOS-003` | OOS-003 | 専用振替 | Negative workflow inspection | Atomicな予約変更/振替機能を提供せず、Cancelと新規予約が独立操作であることを確認する。 | TC-F-004-*, TC-F-003-* |
 | `TC-SG-OOS-004` | OOS-004 | 任意時刻枠 | Negative UI/API inspection | 管理者が任意開始・終了時刻の個人Lesson枠を作成できる初期機能がないことを確認する。 | TC-SG-CON-008 |
 | `TC-SG-OOS-005` | OOS-005 | Group Lesson内容管理 | Negative UI/API inspection | 参加者・定員・申込・出欠・料金・内容・参加者通知の管理機能を提供しないことを確認する。 | TC-F-006-02 |
