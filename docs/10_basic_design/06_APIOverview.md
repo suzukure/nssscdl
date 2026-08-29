@@ -68,13 +68,26 @@ QueryはResource / View Model指向とする。
 
 したがって、`StudentReservation` と `SlotOccupancy` をClientが個別に作成・更新するAPIは提供しない。
 
-## 4. Role境界
+## 4. Identity / Role境界
 
-### 4.1 生徒本人向けAPI
+### 4.1 生徒本人APIのSelf Scope原則
 
 生徒自身を対象とするAPIは `/api/me/...` を基本名前空間とする。
 
-生徒本人を対象とするCommand / Queryでは、対象 `student_id` をClient入力から決定せず、認証済みSessionのIdentityからServer側で決定する。
+`/api/me/...` 配下のCommand / Queryでは、**対象となる生徒本人をClient入力で指定させず、認証済みSessionからServer側で一意に解決する**ことを共通原則とする。
+
+この原則は予約確定だけでなく、生徒本人のSchedule表示、予約Preview、予約履歴、キャンセル、プロフィール等のSelf Scope操作へ共通に適用する。
+
+具体的には次を守る。
+
+- Self ScopeのRequest Contractに、対象本人を選択するための `student_id` を持たせない。
+- 氏名、連絡先メール、Google IDその他の生徒識別情報を、対象本人を決定する正として受け取らない。
+- Clientから送られたRole文字列等を、認証済みIdentity / Roleの代替として信用しない。
+- Reservation作成時の `StudentReservation.student_id` は、認証済みSessionから解決した内部生徒IDをServer側で設定する。
+- Reservation ID等の業務Resource IDをClientが指定するAPIでは、そのResourceが認証済み生徒本人の対象であることをServer側で必ず検証する。
+- Clientが他生徒のID等を推測・改変しても、他生徒を対象とする参照・更新へ切り替わらないAPI形状と認可Ruleにする。
+
+これにより `BR-068` および `REQ-003 / AC-003-019, AC-003-020` をAPI境界で実現する。
 
 例:
 
@@ -86,7 +99,7 @@ POST /api/me/reservations
 POST /api/me/reservations/{reservationId}/cancel
 ```
 
-上記はAPI形状の基本例であり、全Endpointの最終一覧は後続設計で確定する。
+上記はAPI形状の基本例であり、全Endpointの最終一覧は後続設計で確定する。個別Endpoint設計では、特別な理由がない限り本節のSelf Scope原則を参照し、`student_id` 非入力方針を重複定義しない。
 
 ### 4.2 管理者向けAPI
 
@@ -273,6 +286,8 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 
 本書では、APIが認証済みIdentityとRoleをServer側で解決し、その情報を用いて認可するところまでを原則として定義する。
 
+生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、本節では重複定義しない。
+
 以下は後続の認証・Session基本設計で確定する。
 
 - Session保存方式
@@ -283,8 +298,6 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - Google OAuth Flow詳細
 - Magic Link Flow詳細
 - Session失効・更新方式
-
-APIはClientから送られた `student_id` やRole文字列を認証Identityの代替として信用しない。
 
 ## 11. 詳細設計へ送る事項
 
@@ -317,6 +330,8 @@ APIはClientから送られた `student_id` やRole文字列を認証Identityの
 - BR-055 追加レッスン事前表示
 - BR-058 自動再分類
 - BR-067 未来Slotの現在予約状態の一貫性
+- BR-068 生徒本人予約の所有者同一性
+- BR-090 内部生徒ID
 - BR-132 監査
 - BR-133 利用者向けエラー表現
 - REQ-001 初期画面・スケジュール確認
@@ -335,8 +350,12 @@ APIはClientから送られた `student_id` やRole文字列を認証Identityの
 - REQ-940 監査Logging
 - CON-001 Cloudflare基盤
 - CON-006 初期規模
+- OOS-002 管理者代理予約
 
 ## 13. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
+- 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
+- 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
+- `REQ-003 / AC-003-021` に従い、予約Previewでは新規予約による既存未開始Reservationのclassification影響差分を最終確定前に表示可能な形で返す。
