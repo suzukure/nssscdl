@@ -117,7 +117,7 @@ Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Rul
 
 主な対象:
 
-- 予約確定前の日時・現在classification確認
+- 予約確定前の日時・新規予約classification・既存未開始Reservationへの区分変更影響確認
 - Schedule変更時の既存予約への影響確認
 - 月間標準回数変更時の再分類影響確認
 - 生徒削除時の将来予約取消等の影響確認
@@ -136,6 +136,7 @@ PreviewからCommitまでに以下のような重要状態が変化した場合�
 - 対象Slotの予約可否
 - 対象Reservationの状態
 - standard / additional のclassification
+- 新規予約に伴って区分変更される既存未開始Reservationの対象集合または変更前後のclassification
 - 月間標準回数または算入状態
 - Schedule変更対象集合
 - 生徒削除対象となる将来Reservation集合
@@ -150,6 +151,22 @@ Previewは業務状態を変更しないQueryとして扱う。
 ただし、複雑な入力Bodyを必要とする場合はHTTP Methodとして `POST` を使用してよい。
 
 したがって、本設計では「POST = Command」とは定義しない。業務状態を変更するかどうかでQuery / Commandを区別する。
+
+### 5.4 予約Previewの区分影響差分
+
+`REQ-003 / AC-003-021` に従い、予約Previewでは新規予約自身のclassificationだけでなく、その予約を追加した場合に区分が変化する既存の未開始Reservationがある場合、その影響差分も返す。
+
+利用者が最終確定前に直接影響を理解できるよう、少なくとも次を画面表示可能なApplication View Modelとして表現する。
+
+- 影響する既存ReservationのLesson日時
+- 変更前classification
+- 変更後classification
+
+影響がない場合は、区分変更対象がないことを表現できればよく、空集合等の具体Schemaは詳細設計で確定する。
+
+生徒向けPreviewに含める影響Reservationは認証済み生徒本人のReservationに限定し、他生徒のStudent ID、Reservation ID、氏名、メール等を返さない。
+
+Confirm時には、新規予約自身のclassificationだけでなく、Previewで提示した既存Reservationの区分変更対象集合と変更前後も最新確定状態から再計算する。Previewから重要な影響差分が変化している場合は予約を成立させず、Conflictとして最新Previewの再確認へ戻す。
 
 ## 6. Commit時再検証とConflict
 
@@ -178,6 +195,7 @@ Clientが直ちに確定状態を表示できるよう、Commit後の業務上�
 - 確定Reservation識別子
 - Lesson日時
 - 確定時点の実効classification
+- 同一月でclassificationが変更された既存未開始Reservationの一覧または表示に必要な差分
 - 画面更新に必要な現在状態
 
 ### 生徒キャンセル
@@ -290,11 +308,14 @@ APIはClientから送られた `student_id` やRole文字列を認証Identityの
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
+- POL-005 通知は即時性、システム画面は確実性
 - POL-006 ロール分離と最小権限
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-013 重要な管理操作の説明性と監査可能性
 - POL-014 利用者向けエラー情報の安全な抽象化
+- BR-055 追加レッスン事前表示
+- BR-058 自動再分類
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-132 監査
 - BR-133 利用者向けエラー表現
@@ -303,6 +324,7 @@ APIはClientから送られた `student_id` やRole文字列を認証Identityの
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
+- REQ-104 標準／追加区分変更通知
 - REQ-301 月間スケジュール管理
 - REQ-307 月間標準回数設定
 - REQ-309 標準／追加再分類
@@ -318,4 +340,3 @@ APIはClientから送られた `student_id` やRole文字列を認証Identityの
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
-- 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
