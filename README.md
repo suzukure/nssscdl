@@ -10,6 +10,7 @@ Net Shogi School向けのスケジュールシステムです。
 - `docs/10_basic_design/` — 基本設計 / C4 Level 2
 - `docs/20_detailed_design/` — 詳細設計 / C4 Level 3
 - `docs/30_operations/` — 運用・復旧手順
+- `docs/40_test/` — 要求ベースのテスト計画・テスト仕様・トレーサビリティ
 - `docs/adr/` — Architecture Decision Record（ADR）
 - `docs/diagrams/` — 共通図表
 - `src/` — アプリケーションソースコード
@@ -24,3 +25,4 @@ Net Shogi School向けのスケジュールシステムです。
 ChatGPTやローカルワークスペースは作業領域として利用できるが、このリポジトリへCommitされた内容をプロジェクトの正式な記録とする。
 
 要求仕様のベースラインは `docs/00_requirements/` に格納する。
+要求ベースのテスト仕様は `docs/40_test/` に格納し、`POL → BR → REQ → AC → TC` のトレーサビリティを維持する。
