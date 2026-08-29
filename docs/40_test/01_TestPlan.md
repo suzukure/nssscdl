@@ -5,9 +5,9 @@
 | 項目 | 内容 |
 |---|---|
 | 対象システム | Net Shogi School レッスン予約システム |
-| 要求ベースライン | `docs/00_requirements/` v1.5 |
-| ベースライン確認日 | 2026-08-29 |
-| Git基準 | `main` commit `df0752ee8ee69752f061304879b08db4fe6dd8d2` 時点の要求仕様 |
+| 要求ベースライン | `docs/00_requirements/` v1.7 |
+| ベースライン確認日 | 2026-08-30 |
+| Git基準 | `main` commit `556f811a8582f67badfb6b1c87568552bec67b6d` 時点の要求仕様 |
 | 参照標準 | ISO/IEC/IEEE 29119-3:2021（Test documentation） |
 | テストレベル | System Test / Acceptance Test を中心とし、必要に応じIntegration / Operational Testを含む |
 | テスト方式 | Requirements-based, risk-based, black-box |
@@ -20,6 +20,8 @@
 - 時刻境界・状態遷移の正しさ
 - 予約、キャンセル、スケジュール変更の競合整合性
 - 生徒本人予約の所有者同一性とクライアント入力による予約者差し替え防止
+- 新規予約確定前に、既存の未開始Reservationへ生じる標準／追加区分の直接影響を説明できること
+- 複数Schedule変更が競合で全体未適用となる場合に、検出できた競合対象・業務上の理由・再確認に必要な最新状態を管理者へ説明できること
 - 標準／追加分類の非遡及性と再計算
 - 認証・権限・個人情報保護
 - 通知失敗と業務状態の分離
@@ -48,7 +50,7 @@
 
 | 優先度 | 意味 | 主な対象 |
 |---|---|---|
-| P0 | 失敗時に予約整合性、認証、PII、復旧性へ重大影響 | 予約競合、予約所有者同一性、キャンセル境界、未来枠整合性、分類、認証、削除、RPO/Backup |
+| P0 | 失敗時に予約整合性、認証、PII、復旧性へ重大影響 | 予約競合、予約所有者同一性、予約時区分影響、Schedule一括変更競合、キャンセル境界、未来枠整合性、分類、認証、削除、RPO/Backup |
 | P1 | 主要業務の利用不能・誤通知・管理事故につながる | Schedule変更、通知、Suspension、監査、Error表示、Performance |
 | P2 | 補助的品質・運用性 | 表示差異、補助指標、文言、Provider交換性等 |
 
@@ -103,6 +105,7 @@
 - 自動分類基本形: `R1..R3=standard`, `R4..R5=additional`
 - 開始済みstandard数 `C` を変化させ、`max(N-C, 0)` を検証する
 - ClassificationOverride有無、月間算入除外有無を組み合わせる
+- 予約Preview試験では、既存未開始Reservation `R2 < R3 < R4` がstandardの状態に、より早い `R1` を新規予約して既存 `R4` がstandard→additionalとなる直接影響を再現する
 
 ### 6.4 外部依存
 
@@ -133,7 +136,7 @@ Browser Matrixは要求の「現行Major＋1つ前」を実行時点で確定し
 ## 9. Exit Criteria
 
 - 全REQに1件以上のテストケースが存在する
-- 全ACが `04_RequirementsTestTraceability.md` で1件以上のTCへ対応する
+- 全ACが `04_RequirementsTestTraceability.md` および要求変更追補Traceabilityで1件以上のTCへ対応する
 - P0: 100% Pass
 - P1: 原則100% Pass。未解決はRelease判断で明示承認
 - Critical / Major defectが未解決で残らない
