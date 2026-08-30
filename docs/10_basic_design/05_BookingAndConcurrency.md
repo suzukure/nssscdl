@@ -347,15 +347,82 @@ Purge用Entity、列、Scheduled Job等は認証・アカウント設計／詳�
 
 整合性修復中にも即時の利用停止が必要な場合は、生徒削除と混同せず既存のSecurity Suspensionを封じ込め手段として使用できる。
 
-## 10. AuditLog
+## 10. 分類管理Command
 
-### 10.1 成功Commandと同一Transaction
+本節は `04_ReservationModel.md` の月間算入・自動分類・Classification Overrideモデルを、重要Write CommandのTransaction境界として確定する。
+
+月間標準回数変更と月間回数除外設定・解除は自動再分類の入力を変える。一方、Classification Overrideは対象Reservationの実効classificationだけを変更し、他Reservationのautomatic_classificationを変更しない。この差異をTransactionでも維持する。
+
+### 10.1 月間標準回数変更
+
+月間標準回数変更では、少なくとも次を1つのTransactionでCommitする。
+
+- 対象生徒・対象月の `StudentMonthlyLessonConfig.standard_count` の設定または変更
+- 同一生徒・同一月の消費済み自動標準枠の再評価
+- 必要な未開始・算入対象Reservationの再分類
+- 再分類対象Reservationの `automatic_classification` / 実効classification更新
+- AuditLog
+- `REQ-104` に該当する区分変更NotificationIntent
+
+Commit時は最新のReservation状態、欠席、`ReservationMonthlyCountOverride`、標準回数、Server Commit基準時刻によるLesson開始境界等を再検証する。
+
+Previewで管理者が確認した影響Reservation集合または変更前後classificationがCommit直前の最新状態と重要に異なる場合は、変更を成立させずConflictとして再確認へ戻す。
+
+開始済みReservationの `automatic_classification` は変更しない。
+
+### 10.2 月間回数除外の設定・解除
+
+月間回数除外の設定または解除では、少なくとも次を1つのTransactionでCommitする。
+
+- `ReservationMonthlyCountOverride` の設定または解除
+- 対象Reservationの最新条件からの実効算入可否再評価
+- 対象Reservationの実効classification更新
+- 同一生徒・同一月の消費済み自動標準枠の再評価
+- 必要な未開始・算入対象Reservationの再分類
+- 再分類対象Reservationの `automatic_classification` / 実効classification更新
+- AuditLog
+- `REQ-104` に該当する区分変更NotificationIntent
+
+除外設定時は対象Reservationを月間算入対象外とし、`classification = NULL` とするが、`automatic_classification` は保持する。
+
+除外解除は、対象Reservationを無条件に算入対象へ戻す処理ではない。`ReservationMonthlyCountOverride` を解除した後、Reservationのstatus、欠席その他の算入条件を含む最新確定状態から実効算入可否を再評価する。
+
+解除後もキャンセル済み・欠席等により算入対象外であれば `classification = NULL` を維持する。解除後に算入対象となる場合は、対象Reservation自身には保持済み `automatic_classification` と必要に応じ保持済み `ReservationClassificationOverride` を適用し、消費済み自動標準枠の変化は未開始Reservationの再分類にだけ反映する。
+
+Commit時は対象Reservationの算入条件、標準回数、Lesson開始境界、影響する未開始Reservation集合と変更前後classificationを最新状態で再検証する。Preview時の重要影響と異なる場合はConflictとして再確認へ戻す。
+
+### 10.3 Classification Override
+
+Classification Overrideの設定・変更・解除では、少なくとも次を同一Transactionで整合させる。
+
+- `ReservationClassificationOverride` の設定・変更・解除
+- 対象Reservationの実効classification更新
+- AuditLog
+- `REQ-104` に該当する区分変更NotificationIntent
+
+対象Reservationが月間算入対象である場合、Override設定・変更時はOverride値を実効classificationへ反映する。Override解除時は保持済み `automatic_classification` を実効classificationへ戻す。
+
+既存Overrideを持つReservationがキャンセル、欠席、月間回数除外等によって分類対象外となっている場合は、Override自体を明示解除まで保持できるが、分類対象外の間は `classification = NULL` を維持する。
+
+Classification Overrideの設定・変更・解除だけを理由に、他Reservationのautomatic_classification、消費済み自動標準枠、割当順を変更しない。
+
+専用Preview APIを設けない場合でも、対象Reservationの最新ライフサイクル・算入状態・classification等をCommit時に再検証し、管理者が確認した状態からCommandの意味または実効結果が重要に変化している場合は確定状態を無言で上書きしない。
+
+### 10.4 通知境界
+
+分類管理Commandによって実効classificationが `standard → additional` または `additional → standard` へ変化したReservationには `REQ-104` に従うNotificationIntentを生成する。
+
+月間回数除外等によりstandard / additionalから分類対象外へ変化すること自体は、`REQ-104` のstandard / additional区分変更として機械的に通知対象へ含めない。
+
+## 11. AuditLog
+
+### 11.1 成功Commandと同一Transaction
 
 成功した重要業務Commandでは、業務状態変更と `AuditLog(success)` を同一Transactionに含める。
 
 AuditLog作成失敗時は重要業務Command全体を正常Commitしない。
 
-### 10.2 監査単位
+### 11.2 監査単位
 
 監査単位はSQL文やDB行ではなく、意味のある業務Commandとする。
 
@@ -371,7 +438,7 @@ Audit Eventは少なくとも次を必要最小限で表現できるようにす
 
 再分類や複数system cancellation等は元Commandから追跡可能にする。
 
-### 10.3 代表的な同一Transaction監査対象
+### 11.3 代表的な同一Transaction監査対象
 
 少なくとも次を対象とする。
 
@@ -388,13 +455,13 @@ Audit Eventは少なくとも次を必要最小限で表現できるようにす
 - Security Suspension等の重要管理Command
 - Integrity Incidentの明示Repair Command
 
-### 10.4 Conflict・拒否
+### 11.4 Conflict・拒否
 
 業務状態を変更しないConflictや重要な拒否は、必要なものだけを成功Transactionとは別のAudit記録として永続化する。
 
 拒否Audit失敗によって利用者結果をSuccessへ変更したり、業務状態を書き換えたりしない。監査書込み失敗自体は技術Log / Monitoring対象とする。
 
-### 10.5 Business Auditと技術Log
+### 11.5 Business Auditと技術Log
 
 - Business Audit: 重要業務操作の正式監査記録。原則1年保持。
 - Technical / Error / Security Log: 例外、Provider失敗、診断情報等。原則30日程度。
@@ -403,21 +470,21 @@ Audit Eventは少なくとも次を必要最小限で表現できるようにす
 
 AuditLogは通常Application CommandからAppend-onlyとし、保持期限またはPII Purge以外で過去の監査事実を上書きしない。氏名・メール等を必要なく複製せず、PII削除要求を保持期間より優先する。
 
-## 11. NotificationIntentと外部送信
+## 12. NotificationIntentと外部送信
 
-### 11.1 通知義務を同一Transactionで永続化する
+### 12.1 通知義務を同一Transactionで永続化する
 
 業務Commandの正常Commitによって通知義務が発生する場合、その「送るべき通知が存在する」という内部事実を `NotificationIntent` として、業務状態および必要なAuditLogと同一Transactionに含める。
 
 NotificationIntent作成失敗時は、その通知を必須とする業務Command全体を正常Commitしない。
 
-### 11.2 外部送信はCommit後
+### 12.2 外部送信はCommit後
 
 Resend等の外部Providerへの実送信はD1 Transactionに含めず、必ず正常Commit後に行う。Commit前にメールを送信しない。
 
 外部送信失敗、Timeout、Provider障害等によって確定済み業務状態をRollbackしない。
 
-### 11.3 IntentとDeliveryを分離する
+### 12.3 IntentとDeliveryを分離する
 
 ```text
 NotificationIntent
@@ -429,7 +496,7 @@ NotificationDelivery
 
 Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で扱い、Provider固有情報をReservation等のDomain Entityへ直接混在させない。
 
-### 11.4 通知先
+### 12.4 通知先
 
 予約確認、区分変更、スクール都合キャンセル等の通常予約系Intentは、`recipient_student_id` 等の内部識別子による論理的通知先を基本とし、メールアドレスを必要なくIntentへ複製しない。
 
@@ -437,23 +504,23 @@ Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で
 
 旧連絡先へのSecurity Notice等、特定メールアドレス自体に業務意味がある通知は、認証・通知設計で宛先Snapshot等を別途定義する。
 
-### 11.5 複数Intent
+### 12.5 複数Intent
 
 1つの業務Commandから複数通知義務が発生する場合、必要なNotificationIntentを同じTransactionで原子的に生成する。
 
 対象Intentの一部だけ欠落した状態を正常Commitとして許容しない。
 
-### 11.6 Retry
+### 12.6 Retry
 
 一時的送信失敗や再試行のたびに新しいNotificationIntentを作成せず、同一Intentに対するDelivery Attemptとして扱う。
 
 Intent ID等から安定した冪等性識別子を導出できるようにする。Provider受理後はApplication Workerから盲目的に同一メールを重複再送せず、最終Permanent Failureは通知失敗管理対象とする。
 
-## 12. 未来Slotの現在状態Invariant
+## 13. 未来Slotの現在状態Invariant
 
 本節は `BR-067 未来枠の現在予約状態の一貫性` の現在の実現設計である。将来データモデルを変更してもBR-067自体は維持する。
 
-### 12.1 現在状態の正本
+### 13.1 現在状態の正本
 
 「現在予約可能か」「何によって占有されているか」「生徒予約なら誰か」は `LessonSlot + SlotOccupancy` を基点に判定する。
 
@@ -468,7 +535,7 @@ LessonSlot
 
 Reservation履歴一覧から現在占有を推測しない。
 
-### 12.2 常時成立させるInvariant
+### 13.2 常時成立させるInvariant
 
 未来Slotでは少なくとも次を成立させる。
 
@@ -481,7 +548,7 @@ Reservation履歴一覧から現在占有を推測しない。
 7. `LessonSlot.availability_status = disabled` では現在占有を残さない。
 8. `enabled + SlotOccupancyなし` でも、公開状態・Server時刻等の他条件を満たす場合にのみ予約可能。
 
-### 12.3 Invariant違反時はFail Closed
+### 13.3 Invariant違反時はFail Closed
 
 永続化済みInvariant違反を検出した場合、矛盾を都合よく解釈して新規予約を成立させない。
 
@@ -489,7 +556,7 @@ Reservation履歴一覧から現在占有を推測しない。
 
 通常の利用者競合と永続化済みInvariant違反を区別する。後者を通常Commandの副作用として無言で自動修復しない。
 
-### 12.4 検知経路はCommand Guardと定期Integrity Scanの二系統とする
+### 13.4 検知経路はCommand Guardと定期Integrity Scanの二系統とする
 
 Invariant違反は、予約・キャンセル等の重要Command内でのGuardに加え、Scheduled Handlerによる定期Integrity Scanでも検知する。
 
@@ -505,7 +572,7 @@ Scheduled Handler
 
 Commandを誰も実行しないSlotでも不整合を検知できることを目的とする。
 
-### 12.5 Integrity IncidentはRollback後に独立して永続化する
+### 13.5 Integrity IncidentはRollback後に独立して永続化する
 
 永続化済みInvariant違反を検出した場合、論理的な `IntegrityIncident` としてD1上で追跡可能にする。
 
@@ -534,7 +601,7 @@ Rollback後
 
 Incident記録自体が失敗しても、利用者へのFail Closed判定をSuccessへ変更しない。この場合はTechnical Log / Monitoringをfallbackとする。
 
-### 12.6 初期Invariant Code
+### 13.6 初期Invariant Code
 
 初期リリースでは少なくとも次の内部異常コードを定義する。
 
@@ -549,7 +616,7 @@ Incident記録自体が失敗しても、利用者へのFail Closed判定をSucc
 
 これらは保守用内部コードであり、利用者画面や公開APIへ直接表示しない。詳細設計でコードを追加する場合も既存コードの意味を安定させる。
 
-### 12.7 利用者向けはIntegrity Anomalyとして503系へ抽象化する
+### 13.7 利用者向けはIntegrity Anomalyとして503系へ抽象化する
 
 永続化済みInvariant違反は、先行Commitによる通常競合ではないため `409 Conflict` として扱わない。
 
@@ -559,7 +626,7 @@ Incident記録自体が失敗しても、利用者へのFail Closed判定をSucc
 
 内部Invariant Code、対象内部ID、SQL、Stack Trace等はPOL-014 / BR-133 / REQ-914に従い露出しない。
 
-### 12.8 Fail Closed範囲は影響対象を最小単位とする
+### 13.8 Fail Closed範囲は影響対象を最小単位とする
 
 1件のSlot不整合だけを理由に予約機能全体を自動停止しない。
 
@@ -573,7 +640,7 @@ Incident記録自体が失敗しても、利用者へのFail Closed判定をSucc
 
 自動的な全サービス停止の具体Thresholdは詳細設計・運用設計で定義する。
 
-### 12.9 Incidentと通知は重複集約する
+### 13.9 Incidentと通知は重複集約する
 
 同一の次の組をIntegrity Incidentのfingerprintとする。
 
@@ -594,7 +661,7 @@ anomaly_code
 
 これはBR-110およびREQ-942の重大障害監視・集約通知方針に従う。
 
-### 12.10 修復は明示的なRepair Commandとして行う
+### 13.10 修復は明示的なRepair Commandとして行う
 
 通常の予約・キャンセルCommandの副作用としてInvariant違反を無言で自動修復しない。
 
@@ -614,7 +681,7 @@ anomaly_code
 
 直接D1へ手作業SQLを流すことを通常の修復経路とせず、保守用Commandまたは検証済みScriptを通じて修復し、誰が・いつ・何を・なぜ修復したかをAuditLogで追跡可能にする。
 
-### 12.11 保持方針
+### 13.11 保持方針
 
 Integrity IncidentとRepair Auditの保持を分離する。
 
@@ -623,7 +690,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - Repair Commandの正式AuditLog: REQ-940に従い原則1年保持する。
 - PII削除要求は上記保持期間より優先する。
 
-## 13. 関連要求・方針
+## 14. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-002 無料枠優先・Must要件優先
@@ -644,13 +711,14 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - BR-110 重大障害通知
 - BR-111〜BR-116 通知
 - BR-123〜BR-125 生徒削除時処理
+- BR-131 管理操作説明
 - BR-132 監査
 - BR-133 利用者向けエラー表現
 - REQ-002 / REQ-003 / REQ-004 予約・キャンセル
 - REQ-101〜REQ-105 通知
 - REQ-103 / REQ-104 / REQ-110 通知・システム表示
 - REQ-207 Session管理
-- REQ-302 / REQ-307 / REQ-309 / REQ-310 / REQ-313 / REQ-315 / REQ-316 / REQ-317 管理操作
+- REQ-302 / REQ-307 / REQ-308 / REQ-309 / REQ-310 / REQ-313 / REQ-315 / REQ-316 / REQ-317 管理操作
 - REQ-311 / REQ-312 生徒削除
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
@@ -662,7 +730,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - REQ-951 Provider分離
 - CON-001 Cloudflare Platform
 
-## 14. 詳細設計へ送る事項
+## 15. 詳細設計へ送る事項
 
 `OI-BD-006` の基本設計論点はすべて確定済みとする。
 
@@ -671,17 +739,19 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 個別DDL、Index、具体的Guard SQL、CTE
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
+- 分類管理Commandの具体的Guard SQL、集合再分類SQL、Expected Stateの具体表現
 - Integrity Scanの具体Cron式、分割・Query最適化
 - Integrity Incidentの物理Schema・Index
 - 重大Incidentへ昇格する具体Threshold
 - Repair Command / Scriptの具体実装・権限制御・Runbook
 
-## 15. 設計判断記録
+## 16. 設計判断記録
 
 - スクール都合キャンセル後のSlot状態は2026-08-28に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
 - 生徒削除起因system cancellationの即時Transaction境界、PII Purge分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
+- 月間標準回数変更、月間回数除外設定・解除、Classification OverrideのTransaction境界、最新状態再検証、再分類・AuditLog・NotificationIntentの同一Commit方針は2026-08-30に確定した。月間回数除外解除は無条件な再算入ではなく、Override解除後に最新の算入条件から実効算入可否を再評価する。
 - 未来Slotの現在占有Invariant、ADR-002参照方向、Fail Closed方針は2026-08-28に確定した。
 - 未来Slot一貫性は要求仕様v1.3の `BR-067` として要求化済みである。
 - AuditLogを成功した重要業務Commandと同一Transactionへ含め、監査単位を業務Commandとし、Conflict監査を分離する方針は2026-08-28に確定した。
