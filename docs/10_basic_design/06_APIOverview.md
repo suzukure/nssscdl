@@ -123,6 +123,7 @@ POST /api/admin/schedule-months/{month}/generate
 POST /api/admin/schedule-months/{month}/changes/preview
 POST /api/admin/schedule-months/{month}/changes
 POST /api/admin/schedule-months/{month}/publish
+POST /api/admin/reservations/{reservationId}/school-cancel/preview
 POST /api/admin/reservations/{reservationId}/school-cancel
 ```
 
@@ -142,6 +143,7 @@ Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Rul
 - Schedule変更時の既存予約への影響確認
 - 月間標準回数変更時の再分類影響確認
 - 月間回数除外の設定・解除時の再分類影響確認
+- スクール都合キャンセル時の取消内容・取消後Slot・再分類影響・事後登録確認
 - 生徒削除時の将来予約取消等の影響確認
 - その他 `POL-013` により重要な影響説明が必要な管理操作
 
@@ -161,6 +163,7 @@ PreviewからCommitまでに以下のような重要状態が変化した場合�
 - 新規予約に伴って区分変更される既存未開始Reservationの対象集合または変更前後のclassification
 - 月間標準回数または算入状態
 - Schedule変更対象集合
+- スクール都合キャンセル対象Reservationの取消状態・欠席状態・再分類影響
 - 生徒削除対象となる将来Reservation集合
 - その他Previewで明示した主要影響
 
@@ -248,6 +251,14 @@ Clientが直ちに確定状態を表示できるよう、Commit後の業務上�
 
 - 適用済み変更結果
 - 影響した予約・Slotの確定状態
+
+### スクール都合キャンセル
+
+- 対象Reservationの確定した `school_cancelled` 状態
+- 通常取消／事後登録の別
+- 取消確定時刻
+- キャンセル後のSlot状態
+- 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
 
 Responseは内部DB Schemaの変更へ不必要に依存しないApplication View Modelとする。
 
@@ -720,7 +731,123 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - 同一Transactionで区分が変化した未開始ReservationのLesson日時と変更前後classification
 - 最新状態表示に必要な情報
 
-## 14. 詳細設計へ送る事項
+## 14. 管理者向けスクール都合キャンセル単独API基本形
+
+本節は `OI-BD-009` で確定した、Schedule変更に内包されないReservation単独のスクール都合キャンセルAPI基本形を示す。
+
+Schedule Change Setに伴うschool cancellationも本節と同じDomain Rule・Transaction原則を共有するが、Schedule変更を原因とする場合は12.5のCommand境界を正とする。
+
+### 14.1 主要EndpointとPreview / Confirm
+
+基本形を次とする。
+
+```text
+POST /api/admin/reservations/{reservationId}/school-cancel/preview
+POST /api/admin/reservations/{reservationId}/school-cancel
+```
+
+`REQ-313 / AC-313-008, AC-313-009` および `BR-131` に従い、単独スクール都合キャンセルはPreview / Confirm Patternを適用する。
+
+Previewでは少なくとも次を管理者が確認できる形とする。
+
+- 対象ReservationのLesson日時、生徒、現在のReservation状態、現在の実効classification
+- `REQ-313` の理由カテゴリ、補足、必要なPII注意表示
+- 通常のスクール都合キャンセルか事後登録か
+- 対象Reservationが月間回数から除外され「分類対象外」になること
+- キャンセル後のSlot状態または事後登録時のSlot取扱い
+- 同一生徒・同一月で区分が変化する未開始ReservationのLesson日時、変更前classification、変更後classification
+- 生徒へスクール都合キャンセル通知が行われること。事後登録では事後登録であることが通知されること
+- Confirm時の再確認に必要なExpected State相当情報
+
+`reason_category = その他` の場合に補足を必須とし、補足入力欄には不要なPIIを書かないよう注意を表示する。
+
+### 14.2 通常取消と事後登録の判定
+
+通常取消／事後登録の別はClientから送られた種別文字列を正本にせず、同一Commandで用いる信頼できるServer Commit基準時刻 `T` とLesson開始時刻からServer側で判定する。
+
+```text
+T < Lesson.start_time
+  → 通常のスクール都合キャンセル
+
+T >= Lesson.start_time
+  → 事後スクール都合キャンセル
+```
+
+`BR-063 / AC-313-005` に従い、スクール都合キャンセルは原則Lesson開始前に行う。Lesson開始時刻以降は、実際にスクール都合でLessonが実施されず、緊急事情等により当時の操作ができなかった場合の事後登録として扱う。
+
+システムは「実際にLessonが実施されなかった」という業務事実を自動判定しない。事後登録のPreview / Confirmでは、その事実を管理者が明示的に確認して確定する。これはClient入力を自動事実判定の正本とすることを意味せず、管理者による業務判断としてAuditLogから追跡可能にする。
+
+初期リリースでは事後登録に固定日数の期限を設けない。ただし対象は、システム上参照可能で、Commit時点でも現在未取消の `confirmed` Reservationに限定する。
+
+### 14.3 キャンセル後Slot状態
+
+Lesson開始前の通常取消では、取消だけを理由にSlotを暗黙の空き状態へ戻さない。管理者がPreviewで確認した業務目的に応じ、少なくとも次のいずれかへ明示的に確定する。
+
+1. `disabled + occupancyなし`
+2. `enabled + AdminHold等の別占有`
+3. 明示的に再開放した `enabled + occupancyなし`
+
+AdminHold等の別占有を同時に成立させる場合は、Schedule / Occupancy側の既存Domain Ruleと同一Transactionで整合させる。
+
+Lesson開始時刻以降の事後登録では `AC-313-006` に従い、対象Slotを再開放しない。元ReservationによるOccupancyは終了するが、school cancellationだけを理由に過去・開始済みSlotを予約可能状態へ戻す操作を行わない。Slotの `availability_status` は、別の明示的なSchedule変更を同時に行う場合を除き、事後キャンセルだけを理由に変更しない。新規予約可否はServer時刻の開始境界により成立しない。
+
+### 14.4 欠席との関係
+
+`AC-313-007` に従い、対象Reservationに欠席が記録済みの場合はschool cancellation Commandを成立させない。
+
+管理者には、先に欠席解除Commandを明示的に実行する必要があることを案内する。
+
+```text
+欠席記録あり
+  → school-cancel Preview / Confirm 不成立
+  → 欠席を明示解除
+  → school-cancel Previewを再実行
+```
+
+school cancellationの副作用として `ReservationAbsence` を暗黙に削除・解除しない。
+
+### 14.5 Confirm時再検証とTransaction
+
+ConfirmではPreviewを正本とせず、Transaction内で少なくとも次を最新状態から再検証する。
+
+- 対象Reservationが現在も未取消の `confirmed`
+- 欠席が未設定
+- Server Commit基準時刻 `T` に基づく通常取消／事後登録の別
+- 対象ReservationとSlotOccupancyの整合
+- 通常取消で選択したキャンセル後Slot状態が現在も成立可能
+- 月間算入状態・標準回数・開始境界
+- 影響する未開始Reservation集合と変更前後classification
+
+Preview時から対象Reservationの状態、欠席、通常／事後の別、Slot状態、再分類影響等の重要な確認内容が変化している場合は、確定状態を無言で上書きせず原則 `409 Conflict` として再Previewへ戻す。
+
+正常Commitでは `05_BookingAndConcurrency.md` を正として、少なくとも次を1つの原子的業務Transaction境界で整合させる。
+
+- `StudentReservation.status = school_cancelled`
+- `cancelled_at = T`
+- `SchoolCancellationDetail`
+- 対象Reservationの `classification = NULL`、`automatic_classification` は保持
+- 元Reservationの `SlotOccupancy` 終了
+- 通常取消なら明示されたキャンセル後Slot状態
+- 事後登録なら14.3の「再開放しない」取扱い
+- 同一生徒・同一月の必要な未開始Reservation再分類
+- `AuditLog`
+- アプリ内未確認通知
+- スクール都合キャンセルのメール `NotificationIntent`
+- `REQ-104` に該当する区分変更 `NotificationIntent`
+
+開始済みReservation自身の `automatic_classification` を事後キャンセルを理由に遡及変更しない。月間回数から外れることで空いた自動standard枠は、未開始Reservationの再分類にのみ反映する。
+
+### 14.6 通知・振替・成功Response
+
+`REQ-103 / AC-103-004` に従い、通常・事後のどちらでもメールとアプリ内未確認通知を生成する。事後登録では、生徒が「Lesson後に事後登録されたスクール都合キャンセル」であることを理解できる表現にする。
+
+外部メール送信はCommit後に行い、送信失敗によって確定済みschool cancellationやアプリ内通知をRollbackしない。
+
+`BR-065 / AC-313-004 / OOS-002` に従い、本Commandに別日時への移動・振替・管理者代理予約を含めない。必要な場合はschool cancellation確定後にSchedule側で新しい枠を用意し、生徒本人が独立した新規予約を行う。
+
+成功Responseでは、少なくとも確定Reservation状態、通常取消／事後登録の別、取消確定時刻、理由、確定したSlot状態、対象Reservationの分類対象外状態、および同一Transactionで区分が変化した未開始Reservationの差分を返せる形とする。
+
+## 15. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -741,8 +868,11 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - Schedule生成済み・公開済み等の個別Conflict Error Code
 - 分類管理Preview / Confirmの具体的なRequest / Response Wire Format
 - Classification Override直接Commandの具体的な最新状態Guard表現
+- school cancellation Preview / Confirmの具体的なRequest / Response Wire Format
+- 事後登録の管理者明示確認を表現するField / Expected State / Audit Eventの具体形
+- school cancellation固有のConflict / Business Rejection Application Error Code
 
-## 15. 関連要求・方針
+## 16. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -770,13 +900,16 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - BR-058 自動再分類
 - BR-059 明示Override優先
 - BR-060 月間回数除外
+- BR-061 欠席
 - BR-062 予約履歴
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
+- BR-065 専用振替なし
 - BR-066 予約状態と月間算入の分離
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
+- BR-116 スクール都合キャンセル通知
 - BR-131 管理操作説明
 - BR-132 監査
 - BR-133 利用者向けエラー表現
@@ -785,6 +918,7 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
+- REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
 - REQ-301 月間スケジュール管理
 - REQ-302 臨時休業
@@ -797,6 +931,7 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - REQ-310 区分Override
 - REQ-311 生徒削除
 - REQ-313 スクール都合キャンセル
+- REQ-315 欠席記録
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-914 障害・エラー時利用者表示
@@ -805,7 +940,7 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 16. 設計判断記録
+## 17. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
@@ -817,6 +952,9 @@ Classification Overrideだけを理由に、他Reservationのautomatic_classific
 - 月間回数除外解除は無条件な再算入ではなく、`ReservationMonthlyCountOverride` 解除後に予約状態・欠席等の最新条件から実効算入可否を再評価する。要求仕様v1.9の `AC-308-002` と整合する。
 - 月間回数除外の設定・解除で未開始Reservationの区分が変化する場合は、`AC-308-003` に従いLesson日時と変更前後classificationを確定前に提示する。
 - Classification Overrideは対象Reservationの実効classificationだけを変更し、自動標準枠や他Reservationのautomatic_classificationを変更しない。
+- スクール都合キャンセル単独操作はPreview / Confirmとし、通常取消／事後登録はServer Commit基準時刻とLesson開始時刻からServer側で判定する。要求仕様v1.10の `AC-313-005〜009` と整合する。
+- 事後スクール都合キャンセルでは取消時刻を実際のServer Commit時刻とし、Slotを再開放しない。欠席が記録済みの場合は先に欠席を明示解除し、school cancellationの副作用として暗黙解除しない。
+- 事後登録の「実際にLessonが実施されなかった」という業務事実は管理者が明示確認し、AuditLogから追跡可能にする。事後登録であることは `AC-103-004` に従い生徒通知でも明示する。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
