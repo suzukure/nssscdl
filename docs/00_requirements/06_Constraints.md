@@ -82,11 +82,11 @@ Atomicな予約変更・振替機能は対象外。
 | OI-TM-027 | Closed | Cloudflare Workers + D1 + R2。 |
 | OI-TM-028 | Closed | 管理者代理予約は初期リリース対象外。 |
 | OI-TM-029 | Closed | Analytics目的の長期匿名履歴を持たない。 |
-| OI-TM-030 | Closed | Backup内PIIのRetention例外と復旧時Purge。 |
+| OI-TM-030 | Closed | Backup内の個人情報のRetention例外と復旧時Purge。 |
 | OI-TM-031 | Closed | 管理者Account Bootstrap/Recovery。 |
 | OI-TM-032 | Closed | Turnstile、Rate Limit、Enumeration防止。 |
 | OI-TM-033 | Closed | 無料枠圧迫時は自動整理優先、自動有料化なし。 |
-| OI-TM-034 | Closed | 監査Log 1年、技術Log約30日、PII削除優先。 |
+| OI-TM-034 | Closed | 監査Log 1年、技術Log約30日、個人情報削除優先。 |
 | OI-TM-035 | Closed | 連絡先Email変更と所有確認・旧Email Security Notice。 |
 | OI-TM-036 | Closed | 予約済み枠を休業化する場合のCancel/警告。 |
 | OI-TM-037 | Closed | 祝日Sourceは内閣府公式情報、Last Known Good。 |
