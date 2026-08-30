@@ -141,6 +141,7 @@ Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Rul
 - 予約確定前の日時・新規予約classification・既存未開始Reservationへの区分変更影響確認
 - Schedule変更時の既存予約への影響確認
 - 月間標準回数変更時の再分類影響確認
+- 月間回数除外の設定・解除時の再分類影響確認
 - 生徒削除時の将来予約取消等の影響確認
 - その他 `POL-013` により重要な影響説明が必要な管理操作
 
@@ -536,7 +537,7 @@ StudentReservationによる占有の場合、管理者の運営業務に必要�
 
 `POST /api/admin/schedule-months/{month}/generate` は、**対象年月のScheduleMonthがまだ存在しない場合に、現在適用される確定済み生成ルールから初期Scheduleを作成するCommand** とする。
 
-既にScheduleMonthが存在する場合に、既存のLessonSlotや管理者による手動変更を消して再生成する用途には使用しない。
+`REQ-301 / AC-301-010` に従い、既にScheduleMonthが存在する場合に、既存のLessonSlotや管理者による手動変更を消して再生成する用途には使用しない。
 
 この方針により、定期グループレッスン等の設定変更を既生成月へ遡及反映しない `BR-019` と整合させる。既存月を変更する必要がある場合は、明示的なSchedule変更Commandを使用する。
 
@@ -597,7 +598,129 @@ Publish確定時には、Server側で少なくとも次を最新状態から検�
 
 公開済み月の将来枠変更は、既存設計どおりCommit後ただちに最新状態として扱い、月全体の再公開操作を要求しない。
 
-## 13. 詳細設計へ送る事項
+## 13. 管理者向け分類管理API基本形
+
+本節は `OI-BD-009` で確定した、管理者向けAPIのうち月間標準回数、月間回数除外、Classification Overrideに関する基本設計を示す。
+
+3操作はいずれもReservationの表示上のclassificationに関係するが、業務作用を同一視しない。
+
+- 月間標準回数変更は、自動分類でstandardを割り当てる基準数を変更し、同一生徒・同一月の未開始Reservationを再分類し得る。
+- 月間回数除外の設定・解除は、月間算入対象集合や開始済み自動standardの消費数を変化させ、同一生徒・同一月の未開始Reservationを再分類し得る。
+- Classification Overrideは対象Reservationの実効classificationだけへ作用し、自動標準枠の消費数・割当順・他Reservationのautomatic_classificationを変更しない。
+
+この差異は `BR-056 / BR-058 / BR-059 / BR-060 / BR-066` および `04_ReservationModel.md` を正とする。
+
+### 13.1 主要Endpoint
+
+基本形を次とする。
+
+```text
+POST /api/admin/students/{studentId}/schedule-months/{month}/standard-count/preview
+POST /api/admin/students/{studentId}/schedule-months/{month}/standard-count
+
+POST /api/admin/reservations/{reservationId}/monthly-count-exclusion/preview
+POST /api/admin/reservations/{reservationId}/monthly-count-exclusion
+POST /api/admin/reservations/{reservationId}/monthly-count-exclusion/clear/preview
+POST /api/admin/reservations/{reservationId}/monthly-count-exclusion/clear
+
+POST /api/admin/reservations/{reservationId}/classification-override
+POST /api/admin/reservations/{reservationId}/classification-override/clear
+```
+
+月間標準回数変更および月間回数除外の設定・解除は、他の未開始Reservationへ再分類影響が波及し得るためPreview / Confirm Patternを適用する。
+
+Classification Overrideは対象Reservationだけに作用するため、初期基本設計では専用Preview APIを設けない。ただしCommit時の最新状態再検証および管理画面上の変更内容確認は省略しない。
+
+### 13.2 月間標準回数変更
+
+`REQ-307` に従い、Previewでは少なくとも次を管理者が確認できる形とする。
+
+- 現在の標準回数と変更後の標準回数
+- 開始済みReservationのautomatic_classificationは変更しないこと
+- 変更後の消費済み自動標準枠と残り自動標準枠を踏まえた未開始Reservationへの影響
+- 区分が変化する未開始ReservationのLesson日時、変更前classification、変更後classification
+- Confirm時の再確認に必要なExpected State相当情報
+
+ConfirmではPreviewを正本として使用せず、最新のReservation状態、欠席、月間回数除外、標準回数、Lesson開始時刻境界等を再評価する。
+
+Previewから、影響する未開始Reservationの対象集合または変更前後classification等の重要影響が変化している場合は、原則 `409 Conflict` として再Previewへ戻す。
+
+正常Commitでは、少なくとも次を1つの業務Transaction境界で整合させる。
+
+- `StudentMonthlyLessonConfig.standard_count` の設定・変更
+- 同一生徒・同一月の必要な未開始Reservation再分類
+- 再分類対象Reservationの `automatic_classification` / 実効classification更新
+- `AuditLog`
+- `REQ-104` に該当する区分変更の `NotificationIntent`
+
+開始済みReservationの `automatic_classification` は通常の自動再分類で遡及変更しない。
+
+### 13.3 月間回数除外の設定・解除
+
+`REQ-308 / AC-308-001〜003` に従い、月間回数除外の設定と解除を対称な管理操作として提供する。
+
+Previewでは少なくとも次を確認できる形とする。
+
+- 対象ReservationのLesson日時
+- 現在の月間算入可否と、操作後に想定される実効算入可否
+- 対象Reservation自身の現在の実効classificationと操作後の状態
+- 同一生徒・同一月で区分が変化する未開始ReservationのLesson日時、変更前classification、変更後classification
+- Confirm時の再確認に必要なExpected State相当情報
+
+除外設定では `ReservationMonthlyCountOverride = excluded` を確定し、対象Reservationを月間算入対象外として実効classificationを「分類対象外」とする。保存上の `classification` はNULLとし、`automatic_classification` は保持する。
+
+除外解除は、**対象Reservationを無条件に月間算入対象へ戻すCommandではない**。管理者が設定した `ReservationMonthlyCountOverride` を解除した後、Reservationのライフサイクル状態、欠席その他の算入条件を含む最新確定状態から実効算入可否を再評価する。
+
+したがって、解除後もキャンセル済みまたは欠席等により算入対象外であれば「分類対象外」を維持する。解除後に算入対象となる場合は、`04_ReservationModel.md` に従い、そのReservation自身へ保持済みautomatic_classificationおよび保持済みClassification Overrideを必要に応じて反映し、消費済み自動標準枠の変化は未開始Reservationの再分類へだけ反映する。
+
+Confirm時は最新状態を再検証し、Preview時から対象Reservationの算入条件、Lesson開始時刻境界、標準回数、影響する未開始Reservationの対象集合または変更前後classification等の重要影響が変化している場合は、原則 `409 Conflict` として再Previewへ戻す。
+
+正常Commitでは、少なくとも次を1つの業務Transaction境界で整合させる。
+
+- `ReservationMonthlyCountOverride` の設定または解除
+- 対象Reservationの実効classification更新
+- 同一生徒・同一月の必要な未開始Reservation再分類
+- 再分類対象Reservationの `automatic_classification` / 実効classification更新
+- `AuditLog`
+- `REQ-104` に該当する区分変更の `NotificationIntent`
+
+### 13.4 Classification Override
+
+`REQ-310` および `BR-059` に従い、Classification Overrideは対象Reservationの実効classificationを `standard` または `additional` へ明示的にOverrideする管理操作とする。
+
+初期基本設計では専用Preview APIを設けない。管理画面ではCommand実行前に、少なくとも対象ReservationのLesson日時、automatic_classification、現在の実効classification、現在のOverride、変更後のOverride内容を確認できる形とする。
+
+Overrideの設定・変更・解除は他Reservationのautomatic_classification再計算を引き起こさない。自動標準枠の消費数・割当順も変更しない。
+
+対象Reservationが算入対象である場合は、Override設定・変更後の値を実効classificationへ反映する。Override解除時は保持済み `automatic_classification` を実効classificationへ戻す。
+
+既存のClassification Overrideを持つReservationがキャンセル、欠席、月間回数除外等によって分類対象外となった場合は、`04_ReservationModel.md` に従いOverride自体を明示解除まで保持しつつ、分類対象外の間は実効classificationをstandard / additionalとして扱わない。
+
+専用Preview APIを設けない場合でも、Commandは最新のReservation状態・算入状態等をCommit時に再検証する。先行Commitにより、管理者が確認した状態とCommandの意味または実効結果が重要に変化している場合は、確定状態を無言で上書きせず再確認へ戻す。
+
+正常Commitでは、少なくとも次を同一の業務Transaction境界で整合させる。
+
+- `ReservationClassificationOverride` の設定・変更・解除
+- 対象Reservationの実効classification更新
+- `AuditLog` への変更前後、Actor、時刻等の監査記録
+- `REQ-104` に該当する区分変更の `NotificationIntent`
+
+Classification Overrideだけを理由に、他Reservationのautomatic_classificationを変更しない。
+
+### 13.5 区分変更通知と成功Response
+
+分類管理Commandによって既存Reservationの実効classificationが `standard → additional` または `additional → standard` へ変化した場合は、`REQ-104` に従う区分変更通知義務を発生させる。
+
+一方、月間回数除外の設定等により対象Reservationがstandard / additionalから「分類対象外」へ変化すること自体を、`REQ-104` のstandard / additional区分変更通知として機械的に扱わない。
+
+成功ResponseはDB更新件数ではなく、管理者が直ちに確定結果を確認できるApplication View Modelとし、操作に応じ少なくとも次を返せる形とする。
+
+- 対象となった標準回数、月間回数除外状態、またはClassification Overrideの確定状態
+- 対象Reservation自身の確定した実効算入状態・classification
+- 同一Transactionで区分が変化した未開始ReservationのLesson日時と変更前後classification
+- 最新状態表示に必要な情報
+
+## 14. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -616,8 +739,10 @@ Publish確定時には、Server側で少なくとも次を最新状態から検�
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format
 - Schedule生成済み・公開済み等の個別Conflict Error Code
+- 分類管理Preview / Confirmの具体的なRequest / Response Wire Format
+- Classification Override直接Commandの具体的な最新状態Guard表現
 
-## 14. 関連要求・方針
+## 15. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -643,6 +768,8 @@ Publish確定時には、Server側で少なくとも次を最新状態から検�
 - BR-056 月間標準回数
 - BR-057 追加レッスン分類
 - BR-058 自動再分類
+- BR-059 明示Override優先
+- BR-060 月間回数除外
 - BR-062 予約履歴
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
@@ -650,6 +777,7 @@ Publish確定時には、Server側で少なくとも次を最新状態から検�
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
+- BR-131 管理操作説明
 - BR-132 監査
 - BR-133 利用者向けエラー表現
 - REQ-001 初期画面・スケジュール確認
@@ -664,7 +792,9 @@ Publish確定時には、Server側で少なくとも次を最新状態から検�
 - REQ-304 管理者確保枠
 - REQ-305 定期グループレッスン設定
 - REQ-307 月間標準回数設定
+- REQ-308 月間回数除外
 - REQ-309 標準／追加再分類
+- REQ-310 区分Override
 - REQ-311 生徒削除
 - REQ-313 スクール都合キャンセル
 - REQ-907 業務Timezone
@@ -675,14 +805,18 @@ Publish確定時には、Server側で少なくとも次を最新状態から検�
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 15. 設計判断記録
+## 16. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
 - 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
-- 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。
+- 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。要求仕様v1.8の `AC-301-010` と整合する。
 - 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
 - 公開済み月の将来枠変更は再公開を要求せず、正常Commit後ただちに最新確定状態として扱う。
+- 管理者向け分類管理では、月間標準回数変更と月間回数除外設定・解除は未開始Reservationへ波及し得るためPreview / Confirmとし、Classification Overrideは対象Reservationだけに作用するため専用Preview APIを設けない。
+- 月間回数除外解除は無条件な再算入ではなく、`ReservationMonthlyCountOverride` 解除後に予約状態・欠席等の最新条件から実効算入可否を再評価する。要求仕様v1.9の `AC-308-002` と整合する。
+- 月間回数除外の設定・解除で未開始Reservationの区分が変化する場合は、`AC-308-003` に従いLesson日時と変更前後classificationを確定前に提示する。
+- Classification Overrideは対象Reservationの実効classificationだけを変更し、自動標準枠や他Reservationのautomatic_classificationを変更しない。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
