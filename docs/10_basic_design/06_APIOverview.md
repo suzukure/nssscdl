@@ -63,6 +63,7 @@ QueryはResource / View Model指向とする。
 - 欠席設定／解除
 - Security Suspension設定／解除
 - 生徒削除
+- プロフィール代理変更
 
 たとえば予約確定は `StudentReservation` の単純INSERTではなく、`StudentReservation`、`SlotOccupancy`、必要な再分類、`AuditLog`、必要な `NotificationIntent` を1つの業務Commandとして扱う。
 
@@ -133,6 +134,9 @@ POST /api/admin/students/{studentId}/security-suspension
 POST /api/admin/students/{studentId}/security-suspension/clear
 POST /api/admin/students/{studentId}/deletion/preview
 POST /api/admin/students/{studentId}/deletion
+GET  /api/admin/students/{studentId}/profile
+POST /api/admin/students/{studentId}/name-change
+POST /api/admin/students/{studentId}/contact-email-change
 ```
 
 Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
@@ -157,6 +161,8 @@ Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Rul
 - その他 `POL-013` により重要な影響説明が必要な管理操作
 
 Security Suspensionの設定・解除は、実行前説明を必須とする重要管理操作だが、動的な予約集合・再分類影響を計算する操作ではないため、初期基本設計では専用Preview APIを設けず、管理画面上の確定前確認で説明要件を満たす。
+
+プロフィール代理変更も、動的な予約集合・再分類影響を計算する操作ではないため、初期基本設計では専用Preview APIを設けない。氏名変更は変更前後を、連絡先メール変更開始は旧メールが確認完了まで有効であること、新メール所有確認が必要であること、確認完了後に旧メールへSecurity Noticeを送ることを管理画面上で確認できる形とする。
 
 ### 5.2 Previewは確定保証ではない
 
@@ -291,6 +297,11 @@ Clientが直ちに確定状態を表示できるよう、Commit後の業務上�
 - 対象となる開始前Slotの確定状態
 - 個人情報の削除・匿名化が24時間以内の後続処理対象として確実に登録されたこと
 
+### プロフィール代理変更
+
+- 氏名変更では、Commit後の確定プロフィール状態
+- 連絡先メール変更開始では、現在有効な旧連絡先メールは変更せず、新メール所有確認待ちであることを示す状態
+
 Responseは内部DB Schemaの変更へ不必要に依存しないApplication View Modelとする。
 
 ## 8. HTTP StatusとApplication Error
@@ -363,6 +374,8 @@ Security Suspensionについては、停止後に既存Sessionが即時利用不
 
 生徒削除については、削除Commandの正常完了時点で既存Sessionが利用不能であることを基本設計上の保証とする。個人情報の実削除・匿名化は24時間以内の後続処理とするが、後続処理が必要であるという義務自体は削除CommandのTransaction内で失われない形で永続化する。
 
+連絡先メール変更については、生徒本人・管理者のどちらが開始しても新メール所有確認を省略せず、確認完了までは旧メールを有効な連絡先として維持する。Pending変更の物理Entity、Token、期限、再送、確認Endpoint等の具体方式は後続の認証・アカウント設計／詳細設計で確定する。
+
 以下は後続の認証・Session基本設計で確定する。
 
 - Session保存方式
@@ -375,6 +388,7 @@ Security Suspensionについては、停止後に既存Sessionが即時利用不
 - Session失効・更新方式
 - Security Suspensionの即時Session失効・非復活を実現するrevocation方式
 - 生徒削除時のSession即時失効と個人情報削除・匿名化後続処理の具体方式
+- 連絡先メール所有確認のPending状態、Token、期限、再送、無効化方式
 
 ## 11. 生徒向けAPI基本形
 
@@ -1152,7 +1166,111 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 
 成功Responseは、対象Studentが削除確定済みであること、将来Reservationの取消結果、開始前Slotの確定状態、および個人情報削除・匿名化が24時間以内の後続処理対象として登録済みであることを管理者が理解できるApplication View Modelとする。内部Job IDや削除処理内部Schemaを公開API Contractの正本にはしない。
 
-## 18. 詳細設計へ送る事項
+## 18. 管理者向けプロフィール代理支援API基本形
+
+本節は `OI-BD-009` で確定した、管理者によるプロフィール代理支援API基本形を示す。
+
+プロフィール代理支援は `REQ-007 / REQ-206 / REQ-317` に従い、生徒本人が変更できる初期プロフィール項目について管理者が利用支援できるようにする。ただし、管理者代理予約や認証Identityの無条件な差替えを許可する機能ではない。
+
+### 18.1 主要Endpoint
+
+基本形を次とする。
+
+```text
+GET  /api/admin/students/{studentId}/profile
+POST /api/admin/students/{studentId}/name-change
+POST /api/admin/students/{studentId}/contact-email-change
+```
+
+氏名と連絡先メールではCommand成功時の意味が異なるため、汎用 `PATCH /profile` に統合しない。氏名変更は正常Commitで即時反映する一方、連絡先メール変更Commandは新メール所有確認Flowを開始するだけであり、Command成功時点では現在の連絡先メールを変更しない。
+
+初期基本設計では両Commandに専用Preview APIを設けない。対象Student、現在値、変更内容、およびメール変更時の確認Flowを管理画面上で確認してから実行する。
+
+### 18.2 管理者向けプロフィールQuery
+
+プロフィールQueryは対象Studentを内部Student IDで特定し、管理支援に必要な範囲へ情報を限定する。
+
+少なくとも次を画面表示可能なApplication View Modelとして返せる形とする。
+
+- 表示用氏名
+- 現在有効な連絡先メール
+- 連絡先メール変更が確認待ちの場合、その状態を管理者が判断するために必要な最小限の情報
+
+Google ID、認証Token、Session内部情報等をプロフィール支援のために不要に公開しない。Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
+
+### 18.3 氏名代理変更
+
+氏名変更Commandは、対象Studentの現在状態と管理者が確認した変更前氏名を最新状態で検証した上で、新しい氏名を確定し `AuditLog` を同じ業務Commandの監査として記録する。
+
+管理画面を開いた後に本人または別の有効な操作で氏名が変更されており、管理者が確認した変更前状態と最新状態が重要に異なる場合は、古い画面から無言で上書きせず最新状態を示して再確認させる。
+
+氏名変更だけを理由とする専用の生徒向けメール通知は現要求にないため、初期リリースでは必須としない。
+
+### 18.4 連絡先メール変更開始と新メール所有確認
+
+`REQ-206 / AC-206-001〜004` および `AC-317-002` に従い、管理者による連絡先メール変更でも新メール所有確認を省略しない。
+
+基本Flowは次とする。
+
+```text
+管理者が新メールへの変更を開始
+  ↓
+新メール所有確認待ち
+  ↓
+確認完了までは旧メールを現在の連絡先として維持
+  ↓
+新メール所有確認成功
+  ↓
+最新状態・メール一意性を再検証
+  ↓
+連絡先メールを新メールへ確定変更
+  ↓
+以後の業務通知は新メールへ送信
+  ↓
+旧メールへSecurity Notice
+```
+
+管理者が新メールを入力した事実を所有確認の代替としない。Google認証との紐付けも連絡先メール変更だけを理由に変更しない。
+
+所有確認完了時にも、対象Studentが変更可能な状態であること、当該Pending変更が現在有効であること、Activeな他Studentが新メールを連絡先として取得していないことを再検証する。確認待ちの間に重要状態が変化した場合は、古い確認情報で無言に変更を成立させない。
+
+### 18.5 旧メール利用不能時の復旧支援
+
+管理者による連絡先メール変更は、**旧メールが既に利用不能で、生徒本人が旧メールを使った変更開始・認証を行えない場合の復旧支援にも利用できる**。
+
+この場合も新メール所有確認は必須とする一方、旧メール側での所有確認・承認を変更成立条件にはしない。したがって、旧メールが受信不能であっても、新メール所有確認とその他の最新状態Guardを満たせば変更を完了できる。
+
+変更完了後の旧メールへのSecurity Noticeが配信不能であっても、`AC-206-004` に従い確定済みの連絡先メール変更をRollbackしない。
+
+旧メールを利用できない変更依頼について、スクール管理者が依頼者本人をどのように確認するかは初期リリースのシステム機能・認証要件として固定せず、スクールの運用判断とする。システムはこの復旧経路のために旧メール確認や独自の本人確認質問等を追加の必須条件にしない。
+
+### 18.6 Pending変更の排他・競合
+
+初期基本設計では、1 Studentについて同時に有効な連絡先メール変更Pendingは最大1件とする。
+
+新しい連絡先メール変更を開始した場合、以前のPending変更・確認情報が後から成立して連絡先メールを巻き戻さないよう、古いPendingを無効化する。無効化済みまたは置換済みの確認情報で変更を成立させない。
+
+新メール所有確認完了時に、そのメールがActiveな別Studentの連絡先として既に使用されている場合は変更を成立させない。連絡先メール一意性は変更開始時だけに依存せず、変更確定時の最新状態で保証する。
+
+Pending Entity、Token、確認期限、再送、具体的な無効化方法、確認Endpoint、Application Error Code等は認証・アカウント設計／詳細設計で確定する。
+
+### 18.7 Security Suspension・削除との関係
+
+`REQ-211 / AC-211-003` の「停止中はプロフィール変更を禁止する」をプロフィール変更経路全体へ適用し、Security Suspension中は生徒本人による変更だけでなく管理者による氏名・連絡先メールの代理変更も成立させない。
+
+連絡先メール変更開始後にSecurity Suspensionが先行Commitされた場合も、所有確認完了時に停止状態を検出し、停止中にプロフィール変更を確定しない。利用再開が必要な場合はSecurity Suspensionを明示解除し、その後に最新状態から変更手続きを再確認する。
+
+削除済みまたは削除確定処理により通常利用不能となったStudentへのプロフィール代理変更も成立させない。Security Suspensionを回避するためのAccount Recovery経路としてプロフィール代理支援を扱わない。
+
+### 18.8 監査・成功Response
+
+`AC-317-003 / BR-132 / REQ-940` に従い、氏名代理変更および連絡先メール変更開始を監査する。
+
+AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、必要最小限のBefore / Afterを基本とし、氏名・メールそのものを必要なく重複保存しない。メール所有確認完了による実変更についても、変更開始との因果関係を追跡できる形を認証・アカウント設計で具体化する。
+
+氏名変更成功ResponseはCommit後の確定プロフィール状態を返す。連絡先メール変更開始成功Responseは、旧メールが現在有効なままであること、新メール所有確認待ちであること、および管理画面が次の行動を判断するために必要な情報を返せる形とする。
+
+## 19. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -1185,12 +1303,19 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 - 削除対象将来Reservation集合・対象表示情報を確認するExpected State / Guardの具体形
 - 個人情報削除・匿名化後続処理の状態表現、Retry、Monitoring、24時間以内完了の確認方式
 - 生徒削除固有のConflict / Business Rejection Application Error Code
+- プロフィール代理支援の具体的なRequest / Response Wire Formatと最新状態Guard
+- 連絡先メール変更Pendingの物理Entity、Token、確認期限、再送、置換・無効化方式
+- 新メール所有確認Endpointと、確認完了時のメール一意性・Security Suspension・削除状態のGuard
+- 旧メールSecurity Noticeの通知義務・Delivery・失敗時表示の具体形
+- プロフィール代理支援固有のConflict / Business Rejection Application Error Code
 
 認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
 
 生徒削除については、認証・アカウント設計でSession即時失効、個人情報削除・匿名化対象、後続処理の永続状態と再実行可能性を具体化する。運用設計では24時間以内完了の監視・失敗時対応、Backup復旧時の再適用を具体化する。
 
-## 19. 関連要求・方針
+プロフィール代理支援については、認証・アカウント設計で生徒本人と管理者開始を共通化できる連絡先メール所有確認Flow、Pending変更の排他、旧メールSecurity Noticeを具体化する。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
+
+## 20. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -1227,9 +1352,11 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
+- BR-091 連絡先メール一意
 - BR-099 セキュリティ利用停止
 - BR-100 生徒削除
 - BR-116 スクール都合キャンセル通知
+- BR-120 最小プロフィール
 - BR-122 削除権限
 - BR-123 削除時即時無効化
 - BR-124 直接管理個人情報削除
@@ -1245,8 +1372,10 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 - REQ-003 予約
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
+- REQ-007 プロフィール変更
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
+- REQ-206 連絡先メール変更
 - REQ-207 Session管理
 - REQ-211 セキュリティ利用停止
 - REQ-301 月間スケジュール管理
@@ -1263,6 +1392,7 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 - REQ-313 スクール都合キャンセル
 - REQ-315 欠席記録
 - REQ-316 セキュリティ利用停止管理
+- REQ-317 プロフィール代理支援
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-914 障害・エラー時利用者表示
@@ -1271,7 +1401,7 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 20. 設計判断記録
+## 21. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
@@ -1295,6 +1425,10 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 - 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
 - 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再Previewへ戻す。Lesson開始済み・過去Reservationは削除を理由に遡及キャンセルしない。
 - 生徒削除Commandの成功と個人情報の実削除・匿名化完了は分離し、後者は24時間以内の後続処理とする。生徒削除起因system cancellationには専用キャンセルメールを生成しない。
+- プロフィール代理支援は氏名変更と連絡先メール変更開始を別Commandとし、汎用プロフィールPATCHへ統合しない。氏名は正常Commitで即時反映し、連絡先メールは新メール所有確認完了まで旧メールを有効な連絡先として維持する。
+- 管理者による連絡先メール変更でも新メール所有確認を省略せず、Google認証紐付けは連絡先メール変更だけでは変更しない。1 Studentにつき有効なメール変更Pendingは最大1件とし、新しい変更開始時は古いPendingを無効化する。
+- 旧メールが利用不能でも管理者が変更を開始し、新メール所有確認を完了すれば連絡先メールを復旧できる。旧メール側の確認は必須とせず、旧メールへのSecurity Notice失敗は確定変更をRollbackしない。変更依頼者本人の確認方法はシステム要件化せずスクールの運用判断とする。
+- Security Suspension中は生徒本人・管理者代理のいずれのプロフィール変更も成立させず、Pendingメール変更も停止中には確定しない。
 - 基本設計では読みやすさを優先し、`PII` の略語を原則使わず「個人情報」、必要に応じて「氏名・連絡先メール・認証識別子等の直接管理する個人情報」と記載する。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
