@@ -125,6 +125,10 @@ POST /api/admin/schedule-months/{month}/changes
 POST /api/admin/schedule-months/{month}/publish
 POST /api/admin/reservations/{reservationId}/school-cancel/preview
 POST /api/admin/reservations/{reservationId}/school-cancel
+POST /api/admin/reservations/{reservationId}/absence/preview
+POST /api/admin/reservations/{reservationId}/absence
+POST /api/admin/reservations/{reservationId}/absence/clear/preview
+POST /api/admin/reservations/{reservationId}/absence/clear
 ```
 
 Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
@@ -144,6 +148,7 @@ Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Rul
 - 月間標準回数変更時の再分類影響確認
 - 月間回数除外の設定・解除時の再分類影響確認
 - スクール都合キャンセル時の取消内容・取消後Slot・再分類影響・事後登録確認
+- 欠席設定・解除時の月間算入状態・再分類影響確認
 - 生徒削除時の将来予約取消等の影響確認
 - その他 `POL-013` により重要な影響説明が必要な管理操作
 
@@ -164,6 +169,7 @@ PreviewからCommitまでに以下のような重要状態が変化した場合�
 - 月間標準回数または算入状態
 - Schedule変更対象集合
 - スクール都合キャンセル対象Reservationの取消状態・欠席状態・再分類影響
+- 欠席設定・解除対象Reservationの欠席状態・算入状態・再分類影響
 - 生徒削除対象となる将来Reservation集合
 - その他Previewで明示した主要影響
 
@@ -258,6 +264,12 @@ Clientが直ちに確定状態を表示できるよう、Commit後の業務上�
 - 通常取消／事後登録の別
 - 取消確定時刻
 - キャンセル後のSlot状態
+- 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
+
+### 欠席設定・解除
+
+- 対象Reservationの確定した欠席状態
+- 対象Reservationの確定した実効算入状態・classification
 - 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
 
 Responseは内部DB Schemaの変更へ不必要に依存しないApplication View Modelとする。
@@ -847,7 +859,84 @@ Preview時から対象Reservationの状態、欠席、通常／事後の別、Sl
 
 成功Responseでは、少なくとも確定Reservation状態、通常取消／事後登録の別、取消確定時刻、理由、確定したSlot状態、対象Reservationの分類対象外状態、および同一Transactionで区分が変化した未開始Reservationの差分を返せる形とする。
 
-## 15. 詳細設計へ送る事項
+## 15. 管理者向け欠席記録API基本形
+
+本節は `OI-BD-009` で確定した、管理者による終了済みReservationの欠席設定・解除API基本形を示す。
+
+欠席はReservationライフサイクルとは別の `ReservationAbsence` で表現する。欠席設定・解除は月間算入状態を変え、同一生徒・同一月の未開始Reservationへ再分類影響が波及し得るため、`REQ-315 / AC-315-005` に従い設定・解除ともPreview / Confirm Patternを適用する。
+
+### 15.1 主要Endpoint
+
+基本形を次とする。
+
+```text
+POST /api/admin/reservations/{reservationId}/absence/preview
+POST /api/admin/reservations/{reservationId}/absence
+POST /api/admin/reservations/{reservationId}/absence/clear/preview
+POST /api/admin/reservations/{reservationId}/absence/clear
+```
+
+欠席設定と解除は意味の異なるCommandとして明示し、汎用的なReservation PATCHとして公開しない。
+
+### 15.2 Preview
+
+PreviewではServer側で対象ReservationとLesson日時を取得し、信頼できるServer時刻を用いてLesson終了済みであることを判定する。Client時刻やClient入力の終了済みフラグを業務判定の正本としない。
+
+欠席設定Previewでは、対象Reservationが現在も未取消の `confirmed` で、`ReservationAbsence` が未設定であることを確認する。欠席解除Previewでは、対象Reservationが現在も `confirmed` で、`ReservationAbsence` が現在存在することを確認する。
+
+Previewでは少なくとも次を管理者が確認できる形とする。
+
+- 対象ReservationのLesson日時、生徒、現在のReservation状態
+- 現在の欠席状態と操作後の欠席状態
+- 現在の実効月間算入状態・classification
+- 操作後に想定される実効月間算入状態・classification
+- `AC-315-005` に該当する、区分が変化する未開始ReservationのLesson日時、変更前classification、変更後classification
+- Confirm時の再確認に必要なExpected State相当情報
+
+Lesson終了前、キャンセル済み、設定時に既に欠席設定済み、解除時に欠席未設定等、現在の業務状態で対象操作が成立しない場合は確定操作へ進めない。
+
+### 15.3 欠席設定
+
+欠席設定では `ReservationAbsence` を作成し、対象Reservationを月間算入対象外として実効classificationを「分類対象外」とする。保存上の `classification` はNULLとし、開始済みReservationの `automatic_classification` は保持する。
+
+欠席設定はReservationの取消ではないため、`StudentReservation.status`、`cancelled_at`、`LessonSlot`、`SlotOccupancy` を欠席設定だけを理由に変更しない。過去Slotを再開放する処理も行わない。
+
+開始済み自動standard Reservationを欠席として月間算入対象外にした結果、消費済み自動標準枠が減少する場合、その影響は未開始Reservationの再分類にのみ反映する。他の開始済みReservationのautomatic_classificationを遡及変更しない。
+
+### 15.4 欠席解除
+
+欠席解除では `ReservationAbsence` を削除する。ただし、**欠席解除は対象Reservationを無条件に月間算入対象へ戻すCommandではない**。
+
+`ReservationAbsence` 解除後、対象Reservationのライフサイクル状態、`ReservationMonthlyCountOverride` その他の最新算入条件から実効算入可否を再評価する。正常な欠席解除対象は `confirmed` であるが、月間回数除外Override等により引き続き算入対象外であれば「分類対象外」を維持する。
+
+解除後に算入対象へ戻る場合は、開始済みReservation自身の `automatic_classification` を再計算せず、保持済みautomatic_classificationと、存在する場合は保持済みClassification Overrideから実効classificationを復元する。消費済み自動標準枠の増加による影響は未開始Reservationの再分類にのみ反映する。
+
+### 15.5 Confirm時再検証とConflict
+
+ConfirmではPreview結果を正本として使用せず、Transaction内で少なくとも次を最新確定状態から再検証する。
+
+- 対象Reservationが現在も `status = confirmed`
+- 信頼できるServer Commit基準時刻 `T` がLesson終了時刻以上であること
+- 設定Commandでは `ReservationAbsence` が未設定、解除Commandでは現在設定済みであること
+- `ReservationMonthlyCountOverride` 等を含む対象Reservationの実効算入条件
+- 同一生徒・同一月の標準回数
+- 影響する未開始Reservation集合と変更前後classification
+
+Preview時から対象Reservation状態、欠席状態、算入状態、標準回数、影響Reservation集合または変更前後classification等の重要な確認内容が変化している場合は、確定状態を無言で上書きせず原則 `409 Conflict` として再Previewへ戻す。
+
+先に生徒キャンセル、スクール都合キャンセル、system cancellation等がCommitされていれば欠席設定・解除でその状態を上書きしない。
+
+### 15.6 Transaction・通知・成功Response
+
+正常Commitでは `05_BookingAndConcurrency.md` を正として、欠席設定・解除と対象Reservationの実効classification、消費済み自動標準枠の再評価、必要な未開始Reservation再分類、AuditLog、必要な区分変更NotificationIntentを1つの原子的業務Transaction境界で整合させる。
+
+`REQ-315 / AC-315-004` および `BR-062` に従い、欠席設定または解除それ自体を理由とする専用の生徒向け自動メールNotificationIntentは作成しない。
+
+一方、同一Transactionで既存Reservationの実効classificationが `standard → additional` または `additional → standard` に変化した場合は、`REQ-104` に従う区分変更NotificationIntentを生成する。対象Reservationが欠席設定によりstandard / additionalから分類対象外になること自体は、`REQ-104` の区分変更通知として機械的に扱わない。
+
+成功Responseでは、対象Reservationの確定した欠席状態、実効算入状態・classification、および同一Transactionで区分が変化した未開始ReservationのLesson日時と変更前後classificationを返せる形とする。
+
+## 16. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -871,8 +960,11 @@ Preview時から対象Reservationの状態、欠席、通常／事後の別、Sl
 - school cancellation Preview / Confirmの具体的なRequest / Response Wire Format
 - 事後登録の管理者明示確認を表現するField / Expected State / Audit Eventの具体形
 - school cancellation固有のConflict / Business Rejection Application Error Code
+- 欠席設定・解除Preview / Confirmの具体的なRequest / Response Wire Format
+- Lesson終了境界・欠席状態・再分類影響を確認するExpected State / Guardの具体形
+- 欠席設定・解除固有のConflict / Business Rejection Application Error Code
 
-## 16. 関連要求・方針
+## 17. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -901,7 +993,7 @@ Preview時から対象Reservationの状態、欠席、通常／事後の別、Sl
 - BR-059 明示Override優先
 - BR-060 月間回数除外
 - BR-061 欠席
-- BR-062 予約履歴
+- BR-062 欠席表示
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-065 専用振替なし
@@ -940,7 +1032,7 @@ Preview時から対象Reservationの状態、欠席、通常／事後の別、Sl
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 17. 設計判断記録
+## 18. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
@@ -955,6 +1047,9 @@ Preview時から対象Reservationの状態、欠席、通常／事後の別、Sl
 - スクール都合キャンセル単独操作はPreview / Confirmとし、通常取消／事後登録はServer Commit基準時刻とLesson開始時刻からServer側で判定する。要求仕様v1.10の `AC-313-005〜009` と整合する。
 - 事後スクール都合キャンセルでは取消時刻を実際のServer Commit時刻とし、Slotを再開放しない。欠席が記録済みの場合は先に欠席を明示解除し、school cancellationの副作用として暗黙解除しない。
 - 事後登録の「実際にLessonが実施されなかった」という業務事実は管理者が明示確認し、AuditLogから追跡可能にする。事後登録であることは `AC-103-004` に従い生徒通知でも明示する。
+- 欠席設定・解除は、いずれも月間算入状態を変えて未開始Reservationへ再分類影響が波及し得るためPreview / Confirmとする。要求仕様v1.11の `AC-315-005` と整合する。
+- 欠席設定は終了済みの未取消confirmed Reservationだけに行い、Reservationライフサイクル、Slot、Occupancyを変更せず、対象Reservationを分類対象外とした上で必要な未開始Reservation再分類を行う。
+- 欠席解除は無条件な再算入ではなく、`ReservationAbsence` 解除後に月間回数除外等の最新条件から実効算入可否を再評価する。欠席設定・解除そのものの専用メールは生成せず、波及したstandard / additional区分変更だけ `REQ-104` に従い通知する。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
