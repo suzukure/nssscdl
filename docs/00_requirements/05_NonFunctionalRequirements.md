@@ -81,8 +81,8 @@ WCAG 2.2 AAを参照目標とし、初期リリースでは正式Certification�
 - AC-914-004 Database、SQL、外部Provider、Stack Trace、内部Exception等のシステム内部エラー文字列を利用者向け画面または公開APIへ直接露出しない。
 - AC-914-005 操作が成立しなかった場合は、利用者が理解できる状態、必要に応じた再確認・再操作・対応案内、および安定したApplication Error表現を提供する。
 
-## REQ-934 PII削除
-生徒削除後、Active System直接管理PIIを24時間以内に削除・匿名化する。
+## REQ-934 個人情報削除
+生徒削除後、Active Systemが直接管理する個人情報を24時間以内に削除・匿名化する。
 - AC-934-001 氏名、連絡先メール、認証紐付け、直接・間接識別子を対象とする。
 - AC-934-002 外部メールProviderの処理保持はProvider Policyに従う例外とする。
 
@@ -96,7 +96,7 @@ GoogleとMagic Linkを代替認証として提供し、共通基盤障害は重�
 - AC-940-002 氏名・メールを必要なく複製しない。
 - AC-940-003 業務監査Logは1年保持後自動削除する。
 - AC-940-004 技術・Error・Securityの一時Logは原則30日程度で自動削除する。
-- AC-940-005 PII削除要求がLog保持期間より優先する。
+- AC-940-005 個人情報削除要求がLog保持期間より優先する。
 
 ## REQ-942 監視・重大Incident
 DB接続不能、広範な予約API失敗、Reminder Job停止、認証全体障害、Backup失敗等を検知可能にする。
@@ -108,5 +108,5 @@ DB接続不能、広範な予約API失敗、Reminder Job停止、認証全体障
 - AC-951-001 Resend、Google認証等の交換が業務Domain全体の書換えを要求しない構造とする。
 
 ## REQ-952 Backup Privacy
-Backup内PIIを通常業務で検索・参照せず、Retention終了で削除する。
+Backup内の個人情報を通常業務で検索・参照せず、Retention終了で削除する。
 - AC-952-001 旧Backupから復旧する場合、削除済み生徒のPurge/匿名化を通常Service復旧前または同時に再適用する。
