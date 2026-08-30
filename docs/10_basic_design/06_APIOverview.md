@@ -129,6 +129,8 @@ POST /api/admin/reservations/{reservationId}/absence/preview
 POST /api/admin/reservations/{reservationId}/absence
 POST /api/admin/reservations/{reservationId}/absence/clear/preview
 POST /api/admin/reservations/{reservationId}/absence/clear
+POST /api/admin/students/{studentId}/security-suspension
+POST /api/admin/students/{studentId}/security-suspension/clear
 ```
 
 Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
@@ -151,6 +153,8 @@ Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Rul
 - 欠席設定・解除時の月間算入状態・再分類影響確認
 - 生徒削除時の将来予約取消等の影響確認
 - その他 `POL-013` により重要な影響説明が必要な管理操作
+
+Security Suspensionの設定・解除は、実行前説明を必須とする重要管理操作だが、動的な予約集合・再分類影響を計算する操作ではないため、初期基本設計では専用Preview APIを設けず、管理画面上の確定前確認で説明要件を満たす。
 
 ### 5.2 Previewは確定保証ではない
 
@@ -272,6 +276,12 @@ Clientが直ちに確定状態を表示できるよう、Commit後の業務上�
 - 対象Reservationの確定した実効算入状態・classification
 - 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
 
+### Security Suspension設定・解除
+
+- 対象Studentの確定したSecurity Access State
+- 停止時は既存Sessionが失効済みであることを画面更新に必要な範囲で表現できる情報
+- 解除時は新規Loginが必要であり、旧Sessionを復活させないことを確認できる結果
+
 Responseは内部DB Schemaの変更へ不必要に依存しないApplication View Modelとする。
 
 ## 8. HTTP StatusとApplication Error
@@ -332,11 +342,15 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - `IntegrityIncident` 等の運用監視Entityを通常利用者向け業務状態として公開しない。
 - 保存Schema変更が不要にAPI破壊変更へ直結しないようApplication View Modelを介する。
 
+Security Suspensionの論理状態も、将来の物理SchemaをそのままAPI Contractへ露出せず、「現在利用停止中か」「管理者が解除可能か」等の業務Viewへ整形する。
+
 ## 10. 認証・Session設計との境界
 
 本書では、APIが認証済みIdentityとRoleをServer側で解決し、その情報を用いて認可するところまでを原則として定義する。
 
 生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、管理者APIのActor / Target決定Ruleは **4.2 管理者向けAPIのActor / Target Scope原則** を正とする。本節では重複定義しない。
+
+Security Suspensionについては、停止後に既存Sessionが即時利用不能となり、停止中は認証成功後も新しいSessionを発行せず、解除後も停止前Sessionを復活させないことを基本設計上の保証とする。Session保存・revocationの具体方式は後続の認証・Session基本設計で確定する。
 
 以下は後続の認証・Session基本設計で確定する。
 
@@ -348,6 +362,7 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 - Google OAuth Flow詳細
 - Magic Link Flow詳細
 - Session失効・更新方式
+- Security Suspensionの即時Session失効・非復活を実現するrevocation方式
 
 ## 11. 生徒向けAPI基本形
 
@@ -936,7 +951,104 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 
 成功Responseでは、対象Reservationの確定した欠席状態、実効算入状態・classification、および同一Transactionで区分が変化した未開始ReservationのLesson日時と変更前後classificationを返せる形とする。
 
-## 16. 詳細設計へ送る事項
+## 16. 管理者向けSecurity Suspension API基本形
+
+本節は `OI-BD-009` で確定した、管理者による生徒のSecurity Suspension設定・解除API基本形を示す。
+
+Security Suspensionは `BR-099 / REQ-211 / REQ-316` に従う一時的なセキュリティアクセス制御であり、休会・退会・生徒削除・予約キャンセルとは別の状態軸として扱う。停止・解除だけを理由に既存予約、生徒データ、SlotOccupancy、月間算入状態、classificationを変更しない。
+
+### 16.1 主要Endpointと確認方式
+
+基本形を次とする。
+
+```text
+POST /api/admin/students/{studentId}/security-suspension
+POST /api/admin/students/{studentId}/security-suspension/clear
+```
+
+初期基本設計では専用Preview APIを設けない。Security Suspensionは動的な予約集合・再分類影響を計算する操作ではないため、`AC-316-001〜003` の実行前説明は管理画面上の確認表示で満たす。
+
+停止前には少なくとも次を確認できる形とする。
+
+- Security Suspensionを利用すべき代表的なセキュリティ上の場面
+- 既存の生徒Sessionが即時無効化されること
+- 停止中はGoogle / Magic Link認証が成功してもLoginできないこと
+- 新規予約、生徒キャンセル、プロフィール変更等の生徒本人操作が禁止されること
+- 休会・退会・生徒削除・予約キャンセルではないこと
+- 既存予約と生徒データは維持されること
+
+解除前には少なくとも次を確認できる形とする。
+
+- 既存予約・生徒データを維持したまま利用再開すること
+- 停止前に失効したSessionは復活しないこと
+- 利用再開には新規Loginが必要であること
+
+### 16.2 Security Access Stateの分離
+
+Security Suspensionは生徒のReservation状態や削除状態へ統合せず、論理的なSecurity Access Stateとして分離する。
+
+```text
+Student lifecycle / business data
+  ≠ Security Access State
+
+Security Access State
+  active / suspended
+```
+
+物理的にStudent属性として保持するか、別Entityやrevocation状態と組み合わせるかは後続の認証・Session基本設計で確定できる。ただし、業務上 `suspended` と削除・退会・Reservation取消を同一状態として扱わない。
+
+停止・解除CommandではTarget Studentを内部Student IDで特定し、Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
+
+### 16.3 停止時のSession失効と利用禁止
+
+停止Commandが正常完了した時点で、少なくとも次の意味が一貫して成立していなければならない。
+
+- 対象StudentのSecurity Access Stateが `suspended`
+- 停止前に存在した対象Studentの有効Sessionが以後のRequestに使用できない
+- 停止後の認証成功だけでは新しいStudent Sessionを発行しない
+- `AuditLog` から管理者Actor、対象Student、停止操作、時刻を追跡できる
+
+Session物理レコードの一括削除、revocation epoch / version等、即時失効を実現する具体方式は認証・Session基本設計で確定する。ただし方式にかかわらず、停止確定後に旧Sessionが一時的に有効なままとなることを正常状態として許容しない。
+
+認証済みStudent Requestでも、Sessionの形式的有効性だけでなく現在のSecurity Access Stateを認可条件へ含める。停止中は少なくとも `REQ-211` が禁止する新規予約、生徒キャンセル、プロフィール変更を成立させない。他の生徒本人APIをどこまで参照可能とするかの詳細は認証・Session設計で要求との整合を確認するが、停止中にLogin済み状態として通常利用を継続できる実装にはしない。
+
+### 16.4 解除と旧Session非復活
+
+解除CommandはSecurity Access Stateを `suspended → active` へ戻すが、停止時に失効したSessionを再有効化しない。
+
+解除後は `AC-211-005` に従い新規Loginを要求する。したがって、単純に `suspended = false` へ戻すだけで停止前Cookie / Tokenが再び有効になるSession設計は禁止する。
+
+解除だけを理由にReservation、SlotOccupancy、月間算入状態、classification、既存予約を変更しない。
+
+### 16.5 並行操作と最新状態再検証
+
+Security Suspensionと生徒本人の予約・キャンセル・プロフィール変更等が並行した場合は、`POL-008` の先行Commit優先原則を適用する。
+
+```text
+生徒Commandが先に正常Commit
+  → その確定結果を維持
+  → 後続のSecurity Suspensionを成立させる
+
+Security Suspensionが先に正常Commit
+  → 後続Student Write CommandはCommit時にsuspendedを検出
+  → 業務状態を変更せず不成立
+```
+
+予約等の重要Student Write Commandは、対象生徒が現在その操作を実行可能であることをCommit時Guardで確認する。Security Suspensionが先にCommitされていれば、Preview時やRequest開始時に利用可能だったとしても後続Commandを成立させない。
+
+停止済みStudentへの再停止、またはactive Studentへの解除等、管理者が確認した状態と最新状態が異なる場合は、確定状態を無言でNo-opや上書きとして扱わず、最新状態を示して再確認させる。具体HTTP Status / Application Error Codeは詳細設計で確定する。
+
+### 16.6 監査・通知・成功Response
+
+`REQ-316 / AC-316-004` および `BR-132` に従い、Security Suspensionの設定・解除をAuditLogへ記録する。
+
+停止理由の自由記述保存は現要求では必須ではないため、初期基本設計で必須入力・必須保存とはしない。将来、監査上の理由入力が要求化された場合はPII最小化を維持して追加する。
+
+Security Suspension設定・解除それ自体を理由とする生徒向けメールNotificationIntentは、現要求にないため初期リリースでは必須としない。
+
+成功Responseは、対象Studentの確定Security Access State、停止／解除の結果、および管理画面が次の行動を判断するために必要な情報を返せるApplication View Modelとする。Session物理IDやrevocation内部値を公開API Contractへ露出しない。
+
+## 17. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -963,8 +1075,12 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 - 欠席設定・解除Preview / Confirmの具体的なRequest / Response Wire Format
 - Lesson終了境界・欠席状態・再分類影響を確認するExpected State / Guardの具体形
 - 欠席設定・解除固有のConflict / Business Rejection Application Error Code
+- Security Suspension設定・解除の具体的なRequest / Response Wire Format
+- 停止済み／非停止状態への重複Commandを表現するConflict / Business Rejection Code
 
-## 17. 関連要求・方針
+認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
+
+## 18. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -1001,6 +1117,7 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
+- BR-099 セキュリティ利用停止
 - BR-116 スクール都合キャンセル通知
 - BR-131 管理操作説明
 - BR-132 監査
@@ -1012,6 +1129,8 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 - REQ-005 予約履歴
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
+- REQ-207 Session管理
+- REQ-211 セキュリティ利用停止
 - REQ-301 月間スケジュール管理
 - REQ-302 臨時休業
 - REQ-303 月曜営業Override
@@ -1024,6 +1143,7 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 - REQ-311 生徒削除
 - REQ-313 スクール都合キャンセル
 - REQ-315 欠席記録
+- REQ-316 セキュリティ利用停止管理
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-914 障害・エラー時利用者表示
@@ -1032,7 +1152,7 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 18. 設計判断記録
+## 19. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
@@ -1050,6 +1170,9 @@ Preview時から対象Reservation状態、欠席状態、算入状態、標準�
 - 欠席設定・解除は、いずれも月間算入状態を変えて未開始Reservationへ再分類影響が波及し得るためPreview / Confirmとする。要求仕様v1.11の `AC-315-005` と整合する。
 - 欠席設定は終了済みの未取消confirmed Reservationだけに行い、Reservationライフサイクル、Slot、Occupancyを変更せず、対象Reservationを分類対象外とした上で必要な未開始Reservation再分類を行う。
 - 欠席解除は無条件な再算入ではなく、`ReservationAbsence` 解除後に月間回数除外等の最新条件から実効算入可否を再評価する。欠席設定・解除そのものの専用メールは生成せず、波及したstandard / additional区分変更だけ `REQ-104` に従い通知する。
+- Security Suspensionは休会・退会・削除・Reservation取消とは別のSecurity Access Stateとして扱い、設定・解除には専用Preview APIを設けず管理画面上の確定前説明で `AC-316-001〜003` を満たす。
+- Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は認証・Session基本設計で確定する。
+- Security SuspensionとStudent Write Commandの並行時は先行正常Commitを優先し、停止が先行Commitされた場合は後続Student WriteをCommit時Guardで成立させない。停止・解除自体ではReservation、SlotOccupancy、月間算入、classificationを変更しない。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
