@@ -374,7 +374,7 @@ Resend等への外部メール送信はCommit後に行う。送信失敗によ�
 - 各 `automatic_classification` は保持
 - 対応する `SlotOccupancy` 終了
 - 開始前Slotを最新状態から予約可否判定可能な状態へ戻す
-- PII Purge必要状態の永続化
+- 個人情報削除・匿名化の後続処理必要状態の永続化
 - AuditLog
 
 複数の将来Reservationは対象集合全体を1つの整合単位とし、一部だけ取消して生徒削除をCommitしない。
@@ -401,13 +401,13 @@ Preview対象集合 != Commit直前対象集合
   → 再確認
 ```
 
-### 9.4 PII Purge
+### 9.4 個人情報の削除・匿名化
 
-氏名、連絡先メール、Google紐付け等の直接管理PIIの実削除・匿名化は即時生徒削除Transactionに含めない。
+氏名、連絡先メール、Google紐付け等の直接管理する個人情報の実削除・匿名化は即時生徒削除Transactionに含めない。
 
-生徒削除Commit時にPurge必要状態をD1へ永続化し、Worker停止等があっても要求を失わない。PII実削除・匿名化は24時間以内の後続処理とする。
+生徒削除Commit時に個人情報削除・匿名化の後続処理必要状態をD1へ永続化し、Worker停止等があっても要求を失わない。個人情報の実削除・匿名化は24時間以内の後続処理とする。
 
-Purge用Entity、列、Scheduled Job等は認証・アカウント設計／詳細設計で確定する。
+個人情報削除・匿名化用Entity、列、Scheduled Job等は認証・アカウント設計／詳細設計で確定する。
 
 ### 9.5 classification
 
@@ -612,7 +612,7 @@ Audit Eventは少なくとも次を必要最小限で表現できるようにす
 
 技術LogをBusiness Auditの代替正本としない。
 
-AuditLogは通常Application CommandからAppend-onlyとし、保持期限またはPII Purge以外で過去の監査事実を上書きしない。氏名・メール等を必要なく複製せず、PII削除要求を保持期間より優先する。
+AuditLogは通常Application CommandからAppend-onlyとし、保持期限または個人情報削除・匿名化以外で過去の監査事実を上書きしない。氏名・メール等を必要なく複製せず、個人情報削除要求を保持期間より優先する。
 
 ## 13. NotificationIntentと外部送信
 
@@ -720,7 +720,7 @@ Commandを誰も実行しないSlotでも不整合を検知できることを目
 
 永続化済みInvariant違反を検出した場合、論理的な `IntegrityIncident` としてD1上で追跡可能にする。
 
-少なくとも次の情報をPII最小で表現できるようにする。
+少なくとも次の情報を個人情報最小で表現できるようにする。
 
 - `incident_id`
 - `anomaly_code`
@@ -832,7 +832,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - `open` Integrity Incident: 解決まで保持する。
 - `resolved` Incidentの技術診断情報: Technical / Error Logと同様に原則30日程度を基本とする。
 - Repair Commandの正式AuditLog: REQ-940に従い原則1年保持する。
-- PII削除要求は上記保持期間より優先する。
+- 個人情報削除要求は上記保持期間より優先する。
 
 ## 15. 関連要求・方針
 
@@ -899,7 +899,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 要求仕様v1.10に従い、スクール都合キャンセルは原則Lesson開始前、例外的に開始後・終了後も事後登録可能とし、事後登録の取消時刻を実際のServer Commit時刻、Slotは再開放しない、欠席は先に明示解除、事後登録の業務事実確認をAudit対象とする方針を2026-08-30に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
-- 生徒削除起因system cancellationの即時Transaction境界、PII Purge分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
+- 生徒削除起因system cancellationの即時Transaction境界、個人情報削除・匿名化の後続処理分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
 - 月間標準回数変更、月間回数除外設定・解除、Classification OverrideのTransaction境界、最新状態再検証、再分類・AuditLog・NotificationIntentの同一Commit方針は2026-08-30に確定した。月間回数除外解除は無条件な再算入ではなく、Override解除後に最新の算入条件から実効算入可否を再評価する。
 - 要求仕様v1.11に従い、欠席設定・解除はLesson終了済みの未取消confirmed Reservationを対象とし、`ReservationAbsence`、対象Reservationの実効classification、消費済み自動標準枠再評価、必要な未開始Reservation再分類、AuditLog、必要な区分変更NotificationIntentを同一Transactionで整合させる方針を2026-08-30に確定した。
 - 欠席解除は無条件な再算入ではなく、`ReservationAbsence` 解除後に月間回数除外等の最新条件から実効算入可否を再評価する。欠席設定・解除そのものの専用メールは生成せず、波及したstandard / additional区分変更だけを `REQ-104` に従い通知する。
