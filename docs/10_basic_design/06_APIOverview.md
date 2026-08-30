@@ -131,6 +131,8 @@ POST /api/admin/reservations/{reservationId}/absence/clear/preview
 POST /api/admin/reservations/{reservationId}/absence/clear
 POST /api/admin/students/{studentId}/security-suspension
 POST /api/admin/students/{studentId}/security-suspension/clear
+POST /api/admin/students/{studentId}/deletion/preview
+POST /api/admin/students/{studentId}/deletion
 ```
 
 Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
@@ -282,6 +284,13 @@ Clientが直ちに確定状態を表示できるよう、Commit後の業務上�
 - 停止時は既存Sessionが失効済みであることを画面更新に必要な範囲で表現できる情報
 - 解除時は新規Loginが必要であり、旧Sessionを復活させないことを確認できる結果
 
+### 生徒削除
+
+- 対象Studentの削除確定状態
+- 削除により `system_cancelled` となった将来Reservationの結果
+- 対象となる開始前Slotの確定状態
+- 個人情報の削除・匿名化が24時間以内の後続処理対象として確実に登録されたこと
+
 Responseは内部DB Schemaの変更へ不必要に依存しないApplication View Modelとする。
 
 ## 8. HTTP StatusとApplication Error
@@ -352,6 +361,8 @@ Security Suspensionの論理状態も、将来の物理SchemaをそのままAPI 
 
 Security Suspensionについては、停止後に既存Sessionが即時利用不能となり、停止中は認証成功後も新しいSessionを発行せず、解除後も停止前Sessionを復活させないことを基本設計上の保証とする。Session保存・revocationの具体方式は後続の認証・Session基本設計で確定する。
 
+生徒削除については、削除Commandの正常完了時点で既存Sessionが利用不能であることを基本設計上の保証とする。個人情報の実削除・匿名化は24時間以内の後続処理とするが、後続処理が必要であるという義務自体は削除CommandのTransaction内で失われない形で永続化する。
+
 以下は後続の認証・Session基本設計で確定する。
 
 - Session保存方式
@@ -363,6 +374,7 @@ Security Suspensionについては、停止後に既存Sessionが即時利用不
 - Magic Link Flow詳細
 - Session失効・更新方式
 - Security Suspensionの即時Session失効・非復活を実現するrevocation方式
+- 生徒削除時のSession即時失効と個人情報削除・匿名化後続処理の具体方式
 
 ## 11. 生徒向けAPI基本形
 
@@ -569,7 +581,7 @@ Current occupancy
   group_lesson
 ```
 
-StudentReservationによる占有の場合、管理者の運営業務に必要なReservation識別子、内部Student ID、表示用生徒名、classification等を返してよい。ただしSchedule管理に不要な連絡先メール等のPIIを常時返さず、`POL-004` の最小化原則を維持する。
+StudentReservationによる占有の場合、管理者の運営業務に必要なReservation識別子、内部Student ID、表示用生徒名、classification等を返してよい。ただしSchedule管理に不要な連絡先メール等の個人情報を常時返さず、`POL-004` の最小化原則を維持する。
 
 ### 12.3 月間Schedule生成
 
@@ -778,7 +790,7 @@ POST /api/admin/reservations/{reservationId}/school-cancel
 Previewでは少なくとも次を管理者が確認できる形とする。
 
 - 対象ReservationのLesson日時、生徒、現在のReservation状態、現在の実効classification
-- `REQ-313` の理由カテゴリ、補足、必要なPII注意表示
+- `REQ-313` の理由カテゴリ、補足、不要な個人情報入力を避ける注意表示
 - 通常のスクール都合キャンセルか事後登録か
 - 対象Reservationが月間回数から除外され「分類対象外」になること
 - キャンセル後のSlot状態または事後登録時のSlot取扱い
@@ -786,7 +798,7 @@ Previewでは少なくとも次を管理者が確認できる形とする。
 - 生徒へスクール都合キャンセル通知が行われること。事後登録では事後登録であることが通知されること
 - Confirm時の再確認に必要なExpected State相当情報
 
-`reason_category = その他` の場合に補足を必須とし、補足入力欄には不要なPIIを書かないよう注意を表示する。
+`reason_category = その他` の場合に補足を必須とし、補足入力欄には不要な個人情報を書かないよう注意を表示する。
 
 ### 14.2 通常取消と事後登録の判定
 
@@ -1042,13 +1054,105 @@ Security Suspensionが先に正常Commit
 
 `REQ-316 / AC-316-004` および `BR-132` に従い、Security Suspensionの設定・解除をAuditLogへ記録する。
 
-停止理由の自由記述保存は現要求では必須ではないため、初期基本設計で必須入力・必須保存とはしない。将来、監査上の理由入力が要求化された場合はPII最小化を維持して追加する。
+停止理由の自由記述保存は現要求では必須ではないため、初期基本設計で必須入力・必須保存とはしない。将来、監査上の理由入力が要求化された場合は個人情報最小化を維持して追加する。
 
 Security Suspension設定・解除それ自体を理由とする生徒向けメールNotificationIntentは、現要求にないため初期リリースでは必須としない。
 
 成功Responseは、対象Studentの確定Security Access State、停止／解除の結果、および管理画面が次の行動を判断するために必要な情報を返せるApplication View Modelとする。Session物理IDやrevocation内部値を公開API Contractへ露出しない。
 
-## 17. 詳細設計へ送る事項
+## 17. 管理者向け生徒削除API基本形
+
+本節は `OI-BD-009` で確定した、管理者による生徒削除API基本形を示す。
+
+生徒削除は `BR-100 / BR-122〜BR-128 / REQ-311 / REQ-312` に従う不可逆な管理操作であり、Security Suspensionとは異なる。削除確定時に生徒を即時利用不能とし、将来Reservationをシステム起因で取消し、直接管理する個人情報を24時間以内に削除・匿名化する。
+
+### 17.1 主要EndpointとPreview / Confirm
+
+基本形を次とする。
+
+```text
+POST /api/admin/students/{studentId}/deletion/preview
+POST /api/admin/students/{studentId}/deletion
+```
+
+`AC-311-001` および `BR-131` に従い、Preview / Confirm Patternを適用する。対象Studentは内部Student IDで特定し、Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
+
+Previewでは少なくとも次を管理者が確認できる形とする。
+
+- 対象Studentを確認するための必要最小限の情報
+- 削除確定後は直ちにLogin、新規予約、生徒キャンセル、プロフィール変更等ができなくなること
+- 既存Sessionが即時失効すること
+- Server基準時刻で将来と判定される未取消confirmed Reservationが `system_cancelled` となること
+- 取消対象となる各将来ReservationのLesson日時
+- 各開始前Slotが取消後に再予約可能な状態へ戻ること
+- 氏名、連絡先メール、認証識別子等の直接管理する個人情報が24時間以内に削除・匿名化されること
+- 削除後に同じメールで再登録しても新しい生徒として扱われ、旧履歴へ再接続しないこと
+- Confirm時の再確認に必要なExpected State相当情報
+
+Preview表示に個人情報を過剰に含めず、対象確認と影響理解に必要な範囲へ限定する。
+
+### 17.2 削除確定時の即時処理
+
+正常な削除Commandでは `05_BookingAndConcurrency.md` の生徒削除起因system cancellationを正とし、少なくとも次を同一の原子的業務Transaction境界でAll-or-Nothingに確定する。
+
+- 対象Studentを通常利用不能な削除確定状態へ遷移
+- 既存Session失効
+- Server Commit基準時刻 `T` で将来と判定される全 `confirmed` Reservationを `system_cancelled` 化
+- 各 `cancelled_at = T`
+- 各 `SystemCancellationDetail(reason_code = student_deleted)`
+- 各対象Reservationの `classification = NULL`、`automatic_classification` は保持
+- 対応する `SlotOccupancy` 終了
+- 開始前Slotを最新状態から予約可否判定可能な状態へ戻す
+- 個人情報削除・匿名化の後続処理が必要であることを失われない形で永続化
+- `AuditLog`
+
+複数の将来Reservationの一部だけを取消して削除を成功させない。対象ReservationまたはOccupancyに永続化済みInvariant違反を検出し安全に処理できない場合は、削除Transaction全体をFail Closedとする。
+
+### 17.3 将来Reservationの判定と競合
+
+削除起因system cancellationの対象は、Server Commit基準時刻 `T` で少なくとも次を満たすReservationとする。
+
+```text
+status = confirmed
+AND LessonSlot.start_time > T
+```
+
+Lesson開始済み・終了済みReservationを生徒削除だけを理由に遡及キャンセルしない。
+
+Preview後に新しい予約、キャンセル、Schedule変更等が先行Commitされ、削除対象となる将来Reservation集合が変化した場合は、原則 `409 Conflict` として削除を部分適用せず再Previewへ戻す。
+
+対象Studentを特定する正本は内部Student IDとする。Previewで対象確認に表示した氏名・連絡先等が変更され、管理者が確認した対象表示と重要に異なる場合も、不可逆操作であることを踏まえ最新状態を再確認させる。
+
+Security Suspension中のStudentも削除対象とできる。Security Suspensionは一時的アクセス制御、生徒削除は不可逆なライフサイクル操作であるため、両者を同一状態として扱わない。
+
+### 17.4 個人情報削除・匿名化の後続処理
+
+生徒削除Commandの成功と、個人情報の実削除・匿名化完了を同一意味として扱わない。
+
+削除Commandが成功した時点では、少なくとも次が成立していることを保証する。
+
+```text
+生徒の利用不能化           完了
+既存Session失効            完了
+将来Reservation取消        完了
+個人情報削除・匿名化義務保存 完了
+
+個人情報の実削除・匿名化   24時間以内の後続処理
+```
+
+氏名、連絡先メール、Google等の認証紐付けなど直接管理する個人情報の実削除・匿名化は、要求どおり24時間以内に完了させる。Worker停止等があっても削除義務を失わないよう、削除CommandのTransaction内で後続処理必要状態を永続化する。
+
+後続処理のJob / Entity / Retry / Monitoring、Backup復旧時の再適用等の具体方式は認証・アカウント設計、運用設計、詳細設計で確定する。
+
+### 17.5 通知・履歴・成功Response
+
+`BR-116` に従い、生徒削除に伴う `system_cancelled(reason_code = student_deleted)` について専用キャンセルメールNotificationIntentは生成しない。
+
+開始済み・過去Reservationは削除を理由に取消さず、必要な業務履歴として扱う。ただし、個人情報の削除・匿名化後に不要な直接個人情報を履歴へ残さず、`BR-126〜BR-128` の保持・再登録・Backup方針と整合させる。
+
+成功Responseは、対象Studentが削除確定済みであること、将来Reservationの取消結果、開始前Slotの確定状態、および個人情報削除・匿名化が24時間以内の後続処理対象として登録済みであることを管理者が理解できるApplication View Modelとする。内部Job IDや削除処理内部Schemaを公開API Contractの正本にはしない。
+
+## 18. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -1077,10 +1181,16 @@ Security Suspension設定・解除それ自体を理由とする生徒向けメ�
 - 欠席設定・解除固有のConflict / Business Rejection Application Error Code
 - Security Suspension設定・解除の具体的なRequest / Response Wire Format
 - 停止済み／非停止状態への重複Commandを表現するConflict / Business Rejection Code
+- 生徒削除Preview / Confirmの具体的なRequest / Response Wire Format
+- 削除対象将来Reservation集合・対象表示情報を確認するExpected State / Guardの具体形
+- 個人情報削除・匿名化後続処理の状態表現、Retry、Monitoring、24時間以内完了の確認方式
+- 生徒削除固有のConflict / Business Rejection Application Error Code
 
 認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
 
-## 18. 関連要求・方針
+生徒削除については、認証・アカウント設計でSession即時失効、個人情報削除・匿名化対象、後続処理の永続状態と再実行可能性を具体化する。運用設計では24時間以内完了の監視・失敗時対応、Backup復旧時の再適用を具体化する。
+
+## 19. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -1118,7 +1228,15 @@ Security Suspension設定・解除それ自体を理由とする生徒向けメ�
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
 - BR-099 セキュリティ利用停止
+- BR-100 生徒削除
 - BR-116 スクール都合キャンセル通知
+- BR-122 削除権限
+- BR-123 削除時即時無効化
+- BR-124 直接管理個人情報削除
+- BR-125 将来予約処理
+- BR-126 過去情報
+- BR-127 再登録
+- BR-128 Backup内個人情報
 - BR-131 管理操作説明
 - BR-132 監査
 - BR-133 利用者向けエラー表現
@@ -1141,6 +1259,7 @@ Security Suspension設定・解除それ自体を理由とする生徒向けメ�
 - REQ-309 標準／追加再分類
 - REQ-310 区分Override
 - REQ-311 生徒削除
+- REQ-312 削除時予約処理
 - REQ-313 スクール都合キャンセル
 - REQ-315 欠席記録
 - REQ-316 セキュリティ利用停止管理
@@ -1152,7 +1271,7 @@ Security Suspension設定・解除それ自体を理由とする生徒向けメ�
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 19. 設計判断記録
+## 20. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
@@ -1173,6 +1292,10 @@ Security Suspension設定・解除それ自体を理由とする生徒向けメ�
 - Security Suspensionは休会・退会・削除・Reservation取消とは別のSecurity Access Stateとして扱い、設定・解除には専用Preview APIを設けず管理画面上の確定前説明で `AC-316-001〜003` を満たす。
 - Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は認証・Session基本設計で確定する。
 - Security SuspensionとStudent Write Commandの並行時は先行正常Commitを優先し、停止が先行Commitされた場合は後続Student WriteをCommit時Guardで成立させない。停止・解除自体ではReservation、SlotOccupancy、月間算入、classificationを変更しない。
+- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
+- 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再Previewへ戻す。Lesson開始済み・過去Reservationは削除を理由に遡及キャンセルしない。
+- 生徒削除Commandの成功と個人情報の実削除・匿名化完了は分離し、後者は24時間以内の後続処理とする。生徒削除起因system cancellationには専用キャンセルメールを生成しない。
+- 基本設計では読みやすさを優先し、`PII` の略語を原則使わず「個人情報」、必要に応じて「氏名・連絡先メール・認証識別子等の直接管理する個人情報」と記載する。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
