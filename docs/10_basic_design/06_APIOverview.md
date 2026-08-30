@@ -8,7 +8,7 @@
 
 本段階は基本設計であり、個別Request / Response Schema、全Endpoint一覧、Correlation ID、Idempotency Key、Cookie属性、CSRF対策の具体方式等は詳細設計で確定する。
 
-API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定した。
+API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定した。管理者向けAPI基本形は `OI-BD-009` で段階的に確定する。
 
 ## 2. APIの位置づけ
 
@@ -101,24 +101,32 @@ POST /api/me/reservations/{reservationId}/cancel
 
 上記はAPI形状の基本例であり、Request / Responseの厳密なSchemaは詳細設計で確定する。個別Endpoint設計では、特別な理由がない限り本節のSelf Scope原則を参照し、`student_id` 非入力方針を重複定義しない。
 
-### 4.2 管理者向けAPI
+### 4.2 管理者向けAPIのActor / Target Scope原則
 
 スクール管理者向け操作は `/api/admin/...` を基本名前空間とする。
 
-管理者が特定生徒・予約・Schedule等を対象とする場合は、認可後に対象Resource IDを明示して操作する。
+管理者APIでは、**操作主体（Actor）と業務上の操作対象（Target）を明確に分離する**。
+
+- Actorとなる管理者IdentityおよびRoleは、Client入力の管理者IDやRole文字列から決定せず、認証済みSessionからServer側で解決する。
+- Clientは、認可された管理操作に必要なStudent、Reservation、ScheduleMonth、LessonSlot等のTarget Resource IDを明示してよい。
+- Targetが生徒である場合は内部生徒IDを主たる識別子とし、氏名・メール・Google ID等を更新対象決定の正本識別子として扱わない。
+- ServerはTarget Resourceの存在、現在状態、および当該Admin操作でTargetに対して許可された操作かを必ず検証する。
+- 重要な管理CommandのAuditLogでは、ActorはSessionから解決した管理者、TargetはRequestで指定された業務Resourceとして区別して追跡できる形とする。
+- 同一人物が複数Roleを持つ場合でも、`/api/admin/...` の操作はAdmin権限として認可・監査し、生徒権限と混在させない。
+- 管理者がStudent IDをTargetとして指定できることは、管理者代理予約を許可することを意味しない。`OOS-002` に従い、生徒本人の新規予約を管理者が代理実行するAPIは初期リリースでは提供しない。
 
 例:
 
 ```text
 GET  /api/admin/schedule-months/{month}
+POST /api/admin/schedule-months/{month}/generate
 POST /api/admin/schedule-months/{month}/changes/preview
 POST /api/admin/schedule-months/{month}/changes
+POST /api/admin/schedule-months/{month}/publish
 POST /api/admin/reservations/{reservationId}/school-cancel
 ```
 
 Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
-
-同一人物が複数Roleを持つ場合でも、生徒権限と管理者権限を混在させず、操作ごとのRole境界を維持する。
 
 ## 5. Preview / Confirm Pattern
 
@@ -304,7 +312,7 @@ APIはD1の保存Entityをそのまま外部契約にしない。
 
 本書では、APIが認証済みIdentityとRoleをServer側で解決し、その情報を用いて認可するところまでを原則として定義する。
 
-生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、本節では重複定義しない。
+生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、管理者APIのActor / Target決定Ruleは **4.2 管理者向けAPIのActor / Target Scope原則** を正とする。本節では重複定義しない。
 
 以下は後続の認証・Session基本設計で確定する。
 
@@ -483,7 +491,113 @@ POST Reservation Cancel
 
 Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生徒Identityは4.1のSelf Scope原則を共通適用する。
 
-## 12. 詳細設計へ送る事項
+## 12. 管理者向けSchedule API基本形
+
+本節は `OI-BD-009` で確定した、管理者向けAPIのうち月間Scheduleに関する基本設計を示す。
+
+管理者向け分類管理、生徒管理、通知失敗管理等の残りのAPIは `OI-BD-009` で継続検討する。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
+
+### 12.1 主要Endpoint
+
+月間Scheduleの主要API基本形を次とする。
+
+| 用途 | Endpoint | 種別 |
+|---|---|---|
+| 月間Schedule取得 | `GET /api/admin/schedule-months/{month}` | Query |
+| 月間Schedule生成 | `POST /api/admin/schedule-months/{month}/generate` | Command |
+| Schedule変更Preview | `POST /api/admin/schedule-months/{month}/changes/preview` | Query |
+| Schedule変更確定 | `POST /api/admin/schedule-months/{month}/changes` | Command |
+| 月間Schedule公開 | `POST /api/admin/schedule-months/{month}/publish` | Command |
+
+公開済み月の将来枠変更はCommit後ただちに有効であり、再公開操作を必要としない。そのため、公開済み月の変更後に使用する `republish` APIは設けない。
+
+### 12.2 管理者向けSchedule View
+
+管理者向けSchedule Viewは、`03_ScheduleModel.md` の `ScheduleMonth`、`LessonSlot`、`SlotOccupancy` を保存モデルのまま公開せず、運営業務に必要なApplication View Modelへ整形する。
+
+未来Slotの現在状態は、`BR-067` に従い同一の確定業務状態から矛盾なく導出する。
+
+少なくとも次を区別できる形とする。
+
+```text
+LessonSlot availability
+  enabled / disabled
+
+Current occupancy
+  none
+  student_reservation
+  admin_hold
+  group_lesson
+```
+
+StudentReservationによる占有の場合、管理者の運営業務に必要なReservation識別子、内部Student ID、表示用生徒名、classification等を返してよい。ただしSchedule管理に不要な連絡先メール等のPIIを常時返さず、`POL-004` の最小化原則を維持する。
+
+### 12.3 月間Schedule生成
+
+`POST /api/admin/schedule-months/{month}/generate` は、**対象年月のScheduleMonthがまだ存在しない場合に、現在適用される確定済み生成ルールから初期Scheduleを作成するCommand** とする。
+
+既にScheduleMonthが存在する場合に、既存のLessonSlotや管理者による手動変更を消して再生成する用途には使用しない。
+
+この方針により、定期グループレッスン等の設定変更を既生成月へ遡及反映しない `BR-019` と整合させる。既存月を変更する必要がある場合は、明示的なSchedule変更Commandを使用する。
+
+対象年月の重複生成を正常状態として許容せず、`ScheduleMonth` の年月一意性を維持する。既存月に対するgenerate要求の具体的なHTTP Status / Application Error Codeは詳細設計で確定する。
+
+### 12.4 Schedule Change SetのPreview / Confirm
+
+複数Slotに対するSchedule変更は、単なる独立PATCHの配列ではなく、管理者が一括して確認・確定する **Schedule Change Set** として扱う。
+
+Previewでは、対象Change Setを現在の確定状態へ適用した場合の少なくとも次の影響を画面表示可能な形で返す。
+
+- 対象Slotごとの変更前後状態
+- StudentReservation、AdminHold、GroupLesson等の現在占有への影響
+- school cancellationが必要となるReservationと、その理由入力・確認に必要な情報
+- その他、管理者が確定前に理解すべき主要影響
+- Confirm時の再確認に必要なExpected State相当情報
+
+Confirm時はPreviewを正本とせず、Transaction内で最新状態を再検証する。一部でも競合があれば `REQ-301 / AC-301-005, AC-301-009` および6.1に従い、原則としてChange Set全体を未適用とする。
+
+### 12.5 予約影響を伴うSchedule変更のCommand境界
+
+StudentReservationが現在占有する将来Slotを `enabled → disabled` にする等、Schedule変更の成立にschool cancellationが必要な場合は、Schedule変更とschool cancellationを別々の独立Commandとして途中状態を残さない。
+
+少なくとも次を、原因となるSchedule Change Setの1つの原子的な業務Transaction境界へ含める。
+
+- 対象LessonSlotの確定変更
+- 対象StudentReservationの `school_cancelled` 確定
+- `cancelled_at` および `SchoolCancellationDetail`
+- 対象Reservationの現在Occupancy終了
+- 必要となる月間classification再計算・未開始Reservation更新
+- `AuditLog`
+- 必要な `NotificationIntent`
+
+その一部だけをCommitしない。特に次のような状態を正常状態として残してはならない。
+
+```text
+LessonSlot = disabled
+AND
+confirmed StudentReservation が現在占有
+```
+
+school cancellation理由カテゴリ・補足は `REQ-313` に従う。複数Reservationへ同一理由を一括入力できるUIを許容しても、業務上は各Cancellationが理由情報と追跡可能に対応する形とする。
+
+AdminHoldまたはGroupLessonが占有するSlotをdisabledにする場合も、`03_ScheduleModel.md` に従い占有を残したまま利用可否だけを変更せず、対応する占有解除・変更と整合したCommandとして扱う。
+
+### 12.6 月間Schedule公開
+
+`POST /api/admin/schedule-months/{month}/publish` は、未公開ScheduleMonthを公開済みにするCommandとする。
+
+初期基本設計では専用のPublish Preview APIを設けない。管理者は公開前にSchedule View自体で対象月を確認でき、Publishそのものは既存Reservationの取消等の複雑な直接影響を発生させないためである。
+
+Publish確定時には、Server側で少なくとも次を最新状態から検証する。
+
+- 対象ScheduleMonthが存在すること
+- 対象月が未公開であること
+- Scheduleの業務整合性が成立していること
+- 整合性異常等により安全に公開できない状態でないこと
+
+公開済み月の将来枠変更は、既存設計どおりCommit後ただちに最新状態として扱い、月全体の再公開操作を要求しない。
+
+## 13. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -500,8 +614,10 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 - CSRFの具体方式
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
+- Schedule Change Setの具体的なRequest / Response Wire Format
+- Schedule生成済み・公開済み等の個別Conflict Error Code
 
-## 13. 関連要求・方針
+## 14. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
@@ -509,9 +625,15 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 - POL-006 ロール分離と最小権限
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
+- POL-010 既定ルールと例外の分離
 - POL-011 セルフサービスを基本とし必要な利用支援を可能とする
 - POL-013 重要な管理操作の説明性と監査可能性
 - POL-014 利用者向けエラー情報の安全な抽象化
+- BR-015 月間スケジュール公開
+- BR-016 公開後変更
+- BR-017 管理者確保枠
+- BR-018 定期グループレッスン
+- BR-019 定期設定変更の非遡及
 - BR-050 予約即時確定
 - BR-051 二重予約禁止
 - BR-052 予約期限
@@ -522,6 +644,8 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 - BR-057 追加レッスン分類
 - BR-058 自動再分類
 - BR-062 予約履歴
+- BR-063 スクール都合キャンセル
+- BR-064 予約済み枠の休業化
 - BR-066 予約状態と月間算入の分離
 - BR-067 未来Slotの現在予約状態の一貫性
 - BR-068 生徒本人予約の所有者同一性
@@ -535,6 +659,10 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 - REQ-005 予約履歴
 - REQ-104 標準／追加区分変更通知
 - REQ-301 月間スケジュール管理
+- REQ-302 臨時休業
+- REQ-303 月曜営業Override
+- REQ-304 管理者確保枠
+- REQ-305 定期グループレッスン設定
 - REQ-307 月間標準回数設定
 - REQ-309 標準／追加再分類
 - REQ-311 生徒削除
@@ -547,10 +675,14 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 14. 設計判断記録
+## 15. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
+- 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
+- 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。
+- 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
+- 公開済み月の将来枠変更は再公開を要求せず、正常Commit後ただちに最新確定状態として扱う。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
 - 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
