@@ -251,21 +251,35 @@ Client時刻・画面表示時刻を業務期限判定の正本としない。
 
 ## 8. スクール都合キャンセルCommand
 
-### 8.1 キャンセル後Slot状態を明示する
+要求仕様v1.10の `BR-063 / BR-116 / AC-103-004 / AC-313-005〜009` に従い、スクール都合キャンセルは原則Lesson開始前に実行するが、実際にスクール都合でLessonが実施されず緊急事情等で当時の操作ができなかった場合は、現在も未取消のconfirmed ReservationをLesson開始後・終了後に事後登録できる。
 
-スクール都合キャンセルでは、Reservation取消だけを理由に暗黙の `enabled + unoccupied` へ遷移させない。
+通常取消と事後登録は別のReservation statusへ分離せず、どちらも `school_cancelled` とする。通常／事後の別は同一Commandで用いるServer Commit基準時刻 `T` とLesson開始時刻から導出する。
 
-少なくとも次を同一Transactionで確定する。
+### 8.1 共通の原子的Transaction境界
+
+スクール都合キャンセルでは、少なくとも次を同一Transactionで確定する。
 
 - `StudentReservation.status = school_cancelled`
-- `cancelled_at`
+- `cancelled_at = T`
 - `SchoolCancellationDetail`
+- 対象Reservationの `classification = NULL`
+- 対象Reservationの `automatic_classification` は保持
 - 元Reservationの `SlotOccupancy` 終了
-- キャンセル後Slot状態
+- 通常取消／事後登録に応じたキャンセル後Slot取扱い
+- 同一生徒・同一月の必要な未開始Reservation再分類
+- 再分類対象Reservationの `automatic_classification` / 実効classification更新
 - AuditLog
 - アプリ内未確認通知
-- メールNotificationIntent
-- 必要な再分類・区分変更NotificationIntent
+- スクール都合キャンセルのメールNotificationIntent
+- `REQ-104` に該当する区分変更NotificationIntent
+
+その一部だけをCommitしない。外部メール実送信はCommit後とする。
+
+開始済みReservation自身の `automatic_classification` は事後キャンセルを理由に遡及変更しない。事後キャンセルにより開始済みstandard Reservationが月間算入対象外となって消費済み自動標準枠が減少する場合、その影響は未開始Reservationの再分類にのみ反映する。
+
+### 8.2 通常取消のキャンセル後Slot状態
+
+Server Commit基準時刻 `T < LessonSlot.start_time` の通常取消では、Reservation取消だけを理由に暗黙の `enabled + unoccupied` へ遷移させない。
 
 キャンセル後Slot状態は業務目的に応じ次のいずれかへ明示的に遷移させる。
 
@@ -275,9 +289,73 @@ Client時刻・画面表示時刻を業務期限判定の正本としない。
 
 「何も指定しなかった結果として空き枠になる」挙動を禁止する。`disabled` のSlotへ新たなOccupancyを作成しない。
 
-### 8.2 外部通知
+AdminHold等の別占有を成立させる場合は、対象占有作成をschool cancellationと同一の原子的Transaction境界で整合させる。
 
-Resend等への外部メール送信はCommit後に行う。送信失敗によって確定済みのschool cancellation、Slot状態、アプリ内通知等をRollbackしない。
+### 8.3 Lesson開始後・終了後の事後登録
+
+`T >= LessonSlot.start_time` の場合は事後スクール都合キャンセルとして扱う。
+
+事後登録の `cancelled_at` は実際に管理者が確定したServer Commit基準時刻 `T` とし、Lesson開始時刻・終了時刻その他の過去時刻へ遡及させない。
+
+事後登録では元Reservationの `SlotOccupancy` を終了するが、対象Slotを再開放しない。school cancellationだけを理由に `LessonSlot.availability_status` を変更せず、Server時刻が開始境界を越えているため新規予約不可とする。
+
+```text
+開始済み／終了済みSlot
+  + 元Reservation Occupancy終了
+  + availability_statusは事後キャンセルだけでは変更しない
+  + Server時刻条件により新規予約不可
+```
+
+過去・開始済みSlotを再び未来の予約可能枠として扱う状態変更は行わない。
+
+初期リリースでは事後登録に固定日数の期限を設けない。ただし、システム上参照可能で、Commit時点でも未取消の `confirmed` Reservationであることを必須とする。
+
+### 8.4 事後登録の業務事実確認とAudit
+
+システムは「実際にスクール都合でLessonが実施されなかった」という事実を自動判定しない。
+
+事後登録では管理者がその業務事実を明示的に確認してCommandを確定する。この確認を単なるClient入力の自動事実判定として扱わず、管理者Actorによる業務判断としてAuditLogから追跡可能にする。
+
+具体的な確認FieldやAudit Event属性はAPI詳細設計で確定する。
+
+### 8.5 欠席との関係
+
+対象Reservationに `ReservationAbsence` が存在する場合、スクール都合キャンセルCommandを成立させない。
+
+`AC-313-007` に従い、管理者は先に欠席解除Commandを明示的に実行する。
+
+```text
+欠席記録あり
+  → school cancellation 不成立
+  → 欠席解除を別Commandで確定
+  → 最新状態でschool cancellationを再確認
+```
+
+school cancellationの副作用として欠席を暗黙に解除・削除しない。
+
+### 8.6 Preview後の最新状態再検証
+
+スクール都合キャンセルConfirmでは、少なくとも次を最新確定状態で再検証する。
+
+- 対象Reservationが現在も `status = confirmed`
+- 欠席が未設定
+- Server Commit基準時刻 `T` による通常取消／事後登録の別
+- 対象Reservationと現在のSlotOccupancyの整合
+- 通常取消で確認したキャンセル後Slot状態が現在も成立可能
+- 同一生徒・同一月の算入状態・標準回数・Lesson開始境界
+- 影響する未開始Reservation集合と変更前後classification
+
+Preview時から、対象Reservation状態、欠席、通常／事後の別、キャンセル後Slot状態、影響Reservation集合または変更前後classification等の重要影響が変化している場合は、Commandを成立させずConflictとして再確認へ戻す。
+
+先に生徒キャンセル・system cancellation・別のschool cancellation等が正常Commitされていれば上書きしない。最初に正常Commitされた取消状態を正本とする。
+
+### 8.7 通知
+
+通常取消・事後登録のどちらでも、`REQ-103` に従うアプリ内未確認通知とメールNotificationIntentを同一Transactionに含める。
+
+事後登録では `AC-103-004 / BR-116` に従い、生徒がLesson開始後に事後登録されたschool cancellationであることを理解できる通知内容とする。
+
+Resend等への外部メール送信はCommit後に行う。送信失敗によって確定済みのschool cancellation、Slot状態、アプリ内通知、再分類等をRollbackしない。
 
 ## 9. 生徒削除起因system cancellation
 
@@ -444,7 +522,7 @@ Audit Eventは少なくとも次を必要最小限で表現できるようにす
 
 - 予約成立
 - 生徒キャンセル
-- スクール都合キャンセル
+- スクール都合キャンセル（事後登録を含む）
 - 生徒削除 / student_deleted system cancellation
 - 月間標準回数変更
 - 月間回数除外設定・解除
@@ -704,6 +782,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - POL-013 重要な管理操作の説明性と監査可能性
 - POL-014 利用者向けエラー情報の安全な抽象化
 - BR-050〜BR-060 予約・キャンセル・月間分類
+- BR-061 欠席
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-067 未来枠の現在予約状態の一貫性
@@ -740,6 +819,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
 - 分類管理Commandの具体的Guard SQL、集合再分類SQL、Expected Stateの具体表現
+- school cancellationの通常／事後分岐Guard、欠席Guard、事後登録確認Auditの具体表現
 - Integrity Scanの具体Cron式、分割・Query最適化
 - Integrity Incidentの物理Schema・Index
 - 重大Incidentへ昇格する具体Threshold
@@ -748,6 +828,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 ## 16. 設計判断記録
 
 - スクール都合キャンセル後のSlot状態は2026-08-28に確定した。
+- 要求仕様v1.10に従い、スクール都合キャンセルは原則Lesson開始前、例外的に開始後・終了後も事後登録可能とし、事後登録の取消時刻を実際のServer Commit時刻、Slotは再開放しない、欠席は先に明示解除、事後登録の業務事実確認をAudit対象とする方針を2026-08-30に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
 - 生徒削除起因system cancellationの即時Transaction境界、PII Purge分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
