@@ -55,7 +55,7 @@ jobs:
             echo
             gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --comments --json number,title,body,url,labels,comments \
-              --jq '"Issue #\(.number): \(.title)\n\nURL: \(.url)\n\n## Body\n\n\(.body // \"(empty)\")\n\n## Conversation\n\n" + ([.comments[]? | "### " + .author.login + "\n\n" + .body] | join("\n\n"))'
+              --jq '"Issue #\(.number): \(.title)\n\nURL: \(.url)\n\n## Body\n\n" + (.body // "(empty)") + "\n\n## Conversation\n\n" + ([.comments[]? | "### " + .author.login + "\n\n" + .body] | join("\n\n"))'
           } > .ai-context/request.md
 
       - name: Run Codex developer

@@ -34,7 +34,7 @@ gh pr view "$pr_number" \
     "## Existing conversation",
     "",
     ((.comments[]? | "### Comment by \(.author.login)\n\n\(.body)\n") // empty),
-    ((.reviews[]? | "### Review by \(.author.login) — \(.state)\n\n\(.body // \"\")\n") // empty)
+    ((.reviews[]? | "### Review by \(.author.login) — \(.state)\n\n" + (.body // "") + "\n") // empty)
   ' "$metadata"
 
   echo
@@ -48,7 +48,7 @@ gh pr view "$pr_number" \
     | while read -r issue_number; do
         [ -n "$issue_number" ] || continue
         gh api "repos/${repo}/issues/${issue_number}" \
-          --jq '"### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n\(.body // \"(empty)\")\n"' \
+          --jq '"### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n" + (.body // "(empty)") + "\n"' \
           || echo "Issue #${issue_number} could not be fetched."
       done
 
