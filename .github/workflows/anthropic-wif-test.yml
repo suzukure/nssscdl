@@ -1,5 +1,5 @@
 name: Bootstrap Claude review
-# Trigger: pause-label synchronization review
+# Trigger: fail-closed entry and merge-gate review
 
 on:
   push:
