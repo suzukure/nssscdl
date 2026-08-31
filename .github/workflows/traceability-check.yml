@@ -1,0 +1,25 @@
+name: PR Traceability
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  linked-issue:
+    name: Linked Issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an Issue reference
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -Eiq '(close[sd]?|fix(e[sd])?|resolve[sd]?|related([[:space:]]+to)?)[[:space:]]*#[0-9]+' <<< "$PR_BODY"; then
+            echo 'The PR body must link an Issue, for example: Closes #123' >&2
+            exit 1
+          fi

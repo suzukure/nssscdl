@@ -1,0 +1,46 @@
+name: Upstream change or clarification
+description: Pause dependent work while an earlier phase is clarified or changed.
+title: "[Upstream] "
+labels: []
+body:
+  - type: dropdown
+    id: upstream_phase
+    attributes:
+      label: Upstream phase requiring work
+      options:
+        - Requirements
+        - Basic design
+        - Detailed design
+        - Implementation
+        - Test
+        - Operations
+    validations:
+      required: true
+  - type: textarea
+    id: trigger
+    attributes:
+      label: Trigger and required clarification
+      description: Explain what was discovered and which earlier decision must be made.
+    validations:
+      required: true
+  - type: textarea
+    id: blocked
+    attributes:
+      label: Blocked downstream work
+      description: Link the original Issue/PR and identify the exact area that must stop.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Completion criteria
+      description: State what must be confirmed before downstream work can resume.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Downstream impact checklist
+      description: List documents, code, tests, and Issues that must be reassessed after confirmation.
+    validations:
+      required: true

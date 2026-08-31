@@ -1,0 +1,103 @@
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  review:
+    name: Review
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Create reviewer App token
+        id: review-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Create developer App token for identity allowlist
+        id: dev-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+
+      - name: Check out pull request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build review context
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ai-context
+          bash .github/scripts/build-review-context.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md
+
+      - name: Run Claude review
+        id: claude
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
+        with:
+          github_token: ${{ steps.review-token.outputs.token }}
+          allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot]
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          prompt: |
+            Read CLAUDE.md and .ai-context/review.md completely. Review only; do not edit files, push, merge, or post GitHub comments yourself.
+            Return the required structured verdict. Every finding must cite concrete repository evidence.
+          claude_args: >-
+            --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"summary":{"type":"string"},"blocking_findings":{"type":"array","items":{"type":"string"}},"non_blocking_findings":{"type":"array","items":{"type":"string"}},"linked_issues_checked":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking_findings","non_blocking_findings","linked_issues_checked"],"additionalProperties":false}'
+
+      - name: Save structured review
+        env:
+          REVIEW_JSON: ${{ steps.claude.outputs.structured_output }}
+        shell: bash
+        run: printf '%s' "$REVIEW_JSON" > "$RUNNER_TEMP/claude-review.json"
+
+      - name: Submit reviewer verdict
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: bash .github/scripts/submit-claude-review.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" "$RUNNER_TEMP/claude-review.json"
+
+  merge:
+    name: Merge approved PR
+    needs: review
+    if: needs.review.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create reviewer App token
+        id: review-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Squash merge as reviewer
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash
