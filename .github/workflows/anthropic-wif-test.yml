@@ -33,7 +33,7 @@ jobs:
       - name: Build review context
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          TRUSTED_LOGINS: ${{ steps.review-token.outputs.app-slug }}[bot]
+          TRUSTED_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot]
         run: |
           mkdir -p .ai-context
           bash .github/scripts/build-review-context.sh "$GITHUB_REPOSITORY" 37 .ai-context/review.md "$TRUSTED_LOGINS"
