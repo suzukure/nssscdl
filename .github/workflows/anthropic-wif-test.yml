@@ -1,4 +1,4 @@
-name: Anthropic WIF smoke test
+name: Bootstrap Claude review
 
 on:
   push:
@@ -6,57 +6,65 @@ on:
       - chore/test-anthropic-wif-20260831
     paths:
       - .github/workflows/anthropic-wif-test.yml
-  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  exchange-token:
+  review-bootstrap:
+    name: Review PR 37
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - name: Fetch GitHub OIDC token
-        uses: actions/github-script@v8
+      - name: Create reviewer App token
+        id: review-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
-          script: |
-            const token = await core.getIDToken('https://api.anthropic.com');
-            core.setSecret(token);
-            core.exportVariable('ANTHROPIC_IDENTITY_JWT', token);
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
 
-      - name: Exchange for Anthropic access token
-        shell: bash
+      - name: Check out bootstrap PR
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: chore/ai-workflow-bootstrap-20260831
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build review context
         env:
-          FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
         run: |
-          set -euo pipefail
-          request_body="$(
-            jq -n \
-              --arg assertion "$ANTHROPIC_IDENTITY_JWT" \
-              --arg federation_rule_id "$FEDERATION_RULE_ID" \
-              --arg organization_id "$ANTHROPIC_ORGANIZATION_ID" \
-              --arg service_account_id "$ANTHROPIC_SERVICE_ACCOUNT_ID" \
-              --arg workspace_id "$ANTHROPIC_WORKSPACE_ID" \
-              '{
-                grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                assertion: $assertion,
-                federation_rule_id: $federation_rule_id,
-                organization_id: $organization_id,
-                service_account_id: $service_account_id,
-                workspace_id: $workspace_id
-              }'
-          )"
-          response="$(
-            curl --fail-with-body --silent --show-error \
-              https://api.anthropic.com/v1/oauth/token \
-              -H "content-type: application/json" \
-              --data "$request_body"
-          )"
-          echo "$response" | jq -e \
-            'has("access_token") and (.token_type == "Bearer") and (.expires_in > 0)' \
-            >/dev/null
-          echo "Anthropic WIF token exchange succeeded."
+          mkdir -p .ai-context
+          bash .github/scripts/build-review-context.sh "$GITHUB_REPOSITORY" 37 .ai-context/review.md
+
+      - name: Run Claude review
+        id: claude
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
+        with:
+          github_token: ${{ steps.review-token.outputs.token }}
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          prompt: |
+            Read CLAUDE.md and .ai-context/review.md completely. Review PR #37 only.
+            Do not edit files, push, merge, or post GitHub comments yourself.
+            Return the required structured verdict with concrete repository evidence.
+          claude_args: >-
+            --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"summary":{"type":"string"},"blocking_findings":{"type":"array","items":{"type":"string"}},"non_blocking_findings":{"type":"array","items":{"type":"string"}},"linked_issues_checked":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking_findings","non_blocking_findings","linked_issues_checked"],"additionalProperties":false}'
+
+      - name: Save review
+        env:
+          REVIEW_JSON: ${{ steps.claude.outputs.structured_output }}
+        run: printf '%s' "$REVIEW_JSON" > "$RUNNER_TEMP/claude-review.json"
+
+      - name: Submit verdict
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+        run: bash .github/scripts/submit-claude-review.sh "$GITHUB_REPOSITORY" 37 "$RUNNER_TEMP/claude-review.json"
+
+      - name: Merge approved bootstrap PR
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+        run: gh pr merge 37 --repo "$GITHUB_REPOSITORY" --squash
