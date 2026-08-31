@@ -52,7 +52,16 @@ review_count="$(
     <<< "$metadata"
 )"
 
-review_summary="$(sed -n '/^\*\*Verdict:/,/^### Blocking findings/{ /^\*\*Verdict:/d; /^### Blocking findings/d; p; }' <<< "$review_body")"
+if ! grep -Fxq -- '--- BEGIN REVIEW SUMMARY DATA ---' <<< "$review_body" \
+    || ! grep -Fxq -- '--- END REVIEW SUMMARY DATA ---' <<< "$review_body"; then
+  emit_result false true false 'Could not parse the trusted reviewer summary; refusing automated follow-up.'
+  exit 0
+fi
+review_summary="$(
+  sed -n '/^--- BEGIN REVIEW SUMMARY DATA ---$/,/^--- END REVIEW SUMMARY DATA ---$/{
+    /^SUMMARY| /{s/^SUMMARY| //; p;}
+  }' <<< "$review_body"
+)"
 if grep -Eq '\[(REQUIREMENTS_CHANGE_REQUIRED|HUMAN_ESCALATION_RECOMMENDED)\]' <<< "$review_summary"; then
   emit_result false true false 'Claude requested a human decision.'
 elif [ "$review_count" -ge 3 ]; then

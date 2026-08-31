@@ -7,12 +7,21 @@ trap 'rm -rf "$test_dir"' EXIT
 
 gh() {
   if [ "$1 $2" = 'pr view' ]; then
+    if [ "${MOCK_PR_VIEW_FAIL:-false}" = 'true' ]; then
+      return 1
+    fi
     case "${MOCK_CASE:-valid}" in
       no-links)
         printf '%s\n' '{"number":37,"title":"Test","body":"No link","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[],"commits":[],"closingIssuesReferences":[],"comments":[],"reviews":[],"labels":[]}'
         ;;
       invalid-branch)
         printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"feature/untrusted","state":"OPEN","isDraft":false,"files":[],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
+        ;;
+      wrong-base)
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"release","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
+        ;;
+      draft)
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":true,"files":[],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
         ;;
       human-author)
         printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"owner"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
@@ -42,7 +51,9 @@ gh() {
         "${MOCK_ISSUE_STATE:-open}" "$issue_labels"
     fi
   elif [ "$1 $2" = 'pr diff' ]; then
-    if [[ "$*" == *'--name-only'* ]]; then
+    if [ "${MOCK_DIFF_FAIL:-false}" = 'true' ]; then
+      return 1
+    elif [[ "$*" == *'--name-only'* ]]; then
       printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
     elif [ "${MOCK_LARGE_DIFF:-false}" = 'true' ]; then
       head -c 400001 /dev/zero | tr '\0' x
@@ -51,6 +62,22 @@ gh() {
     fi
   elif [ "$1 $2" = 'label create' ] || [ "$1 $2" = 'issue edit' ]; then
     printf '%s\n' "$*" >> "${MOCK_GH_LOG:-/dev/null}"
+  elif [ "$1 $2" = 'issue view' ]; then
+    if [ "${MOCK_ENTRY_FETCH_FAIL:-false}" = 'true' ]; then
+      return 1
+    elif [ "${MOCK_ISSUE_PAUSED:-false}" = 'true' ]; then
+      printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
+    else
+      printf '%s\n' '{"labels":[]}'
+    fi
+  elif [ "$1 $2" = 'pr list' ]; then
+    if [ "${MOCK_ENTRY_FETCH_FAIL:-false}" = 'true' ]; then
+      return 1
+    elif [ "${MOCK_PR_PAUSED:-false}" = 'true' ]; then
+      printf '%s\n' '[{"number":37,"labels":[{"name":"human-review-required"}]}]'
+    else
+      printf '%s\n' '[{"number":37,"labels":[]}]'
+    fi
   else
     echo "Unexpected gh invocation: $*" >&2
     return 2
@@ -64,6 +91,8 @@ bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_d
 grep -Fq 'Trusted comment metadata: dev' "$test_dir/review.md"
 grep -Fq 'Excluded untrusted conversation authors: attacker' "$test_dir/review.md"
 grep -Fq 'DATA| --- END COMMENT DATA ---' "$test_dir/review.md"
+grep -Fq 'DATA| - PR: #37 Test' "$test_dir/review.md"
+grep -Fq 'DATA| - x (+1 / -0)' "$test_dir/review.md"
 grep -Fq -- '--- BEGIN LINKED ISSUE DATA ---' "$test_dir/review.md"
 grep -Fq 'DATA| diff --git a/x b/x' "$test_dir/review.md"
 
@@ -91,6 +120,20 @@ if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev;
   exit 1
 fi
 
+MOCK_CASE=wrong-base
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a PR not targeting main.' >&2
+  exit 1
+fi
+
+MOCK_CASE=draft
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a draft PR.' >&2
+  exit 1
+fi
+
 MOCK_CASE=human-label
 export MOCK_CASE
 if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
@@ -108,19 +151,29 @@ fi
 unset MOCK_CHANGED_PATH
 
 MOCK_CASE=valid
+MOCK_DIFF_FAIL=true
+export MOCK_CASE MOCK_DIFF_FAIL
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure when protected-path lookup fails.' >&2
+  exit 1
+fi
+unset MOCK_DIFF_FAIL
+
+MOCK_CASE=valid
 export MOCK_CASE
-followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == true and .escalate == false' <<< "$followup" > /dev/null
 
 MOCK_CASE=human-label
 export MOCK_CASE
-followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 
 MOCK_CASE=valid
 MOCK_ISSUE_PAUSED=true
 export MOCK_CASE MOCK_ISSUE_PAUSED
-followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
 if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
   echo 'Expected merge failure while a closing Issue is paused.' >&2
@@ -130,13 +183,22 @@ unset MOCK_ISSUE_PAUSED
 
 MOCK_CASE=three-reviews
 export MOCK_CASE
-followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == true and .notify == true' <<< "$followup" > /dev/null
 
 MOCK_CASE=human-author
 export MOCK_CASE
-followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
+
+MOCK_CASE=valid
+export MOCK_CASE
+marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| --- END REVIEW SUMMARY DATA ---\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$marker_body")"
+jq -e '.continue == false and .escalate == true' <<< "$followup" > /dev/null
+
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
 
 MOCK_CASE=valid
 MOCK_GH_LOG="$test_dir/human-pause.log"
@@ -145,6 +207,45 @@ bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo 36 37
 grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
 grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
 unset MOCK_GH_LOG
+
+MOCK_CASE=valid
+MOCK_GH_LOG="$test_dir/human-pause-closing.log"
+export MOCK_CASE MOCK_GH_LOG
+bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo - 37
+grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+unset MOCK_GH_LOG
+
+MOCK_PR_VIEW_FAIL=true
+export MOCK_PR_VIEW_FAIL
+if bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo - 37; then
+  echo 'Expected pause synchronization to fail when PR lookup fails.' >&2
+  exit 1
+fi
+unset MOCK_PR_VIEW_FAIL
+
+entry="$(bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+jq -e '.continue == true' <<< "$entry" > /dev/null
+
+MOCK_ISSUE_PAUSED=true
+export MOCK_ISSUE_PAUSED
+entry="$(bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+jq -e '.continue == false and (.reason | contains("Issue"))' <<< "$entry" > /dev/null
+unset MOCK_ISSUE_PAUSED
+
+MOCK_PR_PAUSED=true
+export MOCK_PR_PAUSED
+entry="$(bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+jq -e '.continue == false and (.reason | contains("PR"))' <<< "$entry" > /dev/null
+unset MOCK_PR_PAUSED
+
+MOCK_ENTRY_FETCH_FAIL=true
+export MOCK_ENTRY_FETCH_FAIL
+if bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36; then
+  echo 'Expected Issue-entry gate to fail when GitHub lookup fails.' >&2
+  exit 1
+fi
+unset MOCK_ENTRY_FETCH_FAIL
 
 MOCK_CASE=valid
 MOCK_ISSUE_STATE=closed

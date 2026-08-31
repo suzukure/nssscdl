@@ -108,11 +108,17 @@ jobs:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
           git show "${BASE_SHA}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
-          bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" - "$PR_NUMBER"
+          if [[ "${HEAD_REF}" =~ ^ai/issue-([0-9]+)$ ]]; then
+            issue_number="${BASH_REMATCH[1]}"
+          else
+            issue_number='-'
+          fi
+          bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
 
       - name: Notify Slack of Claude escalation
         if: >-

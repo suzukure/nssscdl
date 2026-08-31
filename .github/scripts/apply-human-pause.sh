@@ -25,12 +25,19 @@ if [ -n "$pr_number" ]; then
   fi
   gh issue edit "$pr_number" --repo "$repo" --add-label "$label"
   issue_prefix="https://github.com/${repo}/issues/"
-  mapfile -t closing_issues < <(
-    gh pr view "$pr_number" --repo "$repo" --json closingIssuesReferences \
-      | jq -r --arg prefix "$issue_prefix" \
-          '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number'
-  )
-  issue_numbers+=("${closing_issues[@]}")
+  if ! pr_json="$(gh pr view "$pr_number" --repo "$repo" --json closingIssuesReferences)"; then
+    echo "Could not fetch PR #${pr_number}; refusing partial pause synchronization." >&2
+    exit 1
+  fi
+  closing_issue_numbers="$(
+    jq -r --arg prefix "$issue_prefix" \
+      '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' \
+      <<< "$pr_json"
+  )"
+  if [ -n "$closing_issue_numbers" ]; then
+    mapfile -t closing_issues <<< "$closing_issue_numbers"
+    issue_numbers+=("${closing_issues[@]}")
+  fi
 fi
 
 if [ "${#issue_numbers[@]}" -gt 0 ]; then

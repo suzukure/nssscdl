@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  develop-from-issue:
-    name: Develop from Issue
+  gate-issue-entry:
+    name: Gate Issue entry
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request == null &&
@@ -19,6 +19,35 @@ jobs:
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
       !contains(github.event.issue.labels.*.name, 'human-review-required') &&
       contains(github.event.comment.body, '/codex develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      continue: ${{ steps.pause-gate.outputs.continue }}
+    steps:
+      - name: Check out trusted entry gate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Reject a paused Issue or related PR
+        id: pause-gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(bash .github/scripts/evaluate-issue-entry-gate.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER")"
+          echo "continue=$(jq -r .continue <<< "$result")" >> "$GITHUB_OUTPUT"
+          jq -r .reason <<< "$result"
+
+  develop-from-issue:
+    name: Develop from Issue
+    needs: gate-issue-entry
+    if: needs.gate-issue-entry.outputs.continue == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: codex-issue-${{ github.event.issue.number }}

@@ -88,9 +88,10 @@ if [ "$paused_issue_count" -gt 0 ]; then
   exit 1
 fi
 
+changed_paths="$(gh pr diff "$pr_number" --repo "$repo" --name-only)"
 protected_paths="$(
-  gh pr diff "$pr_number" --repo "$repo" --name-only \
-    | grep -E '(^|/)(AGENTS\.md|AGENTS\.override\.md|CLAUDE\.md|CLAUDE\.local\.md|CODEOWNERS|\.mcp\.json)$|(^|/)\.(claude|codex)(/|$)|^\.github/' \
+  grep -E '(^|/)(AGENTS\.md|AGENTS\.override\.md|CLAUDE\.md|CLAUDE\.local\.md|CODEOWNERS|\.mcp\.json)$|(^|/)\.(claude|codex|github)(/|$)' \
+    <<< "$changed_paths" \
     || true
 )"
 if [ -n "$protected_paths" ]; then

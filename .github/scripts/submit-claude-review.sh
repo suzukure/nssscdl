@@ -28,7 +28,9 @@ trap 'rm -f "$body_file"' EXIT
   echo
   echo "**Verdict:** \`$verdict\`"
   echo
-  jq -r '.summary' "$review_json"
+  echo '--- BEGIN REVIEW SUMMARY DATA ---'
+  jq -r '.summary | split("\n") | map("SUMMARY| " + .) | join("\n")' "$review_json"
+  echo '--- END REVIEW SUMMARY DATA ---'
   echo
   echo '### Blocking findings'
   echo
