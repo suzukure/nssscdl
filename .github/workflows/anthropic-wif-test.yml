@@ -1,0 +1,62 @@
+name: Anthropic WIF smoke test
+
+on:
+  push:
+    branches:
+      - chore/test-anthropic-wif-20260831
+    paths:
+      - .github/workflows/anthropic-wif-test.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  exchange-token:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch GitHub OIDC token
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const token = await core.getIDToken('https://api.anthropic.com');
+            core.setSecret(token);
+            core.exportVariable('ANTHROPIC_IDENTITY_JWT', token);
+
+      - name: Exchange for Anthropic access token
+        shell: bash
+        env:
+          FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          set -euo pipefail
+          request_body="$(
+            jq -n \
+              --arg assertion "$ANTHROPIC_IDENTITY_JWT" \
+              --arg federation_rule_id "$FEDERATION_RULE_ID" \
+              --arg organization_id "$ANTHROPIC_ORGANIZATION_ID" \
+              --arg service_account_id "$ANTHROPIC_SERVICE_ACCOUNT_ID" \
+              --arg workspace_id "$ANTHROPIC_WORKSPACE_ID" \
+              '{
+                grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                assertion: $assertion,
+                federation_rule_id: $federation_rule_id,
+                organization_id: $organization_id,
+                service_account_id: $service_account_id,
+                workspace_id: $workspace_id
+              }'
+          )"
+          response="$(
+            curl --fail-with-body --silent --show-error \
+              https://api.anthropic.com/v1/oauth/token \
+              -H "content-type: application/json" \
+              --data "$request_body"
+          )"
+          echo "$response" | jq -e \
+            'has("access_token") and (.token_type == "Bearer") and (.expires_in > 0)' \
+            >/dev/null
+          echo "Anthropic WIF token exchange succeeded."
