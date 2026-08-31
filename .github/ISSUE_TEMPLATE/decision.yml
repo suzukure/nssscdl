@@ -34,7 +34,7 @@ body:
     id: decision
     attributes:
       label: Decision and rationale
-      description: Leave as pending until the decision is confirmed.
+      description: Enter `Pending` until the decision is confirmed; then replace it with the decision and rationale.
     validations:
       required: true
   - type: textarea

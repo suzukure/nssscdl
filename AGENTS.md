@@ -9,7 +9,7 @@ Act as the developer. Implement the GitHub Issue supplied in `.ai-context/reques
 ## Required workflow
 
 1. Read the complete Issue, its linked Issues, and the relevant existing documents before editing.
-2. Keep the change inside the Issue scope. If a requirements change is needed, do not silently change the requirement. Record the need in the final response so it can be escalated to a human.
+2. Keep the change inside the Issue scope. If a requirements change is needed, do not silently change the requirement. Include the exact marker `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response so automation stops and escalates to a human.
 3. If work in an earlier phase is required, do not guess. Record the upstream question and the downstream work that must remain blocked.
 4. Preserve traceability across `POL -> BR -> REQ -> AC -> TC` and keep identifiers stable unless the Issue explicitly authorizes a change.
 5. Update all affected documents, diagrams, source, tests, and traceability records together.

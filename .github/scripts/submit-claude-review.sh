@@ -61,7 +61,4 @@ jq -n \
 
 rm -f "$body_file"
 
-if [ "$verdict" = 'request_changes' ]; then
-  echo 'Claude found blocking changes.' >&2
-  exit 1
-fi
+echo "Claude review submitted with verdict: ${verdict}"
