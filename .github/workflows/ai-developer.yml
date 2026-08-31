@@ -53,6 +53,7 @@ jobs:
           fi
           echo "AI_BRANCH=$branch" >> "$GITHUB_ENV"
           git show "${base_sha}:.github/scripts/notify-slack.sh" > "$RUNNER_TEMP/notify-slack.sh"
+          git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
 
           mkdir -p .ai-context
           git show "${base_sha}:AGENTS.md" > .ai-context/AGENTS.base.md
@@ -97,9 +98,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ -s "$CODEX_FINAL" ] && grep -Fq '[REQUIREMENTS_CHANGE_REQUIRED]' "$CODEX_FINAL"; then
-            gh label create human-review-required --repo "$GITHUB_REPOSITORY" \
-              --color D93F0B --description 'Automation paused pending a human decision' --force
-            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label human-review-required
+            pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
+              --state open --json number --jq '.[0].number // empty')"
+            bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --body 'Codex detected that a requirements change is required. Automated development is paused for a human decision.'
             echo 'continue=false' >> "$GITHUB_OUTPUT"
@@ -228,6 +229,7 @@ jobs:
           REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
           DEVELOPER_APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -239,9 +241,13 @@ jobs:
           reason="$(jq -r .reason <<< "$result")"
 
           if [ "$escalate" = 'true' ]; then
-            gh label create human-review-required --repo "$GITHUB_REPOSITORY" \
-              --color D93F0B --description 'Automation paused pending a human decision' --force
-            gh issue edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label human-review-required
+            if [[ "${HEAD_REF}" =~ ^ai/issue-([0-9]+)$ ]]; then
+              issue_number="${BASH_REMATCH[1]}"
+            else
+              issue_number='-'
+            fi
+            bash .github/scripts/apply-human-pause.sh \
+              "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --body "${reason} Codex follow-up is paused; a human must decide how to proceed."
           fi

@@ -26,6 +26,7 @@ if [ "${#linked_issues[@]}" -lt 1 ]; then
 fi
 
 open_issue_count=0
+paused_issue_count=0
 for issue_number in "${linked_issues[@]}"; do
   if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
     echo "Could not fetch closing Issue #${issue_number}; refusing to continue." >&2
@@ -33,6 +34,9 @@ for issue_number in "${linked_issues[@]}"; do
   fi
   if jq -e '.state == "open" and (has("pull_request") | not)' <<< "$issue_json" > /dev/null; then
     open_issue_count=$((open_issue_count + 1))
+  fi
+  if jq -e '(.labels // []) | any(.name == "human-review-required")' <<< "$issue_json" > /dev/null; then
+    paused_issue_count=$((paused_issue_count + 1))
   fi
 done
 
@@ -79,9 +83,14 @@ if jq -e '.labels | any(.name == "human-review-required")' "$metadata" > /dev/nu
   exit 1
 fi
 
+if [ "$paused_issue_count" -gt 0 ]; then
+  echo 'Auto-merge is paused because a closing Issue has the human-review-required label.' >&2
+  exit 1
+fi
+
 protected_paths="$(
   gh pr diff "$pr_number" --repo "$repo" --name-only \
-    | grep -E '(^|/)(AGENTS\.md|CLAUDE\.md|\.mcp\.json)$|(^|/)\.(claude|codex)(/|$)|^\.github/' \
+    | grep -E '(^|/)(AGENTS\.md|AGENTS\.override\.md|CLAUDE\.md|CLAUDE\.local\.md|CODEOWNERS|\.mcp\.json)$|(^|/)\.(claude|codex)(/|$)|^\.github/' \
     || true
 )"
 if [ -n "$protected_paths" ]; then

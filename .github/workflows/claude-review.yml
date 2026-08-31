@@ -107,12 +107,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          gh label create human-review-required --repo "$GITHUB_REPOSITORY" \
-            --color D93F0B --description 'Automation paused pending a human decision' --force
-          gh issue edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label human-review-required
+          git show "${BASE_SHA}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
+          bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" - "$PR_NUMBER"
 
       - name: Notify Slack of Claude escalation
         if: >-

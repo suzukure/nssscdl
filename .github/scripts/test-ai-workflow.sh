@@ -34,7 +34,12 @@ gh() {
     if [[ "$*" == *'### Issue'* ]]; then
       printf '%s\n' '### Issue #36: Issue' '' "State: ${MOCK_ISSUE_STATE:-open}" '' '--- BEGIN LINKED ISSUE DATA ---' 'DATA| requirements' '--- END LINKED ISSUE DATA ---'
     else
-      printf '{"number":36,"state":"%s","body":"requirements"}\n' "${MOCK_ISSUE_STATE:-open}"
+      issue_labels='[]'
+      if [ "${MOCK_ISSUE_PAUSED:-false}" = 'true' ]; then
+        issue_labels='[{"name":"human-review-required"}]'
+      fi
+      printf '{"number":36,"state":"%s","body":"requirements","labels":%s}\n' \
+        "${MOCK_ISSUE_STATE:-open}" "$issue_labels"
     fi
   elif [ "$1 $2" = 'pr diff' ]; then
     if [[ "$*" == *'--name-only'* ]]; then
@@ -44,6 +49,8 @@ gh() {
     else
       printf '%s\n' 'diff --git a/x b/x'
     fi
+  elif [ "$1 $2" = 'label create' ] || [ "$1 $2" = 'issue edit' ]; then
+    printf '%s\n' "$*" >> "${MOCK_GH_LOG:-/dev/null}"
   else
     echo "Unexpected gh invocation: $*" >&2
     return 2
@@ -110,6 +117,17 @@ export MOCK_CASE
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 
+MOCK_CASE=valid
+MOCK_ISSUE_PAUSED=true
+export MOCK_CASE MOCK_ISSUE_PAUSED
+followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure while a closing Issue is paused.' >&2
+  exit 1
+fi
+unset MOCK_ISSUE_PAUSED
+
 MOCK_CASE=three-reviews
 export MOCK_CASE
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
@@ -119,6 +137,14 @@ MOCK_CASE=human-author
 export MOCK_CASE
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
+
+MOCK_CASE=valid
+MOCK_GH_LOG="$test_dir/human-pause.log"
+export MOCK_CASE MOCK_GH_LOG
+bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo 36 37
+grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+unset MOCK_GH_LOG
 
 MOCK_CASE=valid
 MOCK_ISSUE_STATE=closed

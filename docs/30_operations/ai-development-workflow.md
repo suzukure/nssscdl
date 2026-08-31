@@ -12,7 +12,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
 5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。
 6. `REQUEST_CHANGES` の場合はCodexが修正する。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーで自動修正を停止する。
-7. Claudeが承認し、PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、`human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
+7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
 
@@ -62,7 +62,7 @@ default branchに次を適用する。
 
 - Pull Request必須
 - 承認1件以上
-- Code Owner review必須（`.github/**`、任意階層の `AGENTS.md` / `CLAUDE.md`、`.claude/**`、`.codex/**`、`.mcp.json` は人間ownerのみ）
+- Code Owner review必須（`.github/**`、任意階層の `AGENTS.md` / `AGENTS.override.md` / `CLAUDE.md` / `CLAUDE.local.md` / `CODEOWNERS`、`.claude/**`、`.codex/**`、`.mcp.json` は人間ownerのみ）
 - 古い承認を新しいpushで破棄
 - 最新pushへの承認必須
 - 会話スレッド解決必須
@@ -83,7 +83,7 @@ default branchに次を適用する。
 - Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
 - Claudeのchange requestが3回に到達した。
 
-ラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。人間が判断を記録し、再開可能と確認してからラベルを外す。
+停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。人間が判断を記録し、再開可能と確認してから両方のラベルを外す。
 
 `SLACK_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをSlackへ送る。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
