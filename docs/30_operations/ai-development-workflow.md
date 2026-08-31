@@ -47,9 +47,10 @@ developer Appとreviewer Appを分離し、対象リポジトリだけへイン�
 | Contents | Read and write | Read and write |
 | Issues | Read and write | Read and write |
 | Pull requests | Read and write | Read and write |
+| Workflows | No access | No access |
 | Metadata | Read | Read |
 
-reviewer Appだけが承認後のマージを担当する。developer Appは自分のPRを承認・マージしない。
+reviewer Appだけが承認後のマージを担当する。developer Appは自分のPRを承認・マージしない。どちらのAppにもWorkflows writeを付与してはならない。
 
 ## Anthropic認証
 
@@ -61,6 +62,7 @@ default branchに次を適用する。
 
 - Pull Request必須
 - 承認1件以上
+- Code Owner review必須（`.github/**`、`AGENTS.md`、`CLAUDE.md` は人間ownerのみ）
 - 古い承認を新しいpushで破棄
 - 最新pushへの承認必須
 - 会話スレッド解決必須
@@ -68,6 +70,8 @@ default branchに次を適用する。
 - linear history必須
 - branch deletionとforce pushを禁止
 - bypass actorなし
+
+`pull_request` runはsame-repository PR側のworkflow定義を評価し得るため、`.github/CODEOWNERS` とCode Owner reviewを防御境界とする。AI AppはCode Ownerに指定せず、Workflow・AI指示書の変更には人間ownerの承認を必須にする。
 
 実際のcheck名がmain上で一度観測できた後、`PR Traceability / Linked Issue` をrequired status checkへ追加する。自動マージ処理自身も同じclosing Issue条件を再検証するため、required check設定前でもこの条件を迂回しない。
 

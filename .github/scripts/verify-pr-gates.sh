@@ -4,12 +4,13 @@ set -euo pipefail
 repo="${1:?repository is required}"
 pr_number="${2:?pull request number is required}"
 mode="${3:-traceability}"
+developer_app_slug="${4:-}"
 
 metadata="$(mktemp)"
 trap 'rm -f "$metadata"' EXIT
 
 gh pr view "$pr_number" --repo "$repo" \
-  --json number,state,isDraft,baseRefName,headRefName,closingIssuesReferences,labels \
+  --json number,state,isDraft,author,baseRefName,headRefName,closingIssuesReferences,labels \
   > "$metadata"
 
 issue_prefix="https://github.com/${repo}/issues/"
@@ -26,9 +27,11 @@ fi
 
 open_issue_count=0
 for issue_number in "${linked_issues[@]}"; do
-  if gh api "repos/${repo}/issues/${issue_number}" \
-      --jq 'select(.state == "open" and (has("pull_request") | not)) | .number' \
-      | grep -qx "$issue_number"; then
+  if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
+    echo "Could not fetch closing Issue #${issue_number}; refusing to continue." >&2
+    exit 1
+  fi
+  if jq -e '.state == "open" and (has("pull_request") | not)' <<< "$issue_json" > /dev/null; then
     open_issue_count=$((open_issue_count + 1))
   fi
 done
@@ -40,6 +43,17 @@ fi
 
 if [ "$mode" != 'merge' ]; then
   exit 0
+fi
+
+if [ -z "$developer_app_slug" ]; then
+  echo 'Developer App slug is required for merge verification.' >&2
+  exit 1
+fi
+
+author_login="$(jq -r '.author.login' "$metadata")"
+if [ "$author_login" != "$developer_app_slug" ] && [ "$author_login" != "${developer_app_slug}[bot]" ]; then
+  echo "Auto-merge requires a PR authored by the developer App; got: ${author_login}" >&2
+  exit 1
 fi
 
 jq -e '.state == "OPEN" and (.isDraft | not)' "$metadata" > /dev/null \

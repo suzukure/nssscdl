@@ -4,6 +4,7 @@ set -euo pipefail
 repo="${1:?repository is required}"
 pr_number="${2:?pull request number is required}"
 review_json="${3:?review JSON path is required}"
+commit_id="${4:-}"
 
 jq -e '
   (.verdict == "approve" or .verdict == "request_changes") and
@@ -56,8 +57,9 @@ trap 'rm -f "$body_file"' EXIT
 
 jq -n \
   --arg event "$event" \
+  --arg commit_id "$commit_id" \
   --rawfile body "$body_file" \
-  '{event: $event, body: $body}' \
+  '{event: $event, body: $body} + (if $commit_id == "" then {} else {commit_id: $commit_id} end)' \
   | gh api --method POST "repos/${repo}/pulls/${pr_number}/reviews" --input - > /dev/null
 
 echo "Claude review submitted with verdict: ${verdict}"

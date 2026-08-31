@@ -1,0 +1,4 @@
+# Security-sensitive automation requires the human repository owner.
+/.github/ @suzukure
+/AGENTS.md @suzukure
+/CLAUDE.md @suzukure

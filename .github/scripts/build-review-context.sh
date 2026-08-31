@@ -30,6 +30,7 @@ fi
   echo
   jq -r --arg trusted_logins_csv "$trusted_logins_csv" '
     def trusted_logins: ($trusted_logins_csv | split(",") | map(select(length > 0)));
+    def data_lines: split("\n") | map("DATA| " + .) | join("\n");
     def trusted_author:
       ((.authorAssociation // "") as $association
         | (["OWNER", "MEMBER", "COLLABORATOR"] | index($association)) != null)
@@ -43,7 +44,7 @@ fi
     "## Pull request body",
     "",
     "--- BEGIN PR BODY DATA ---",
-    (.body // "(empty)"),
+    ((.body // "(empty)") | data_lines),
     "--- END PR BODY DATA ---",
     "",
     "## Changed files",
@@ -52,8 +53,8 @@ fi
     "",
     "## Existing conversation",
     "",
-    ((.comments[]? | select(trusted_author) | "### Trusted comment metadata: \(.author.login)\n\n--- BEGIN COMMENT DATA ---\n\(.body)\n--- END COMMENT DATA ---\n") // empty),
-    ((.reviews[]? | select(trusted_author) | "### Trusted review metadata: \(.author.login) — \(.state)\n\n--- BEGIN REVIEW DATA ---\n" + (.body // "") + "\n--- END REVIEW DATA ---\n") // empty),
+    ((.comments[]? | select(trusted_author) | "### Trusted comment metadata: \(.author.login)\n\n--- BEGIN COMMENT DATA ---\n" + (.body | data_lines) + "\n--- END COMMENT DATA ---\n") // empty),
+    ((.reviews[]? | select(trusted_author) | "### Trusted review metadata: \(.author.login) — \(.state)\n\n--- BEGIN REVIEW DATA ---\n" + ((.body // "") | data_lines) + "\n--- END REVIEW DATA ---\n") // empty),
     (([(.comments[]? | select(trusted_author | not) | .author.login),
        (.reviews[]? | select(trusted_author | not) | .author.login)] | unique) as $excluded
       | if ($excluded | length) > 0 then "Excluded untrusted conversation authors: " + ($excluded | join(", ")) else empty end)
@@ -69,13 +70,13 @@ fi
     | while read -r issue_number; do
         [ -n "$issue_number" ] || continue
         gh api "repos/${repo}/issues/${issue_number}" \
-          --jq '"### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n--- BEGIN LINKED ISSUE DATA ---\n" + (.body // "(empty)") + "\n--- END LINKED ISSUE DATA ---\n"'
+          --jq 'def data_lines: split("\n") | map("DATA| " + .) | join("\n"); "### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n--- BEGIN LINKED ISSUE DATA ---\n" + ((.body // "(empty)") | data_lines) + "\n--- END LINKED ISSUE DATA ---\n"'
       done
 
   echo
   echo '## Pull request diff'
   echo
   echo '--- BEGIN DIFF DATA ---'
-  cat "$diff_file"
+  sed 's/^/DATA| /' "$diff_file"
   echo '--- END DIFF DATA ---'
 } > "$output"

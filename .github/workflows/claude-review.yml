@@ -20,6 +20,7 @@ jobs:
       cancel-in-progress: true
     outputs:
       verdict: ${{ steps.review-result.outputs.verdict }}
+      developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}
     steps:
       - name: Create reviewer App token
         id: review-token
@@ -54,6 +55,7 @@ jobs:
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
+          git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
 
       - name: Run Claude review
@@ -86,11 +88,12 @@ jobs:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
           git show "${BASE_SHA}:.github/scripts/submit-claude-review.sh" > "$RUNNER_TEMP/submit-claude-review.sh"
-          bash "$RUNNER_TEMP/submit-claude-review.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$RUNNER_TEMP/claude-review.json"
+          bash "$RUNNER_TEMP/submit-claude-review.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$RUNNER_TEMP/claude-review.json" "$REVIEWED_HEAD_SHA"
 
       - name: Record verdict
         id: review-result
@@ -154,7 +157,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: bash .github/scripts/verify-pr-gates.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" merge
+          DEV_APP_SLUG: ${{ needs.review.outputs.developer_app_slug }}
+        run: bash .github/scripts/verify-pr-gates.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" merge "$DEV_APP_SLUG"
 
       - name: Squash merge as reviewer
         env:
