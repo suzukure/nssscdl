@@ -1,4 +1,5 @@
 name: Bootstrap Claude review
+# Trigger: pause-label synchronization review
 
 on:
   push:
