@@ -1,3 +1,5 @@
 # 運用
 
 運用文書をこのディレクトリに格納する。デプロイ、監視、インシデント対応、Backup / Restore、アカウントRecovery等の手順を扱う。
+
+- [AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md)

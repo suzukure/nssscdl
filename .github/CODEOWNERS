@@ -1,0 +1,10 @@
+# Security-sensitive automation requires the human repository owner.
+.github/ @suzukure
+AGENTS.md @suzukure
+AGENTS.override.md @suzukure
+CLAUDE.md @suzukure
+CLAUDE.local.md @suzukure
+CODEOWNERS @suzukure
+.claude/ @suzukure
+.codex/ @suzukure
+.mcp.json @suzukure

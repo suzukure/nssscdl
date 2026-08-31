@@ -1,0 +1,53 @@
+name: Engineering decision
+description: Record an important decision, alternatives, and affected phases.
+title: "[Decision] "
+labels: []
+body:
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - Requirements
+        - Basic design
+        - Detailed design
+        - Implementation
+        - Test
+        - Operations
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: Background and question
+      description: Describe why a decision is needed and the exact question to settle.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options and trade-offs
+      description: List realistic alternatives, constraints, risks, and rejected options.
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision and rationale
+      description: Enter `Pending` until the decision is confirmed; then replace it with the decision and rationale.
+    validations:
+      required: true
+  - type: textarea
+    id: traceability
+    attributes:
+      label: Related specifications and artifacts
+      description: List POL/BR/REQ/AC/TC IDs, files, and related Issues.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Upstream and downstream impact
+      description: Identify earlier-phase dependencies, blocked work, and downstream items to reassess.
+    validations:
+      required: true

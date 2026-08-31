@@ -9,7 +9,7 @@ Net Shogi School向けのスケジュールシステムです。
 - `docs/00_requirements/` — 要求仕様ベースライン
 - `docs/10_basic_design/` — 基本設計 / C4 Level 2
 - `docs/20_detailed_design/` — 詳細設計 / C4 Level 3
-- `docs/30_operations/` — 運用・復旧手順
+- `docs/30_operations/` — 運用・復旧手順（[AI開発・レビュー運用](docs/30_operations/ai-development-workflow.md)）
 - `docs/40_test/` — 要求ベースのテスト計画・テスト仕様・トレーサビリティ
 - `docs/adr/` — Architecture Decision Record（ADR）
 - `docs/diagrams/` — 共通図表
