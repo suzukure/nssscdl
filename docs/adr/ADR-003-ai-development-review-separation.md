@@ -18,7 +18,7 @@ Issue #36で、Codex/OpenAIが開発し、Claudeが独立レビューし、検�
 - 自動マージはdeveloper Appが作る `ai/issue-<Issue番号>` だけに限定し、番号がclosing Issueと一致することを要求する。人間や任意ブランチのPRは自動マージしない。
 - PR本文、差分、Issue本文、会話はデータ境界で囲み、OWNER、MEMBER、COLLABORATORおよび明示したApp bot以外の会話はAIコンテキストから除外する。
 - 要求変更・人間判断マーカー、または3回目のchange requestで `human-review-required` を付け、Codexの自動修正と自動マージを止める。Slack webhookが設定済みなら同時に通知する。
-- `.github/**`、`AGENTS.md`、`CLAUDE.md` は人間ownerをCode Ownerとし、rulesetでCode Owner reviewを要求する。developer/reviewer AppにはWorkflows writeを付与しない。
+- `.github/**`、階層を問わない `AGENTS.md` / `CLAUDE.md`、`.claude/**`、`.codex/**`、`.mcp.json` は人間ownerをCode Ownerとし、rulesetでCode Owner reviewを要求する。これらを変更するPRはreviewer Appで自動マージせず、人間ownerが確認してマージする。developer/reviewer AppにはWorkflows writeを付与しない。
 
 ## 検討した代替案
 

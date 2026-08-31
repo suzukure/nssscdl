@@ -62,7 +62,7 @@ default branchに次を適用する。
 
 - Pull Request必須
 - 承認1件以上
-- Code Owner review必須（`.github/**`、`AGENTS.md`、`CLAUDE.md` は人間ownerのみ）
+- Code Owner review必須（`.github/**`、任意階層の `AGENTS.md` / `CLAUDE.md`、`.claude/**`、`.codex/**`、`.mcp.json` は人間ownerのみ）
 - 古い承認を新しいpushで破棄
 - 最新pushへの承認必須
 - 会話スレッド解決必須
@@ -71,7 +71,7 @@ default branchに次を適用する。
 - branch deletionとforce pushを禁止
 - bypass actorなし
 
-`pull_request` runはsame-repository PR側のworkflow定義を評価し得るため、`.github/CODEOWNERS` とCode Owner reviewを防御境界とする。AI AppはCode Ownerに指定せず、Workflow・AI指示書の変更には人間ownerの承認を必須にする。
+`pull_request` runはsame-repository PR側のworkflow定義を評価し得るため、`.github/CODEOWNERS` とCode Owner reviewを防御境界とする。AI AppはCode Ownerに指定せず、Workflow・AI指示書・agent設定の変更には人間ownerの承認と手動マージを必須にする。自動マージゲートも対象パスを検出して失敗する。
 
 実際のcheck名がmain上で一度観測できた後、`PR Traceability / Linked Issue` をrequired status checkへ追加する。自動マージ処理自身も同じclosing Issue条件を再検証するため、required check設定前でもこの条件を迂回しない。
 
@@ -82,6 +82,8 @@ default branchに次を適用する。
 - CodexまたはClaudeが `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。
 - Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
 - Claudeのchange requestが3回に到達した。
+
+ラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。人間が判断を記録し、再開可能と確認してからラベルを外す。
 
 `SLACK_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをSlackへ送る。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 

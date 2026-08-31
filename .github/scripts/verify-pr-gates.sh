@@ -78,3 +78,14 @@ if jq -e '.labels | any(.name == "human-review-required")' "$metadata" > /dev/nu
   echo 'Auto-merge is paused by the human-review-required label.' >&2
   exit 1
 fi
+
+protected_paths="$(
+  gh pr diff "$pr_number" --repo "$repo" --name-only \
+    | grep -E '(^|/)(AGENTS\.md|CLAUDE\.md|\.mcp\.json)$|(^|/)\.(claude|codex)(/|$)|^\.github/' \
+    || true
+)"
+if [ -n "$protected_paths" ]; then
+  echo 'AI instruction, agent configuration, and GitHub automation changes require a human Code Owner merge:' >&2
+  printf '%s\n' "$protected_paths" >&2
+  exit 1
+fi
