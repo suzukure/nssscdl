@@ -1,14 +1,15 @@
 # ADR-003: AI開発と独立レビューをGitHub上で分離する
 
-## Status
+## 状態
 
-Accepted
+- 状態: Accepted
+- 日付: 2026-08-31
 
-## Context
+## 背景
 
 Issue #36で、Codex/OpenAIが開発し、Claudeが独立レビューし、検討・成果・議論をIssueとPull Requestへ残す開発基盤が必要になった。開発者とレビューアーの権限分離、外部AI APIの認証、信頼できないPR内容の扱い、自動修正ループとマージの停止条件を決める必要がある。
 
-## Decision
+## 決定
 
 - developer Appとreviewer Appを別々に作り、developer Appは変更とPR、reviewer Appはレビューと承認後のsquash mergeを担当する。
 - OpenAIはRepository secretのAPIキー、AnthropicはGitHub OIDC / Workload Identity Federationで認証する。
@@ -18,7 +19,7 @@ Issue #36で、Codex/OpenAIが開発し、Claudeが独立レビューし、検�
 - PR本文、差分、Issue本文、会話はデータ境界で囲み、OWNER、MEMBER、COLLABORATORおよび明示したApp bot以外の会話はAIコンテキストから除外する。
 - 要求変更・人間判断マーカー、または3回目のchange requestで `human-review-required` を付け、Codexの自動修正と自動マージを止める。Slack webhookが設定済みなら同時に通知する。
 
-## Alternatives considered
+## 検討した代替案
 
 ### `GITHUB_TOKEN`だけを使う
 
@@ -44,7 +45,7 @@ Issue連携、対象ブランチ、要求変更、人間停止を迂回できる
 
 平行線の議論が有料APIを無期限に消費し、人間が気づけない。3回のchange requestで停止・通知する方式を採用する。
 
-## Consequences
+## 影響
 
 - GitHub App、Repository secrets/variables、Anthropic federation rule、rulesetの初期設定が必要になる。
 - App tokenとOIDC tokenは各runで短期発行され、長期credentialの露出範囲を抑えられる。

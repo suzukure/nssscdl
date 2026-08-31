@@ -21,6 +21,7 @@ else
 fi
 
 body_file="$(mktemp)"
+trap 'rm -f "$body_file"' EXIT
 {
   echo '## Claude review'
   echo
@@ -58,7 +59,5 @@ jq -n \
   --rawfile body "$body_file" \
   '{event: $event, body: $body}' \
   | gh api --method POST "repos/${repo}/pulls/${pr_number}/reviews" --input - > /dev/null
-
-rm -f "$body_file"
 
 echo "Claude review submitted with verdict: ${verdict}"

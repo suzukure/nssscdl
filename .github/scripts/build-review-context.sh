@@ -8,12 +8,20 @@ trusted_logins_csv="${4:-}"
 
 mkdir -p "$(dirname "$output")"
 metadata="$(mktemp)"
-trap 'rm -f "$metadata"' EXIT
+diff_file="$(mktemp)"
+trap 'rm -f "$metadata" "$diff_file"' EXIT
 
 gh pr view "$pr_number" \
   --repo "$repo" \
   --json number,title,body,url,author,baseRefName,headRefName,isDraft,files,commits,reviews,comments,closingIssuesReferences \
   > "$metadata"
+
+gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
+diff_bytes="$(wc -c < "$diff_file")"
+if [ "$diff_bytes" -gt 400000 ]; then
+  echo "Pull request diff is ${diff_bytes} bytes; automatic AI review is limited to 400000 bytes." >&2
+  exit 1
+fi
 
 {
   echo '# Pull request review context'
@@ -55,19 +63,19 @@ gh pr view "$pr_number" \
   echo '## Linked Issue snapshots'
   echo
 
-  jq -r '.closingIssuesReferences[]?.number' "$metadata" \
+  jq -r --arg prefix "https://github.com/${repo}/issues/" \
+    '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' "$metadata" \
     | sort -nu \
     | while read -r issue_number; do
         [ -n "$issue_number" ] || continue
         gh api "repos/${repo}/issues/${issue_number}" \
-          --jq '"### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n--- BEGIN LINKED ISSUE DATA ---\n" + (.body // "(empty)") + "\n--- END LINKED ISSUE DATA ---\n"' \
-          || echo "Issue #${issue_number} could not be fetched."
+          --jq '"### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n--- BEGIN LINKED ISSUE DATA ---\n" + (.body // "(empty)") + "\n--- END LINKED ISSUE DATA ---\n"'
       done
 
   echo
   echo '## Pull request diff'
   echo
   echo '--- BEGIN DIFF DATA ---'
-  gh pr diff "$pr_number" --repo "$repo"
+  cat "$diff_file"
   echo '--- END DIFF DATA ---'
 } > "$output"

@@ -15,6 +15,8 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request == null &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
       contains(github.event.comment.body, '/codex develop')
     runs-on: ubuntu-latest
     concurrency:
@@ -52,6 +54,7 @@ jobs:
           git show "${base_sha}:.github/scripts/notify-slack.sh" > "$RUNNER_TEMP/notify-slack.sh"
 
           mkdir -p .ai-context
+          git show "${base_sha}:AGENTS.md" > .ai-context/AGENTS.base.md
           {
             echo '# Development request'
             echo
@@ -76,7 +79,8 @@ jobs:
           permission-profile: :workspace
           effort: medium
           prompt: |
-            Read AGENTS.md and .ai-context/request.md completely. Implement the Issue in this working tree.
+            Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
+            Implement the Issue in this working tree.
             Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
@@ -182,18 +186,23 @@ jobs:
           private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
 
       - name: Verify review author
+        id: verify-reviewer
         env:
           EXPECTED_LOGIN: ${{ steps.review-token.outputs.app-slug }}[bot]
           ACTUAL_LOGIN: ${{ github.event.review.user.login }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$ACTUAL_LOGIN" != "$EXPECTED_LOGIN" ]; then
-            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN" >&2
-            exit 1
+          expected_slug="${EXPECTED_LOGIN%\[bot\]}"
+          if [ "$ACTUAL_LOGIN" = "$EXPECTED_LOGIN" ] || [ "$ACTUAL_LOGIN" = "$expected_slug" ]; then
+            echo 'trusted=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN"
+            echo 'trusted=false' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create developer App token
+        if: steps.verify-reviewer.outputs.trusted == 'true'
         id: dev-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -201,25 +210,27 @@ jobs:
           private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
 
       - name: Check out trusted automation
+        if: steps.verify-reviewer.outputs.trusted == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Gate automated follow-up
+        if: steps.verify-reviewer.outputs.trusted == 'true'
         id: followup-gate
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          EXPECTED_LOGIN: ${{ steps.review-token.outputs.app-slug }}[bot]
+          EXPECTED_SLUG: ${{ steps.review-token.outputs.app-slug }}
           REVIEW_BODY: ${{ github.event.review.body }}
         shell: bash
         run: |
           set -euo pipefail
           review_count="$(
             gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json reviews \
-              | jq --arg login "$EXPECTED_LOGIN" \
-                  '[.reviews[]? | select(.author.login == $login and .state == "CHANGES_REQUESTED")] | length'
+              | jq --arg slug "$EXPECTED_SLUG" \
+                  '[.reviews[]? | select((.author.login == $slug or .author.login == ($slug + "[bot]")) and .state == "CHANGES_REQUESTED")] | length'
           )"
 
           reason=''
@@ -245,15 +256,16 @@ jobs:
           fi
 
       - name: Notify Slack of review escalation
-        if: steps.followup-gate.outputs.notify == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.notify == 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: >-
-          bash .github/scripts/notify-slack.sh
-          "${{ steps.followup-gate.outputs.reason }} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+          ESCALATION_REASON: ${{ steps.followup-gate.outputs.reason }}
+        run: |
+          bash .github/scripts/notify-slack.sh \
+            "${ESCALATION_REASON} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Check out PR branch
-        if: steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           token: ${{ steps.dev-token.outputs.token }}
@@ -261,21 +273,22 @@ jobs:
           fetch-depth: 0
 
       - name: Build review context
-        if: steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]
+          TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot]
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
+          git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
 
       - name: Run Codex follow-up
-        if: steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         id: codex
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
         with:
@@ -284,17 +297,19 @@ jobs:
           effort: medium
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
           prompt: |
-            Read AGENTS.md and .ai-context/request.md completely. Address every blocking Claude finding in this working tree.
+            Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
+            Address every blocking Claude finding in this working tree.
             Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
       - name: Commit and answer review
-        if: steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -317,7 +332,7 @@ jobs:
           fi
 
           git commit -m "Address Claude review for PR #${PR_NUMBER}"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          git push origin "HEAD:${HEAD_REF}"
           if [ -s "$CODEX_FINAL" ]; then
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
           else

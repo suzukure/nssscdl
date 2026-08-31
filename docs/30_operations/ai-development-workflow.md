@@ -81,8 +81,16 @@ default branchに次を適用する。
 
 `SLACK_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをSlackへ送る。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
+Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #38で追跡する。
+
 ## Bootstrapと復旧
 
 `pull_request` workflowはdefault branchにworkflowファイルが存在してから通常運用を開始する。初回導入PRは管理者が内容を確認し、reviewer Appによる一時レビューまたは手動レビューを経てマージする。通常の自動マージは `ai/issue-*` だけに限定されるため、bootstrap用ブランチは自動マージ対象外である。
 
 Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。secret値をログへ出さない。
+
+Workflow変更時は次を実行し、認可・信頼境界・closing Issue・merge gateのfixtureを確認する。
+
+```bash
+bash .github/scripts/test-ai-workflow.sh
+```
