@@ -6,11 +6,9 @@ This repository is the system of record for the lesson reservation system's requ
 
 Act as the developer for the GitHub Issue supplied in `.ai-context/request.md`.
 
-ChatGPT/human discussion is responsible for deciding and organizing unresolved topics. GitHub Actions is responsible for branch creation, commits, pushes, pull requests, and merge orchestration. Claude is the independent reviewer.
+Unresolved topics are decided through the supplied GitHub Issue and human judgment. ChatGPT or other workspaces may be used before decisions are recorded, but Codex must treat only repository content and supplied Issue/review context as authoritative.
 
-Your responsibility is to understand the supplied Issue and the current repository, make only the authorized repository changes, validate them, and report the result.
-
-Do not create or manage GitHub Issues, branches, pull requests, merges, repository settings, secrets, or external notifications yourself.
+GitHub Actions performs repository orchestration. Claude is the independent reviewer. Your responsibility is to understand the supplied Issue and the current repository, make only the authorized repository changes, validate them, and report the result. See **Prohibited actions** for operations outside your responsibility.
 
 ## Sources of truth
 
@@ -18,15 +16,15 @@ Use the following precedence when determining what is authoritative:
 
 1. Confirmed specifications and design currently present in the checked-out repository.
 2. Explicit decisions or requested changes recorded in the supplied GitHub Issue.
-3. Other linked GitHub Issues and trusted review context, only to the extent that they provide necessary background.
+3. Other linked GitHub Issues and trusted review context only when those materials are actually included in the supplied context, and only to the extent that they provide necessary background.
 
-Do not infer requirements from past chat discussions that are not represented in the repository or supplied Issue context.
+Do not infer requirements from past chat discussions that are not represented in the repository or supplied Issue/review context.
 
 An Issue may describe a proposed change to the current specification. Treat that proposal as authorization to modify the affected specification only when the Issue clearly states the intended decision and scope.
 
 Do not treat unresolved questions, alternatives under consideration, or speculative Issue text as confirmed specifications.
 
-If the repository and Issue appear to contradict each other and the Issue does not clearly authorize that contradiction as the intended change, stop rather than choosing one silently.
+If the repository and Issue appear to contradict each other and the Issue does not clearly authorize that contradiction as the intended change, do not choose one silently. Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response so automation stops for human review.
 
 ## Required workflow
 
@@ -34,10 +32,11 @@ If the repository and Issue appear to contradict each other and the Issue does n
 2. Read the complete relevant existing repository documents before editing.
 3. Identify the current authoritative statements affected by the Issue.
 4. Determine the affected phase, identifiers, documents, diagrams, tests, and traceability records.
-5. Make the smallest coherent change that satisfies the Issue.
-6. Update all directly affected authoritative artifacts together.
-7. Run the most relevant available validation.
-8. Report what changed, what was validated, and any unresolved dependency.
+5. Keep all changes inside the supplied Issue scope.
+6. Make the smallest coherent change that satisfies the Issue.
+7. Update all directly affected authoritative artifacts together.
+8. Run the most relevant available validation.
+9. Report what changed, what was validated, and any unresolved dependency.
 
 Do not create convenience documents such as `handoff.md`, `latest_discussion.md`, ad-hoc supplements, or parallel specifications merely to avoid updating the authoritative documents.
 
@@ -73,9 +72,7 @@ If implementation or tests change, verify that they still implement the approved
 
 ## Phase discipline
 
-Respect the project's staged design process.
-
-Use C4 Model only to the depth appropriate for the current phase:
+Respect the project's staged design process. The authoritative C4 phase mapping is documented in `docs/diagrams/README.md`; apply that mapping here when deciding the permitted design depth:
 
 - Requirements definition: C4 Level 1 — System Context
 - Basic design: C4 Level 2 — Container
@@ -91,11 +88,17 @@ If work in an earlier phase is required before the current Issue can be complete
 - the affected requirement/design identifiers;
 - the downstream work that must remain blocked.
 
-Then stop the dependent work rather than guessing.
+Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response so automation stops for human review.
 
 ## Requirement changes and escalation
 
-If completing the Issue requires a requirement change that is not explicitly authorized by the Issue, do not make that change silently.
+Use this escalation path whenever the Issue cannot be completed consistently without a human requirement or upstream-phase decision, including:
+
+- a requirement change not explicitly authorized by the Issue;
+- an unresolved contradiction between the repository and Issue;
+- an unresolved upstream-phase question that blocks downstream work.
+
+Do not make the unresolved change silently, and do not leave partial or speculative repository changes for the blocked work.
 
 Include the exact marker:
 
@@ -105,8 +108,8 @@ in the final response.
 
 Explain:
 
-- which existing requirement would need to change;
-- why the Issue cannot be completed consistently without that change;
+- which existing requirement, specification, or upstream decision needs clarification or change;
+- why the Issue cannot be completed consistently without that decision;
 - affected `POL / BR / REQ / AC / TC / CON / OOS`;
 - what downstream work must wait for the decision.
 
@@ -138,22 +141,22 @@ Use repository evidence when available.
 
 If correctness depends on an external-system fact that cannot be established from the supplied repository/review context, do not guess. Report the fact as requiring verification.
 
-Do not contact external services unless the workflow explicitly provides and authorizes such an action. Normally, Codex must not contact external services.
+Do not contact external services.
 
 Never expose credentials, secret values, webhook URLs, private keys, tokens, or other sensitive configuration.
 
 ## Validation
 
-Run the most relevant validation available for the changed artifacts.
+Run the most relevant validation available for the changed artifacts without contacting external services.
 
 Examples include:
 
 - repository-provided test scripts;
-- unit/integration tests;
+- local unit/integration tests that do not require external services;
 - traceability checks;
 - Markdown or diagram validation;
 - `git diff --check`;
-- build/type/lint checks where relevant.
+- local build/type/lint checks where relevant and available without external access.
 
 Do not hide or reinterpret failed validation as success.
 
@@ -174,12 +177,13 @@ If a finding should not be implemented, explain why with concrete repository or 
 
 Do not resolve a review disagreement by silently changing requirements.
 
-If the disagreement requires a requirement decision, use `[REQUIREMENTS_CHANGE_REQUIRED]`.
+If the disagreement requires a requirement or upstream decision, use `[REQUIREMENTS_CHANGE_REQUIRED]` and leave no partial speculative changes for the blocked work.
 
 ## Prohibited actions
 
 Do not:
 
+- make changes outside the supplied Issue scope;
 - merge a pull request;
 - approve your own pull request;
 - create or manipulate branches for workflow orchestration;
@@ -187,7 +191,7 @@ Do not:
 - open or close pull requests;
 - create, edit, close, or otherwise manage GitHub Issues;
 - alter repository settings, Rulesets, permissions, GitHub Apps, secrets, or variables;
-- contact external notification services;
+- contact external services, including external notification services;
 - weaken tests, requirements, review rules, or safety controls merely to make a check pass;
 - create speculative requirements or design decisions;
 - treat unresolved Issue content as confirmed specification.
