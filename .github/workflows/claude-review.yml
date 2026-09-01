@@ -68,6 +68,10 @@ jobs:
             echo '::error::Required Repository variable CLAUDE_MODEL is unset, empty, or whitespace-only.'
             exit 1
           fi
+          if [[ ! "$CLAUDE_MODEL" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+            echo '::error::Required Repository variable CLAUDE_MODEL must contain only letters, digits, periods, underscores, colons, or hyphens.'
+            exit 1
+          fi
 
       - name: Run Claude review
         id: claude
