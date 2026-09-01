@@ -55,7 +55,9 @@ if [ -z "$developer_app_slug" ]; then
 fi
 
 author_login="$(jq -r '.author.login' "$metadata")"
-if [ "$author_login" != "$developer_app_slug" ] && [ "$author_login" != "${developer_app_slug}[bot]" ]; then
+if [ "$author_login" != "$developer_app_slug" ] \
+    && [ "$author_login" != "${developer_app_slug}[bot]" ] \
+    && [ "$author_login" != "app/${developer_app_slug}" ]; then
   echo "Auto-merge requires a PR authored by the developer App; got: ${author_login}" >&2
   exit 1
 fi
