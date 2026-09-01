@@ -5,6 +5,34 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
+curl() {
+  printf '%s\n' "$*" > "$MOCK_CURL_ARGS"
+  cat > "$MOCK_CURL_BODY"
+}
+export -f curl
+
+unset NOTIFICATION_WEBHOOK_URL
+if ! bash "$repo_root/.github/scripts/notify-human.sh" 'test escalation' \
+  > "$test_dir/notification-unset.out" 2> "$test_dir/notification-unset.err"; then
+  echo 'Expected notification to be skipped when the webhook is not configured.' >&2
+  exit 1
+fi
+grep -Fq 'GitHub escalation remains active' "$test_dir/notification-unset.err"
+
+NOTIFICATION_WEBHOOK_URL='https://discord.invalid/api/webhooks/secret-value'
+MOCK_CURL_ARGS="$test_dir/curl.args"
+MOCK_CURL_BODY="$test_dir/curl.body"
+export NOTIFICATION_WEBHOOK_URL MOCK_CURL_ARGS MOCK_CURL_BODY
+bash "$repo_root/.github/scripts/notify-human.sh" 'test escalation' \
+  > "$test_dir/notification.out" 2> "$test_dir/notification.err"
+jq -e '. == {"content":"test escalation"}' "$MOCK_CURL_BODY" > /dev/null
+grep -Fq -- '--header Content-Type: application/json' "$MOCK_CURL_ARGS"
+grep -Fq -- '--data-binary @-' "$MOCK_CURL_ARGS"
+if grep -Fq "$NOTIFICATION_WEBHOOK_URL" "$test_dir/notification.out" "$test_dir/notification.err"; then
+  echo 'Webhook URL was written to notification output.' >&2
+  exit 1
+fi
+
 gh() {
   if [ "$1 $2" = 'pr view' ]; then
     if [ "${MOCK_PR_VIEW_FAIL:-false}" = 'true' ]; then

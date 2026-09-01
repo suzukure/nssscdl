@@ -81,7 +81,7 @@ jobs:
             git checkout -b "$branch"
           fi
           echo "AI_BRANCH=$branch" >> "$GITHUB_ENV"
-          git show "${base_sha}:.github/scripts/notify-slack.sh" > "$RUNNER_TEMP/notify-slack.sh"
+          git show "${base_sha}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
 
           mkdir -p .ai-context
@@ -137,12 +137,12 @@ jobs:
             echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Notify Slack of requirement escalation
+      - name: Notify human of requirement escalation
         if: steps.development-gate.outputs.continue != 'true'
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         run: >-
-          bash "$RUNNER_TEMP/notify-slack.sh"
+          bash "$RUNNER_TEMP/notify-human.sh"
           "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}"
 
       - name: Commit, push, and open or update PR
@@ -284,13 +284,13 @@ jobs:
           echo "notify=${notify}" >> "$GITHUB_OUTPUT"
           echo "continue=${continue}" >> "$GITHUB_OUTPUT"
 
-      - name: Notify Slack of review escalation
+      - name: Notify human of review escalation
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.notify == 'true'
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           ESCALATION_REASON: ${{ steps.followup-gate.outputs.reason }}
         run: |
-          bash .github/scripts/notify-slack.sh \
+          bash .github/scripts/notify-human.sh \
             "${ESCALATION_REASON} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Check out PR branch
