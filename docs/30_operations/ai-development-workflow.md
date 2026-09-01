@@ -75,7 +75,7 @@ default branchに次を適用する。
 
 `pull_request` runはsame-repository PR側のworkflow定義を評価し得るため、`.github/CODEOWNERS` とCode Owner reviewを防御境界とする。AI AppはCode Ownerに指定せず、Workflow・AI指示書・agent設定の変更には人間ownerの承認と手動マージを必須にする。自動マージゲートも対象パスを検出して失敗する。
 
-実際のcheck名がmain上で一度観測できた後、`PR Traceability / Linked Issue` をrequired status checkへ追加する。自動マージ処理自身も同じclosing Issue条件を再検証するため、required check設定前でもこの条件を迂回しない。
+`PR Traceability / Linked Issue` のcheck名はmain上で観測済みで、default branch rulesetのrequired status check `Linked Issue` として有効化済みである。自動マージ処理自身も同じclosing Issue条件を再検証するため、このrequired checkに加えてmerge gateでも条件を迂回しない。
 
 ## 人間エスカレーション
 
@@ -89,7 +89,7 @@ default branchに次を適用する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
-Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #38で追跡する。
+Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で追跡する。
 
 ## Bootstrapと復旧
 

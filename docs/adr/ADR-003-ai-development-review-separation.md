@@ -61,5 +61,5 @@ Issue連携、対象ブランチ、要求変更、人間停止を迂回できる
 ## 関連要求・記録
 
 - 判断と導入作業: Issue #36
-- 通知・E2E follow-up: Issue #38
+- 通知・E2E follow-up: Issue #46
 - 運用手順: `docs/30_operations/ai-development-workflow.md`
