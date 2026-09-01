@@ -58,6 +58,17 @@ jobs:
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
 
+      - name: Validate Claude model configuration
+        env:
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAUDE_MODEL}" ]; then
+            echo 'CLAUDE_MODEL repository variable must be configured.' >&2
+            exit 1
+          fi
+
       - name: Run Claude review
         id: claude
         uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
