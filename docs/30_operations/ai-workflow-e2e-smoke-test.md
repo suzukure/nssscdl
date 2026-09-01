@@ -10,7 +10,7 @@
 
 ## 実施結果（2026-09-01）
 
-Issue #38で追跡する正常系E2Eについて、次を確認した。
+Issue #38の正常系E2Eでは、次を確認した。
 
 - Issue #39の `/codex develop` を起点にdeveloper AppがPull Request #40を作成した。
 - `PR Traceability / Linked Issue` が成功した。
@@ -27,8 +27,8 @@ Issue #38で追跡する正常系E2Eについて、次を確認した。
 
 次の項目はリポジトリ外の管理操作または実通知を必要とし、本記録の時点では完了を確認していない。
 
-- Slack Incoming Webhookを準備し、Repository secret `SLACK_WEBHOOK_URL` を登録する。
-- secret値をIssue、Pull Request、Actionsログへ露出させず、要求変更マーカーまたは3回目のchange requestを使う安全なテストで、`human-review-required` による停止とSlackへの実通知を確認する。
+- Discord Webhookを準備し、Repository secret `NOTIFICATION_WEBHOOK_URL` を登録する。
+- secret値をIssue、Pull Request、Actionsログへ露出させず、要求変更マーカーまたは3回目のchange requestを使う安全なテストで、`human-review-required` による停止とDiscordへの実通知を確認する。
 - default branch rulesetのrequired status checkへ、観測済みの `PR Traceability / Linked Issue` を追加し、有効になったことを確認する。
 
-これらの完了証跡はIssue #38へ記録する。secret値そのものは記録しない。
+これらの完了証跡はIssue #46へ記録する。secret値そのものは記録しない。

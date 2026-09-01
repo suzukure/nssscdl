@@ -23,7 +23,7 @@ Repository secrets:
 - `DEV_APP_PRIVATE_KEY`
 - `REVIEW_APP_PRIVATE_KEY`
 - `OPENAI_API_KEY`
-- `SLACK_WEBHOOK_URL`（人間通知をSlackへ送る場合。未設定でもGitHub上の停止・ラベル付与は行う）
+- `NOTIFICATION_WEBHOOK_URL`（人間通知用のDiscord Webhook URL。未設定でもGitHub上の停止・ラベル付与は行う）
 
 Repository variables:
 
@@ -87,9 +87,9 @@ default branchに次を適用する。
 
 停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。人間が判断を記録し、再開可能と確認してから両方のラベルを外す。
 
-`SLACK_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをSlackへ送る。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
+`NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
-Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #38で追跡する。
+Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で追跡する。
 
 ## Bootstrapと復旧
 
