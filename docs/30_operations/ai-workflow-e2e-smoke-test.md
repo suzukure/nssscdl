@@ -15,8 +15,9 @@ Issue #38で追跡する正常系E2Eについて、次を確認した。
 - Issue #39の `/codex develop` を起点にdeveloper AppがPull Request #40を作成した。
 - `PR Traceability / Linked Issue` が成功した。
 - Claude Appが最新headを承認した。
+- 初回の `Merge approved PR` は、GitHub CLIが返す `app/<slug>` actor表記をmerge gateが許容していなかったため失敗した。
 - Issue #41 / Pull Request #42でGitHub CLIが返す `app/<slug>` actor表記の正規化へ対応した。
-- Pull Request #40の基準点を対応後の最新 `main` へ更新し、ワークフローを再実行した。
+- 人間がPull Request #40の基準点を対応後の最新 `main` へ更新し、ワークフローを再実行した。
 - `Merge approved PR` が成功し、reviewer AppがPull Request #40をsquash mergeした。
 - Pull Request #40の `Closes #39` によりIssue #39が自動的にcloseされた。
 
