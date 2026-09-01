@@ -36,9 +36,9 @@ Repository variables:
 - `CLAUDE_MODEL`（Claudeレビューで使用するモデルを指定する）
 - `CODEX_MODEL`（Issue開発とClaudeレビュー追従の両方でCodexが使用するモデルを指定する）
 
-EnvironmentではなくRepositoryスコープに設定する。値をIssue、PR、ログ、文書へ貼り付けない。
+EnvironmentではなくRepositoryスコープに設定する。認証・識別系variable（App client ID、Anthropic federation / organization / service account / workspace ID）の値はIssue、PR、ログ、文書へ貼り付けない。一方、`CLAUDE_MODEL` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
-AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL` または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。モデルvariableを未設定の状態はサポートしないため、workflow障害時は認証設定と同様にRepository variable名と設定有無を確認する。
+AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL` または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。モデルvariableを未設定の状態はサポートしないため、workflow障害時はRepository variable名と設定有無を確認する。
 
 ## GitHub Apps
 
@@ -99,7 +99,7 @@ Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で�
 
 `pull_request` workflowはdefault branchにworkflowファイルが存在してから通常運用を開始する。初回導入PRは管理者が内容を確認し、reviewer Appによる一時レビューまたは手動レビューを経てマージする。通常の自動マージは `ai/issue-*` だけに限定されるため、bootstrap用ブランチは自動マージ対象外である。
 
-Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値やvariable値をログへ出さない。
+Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値と認証・識別系variable値をログへ出さない。モデルIDは検証証跡としてIssue/PRへ記録してよい。
 
 Workflow変更時は次を実行し、認可・信頼境界・closing Issue・merge gateのfixtureを確認する。
 
