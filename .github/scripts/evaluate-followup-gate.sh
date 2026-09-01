@@ -19,7 +19,9 @@ emit_result() {
     '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason}'
 }
 
-if [ "$author_login" != "$developer_app_slug" ] && [ "$author_login" != "${developer_app_slug}[bot]" ]; then
+if [ "$author_login" != "$developer_app_slug" ] \
+    && [ "$author_login" != "${developer_app_slug}[bot]" ] \
+    && [ "$author_login" != "app/${developer_app_slug}" ]; then
   emit_result false false false "Ignoring automated follow-up for untrusted PR author: ${author_login}"
   exit 0
 fi
@@ -48,7 +50,7 @@ done
 
 review_count="$(
   jq --arg slug "$reviewer_app_slug" \
-    '[.reviews[]? | select((.author.login == $slug or .author.login == ($slug + "[bot]")) and .state == "CHANGES_REQUESTED")] | length' \
+    '[.reviews[]? | select((.author.login == $slug or .author.login == ($slug + "[bot]") or .author.login == ("app/" + $slug)) and .state == "CHANGES_REQUESTED")] | length' \
     <<< "$metadata"
 )"
 

@@ -52,6 +52,8 @@ developer Appとreviewer Appを分離し、対象リポジトリだけへイン�
 
 reviewer Appだけが承認後のマージを担当する。developer Appは自分のPRを承認・マージしない。どちらのAppにもWorkflows writeを付与してはならない。
 
+GitHub API / CLIがApp actorを返す表記差を考慮し、identity検証では設定済みslugに対する `<slug>`、`<slug>[bot]`、`app/<slug>` の3形式だけを同一Appとして扱う。
+
 ## Anthropic認証
 
 Anthropicは長期APIキーではなくGitHub OIDC / Workload Identity Federationを使う。Federation ruleはこのリポジトリの不変なowner/repository IDをsubject prefixに含め、他リポジトリからのtoken exchangeを許可しない。
