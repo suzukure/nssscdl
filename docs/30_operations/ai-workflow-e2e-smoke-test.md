@@ -32,3 +32,7 @@ Issue #38の正常系E2Eでは、次を確認した。
 - secret値をIssue、Pull Request、Actionsログへ露出させず、要求変更マーカーまたは3回目のchange requestを使う安全なテストで、`human-review-required` による停止とDiscordへの実通知を確認する。
 
 これらの完了証跡はIssue #46へ記録する。secret値そのものは記録しない。
+
+## 最終正常系E2Eテスト（開始）
+
+Issue #48で最終正常系E2Eテストを開始した。
