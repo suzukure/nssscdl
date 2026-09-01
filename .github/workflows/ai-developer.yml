@@ -110,6 +110,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
+          model: ${{ vars.CODEX_MODEL }}
           effort: medium
           prompt: |
             Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
@@ -323,6 +324,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
+          model: ${{ vars.CODEX_MODEL }}
           effort: medium
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
           prompt: |
