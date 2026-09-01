@@ -7,3 +7,27 @@
 このスモークテストでは、プロダクト要求、設計、ソースコード、テスト仕様を変更しない。
 
 本ファイルは、AI開発・Claudeレビューの運用検証記録としてリポジトリに残してよい。
+
+## 実施結果（2026-09-01）
+
+Issue #38で追跡する正常系E2Eについて、次を確認した。
+
+- Issue #39の `/codex develop` を起点にdeveloper AppがPull Request #40を作成した。
+- `PR Traceability / Linked Issue` が成功した。
+- Claude Appが最新headを承認した。
+- Issue #41 / Pull Request #42でGitHub CLIが返す `app/<slug>` actor表記の正規化へ対応した。
+- Pull Request #40の基準点を対応後の最新 `main` へ更新し、ワークフローを再実行した。
+- `Merge approved PR` が成功し、reviewer AppがPull Request #40をsquash mergeした。
+- Pull Request #40の `Closes #39` によりIssue #39が自動的にcloseされた。
+
+確認時の `main` は `c98ed3f3219c6551a699ff9c7efa70e280ec5fba` である。
+
+## 未完了の外部設定・確認
+
+次の項目はリポジトリ外の管理操作または実通知を必要とし、本記録の時点では完了を確認していない。
+
+- Slack Incoming Webhookを準備し、Repository secret `SLACK_WEBHOOK_URL` を登録する。
+- secret値をIssue、Pull Request、Actionsログへ露出させず、要求変更マーカーまたは3回目のchange requestを使う安全なテストで、`human-review-required` による停止とSlackへの実通知を確認する。
+- default branch rulesetのrequired status checkへ、観測済みの `PR Traceability / Linked Issue` を追加し、有効になったことを確認する。
+
+これらの完了証跡はIssue #38へ記録する。secret値そのものは記録しない。
