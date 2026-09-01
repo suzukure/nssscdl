@@ -120,18 +120,18 @@ jobs:
           fi
           bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
 
-      - name: Notify Slack of Claude escalation
+      - name: Notify human of Claude escalation
         if: >-
           contains(fromJSON(steps.claude.outputs.structured_output).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
           contains(fromJSON(steps.claude.outputs.structured_output).summary, '[HUMAN_ESCALATION_RECOMMENDED]')
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          git show "${BASE_SHA}:.github/scripts/notify-slack.sh" > "$RUNNER_TEMP/notify-slack.sh"
-          bash "$RUNNER_TEMP/notify-slack.sh" \
+          git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
+          bash "$RUNNER_TEMP/notify-human.sh" \
             "Claude requested a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
   merge:
