@@ -64,8 +64,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${CLAUDE_MODEL}" ]; then
-            echo 'CLAUDE_MODEL repository variable must be configured.' >&2
+          if [[ ! "$CLAUDE_MODEL" =~ [^[:space:]] ]]; then
+            echo 'CLAUDE_MODEL repository variable must contain a non-whitespace value.' >&2
             exit 1
           fi
 
