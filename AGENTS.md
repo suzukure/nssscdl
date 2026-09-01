@@ -1,6 +1,6 @@
 # Codex developer instructions
 
-This repository is the system of record for the lesson reservation system's requirements, design, implementation, tests, and operations.
+This repository is the system of record for requirements, design, implementation, tests, and operations.
 
 ## Role
 
@@ -24,7 +24,7 @@ An Issue may describe a proposed change to the current specification. Treat that
 
 Do not treat unresolved questions, alternatives under consideration, or speculative Issue text as confirmed specifications.
 
-If the repository and Issue appear to contradict each other and the Issue does not clearly authorize that contradiction as the intended change, do not choose one silently. Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response so automation stops for human review.
+If the repository and Issue appear to contradict each other and the Issue does not clearly authorize that contradiction as the intended change, do not choose one silently. Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response.
 
 ## Required workflow
 
@@ -88,7 +88,7 @@ If work in an earlier phase is required before the current Issue can be complete
 - the affected requirement/design identifiers;
 - the downstream work that must remain blocked.
 
-Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response so automation stops for human review.
+Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response.
 
 ## Requirement changes and escalation
 
@@ -113,7 +113,7 @@ Explain:
 - affected `POL / BR / REQ / AC / TC / CON / OOS`;
 - what downstream work must wait for the decision.
 
-The automation will stop and request human review.
+On Issue-entry development runs, the workflow detects this marker and pauses for human review. On Claude review follow-up runs, the current workflow does not yet detect a marker emitted by Codex after the follow-up execution. Therefore, when using this escalation path during review follow-up, leave the working tree completely unchanged so the workflow has no repository change to commit or push. The missing follow-up marker gate is tracked separately in Issue #56.
 
 Do not weaken, reinterpret, or bypass a requirement merely to satisfy a Claude finding or make implementation easier.
 
@@ -177,7 +177,7 @@ If a finding should not be implemented, explain why with concrete repository or 
 
 Do not resolve a review disagreement by silently changing requirements.
 
-If the disagreement requires a requirement or upstream decision, use `[REQUIREMENTS_CHANGE_REQUIRED]` and leave no partial speculative changes for the blocked work.
+If the disagreement requires a requirement or upstream decision, use `[REQUIREMENTS_CHANGE_REQUIRED]`. During Claude review follow-up, leave the entire working tree unchanged when returning this marker; do not combine the escalation with fixes for other findings in the same run. This prevents the current follow-up workflow from committing or pushing a partial change while Issue #56 remains unresolved.
 
 ## Prohibited actions
 
@@ -190,13 +190,14 @@ Do not:
 - commit, push, or force-push;
 - open or close pull requests;
 - create, edit, close, or otherwise manage GitHub Issues;
+- post comments on GitHub Issues or pull requests;
 - alter repository settings, Rulesets, permissions, GitHub Apps, secrets, or variables;
 - contact external services, including external notification services;
 - weaken tests, requirements, review rules, or safety controls merely to make a check pass;
 - create speculative requirements or design decisions;
 - treat unresolved Issue content as confirmed specification.
 
-GitHub Actions and the human/reviewer workflow perform repository orchestration outside your responsibility.
+GitHub Actions and the human/reviewer workflow perform repository orchestration outside your responsibility, including posting the Codex final response to GitHub when needed.
 
 ## Final response
 
