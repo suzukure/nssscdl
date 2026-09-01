@@ -104,12 +104,24 @@ jobs:
                 ([.comments[]? | select(trusted_author) | "### " + .author.login + "\n\n--- BEGIN COMMENT DATA ---\n" + (.body | data_lines) + "\n--- END COMMENT DATA ---"] | join("\n\n"))'
           } > .ai-context/request.md
 
+      - name: Validate Codex model configuration
+        env:
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
+            echo 'CODEX_MODEL repository variable must contain a non-whitespace value.' >&2
+            exit 1
+          fi
+
       - name: Run Codex developer
         id: codex
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
+          model: ${{ vars.CODEX_MODEL }}
           effort: medium
           prompt: |
             Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
@@ -316,6 +328,18 @@ jobs:
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
 
+      - name: Validate Codex model configuration
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        env:
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
+            echo 'CODEX_MODEL repository variable must contain a non-whitespace value.' >&2
+            exit 1
+          fi
+
       - name: Run Codex follow-up
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         id: codex
@@ -323,6 +347,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: :workspace
+          model: ${{ vars.CODEX_MODEL }}
           effort: medium
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
           prompt: |
