@@ -110,8 +110,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${CODEX_MODEL}" ]; then
-            echo 'CODEX_MODEL repository variable must be configured.' >&2
+          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
+            echo 'CODEX_MODEL repository variable must contain a non-whitespace value.' >&2
             exit 1
           fi
 
@@ -335,8 +335,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${CODEX_MODEL}" ]; then
-            echo 'CODEX_MODEL repository variable must be configured.' >&2
+          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
+            echo 'CODEX_MODEL repository variable must contain a non-whitespace value.' >&2
             exit 1
           fi
 
