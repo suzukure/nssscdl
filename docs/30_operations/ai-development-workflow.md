@@ -29,12 +29,16 @@ Repository variables:
 
 - `DEV_APP_CLIENT_ID`
 - `REVIEW_APP_CLIENT_ID`
+- `CLAUDE_MODEL`（Claudeレビューで使用するモデル）
+- `CODEX_MODEL`（Codex開発とClaudeレビュー追従で共通使用するモデル）
 - `ANTHROPIC_FEDERATION_RULE_ID`
 - `ANTHROPIC_ORGANIZATION_ID`
 - `ANTHROPIC_SERVICE_ACCOUNT_ID`
 - `ANTHROPIC_WORKSPACE_ID`
 
-EnvironmentではなくRepositoryスコープに設定する。値をIssue、PR、ログ、文書へ貼り付けない。
+EnvironmentではなくRepositoryスコープに設定する。値をIssue、PR、ログ、文書へ貼り付けない。ただしモデルIDは、モデル変更のIssue/PR変更履歴と検証証跡に限って記録できる。workflowは各AIモデル実行直前に対応するモデル変数を検査し、未設定、空文字、空白のみの場合はモデルを実行せず失敗する。検査時もモデルIDをログへ出力しない。
+
+モデルを変更する場合は、変更理由と対象モデルIDをIssueへ記録し、利用するAI actionおよびAPI projectでそのモデルが利用可能か確認したうえで、対応するRepository variableだけを更新する。workflowファイルへモデルIDを直接記述しない。変更後はClaudeレビューとCodex開発・レビュー追従の各経路を実行し、モデル指定が受理されたことをIssueまたはPRへ記録する。`CODEX_MODEL` は開発とレビュー追従の両方へ同じ値が適用される。
 
 ## GitHub Apps
 
