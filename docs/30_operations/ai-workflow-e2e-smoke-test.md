@@ -20,6 +20,7 @@ Issue #38の正常系E2Eでは、次を確認した。
 - 人間がPull Request #40の基準点を対応後の最新 `main` へ更新し、ワークフローを再実行した。
 - `Merge approved PR` が成功し、reviewer AppがPull Request #40をsquash mergeした。
 - Pull Request #40の `Closes #39` によりIssue #39が自動的にcloseされた。
+- default branch rulesetでrequired status check `Linked Issue` が有効であることを確認した。
 
 確認時の `main` は `c98ed3f3219c6551a699ff9c7efa70e280ec5fba` である。
 
@@ -29,6 +30,5 @@ Issue #38の正常系E2Eでは、次を確認した。
 
 - Discord Webhookを準備し、Repository secret `NOTIFICATION_WEBHOOK_URL` を登録する。
 - secret値をIssue、Pull Request、Actionsログへ露出させず、要求変更マーカーまたは3回目のchange requestを使う安全なテストで、`human-review-required` による停止とDiscordへの実通知を確認する。
-- default branch rulesetのrequired status checkへ、観測済みの `PR Traceability / Linked Issue` を追加し、有効になったことを確認する。
 
 これらの完了証跡はIssue #46へ記録する。secret値そのものは記録しない。
