@@ -119,6 +119,92 @@ gh() {
 }
 export -f gh
 
+valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
+validated_structured_review="$(bash "$repo_root/.github/scripts/validate-claude-review-output.sh" "$valid_structured_review")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_structured_review" > /dev/null
+
+fenced_structured_review="$(printf '```json\n%s\n```' "$valid_structured_review")"
+validated_fenced_review="$(bash "$repo_root/.github/scripts/validate-claude-review-output.sh" "$fenced_structured_review")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_fenced_review" > /dev/null
+
+surrounded_fenced_review="$(printf 'Review follows:\n```json\n%s\n```' "$valid_structured_review")"
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" "$surrounded_fenced_review" > /dev/null; then
+  echo 'Expected a fenced review with surrounding prose to be rejected.' >&2
+  exit 1
+fi
+
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '' > /dev/null; then
+  echo 'Expected an empty structured review to be rejected.' >&2
+  exit 1
+fi
+
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict":"approve"}' > /dev/null; then
+  echo 'Expected an incomplete structured review to be rejected.' >&2
+  exit 1
+fi
+
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":[],"unexpected":true}' > /dev/null; then
+  echo 'Expected a structured review with extra fields to be rejected.' >&2
+  exit 1
+fi
+
+bootstrap_validator="$test_dir/bootstrap-validate-claude-review-output.sh"
+awk '
+  /^          #!\/usr\/bin\/env bash$/ { capture = 1 }
+  capture && /^          VALIDATOR$/ { exit }
+  capture { sub(/^          /, ""); print }
+' "$repo_root/.github/workflows/claude-review.yml" > "$bootstrap_validator"
+cmp -s "$repo_root/.github/scripts/validate-claude-review-output.sh" "$bootstrap_validator"
+
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/valid-execution-with-review.json"
+validated_execution_review="$(bash "$repo_root/.github/scripts/validate-claude-review-output.sh" --execution-file "$test_dir/valid-execution-with-review.json")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_execution_review" > /dev/null
+
+for fixture in no-success multiple-success error-result; do
+  case "$fixture" in
+    no-success)
+      fixture_json='[]'
+      ;;
+    multiple-success)
+      fixture_json="$(jq -cn --arg review "$valid_structured_review" '[
+        {type:"result", subtype:"success", is_error:false, result:$review},
+        {type:"result", subtype:"success", is_error:false, result:$review}
+      ]')"
+      ;;
+    error-result)
+      fixture_json="$(jq -cn --arg review "$valid_structured_review" '[
+        {type:"result", subtype:"success", is_error:true, result:$review}
+      ]')"
+      ;;
+  esac
+  printf '%s\n' "$fixture_json" > "$test_dir/$fixture-execution.json"
+  if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" --execution-file "$test_dir/$fixture-execution.json" > /dev/null; then
+    echo "Expected $fixture execution output to be rejected." >&2
+    exit 1
+  fi
+done
+
+if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
+  echo 'Expected exactly one Claude review invocation.' >&2
+  exit 1
+fi
+if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
+  echo 'Expected Claude execution failures to reach fail-closed validation.' >&2
+  exit 1
+fi
+grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Claude returned no valid JSON review; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Expected execution_file validation instead of unsupported --json-schema forwarding.' >&2
+  exit 1
+fi
+if grep -Eq 'attempt (2|3) of 3' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Expected duplicate full-review retries to be removed.' >&2
+  exit 1
+fi
+
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 
 MOCK_CASE=valid
