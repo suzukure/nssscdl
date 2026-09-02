@@ -116,7 +116,7 @@ Commit必須条件が不成立の場合は、DB Transaction全体が失敗する
 
 特に「D1側ではCommit済みだがWorkerが正常応答を受け取れなかった」可能性を考慮する。
 
-結果が不明な場合は最新確定状態を再取得し、業務結果を判定することを基本とする。Command Idempotency Key等の追加方式が必要かはAPI詳細設計で判断する。
+結果が不明な場合は最新確定状態を再取得し、業務結果を判定することを基本とする。一括予約Confirmの再送は5.5.3の操作識別子によるIdempotency方針に従う。他のCommandにCommand Idempotency Key等の追加方式が必要かはAPI詳細設計で判断する。
 
 ## 4. 競合・エラー表現
 
@@ -232,9 +232,28 @@ Reservationだけ作成されOccupancyがない状態、Reservation / Occupancy�
 5. Previewで確認した重要状態との一致を確認し、すべてのGuardが成立した場合だけ、5.5.1の状態変更、AuditLog、NotificationIntentをCommitする
 ```
 
-この再検証はTransaction外のPreviewや事前読込だけに依存しない。具体的なExpected Stateの構成要素およびWire表現は本書で定めない。
+この再検証はTransaction外のPreviewや事前読込だけに依存しない。
 
-#### 5.5.3 Conflictと全体未適用
+#### 5.5.3 Expected StateとIdempotency
+
+Bulk Previewで利用者が確認した内容をBulk Confirm時に再確認するため、Expected Stateは少なくとも次の**業務上の意味**をSnapshotとして表現する。
+
+- 選択したSlot集合
+- 選択SlotからServerが判定した対象月
+- 対象生徒・対象月についてPreview時に適用した月間標準回数N
+- 各選択Slotの予約可能状態
+- 選択集合全体を追加した場合の各新規Reservationのclassification
+- 選択対象外の既存未開始Reservationへのclassification影響（対象集合および変更前後classification）
+
+Expected Stateは、Preview時に確認した業務上の意味とCommit直前にServerが最新確定状態から再計算した意味が一致することを確認するための入力である。Clientはclassification、N、対象月、予約可能状態、または既存Reservationへの影響を更新値・正本として指定できない。Serverはこれらを最新確定状態から再判定・再計算し、一致しない場合は5.5.4のConflictとして選択集合全体を未適用とする。
+
+Expected StateとIdempotencyは別概念である。Expected StateはPreview後の業務状態の変化を検出して初回Confirmの成立可否を判定するものであり、Idempotencyは同一Confirmの通信再送による二重確定を防止するものである。一方をもう一方の代替として扱わない。
+
+Bulk ConfirmはClientが操作識別子を送信できる形とする。同一操作識別子で同一内容のConfirmが再送された場合、Serverは新たなReservation、Occupancy、再分類、AuditLogまたはNotificationIntentを重複して作成せず、先に確定した同一操作の結果を返せるようにする。同一操作識別子が選択Slot集合またはExpected Stateを含む異なるConfirm内容に再利用された場合は、別操作として実行せずRejectする。
+
+操作識別子の具体Field、同一内容の比較方法、保存Entity、保持期間、一意性Guard、再送時のHTTP Response表現は詳細設計で確定する。
+
+#### 5.5.4 Conflictと全体未適用
 
 同時予約による対象Slotの先行占有、Commit判定中のLesson開始時刻到達、Slotの公開状態またはavailability状態の変更、最新N・月間算入条件・classificationまたは選択対象外の既存未開始Reservationへのclassification影響の変化等により、再検証またはGuardが不成立となる場合はConflictとする。
 
@@ -929,7 +948,8 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 個別DDL、Index、具体的Guard SQL、CTE
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
-- 一括予約ConfirmのExpected State、Guard SQL、集合書込みSQL、Conflict Responseの具体Wire表現
+- 一括予約ConfirmのExpected Stateの具体表現、Guard SQL、集合書込みSQL、Conflict Responseの具体Wire表現
+- 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送Response表現
 - 分類管理Commandの具体的Guard SQL、集合再分類SQL、Expected Stateの具体表現
 - school cancellationの通常／事後分岐Guard、欠席Guard、事後登録確認Auditの具体表現
 - 欠席設定・解除のLesson終了Guard、欠席有無Guard、実効算入再評価、集合再分類SQL、Expected Stateの具体表現
@@ -944,6 +964,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 要求仕様v1.10に従い、スクール都合キャンセルは原則Lesson開始前、例外的に開始後・終了後も事後登録可能とし、事後登録の取消時刻を実際のServer Commit時刻、Slotは再開放しない、欠席は先に明示解除、事後登録の業務事実確認をAudit対象とする方針を2026-08-30に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - `REQ-008 / AC-008-001〜009 / BR-069` に従い、一括予約Confirmを選択Slot集合全体の1業務Commandとし、D1上でReservation、Occupancy、必要な再分類、AuditLog、通知義務をAll-or-Nothingに確定する。Commit直前の最新状態再検証、競合時の全体Rollback、および安全に検出できた範囲に限るConflict Responseの方針を2026-09-02に確定した。
+- 一括予約ConfirmのExpected Stateを、選択Slot集合、対象月、最新N、Slot予約可能状態、新規classification、既存未開始Reservationへのclassification影響の業務的Snapshotとして再確認する方針を2026-09-02に確定した。Expected StateはClientの更新値・正本ではなく、最新確定状態からの再計算との一致確認に用いる。これとは別に、同一操作識別子・同一内容の再送では先に確定した結果を返して二重確定を防ぎ、異なる内容での同一識別子再利用は別操作として実行せずRejectする方針を同日に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
 - 生徒削除起因system cancellationの即時Transaction境界、個人情報削除・匿名化の後続処理分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
 - 月間標準回数変更、月間回数除外設定・解除、Classification OverrideのTransaction境界、最新状態再検証、再分類・AuditLog・NotificationIntentの同一Commit方針は2026-08-30に確定した。月間回数除外解除は無条件な再算入ではなく、Override解除後に最新の算入条件から実効算入可否を再評価する。

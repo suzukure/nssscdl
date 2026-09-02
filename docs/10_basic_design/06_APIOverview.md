@@ -515,11 +515,13 @@ Preview Responseは、少なくとも次を画面表示可能なApplication View
 
 #### 11.5.2 Confirm
 
-Bulk Confirmは1つの業務Commandである。Requestは論理的に、Previewした選択 `LessonSlot` 識別子群とExpected State相当情報を持つ。Preview Response中のclassification、月間標準回数N、予約可否、対象月、または影響差分をClientが正本として指定・更新する形にはしない。
+Bulk Confirmは1つの業務Commandである。Requestは論理的に、Previewした選択 `LessonSlot` 識別子群、Expected State相当情報、および再送を識別する操作識別子を持つ。Expected Stateは、選択Slot集合、そこからServerが判定した対象月、最新N、各Slotの予約可能状態、各新規Reservationのclassification、および選択対象外の既存未開始Reservationへのclassification影響を確認する業務的Snapshotとする。Preview Response中のclassification、月間標準回数N、予約可否、対象月、または影響差分をClientが正本として指定・更新する形にはしない。
 
 Confirm時、Serverは選択全体について最新のN、同一暦月、各Slotの予約可否・予約期限・現在占有、classification、および選択対象外の既存未開始Reservationへの区分影響を再読込・再検証する。
 
 全対象が最新状態で条件を満たす場合のみ、選択全体を確定する。対象の一部だけを確定することはなく、単一予約のConfirmと同様に確定Reservationの予約者は認証済みSessionから解決した内部生徒IDとする。D1 Transaction、Lock、Guard SQL等の実現方式は本基本API契約では定めず、後続の詳細設計で確定する。
+
+Expected StateはPreview後の重要状態の変化を検出してConfirm成立可否を判定するためのものであり、操作識別子によるIdempotencyの代替ではない。逆に操作識別子は再送時の二重確定を防ぐためのものであり、最新状態再検証を省略させない。同一操作識別子・同一内容のBulk Confirm再送では、新しいReservationを重複作成せず、先に確定した同一操作の結果を返せる形とする。同一操作識別子を選択Slot集合またはExpected Stateを含む異なる内容で再利用した場合は、別操作として実行せずRejectする。操作識別子の具体Field、同一内容の比較、保存、保持、一意性Guard、再送・RejectのHTTP表現は詳細設計で確定する。
 
 成功時は複数の新規Reservationを確定した結果としてHTTP `201 Created` を基本とする。成功Responseは、少なくとも確定した各Reservationの識別子、Lesson日時、確定classification、現在のSlot状態、および同一Commandで変更された既存未開始Reservationの画面表示に必要な区分差分を返せる形とする。
 
@@ -1365,6 +1367,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - Schedule Change Setの具体的なRequest / Response Wire Format
 - 一括予約Preview / Confirmの具体的なRequest / Response Wire Format
 - 一括予約の選択Slot集合、同一暦月、操作上限N、classification影響を確認するExpected State / Guardの具体形
+- 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送・Reject Responseの具体形
 - 一括予約固有のConflict / Business Rejection Application Error Codeと再Preview情報のWire表現
 - Schedule生成済み・公開済み等の個別Conflict Error Code
 - 分類管理Preview / Confirmの具体的なRequest / Response Wire Format
@@ -1486,6 +1489,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
 - 生徒一括予約の専用Preview / Confirm API契約はIssue #66で確定した。既存の単一予約APIを維持し、`REQ-008 / AC-008-001〜009` に対して、同一暦月・最新N・選択Slot・classification影響をServerが再検証する全体Confirmと、409での全体未適用・再Preview要求を定義した。
+- 一括予約ConfirmのExpected Stateは、選択Slot集合、対象月、最新N、Slot予約可能状態、新規classification、既存未開始Reservationへのclassification影響を再確認する業務的Snapshotとする。Serverは最新確定状態から再計算し、ClientのExpected Stateを更新値・正本として扱わない。Expected Stateとは別に操作識別子によるIdempotencyを適用し、同一内容の再送で新規Reservationを重複作成せず、異なる内容での同一識別子再利用を別操作として実行せずRejectする方針をIssue #72で確定した。
 - 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
 - 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。要求仕様v1.8の `AC-301-010` と整合する。
 - 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
