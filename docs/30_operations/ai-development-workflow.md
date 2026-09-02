@@ -11,7 +11,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むPRを作成する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
 5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。結果が入力全体を占める単一の `json` Markdown fenceで包まれている場合だけ外枠を除去し、前後の説明文、複数候補、欠落・不正なschemaは受理せず、verdictを推測せずfail-closedでjobを失敗させる。
-6. `REQUEST_CHANGES` の場合はCodexが修正する。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーで自動修正を停止する。
+6. `REQUEST_CHANGES` の場合は、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付けて自動Claude再レビューを停止し、その状態でCodexが1回だけ修正する。人間が修正結果を確認した後、closing Issue側のラベルを先に、PR側のラベルを最後に外す。PRの `unlabeled` eventを明示的な再レビュー要求として扱い、同じheadをClaudeが1回レビューする。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
@@ -33,12 +33,13 @@ Repository variables:
 - `ANTHROPIC_ORGANIZATION_ID`
 - `ANTHROPIC_SERVICE_ACCOUNT_ID`
 - `ANTHROPIC_WORKSPACE_ID`
-- `CLAUDE_MODEL`（Claudeレビューで使用するモデルを指定する）
+- `CLAUDE_MODEL`（protected pathsを含む高リスクClaudeレビューで使用するモデルを指定する）
+- `CLAUDE_MODEL_STANDARD`（protected pathsを含まない通常Claudeレビューで使用するモデルを指定する）
 - `CODEX_MODEL`（Issue開発とClaudeレビュー追従の両方でCodexが使用するモデルを指定する）
 
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
-AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL` または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。preflightは信頼済みbase commitから追加scriptを取得する処理を増やさないため、各モデル実行stepの直前にinlineで置く。
+AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。preflightは信頼済みbase commitから追加scriptを取得する処理を増やさないため、各モデル実行stepの直前にinlineで置く。
 
 ## GitHub Apps
 
@@ -61,6 +62,16 @@ GitHub CLI経由のメタデータではApp actorが `app/<slug>` に正規化�
 ## Anthropic認証
 
 Anthropicは長期APIキーではなくGitHub OIDC / Workload Identity Federationを使う。Federation ruleはこのリポジトリの不変なowner/repository IDをsubject prefixに含め、他リポジトリからのtoken exchangeを許可しない。
+
+## Claude API消費制御
+
+Claude reviewは1実行につき `--max-budget-usd 1.50` を設定し、上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとする。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
+
+利用量記録はverdict経路を阻害しない非致命stepとする。Action outcome、result subtype、schema検証結果、turns、duration、estimated cost、input/output token、cache creation/read tokenをJob Summaryへ記録し、prompt本文、review本文、secret値は記録しない。`modelUsage` はClaude Code session全体のモデル別累積値として合算する。利用量が欠落・不正でもreview結果の厳密検証とverdict投稿は継続する。
+
+Claude Codeの標準5分prompt cacheを使用し、まず3実行分のcache creation/read tokenを記録して効果を評価する。1時間cacheはwrite単価が高く、自動再レビューを停止した運用では再利用機会が限定されるため、反復利用の実測根拠が得られるまで有効化しない。
+
+Message Batches APIは非同期処理であり、即時のreview verdictを必要とする同期PR gateへ導入しない。夜間処理など遅延を許容でき、複数の独立したreviewをまとめられる用途が生じた場合は別Issueで再検討する。
 
 ## Ruleset
 
@@ -89,7 +100,7 @@ default branchに次を適用する。
 - Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
 - Claudeのchange requestが3回に到達した。
 
-停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。人間が判断を記録し、再開可能と確認してから両方のラベルを外す。
+停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。許可済みのClaude change request follow-upでは、follow-up gate通過後にラベルを付けてからCodexを1回実行するため、その実行だけは継続するが、修正pushによる `synchronize` reviewは起動しない。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。人間が判断を記録し、再開可能と確認した後、closing Issue側を先に、PR側を最後に外す。PR側の `human-review-required` が外れたeventだけが明示的なClaude再レビュー要求となる。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 

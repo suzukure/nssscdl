@@ -156,6 +156,33 @@ awk '
 ' "$repo_root/.github/workflows/claude-review.yml" > "$bootstrap_validator"
 cmp -s "$repo_root/.github/scripts/validate-claude-review-output.sh" "$bootstrap_validator"
 
+bootstrap_summarizer="$test_dir/bootstrap-summarize-claude-usage.sh"
+awk '
+  /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
+  candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
+  candidate && /^          SUMMARIZER$/ { printf "%s", block; exit }
+' "$repo_root/.github/workflows/claude-review.yml" \
+  | sed '$d' > "$bootstrap_summarizer"
+cmp -s "$repo_root/.github/scripts/summarize-claude-usage.sh" "$bootstrap_summarizer"
+
+bootstrap_review_gate="$test_dir/bootstrap-evaluate-claude-review-entry-gate.sh"
+awk '
+  /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
+  candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
+  candidate && /^          REVIEW_GATE$/ { printf "%s", block; exit }
+' "$repo_root/.github/workflows/claude-review.yml" \
+  | sed '$d' > "$bootstrap_review_gate"
+cmp -s "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" "$bootstrap_review_gate"
+
+bootstrap_risk_classifier="$test_dir/bootstrap-classify-claude-review-risk.sh"
+awk '
+  /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
+  candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
+  candidate && /^          RISK_CLASSIFIER$/ { printf "%s", block; exit }
+' "$repo_root/.github/workflows/claude-review.yml" \
+  | sed '$d' > "$bootstrap_risk_classifier"
+cmp -s "$repo_root/.github/scripts/classify-claude-review-risk.sh" "$bootstrap_risk_classifier"
+
 jq -cn --arg review "$fenced_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/valid-execution-with-review.json"
@@ -186,14 +213,92 @@ for fixture in no-success multiple-success error-result; do
   fi
 done
 
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    num_turns:9,
+    duration_ms:123456,
+    total_cost_usd:1.25,
+    modelUsage:{
+      "model-a":{
+        inputTokens:10,
+        outputTokens:3,
+        cacheCreationInputTokens:100,
+        cacheReadInputTokens:1000,
+        costUSD:0.75
+      },
+      "model-b":{
+        inputTokens:20,
+        outputTokens:4,
+        cacheCreationInputTokens:200,
+        cacheReadInputTokens:2000,
+        costUSD:0.5
+      }
+    }
+  }
+]' > "$test_dir/usage-execution.json"
+usage_summary="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/usage-execution.json")"
+jq -e '
+  .result_subtype == "success" and
+  .is_error == false and
+  .turns == 9 and
+  .duration_ms == 123456 and
+  .estimated_cost_usd == 1.25 and
+  .input_tokens == 30 and
+  .output_tokens == 7 and
+  .cache_creation_input_tokens == 300 and
+  .cache_read_input_tokens == 3000
+' <<< "$usage_summary" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"error_max_budget",
+    is_error:true,
+    usage:{
+      input_tokens:11,
+      output_tokens:2,
+      cache_creation_input_tokens:33,
+      cache_read_input_tokens:44
+    }
+  }
+]' > "$test_dir/fallback-usage-execution.json"
+fallback_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/fallback-usage-execution.json")"
+jq -e '
+  .result_subtype == "error_max_budget" and
+  .is_error == true and
+  .input_tokens == 11 and
+  .output_tokens == 2 and
+  .cache_creation_input_tokens == 33 and
+  .cache_read_input_tokens == 44
+' <<< "$fallback_usage" > /dev/null
+
+if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
+  echo 'Expected usage summarization without a result event to fail.' >&2
+  exit 1
+fi
+
 if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
   echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
-if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
-  echo 'Expected Claude execution failures to reach fail-closed validation.' >&2
+if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 2 ]; then
+  echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
   exit 1
 fi
+grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, unlabeled]' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq "github.event.label.name == 'human-review-required'" "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'CLAUDE_MODEL_STANDARD' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq -- '--max-budget-usd 1.50' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Gate Claude review entry' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
+grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
+grep -Fq 'Automatic Claude re-review is paused.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq 'apply-human-pause.sh' "$repo_root/.github/workflows/ai-developer.yml"
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Claude returned no valid JSON review; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
 if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
@@ -206,6 +311,32 @@ if grep -Eq 'attempt (2|3) of 3' "$repo_root/.github/workflows/claude-review.yml
 fi
 
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+
+MOCK_CASE=valid
+export MOCK_CASE
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == true' <<< "$review_entry" > /dev/null
+
+MOCK_CASE=human-label
+export MOCK_CASE
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
+
+MOCK_CASE=valid
+MOCK_ISSUE_PAUSED=true
+export MOCK_CASE MOCK_ISSUE_PAUSED
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == false and (.reason | contains("Issue #36"))' <<< "$review_entry" > /dev/null
+unset MOCK_ISSUE_PAUSED
+
+MOCK_CASE=valid
+MOCK_API_FAIL=true
+export MOCK_CASE MOCK_API_FAIL
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37; then
+  echo 'Expected Claude review entry to fail when a closing Issue cannot be fetched.' >&2
+  exit 1
+fi
+unset MOCK_API_FAIL
 
 MOCK_CASE=valid
 export MOCK_CASE
@@ -273,6 +404,10 @@ fi
 MOCK_CASE=valid
 MOCK_CHANGED_PATH=src/CLAUDE.md
 export MOCK_CASE MOCK_CHANGED_PATH
+if [ "$(bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk)" != 'high' ]; then
+  echo 'Expected a nested AI instruction file to use the high-risk model.' >&2
+  exit 1
+fi
 if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
   echo 'Expected merge failure for a nested AI instruction file.' >&2
   exit 1
@@ -280,8 +415,19 @@ fi
 unset MOCK_CHANGED_PATH
 
 MOCK_CASE=valid
+export MOCK_CASE
+if [ "$(bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk)" != 'standard' ]; then
+  echo 'Expected an ordinary change to use the standard review model.' >&2
+  exit 1
+fi
+
+MOCK_CASE=valid
 MOCK_DIFF_FAIL=true
 export MOCK_CASE MOCK_DIFF_FAIL
+if bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk; then
+  echo 'Expected model classification to fail when protected-path lookup fails.' >&2
+  exit 1
+fi
 if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
   echo 'Expected merge failure when protected-path lookup fails.' >&2
   exit 1

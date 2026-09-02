@@ -90,12 +90,7 @@ if [ "$paused_issue_count" -gt 0 ]; then
   exit 1
 fi
 
-changed_paths="$(gh pr diff "$pr_number" --repo "$repo" --name-only)"
-protected_paths="$(
-  grep -E '(^|/)(AGENTS\.md|AGENTS\.override\.md|CLAUDE\.md|CLAUDE\.local\.md|CODEOWNERS|\.mcp\.json)$|(^|/)\.(claude|codex|github)(/|$)' \
-    <<< "$changed_paths" \
-    || true
-)"
+protected_paths="$(bash "$(dirname "$0")/classify-claude-review-risk.sh" "$repo" "$pr_number" list)"
 if [ -n "$protected_paths" ]; then
   echo 'AI instruction, agent configuration, and GitHub automation changes require a human Code Owner merge:' >&2
   printf '%s\n' "$protected_paths" >&2

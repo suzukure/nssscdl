@@ -2,7 +2,7 @@ name: Claude Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, unlabeled]
 
 permissions:
   contents: read
@@ -13,7 +13,9 @@ jobs:
     name: Review
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.draft == false
+      github.event.pull_request.draft == false &&
+      !contains(github.event.pull_request.labels.*.name, 'human-review-required') &&
+      (github.event.action != 'unlabeled' || github.event.label.name == 'human-review-required')
     runs-on: ubuntu-latest
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
@@ -108,23 +110,195 @@ jobs:
           ' <<< "$review_json"
           VALIDATOR
           fi
+          if git cat-file -e "${BASE_SHA}:.github/scripts/summarize-claude-usage.sh" 2> /dev/null; then
+            git show "${BASE_SHA}:.github/scripts/summarize-claude-usage.sh" > "$RUNNER_TEMP/summarize-claude-usage.sh"
+          else
+            # Bootstrap only the introducing PR. Never execute the summarizer from the untrusted PR head.
+            cat > "$RUNNER_TEMP/summarize-claude-usage.sh" <<'SUMMARIZER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          execution_file="${1:?execution file is required}"
+
+          jq -ce '
+            [.[] | select(type == "object" and .type == "result")] | last as $result
+            | if $result == null then error("Claude execution has no result event") else $result end
+            | (.modelUsage // {} | to_entries | map(.value)) as $models
+            | {
+                result_subtype: (.subtype // "unavailable"),
+                is_error: (if has("is_error") then .is_error else null end),
+                turns: (.num_turns // null),
+                duration_ms: (.duration_ms // null),
+                estimated_cost_usd: (
+                  .total_cost_usd
+                  // (if ($models | length) > 0 then ($models | map(.costUSD // 0) | add) else null end)
+                ),
+                input_tokens: (
+                  if ($models | length) > 0
+                  then ($models | map(.inputTokens // 0) | add)
+                  else (.usage.input_tokens // null)
+                  end
+                ),
+                output_tokens: (
+                  if ($models | length) > 0
+                  then ($models | map(.outputTokens // 0) | add)
+                  else (.usage.output_tokens // null)
+                  end
+                ),
+                cache_creation_input_tokens: (
+                  if ($models | length) > 0
+                  then ($models | map(.cacheCreationInputTokens // 0) | add)
+                  else (.usage.cache_creation_input_tokens // null)
+                  end
+                ),
+                cache_read_input_tokens: (
+                  if ($models | length) > 0
+                  then ($models | map(.cacheReadInputTokens // 0) | add)
+                  else (.usage.cache_read_input_tokens // null)
+                  end
+                )
+              }
+          ' "$execution_file"
+          SUMMARIZER
+          fi
+          if git cat-file -e "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" 2> /dev/null; then
+            git show "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" > "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh"
+          else
+            # Bootstrap only the introducing PR. Never execute the entry gate from the untrusted PR head.
+            cat > "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" <<'REVIEW_GATE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          repo="${1:?repository is required}"
+          pr_number="${2:?pull request number is required}"
+
+          metadata="$(gh pr view "$pr_number" --repo "$repo" --json labels,closingIssuesReferences)"
+
+          emit_result() {
+            jq -cn --argjson continue "$1" --arg reason "$2" \
+              '{continue: $continue, reason: $reason}'
+          }
+
+          if jq -e '.labels | any(.name == "human-review-required")' <<< "$metadata" > /dev/null; then
+            emit_result false 'Claude review is paused by the human-review-required label on the PR.'
+            exit 0
+          fi
+
+          issue_prefix="https://github.com/${repo}/issues/"
+          mapfile -t closing_issues < <(
+            jq -r --arg prefix "$issue_prefix" \
+              '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' \
+              <<< "$metadata"
+          )
+
+          if [ "${#closing_issues[@]}" -lt 1 ]; then
+            echo 'Claude review requires at least one same-repository closing Issue.' >&2
+            exit 1
+          fi
+
+          for issue_number in "${closing_issues[@]}"; do
+            if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
+              echo "Could not fetch closing Issue #${issue_number}; refusing Claude review." >&2
+              exit 1
+            fi
+            if jq -e '(.labels // []) | any(.name == "human-review-required")' <<< "$issue_json" > /dev/null; then
+              emit_result false "Claude review is paused by the human-review-required label on Issue #${issue_number}."
+              exit 0
+            fi
+          done
+
+          emit_result true ''
+          REVIEW_GATE
+          fi
+          if git cat-file -e "${BASE_SHA}:.github/scripts/classify-claude-review-risk.sh" 2> /dev/null; then
+            git show "${BASE_SHA}:.github/scripts/classify-claude-review-risk.sh" > "$RUNNER_TEMP/classify-claude-review-risk.sh"
+          else
+            # Bootstrap only the introducing PR. Never execute the classifier from the untrusted PR head.
+            cat > "$RUNNER_TEMP/classify-claude-review-risk.sh" <<'RISK_CLASSIFIER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          repo="${1:?repository is required}"
+          pr_number="${2:?pull request number is required}"
+          mode="${3:-risk}"
+
+          changed_paths="$(gh pr diff "$pr_number" --repo "$repo" --name-only)"
+          protected_paths="$(
+            grep -E '(^|/)(AGENTS\.md|AGENTS\.override\.md|CLAUDE\.md|CLAUDE\.local\.md|CODEOWNERS|\.mcp\.json)$|(^|/)\.(claude|codex|github)(/|$)' \
+              <<< "$changed_paths" \
+              || true
+          )"
+
+          case "$mode" in
+            risk)
+              if [ -n "$protected_paths" ]; then
+                echo high
+              else
+                echo standard
+              fi
+              ;;
+            list)
+              printf '%s\n' "$protected_paths"
+              ;;
+            *)
+              echo "Unsupported classification mode: ${mode}" >&2
+              exit 1
+              ;;
+          esac
+          RISK_CLASSIFIER
+          fi
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
 
-      - name: Validate Claude model configuration
+      - name: Gate Claude review entry
+        id: review-entry
         env:
-          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$CLAUDE_MODEL" =~ [^[:space:]] ]]; then
+          result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")"
+          echo "continue=$(jq -r .continue <<< "$result")" >> "$GITHUB_OUTPUT"
+          jq -r .reason <<< "$result"
+
+      - name: Select Claude review model
+        id: review-model
+        if: steps.review-entry.outputs.continue == 'true'
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STANDARD_MODEL: ${{ vars.CLAUDE_MODEL_STANDARD }}
+          HIGH_RISK_MODEL: ${{ vars.CLAUDE_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$STANDARD_MODEL" =~ [^[:space:]] ]]; then
+            echo 'CLAUDE_MODEL_STANDARD repository variable must contain a non-whitespace value.' >&2
+            exit 1
+          fi
+          if [[ ! "$HIGH_RISK_MODEL" =~ [^[:space:]] ]]; then
             echo 'CLAUDE_MODEL repository variable must contain a non-whitespace value.' >&2
+            exit 1
+          fi
+          risk="$(bash "$RUNNER_TEMP/classify-claude-review-risk.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" risk)"
+          if [ "$risk" = 'high' ]; then
+            echo "model=$HIGH_RISK_MODEL" >> "$GITHUB_OUTPUT"
+            echo 'risk=high' >> "$GITHUB_OUTPUT"
+            echo 'Selected the high-risk review model.'
+          elif [ "$risk" = 'standard' ]; then
+            echo "model=$STANDARD_MODEL" >> "$GITHUB_OUTPUT"
+            echo 'risk=standard' >> "$GITHUB_OUTPUT"
+            echo 'Selected the standard review model.'
+          else
+            echo "Unsupported Claude review risk classification: ${risk}" >&2
             exit 1
           fi
 
       - name: Run Claude review
         id: claude-attempt-1
+        if: steps.review-entry.outputs.continue == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
         with:
@@ -143,12 +317,13 @@ jobs:
             verdict must be approve or request_changes; summary must be a string; the three findings/issues fields must be arrays of strings.
             Every finding must cite concrete repository evidence.
           claude_args: >-
-            --model "${{ vars.CLAUDE_MODEL }}"
+            --model "${{ steps.review-model.outputs.model }}"
+            --max-budget-usd 1.50
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
 
       - name: Validate Claude review
         id: validate-attempt-1
-        if: always()
+        if: always() && steps.review-entry.outputs.continue == 'true'
         env:
           EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
         shell: bash
@@ -167,9 +342,51 @@ jobs:
             echo 'valid=false' >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Record Claude review usage
+        if: always() && steps.review-entry.outputs.continue == 'true'
+        continue-on-error: true
+        env:
+          EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
+          ACTION_OUTCOME: ${{ steps.claude-attempt-1.outcome }}
+          VALIDATION_RESULT: ${{ steps.validate-attempt-1.outputs.valid }}
+          REVIEW_RISK: ${{ steps.review-model.outputs.risk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Claude review usage'
+            echo
+            if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ] \
+                && usage_json="$(bash "$RUNNER_TEMP/summarize-claude-usage.sh" "$EXECUTION_FILE")"; then
+              jq -r \
+                --arg action "$ACTION_OUTCOME" \
+                --arg validation "$VALIDATION_RESULT" \
+                --arg risk "$REVIEW_RISK" '
+                [
+                  "| Metric | Value |",
+                  "|---|---:|",
+                  "| Risk class | \($risk // "unavailable") |",
+                  "| Action outcome | \($action // "unavailable") |",
+                  "| Result subtype | \(.result_subtype // "unavailable") |",
+                  "| Result is error | \(if .is_error == null then "unavailable" else .is_error end) |",
+                  "| Schema valid | \($validation // "unavailable") |",
+                  "| Turns | \(.turns // "unavailable") |",
+                  "| Duration (ms) | \(.duration_ms // "unavailable") |",
+                  "| Estimated cost (USD) | \(.estimated_cost_usd // "unavailable") |",
+                  "| Input tokens | \(.input_tokens // "unavailable") |",
+                  "| Output tokens | \(.output_tokens // "unavailable") |",
+                  "| Cache creation tokens | \(.cache_creation_input_tokens // "unavailable") |",
+                  "| Cache read tokens | \(.cache_read_input_tokens // "unavailable") |"
+                ] | .[]
+              ' <<< "$usage_json"
+            else
+              echo 'Execution usage was unavailable.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Save structured review
         id: structured-review
-        if: always()
+        if: always() && steps.review-entry.outputs.continue == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -185,6 +402,7 @@ jobs:
           exit 1
 
       - name: Submit reviewer verdict
+        if: steps.review-entry.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -198,13 +416,15 @@ jobs:
 
       - name: Record verdict
         id: review-result
+        if: steps.review-entry.outputs.continue == 'true'
         shell: bash
         run: echo "verdict=$(jq -r .verdict "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
 
       - name: Mark human escalation
         if: >-
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]')
+          steps.review-entry.outputs.continue == 'true' &&
+          (contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
+          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -223,8 +443,9 @@ jobs:
 
       - name: Notify human of Claude escalation
         if: >-
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]')
+          steps.review-entry.outputs.continue == 'true' &&
+          (contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
+          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
