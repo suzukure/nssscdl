@@ -148,40 +148,27 @@ if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict
   exit 1
 fi
 
-bootstrap_validator="$test_dir/bootstrap-validate-claude-review-output.sh"
-awk '
-  /^          #!\/usr\/bin\/env bash$/ { capture = 1 }
-  capture && /^          VALIDATOR$/ { exit }
-  capture { sub(/^          /, ""); print }
-' "$repo_root/.github/workflows/claude-review.yml" > "$bootstrap_validator"
-cmp -s "$repo_root/.github/scripts/validate-claude-review-output.sh" "$bootstrap_validator"
+assert_bootstrap_matches() {
+  local terminator="${1:?terminator is required}"
+  local script_path="${2:?script path is required}"
+  local output_path="$test_dir/bootstrap-${terminator,,}.sh"
 
-bootstrap_summarizer="$test_dir/bootstrap-summarize-claude-usage.sh"
-awk '
-  /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
-  candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
-  candidate && /^          SUMMARIZER$/ { printf "%s", block; exit }
-' "$repo_root/.github/workflows/claude-review.yml" \
-  | sed '$d' > "$bootstrap_summarizer"
-cmp -s "$repo_root/.github/scripts/summarize-claude-usage.sh" "$bootstrap_summarizer"
+  awk -v terminator="$terminator" '
+    /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
+    candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
+    candidate && $0 == "          " terminator { printf "%s", block; exit }
+  ' "$repo_root/.github/workflows/claude-review.yml" | sed '$d' > "$output_path"
 
-bootstrap_review_gate="$test_dir/bootstrap-evaluate-claude-review-entry-gate.sh"
-awk '
-  /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
-  candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
-  candidate && /^          REVIEW_GATE$/ { printf "%s", block; exit }
-' "$repo_root/.github/workflows/claude-review.yml" \
-  | sed '$d' > "$bootstrap_review_gate"
-cmp -s "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" "$bootstrap_review_gate"
+  if ! cmp -s "$script_path" "$output_path"; then
+    echo "Bootstrap copy mismatch for $script_path (terminator: $terminator)." >&2
+    exit 1
+  fi
+}
 
-bootstrap_risk_classifier="$test_dir/bootstrap-classify-claude-review-risk.sh"
-awk '
-  /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
-  candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
-  candidate && /^          RISK_CLASSIFIER$/ { printf "%s", block; exit }
-' "$repo_root/.github/workflows/claude-review.yml" \
-  | sed '$d' > "$bootstrap_risk_classifier"
-cmp -s "$repo_root/.github/scripts/classify-claude-review-risk.sh" "$bootstrap_risk_classifier"
+assert_bootstrap_matches VALIDATOR "$repo_root/.github/scripts/validate-claude-review-output.sh"
+assert_bootstrap_matches SUMMARIZER "$repo_root/.github/scripts/summarize-claude-usage.sh"
+assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
+assert_bootstrap_matches RISK_CLASSIFIER "$repo_root/.github/scripts/classify-claude-review-risk.sh"
 
 jq -cn --arg review "$fenced_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
@@ -252,6 +239,7 @@ jq -e '
   .cache_read_input_tokens == 3000
 ' <<< "$usage_summary" > /dev/null
 
+# error_max_budget is an unverified placeholder as of Issue #61; confirm it from a real budget-limit run before treating it as a CLI contract.
 jq -cn '[
   {
     type:"result",
