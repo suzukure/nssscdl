@@ -54,7 +54,36 @@ jobs:
           set -euo pipefail
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
-          git show "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" > "$RUNNER_TEMP/validate-claude-review-output.sh"
+          if git cat-file -e "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" 2> /dev/null; then
+            git show "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" > "$RUNNER_TEMP/validate-claude-review-output.sh"
+          else
+            # Bootstrap only the introducing PR. Never execute the validator from the untrusted PR head.
+            cat > "$RUNNER_TEMP/validate-claude-review-output.sh" <<'VALIDATOR'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          review_json="${1-}"
+
+          jq -ce '
+          if type == "object" and
+            (keys | sort) == [
+              "blocking_findings",
+              "linked_issues_checked",
+              "non_blocking_findings",
+              "summary",
+              "verdict"
+            ] and
+            (.verdict == "approve" or .verdict == "request_changes") and
+            (.summary | type == "string") and
+            (.blocking_findings | type == "array" and all(.[]; type == "string")) and
+            (.non_blocking_findings | type == "array" and all(.[]; type == "string")) and
+            (.linked_issues_checked | type == "array" and all(.[]; type == "string"))
+          then .
+          else error("Claude review does not match the required schema")
+          end
+          ' <<< "$review_json"
+          VALIDATOR
+          fi
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
