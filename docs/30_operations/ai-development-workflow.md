@@ -101,6 +101,8 @@ Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で�
 
 Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデルpreflightまたはモデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値とRepository variable値はログへ出さない。モデルIDについては前述のとおりIssue/PRの変更履歴・検証証跡へ記録してよいが、ログへは出さない。
 
+Claude reviewでは、各実行結果をworkflowの固定JSON schemaで検証する。`structured_output` が欠落・不正な場合は最大3回まで同じレビューを再試行し、いずれも有効な `approve` または `request_changes` verdictを返さなければfail-closedでjobを失敗させる。空の結果や推測したverdictを保存・投稿してはならない。成功した場合だけ最初のschema適合結果を正本として保存・投稿し、通常の人間エスカレーション判定へ進む。
+
 `.github/scripts/**` を変更した場合、または認可・信頼境界・closing Issue・merge gateのロジックを変更した場合は次を実行し、fixtureを確認する。
 
 ```bash

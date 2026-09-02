@@ -119,6 +119,32 @@ gh() {
 }
 export -f gh
 
+valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
+validated_structured_review="$(bash "$repo_root/.github/scripts/validate-claude-review-output.sh" "$valid_structured_review")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_structured_review" > /dev/null
+
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '' > /dev/null; then
+  echo 'Expected an empty structured review to be rejected.' >&2
+  exit 1
+fi
+
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict":"approve"}' > /dev/null; then
+  echo 'Expected an incomplete structured review to be rejected.' >&2
+  exit 1
+fi
+
+if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":[],"unexpected":true}' > /dev/null; then
+  echo 'Expected a structured review with extra fields to be rejected.' >&2
+  exit 1
+fi
+
+grep -Fq 'Run Claude review (attempt 3 of 3)' "$repo_root/.github/workflows/claude-review.yml"
+if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 3 ]; then
+  echo 'Expected Claude review to have exactly three bounded attempts.' >&2
+  exit 1
+fi
+grep -Fq 'Claude returned no valid structured review after 3 attempts; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 
 MOCK_CASE=valid
