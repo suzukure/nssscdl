@@ -322,7 +322,7 @@ jobs:
             Every finding must cite concrete repository evidence.
           claude_args: >-
             --model "${{ steps.review-model.outputs.model }}"
-            --max-budget-usd 1.50
+            --max-budget-usd 1.70
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
 
       - name: Validate Claude review

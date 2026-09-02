@@ -65,7 +65,7 @@ Anthropicは長期APIキーではなくGitHub OIDC / Workload Identity Federatio
 
 ## Claude API消費制御
 
-Claude reviewは1実行につき `--max-budget-usd 1.50` を設定し、上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとする。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
+Claude reviewは1実行につき `--max-budget-usd 1.70` を設定し、上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとする。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
 
 利用量記録はverdict経路を阻害しない非致命stepとする。Action outcome、result subtype、schema検証結果、turns、duration、estimated cost、input/output token、cache creation/read tokenをJob Summaryへ記録し、prompt本文、review本文、secret値は記録しない。`modelUsage` はClaude Code session全体のモデル別累積値として合算する。利用量が欠落・不正でもreview結果の厳密検証とverdict投稿は継続する。
 
