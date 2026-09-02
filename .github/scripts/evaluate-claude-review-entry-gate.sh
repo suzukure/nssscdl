@@ -23,7 +23,7 @@ mapfile -t closing_issues < <(
     <<< "$metadata"
 )
 
- for issue_number in "${closing_issues[@]}"; do
+for issue_number in "${closing_issues[@]}"; do
   if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
     echo "Could not fetch closing Issue #${issue_number}; refusing Claude review." >&2
     exit 1
