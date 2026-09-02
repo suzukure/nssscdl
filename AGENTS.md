@@ -100,7 +100,7 @@ Use this escalation path whenever the Issue cannot be completed consistently wit
 
 Do not make the unresolved change silently, and do not leave partial or speculative repository changes for the blocked work.
 
-Include the exact marker:
+Include the exact marker on a standalone line by itself:
 
 `[REQUIREMENTS_CHANGE_REQUIRED]`
 
@@ -113,7 +113,7 @@ Explain:
 - affected `POL / BR / REQ / AC / TC / CON / OOS`;
 - what downstream work must wait for the decision.
 
-On Issue-entry development runs, the workflow detects this marker and pauses for human review. On Claude review follow-up runs, the current workflow does not yet detect a marker emitted by Codex after the follow-up execution. Therefore, when using this escalation path during review follow-up, leave the working tree completely unchanged so the workflow has no repository change to commit or push. The missing follow-up marker gate is tracked separately in Issue #56.
+On Issue-entry development runs and after Codex executes during a Claude review follow-up, the workflow detects this marker only when it appears on a standalone line exactly equal to `[REQUIREMENTS_CHANGE_REQUIRED]`, then synchronizes `human-review-required` and pauses for human review. Explanatory mentions within another line are not stop signals. During review follow-up, leave the working tree unchanged when returning this marker; do not combine the escalation with fixes for other findings in the same run.
 
 Do not weaken, reinterpret, or bypass a requirement merely to satisfy a Claude finding or make implementation easier.
 
@@ -177,7 +177,7 @@ If a finding should not be implemented, explain why with concrete repository or 
 
 Do not resolve a review disagreement by silently changing requirements.
 
-If the disagreement requires a requirement or upstream decision, use `[REQUIREMENTS_CHANGE_REQUIRED]`. During Claude review follow-up, leave the entire working tree unchanged when returning this marker; do not combine the escalation with fixes for other findings in the same run. This prevents the current follow-up workflow from committing or pushing a partial change while Issue #56 remains unresolved.
+If the disagreement requires a requirement or upstream decision, put `[REQUIREMENTS_CHANGE_REQUIRED]` on a standalone line by itself. During Claude review follow-up, leave the entire working tree unchanged when returning this marker; do not combine the escalation with fixes for other findings in the same run. The workflow pauses before committing or pushing the partial change.
 
 ## Prohibited actions
 

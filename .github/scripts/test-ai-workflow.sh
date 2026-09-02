@@ -121,6 +121,16 @@ export -f gh
 
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 
+marker_response="$test_dir/marker-response.md"
+printf '%s\n' '[REQUIREMENTS_CHANGE_REQUIRED]' > "$marker_response"
+bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"
+
+printf '%s\n' 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.' > "$marker_response"
+if bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"; then
+  echo 'Expected an inline requirements-change marker not to trigger a pause.' >&2
+  exit 1
+fi
+
 MOCK_CASE=valid
 export MOCK_CASE
 bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/review.md" 'dev,dev[bot],app/dev,review,review[bot],app/review'
