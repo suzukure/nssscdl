@@ -80,6 +80,14 @@ jobs:
             ' "$execution_file")"
           fi
 
+          review_json="$(printf '%s' "$review_json" | jq -Rrs '
+            if test("^\\s*```json[\\t ]*\\r?\\n[\\s\\S]*\\r?\\n```\\s*$"; "i") then
+              capture("^\\s*```json[\\t ]*\\r?\\n(?<body>[\\s\\S]*?)\\r?\\n```\\s*$"; "i").body
+            else
+              .
+            end
+          ')"
+
           jq -ce '
           if type == "object" and
             (keys | sort) == [
