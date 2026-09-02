@@ -138,12 +138,28 @@ if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict
   exit 1
 fi
 
-grep -Fq 'Run Claude review (attempt 3 of 3)' "$repo_root/.github/workflows/claude-review.yml"
-if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 3 ]; then
-  echo 'Expected Claude review to have exactly three bounded attempts.' >&2
+if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
+  echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
-grep -Fq 'Claude returned no valid structured review after 3 attempts; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
+  echo 'Expected exactly one bounded Claude review invocation.' >&2
+  exit 1
+fi
+grep -Fq -- '--max-turns 12' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Cache creation tokens' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Cache read tokens' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Claude returned no valid JSON review; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Expected execution_file validation instead of unsupported --json-schema forwarding.' >&2
+  exit 1
+fi
+if grep -Eq 'attempt (2|3) of 3' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Expected duplicate full-review retries to be removed.' >&2
+  exit 1
+fi
 
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 
