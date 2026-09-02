@@ -69,7 +69,7 @@ Claude reviewは1実行につき `--max-budget-usd 1.70` を設定し、上限�
 
 利用量記録はverdict経路を阻害しない非致命stepとする。Action outcome、result subtype、schema検証結果、turns、duration、estimated cost、input/output token、cache creation/read tokenをJob Summaryへ記録し、prompt本文、review本文、secret値は記録しない。`modelUsage` はClaude Code session全体のモデル別累積値として合算する。利用量が欠落・不正でもreview結果の厳密検証とverdict投稿は継続する。
 
-Claude Codeの標準5分prompt cacheを使用し、まず3実行分のcache creation/read tokenを記録して効果を評価する。1時間cacheはwrite単価が高く、自動再レビューを停止した運用では再利用機会が限定されるため、反復利用の実測根拠が得られるまで有効化しない。
+Claude Codeの標準5分prompt cacheを使用し、Issue #61の高リスク2実行分と、後継Issue #63で追跡する実際の通常PR 1実行分のcache creation/read tokenを合わせて評価する。1時間cacheはwrite単価が高く、自動再レビューを停止した運用では再利用機会が限定されるため、反復利用の実測根拠が得られるまで有効化しない。
 
 Message Batches APIは非同期処理であり、即時のreview verdictを必要とする同期PR gateへ導入しない。夜間処理など遅延を許容でき、複数の独立したreviewをまとめられる用途が生じた場合は別Issueで再検討する。
 
