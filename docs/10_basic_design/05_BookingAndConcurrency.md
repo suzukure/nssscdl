@@ -202,6 +202,48 @@ Reservationだけ作成されOccupancyがない状態、Reservation / Occupancy�
 
 開始済みReservationの `automatic_classification` は遡及変更しない。同一生徒・同一月の異なるSlotへの同時予約も、Slot競合とは別に月間分類競合として扱う。
 
+### 5.5 一括予約ConfirmのTransaction境界と競合
+
+`REQ-008 / AC-008-001〜009 / BR-069` に従う一括予約Confirmは、選択Slot集合全体を1つの業務Commandとして扱う。選択対象の各Slotを独立した単一予約Commandとして順番に確定したり、成功した一部だけを残したりしない。既存の単一予約Confirmは引き続き5.1〜5.4を適用し、一括予約がこれを置換しない。
+
+#### 5.5.1 原子的Transaction境界
+
+一括予約Confirmでは、少なくとも次を選択Slot集合全体について1つのD1 TransactionでAll-or-NothingにCommitする。
+
+- 各選択Slotに対応する新規 `StudentReservation` 作成
+- 各対象 `LessonSlot` の `SlotOccupancy` 確保
+- 選択集合を反映した同一生徒・同一月の必要な自動再分類
+- 各新規Reservationおよび影響する選択対象外の未開始Reservationの `automatic_classification` / `classification` 更新
+- 一括予約Commandを単位とするAuditLog
+- 各新規予約の予約確認NotificationIntent
+- 既存Reservationのclassificationが変化した場合に必要な区分変更NotificationIntent
+
+対象Reservation、Occupancy、再分類、AuditLog、または通知義務のいずれかを一部だけCommitする正常結果を許容しない。いずれかのCommit必須条件または同一Transaction内の書込みが不成立なら、選択集合全体をRollbackする。
+
+#### 5.5.2 Commit直前の論理的再検証順序
+
+具体SQLのStatement順序は詳細設計で定めるが、Transaction内ではCommit直前まで最新確定状態を基準に、少なくとも次の論理順序で再検証する。
+
+```text
+1. 認証済みSessionから解決した対象生徒が、現在も予約操作可能であることを確認する
+2. 選択集合が同一暦月・一括操作上限N等の一括予約条件を満たすことを確認する
+3. 各対象Slotについて、公開済み、enabled、Server Commit基準時刻で開始前、現在Occupancyなし、未来Slot Invariant成立を確認する
+4. 同一生徒・同一月のReservation、欠席、月間算入Override、最新Nおよび開始境界から、選択集合全体の新規classificationと選択対象外の未開始Reservationへの再分類影響を算出する
+5. Previewで確認した重要状態との一致を確認し、すべてのGuardが成立した場合だけ、5.5.1の状態変更、AuditLog、NotificationIntentをCommitする
+```
+
+この再検証はTransaction外のPreviewや事前読込だけに依存しない。具体的なExpected Stateの構成要素およびWire表現は本書で定めない。
+
+#### 5.5.3 Conflictと全体未適用
+
+同時予約による対象Slotの先行占有、Commit判定中のLesson開始時刻到達、Slotの公開状態またはavailability状態の変更、最新N・月間算入条件・classificationまたは選択対象外の既存未開始Reservationへのclassification影響の変化等により、再検証またはGuardが不成立となる場合はConflictとする。
+
+Conflict時はTransactionをRollbackし、全対象を未適用とする。先行正常Commitを優先し、選択集合の一部だけをReservation、Occupancy、再分類、Audit、または通知義務として残さない。
+
+Rollback後は、Primaryの最新状態から安全に検出・再取得できた範囲だけをConflict Responseへ含めてよい。Responseは再Previewまたは再確認に必要な対象Slot・業務上の理由・安全な最新Slot View・classification影響を示せる形とするが、全競合または全影響の完全列挙を保証しない。
+
+Responseへ他生徒の氏名、内部生徒ID、Reservation IDその他の個人情報を含めず、D1 / SQLエラー、Constraint名、内部Table・Column名、内部Invariant Codeも公開しない。具体的なApplication Error Code、HTTP Response Schema、Expected State、および再Preview情報のWire表現は詳細設計で確定する。
+
 ## 6. 生徒キャンセルCommand
 
 ### 6.1 原子的Transaction境界
@@ -853,6 +895,8 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - BR-063 スクール都合キャンセル
 - BR-064 予約済み枠の休業化
 - BR-067 未来枠の現在予約状態の一貫性
+- BR-068 生徒本人予約の所有者同一性
+- BR-069 生徒一括予約
 - BR-100 生徒削除
 - BR-110 重大障害通知
 - BR-111〜BR-116 通知
@@ -860,7 +904,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - BR-131 管理操作説明
 - BR-132 監査
 - BR-133 利用者向けエラー表現
-- REQ-002 / REQ-003 / REQ-004 予約・キャンセル
+- REQ-002 / REQ-003 / REQ-004 / REQ-008 予約・キャンセル・一括予約
 - REQ-101〜REQ-105 通知
 - REQ-103 / REQ-104 / REQ-110 通知・システム表示
 - REQ-207 Session管理
@@ -885,6 +929,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 個別DDL、Index、具体的Guard SQL、CTE
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
+- 一括予約ConfirmのExpected State、Guard SQL、集合書込みSQL、Conflict Responseの具体Wire表現
 - 分類管理Commandの具体的Guard SQL、集合再分類SQL、Expected Stateの具体表現
 - school cancellationの通常／事後分岐Guard、欠席Guard、事後登録確認Auditの具体表現
 - 欠席設定・解除のLesson終了Guard、欠席有無Guard、実効算入再評価、集合再分類SQL、Expected Stateの具体表現
@@ -898,6 +943,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - スクール都合キャンセル後のSlot状態は2026-08-28に確定した。
 - 要求仕様v1.10に従い、スクール都合キャンセルは原則Lesson開始前、例外的に開始後・終了後も事後登録可能とし、事後登録の取消時刻を実際のServer Commit時刻、Slotは再開放しない、欠席は先に明示解除、事後登録の業務事実確認をAudit対象とする方針を2026-08-30に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
+- `REQ-008 / AC-008-001〜009 / BR-069` に従い、一括予約Confirmを選択Slot集合全体の1業務Commandとし、D1上でReservation、Occupancy、必要な再分類、AuditLog、通知義務をAll-or-Nothingに確定する。Commit直前の最新状態再検証、競合時の全体Rollback、および安全に検出できた範囲に限るConflict Responseの方針を2026-09-02に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
 - 生徒削除起因system cancellationの即時Transaction境界、個人情報削除・匿名化の後続処理分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
 - 月間標準回数変更、月間回数除外設定・解除、Classification OverrideのTransaction境界、最新状態再検証、再分類・AuditLog・NotificationIntentの同一Commit方針は2026-08-30に確定した。月間回数除外解除は無条件な再算入ではなく、Override解除後に最新の算入条件から実効算入可否を再評価する。
