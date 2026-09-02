@@ -300,6 +300,8 @@ jobs:
             bash .github/scripts/apply-human-pause.sh \
               "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
             reason='Codex may apply this follow-up, but automatic Claude re-review is paused until a human removes the labels.'
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body 'Automatic Claude re-review is paused. After checking the Codex follow-up, remove human-review-required from the closing Issue first and from this PR last to request one new Claude review.'
           fi
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "notify=${notify}" >> "$GITHUB_OUTPUT"
@@ -378,8 +380,6 @@ jobs:
           set -euo pipefail
           rm -f .ai-context/request.md
           rmdir .ai-context 2>/dev/null || true
-          pause_message='Automatic Claude re-review is paused. After checking the Codex follow-up, remove human-review-required from the closing Issue first and from this PR last to request one new Claude review.'
-
           bot_login="${APP_SLUG}[bot]"
           bot_id="$(gh api "/users/${bot_login}" --jq .id)"
           git config user.name "$bot_login"
@@ -392,7 +392,6 @@ jobs:
             else
               gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex found no repository change and produced no final summary.'
             fi
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$pause_message"
             exit 0
           fi
 
@@ -403,4 +402,3 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
           fi
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$pause_message"

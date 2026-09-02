@@ -191,12 +191,7 @@ jobs:
               <<< "$metadata"
           )
 
-          if [ "${#closing_issues[@]}" -lt 1 ]; then
-            echo 'Claude review requires at least one same-repository closing Issue.' >&2
-            exit 1
-          fi
-
-          for issue_number in "${closing_issues[@]}"; do
+           for issue_number in "${closing_issues[@]}"; do
             if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
               echo "Could not fetch closing Issue #${issue_number}; refusing Claude review." >&2
               exit 1
@@ -260,8 +255,17 @@ jobs:
         run: |
           set -euo pipefail
           result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")"
-          echo "continue=$(jq -r .continue <<< "$result")" >> "$GITHUB_OUTPUT"
-          jq -r .reason <<< "$result"
+          continue="$(jq -r .continue <<< "$result")"
+          reason="$(jq -r .reason <<< "$result")"
+          echo "continue=$continue" >> "$GITHUB_OUTPUT"
+          if [ "$continue" = 'false' ]; then
+            {
+              echo '### Claude review not run'
+              echo
+              echo "Reason: ${reason:-unavailable}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "$reason"
 
       - name: Select Claude review model
         id: review-model
@@ -365,11 +369,11 @@ jobs:
                 [
                   "| Metric | Value |",
                   "|---|---:|",
-                  "| Risk class | \($risk // "unavailable") |",
-                  "| Action outcome | \($action // "unavailable") |",
+                  "| Risk class | \(if $risk == "" then "unavailable" else $risk end) |",
+                  "| Action outcome | \(if $action == "" then "unavailable" else $action end) |",
                   "| Result subtype | \(.result_subtype // "unavailable") |",
                   "| Result is error | \(if .is_error == null then "unavailable" else .is_error end) |",
-                  "| Schema valid | \($validation // "unavailable") |",
+                  "| Schema valid | \(if $validation == "" then "unavailable" else $validation end) |",
                   "| Turns | \(.turns // "unavailable") |",
                   "| Duration (ms) | \(.duration_ms // "unavailable") |",
                   "| Estimated cost (USD) | \(.estimated_cost_usd // "unavailable") |",

@@ -23,12 +23,7 @@ mapfile -t closing_issues < <(
     <<< "$metadata"
 )
 
-if [ "${#closing_issues[@]}" -lt 1 ]; then
-  echo 'Claude review requires at least one same-repository closing Issue.' >&2
-  exit 1
-fi
-
-for issue_number in "${closing_issues[@]}"; do
+ for issue_number in "${closing_issues[@]}"; do
   if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
     echo "Could not fetch closing Issue #${issue_number}; refusing Claude review." >&2
     exit 1

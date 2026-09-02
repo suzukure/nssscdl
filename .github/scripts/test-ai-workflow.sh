@@ -294,6 +294,8 @@ grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-requi
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq -- '--max-budget-usd 1.50' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Claude review not run' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Gate Claude review entry' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
@@ -316,6 +318,11 @@ MOCK_CASE=valid
 export MOCK_CASE
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
 jq -e '.continue == true' <<< "$review_entry" > /dev/null
+
+MOCK_CASE=no-links
+export MOCK_CASE
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 
 MOCK_CASE=human-label
 export MOCK_CASE
