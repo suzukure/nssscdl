@@ -104,6 +104,7 @@ Atomicな予約変更・振替機能は対象外。
 | OI-TM-049 | Closed | Group Lesson定期設定。変更は既生成月へ非遡及。 |
 | OI-TM-050 | Closed | Backup要求をRPO中心に方式非依存化。 |
 | OI-TM-051 | Closed | 24h Serviceと有人保守6:00-24:00の分離、RTO整理。 |
+| OI-TM-052 | Closed | 生徒一括予約は同一生徒・同一月、月間標準回数Nを1回の操作上限として一括Preview／一括確定する。全体Reject、Preview／Confirm時の再検証および追加予約の公平性制御を初期リリースへ追加しない判断を含む。 |
 
 ## 4. 初期リリースで未決の業務論点
 なし。
