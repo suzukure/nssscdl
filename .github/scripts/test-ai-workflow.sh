@@ -138,19 +138,53 @@ if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" '{"verdict
   exit 1
 fi
 
+bootstrap_validator="$test_dir/bootstrap-validate-claude-review-output.sh"
+awk '
+  /^          #!\/usr\/bin\/env bash$/ { capture = 1 }
+  capture && /^          VALIDATOR$/ { exit }
+  capture { sub(/^          /, ""); print }
+' "$repo_root/.github/workflows/claude-review.yml" > "$bootstrap_validator"
+cmp -s "$repo_root/.github/scripts/validate-claude-review-output.sh" "$bootstrap_validator"
+
+jq -cn --arg review "$valid_structured_review" '[
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/valid-execution-with-review.json"
+validated_execution_review="$(bash "$repo_root/.github/scripts/validate-claude-review-output.sh" --execution-file "$test_dir/valid-execution-with-review.json")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_execution_review" > /dev/null
+
+for fixture in no-success multiple-success error-result; do
+  case "$fixture" in
+    no-success)
+      fixture_json='[]'
+      ;;
+    multiple-success)
+      fixture_json="$(jq -cn --arg review "$valid_structured_review" '[
+        {type:"result", subtype:"success", is_error:false, result:$review},
+        {type:"result", subtype:"success", is_error:false, result:$review}
+      ]')"
+      ;;
+    error-result)
+      fixture_json="$(jq -cn --arg review "$valid_structured_review" '[
+        {type:"result", subtype:"success", is_error:true, result:$review}
+      ]')"
+      ;;
+  esac
+  printf '%s\n' "$fixture_json" > "$test_dir/$fixture-execution.json"
+  if bash "$repo_root/.github/scripts/validate-claude-review-output.sh" --execution-file "$test_dir/$fixture-execution.json" > /dev/null; then
+    echo "Expected $fixture execution output to be rejected." >&2
+    exit 1
+  fi
+done
+
 if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
   echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
 if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
-  echo 'Expected exactly one bounded Claude review invocation.' >&2
+  echo 'Expected Claude execution failures to reach fail-closed validation.' >&2
   exit 1
 fi
-grep -Fq -- '--max-turns 12' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Cache creation tokens' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Cache read tokens' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Claude returned no valid JSON review; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
 if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
   echo 'Expected execution_file validation instead of unsupported --json-schema forwarding.' >&2

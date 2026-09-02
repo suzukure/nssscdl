@@ -64,6 +64,22 @@ jobs:
 
           review_json="${1-}"
 
+          if [ "$review_json" = '--execution-file' ]; then
+            execution_file="${2:?execution file is required}"
+            review_json="$(jq -er '
+              [
+                .[]
+                | select(
+                    .type == "result" and
+                    .subtype == "success" and
+                    .is_error == false and
+                    (.result | type == "string")
+                  )
+              ]
+              | if length == 1 then .[0].result else error("expected exactly one successful result") end
+            ' "$execution_file")"
+          fi
+
           jq -ce '
           if type == "object" and
             (keys | sort) == [
@@ -120,7 +136,6 @@ jobs:
             Every finding must cite concrete repository evidence.
           claude_args: >-
             --model "${{ vars.CLAUDE_MODEL }}"
-            --max-turns 12
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
 
       - name: Validate Claude review
@@ -136,55 +151,13 @@ jobs:
           if
             [ -n "$EXECUTION_FILE" ] &&
             [ -f "$EXECUTION_FILE" ] &&
-            review_json="$(jq -er '
-              [
-                .[]
-                | select(
-                    .type == "result" and
-                    .subtype == "success" and
-                    .is_error == false and
-                    (.result | type == "string")
-                  )
-              ]
-              | if length == 1 then .[0].result else error("expected exactly one successful result") end
-            ' "$EXECUTION_FILE")" &&
-            bash "$RUNNER_TEMP/validate-claude-review-output.sh" "$review_json" > "$output_path"
+            bash "$RUNNER_TEMP/validate-claude-review-output.sh" --execution-file "$EXECUTION_FILE" > "$output_path"
           then
             echo 'valid=true' >> "$GITHUB_OUTPUT"
           else
             rm -f "$output_path"
             echo 'valid=false' >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Record Claude review usage
-        if: always()
-        env:
-          EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo '### Claude review usage'
-            echo
-            if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
-              jq -r '
-                [.[] | select(.type == "result")] | last as $result |
-                [
-                  "| Metric | Value |",
-                  "|---|---:|",
-                  "| Turns | \($result.num_turns // "unavailable") |",
-                  "| Duration (ms) | \($result.duration_ms // "unavailable") |",
-                  "| Estimated cost (USD) | \($result.total_cost_usd // "unavailable") |",
-                  "| Input tokens | \($result.usage.input_tokens // "unavailable") |",
-                  "| Output tokens | \($result.usage.output_tokens // "unavailable") |",
-                  "| Cache creation tokens | \($result.usage.cache_creation_input_tokens // "unavailable") |",
-                  "| Cache read tokens | \($result.usage.cache_read_input_tokens // "unavailable") |"
-                ] | .[]
-              ' "$EXECUTION_FILE"
-            else
-              echo 'Execution usage was unavailable.'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save structured review
         id: structured-review

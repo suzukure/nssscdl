@@ -10,7 +10,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 2. Issueコメントに `/codex develop` と投稿する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むPRを作成する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
-5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、workflowの固定structured outputを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。
+5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。出力の欠落・不正時にはverdictを推測せずfail-closedでjobを失敗させる。
 6. `REQUEST_CHANGES` の場合はCodexが修正する。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーで自動修正を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
@@ -100,8 +100,6 @@ Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で�
 `pull_request` workflowはdefault branchにworkflowファイルが存在してから通常運用を開始する。初回導入PRは管理者が内容を確認し、reviewer Appによる一時レビューまたは手動レビューを経てマージする。通常の自動マージは `ai/issue-*` だけに限定されるため、bootstrap用ブランチは自動マージ対象外である。
 
 Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデルpreflightまたはモデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値とRepository variable値はログへ出さない。モデルIDについては前述のとおりIssue/PRの変更履歴・検証証跡へ記録してよいが、ログへは出さない。
-
-Claude reviewは1回だけ実行し、Actionの `execution_file` に含まれる成功結果をworkflowの固定JSON schemaで厳密に検証する。出力の欠落・不正時には同一レビューを即時再実行せず、verdictを推測せずfail-closedでjobを失敗させる。成功したschema適合結果だけを正本として保存・投稿し、通常の人間エスカレーション判定へ進む。レビューには `--max-turns 12` の上限を設け、turn数、所要時間、推定費用、input/output token、cache creation/read tokenをJob Summaryへ記録する。プロンプト本文、レビュー本文、secret値は利用量サマリーへ出力しない。
 
 `.github/scripts/**` を変更した場合、または認可・信頼境界・closing Issue・merge gateのロジックを変更した場合は次を実行し、fixtureを確認する。
 
