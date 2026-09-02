@@ -9,7 +9,7 @@
 - `03_ScheduleModel.md` — 月間公開、具体的なレッスン枠日時、枠利用可否モデル
 - `04_ReservationModel.md` — 予約履歴、現在の枠占有、キャンセル、再予約モデル
 - `05_BookingAndConcurrency.md` — 予約・キャンセル・再分類のTransaction境界と競合設計。`OI-BD-006` で確定済み
-- `06_APIOverview.md` — Application APIの基本原則、Command / Query境界、Identity / Role境界、Preview / Confirm、Conflict・Error方針、生徒向け主要API Flow。API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定済み
+- `06_APIOverview.md` — Application APIの基本原則、Command / Query境界、Identity / Role境界、Preview / Confirm、Conflict・Error方針、生徒向け主要API Flow。一括予約の専用Preview / Confirm API契約（Issue #66）を含む。API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定済み
 
 ## 今後の検討項目
 
