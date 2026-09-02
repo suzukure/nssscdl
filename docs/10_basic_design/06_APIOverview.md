@@ -97,6 +97,8 @@ GET  /api/me/reservations
 GET  /api/me/schedule-months/{month}
 POST /api/me/reservations/preview
 POST /api/me/reservations
+POST /api/me/reservations/bulk/preview
+POST /api/me/reservations/bulk
 POST /api/me/reservations/{reservationId}/cancel
 ```
 
@@ -480,7 +482,60 @@ Conflict Responseでは他生徒の情報を公開せず、生徒本人が再確
 
 例えば他生徒予約済みであれば `unavailable` であることは示してよいが、その予約者のStudent ID、Reservation ID、氏名等は返さない。
 
-### 11.5 生徒キャンセル
+### 11.5 一括予約Preview / Confirm
+
+`REQ-008 / AC-008-001〜009` に従い、一括予約は既存の単一予約APIを変更せず、専用のBulk Reservation Commandとして次の基本形を用いる。
+
+```text
+POST /api/me/reservations/bulk/preview
+POST /api/me/reservations/bulk
+```
+
+いずれもSelf Scope原則に従い、対象本人を選択する `student_id` その他の生徒識別情報をRequestに持たせない。予約者は認証済みSessionからServer側で解決する。一括操作の対象月もClient入力を正とせず、Serverが選択されたLessonSlotから判定・検証する。
+
+#### 11.5.1 Preview
+
+Bulk Previewは状態を変更しないQueryである。Requestは論理的に、選択した複数の `LessonSlot` 識別子を持つ。具体JSON Schema、Field名、空配列・重複指定等の入力Validation表現は詳細設計で確定する。
+
+Serverは最新確定状態から、少なくとも次を一括で検証・算出する。
+
+- 選択対象が2件以上で、同一暦月に属する複数のSlotであること
+- 選択数が対象生徒・対象月の最新の月間標準回数N以下であること。このNは当該一括操作の上限であり、月全体の予約件数上限ではないこと
+- 各対象Slotが現在予約可能であり、公開済みで、信頼できるServer時刻において開始前かつ現在占有されていないこと
+- 選択全体を追加した場合の各新規Reservationのclassification
+- 選択対象外の既存未開始Reservationについて生じるclassificationの差分
+
+Preview Responseは、少なくとも次を画面表示可能なApplication View Modelとして返す。
+
+- 選択対象ごとのLesson日時とPreview時classification（`standard` / `additional`）
+- 選択対象外の既存未開始Reservationへの区分影響。影響ごとにLesson日時、変更前classification、変更後classificationを表現する
+- Confirm時に再確認するためのExpected State相当情報
+
+影響がない場合の空集合等のWire表現、Nの表示有無、Expected StateのRevision / Fingerprint / Token等の具体方式は詳細設計で確定する。Responseは他生徒のStudent ID、Reservation ID、氏名、メール、内部DB構造を含めない。
+
+#### 11.5.2 Confirm
+
+Bulk Confirmは1つの業務Commandである。Requestは論理的に、Previewした選択 `LessonSlot` 識別子群とExpected State相当情報を持つ。Preview Response中のclassification、月間標準回数N、予約可否、対象月、または影響差分をClientが正本として指定・更新する形にはしない。
+
+Confirm時、Serverは選択全体について最新のN、同一暦月、各Slotの予約可否・予約期限・現在占有、classification、および選択対象外の既存未開始Reservationへの区分影響を再読込・再検証する。
+
+全対象が最新状態で条件を満たす場合のみ、選択全体を確定する。対象の一部だけを確定することはなく、単一予約のConfirmと同様に確定Reservationの予約者は認証済みSessionから解決した内部生徒IDとする。D1 Transaction、Lock、Guard SQL等の実現方式は本基本API契約では定めず、後続の詳細設計で確定する。
+
+成功時は複数の新規Reservationを確定した結果としてHTTP `201 Created` を基本とする。成功Responseは、少なくとも確定した各Reservationの識別子、Lesson日時、確定classification、現在のSlot状態、および同一Commandで変更された既存未開始Reservationの画面表示に必要な区分差分を返せる形とする。
+
+#### 11.5.3 Confirm時の再確認要求
+
+Preview後にN、対象月、対象Slotの予約可否・予約期限・現在占有、各新規Reservationのclassification、または選択対象外の既存未開始Reservationへの区分影響が変化した場合、Bulk Confirmは全体を未適用とする。
+
+通常の業務競合は原則HTTP `409 Conflict` とし、Responseは再Previewが必要であることを表現できる安定したApplication Error Codeまたは同等のApplication Viewを持つ。安全に検出できた範囲で、少なくとも次を返せる形とする。
+
+- 問題を検出した選択対象Slotまたは選択条件を利用者が識別できる情報
+- 予約済み、予約期限超過、Nまたはclassificationが変化した等の業務上の理由
+- 最新の安全なSlot View、classification影響、またはそれらを取得するための再Preview情報
+
+Conflict Responseは全競合の完全列挙を保証しない。いずれの場合も、他生徒の個人情報、Database Constraint名、SQL Error、内部Table / Column名を公開しない。
+
+### 11.6 生徒キャンセル
 
 基本形を次とする。
 
@@ -498,7 +553,7 @@ POST /api/me/reservations/{reservationId}/cancel
 
 成功Responseは、キャンセル後Reservation状態、現在のSlot View、および同一月でclassificationが変更された未開始Reservationの画面表示に必要な差分を返せる形とする。
 
-### 11.6 予約履歴
+### 11.7 予約履歴
 
 基本形を次とする。
 
@@ -528,7 +583,7 @@ classification
 
 UI向けに複合的な表示Labelへ変換することは許容するが、API内部でキャンセル・欠席・classification等の意味を失う形へ統合しない。
 
-### 11.7 生徒向け主要Flow
+### 11.8 生徒向け主要Flow
 
 主要Flowは次を基本とする。
 
@@ -552,6 +607,26 @@ GET Reservations
 POST Reservation Cancel
     ↓
 キャンセル後の確定業務状態
+```
+
+一括予約は単一予約と並行して次のFlowを提供する。単一予約Flowを一括予約へリダイレクトまたは置換しない。
+
+```text
+GET Schedule
+    ↓
+複数Slot選択（同一暦月）
+    ↓
+POST Bulk Reservation Preview
+    ↓
+全対象の日時・classification・既存予約への区分影響を確認
+    ↓
+POST Bulk Reservation Confirm
+    ↓
+201 全対象の確定業務状態
+
+重要状態が変化
+    ↓
+409 全体未適用・再Preview要求
 ```
 
 Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生徒Identityは4.1のSelf Scope原則を共通適用する。
@@ -1288,6 +1363,9 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format
+- 一括予約Preview / Confirmの具体的なRequest / Response Wire Format
+- 一括予約の選択Slot集合、同一暦月、操作上限N、classification影響を確認するExpected State / Guardの具体形
+- 一括予約固有のConflict / Business Rejection Application Error Codeと再Preview情報のWire表現
 - Schedule生成済み・公開済み等の個別Conflict Error Code
 - 分類管理Preview / Confirmの具体的なRequest / Response Wire Format
 - Classification Override直接Commandの具体的な最新状態Guard表現
@@ -1338,6 +1416,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - BR-053 生徒キャンセル期限
 - BR-054 キャンセル後の枠
 - BR-055 追加レッスン事前表示
+- BR-069 生徒一括予約
 - BR-056 月間標準回数
 - BR-057 追加レッスン分類
 - BR-058 自動再分類
@@ -1373,6 +1452,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
 - REQ-007 プロフィール変更
+- REQ-008 生徒一括予約
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
 - REQ-206 連絡先メール変更
@@ -1405,6 +1485,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
+- 生徒一括予約の専用Preview / Confirm API契約はIssue #66で確定した。既存の単一予約APIを維持し、`REQ-008 / AC-008-001〜009` に対して、同一暦月・最新N・選択Slot・classification影響をServerが再検証する全体Confirmと、409での全体未適用・再Preview要求を定義した。
 - 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
 - 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。要求仕様v1.8の `AC-301-010` と整合する。
 - 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
