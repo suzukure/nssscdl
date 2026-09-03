@@ -2,7 +2,7 @@
 
 ## 1. 位置づけ
 
-本書は、`REQ-008 / AC-008-001〜009` および `BR-069` に対する要求ベースの System / Acceptance Test Case Specification である。
+本書は、`REQ-008 / AC-008-001〜010` および `BR-069` に対する要求ベースの System / Acceptance Test Case Specification である。
 
 一括予約は `REQ-003` の単一予約を置き換えない。本書は既存の `02_FunctionalTestSpecification.md`、`02a_ReservationOwnershipTestSpecification.md`、および `02b_RequirementsV1.6V1.7TestSpecification.md` を補完し、テストケースIDは `TC-F-008-*` 系列とする。
 
@@ -21,7 +21,7 @@
 | `TC-F-008-05` | AC-008-005, AC-008-006 | P0 | Expected State / Stale Preview | S1が複数Slotを一括Previewし、選択Slot集合、対象月、最新N、予約可能状態、新規Reservationのclassification、選択対象外の既存未開始Reservationへの区分影響を確認する。Preview後にこれらの業務上の意味のいずれかが変化するよう先行Commitさせ、S1がPreviewで得た確認情報を用いてConfirmする。 | Clientの確認情報を更新値・正本として扱わず、Serverが最新確定状態から再計算した結果との一致を確認する。不一致時は一括Confirmを全体未適用とし、再Preview／再確認を要求する。Expected State相当情報のRevision、Fingerprint、Token等の具体表現は合否条件としない。 | 自動化候補 |
 | `TC-F-008-06` | AC-008-008 | P0 | Authorization / Tampering | S1で認証し、同月の複数予約可能Slotの一括Confirmを行う。Confirm時のクライアント入力にS2の生徒ID・氏名・メール・Google ID、または存在しない生徒識別情報を個別に混入・差し替えて試みる。 | 一括確定した各Reservationの予約者は、認証済みS1の内部生徒IDとなる。クライアント入力によってS2または存在しない生徒を予約者として確定できず、他生徒・架空生徒のReservationは生成されない。 | 自動化候補 |
 | `TC-F-008-07` | AC-008-009 | P0 | Decision Table / Preview | S1の同月に、既存未開始Reservation `R3 < R4 < R5` をstandardで用意する。選択全体を追加すると、選択対象外のR5が `standard → additional` となる、より早い複数の将来空きSlotをS1が一括Previewする。 | 最終確定前に、選択対象外で影響するR5のLesson日時、変更前classification、変更後classificationを明瞭に確認できる。新規Reservationのclassification表示だけで代替しない。影響がない場合の空集合表現や文言は合否条件としない。 | 自動化候補 |
-| `TC-F-008-08` | AC-008-005, AC-008-006 | P0 | Idempotency / Retry | S1が有効な一括Preview後、同一の選択Slot集合および確認情報で一括Confirmする。通信結果が利用者へ届かない状況を模擬し、同一操作を識別する情報で同一内容のConfirmを再送する。続けて、同じ操作識別子を選択Slot集合または確認情報が異なるConfirmへ再利用する。 | 同一内容の再送では、先に確定した同一操作の結果を取得でき、新たなReservation、占有、再分類、監査記録または通知義務を重複して作成しない。異なる内容での同一操作識別子再利用は、別操作として実行されずRejectされる。操作識別子のField名、保存期間、同一性比較方法、および成功／RejectのWire表現は合否条件としない。 | 自動化候補 |
+| `TC-F-008-08` | AC-008-010 | P0 | Idempotency / Retry | S1が有効な一括Preview後、同一の選択Slot集合および確認情報で一括Confirmする。通信結果が利用者へ届かない状況を模擬し、同一操作を識別する情報で同一内容のConfirmを再送する。続けて、同じ操作識別子を選択Slot集合または確認情報が異なるConfirmへ再利用する。 | 同一内容の再送では、先に確定した同一操作の結果を取得でき、新たなReservation、占有、再分類、監査記録または通知義務を重複して作成しない。異なる内容での同一操作識別子再利用は、別操作として実行されずRejectされる。操作識別子のField名、保存期間、同一性比較方法、および成功／RejectのWire表現は合否条件としない。 | 自動化候補 |
 
 ## 3. 合否判定上の注意
 
