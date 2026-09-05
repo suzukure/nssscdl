@@ -215,10 +215,12 @@ Reservationだけ作成されOccupancyがない状態、Reservation / Occupancy�
 - 選択集合を反映した同一生徒・同一月の必要な自動再分類
 - 各新規Reservationおよび影響する選択対象外の未開始Reservationの `automatic_classification` / `classification` 更新
 - 一括予約Commandを単位とするAuditLog
-- 各新規予約の予約確認NotificationIntent
+- 選択集合中の全新規Reservationに対する予約確認義務を表す、当該一括予約1操作につき1件の予約確認NotificationIntent
 - 既存Reservationのclassificationが変化した場合に必要な区分変更NotificationIntent
 
-対象Reservation、Occupancy、再分類、AuditLog、または通知義務のいずれかを一部だけCommitする正常結果を許容しない。いずれかのCommit必須条件または同一Transaction内の書込みが不成立なら、選択集合全体をRollbackする。
+正常Commitした一括予約1操作と予約確認NotificationIntentは1対1に対応させる。このIntentは選択集合中の各新規Reservationの予約確認義務をまとめて表すものであり、同一一括操作について新規Reservationごとの予約確認NotificationIntentを作成しない。
+
+対象Reservation、Occupancy、再分類、AuditLog、または通知義務のいずれかを一部だけCommitする正常結果を許容しない。いずれかのCommit必須条件または同一Transaction内の書込みが不成立なら、選択集合全体をRollbackする。この場合、Reservation、Occupancy、再分類、AuditLogおよび予約確認NotificationIntentを含む通知義務を一部もCommitしない。
 
 #### 5.5.2 Commit直前の論理的再検証順序
 
