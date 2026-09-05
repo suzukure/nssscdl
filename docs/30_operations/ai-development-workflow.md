@@ -10,11 +10,19 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 2. Issueコメントに `/codex develop` と投稿する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むPRを作成する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
-5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。JSON objectそのもの、または前後の文章の有無を問わず厳密に1個だけある `json` Markdown fence内のobjectだけを受理する。任意の波括弧部分は抽出せず、fenceまたは候補の欠落・複数、不正JSON、不正schemaは非機密な理由コードだけを記録して、verdictを推測せずfail-closedでjobを失敗させる。
+5. ClaudeがPR、信頼済み会話、closing Issue、明示された後継Issueのsnapshot、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。JSON objectそのもの、または前後の文章の有無を問わず厳密に1個だけある `json` Markdown fence内のobjectだけを受理する。任意の波括弧部分は抽出せず、fenceまたは候補の欠落・複数、不正JSON、不正schemaは非機密な理由コードだけを記録して、verdictを推測せずfail-closedでjobを失敗させる。
 6. `REQUEST_CHANGES` の場合は、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付けて自動Claude再レビューを停止し、その状態でCodexが1回だけ修正する。人間が修正結果を確認した後、closing Issue側のラベルを先に、PR側のラベルを最後に外す。PRの `unlabeled` eventを明示的な再レビュー要求として扱い、同じheadをClaudeが1回レビューする。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
+
+## スコープ外影響と後継Issue
+
+Codexはスコープ外影響を発見した場合、その安全性・正確性・要求整合性への影響を調査して報告する。Claudeは、対応を後継Issueへ分離する妥当性と、その後継Issueを確認する。後継Issueの存在だけでblockingを解除してはならない。
+
+後継対応へ分離できるのは、元PRを先にマージしても安全性・正確性・要求整合性を損なわない場合に限る。確定した決定はclosing Issue本文を正本とし、残るスコープ外影響、今回のPRを先にマージできる理由、後継Issue番号、後継Issueの変更範囲・完了条件、および対応時期または順序を記録する。PR本文にはその要約と元Issue・後継Issueへのリンクを記載する。Issueコメントで決定した内容も、確定後はclosing Issue本文へ反映する。
+
+IssueとPRでは `## Scope-out impact and follow-up` 見出しを使用する。各same-repository後継Issueは `- Follow-up Issue: #<number>` の1行で明示し、対象がなければ `none` とする。review context生成はPR本文とclosing Issue本文のこの定型欄だけを読み、closing Issueと重複しない後継Issueを再帰せずに取得する。PRとclosing Issueから抽出した異なる後継Issueの合計に適用する上限値の正本は `build-review-context.sh` の `follow_up_issue_limit` であり、現在は5件である。6件以上が抽出された場合は切り捨てずreview context生成をfail-closedで停止する。後継Issueを整理・分割するか、人間レビューへ切り替えて復旧する。後継Issueの番号・タイトル・state・本文はuntrusted data境界内のsnapshotとしてClaudeへ渡す。定型欄外の通常の番号参照は後継Issueとして扱わない。明示された後継Issueを取得できない場合も、存在しないと推測せずreview context生成をfail-closedで停止する。
 
 ## 必要なGitHub Actions設定
 
