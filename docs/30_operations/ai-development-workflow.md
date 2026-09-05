@@ -104,7 +104,8 @@ default branchに次を適用する。
 
 次のいずれかで `human-review-required` を付け、自動修正と自動マージを停止する。
 
-- CodexまたはClaudeが `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。
+- Codexが、単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。説明文中の言及は停止シグナルにしない。Codexの検出はIssue起点とClaude review follow-upの実行後に同じ規則で行う。
+- Claudeが `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。
 - Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
 - Claudeのchange requestが3回に到達した。
 
