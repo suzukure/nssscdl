@@ -10,7 +10,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 2. Issueコメントに `/codex develop` と投稿する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むPRを作成する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
-5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。結果が入力全体を占める単一の `json` Markdown fenceで包まれている場合だけ外枠を除去し、前後の説明文、複数候補、欠落・不正なschemaは受理せず、verdictを推測せずfail-closedでjobを失敗させる。
+5. ClaudeがPR、信頼済み会話、closing Issue、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。JSON objectそのもの、または前後の文章の有無を問わず厳密に1個だけある `json` Markdown fence内のobjectだけを受理する。任意の波括弧部分は抽出せず、fenceまたは候補の欠落・複数、不正JSON、不正schemaは非機密な理由コードだけを記録して、verdictを推測せずfail-closedでjobを失敗させる。
 6. `REQUEST_CHANGES` の場合は、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付けて自動Claude再レビューを停止し、その状態でCodexが1回だけ修正する。人間が修正結果を確認した後、closing Issue側のラベルを先に、PR側のラベルを最後に外す。PRの `unlabeled` eventを明示的な再レビュー要求として扱い、同じheadをClaudeが1回レビューする。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
