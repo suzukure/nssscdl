@@ -4,16 +4,17 @@
 
 ## 現行ベースライン
 
-- 要求仕様: v1.7
-- 対象REQ: 63
-- 対象AC: 198
-- 機能TC: 107
+- 要求仕様: v1.19
+- 対象REQ: 64（機能44 + 非機能20）
+- 対象AC: 221
+- 対応済AC: 208
+- AC未対応: 13
+- 機能TC: 115
 - 非機能TC: 41
-- 合計TC: 148
-- AC Coverage: 100%
-- AC未対応: 0
+- 合計TC: 156
+- AC Coverage: 94.1%
 
-v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_RequirementsV1.6V1.7TestSpecification.md` および `04a_RequirementsTestTraceability_v1.6_v1.7.md` で追補する。
+v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_RequirementsV1.6V1.7TestSpecification.md` および `04a_RequirementsTestTraceability_v1.6_v1.7.md` で、一括予約を追加したv1.18 / v1.19の変更は `02c_BulkReservationTestSpecification.md` および `04b_BulkReservationTraceability.md` で追補する。
 
 ## 適用方針
 
@@ -30,9 +31,11 @@ v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_Requirement
 - `02_FunctionalTestSpecification.md` — 機能要求に対するテストケース仕様（ベース）
 - `02a_ReservationOwnershipTestSpecification.md` — 要求v1.5で追加された生徒本人予約の所有者同一性テスト
 - `02b_RequirementsV1.6V1.7TestSpecification.md` — 要求v1.6/v1.7で追加された予約区分影響事前表示・Schedule競合説明性テスト
+- `02c_BulkReservationTestSpecification.md` — 要求v1.18/v1.19で追加された生徒一括予約テスト
 - `03_NonFunctionalTestSpecification.md` — 非機能要求に対するテストケース仕様
 - `04_RequirementsTestTraceability.md` — v1.5までのREQ / AC とテストケースのベース対応、CON / OOS の確認方法
-- `04a_RequirementsTestTraceability_v1.6_v1.7.md` — v1.6/v1.7の追加AC・回帰拡張と現行Coverage Summary
+- `04a_RequirementsTestTraceability_v1.6_v1.7.md` — v1.6/v1.7の追加AC・回帰拡張
+- `04b_BulkReservationTraceability.md` — v1.18/v1.19の一括予約追加AC・回帰拡張と現行Coverage Summary
 
 ## ID規約
 
