@@ -5,9 +5,9 @@
 | 項目 | 内容 |
 |---|---|
 | 対象システム | Net Shogi School レッスン予約システム |
-| 要求ベースライン | `docs/00_requirements/` v1.7 |
-| ベースライン確認日 | 2026-08-30 |
-| Git基準 | `main` commit `556f811a8582f67badfb6b1c87568552bec67b6d` 時点の要求仕様 |
+| 要求ベースライン | `docs/00_requirements/` v1.19 |
+| ベースライン確認日 | 2026-09-05 |
+| Git基準 | `main` commit `a3f7502fbcba7da89b4fb9caa175b7888ae78be1` 時点の要求仕様 |
 | 参照標準 | ISO/IEC/IEEE 29119-3:2021（Test documentation） |
 | テストレベル | System Test / Acceptance Test を中心とし、必要に応じIntegration / Operational Testを含む |
 | テスト方式 | Requirements-based, risk-based, black-box |
@@ -32,7 +32,7 @@
 
 ### 3.1 対象
 
-- 生徒向けSchedule閲覧、予約、キャンセル、履歴、Profile
+- 生徒向けSchedule閲覧、予約、一括予約、キャンセル、履歴、Profile
 - Email / System内通知
 - Google / Magic Link認証、Session、登録、Invitation、Security Suspension
 - 管理者向けSchedule管理、休業、管理者確保、分類、削除、欠席、通知失敗管理
