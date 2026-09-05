@@ -9,9 +9,11 @@
 - `04_RequirementsTestTraceability.md` — v1.5までのベース対応
 - 本書 — v1.6 / v1.7の追加ACおよび関連回帰対応
 
-両者と要求側Matrixを結合することで、現行要求 v1.7 の `POL → BR → REQ → AC → TC` を追跡する。
+両者と要求側Matrixを結合することで、要求ベースラインv1.7時点の `POL → BR → REQ → AC → TC` を追跡する。
 
-## 2. Current Coverage Summary
+## 2. v1.6 / v1.7時点の Coverage Summary（履歴値）
+
+以下の集計値は、要求ベースラインv1.7時点の履歴値である。現行（v1.19）のCoverageは `04b_BulkReservationTraceability.md` を参照する。
 
 | 指標 | 値 |
 |---|---:|
