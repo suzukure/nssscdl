@@ -9,7 +9,8 @@ trusted_logins_csv="${4:-}"
 mkdir -p "$(dirname "$output")"
 metadata="$(mktemp)"
 diff_file="$(mktemp)"
-trap 'rm -f "$metadata" "$diff_file"' EXIT
+issue_dir="$(mktemp -d)"
+trap 'rm -f "$metadata" "$diff_file"; rm -rf "$issue_dir"' EXIT
 
 gh pr view "$pr_number" \
   --repo "$repo" \
@@ -22,6 +23,72 @@ if [ "$diff_bytes" -gt 400000 ]; then
   echo "Pull request diff is ${diff_bytes} bytes; automatic AI review is limited to 400000 bytes." >&2
   exit 1
 fi
+
+issue_prefix="https://github.com/${repo}/issues/"
+mapfile -t closing_issues < <(
+  jq -r --arg prefix "$issue_prefix" \
+    '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' "$metadata" \
+    | sort -nu
+)
+
+# Fetch the closing Issues before writing the context so a failed lookup cannot
+# leave a context that appears complete.  Their bodies are the authoritative
+# record for any decision to defer scope-out work.
+for issue_number in "${closing_issues[@]}"; do
+  [ -n "$issue_number" ] || continue
+  if ! gh api "repos/${repo}/issues/${issue_number}" > "$issue_dir/closing-${issue_number}.json"; then
+    echo "Could not fetch closing Issue #${issue_number}; refusing to build review context." >&2
+    exit 1
+  fi
+done
+
+extract_follow_up_issues() {
+  jq -r '
+    def follow_up_numbers:
+      split("\n")
+      | reduce .[] as $line (
+          { in_scope_out_section: false, numbers: [] };
+          if ($line | test("^## Scope-out impact and follow-up[[:space:]]*$")) then
+            .in_scope_out_section = true
+          elif ($line | test("^#{1,2}[[:space:]]")) then
+            .in_scope_out_section = false
+          elif .in_scope_out_section and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
+            .numbers += [($line | capture("^- Follow-up Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
+          else . end
+        )
+      | .numbers[];
+    (.body // "") | follow_up_numbers
+  ' "$@"
+}
+
+# Only the prescribed heading and line format can introduce a follow-up Issue.
+# Do not recursively inspect the fetched follow-up bodies.  Five is deliberately
+# small: a larger set must be split or reviewed by a human instead of silently
+# omitting context.
+follow_up_candidates="$issue_dir/follow-up-candidates.json"
+{
+  extract_follow_up_issues "$metadata"
+  for issue_number in "${closing_issues[@]}"; do
+    [ -n "$issue_number" ] || continue
+    extract_follow_up_issues "$issue_dir/closing-${issue_number}.json"
+  done
+} | jq -s --argjson closing "$(printf '%s\n' "${closing_issues[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')" \
+  'unique | sort | map(select(. as $number | ($closing | index($number) | not)))' \
+  > "$follow_up_candidates"
+
+follow_up_count="$(jq 'length' "$follow_up_candidates")"
+if [ "$follow_up_count" -gt 5 ]; then
+  echo "More than five explicit follow-up Issues were found; refusing to build incomplete review context." >&2
+  exit 1
+fi
+
+mapfile -t follow_up_issues < <(jq -r '.[]' "$follow_up_candidates")
+for issue_number in "${follow_up_issues[@]}"; do
+  if ! gh api "repos/${repo}/issues/${issue_number}" > "$issue_dir/follow-up-${issue_number}.json"; then
+    echo "Could not fetch follow-up Issue #${issue_number}; refusing to build review context." >&2
+    exit 1
+  fi
+done
 
 {
   echo '# Pull request review context'
@@ -70,14 +137,35 @@ fi
   echo '## Linked Issue snapshots'
   echo
 
-  jq -r --arg prefix "https://github.com/${repo}/issues/" \
-    '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' "$metadata" \
-    | sort -nu \
-    | while read -r issue_number; do
-        [ -n "$issue_number" ] || continue
-        gh api "repos/${repo}/issues/${issue_number}" \
-          --jq 'def data_lines: split("\n") | map("DATA| " + .) | join("\n"); "### Issue #\(.number): \(.title)\n\nState: \(.state)\n\n--- BEGIN LINKED ISSUE DATA ---\n" + ((.body // "(empty)") | data_lines) + "\n--- END LINKED ISSUE DATA ---\n"'
-      done
+  for issue_number in "${closing_issues[@]}"; do
+    [ -n "$issue_number" ] || continue
+    jq -r '
+      def data_lines: split("\n") | map("DATA| " + .) | join("\n");
+      "### Closing Issue snapshot\n\n--- BEGIN LINKED ISSUE DATA ---\n"
+      + (("- Issue: #\(.number)") | data_lines) + "\n"
+      + (("- Title: \(.title)") | data_lines) + "\n"
+      + (("- State: \(.state)") | data_lines) + "\nDATA| \n"
+      + ((.body // "(empty)") | data_lines)
+      + "\n--- END LINKED ISSUE DATA ---\n"
+    ' "$issue_dir/closing-${issue_number}.json"
+  done
+
+  if [ "${#follow_up_issues[@]}" -gt 0 ]; then
+    echo
+    echo '## Follow-up Issue snapshots'
+    echo
+    for issue_number in "${follow_up_issues[@]}"; do
+      jq -r '
+        def data_lines: split("\n") | map("DATA| " + .) | join("\n");
+        "### Follow-up Issue snapshot\n\n--- BEGIN FOLLOW-UP ISSUE DATA ---\n"
+        + (("- Issue: #\(.number)") | data_lines) + "\n"
+        + (("- Title: \(.title)") | data_lines) + "\n"
+        + (("- State: \(.state)") | data_lines) + "\nDATA| \n"
+        + ((.body // "(empty)") | data_lines)
+        + "\n--- END FOLLOW-UP ISSUE DATA ---\n"
+      ' "$issue_dir/follow-up-${issue_number}.json"
+    done
+  fi
 
   echo
   echo '## Pull request diff'

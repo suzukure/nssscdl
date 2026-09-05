@@ -133,6 +133,14 @@ In particular, check for:
 
 Where one document is the authoritative source, prefer references to that source over duplicating the same normative rule in multiple places.
 
+## Scope-out impacts and follow-up Issues
+
+When an out-of-scope impact is discovered, investigate its effect on safety, correctness, and requirements consistency and report it for review. A follow-up Issue never by itself makes the current change acceptable: it may be deferred only when merging the current PR first is safe on all three grounds.
+
+The closing Issue body is the authoritative decision record. It must contain the remaining impact, why the current PR can merge first, each follow-up Issue number, each follow-up's change scope and completion condition, and the intended timing or order. The PR body must summarize that decision and link both the closing and follow-up Issues. Decisions first made in Issue comments must be reflected in the closing Issue body once confirmed.
+
+Use the `## Scope-out impact and follow-up` section and one `- Follow-up Issue: #<number>` line for each same-repository follow-up Issue; use `none` when there is none. Do not treat ordinary Issue-number references as follow-ups. If an explicitly recorded follow-up cannot be verified in the supplied review context, report it as unverifiable rather than assuming that it does not exist.
+
 ## External systems
 
 Do not invent behavior, quotas, guarantees, authentication semantics, retry behavior, or limitations of external systems.
