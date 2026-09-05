@@ -5,6 +5,7 @@ repo="${1:?repository is required}"
 pr_number="${2:?pull request number is required}"
 output="${3:?output path is required}"
 trusted_logins_csv="${4:-}"
+follow_up_issue_limit=5
 
 mkdir -p "$(dirname "$output")"
 metadata="$(mktemp)"
@@ -62,9 +63,9 @@ extract_follow_up_issues() {
 }
 
 # Only the prescribed heading and line format can introduce a follow-up Issue.
-# Do not recursively inspect the fetched follow-up bodies.  Five is deliberately
-# small: a larger set must be split or reviewed by a human instead of silently
-# omitting context.
+# Do not recursively inspect the fetched follow-up bodies.  The configured limit
+# is deliberately small: a larger set must be split or reviewed by a human
+# instead of silently omitting context.
 follow_up_candidates="$issue_dir/follow-up-candidates.json"
 {
   extract_follow_up_issues "$metadata"
@@ -77,8 +78,8 @@ follow_up_candidates="$issue_dir/follow-up-candidates.json"
   > "$follow_up_candidates"
 
 follow_up_count="$(jq 'length' "$follow_up_candidates")"
-if [ "$follow_up_count" -gt 5 ]; then
-  echo "More than five explicit follow-up Issues were found; refusing to build incomplete review context." >&2
+if [ "$follow_up_count" -gt "$follow_up_issue_limit" ]; then
+  echo "More than ${follow_up_issue_limit} explicit follow-up Issues were found; refusing to build incomplete review context." >&2
   exit 1
 fi
 

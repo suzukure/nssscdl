@@ -22,7 +22,7 @@ Codexはスコープ外影響を発見した場合、その安全性・正確性
 
 後継対応へ分離できるのは、元PRを先にマージしても安全性・正確性・要求整合性を損なわない場合に限る。確定した決定はclosing Issue本文を正本とし、残るスコープ外影響、今回のPRを先にマージできる理由、後継Issue番号、後継Issueの変更範囲・完了条件、および対応時期または順序を記録する。PR本文にはその要約と元Issue・後継Issueへのリンクを記載する。Issueコメントで決定した内容も、確定後はclosing Issue本文へ反映する。
 
-IssueとPRでは `## Scope-out impact and follow-up` 見出しを使用する。各same-repository後継Issueは `- Follow-up Issue: #<number>` の1行で明示し、対象がなければ `none` とする。review context生成はPR本文とclosing Issue本文のこの定型欄だけを読み、closing Issueと重複しない後継Issueを最大5件、再帰せずに取得する。後継Issueの番号・タイトル・state・本文はuntrusted data境界内のsnapshotとしてClaudeへ渡す。定型欄外の通常の番号参照は後継Issueとして扱わない。明示された後継Issueを取得できない場合は、存在しないと推測せずreview context生成をfail-closedで停止する。
+IssueとPRでは `## Scope-out impact and follow-up` 見出しを使用する。各same-repository後継Issueは `- Follow-up Issue: #<number>` の1行で明示し、対象がなければ `none` とする。review context生成はPR本文とclosing Issue本文のこの定型欄だけを読み、closing Issueと重複しない後継Issueを再帰せずに取得する。PRとclosing Issueから抽出した異なる後継Issueの合計に適用する上限値の正本は `build-review-context.sh` の `follow_up_issue_limit` であり、現在は5件である。6件以上が抽出された場合は切り捨てずreview context生成をfail-closedで停止する。後継Issueを整理・分割するか、人間レビューへ切り替えて復旧する。後継Issueの番号・タイトル・state・本文はuntrusted data境界内のsnapshotとしてClaudeへ渡す。定型欄外の通常の番号参照は後継Issueとして扱わない。明示された後継Issueを取得できない場合も、存在しないと推測せずreview context生成をfail-closedで停止する。
 
 ## 必要なGitHub Actions設定
 
