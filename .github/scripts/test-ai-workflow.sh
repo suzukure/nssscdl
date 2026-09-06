@@ -273,7 +273,7 @@ jq -cn '[
         outputTokens:4,
         cacheCreationInputTokens:200,
         cacheReadInputTokens:2000,
-        costUSD:0.5
+        costUSD:0.75
       }
     }
   }
@@ -344,7 +344,7 @@ jq -cn '[
 partial_model_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/partial-model-usage-execution.json")"
 jq -e '
   .input_tokens == 30 and
-  .output_tokens == 22 and
+  .output_tokens == null and
   .cache_creation_input_tokens == 300 and
   .cache_read_input_tokens == 3000
 ' <<< "$partial_model_usage" > /dev/null
@@ -365,6 +365,34 @@ jq -e '
   .cache_read_input_tokens == null
 ' <<< "$missing_usage" > /dev/null
 
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{
+      "model-a":{costUSD:0.75},
+      "model-b":{costUSD:0.5}
+    }
+  }
+]' > "$test_dir/model-cost-fallback-execution.json"
+model_cost_fallback="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/model-cost-fallback-execution.json")"
+jq -e '.estimated_cost_usd == 1.25' <<< "$model_cost_fallback" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{
+      "model-a":{costUSD:0.75},
+      "model-b":{}
+    }
+  }
+]' > "$test_dir/partial-model-cost-execution.json"
+partial_model_cost="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/partial-model-cost-execution.json")"
+jq -e '.estimated_cost_usd == null' <<< "$partial_model_cost" > /dev/null
+
 usage_step_script="$test_dir/record-claude-review-usage.sh"
 awk '
   /      - name: Record Claude review usage$/ { step = 1 }
@@ -384,10 +412,14 @@ EXECUTION_FILE="$test_dir/usage-execution.json" \
 ACTION_OUTCOME=success \
 VALIDATION_RESULT=true \
 REVIEW_RISK=low \
-bash "$usage_step_script" > "$test_dir/usage-step.stdout"
+bash "$usage_step_script" > "$test_dir/usage-step.stdout" 2> "$test_dir/usage-step.stderr"
 if [ "$(wc -l < "$test_dir/usage-step.stdout")" -ne 1 ] \
     || [ "$(cat "$test_dir/usage-step.stdout")" != "$usage_summary" ]; then
   echo 'Expected the usage step to write exactly the aggregated JSON to stdout.' >&2
+  exit 1
+fi
+if [ -s "$test_dir/usage-step.stderr" ]; then
+  echo 'Expected the usage step to write no diagnostics to stderr.' >&2
   exit 1
 fi
 if grep -Fq "$usage_summary" "$test_dir/usage-summary.md"; then
@@ -396,6 +428,45 @@ if grep -Fq "$usage_summary" "$test_dir/usage-summary.md"; then
 fi
 grep -Fq '### Claude review usage' "$test_dir/usage-summary.md"
 grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
+
+assert_usage_step_unavailable() {
+  local fixture="${1:?fixture is required}"
+  local stdout_path="$test_dir/usage-step-$fixture.stdout"
+  local stderr_path="$test_dir/usage-step-$fixture.stderr"
+  local summary_path="$test_dir/usage-step-$fixture-summary.md"
+
+  if [ "$fixture" = unset-execution-file ]; then
+    env -u EXECUTION_FILE \
+      GITHUB_STEP_SUMMARY="$summary_path" \
+      RUNNER_TEMP="$test_dir/runner-temp" \
+      ACTION_OUTCOME=success \
+      VALIDATION_RESULT=false \
+      REVIEW_RISK=low \
+      bash "$usage_step_script" > "$stdout_path" 2> "$stderr_path"
+  else
+    GITHUB_STEP_SUMMARY="$summary_path" \
+    RUNNER_TEMP="$test_dir/runner-temp" \
+    EXECUTION_FILE="$2" \
+    ACTION_OUTCOME=success \
+    VALIDATION_RESULT=false \
+    REVIEW_RISK=low \
+    bash "$usage_step_script" > "$stdout_path" 2> "$stderr_path"
+  fi
+
+  if [ -s "$stdout_path" ]; then
+    echo "Unavailable usage fixture wrote JSON to stdout: $fixture" >&2
+    exit 1
+  fi
+  if [ -s "$stderr_path" ]; then
+    echo "Unavailable usage fixture wrote diagnostics to stderr: $fixture" >&2
+    exit 1
+  fi
+  grep -Fqx 'Execution usage was unavailable.' "$summary_path"
+}
+
+assert_usage_step_unavailable unset-execution-file
+assert_usage_step_unavailable missing-execution-file "$test_dir/does-not-exist.json"
+assert_usage_step_unavailable summarizer-failure "$test_dir/no-success-execution.json"
 
 if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
   echo 'Expected usage summarization without a result event to fail.' >&2
