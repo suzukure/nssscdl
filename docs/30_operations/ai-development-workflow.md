@@ -16,6 +16,12 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
 
+## ChatGPT Workのコンテキスト・コスト管理
+
+ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位でチャットを分け、Actionsログを失敗stepから段階的に取得し、作業内容に応じてモデルを選択する。同一head SHA・run IDのPR本文、review、Actions Job Summaryを再利用し、状態が変わっていない証跡を繰り返し調査しない。
+
+Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、完了時handoffの正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定事項の正本は引き続きGitHubのIssue本文、PR本文、review、リポジトリであり、チャットやhandoffだけに決定を残さない。
+
 ## スコープ外影響と後継Issue
 
 Codexはスコープ外影響を発見した場合、その安全性・正確性・要求整合性への影響を調査して報告する。Claudeは、対応を後継Issueへ分離する妥当性と、その後継Issueを確認する。後継Issueの存在だけでblockingを解除してはならない。
