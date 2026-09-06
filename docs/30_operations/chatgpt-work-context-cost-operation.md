@@ -41,7 +41,7 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 - 各チャットの開始時に、対象Issue、関連PR、main SHA、PRのbase/head SHA、ラベル、最新レビュー、最新Actions結果をGitHubから読み取りで確認する。
 - 前チャットの記憶だけで現在状態を断定しない。
 - 一度取得した同じSHA・同じActions runの情報は、状態が変わっていない限り再取得しない。
-- GitHubのIssue本文、PR本文、レビュー、Actions Job Summaryを一次情報として扱う。
+- GitHubのIssue本文、PR本文、レビュー、Actions Job Summary、およびClaude review usage step logの集計済みJSONを一次情報として扱う。
 - 過去のチャット内容は、GitHubへ記録されていない限り仕様・決定の正本にしない。
 
 ### Actionsログの取得
@@ -55,7 +55,7 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 
 ### 既存証跡の再利用
 
-- Actions Job Summaryにレビュー判定、費用、turn数、duration、token数があれば、その値を再計算しない。
+- Actions Job SummaryまたはClaude review usage step logの集計済みJSONに費用、turn数、duration、token数があれば、その値を再計算しない。
 - PR本文に検証結果が記載されていれば、同じhead SHAに対して同じ検証を繰り返さない。
 - 最新head SHAが変わった場合だけ、変更の影響を受ける確認をやり直す。
 - mainへマージ済みのIssueについては、PR、merge commit、Issue stateの確認をもって完了判定し、過去レビュー全件を再調査しない。
@@ -166,12 +166,12 @@ Secret、token、Webhook URL、private key、未公開のVariable値をログか
 |---|---|---|
 | PR本文のvalidation | head SHAが同じ | 関連ファイルまたはhead SHAの変更 |
 | Claude review | review対象head SHAが同じ | 新しいpush、reviewのdismiss、要求・Issue本文の重大変更 |
-| Actions Job Summary | run IDとhead SHAが同じ | rerun、新run、新head |
+| Actions Job Summary / Claude review usage step log | run IDとhead SHAが同じ | rerun、新run、新head |
 | Issue本文の決定 | 本文の更新時刻・内容が同じ | 決定、範囲、完了条件の更新 |
 | main上の文書 | main SHAが同じ | mainの新しいcommit |
 | 過去のhandoff | 記載したIssue・PR・SHAを現在状態と照合済み | state、label、head、review、runの変更 |
 
-Claudeの費用、turn数、duration、input/output token、cache creation/read tokenはJob Summaryに記録済みならその値を使う。execution fileやログから重複集計しない。
+Claudeの費用、turn数、duration、input/output token、cache creation/read tokenはJob SummaryまたはClaude review usage step logの集計済みJSONに記録済みならその値を使う。execution fileやraw logから重複集計しない。
 
 ## チャット開始テンプレート
 

@@ -315,6 +315,56 @@ jq -e '
   .cache_read_input_tokens == 44
 ' <<< "$fallback_usage" > /dev/null
 
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{
+      "model-a":{
+        inputTokens:10,
+        outputTokens:3,
+        cacheCreationInputTokens:100,
+        cacheReadInputTokens:1000
+      },
+      "model-b":{
+        inputTokens:20,
+        cacheCreationInputTokens:200,
+        cacheReadInputTokens:2000
+      }
+    },
+    usage:{
+      input_tokens:111,
+      output_tokens:22,
+      cache_creation_input_tokens:333,
+      cache_read_input_tokens:4444
+    }
+  }
+]' > "$test_dir/partial-model-usage-execution.json"
+partial_model_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/partial-model-usage-execution.json")"
+jq -e '
+  .input_tokens == 30 and
+  .output_tokens == 22 and
+  .cache_creation_input_tokens == 300 and
+  .cache_read_input_tokens == 3000
+' <<< "$partial_model_usage" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{"model-a":{inputTokens:10}}
+  }
+]' > "$test_dir/missing-usage-execution.json"
+missing_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/missing-usage-execution.json")"
+jq -e '
+  .input_tokens == 10 and
+  .output_tokens == null and
+  .cache_creation_input_tokens == null and
+  .cache_read_input_tokens == null
+' <<< "$missing_usage" > /dev/null
+
 if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
   echo 'Expected usage summarization without a result event to fail.' >&2
   exit 1
@@ -334,6 +384,7 @@ grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-requi
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq -- '--max-budget-usd 1.70' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq "printf '%s\\n' \"\$usage_json\"" "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Claude review not run' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Gate Claude review entry' "$repo_root/.github/workflows/claude-review.yml"

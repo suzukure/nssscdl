@@ -81,7 +81,7 @@ Anthropicは長期APIキーではなくGitHub OIDC / Workload Identity Federatio
 
 Claude reviewは1実行につき `--max-budget-usd 1.70` を設定し、上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとする。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
 
-利用量記録はverdict経路を阻害しない非致命stepとする。Action outcome、result subtype、schema検証結果、turns、duration、estimated cost、input/output token、cache creation/read tokenをJob Summaryへ記録し、prompt本文、review本文、secret値は記録しない。`modelUsage` はClaude Code session全体のモデル別累積値として合算する。利用量が欠落・不正でもreview結果の厳密検証とverdict投稿は継続する。
+利用量記録はverdict経路を阻害しない非致命stepとする。Action outcome、result subtype、schema検証結果、turns、duration、estimated cost、input/output token、cache creation/read tokenをJob Summaryへ記録し、同じ集計済みJSONを通常step logへ1行だけ出力してActions Job logs APIから回収可能にする。prompt本文、review本文、raw execution file、secret値は記録しない。`modelUsage` はClaude Code session全体のモデル別累積値として、対象token fieldが全modelで数値の場合だけ合算する。一部でも欠落・不正ならtop-level `usage` の同じfieldを使用し、そこにも数値がなければ `unavailable` とする。利用量が欠落・不正でもreview結果の厳密検証とverdict投稿は継続する。
 
 Claude Codeの標準5分prompt cacheを使用し、Issue #61の高リスク2実行分と、後継Issue #63で追跡する実際の通常PR 1実行分のcache creation/read tokenを合わせて評価する。1時間cacheはwrite単価が高く、自動再レビューを停止した運用では再利用機会が限定されるため、反復利用の実測根拠が得られるまで有効化しない。
 

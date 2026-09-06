@@ -4,6 +4,11 @@ set -euo pipefail
 execution_file="${1:?execution file is required}"
 
 jq -ce '
+  def token_usage($models; $model_field; $usage_field):
+    if ($models | length) > 0 and all($models[]; .[$model_field] | type == "number")
+    then ($models | map(.[$model_field]) | add)
+    else (.usage[$usage_field] | if type == "number" then . else null end)
+    end;
   [.[] | select(type == "object" and .type == "result")] | last as $result
   | if $result == null then error("Claude execution has no result event") else $result end
   | (.modelUsage // {} | to_entries | map(.value)) as $models
@@ -16,29 +21,9 @@ jq -ce '
         .total_cost_usd
         // (if ($models | length) > 0 then ($models | map(.costUSD // 0) | add) else null end)
       ),
-      input_tokens: (
-        if ($models | length) > 0
-        then ($models | map(.inputTokens // 0) | add)
-        else (.usage.input_tokens // null)
-        end
-      ),
-      output_tokens: (
-        if ($models | length) > 0
-        then ($models | map(.outputTokens // 0) | add)
-        else (.usage.output_tokens // null)
-        end
-      ),
-      cache_creation_input_tokens: (
-        if ($models | length) > 0
-        then ($models | map(.cacheCreationInputTokens // 0) | add)
-        else (.usage.cache_creation_input_tokens // null)
-        end
-      ),
-      cache_read_input_tokens: (
-        if ($models | length) > 0
-        then ($models | map(.cacheReadInputTokens // 0) | add)
-        else (.usage.cache_read_input_tokens // null)
-        end
-      )
+      input_tokens: token_usage($models; "inputTokens"; "input_tokens"),
+      output_tokens: token_usage($models; "outputTokens"; "output_tokens"),
+      cache_creation_input_tokens: token_usage($models; "cacheCreationInputTokens"; "cache_creation_input_tokens"),
+      cache_read_input_tokens: token_usage($models; "cacheReadInputTokens"; "cache_read_input_tokens")
     }
 ' "$execution_file"
