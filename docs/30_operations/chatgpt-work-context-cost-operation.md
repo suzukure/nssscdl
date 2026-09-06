@@ -10,15 +10,16 @@ GitHub上のIssue、Pull Request、Actions、リポジトリを要求・決定�
 
 継続作業には専用のChatGPT Projectを使用する。
 
-### Sources
+### SourcesとGitHub接続
 
 Project Sourcesは次の最小構成とする。
 
-- GitHubリポジトリ `suzukure/nssscdl`
 - AI開発・レビュー基盤の概要資料
 - 必要な場合だけ、100行程度を目安とする最新状態の要約1件
 
-過去IssueごとのActionsログ、レビュー全文、チャットごとのhandoffをSourcesへ累積しない。確定事項はGitHubのIssue本文、PR本文、レビュー、リポジトリへ記録する。
+GitHubの最新状態は、接続済みGitHubツールから都度取得する。利用中のChatGPT Work環境でGitHubリポジトリを継続的に参照できるProject Sourceとして追加可能であることを実際に確認できた場合は、`suzukure/nssscdl`をSourcesに加えてよい。追加可否を確認できない場合は必須構成に含めない。
+
+アップロードしたリポジトリファイルや状態要約は、その時点のsnapshotであり、最新Issue、PR、Actions、SHA確認の代替にしない。過去IssueごとのActionsログ、レビュー全文、チャットごとのhandoffをSourcesへ累積しない。確定事項はGitHubのIssue本文、PR本文、レビュー、リポジトリへ記録する。
 
 ### Project instructions
 
