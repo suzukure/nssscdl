@@ -48,6 +48,7 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 
 - Actions失敗時は、最初にrun、job、失敗step、conclusion、head SHAを確認する。
 - ログ全文を最初から取得しない。
+- 成功runで費用、turn数、duration、token数だけが必要な場合は、job全文ではなく`Record Claude review usage` step logの集計済みJSONだけを取得する。
 - 失敗stepのログと、その直前の原因判定に必要な範囲だけを取得する。
 - エラーメッセージ、exit code、該当script、入力状態で原因を特定できない場合に限り、取得範囲を段階的に広げる。
 - 既にユーザーが提示したログは再取得せず、現在のrunと一致するかだけ確認する。
@@ -188,7 +189,8 @@ GitHubリポジトリ suzukure/nssscdl のIssue #<番号>を読み取りで確�
 - 最新Actions runのjobと失敗step
 
 ログ全文は取得せず、失敗stepと必要な範囲だけ確認してください。
-同じSHA・runについて既存のJob SummaryやPR本文に証跡があれば再利用してください。
+費用、turn数、duration、token数だけが必要な成功runでは、job全文ではなく`Record Claude review usage` step logの集計済みJSONだけを取得してください。
+同じSHA・runについて既存のJob Summary、Claude review usage step log、PR本文に証跡があれば再利用してください。
 現在地点、問題、次の1手を簡潔に報告してください。
 書き込みは行わないでください。
 ```

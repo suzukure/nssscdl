@@ -395,9 +395,13 @@ jobs:
         run: |
           set -euo pipefail
           usage_json=""
-          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ] \
-              && usage_json="$(bash "$RUNNER_TEMP/summarize-claude-usage.sh" "$EXECUTION_FILE" 2> /dev/null)"; then
-            printf '%s\n' "$usage_json"
+          # Keep the non-fatal step safe when an isolated fixture leaves EXECUTION_FILE unset.
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
+            if usage_json="$(bash "$RUNNER_TEMP/summarize-claude-usage.sh" "$EXECUTION_FILE" 2> /dev/null)"; then
+              printf '%s\n' "$usage_json"
+            else
+              printf '%s\n' 'Claude usage summarization failed.' >&2
+            fi
           fi
           {
             echo '### Claude review usage'
