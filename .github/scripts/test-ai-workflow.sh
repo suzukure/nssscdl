@@ -296,10 +296,44 @@ jq -cn '[{type:"result", subtype:"enforced_spend_limit_reached", is_error:true}]
 assert_execution_classification ACCOUNT_SPEND_LIMIT_REACHED spend-limited-execution \
   "$test_dir/spend-limited-execution.json"
 
+jq -cn '[{type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}}}]' \
+  > "$test_dir/spend-limited-error-code-execution.json"
+assert_execution_classification ACCOUNT_SPEND_LIMIT_REACHED spend-limited-error-code-execution \
+  "$test_dir/spend-limited-error-code-execution.json"
+
 jq -cn '[{type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}}]' \
   > "$test_dir/rate-limited-execution.json"
 assert_execution_classification TRANSIENT_RATE_LIMIT rate-limited-execution \
   "$test_dir/rate-limited-execution.json"
+
+# A terminal successful review represents a completed retry. Earlier structured
+# errors therefore cannot discard the review or prevent its safe hand-off.
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}},
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/rate-limit-then-success-execution.json"
+assert_execution_classification REVIEW_VALID rate-limit-then-success-execution \
+  "$test_dir/rate-limit-then-success-execution.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/rate-limit-then-success-execution.review.json" > /dev/null
+
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"error", error:{type:"enforced_spend_limit_reached", message:"sensitive-raw-claude-output"}},
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/spend-limit-error-then-success-execution.json"
+assert_execution_classification REVIEW_VALID spend-limit-error-then-success-execution \
+  "$test_dir/spend-limit-error-then-success-execution.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/spend-limit-error-then-success-execution.review.json" > /dev/null
+
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}, message:"sensitive-raw-claude-output"}},
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/spend-limit-then-success-execution.json"
+assert_execution_classification REVIEW_VALID spend-limit-then-success-execution \
+  "$test_dir/spend-limit-then-success-execution.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/spend-limit-then-success-execution.review.json" > /dev/null
 
 # A numeric HTTP status or unstructured API message is not an account-spend
 # signal. The classifier deliberately considers only the known structured

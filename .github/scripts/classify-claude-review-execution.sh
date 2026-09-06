@@ -26,27 +26,49 @@ event_has_subtype() {
 event_has_error_type() {
   local error_type="${1:?error type is required}"
   jq -e --arg error_type "$error_type" '
-    any(.[]; type == "object" and (.error | type == "object") and .error.type == $error_type)
+    any(.[]; type == "object" and .type == "error" and
+      (.error | type == "object") and .error.type == $error_type)
   ' "$execution_file" > /dev/null 2> /dev/null
 }
 
-if event_has_subtype error_max_budget_usd; then
+event_has_error_code() {
+  local error_code="${1:?error code is required}"
+  jq -e --arg error_code "$error_code" '
+    any(.[]; type == "object" and .type == "error" and
+      (.error | type == "object") and (.error.details | type == "object") and
+      .error.details.error_code == $error_code)
+  ' "$execution_file" > /dev/null 2> /dev/null
+}
+
+terminal_result_is_success() {
+  jq -e '
+    [.[] | select(type == "object" and .type == "result")] | last
+    | type == "object" and .subtype == "success" and .is_error == false
+  ' "$execution_file" > /dev/null 2> /dev/null
+}
+
+# A successful terminal result is authoritative, matching summarize-claude-
+# usage.sh's last-result convention. It represents a completed retry and must
+# be validated before prior error events are classified. When no terminal
+# success exists, scan recorded result/error metadata for the most specific
+# fixed failure reason; this includes error_max_budget_usd and structured error
+# events, neither of which is allowed to inspect messages or HTTP status.
+if terminal_result_is_success; then
+  :
+elif event_has_subtype error_max_budget_usd; then
   emit_reason RUN_BUDGET_LIMIT_REACHED
   exit 0
-fi
-
-if event_has_subtype enforced_spend_limit_reached \
+elif event_has_subtype enforced_spend_limit_reached \
     || event_has_error_type enforced_spend_limit_reached; then
   emit_reason ACCOUNT_SPEND_LIMIT_REACHED
   exit 0
-fi
-
-if event_has_subtype rate_limit_error || event_has_error_type rate_limit_error; then
+elif event_has_error_code enforced_spend_limit_reached; then
+  emit_reason ACCOUNT_SPEND_LIMIT_REACHED
+  exit 0
+elif event_has_subtype rate_limit_error || event_has_error_type rate_limit_error; then
   emit_reason TRANSIENT_RATE_LIMIT
   exit 0
-fi
-
-if jq -e '
+elif jq -e '
   any(.[]; type == "object" and .type == "result" and .is_error == true)
 ' "$execution_file" > /dev/null 2> /dev/null; then
   emit_reason CLAUDE_EXECUTION_FAILED
