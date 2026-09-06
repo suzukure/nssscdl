@@ -365,6 +365,38 @@ jq -e '
   .cache_read_input_tokens == null
 ' <<< "$missing_usage" > /dev/null
 
+usage_step_script="$test_dir/record-claude-review-usage.sh"
+awk '
+  /      - name: Record Claude review usage$/ { step = 1 }
+  step && /^        run: \|$/ { run = 1; next }
+  run && /^      - name: / { exit }
+  run { line = $0; sub(/^          /, "", line); print line }
+' "$repo_root/.github/workflows/claude-review.yml" > "$usage_step_script"
+if [ ! -s "$usage_step_script" ]; then
+  echo 'Could not extract the Record Claude review usage step.' >&2
+  exit 1
+fi
+mkdir "$test_dir/runner-temp"
+cp "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/runner-temp/summarize-claude-usage.sh"
+GITHUB_STEP_SUMMARY="$test_dir/usage-summary.md" \
+RUNNER_TEMP="$test_dir/runner-temp" \
+EXECUTION_FILE="$test_dir/usage-execution.json" \
+ACTION_OUTCOME=success \
+VALIDATION_RESULT=true \
+REVIEW_RISK=low \
+bash "$usage_step_script" > "$test_dir/usage-step.stdout"
+if [ "$(wc -l < "$test_dir/usage-step.stdout")" -ne 1 ] \
+    || [ "$(cat "$test_dir/usage-step.stdout")" != "$usage_summary" ]; then
+  echo 'Expected the usage step to write exactly the aggregated JSON to stdout.' >&2
+  exit 1
+fi
+if grep -Fq "$usage_summary" "$test_dir/usage-summary.md"; then
+  echo 'Usage JSON was written to the Job Summary instead of only stdout.' >&2
+  exit 1
+fi
+grep -Fq '### Claude review usage' "$test_dir/usage-summary.md"
+grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
+
 if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
   echo 'Expected usage summarization without a result event to fail.' >&2
   exit 1
@@ -384,7 +416,6 @@ grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-requi
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq -- '--max-budget-usd 1.70' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq "printf '%s\\n' \"\$usage_json\"" "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Claude review not run' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Gate Claude review entry' "$repo_root/.github/workflows/claude-review.yml"
