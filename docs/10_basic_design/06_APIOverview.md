@@ -139,6 +139,10 @@ POST /api/admin/students/{studentId}/deletion
 GET  /api/admin/students/{studentId}/profile
 POST /api/admin/students/{studentId}/name-change
 POST /api/admin/students/{studentId}/contact-email-change
+GET  /api/admin/notification-failures/summary
+GET  /api/admin/notification-failures
+GET  /api/admin/notification-failures/{notificationId}
+POST /api/admin/notification-failures/{notificationId}/retry
 ```
 
 Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
@@ -645,7 +649,7 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 
 本節は `OI-BD-009` で確定した、管理者向けAPIのうち月間Scheduleに関する基本設計を示す。
 
-管理者向け分類管理、生徒管理、通知失敗管理等の残りのAPIは `OI-BD-009` で継続検討する。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
+管理者向け分類管理、生徒管理等の残りのAPIは `OI-BD-009` で継続検討する。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
 
 ### 12.1 主要Endpoint
 
@@ -1355,7 +1359,52 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 氏名変更成功ResponseはCommit後の確定プロフィール状態を返す。連絡先メール変更開始成功Responseは、旧メールが現在有効なままであること、新メール所有確認待ちであること、および管理画面が次の行動を判断するために必要な情報を返せる形とする。
 
-## 19. 詳細設計へ送る事項
+## 19. 管理者向け通知失敗Dashboard・個別再送API基本形
+
+本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。
+
+### 19.1 主要Endpointと認可
+
+| 用途 | Endpoint | 種別 |
+|---|---|---|
+| 未解決件数 | `GET /api/admin/notification-failures/summary` | Query |
+| 失敗一覧 | `GET /api/admin/notification-failures` | Query |
+| 失敗詳細 | `GET /api/admin/notification-failures/{notificationId}` | Query |
+| 個別再送 | `POST /api/admin/notification-failures/{notificationId}/retry` | Command |
+
+`notificationId` は通知管理の論理IDであり、Provider Message IDをAPI Targetの正本にしない。Actorは4.2の原則どおり認証済みAdmin Sessionから解決し、すべてのQueryとCommandで管理者認可を行う。
+
+### 19.2 Dashboard・Query View
+
+未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通常予約系の未解決NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。
+
+失敗一覧では、少なくとも種別、予約日時、生徒名、失敗時の実送信先、失敗理由、失敗日時、再送状態を画面表示可能なApplication View Modelとして返せる形とする。詳細Queryでは、通知内容の要約、Delivery Attempt履歴、今回の再送先、再送可否および必要な対応を確認できる形とする。再送前の確認はこの詳細Queryを基に管理画面で行い、専用Preview APIは設けない。
+
+Provider等の生Error、Message ID、内部技術情報を画面または公開APIへ露出せず、失敗理由は安全なApplication Errorまたは業務上の理由へ抽象化する。氏名・送信先その他の個人情報は、管理者の対応に必要な最小限に限定し、削除・保持要求を優先する。
+
+### 19.3 個別再送の状態と成功Response
+
+個別再送は最終失敗後に管理者が明示的に開始する。再送受付済み、送信中、Provider受理済みで配信結果待ちのいずれも未解決を維持し、その間の並行する追加再送を許可しない。最終失敗では未解決を維持して最新理由を表示し、Provider受理後の結果が不明な場合は結果確認中として盲目的な追加送信を行わない。
+
+再送要求の永続化に成功したResponseは `202 Accepted` とする。これは「再送を受け付けた」ことを表し、Provider受理または配信成功を表さない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとする。開封確認は要求しない。
+
+### 19.4 Confirm時再検証・Transaction境界
+
+再送Commandは、最新の未解決状態、対象通知の再送可否、実送信時に有効な宛先、および先行する再送・解決状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。
+
+正常受付では `05_BookingAndConcurrency.md` §13.8を正とし、再送要求の永続化、同時再送防止、Admin Actorと対象通知を追跡できるAuditLogを同一の業務Transactionで確定する。外部Providerへの送信はCommit後に行う。再送は元のReservation、確定時classification、アプリ内通知の確認状態を変更せず、送信失敗で確定済み業務状態をRollbackしない。
+
+新しいNotificationIntentは作成せず、同じIntentのDelivery Attemptとして扱う。同じ再送要求の通信Retryは同じDelivery Attemptとして冪等に扱う一方、最終失敗後に明示的に開始する新たな手動再送は、同じIntentに属する別のDelivery Attemptとする。Intent単位の同一性と試行単位の冪等性を混同しない。具体的なRequest識別子、保存、一意性Guard、状態遷移は詳細設計で確定する。
+
+通常予約系通知の再送先は `05_BookingAndConcurrency.md` §13.4に従う実送信時の有効な連絡先とし、任意宛先入力は提供しない。失敗時の実送信先と今回の再送先を区別し、元のIntentが表す業務事実、予約確認の確定時classification、元の発生時点を保持する。再送であることを明示し、現在の業務状態はシステム画面で確認できるようにする。
+
+### 19.5 Retry境界と未決事項
+
+Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。
+
+削除済み生徒、期限切れReminder等の再送抑止・終了状態、認証・所有確認メールおよび旧メールSecurity Noticeへの適用は、本節で決定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+
+## 20. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
 
@@ -1397,6 +1446,9 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - 新メール所有確認Endpointと、確認完了時のメール一意性・Security Suspension・削除状態のGuard
 - 旧メールSecurity Noticeの通知義務・Delivery・失敗時表示の具体形
 - プロフィール代理支援固有のConflict / Business Rejection Application Error Code
+- 通知失敗DashboardのPagination / Filter / Sort、Response Schema、表示用状態・業務理由の具体形
+- 再送要求の具体的な識別子、保存、Delivery Attempt状態遷移、試行単位の冪等性Guard
+- Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合
 
 認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
 
@@ -1404,9 +1456,10 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 プロフィール代理支援については、認証・アカウント設計で生徒本人と管理者開始を共通化できる連絡先メール所有確認Flow、Pending変更の排他、旧メールSecurity Noticeを具体化する。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
 
-## 20. 関連要求・方針
+## 21. 関連要求・方針
 
 - POL-001 必要最小限・低運用負荷
+- POL-003 業務状態と外部連携の分離
 - POL-004 個人情報最小化
 - POL-005 通知は即時性、システム画面は確実性
 - POL-006 ロール分離と最小権限
@@ -1446,6 +1499,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - BR-099 セキュリティ利用停止
 - BR-100 生徒削除
 - BR-116 スクール都合キャンセル通知
+- BR-114 通知失敗
 - BR-120 最小プロフィール
 - BR-122 削除権限
 - BR-123 削除時即時無効化
@@ -1466,6 +1520,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - REQ-008 生徒一括予約
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
+- REQ-105 通知失敗管理
 - REQ-206 連絡先メール変更
 - REQ-207 Session管理
 - REQ-211 セキュリティ利用停止
@@ -1486,19 +1541,23 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 - REQ-317 プロフィール代理支援
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
+- REQ-912 外部API Retry
 - REQ-914 障害・エラー時利用者表示
+- REQ-934 個人情報削除
 - REQ-940 監査Logging
+- REQ-951 Provider分離
 - CON-001 Cloudflare基盤
 - CON-006 初期規模
 - OOS-002 管理者代理予約
 
-## 21. 設計判断記録
+## 22. 設計判断記録
 
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
 - 生徒一括予約の専用Preview / Confirm API契約はIssue #66で確定した。既存の単一予約APIを維持し、`REQ-008 / AC-008-001〜009` に対して、同一暦月・最新N・選択Slot・classification影響をServerが再検証する全体Confirmと、409での全体未適用・再Preview要求を定義した。
 - 一括予約ConfirmのExpected Stateは、選択Slot集合、対象月、最新N、Slot予約可能状態、新規classification、既存未開始Reservationへのclassification影響を再確認する業務的Snapshotとする。Serverは最新確定状態から再計算し、ClientのExpected Stateを更新値・正本として扱わない。Expected Stateとは別に操作識別子によるIdempotencyを適用し、同一内容の再送で新規Reservationを重複作成せず、異なる内容での同一識別子再利用を別操作として実行せずRejectする方針をIssue #72で確定した。
 - 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
+- 通知失敗Dashboardは通常予約系の未解決NotificationIntentを件数単位とし、詳細Queryによる確認後に個別手動再送を受け付ける。再送受付は202であり、Provider配信成功確認まで解決としない。再送は同じIntentのDelivery Attemptとして扱い、同時再送を防ぎ、元の業務状態を変更しない方針を2026-09-06に確定した。
 - 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。要求仕様v1.8の `AC-301-010` と整合する。
 - 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
 - 公開済み月の将来枠変更は再公開を要求せず、正常Commit後ただちに最新確定状態として扱う。
