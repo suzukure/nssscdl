@@ -472,6 +472,10 @@ classificationは `standard → additional` と `additional → standard` の両
 
 予約確定成功時は、新規Resource作成としてHTTP `201 Created` を基本とする。
 
+正常Commitした予約確定1操作につき、`REQ-101 / AC-101-001〜002 / BR-112` に従う予約確認メールを送る `NotificationIntent` を1件生成する。この予約確認メールには、確定したReservationのLesson日時と確定classification（`standard` / `additional`）を含め、月間回数および金額は含めない。
+
+HTTP `201 Created` は、Reservationの確定結果に加え、この予約確認メールを送る通知義務が正常Commitに含まれたことを表す。メールの外部送信はCommit後であり、`201 Created` はProviderによる受付または生徒への配信完了を表さない。送信失敗は確定済み予約をRollbackせず、通知失敗管理は `REQ-105` に従う。具体的なメール文面・レイアウト、Delivery状態、および成功Responseへの通知状態のWire表現は詳細設計で確定する。
+
 成功ResponseではDB更新件数ではなく、少なくともReservation識別子、Lesson日時、確定classification、現在のSlot状態、および同一Transactionでclassificationが変更された既存未開始Reservationの画面表示に必要な差分を返せる形とする。
 
 ### 11.4 予約確定Conflict時の情報
