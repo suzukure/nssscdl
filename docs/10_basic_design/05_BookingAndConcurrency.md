@@ -974,6 +974,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 要求仕様v1.10に従い、スクール都合キャンセルは原則Lesson開始前、例外的に開始後・終了後も事後登録可能とし、事後登録の取消時刻を実際のServer Commit時刻、Slotは再開放しない、欠席は先に明示解除、事後登録の業務事実確認をAudit対象とする方針を2026-08-30に確定した。
 - 予約確定CommandのTransaction境界、Commit直前再検証、classification Conflict、既存Reservation再分類の同一Commit方針は2026-08-28に確定した。
 - `REQ-008 / AC-008-001〜009 / BR-069` に従い、一括予約Confirmを選択Slot集合全体の1業務Commandとし、D1上でReservation、Occupancy、必要な再分類、AuditLog、通知義務をAll-or-Nothingに確定する。Commit直前の最新状態再検証、競合時の全体Rollback、および安全に検出できた範囲に限るConflict Responseの方針を2026-09-02に確定した。
+- 正常Commitした一括予約1操作と予約確認NotificationIntentを1対1に対応させ、1件のIntentで選択集合中の全新規Reservationに対する予約確認義務を表す。同一一括操作について新規Reservationごとの予約確認NotificationIntentは作成しない方針を2026-09-06に確定した。
 - 一括予約ConfirmのExpected Stateを、選択Slot集合、対象月、最新N、Slot予約可能状態、新規classification、既存未開始Reservationへのclassification影響の業務的Snapshotとして再確認する方針を2026-09-02に確定した。Expected StateはClientの更新値・正本ではなく、最新確定状態からの再計算との一致確認に用いる。これとは別に、同一操作識別子・同一内容の再送では先に確定した結果を返して二重確定を防ぎ、異なる内容での同一識別子再利用は別操作として実行せずRejectする方針を同日に確定した。
 - 生徒キャンセルCommandのTransaction境界、開始前／開始後の占有終了、最新状態再検証、Server Commit基準時刻、分類更新方針は2026-08-28に確定した。
 - 生徒削除起因system cancellationの即時Transaction境界、個人情報削除・匿名化の後続処理分離、対象集合All-or-Nothing、Preview競合方針は2026-08-28に確定した。
