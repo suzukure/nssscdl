@@ -711,13 +711,21 @@ Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で
 
 旧連絡先へのSecurity Notice等、特定メールアドレス自体に業務意味がある通知は、認証・通知設計で宛先Snapshot等を別途定義する。
 
-### 13.5 複数Intent
+### 13.5 一括予約における予約確認と区分変更の責任分担
+
+一括予約Confirmが正常Commitした場合、`REQ-101` の予約確認NotificationIntentは当該一括予約1操作につき1件とし、選択集合中で新規作成した全Reservationだけを通知対象とする。このIntentによる予約確認メールには、`BR-112` および `AC-101-001〜002` に従い、各新規Reservationの日時と確定時点の標準／追加区分を含める。
+
+同一一括予約により選択対象外の既存未開始Reservationの実効classificationが `standard → additional` または `additional → standard` に変化した場合、その変更は `REQ-104` の区分変更NotificationIntentの責務とする。予約確認NotificationIntentへ既存Reservationの変更前後区分を含めて `REQ-104` の通知を代替してはならず、区分変更は予約確認メールとは別の通知として送信する。
+
+したがって、選択集合中の新規Reservationの確定時classificationは予約確認だけで通知し、同じclassificationを理由に区分変更NotificationIntentを重複して生成しない。一方、既存Reservationに実際に生じた上記の両方向の区分変更は、予約確認NotificationIntentの有無にかかわらず `REQ-104` に従って通知する。
+
+### 13.6 複数Intent
 
 1つの業務Commandから複数通知義務が発生する場合、必要なNotificationIntentを同じTransactionで原子的に生成する。
 
 対象Intentの一部だけ欠落した状態を正常Commitとして許容しない。
 
-### 13.6 Retry
+### 13.7 Retry
 
 一時的送信失敗や再試行のたびに新しいNotificationIntentを作成せず、同一Intentに対するDelivery Attemptとして扱う。
 
