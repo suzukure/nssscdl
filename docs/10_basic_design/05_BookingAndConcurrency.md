@@ -729,7 +729,23 @@ Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で
 
 一時的送信失敗や再試行のたびに新しいNotificationIntentを作成せず、同一Intentに対するDelivery Attemptとして扱う。
 
-Intent ID等から安定した冪等性識別子を導出できるようにする。Provider受理後はApplication Workerから盲目的に同一メールを重複再送せず、最終Permanent Failureは通知失敗管理対象とする。
+Intent単位の通知義務の同一性とDelivery Attempt単位の再送要求の同一性を分離し、各Delivery Attemptに安定した冪等性識別子を導出できるようにする。Provider受理後はApplication Workerから盲目的に同一メールを重複再送せず、最終Permanent Failureは通知失敗管理対象とする。
+
+### 13.8 通知失敗の個別手動再送
+
+`REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` に従い、通常予約系Intentの最終配信失敗は、同じ通知義務（`NotificationIntent`）を単位として管理者が確認し、個別に手動再送できる。配送試行ごとに未解決件数を重複計上しない。一括予約Confirmの予約確認は、既存どおり1操作につき1 Intent・1通であり、複数の予約日時をそのIntentの通知内容として確認できる。
+
+手動再送では新しいNotificationIntentを作成しない。同一Intentに属する新しいDelivery Attemptを開始する。通信上同じ再送要求を再送した場合は同じDelivery Attemptとして冪等に扱い、最終失敗後に管理者が明示的に開始した新たな手動再送だけを、同じIntentに属する別のDelivery Attemptとする。Intent単位の通知義務の同一性と、Delivery Attempt単位の再送要求の同一性を混同しない。具体的な識別子、保存期間、一意性Guardは詳細設計で定める。
+
+再送Commandは、最新の未解決状態、対象Intentの再送可否、実送信時に有効な連絡先、先行する再送または解決状態をTransaction内で再検証する。管理者が詳細で確認した宛先、再送可否または重要な状態が変化していた場合は、確定状態を無言で上書き・送信せず、原則Conflictとして最新状態の再確認へ戻す。
+
+正常受付では、再送要求の永続化、同時再送を防ぐ状態、認証済み管理者Actorと対象Intentを追跡できるAuditLogを同一Transactionで確定する。外部Providerへの送信はCommit後に行う。再送操作は元のReservation、確定時classification、アプリ内通知の確認状態を変更せず、送信失敗・結果不明を理由にそれらの確定済み業務状態をRollbackしない。
+
+再送受付済み、送信中、Provider受理済みで配信結果待ちの間は未解決を維持し、並行する追加再送を許可しない。Provider受理だけでは解決としない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとし、開封確認は要求しない。最終失敗では未解決を維持して最新の業務上の失敗理由を表示する。Provider受理後の結果が不明な場合も結果確認中として扱い、盲目的な追加送信を行わない。Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。
+
+通常予約系Intentの再送先は13.4に従い、実送信時の有効な連絡先とする。失敗時に実際に送った宛先と今回の再送先を区別して記録・表示できるようにし、管理者による任意宛先入力は提供しない。元のIntentが表す業務事実を保持し、予約確認の確定時classificationを再送時の最新classificationへ無言で置換しない。再送であることと元の発生時点を明示し、現在の業務状態はシステム画面で確認できるようにする。
+
+削除済み生徒、期限切れReminder等の再送抑止・終了状態、認証・所有確認メールおよび旧メールSecurity Noticeへの適用は、この通常予約系の基本形の対象外である。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合は、未検証のProvider能力を保証せず、後続の通知設計・詳細設計で具体化する。
 
 ## 14. 未来Slotの現在状態Invariant
 
@@ -936,6 +952,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - REQ-002 / REQ-003 / REQ-004 / REQ-008 予約・キャンセル・一括予約
 - REQ-101〜REQ-105 通知
 - REQ-103 / REQ-104 / REQ-110 通知・システム表示
+- REQ-105 / REQ-314 通知失敗管理・Dashboard
 - REQ-207 Session管理
 - REQ-302 / REQ-307 / REQ-308 / REQ-309 / REQ-310 / REQ-313 / REQ-315 / REQ-316 / REQ-317 管理操作
 - REQ-311 / REQ-312 生徒削除
@@ -958,6 +975,8 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 個別DDL、Index、具体的Guard SQL、CTE
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
+- 通知失敗の再送要求・Delivery Attemptの具体的な識別子、保存、冪等性Guard、状態遷移
+- Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価
 - 一括予約ConfirmのExpected Stateの具体表現、Guard SQL、集合書込みSQL、Conflict Responseの具体Wire表現
 - 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送Response表現
 - 分類管理Commandの具体的Guard SQL、集合再分類SQL、Expected Stateの具体表現
@@ -985,6 +1004,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - 未来Slot一貫性は要求仕様v1.3の `BR-067` として要求化済みである。
 - AuditLogを成功した重要業務Commandと同一Transactionへ含め、監査単位を業務Commandとし、Conflict監査を分離する方針は2026-08-28に確定した。
 - NotificationIntentを通知義務として業務状態と同一Transactionへ含め、外部送信とDelivery状態を分離する方針は2026-08-28に確定した。
+- 通知失敗Dashboardは通常予約系の未解決NotificationIntentを件数単位とし、個別手動再送では同一Intentに新たなDelivery Attemptを開始する。再送受付・同時再送防止・管理者Actorと対象IntentのAuditLogを同一Transactionで確定し、外部送信はCommit後とする方針を2026-09-06に確定した。Provider配信成功確認まで未解決を維持し、Provider受理だけでは解決としない。
 - D1重要Write Commandで `withSession("first-primary").batch()` とPrepared Statementを基本とし、Transaction内Guard、集合指向SQL、安定したApplication Errorへの変換、Writeの盲目的Retry禁止を採用する方針は2026-08-28に確定した。
 - 利用者向け内部エラー非露出の方針は要求仕様v1.4の `POL-014` / `BR-133` / `REQ-914` として上位要求化し、本書4章をその実現設計としてトレースする。
 - Invariant違反について、Command Guardと1時間ごとのIntegrity Scanの二系統検知、IntegrityIncidentの独立永続化、内部異常コード、原則503への抽象化、影響対象単位のFail Closed、Alert集約、明示Repair、再Scan後の解決判定を2026-08-28に確定した。
