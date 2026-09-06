@@ -525,6 +525,10 @@ Expected StateはPreview後の重要状態の変化を検出してConfirm成立�
 
 成功時は複数の新規Reservationを確定した結果としてHTTP `201 Created` を基本とする。成功Responseは、少なくとも確定した各Reservationの識別子、Lesson日時、確定classification、現在のSlot状態、および同一Commandで変更された既存未開始Reservationの画面表示に必要な区分差分を返せる形とする。
 
+正常CommitしたBulk Confirmの1操作につき、`REQ-101 / AC-101-001〜002 / BR-112` に従う予約確認メールを1通送る通知義務を生成する。このメールは選択集合全体を1通にまとめ、確定した各新規ReservationについてLesson日時と確定classification（`standard` / `additional`）を一覧表示する。月間回数および金額は含めない。選択対象外の既存Reservationに生じた区分変更は、この予約確認メールの一覧対象には含めず、`REQ-104` による区分変更通知との責任分担・重複または集約の方針は本節では定めない。
+
+HTTP `201 Created` は、各Reservationの確定結果に加え、当該1通の予約確認メールを送る通知義務が正常Commitに含まれたことを表す。メールの外部送信はCommit後であり、`201 Created` はProviderによる受付または生徒への配信完了を表さない。送信失敗は確定済みの一括予約をRollbackせず、通知失敗管理は `REQ-105` に従う。同一操作識別子・同一内容の再送で返す既存の成功結果についても、新たな予約確認メールの通知義務を重複して生成しない。具体的なメール文面・レイアウト、Delivery状態、および成功Responseへの通知状態のWire表現は詳細設計で確定する。
+
 #### 11.5.3 Confirm時の再確認要求
 
 Preview後にN、対象月、対象Slotの予約可否・予約期限・現在占有、各新規Reservationのclassification、または選択対象外の既存未開始Reservationへの区分影響が変化した場合、Bulk Confirmは全体を未適用とする。
