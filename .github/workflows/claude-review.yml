@@ -278,6 +278,7 @@ jobs:
           esac
           RISK_CLASSIFIER
           fi
+          git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
@@ -372,16 +373,41 @@ jobs:
           set -euo pipefail
           output_path="$RUNNER_TEMP/claude-review-attempt-1.json"
           rm -f "$output_path"
-          if
-            [ -n "$EXECUTION_FILE" ] &&
-            [ -f "$EXECUTION_FILE" ] &&
-            bash "$RUNNER_TEMP/validate-claude-review-output.sh" --execution-file "$EXECUTION_FILE" > "$output_path"
-          then
+          reason="$(bash "$RUNNER_TEMP/classify-claude-review-execution.sh" "$EXECUTION_FILE" "$output_path")"
+          case "$reason" in
+            REVIEW_VALID|CLAUDE_EXECUTION_FAILED|RUN_BUDGET_LIMIT_REACHED|ACCOUNT_SPEND_LIMIT_REACHED|TRANSIENT_RATE_LIMIT|REVIEW_RESULT_MISSING|REVIEW_RESULT_AMBIGUOUS|REVIEW_JSON_INVALID|REVIEW_SCHEMA_MISMATCH)
+              ;;
+            *)
+              reason=REVIEW_JSON_INVALID
+              rm -f "$output_path"
+              ;;
+          esac
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          if [ "$reason" = REVIEW_VALID ] && [ -f "$output_path" ]; then
             echo 'valid=true' >> "$GITHUB_OUTPUT"
           else
             rm -f "$output_path"
             echo 'valid=false' >> "$GITHUB_OUTPUT"
           fi
+          {
+            echo '### Claude review result'
+            echo
+            echo "Reason code: $reason"
+            case "$reason" in
+              REVIEW_VALID)
+                echo 'Recovery: Review output is valid; continue with the existing verdict submission.'
+                ;;
+              RUN_BUDGET_LIMIT_REACHED|ACCOUNT_SPEND_LIMIT_REACHED)
+                echo 'Recovery: Wait for the applicable budget or spend limit to become available, then trigger a new review. This workflow does not retry automatically.'
+                ;;
+              TRANSIENT_RATE_LIMIT)
+                echo 'Recovery: Trigger a new review after the rate limit clears. This workflow does not retry automatically.'
+                ;;
+              *)
+                echo 'Recovery: Investigate the Claude execution or review output, then trigger a new review. No verdict was submitted.'
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record Claude review usage
         if: always() && steps.review-entry.outputs.continue == 'true'
@@ -432,22 +458,25 @@ jobs:
       - name: Save structured review
         id: structured-review
         if: always() && steps.review-entry.outputs.continue == 'true'
+        env:
+          CLASSIFICATION_REASON: ${{ steps.validate-attempt-1.outputs.reason }}
         shell: bash
         run: |
           set -euo pipefail
           review_path="$RUNNER_TEMP/claude-review-attempt-1.json"
           if
+            [ "$CLASSIFICATION_REASON" = REVIEW_VALID ] &&
             [ -f "$review_path" ] &&
-            bash "$RUNNER_TEMP/validate-claude-review-output.sh" "$(cat "$review_path")" > "$RUNNER_TEMP/claude-review.json"
+            cp "$review_path" "$RUNNER_TEMP/claude-review.json"
           then
             echo "json=$(cat "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo 'Claude returned no valid JSON review; refusing to submit a verdict.' >&2
+          echo "Claude review result was classified as ${CLASSIFICATION_REASON:-REVIEW_JSON_INVALID}; refusing to submit a verdict." >&2
           exit 1
 
       - name: Submit reviewer verdict
-        if: steps.review-entry.outputs.continue == 'true'
+        if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -461,7 +490,7 @@ jobs:
 
       - name: Record verdict
         id: review-result
-        if: steps.review-entry.outputs.continue == 'true'
+        if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
         shell: bash
         run: echo "verdict=$(jq -r .verdict "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
 

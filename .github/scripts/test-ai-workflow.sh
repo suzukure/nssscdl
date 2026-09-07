@@ -219,6 +219,7 @@ assert_bootstrap_matches VALIDATOR "$repo_root/.github/scripts/validate-claude-r
 assert_bootstrap_matches SUMMARIZER "$repo_root/.github/scripts/summarize-claude-usage.sh"
 assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
 assert_bootstrap_matches RISK_CLASSIFIER "$repo_root/.github/scripts/classify-claude-review-risk.sh"
+grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"' "$repo_root/.github/workflows/claude-review.yml"
 
 jq -cn --arg review "$fenced_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
@@ -358,6 +359,110 @@ jq -cn --arg review '{"verdict":"approve"}' \
   '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
   > "$test_dir/schema-mismatch-execution.json"
 assert_execution_classification REVIEW_SCHEMA_MISMATCH schema-mismatch-execution \
+  "$test_dir/schema-mismatch-execution.json"
+
+extract_workflow_step() {
+  local step_name="${1:?step name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v step_name="$step_name" '
+    $0 == "      - name: " step_name { step = 1 }
+    step && /^        run: \|$/ { run = 1; next }
+    run && /^      - name: / { exit }
+    run { line = $0; sub(/^          /, "", line); print line }
+  ' "$repo_root/.github/workflows/claude-review.yml" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract the $step_name step." >&2
+    exit 1
+  fi
+}
+
+# Exercise the workflow hand-off itself, not only the classifier. The action
+# execution file is untrusted; only the fixed classifier reason reaches its
+# outputs, Job Summary, and fail-closed save step.
+workflow_runner_temp="$test_dir/workflow-runner-temp"
+mkdir "$workflow_runner_temp"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$workflow_runner_temp/"
+cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$workflow_runner_temp/"
+validate_step_script="$test_dir/validate-claude-review.sh"
+save_step_script="$test_dir/save-structured-review.sh"
+extract_workflow_step 'Validate Claude review' "$validate_step_script"
+extract_workflow_step 'Save structured review' "$save_step_script"
+
+GITHUB_OUTPUT="$test_dir/validate-valid.outputs" \
+GITHUB_STEP_SUMMARY="$test_dir/validate-valid.summary" \
+RUNNER_TEMP="$workflow_runner_temp" \
+EXECUTION_FILE="$test_dir/valid-execution-with-review.json" \
+bash "$validate_step_script"
+grep -Fqx 'reason=REVIEW_VALID' "$test_dir/validate-valid.outputs"
+grep -Fqx 'valid=true' "$test_dir/validate-valid.outputs"
+grep -Fq 'Reason code: REVIEW_VALID' "$test_dir/validate-valid.summary"
+CLASSIFICATION_REASON=REVIEW_VALID \
+GITHUB_OUTPUT="$test_dir/save-valid.outputs" \
+RUNNER_TEMP="$workflow_runner_temp" \
+bash "$save_step_script"
+jq -e '.verdict == "approve"' "$workflow_runner_temp/claude-review.json" > /dev/null
+
+GITHUB_OUTPUT="$test_dir/validate-failed.outputs" \
+GITHUB_STEP_SUMMARY="$test_dir/validate-failed.summary" \
+RUNNER_TEMP="$workflow_runner_temp" \
+EXECUTION_FILE="$test_dir/failed-execution.json" \
+bash "$validate_step_script"
+grep -Fqx 'reason=CLAUDE_EXECUTION_FAILED' "$test_dir/validate-failed.outputs"
+grep -Fqx 'valid=false' "$test_dir/validate-failed.outputs"
+grep -Fq 'Reason code: CLAUDE_EXECUTION_FAILED' "$test_dir/validate-failed.summary"
+if CLASSIFICATION_REASON=CLAUDE_EXECUTION_FAILED \
+  GITHUB_OUTPUT="$test_dir/save-failed.outputs" \
+  RUNNER_TEMP="$workflow_runner_temp" \
+  bash "$save_step_script" > "$test_dir/save-failed.stdout" 2> "$test_dir/save-failed.stderr"; then
+  echo 'Expected the structured-review save step to fail closed for a failed execution.' >&2
+  exit 1
+fi
+grep -Fq 'CLAUDE_EXECUTION_FAILED' "$test_dir/save-failed.stderr"
+if grep -Fq 'sensitive-raw-claude-output' "$test_dir/validate-failed.outputs" "$test_dir/validate-failed.summary" "$test_dir/save-failed.stderr"; then
+  echo 'Workflow execution classification exposed raw Claude output.' >&2
+  exit 1
+fi
+
+assert_workflow_failure_classification() {
+  local expected_reason="${1:?expected reason is required}"
+  local fixture_name="${2:?fixture name is required}"
+  local execution_file="${3:?execution file is required}"
+  local output_path="$test_dir/workflow-$fixture_name.outputs"
+  local summary_path="$test_dir/workflow-$fixture_name.summary"
+  local stderr_path="$test_dir/workflow-$fixture_name.stderr"
+
+  GITHUB_OUTPUT="$output_path" \
+  GITHUB_STEP_SUMMARY="$summary_path" \
+  RUNNER_TEMP="$workflow_runner_temp" \
+  EXECUTION_FILE="$execution_file" \
+  bash "$validate_step_script"
+  grep -Fqx "reason=$expected_reason" "$output_path"
+  grep -Fqx 'valid=false' "$output_path"
+  grep -Fq "Reason code: $expected_reason" "$summary_path"
+  if CLASSIFICATION_REASON="$expected_reason" \
+    GITHUB_OUTPUT="$test_dir/workflow-$fixture_name-save.outputs" \
+    RUNNER_TEMP="$workflow_runner_temp" \
+    bash "$save_step_script" > /dev/null 2> "$stderr_path"; then
+    echo "Expected workflow fixture $fixture_name to fail closed." >&2
+    exit 1
+  fi
+  grep -Fq "$expected_reason" "$stderr_path"
+}
+
+assert_workflow_failure_classification RUN_BUDGET_LIMIT_REACHED budget-limit \
+  "$test_dir/budget-limited-execution.json"
+assert_workflow_failure_classification ACCOUNT_SPEND_LIMIT_REACHED account-spend-limit \
+  "$test_dir/spend-limited-execution.json"
+assert_workflow_failure_classification TRANSIENT_RATE_LIMIT rate-limit \
+  "$test_dir/rate-limited-execution.json"
+assert_workflow_failure_classification REVIEW_RESULT_MISSING missing-result \
+  "$test_dir/no-success-execution.json"
+assert_workflow_failure_classification REVIEW_RESULT_AMBIGUOUS ambiguous-result \
+  "$test_dir/multiple-success-execution.json"
+assert_workflow_failure_classification REVIEW_JSON_INVALID invalid-json \
+  "$test_dir/invalid-review-execution.json"
+assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH schema-mismatch \
   "$test_dir/schema-mismatch-execution.json"
 
 jq -cn '[
@@ -603,7 +708,8 @@ grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usa
 grep -Fq 'Automatic Claude re-review is paused.' "$repo_root/.github/workflows/ai-developer.yml"
 grep -Fq 'apply-human-pause.sh' "$repo_root/.github/workflows/ai-developer.yml"
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Claude returned no valid JSON review; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-REVIEW_JSON_INVALID}; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq "steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$repo_root/.github/workflows/claude-review.yml"
 if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
   echo 'Expected execution_file validation instead of unsupported --json-schema forwarding.' >&2
   exit 1
