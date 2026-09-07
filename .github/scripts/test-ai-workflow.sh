@@ -431,6 +431,7 @@ grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
 
 assert_usage_step_unavailable() {
   local fixture="${1:?fixture is required}"
+  # An empty expected diagnostic is valid for unset and missing execution files.
   local expected_stderr="${2?expected stderr is required}"
   local stdout_path="$test_dir/usage-step-$fixture.stdout"
   local stderr_path="$test_dir/usage-step-$fixture.stderr"
