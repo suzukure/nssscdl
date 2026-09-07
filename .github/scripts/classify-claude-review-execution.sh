@@ -9,9 +9,16 @@ emit_reason() {
   printf '%s\n' "$1"
 }
 
-# The execution file is untrusted action output.  Inspect only event metadata
-# here; the validator owns all parsing of the model's result string.
-if [ -z "$execution_file" ] || ! jq -e 'type == "array"' "$execution_file" > /dev/null 2> /dev/null; then
+# The execution file is untrusted action output. A missing, non-regular, or
+# unreadable input is a classifier failure. A readable but empty, malformed, or
+# non-array execution container is REVIEW_JSON_INVALID; the validator owns all
+# parsing of the model's result string.
+if [ -z "$execution_file" ] || [ ! -f "$execution_file" ] || [ ! -r "$execution_file" ]; then
+  emit_reason CLASSIFIER_INTERNAL_ERROR
+  exit 0
+fi
+
+if ! jq -e 'type == "array"' "$execution_file" > /dev/null 2> /dev/null; then
   emit_reason REVIEW_JSON_INVALID
   exit 0
 fi
@@ -86,14 +93,22 @@ fi
 if [ -n "$review_output_file" ]; then
   output_dir="$(dirname "$review_output_file")"
   output_base="$(basename "$review_output_file")"
-  temporary_output="$(mktemp "$output_dir/.${output_base}.XXXXXX")"
+  if ! temporary_output="$(mktemp "$output_dir/.${output_base}.XXXXXX" 2> /dev/null)"; then
+    emit_reason CLASSIFIER_INTERNAL_ERROR
+    exit 0
+  fi
   chmod 600 "$temporary_output"
+  # Keep both staging files beside the destination so the final rename is
+  # atomic even when TMPDIR is on a different filesystem.
+  if ! normalized_output="$(mktemp "$output_dir/.${output_base}.normalized.XXXXXX" 2> /dev/null)"; then
+    emit_reason CLASSIFIER_INTERNAL_ERROR
+    exit 0
+  fi
 else
   temporary_output="$(mktemp)"
   chmod 600 "$temporary_output"
+  normalized_output="$(mktemp)"
 fi
-
-normalized_output="$(mktemp)"
 chmod 600 "$normalized_output"
 
 # A validator exit status alone is not enough to establish a review. Keep its
@@ -104,7 +119,10 @@ if bash "$validator" --execution-file "$execution_file" > "$temporary_output" 2>
   && jq -e -s 'length == 1 and (.[0] | type == "object")' "$temporary_output" > /dev/null 2> /dev/null \
   && jq -c . "$temporary_output" > "$normalized_output" 2> /dev/null; then
   if [ -n "$review_output_file" ]; then
-    mv -f "$normalized_output" "$review_output_file"
+    if ! mv -f "$normalized_output" "$review_output_file" 2> /dev/null; then
+      emit_reason CLASSIFIER_INTERNAL_ERROR
+      exit 0
+    fi
   fi
   emit_reason REVIEW_VALID
   exit 0

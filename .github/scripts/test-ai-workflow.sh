@@ -286,6 +286,65 @@ assert_execution_classification REVIEW_VALID valid-execution-classification \
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
   "$test_dir/valid-execution-classification.review.json" > /dev/null
 
+# A different TMPDIR must not prevent the classifier from atomically renaming
+# the normalized hand-off into the caller's output directory.
+mkdir "$test_dir/foreign-tmp"
+TMPDIR="$test_dir/foreign-tmp" bash "$repo_root/.github/scripts/classify-claude-review-execution.sh" \
+  "$test_dir/valid-execution-with-review.json" "$test_dir/cross-tmpdir.review.json" \
+  > "$test_dir/cross-tmpdir.classifier.out" 2> "$test_dir/cross-tmpdir.classifier.err"
+if [ "$(cat "$test_dir/cross-tmpdir.classifier.out")" != REVIEW_VALID ] \
+  || [ -s "$test_dir/cross-tmpdir.classifier.err" ]; then
+  echo 'Classifier did not safely hand off a review with a different TMPDIR.' >&2
+  exit 1
+fi
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/cross-tmpdir.review.json" > /dev/null
+
+# Readable malformed execution containers are untrusted review failures, while
+# missing, non-regular, and unreadable files are classifier entry failures.
+: > "$test_dir/empty-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID empty-execution \
+  "$test_dir/empty-execution.json"
+printf '%s\n' '{}' > "$test_dir/non-array-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID non-array-execution \
+  "$test_dir/non-array-execution.json"
+printf '%s' '{' > "$test_dir/malformed-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID malformed-execution \
+  "$test_dir/malformed-execution.json"
+
+assert_classifier_entry_failure() {
+  local fixture_name="${1:?fixture name is required}"
+  local execution_file="${2-}"
+  local review_file="$test_dir/$fixture_name.review.json"
+  local stdout_path="$test_dir/$fixture_name.classifier.out"
+  local stderr_path="$test_dir/$fixture_name.classifier.err"
+
+  bash "$repo_root/.github/scripts/classify-claude-review-execution.sh" \
+    "$execution_file" "$review_file" > "$stdout_path" 2> "$stderr_path"
+  if [ "$(cat "$stdout_path")" != CLASSIFIER_INTERNAL_ERROR ] || [ -s "$stderr_path" ]; then
+    echo "Expected $fixture_name to be a classifier entry failure." >&2
+    exit 1
+  fi
+  if [ -e "$review_file" ]; then
+    echo "Classifier left a review file for entry failure $fixture_name." >&2
+    exit 1
+  fi
+}
+
+assert_classifier_entry_failure missing-execution ''
+mkdir "$test_dir/execution-directory"
+assert_classifier_entry_failure non-regular-execution "$test_dir/execution-directory"
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo 'Skipping unreadable validator and execution fixtures as root; root bypasses chmod 000 read checks.' >&2
+else
+  unreadable_execution="$test_dir/unreadable-execution.json"
+  cp "$test_dir/valid-execution-with-review.json" "$unreadable_execution"
+  chmod 000 "$unreadable_execution"
+  assert_classifier_entry_failure unreadable-execution "$unreadable_execution"
+  chmod 600 "$unreadable_execution"
+fi
+
 # Trusted bootstrap scripts are written with `git show > file`, which does not
 # preserve their executable bits. The classifier must invoke its validator via
 # bash and retain its safe normalized review hand-off.
@@ -335,9 +394,12 @@ mkdir "$unreadable_validator_scripts"
 cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$unreadable_validator_scripts/"
 cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$unreadable_validator_scripts/"
 chmod 000 "$unreadable_validator_scripts/validate-claude-review-output.sh"
-assert_execution_classification CLASSIFIER_INTERNAL_ERROR unreadable-validator \
-  "$test_dir/valid-execution-with-review.json" \
-  "$unreadable_validator_scripts/classify-claude-review-execution.sh"
+if [ "$(id -u)" -ne 0 ]; then
+  assert_execution_classification CLASSIFIER_INTERNAL_ERROR unreadable-validator \
+    "$test_dir/valid-execution-with-review.json" \
+    "$unreadable_validator_scripts/classify-claude-review-execution.sh"
+fi
+chmod 600 "$unreadable_validator_scripts/validate-claude-review-output.sh"
 
 unknown_diagnostic_scripts="$test_dir/unknown-diagnostic-scripts"
 mkdir "$unknown_diagnostic_scripts"
