@@ -83,7 +83,10 @@ if [ -n "$review_output_file" ]; then
   output_base="$(basename "$review_output_file")"
   temporary_output="$(mktemp "$output_dir/.${output_base}.XXXXXX")"
   chmod 600 "$temporary_output"
-  if "$validator" --execution-file "$execution_file" > "$temporary_output" 2> "$validation_diagnostic"; then
+  # Bootstrap writes the trusted validator with `git show > file`, which does
+  # not retain the executable bit. Invoke it through Bash so execution depends
+  # only on the validator being readable, not on its file mode.
+  if bash "$validator" --execution-file "$execution_file" > "$temporary_output" 2> "$validation_diagnostic"; then
     mv -f "$temporary_output" "$review_output_file"
     trap - EXIT
     rm -f "$validation_diagnostic"
@@ -91,14 +94,16 @@ if [ -n "$review_output_file" ]; then
     exit 0
   fi
 else
-  if "$validator" --execution-file "$execution_file" > /dev/null 2> "$validation_diagnostic"; then
+  if bash "$validator" --execution-file "$execution_file" > /dev/null 2> "$validation_diagnostic"; then
     emit_reason REVIEW_VALID
     exit 0
   fi
 fi
 
 # The validator's stdout (the review) is never forwarded. Its diagnostic is a
-# fixed code, which is translated to this classifier's fixed code below.
+# fixed code, which is translated to this classifier's fixed code below. An
+# unrecognized diagnostic is an internal bootstrap/execution failure, not an
+# invalid model review.
 validation_reason="$(cat "$validation_diagnostic")"
 
 case "$validation_reason" in
@@ -106,5 +111,5 @@ case "$validation_reason" in
   ambiguous_result) emit_reason REVIEW_RESULT_AMBIGUOUS ;;
   invalid_json) emit_reason REVIEW_JSON_INVALID ;;
   schema_mismatch) emit_reason REVIEW_SCHEMA_MISMATCH ;;
-  *) emit_reason REVIEW_JSON_INVALID ;;
+  *) emit_reason CLASSIFIER_INTERNAL_ERROR ;;
 esac

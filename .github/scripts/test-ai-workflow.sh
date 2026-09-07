@@ -361,6 +361,17 @@ jq -cn --arg review '{"verdict":"approve"}' \
 assert_execution_classification REVIEW_SCHEMA_MISMATCH schema-mismatch-execution \
   "$test_dir/schema-mismatch-execution.json"
 
+# A missing trusted validator is an internal bootstrap fault. It must not be
+# represented as invalid Claude review JSON.
+classifier_without_validator_dir="$test_dir/classifier-without-validator"
+mkdir "$classifier_without_validator_dir"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$classifier_without_validator_dir/"
+missing_validator_reason="$(bash "$classifier_without_validator_dir/classify-claude-review-execution.sh" "$test_dir/valid-execution-with-review.json")"
+if [ "$missing_validator_reason" != CLASSIFIER_INTERNAL_ERROR ]; then
+  echo 'Expected a missing validator to be classified as an internal classifier error.' >&2
+  exit 1
+fi
+
 extract_workflow_step() {
   local step_name="${1:?step name is required}"
   local output_path="${2:?output path is required}"
@@ -384,6 +395,9 @@ workflow_runner_temp="$test_dir/workflow-runner-temp"
 mkdir "$workflow_runner_temp"
 cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$workflow_runner_temp/"
 cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$workflow_runner_temp/"
+# Match `git show ... > file`: the trusted validator is readable but has no
+# executable bit. The classifier must invoke it through Bash.
+chmod a-x "$workflow_runner_temp/validate-claude-review-output.sh"
 validate_step_script="$test_dir/validate-claude-review.sh"
 save_step_script="$test_dir/save-structured-review.sh"
 extract_workflow_step 'Validate Claude review' "$validate_step_script"
@@ -464,6 +478,9 @@ assert_workflow_failure_classification REVIEW_JSON_INVALID invalid-json \
   "$test_dir/invalid-review-execution.json"
 assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH schema-mismatch \
   "$test_dir/schema-mismatch-execution.json"
+rm -f "$workflow_runner_temp/validate-claude-review-output.sh"
+assert_workflow_failure_classification CLASSIFIER_INTERNAL_ERROR classifier-internal \
+  "$test_dir/valid-execution-with-review.json"
 
 jq -cn '[
   {
