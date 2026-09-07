@@ -78,12 +78,17 @@ fi
 validation_diagnostic="$(mktemp)"
 trap 'rm -f "$validation_diagnostic" "${temporary_output:-}"' EXIT
 
+if [ ! -f "$validator" ] || [ ! -r "$validator" ]; then
+  emit_reason CLASSIFIER_INTERNAL_ERROR
+  exit 0
+fi
+
 if [ -n "$review_output_file" ]; then
   output_dir="$(dirname "$review_output_file")"
   output_base="$(basename "$review_output_file")"
   temporary_output="$(mktemp "$output_dir/.${output_base}.XXXXXX")"
   chmod 600 "$temporary_output"
-  if "$validator" --execution-file "$execution_file" > "$temporary_output" 2> "$validation_diagnostic"; then
+  if bash "$validator" --execution-file "$execution_file" > "$temporary_output" 2> "$validation_diagnostic"; then
     mv -f "$temporary_output" "$review_output_file"
     trap - EXIT
     rm -f "$validation_diagnostic"
@@ -91,7 +96,7 @@ if [ -n "$review_output_file" ]; then
     exit 0
   fi
 else
-  if "$validator" --execution-file "$execution_file" > /dev/null 2> "$validation_diagnostic"; then
+  if bash "$validator" --execution-file "$execution_file" > /dev/null 2> "$validation_diagnostic"; then
     emit_reason REVIEW_VALID
     exit 0
   fi
@@ -106,5 +111,5 @@ case "$validation_reason" in
   ambiguous_result) emit_reason REVIEW_RESULT_AMBIGUOUS ;;
   invalid_json) emit_reason REVIEW_JSON_INVALID ;;
   schema_mismatch) emit_reason REVIEW_SCHEMA_MISMATCH ;;
-  *) emit_reason REVIEW_JSON_INVALID ;;
+  *) emit_reason CLASSIFIER_INTERNAL_ERROR ;;
 esac

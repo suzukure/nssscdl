@@ -256,11 +256,12 @@ assert_execution_classification() {
   local expected_reason="${1:?expected reason is required}"
   local fixture_name="${2:?fixture name is required}"
   local execution_file="${3:?execution file is required}"
+  local classifier="${4:-$repo_root/.github/scripts/classify-claude-review-execution.sh}"
   local review_file="$test_dir/$fixture_name.review.json"
   local stdout_path="$test_dir/$fixture_name.classifier.out"
   local stderr_path="$test_dir/$fixture_name.classifier.err"
 
-  bash "$repo_root/.github/scripts/classify-claude-review-execution.sh" \
+  bash "$classifier" \
     "$execution_file" "$review_file" > "$stdout_path" 2> "$stderr_path"
   if [ "$(cat "$stdout_path")" != "$expected_reason" ]; then
     echo "Expected $fixture_name to be classified as $expected_reason." >&2
@@ -280,6 +281,46 @@ assert_execution_classification REVIEW_VALID valid-execution-classification \
   "$test_dir/valid-execution-with-review.json"
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
   "$test_dir/valid-execution-classification.review.json" > /dev/null
+
+# Trusted bootstrap scripts are written with `git show > file`, which does not
+# preserve their executable bits. The classifier must invoke its validator via
+# bash and retain its safe normalized review hand-off.
+bootstrap_scripts="$test_dir/bootstrap-scripts"
+mkdir "$bootstrap_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$bootstrap_scripts/"
+cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$bootstrap_scripts/"
+chmod 600 "$bootstrap_scripts/validate-claude-review-output.sh"
+assert_execution_classification REVIEW_VALID non-executable-bootstrap-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$bootstrap_scripts/classify-claude-review-execution.sh"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/non-executable-bootstrap-validator.review.json" > /dev/null
+
+missing_validator_scripts="$test_dir/missing-validator-scripts"
+mkdir "$missing_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$missing_validator_scripts/"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR missing-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$missing_validator_scripts/classify-claude-review-execution.sh"
+
+unreadable_validator_scripts="$test_dir/unreadable-validator-scripts"
+mkdir "$unreadable_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$unreadable_validator_scripts/"
+cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$unreadable_validator_scripts/"
+chmod 000 "$unreadable_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR unreadable-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$unreadable_validator_scripts/classify-claude-review-execution.sh"
+
+unknown_diagnostic_scripts="$test_dir/unknown-diagnostic-scripts"
+mkdir "$unknown_diagnostic_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$unknown_diagnostic_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" sensitive-raw-claude-output >&2' 'exit 1' \
+  > "$unknown_diagnostic_scripts/validate-claude-review-output.sh"
+chmod 600 "$unknown_diagnostic_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR unknown-validator-diagnostic \
+  "$test_dir/valid-execution-with-review.json" \
+  "$unknown_diagnostic_scripts/classify-claude-review-execution.sh"
 
 jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
   > "$test_dir/failed-execution.json"
