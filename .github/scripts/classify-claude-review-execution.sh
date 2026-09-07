@@ -9,9 +9,16 @@ emit_reason() {
   printf '%s\n' "$1"
 }
 
-# The execution file is untrusted action output.  Inspect only event metadata
-# here; the validator owns all parsing of the model's result string.
-if [ -z "$execution_file" ] || ! jq -e 'type == "array"' "$execution_file" > /dev/null 2> /dev/null; then
+# The execution file is untrusted action output. A missing, non-regular, or
+# unreadable input is a classifier failure. A readable but empty, malformed, or
+# non-array execution container is REVIEW_JSON_INVALID; the validator owns all
+# parsing of the model's result string.
+if [ -z "$execution_file" ] || [ ! -f "$execution_file" ] || [ ! -r "$execution_file" ]; then
+  emit_reason CLASSIFIER_INTERNAL_ERROR
+  exit 0
+fi
+
+if ! jq -e 'type == "array"' "$execution_file" > /dev/null 2> /dev/null; then
   emit_reason REVIEW_JSON_INVALID
   exit 0
 fi
@@ -76,34 +83,53 @@ elif jq -e '
 fi
 
 validation_diagnostic="$(mktemp)"
-trap 'rm -f "$validation_diagnostic" "${temporary_output:-}"' EXIT
+trap 'rm -f "$validation_diagnostic" "${temporary_output:-}" "${normalized_output:-}"' EXIT
+
+if [ ! -f "$validator" ] || [ ! -r "$validator" ] || [ ! -s "$validator" ]; then
+  emit_reason CLASSIFIER_INTERNAL_ERROR
+  exit 0
+fi
 
 if [ -n "$review_output_file" ]; then
   output_dir="$(dirname "$review_output_file")"
   output_base="$(basename "$review_output_file")"
-  temporary_output="$(mktemp "$output_dir/.${output_base}.XXXXXX")"
+  if ! temporary_output="$(mktemp "$output_dir/.${output_base}.XXXXXX" 2> /dev/null)"; then
+    emit_reason CLASSIFIER_INTERNAL_ERROR
+    exit 0
+  fi
   chmod 600 "$temporary_output"
-  # Bootstrap writes the trusted validator with `git show > file`, which does
-  # not retain the executable bit. Invoke it through Bash so execution depends
-  # only on the validator being readable, not on its file mode.
-  if bash "$validator" --execution-file "$execution_file" > "$temporary_output" 2> "$validation_diagnostic"; then
-    mv -f "$temporary_output" "$review_output_file"
-    trap - EXIT
-    rm -f "$validation_diagnostic"
-    emit_reason REVIEW_VALID
+  # Keep both staging files beside the destination so the final rename is
+  # atomic even when TMPDIR is on a different filesystem.
+  if ! normalized_output="$(mktemp "$output_dir/.${output_base}.normalized.XXXXXX" 2> /dev/null)"; then
+    emit_reason CLASSIFIER_INTERNAL_ERROR
     exit 0
   fi
 else
-  if bash "$validator" --execution-file "$execution_file" > /dev/null 2> "$validation_diagnostic"; then
-    emit_reason REVIEW_VALID
-    exit 0
+  temporary_output="$(mktemp)"
+  chmod 600 "$temporary_output"
+  normalized_output="$(mktemp)"
+fi
+chmod 600 "$normalized_output"
+
+# A validator exit status alone is not enough to establish a review. Keep its
+# stdout private until it has been confirmed as exactly one JSON object, then
+# reserialize it for the only hand-off path.
+if bash "$validator" --execution-file "$execution_file" > "$temporary_output" 2> "$validation_diagnostic" \
+  && [ -s "$temporary_output" ] \
+  && jq -e -s 'length == 1 and (.[0] | type == "object")' "$temporary_output" > /dev/null 2> /dev/null \
+  && jq -c . "$temporary_output" > "$normalized_output" 2> /dev/null; then
+  if [ -n "$review_output_file" ]; then
+    if ! mv -f "$normalized_output" "$review_output_file" 2> /dev/null; then
+      emit_reason CLASSIFIER_INTERNAL_ERROR
+      exit 0
+    fi
   fi
+  emit_reason REVIEW_VALID
+  exit 0
 fi
 
 # The validator's stdout (the review) is never forwarded. Its diagnostic is a
-# fixed code, which is translated to this classifier's fixed code below. An
-# unrecognized diagnostic is an internal bootstrap/execution failure, not an
-# invalid model review.
+# fixed code, which is translated to this classifier's fixed code below.
 validation_reason="$(cat "$validation_diagnostic")"
 
 case "$validation_reason" in
