@@ -376,17 +376,24 @@ jobs:
         if: always() && steps.review-entry.outputs.continue == 'true'
         env:
           EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
+          ACTION_OUTCOME: ${{ steps.claude-attempt-1.outcome }}
         shell: bash
         run: |
           set -euo pipefail
           output_path="$RUNNER_TEMP/claude-review-attempt-1.json"
           rm -f "$output_path"
-          reason="$(bash "$RUNNER_TEMP/classify-claude-review-execution.sh" "$EXECUTION_FILE" "$output_path")"
+          # An Action failure before it writes its execution file is a Claude
+          # execution failure, not a trusted-classifier bootstrap failure.
+          if [ "${ACTION_OUTCOME:-}" = failure ] && [ -z "${EXECUTION_FILE:-}" ]; then
+            reason=CLAUDE_EXECUTION_FAILED
+          else
+            reason="$(bash "$RUNNER_TEMP/classify-claude-review-execution.sh" "$EXECUTION_FILE" "$output_path")"
+          fi
           case "$reason" in
             REVIEW_VALID|CLAUDE_EXECUTION_FAILED|RUN_BUDGET_LIMIT_REACHED|ACCOUNT_SPEND_LIMIT_REACHED|TRANSIENT_RATE_LIMIT|REVIEW_RESULT_MISSING|REVIEW_RESULT_AMBIGUOUS|REVIEW_JSON_INVALID|REVIEW_SCHEMA_MISMATCH|CLASSIFIER_INTERNAL_ERROR)
               ;;
             *)
-              reason=REVIEW_JSON_INVALID
+              reason=CLASSIFIER_INTERNAL_ERROR
               rm -f "$output_path"
               ;;
           esac
@@ -410,6 +417,9 @@ jobs:
                 ;;
               TRANSIENT_RATE_LIMIT)
                 echo 'Recovery: Trigger a new review after the rate limit clears. This workflow does not retry automatically.'
+                ;;
+              CLASSIFIER_INTERNAL_ERROR)
+                echo 'Recovery: Verify the trusted classifier and validator bootstrap, then trigger a new review. No verdict was submitted.'
                 ;;
               *)
                 echo 'Recovery: Investigate the Claude execution or review output, then trigger a new review. No verdict was submitted.'
@@ -480,7 +490,7 @@ jobs:
             echo "json=$(cat "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "Claude review result was classified as ${CLASSIFICATION_REASON:-REVIEW_JSON_INVALID}; refusing to submit a verdict." >&2
+          echo "Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict." >&2
           exit 1
 
       - name: Submit reviewer verdict

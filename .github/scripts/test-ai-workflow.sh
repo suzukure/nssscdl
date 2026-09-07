@@ -677,7 +677,8 @@ fi
 assert_workflow_failure_classification() {
   local expected_reason="${1:?expected reason is required}"
   local fixture_name="${2:?fixture name is required}"
-  local execution_file="${3:?execution file is required}"
+  local execution_file="${3-}"
+  local action_outcome="${4:-success}"
   local output_path="$test_dir/workflow-$fixture_name.outputs"
   local summary_path="$test_dir/workflow-$fixture_name.summary"
   local stderr_path="$test_dir/workflow-$fixture_name.stderr"
@@ -686,6 +687,7 @@ assert_workflow_failure_classification() {
   GITHUB_STEP_SUMMARY="$summary_path" \
   RUNNER_TEMP="$workflow_runner_temp" \
   EXECUTION_FILE="$execution_file" \
+  ACTION_OUTCOME="$action_outcome" \
   bash "$validate_step_script"
   grep -Fqx "reason=$expected_reason" "$output_path"
   grep -Fqx 'valid=false' "$output_path"
@@ -714,6 +716,22 @@ assert_workflow_failure_classification REVIEW_JSON_INVALID invalid-json \
   "$test_dir/invalid-review-execution.json"
 assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH schema-mismatch \
   "$test_dir/schema-mismatch-execution.json"
+# A missing execution file after the Action itself failed is an execution
+# failure. The classifier's direct missing-input fixture above remains an
+# internal classifier-entry fault, so this workflow boundary stays explicit.
+assert_workflow_failure_classification CLAUDE_EXECUTION_FAILED action-failed-without-execution-file \
+  '' failure
+# If validation itself cannot publish a classification, Save structured review
+# receives the empty Actions output and must name that trusted-path fault
+# without recasting it as invalid review JSON.
+if CLASSIFICATION_REASON='' \
+  GITHUB_OUTPUT="$test_dir/workflow-unclassified-save.outputs" \
+  RUNNER_TEMP="$workflow_runner_temp" \
+  bash "$save_step_script" > /dev/null 2> "$test_dir/workflow-unclassified-save.stderr"; then
+  echo 'Expected an unclassified workflow result to fail closed.' >&2
+  exit 1
+fi
+grep -Fq 'CLASSIFIER_INTERNAL_ERROR' "$test_dir/workflow-unclassified-save.stderr"
 rm -f "$workflow_runner_temp/validate-claude-review-output.sh"
 assert_workflow_failure_classification CLASSIFIER_INTERNAL_ERROR classifier-internal \
   "$test_dir/valid-execution-with-review.json"
@@ -969,7 +987,8 @@ if grep -Fq 'github.event.pull_request.base.sha' "$repo_root/.github/workflows/c
   echo 'Workflow still uses the stale event base SHA.' >&2
   exit 1
 fi
-grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-REVIEW_JSON_INVALID}; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'Verify the trusted classifier and validator bootstrap' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq "steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$repo_root/.github/workflows/claude-review.yml"
 if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
   echo 'Expected execution_file validation instead of unsupported --json-schema forwarding.' >&2
