@@ -252,6 +252,114 @@ for fixture in no-success multiple-success error-result; do
     bash "$repo_root/.github/scripts/validate-claude-review-output.sh" --execution-file "$test_dir/$fixture-execution.json"
 done
 
+assert_execution_classification() {
+  local expected_reason="${1:?expected reason is required}"
+  local fixture_name="${2:?fixture name is required}"
+  local execution_file="${3:?execution file is required}"
+  local review_file="$test_dir/$fixture_name.review.json"
+  local stdout_path="$test_dir/$fixture_name.classifier.out"
+  local stderr_path="$test_dir/$fixture_name.classifier.err"
+
+  bash "$repo_root/.github/scripts/classify-claude-review-execution.sh" \
+    "$execution_file" "$review_file" > "$stdout_path" 2> "$stderr_path"
+  if [ "$(cat "$stdout_path")" != "$expected_reason" ]; then
+    echo "Expected $fixture_name to be classified as $expected_reason." >&2
+    exit 1
+  fi
+  if [ -s "$stderr_path" ]; then
+    echo "Classifier wrote diagnostics for $fixture_name." >&2
+    exit 1
+  fi
+  if grep -Fq 'sensitive-raw-claude-output' "$stdout_path" "$stderr_path"; then
+    echo "Classifier exposed raw Claude output for $fixture_name." >&2
+    exit 1
+  fi
+}
+
+assert_execution_classification REVIEW_VALID valid-execution-classification \
+  "$test_dir/valid-execution-with-review.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/valid-execution-classification.review.json" > /dev/null
+
+jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
+  > "$test_dir/failed-execution.json"
+assert_execution_classification CLAUDE_EXECUTION_FAILED failed-execution \
+  "$test_dir/failed-execution.json"
+
+jq -cn '[{type:"result", subtype:"error_max_budget_usd", is_error:true}]' \
+  > "$test_dir/budget-limited-execution.json"
+assert_execution_classification RUN_BUDGET_LIMIT_REACHED budget-limited-execution \
+  "$test_dir/budget-limited-execution.json"
+
+jq -cn '[{type:"result", subtype:"enforced_spend_limit_reached", is_error:true}]' \
+  > "$test_dir/spend-limited-execution.json"
+assert_execution_classification ACCOUNT_SPEND_LIMIT_REACHED spend-limited-execution \
+  "$test_dir/spend-limited-execution.json"
+
+jq -cn '[{type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}}}]' \
+  > "$test_dir/spend-limited-error-code-execution.json"
+assert_execution_classification ACCOUNT_SPEND_LIMIT_REACHED spend-limited-error-code-execution \
+  "$test_dir/spend-limited-error-code-execution.json"
+
+jq -cn '[{type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}}]' \
+  > "$test_dir/rate-limited-execution.json"
+assert_execution_classification TRANSIENT_RATE_LIMIT rate-limited-execution \
+  "$test_dir/rate-limited-execution.json"
+
+# A terminal successful review represents a completed retry. Earlier structured
+# errors therefore cannot discard the review or prevent its safe hand-off.
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}},
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/rate-limit-then-success-execution.json"
+assert_execution_classification REVIEW_VALID rate-limit-then-success-execution \
+  "$test_dir/rate-limit-then-success-execution.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/rate-limit-then-success-execution.review.json" > /dev/null
+
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"error", error:{type:"enforced_spend_limit_reached", message:"sensitive-raw-claude-output"}},
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/spend-limit-error-then-success-execution.json"
+assert_execution_classification REVIEW_VALID spend-limit-error-then-success-execution \
+  "$test_dir/spend-limit-error-then-success-execution.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/spend-limit-error-then-success-execution.review.json" > /dev/null
+
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}, message:"sensitive-raw-claude-output"}},
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/spend-limit-then-success-execution.json"
+assert_execution_classification REVIEW_VALID spend-limit-then-success-execution \
+  "$test_dir/spend-limit-then-success-execution.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/spend-limit-then-success-execution.review.json" > /dev/null
+
+# A numeric HTTP status or unstructured API message is not an account-spend
+# signal. The classifier deliberately considers only the known structured
+# fields above, and must not expose this message while doing so.
+jq -cn '[{type:"error", status:429, message:"enforced_spend_limit_reached sensitive-raw-claude-output"}]' \
+  > "$test_dir/http-429-execution.json"
+assert_execution_classification REVIEW_RESULT_MISSING http-429-execution \
+  "$test_dir/http-429-execution.json"
+
+assert_execution_classification REVIEW_RESULT_MISSING no-success-classification \
+  "$test_dir/no-success-execution.json"
+assert_execution_classification REVIEW_RESULT_AMBIGUOUS multiple-success-classification \
+  "$test_dir/multiple-success-execution.json"
+
+jq -cn --arg review '{"sensitive-raw-claude-output":' \
+  '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
+  > "$test_dir/invalid-review-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID invalid-review-execution \
+  "$test_dir/invalid-review-execution.json"
+
+jq -cn --arg review '{"verdict":"approve"}' \
+  '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
+  > "$test_dir/schema-mismatch-execution.json"
+assert_execution_classification REVIEW_SCHEMA_MISMATCH schema-mismatch-execution \
+  "$test_dir/schema-mismatch-execution.json"
+
 jq -cn '[
   {
     type:"result",
