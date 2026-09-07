@@ -24,7 +24,7 @@ An Issue may describe a proposed change to the current specification. Treat that
 
 Do not treat unresolved questions, alternatives under consideration, or speculative Issue text as confirmed specifications.
 
-If the repository and Issue appear to contradict each other and the Issue does not clearly authorize that contradiction as the intended change, do not choose one silently. Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response.
+If the repository and Issue appear to contradict each other and the Issue does not clearly authorize that contradiction as the intended change, do not choose one silently. Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation**.
 
 ## Required workflow
 
@@ -88,7 +88,7 @@ If work in an earlier phase is required before the current Issue can be complete
 - the affected requirement/design identifiers;
 - the downstream work that must remain blocked.
 
-Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation** and include `[REQUIREMENTS_CHANGE_REQUIRED]` in the final response.
+Do not leave partial or speculative changes in the working tree. Follow **Requirement changes and escalation**.
 
 ## Requirement changes and escalation
 
@@ -100,11 +100,11 @@ Use this escalation path whenever the Issue cannot be completed consistently wit
 
 Do not make the unresolved change silently, and do not leave partial or speculative repository changes for the blocked work.
 
-Include the exact marker on a standalone line by itself:
+Include this plain-text line by itself in the final response:
 
-`[REQUIREMENTS_CHANGE_REQUIRED]`
+[REQUIREMENTS_CHANGE_REQUIRED]
 
-in the final response.
+Do not wrap it in backticks or a code block, indent it, or add leading/trailing whitespace. A CRLF line ending is allowed.
 
 Explain:
 
@@ -113,7 +113,7 @@ Explain:
 - affected `POL / BR / REQ / AC / TC / CON / OOS`;
 - what downstream work must wait for the decision.
 
-On Issue-entry development runs and after Codex executes during a Claude review follow-up, the workflow detects this marker only when it appears on a standalone line exactly equal to `[REQUIREMENTS_CHANGE_REQUIRED]`, then synchronizes `human-review-required` and pauses for human review. Explanatory mentions within another line are not stop signals. During review follow-up, leave the working tree unchanged when returning this marker; do not combine the escalation with fixes for other findings in the same run.
+On Issue-entry development runs and after Codex executes during a Claude review follow-up, the workflow applies the exact marker rule above, then synchronizes `human-review-required` and pauses for human review. During review follow-up, leave the working tree unchanged when escalating; do not combine the escalation with fixes for other findings in the same run.
 
 Do not weaken, reinterpret, or bypass a requirement merely to satisfy a Claude finding or make implementation easier.
 
@@ -185,7 +185,7 @@ If a finding should not be implemented, explain why with concrete repository or 
 
 Do not resolve a review disagreement by silently changing requirements.
 
-If the disagreement requires a requirement or upstream decision, put `[REQUIREMENTS_CHANGE_REQUIRED]` on a standalone line by itself. During Claude review follow-up, leave the entire working tree unchanged when returning this marker; do not combine the escalation with fixes for other findings in the same run. The workflow pauses before committing or pushing the partial change.
+If the disagreement requires a requirement or upstream decision, follow **Requirement changes and escalation**. During Claude review follow-up, leave the entire working tree unchanged when escalating; do not combine the escalation with fixes for other findings in the same run. The workflow pauses before committing or pushing the partial change.
 
 ## Prohibited actions
 
