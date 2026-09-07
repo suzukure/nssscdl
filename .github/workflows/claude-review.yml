@@ -23,6 +23,7 @@ jobs:
     outputs:
       verdict: ${{ steps.review-result.outputs.verdict }}
       developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}
+      trusted_base_sha: ${{ steps.build-review-context.outputs.base_sha }}
     steps:
       - name: Create reviewer App token
         id: review-token
@@ -46,14 +47,21 @@ jobs:
           persist-credentials: false
 
       - name: Build review context
+        id: build-review-context
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],app/${{ steps.dev-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
         shell: bash
         run: |
           set -euo pipefail
+          BASE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_REF}" --jq '.object.sha')"
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Could not resolve the current base branch tip to a commit SHA; refusing review.' >&2
+            exit 1
+          fi
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
           if git cat-file -e "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" 2> /dev/null; then
@@ -278,6 +286,7 @@ jobs:
           esac
           RISK_CLASSIFIER
           fi
+          git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
@@ -367,21 +376,56 @@ jobs:
         if: always() && steps.review-entry.outputs.continue == 'true'
         env:
           EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
+          ACTION_OUTCOME: ${{ steps.claude-attempt-1.outcome }}
         shell: bash
         run: |
           set -euo pipefail
           output_path="$RUNNER_TEMP/claude-review-attempt-1.json"
           rm -f "$output_path"
-          if
-            [ -n "$EXECUTION_FILE" ] &&
-            [ -f "$EXECUTION_FILE" ] &&
-            bash "$RUNNER_TEMP/validate-claude-review-output.sh" --execution-file "$EXECUTION_FILE" > "$output_path"
-          then
+          # An Action failure before it writes its execution file is a Claude
+          # execution failure, not a trusted-classifier bootstrap failure.
+          if [ "${ACTION_OUTCOME:-}" = failure ] && [ -z "${EXECUTION_FILE:-}" ]; then
+            reason=CLAUDE_EXECUTION_FAILED
+          else
+            reason="$(bash "$RUNNER_TEMP/classify-claude-review-execution.sh" "$EXECUTION_FILE" "$output_path")"
+          fi
+          case "$reason" in
+            REVIEW_VALID|CLAUDE_EXECUTION_FAILED|RUN_BUDGET_LIMIT_REACHED|ACCOUNT_SPEND_LIMIT_REACHED|TRANSIENT_RATE_LIMIT|REVIEW_RESULT_MISSING|REVIEW_RESULT_AMBIGUOUS|REVIEW_JSON_INVALID|REVIEW_SCHEMA_MISMATCH|CLASSIFIER_INTERNAL_ERROR)
+              ;;
+            *)
+              reason=CLASSIFIER_INTERNAL_ERROR
+              rm -f "$output_path"
+              ;;
+          esac
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          if [ "$reason" = REVIEW_VALID ] && [ -f "$output_path" ]; then
             echo 'valid=true' >> "$GITHUB_OUTPUT"
           else
             rm -f "$output_path"
             echo 'valid=false' >> "$GITHUB_OUTPUT"
           fi
+          {
+            echo '### Claude review result'
+            echo
+            echo "Reason code: $reason"
+            case "$reason" in
+              REVIEW_VALID)
+                echo 'Recovery: Review output is valid; continue with the existing verdict submission.'
+                ;;
+              RUN_BUDGET_LIMIT_REACHED|ACCOUNT_SPEND_LIMIT_REACHED)
+                echo 'Recovery: Wait for the applicable budget or spend limit to become available, then trigger a new review. This workflow does not retry automatically.'
+                ;;
+              TRANSIENT_RATE_LIMIT)
+                echo 'Recovery: Trigger a new review after the rate limit clears. This workflow does not retry automatically.'
+                ;;
+              CLASSIFIER_INTERNAL_ERROR)
+                echo 'Recovery: Verify the trusted classifier and validator bootstrap, then trigger a new review. No verdict was submitted.'
+                ;;
+              *)
+                echo 'Recovery: Investigate the Claude execution or review output, then trigger a new review. No verdict was submitted.'
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record Claude review usage
         if: always() && steps.review-entry.outputs.continue == 'true'
@@ -432,26 +476,29 @@ jobs:
       - name: Save structured review
         id: structured-review
         if: always() && steps.review-entry.outputs.continue == 'true'
+        env:
+          CLASSIFICATION_REASON: ${{ steps.validate-attempt-1.outputs.reason }}
         shell: bash
         run: |
           set -euo pipefail
           review_path="$RUNNER_TEMP/claude-review-attempt-1.json"
           if
+            [ "$CLASSIFICATION_REASON" = REVIEW_VALID ] &&
             [ -f "$review_path" ] &&
-            bash "$RUNNER_TEMP/validate-claude-review-output.sh" "$(cat "$review_path")" > "$RUNNER_TEMP/claude-review.json"
+            cp "$review_path" "$RUNNER_TEMP/claude-review.json"
           then
             echo "json=$(cat "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo 'Claude returned no valid JSON review; refusing to submit a verdict.' >&2
+          echo "Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict." >&2
           exit 1
 
       - name: Submit reviewer verdict
-        if: steps.review-entry.outputs.continue == 'true'
+        if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
           REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
@@ -461,7 +508,7 @@ jobs:
 
       - name: Record verdict
         id: review-result
-        if: steps.review-entry.outputs.continue == 'true'
+        if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
         shell: bash
         run: echo "verdict=$(jq -r .verdict "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
 
@@ -473,7 +520,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
@@ -493,7 +540,7 @@ jobs:
           contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -523,7 +570,7 @@ jobs:
       - name: Check out trusted merge gates
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.review.outputs.trusted_base_sha }}
           persist-credentials: false
 
       - name: Verify merge gates
