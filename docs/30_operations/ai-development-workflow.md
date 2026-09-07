@@ -89,6 +89,27 @@ Claude Codeの標準5分prompt cacheを使用し、Issue #61の高リスク2実�
 
 Message Batches APIは非同期処理であり、即時のreview verdictを必要とする同期PR gateへ導入しない。夜間処理など遅延を許容でき、複数の独立したreviewをまとめられる用途が生じた場合は別Issueで再検討する。
 
+### Claude review失敗の分類と再実行
+
+Claude reviewの実行結果は、`Validate Claude review` stepがJob Summaryへ記録する `Reason code` を一次情報とする。`Record Claude review usage` の集計済みusage JSONと表は費用・利用量の補助証跡であり、失敗原因またはverdictを決めない。reason codeは信頼済みbase commit由来classifierがexecution file内の構造化されたresult/error metadataから付けるローカルな分類であり、Claude Providerの障害理由・復旧時刻・quotaを保証するものではない。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載・再集計しない。
+
+| Reason code | 判定 | 人間の復旧手順 |
+|---|---|---|
+| `REVIEW_VALID` | 構造化reviewが検証済みである。 | 既存のverdict投稿を継続する。 |
+| `RUN_BUDGET_LIMIT_REACHED` | result subtypeが`error_max_budget_usd`で、当該review実行の予算上限に達した。 | 当該実行の予算を利用可能にできる判断をした後、同じheadで新しいreviewを人が起動する。自動再試行しない。 |
+| `ACCOUNT_SPEND_LIMIT_REACHED` | result subtype、error type、またはerror detailsのcodeが`enforced_spend_limit_reached`である。 | アカウント側の支出上限が利用可能になったことを人が確認してから、同じheadで新しいreviewを起動する。自動再試行しない。 |
+| `TRANSIENT_RATE_LIMIT` | result subtypeまたはerror typeが`rate_limit_error`である。 | 制限が解消したと人が確認してから、同じheadで新しいreviewを起動する。自動再試行しない。 |
+| `CLAUDE_EXECUTION_FAILED` | Actionがexecution fileを残す前に失敗した、または上記以外のerror resultが記録された。 | Action実行、認証・設定、入力状態を必要最小限の非機密証跡で調査し、原因を解消してから再実行する。 |
+| `REVIEW_RESULT_MISSING` | 検証対象となる成功resultがない。 | review出力の取得・検証経路を調査してから再実行する。 |
+| `REVIEW_RESULT_AMBIGUOUS` | 検証対象となる成功resultが複数ある。 | review出力の検証経路を調査してから再実行する。 |
+| `REVIEW_JSON_INVALID` | execution containerまたはreview JSONが不正である。 | 出力・検証経路を調査してから再実行する。 |
+| `REVIEW_SCHEMA_MISMATCH` | review JSONが固定schemaに適合しない。 | 出力・検証経路を調査してから再実行する。 |
+| `CLASSIFIER_INTERNAL_ERROR` | 信頼済みclassifier/validatorのbootstrapまたは内部処理を確認できない。 | 信頼済みbase commit由来のclassifier/validator bootstrapを確認してから再実行する。 |
+
+HTTP status、特にHTTP 429、Action logの文言、または利用量だけから`ACCOUNT_SPEND_LIMIT_REACHED`と推定してはならない。構造化metadataがこのcodeを示さない失敗は、分類不能または別のreason codeとして扱う。上限到達と分類不能な失敗（少なくとも`CLASSIFIER_INTERNAL_ERROR`、不明なreason code、またはJob Summaryを取得できない場合）では自動再試行を行わず、人間が調査・判断する。
+
+同じheadを再実行する前に、人間はIssue番号、closing Issue、PR番号、対象PR head SHA、失敗run ID、および失敗runのhead SHAを照合する。Job Summaryの`Claude review result`でreason codeを先に確認し、必要な場合だけ該当stepの最小限の非機密情報を確認する。PR差分を変えずに再実行する場合は、GitHub Actions UIで当該runのreviewを再実行し、完了後に新しいrun IDとhead SHAが対象PRの現在head SHAに一致することを確認する。`human-review-required`による停止中は、人間が再開可能と判断してclosing Issue側を先に、PR側を最後に外す。そのPRラベル解除eventが同じheadに対する明示的なClaude再review要求となる。head SHAが変わった場合は同じ実行の再試行として扱わず、新しい差分に対するreviewとして必要な確認をやり直す。
+
 ## Ruleset
 
 default branchに次を適用する。
