@@ -275,6 +275,10 @@ assert_execution_classification() {
     echo "Classifier exposed raw Claude output for $fixture_name." >&2
     exit 1
   fi
+  if [ "$expected_reason" != REVIEW_VALID ] && [ -e "$review_file" ]; then
+    echo "Classifier left a review file for rejected $fixture_name." >&2
+    exit 1
+  fi
 }
 
 assert_execution_classification REVIEW_VALID valid-execution-classification \
@@ -296,12 +300,35 @@ assert_execution_classification REVIEW_VALID non-executable-bootstrap-validator 
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
   "$test_dir/non-executable-bootstrap-validator.review.json" > /dev/null
 
+normalized_output_validator_scripts="$test_dir/normalized-output-validator-scripts"
+mkdir "$normalized_output_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$normalized_output_validator_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '{ \"normalization\": true }'" \
+  > "$normalized_output_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$normalized_output_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification REVIEW_VALID normalized-validator-output \
+  "$test_dir/valid-execution-with-review.json" \
+  "$normalized_output_validator_scripts/classify-claude-review-execution.sh"
+if [ "$(cat "$test_dir/normalized-validator-output.review.json")" != '{"normalization":true}' ]; then
+  echo 'Classifier did not normalize the validated review output.' >&2
+  exit 1
+fi
+
 missing_validator_scripts="$test_dir/missing-validator-scripts"
 mkdir "$missing_validator_scripts"
 cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$missing_validator_scripts/"
 assert_execution_classification CLASSIFIER_INTERNAL_ERROR missing-validator \
   "$test_dir/valid-execution-with-review.json" \
   "$missing_validator_scripts/classify-claude-review-execution.sh"
+
+empty_validator_scripts="$test_dir/empty-validator-scripts"
+mkdir "$empty_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$empty_validator_scripts/"
+: > "$empty_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$empty_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR empty-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$empty_validator_scripts/classify-claude-review-execution.sh"
 
 unreadable_validator_scripts="$test_dir/unreadable-validator-scripts"
 mkdir "$unreadable_validator_scripts"
@@ -321,6 +348,26 @@ chmod 600 "$unknown_diagnostic_scripts/validate-claude-review-output.sh"
 assert_execution_classification CLASSIFIER_INTERNAL_ERROR unknown-validator-diagnostic \
   "$test_dir/valid-execution-with-review.json" \
   "$unknown_diagnostic_scripts/classify-claude-review-execution.sh"
+
+empty_output_validator_scripts="$test_dir/empty-output-validator-scripts"
+mkdir "$empty_output_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$empty_output_validator_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
+  > "$empty_output_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$empty_output_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR empty-validator-output \
+  "$test_dir/valid-execution-with-review.json" \
+  "$empty_output_validator_scripts/classify-claude-review-execution.sh"
+
+non_object_output_validator_scripts="$test_dir/non-object-output-validator-scripts"
+mkdir "$non_object_output_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$non_object_output_validator_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '[]'" \
+  > "$non_object_output_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$non_object_output_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR non-object-validator-output \
+  "$test_dir/valid-execution-with-review.json" \
+  "$non_object_output_validator_scripts/classify-claude-review-execution.sh"
 
 jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
   > "$test_dir/failed-execution.json"
