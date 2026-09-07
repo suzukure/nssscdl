@@ -77,6 +77,22 @@ gh() {
     if [ "${MOCK_API_FAIL:-false}" = 'true' ]; then
       return 1
     fi
+    if [[ "$2" =~ ^repos/owner/repo/git/ref/heads/ ]]; then
+      base_ref="${2#repos/owner/repo/git/ref/heads/}"
+      if [ -n "${MOCK_BASE_REF_LOG:-}" ]; then
+        printf '%s\n' "$base_ref" >> "$MOCK_BASE_REF_LOG"
+      fi
+      if [ "${MOCK_BASE_REF_FAIL:-false}" = 'true' ]; then
+        return 1
+      fi
+      base_sha="${MOCK_BASE_TIP_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+      if [[ "$*" == *'--jq .object.sha'* ]]; then
+        printf '%s\n' "$base_sha"
+      else
+        jq -cn --arg sha "$base_sha" '{object: {sha: $sha}}'
+      fi
+      return
+    fi
     if [[ "$*" =~ /issues/([0-9]+) ]]; then
       issue_number="${BASH_REMATCH[1]}"
     else
@@ -538,6 +554,76 @@ extract_workflow_step() {
   fi
 }
 
+# The event payload can retain a stale base SHA after main advances. The
+# workflow must resolve the current base ref and use that tip for every
+# bootstrap read, particularly the trusted execution classifier.
+build_context_step_script="$test_dir/build-review-context.sh"
+extract_workflow_step 'Build review context' "$build_context_step_script"
+stale_event_base_sha='1111111111111111111111111111111111111111'
+current_base_tip_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+workflow_bootstrap_dir="$test_dir/workflow-bootstrap"
+mkdir "$workflow_bootstrap_dir"
+workflow_git_show_log="$test_dir/workflow-git-show.log"
+workflow_base_ref_log="$test_dir/workflow-base-ref.log"
+git() {
+  case "$1" in
+    show)
+      printf '%s\n' "$2" >> "$MOCK_GIT_SHOW_LOG"
+      case "$2" in
+        "$MOCK_BASE_TIP_SHA:.github/scripts/build-review-context.sh") command cat "$repo_root/.github/scripts/build-review-context.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/validate-claude-review-output.sh") command cat "$repo_root/.github/scripts/validate-claude-review-output.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/summarize-claude-usage.sh") command cat "$repo_root/.github/scripts/summarize-claude-usage.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/evaluate-claude-review-entry-gate.sh") command cat "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/classify-claude-review-risk.sh") command cat "$repo_root/.github/scripts/classify-claude-review-risk.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/classify-claude-review-execution.sh") command cat "$repo_root/.github/scripts/classify-claude-review-execution.sh" ;;
+        "$MOCK_BASE_TIP_SHA:CLAUDE.md") command cat "$repo_root/CLAUDE.md" ;;
+        "$MOCK_BASE_TIP_SHA:AGENTS.md") command cat "$repo_root/AGENTS.md" ;;
+        *) echo "Unexpected trusted bootstrap read: $2" >&2; return 2 ;;
+      esac
+      ;;
+    cat-file) return 0 ;;
+    *) command git "$@" ;;
+  esac
+}
+export -f git
+export repo_root
+MOCK_BASE_TIP_SHA="$current_base_tip_sha" \
+MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
+MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
+GITHUB_OUTPUT="$test_dir/build-context.outputs" \
+GITHUB_REPOSITORY=owner/repo \
+RUNNER_TEMP="$workflow_bootstrap_dir" \
+BASE_REF=main \
+EVENT_BASE_SHA="$stale_event_base_sha" \
+PR_NUMBER=37 \
+TRUSTED_LOGINS=dev \
+bash "$build_context_step_script"
+grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
+grep -Fqx main "$workflow_base_ref_log"
+grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
+if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
+  echo 'Workflow bootstrap used the stale event base SHA.' >&2
+  exit 1
+fi
+if [ -x "$workflow_bootstrap_dir/validate-claude-review-output.sh" ]; then
+  echo 'Workflow bootstrap fixture did not reproduce git show file permissions.' >&2
+  exit 1
+fi
+if MOCK_BASE_TIP_SHA=not-a-commit \
+  MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
+  GITHUB_OUTPUT="$test_dir/build-context-invalid.outputs" \
+  GITHUB_REPOSITORY=owner/repo \
+  RUNNER_TEMP="$workflow_bootstrap_dir" \
+  BASE_REF=main \
+  PR_NUMBER=37 \
+  TRUSTED_LOGINS=dev \
+  bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"; then
+  echo 'Workflow bootstrap accepted an invalid current base tip.' >&2
+  exit 1
+fi
+grep -Fq 'Could not resolve the current base branch tip' "$test_dir/build-context-invalid.err"
+unset -f git
+
 # Exercise the workflow hand-off itself, not only the classifier. The action
 # execution file is untrusted; only the fixed classifier reason reaches its
 # outputs, Job Summary, and fail-closed save step.
@@ -875,6 +961,14 @@ grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usa
 grep -Fq 'Automatic Claude re-review is paused.' "$repo_root/.github/workflows/ai-developer.yml"
 grep -Fq 'apply-human-pause.sh' "$repo_root/.github/workflows/ai-developer.yml"
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'git/ref/heads/${BASE_REF}' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq '^[0-9a-f]{40}$' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'steps.build-review-context.outputs.base_sha' "$repo_root/.github/workflows/claude-review.yml"
+if grep -Fq 'github.event.pull_request.base.sha' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Workflow still uses the stale event base SHA.' >&2
+  exit 1
+fi
 grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-REVIEW_JSON_INVALID}; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq "steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$repo_root/.github/workflows/claude-review.yml"
 if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then

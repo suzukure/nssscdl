@@ -23,6 +23,7 @@ jobs:
     outputs:
       verdict: ${{ steps.review-result.outputs.verdict }}
       developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}
+      trusted_base_sha: ${{ steps.build-review-context.outputs.base_sha }}
     steps:
       - name: Create reviewer App token
         id: review-token
@@ -46,14 +47,21 @@ jobs:
           persist-credentials: false
 
       - name: Build review context
+        id: build-review-context
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],app/${{ steps.dev-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
         shell: bash
         run: |
           set -euo pipefail
+          BASE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_REF}" --jq '.object.sha')"
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Could not resolve the current base branch tip to a commit SHA; refusing review.' >&2
+            exit 1
+          fi
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
           if git cat-file -e "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" 2> /dev/null; then
@@ -480,7 +488,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
           REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
@@ -502,7 +510,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
@@ -522,7 +530,7 @@ jobs:
           contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -552,7 +560,7 @@ jobs:
       - name: Check out trusted merge gates
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ needs.review.outputs.trusted_base_sha }}
           persist-credentials: false
 
       - name: Verify merge gates
