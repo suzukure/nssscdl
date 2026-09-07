@@ -83,6 +83,7 @@ jobs:
           echo "AI_BRANCH=$branch" >> "$GITHUB_ENV"
           git show "${base_sha}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
+          git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
 
           mkdir -p .ai-context
           git show "${base_sha}:AGENTS.md" > .ai-context/AGENTS.base.md
@@ -138,7 +139,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -s "$CODEX_FINAL" ] && grep -Fq '[REQUIREMENTS_CHANGE_REQUIRED]' "$CODEX_FINAL"; then
+          if [ -s "$CODEX_FINAL" ] && bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"; then
             pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
               --state open --json number --jq '.[0].number // empty')"
             bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
@@ -337,6 +338,8 @@ jobs:
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
+          git show "${BASE_SHA}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
+          git show "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
 
       - name: Validate Codex model configuration
@@ -367,8 +370,42 @@ jobs:
             Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
-      - name: Commit and answer review
+      - name: Gate Codex follow-up requirement changes
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        id: codex-requirements-gate
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -s "$CODEX_FINAL" ] && bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"; then
+            if [[ "$HEAD_REF" =~ ^ai/issue-([0-9]+)$ ]]; then
+              issue_number="${BASH_REMATCH[1]}"
+            else
+              issue_number='-'
+            fi
+            bash "$RUNNER_TEMP/apply-human-pause.sh" \
+              "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body 'Codex detected that a requirements change is required. Automated follow-up is paused for a human decision.'
+            echo 'continue=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'continue=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify human of Codex follow-up requirement escalation
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue != 'true'
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+        run: >-
+          bash "$RUNNER_TEMP/notify-human.sh"
+          "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+
+      - name: Commit and answer review
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
