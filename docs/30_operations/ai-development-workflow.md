@@ -87,10 +87,6 @@ Claude reviewは1実行につき `--max-budget-usd 1.70` を設定し、上限�
 
 利用量が欠落・不正でも、review結果の厳密検証とverdict投稿は継続する。
 
-検証が成功しなかった場合、`Diagnose Claude review output` stepはrunner上のexecution fileから安全な構造メタ情報だけを1行JSONで記録する。項目は診断状態、result件数、成功・非error・文字列result候補件数、末尾resultのsubtype（`success`または`other`のみ）・is_error・文字列型判定、および候補が1件の場合の文字数・NUL有無・前後空白除去後の波括弧開始/終了判定・単一JSON解析可否・既存validator形式のfence状態である。本文、先頭末尾の実文字列、任意キー、例外文、ファイルパスは出力しない。32 MiB超の入力は解析せず固定状態にする。raw fileをartifactへ保存せず、`show_full_output`も有効化しない。
-
-この診断は非致命の補助証跡であり、classifier/validatorのreason code、候補選択、schema検証、verdict経路を変更しない。Pythonによる解析可否はvalidatorのjq判定そのものではなく、診断結果からverdictを決めてはならない。過去runの失われたexecution fileを復元する機能や自動再試行は追加しない。必要時はActions Job logs APIで対象jobを取得し、この診断step区間の固定JSONだけを確認する。
-
 Claude Codeの標準5分prompt cacheを使用し、Issue #61の高リスク2実行分と、後継Issue #63で追跡する実際の通常PR 1実行分のcache creation/read tokenを合わせて評価する。1時間cacheはwrite単価が高く、自動再レビューを停止した運用では再利用機会が限定されるため、反復利用の実測根拠が得られるまで有効化しない。
 
 Message Batches APIは非同期処理であり、即時のreview verdictを必要とする同期PR gateへ導入しない。夜間処理など遅延を許容でき、複数の独立したreviewをまとめられる用途が生じた場合は別Issueで再検討する。
