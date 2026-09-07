@@ -47,11 +47,20 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 ### Actionsログの取得
 
 - Actions失敗時は、最初にrun、job、失敗step、conclusion、head SHAを確認する。
+- Claude review失敗では、Job Summaryの`Claude review result`にある`Reason code`を最初に確認する。usage JSONは費用・利用量の補助証跡であり、失敗原因やverdictの判定には使わない。
 - ログ全文を最初から取得しない。
 - 失敗stepのログと、その直前の原因判定に必要な範囲だけを取得する。
 - エラーメッセージ、exit code、該当script、入力状態で原因を特定できない場合に限り、取得範囲を段階的に広げる。
 - 既にユーザーが提示したログは再取得せず、現在のrunと一致するかだけ確認する。
 - 1万行を超えるログは全文表示せず、反復箇所、最初の異常、最後の異常、進捗の有無を要約する。
+- raw execution file、raw model/API output（promptおよびraw model出力中のreview本文を含む）を取得・転載しない。HTTP 429、log文言、利用量だけから支出上限到達と推定しない。
+
+### Claude review失敗時の再実行
+
+- `RUN_BUDGET_LIMIT_REACHED`、`ACCOUNT_SPEND_LIMIT_REACHED`、`TRANSIENT_RATE_LIMIT`、`CLAUDE_EXECUTION_FAILED`、review出力検証失敗、または`CLASSIFIER_INTERNAL_ERROR`では、`ai-development-workflow.md`の固定reason code表と復旧手順に従う。上限到達・分類不能失敗では自動再試行しない。
+- 再実行前にIssue番号、closing Issue、PR番号、現在のPR head SHA、失敗run ID、失敗runのhead SHAを照合する。Job Summaryを優先し、必要な非機密情報だけを追加確認する。
+- PR差分を変えない再実行はGitHub Actions UIで当該reviewを人が再実行し、完了後のrun IDとhead SHAを記録・照合する。head SHAが変われば新しいreviewとして扱う。
+- `human-review-required`による停止中は、明示許可と再開判断の後にclosing Issue、PRの順でラベルを外す。このPRラベル解除eventが同じheadのClaude再review要求となる。
 
 ### 既存証跡の再利用
 
@@ -150,13 +159,16 @@ Actions障害は次の順序で調査する。
 1. workflow runのstatus、conclusion、event、head SHAを確認する。
 2. job一覧から失敗jobを特定する。
 3. job step一覧から最初に失敗したstepを特定する。
-4. 失敗stepのログと、必要なら直前stepの末尾を取得する。
-5. ログが同じ出力を反復している場合は、最初と最後の代表範囲、反復回数または傾向、差分の進展を調べる。
-6. 原因を区別できない場合に限り、関連stepまたはjob全体へ取得範囲を広げる。
+4. Claude reviewならJob Summaryの`Claude review result`から`Reason code`を確認する。usage JSONは補助証跡であり、reason codeを置き換えない。
+5. 失敗stepのログと、必要なら直前stepの末尾を取得する。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載しない。
+6. ログが同じ出力を反復している場合は、最初と最後の代表範囲、反復回数または傾向、差分の進展を調べる。
+7. 原因を区別できない場合に限り、関連stepまたはjob全体へ取得範囲を広げる。
 
 「ログが1万行ある」「30分動いている」だけでは失敗と断定しない。過去の1時間停止事例と、同じstep・同じ反復・同じ終了条件かを比較する。一方、進捗のない反復と時間上限到達が再現している場合は、同じrunを繰り返さず、Issueの論点・対象節・文書サイズ・検証範囲の分割を検討する。
 
 Secret、token、Webhook URL、private key、未公開のVariable値をログから抽出・再掲しない。
+
+Claude reviewの固定reason codeと復旧手順は[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#claude-review失敗の分類と再実行)を正本とする。HTTP 429、Action logの文言、またはusageだけから`ACCOUNT_SPEND_LIMIT_REACHED`と判断しない。上限到達または分類不能な失敗では自動再試行せず、再実行前にIssue番号、closing Issue、PR番号、現在PR head SHA、失敗run ID、失敗runのhead SHAを照合する。PR差分を変えない場合は人間がGitHub Actions UIで当該reviewを再実行し、完了後のrun IDとhead SHAを照合する。停止ラベルがある場合は、人間が再開可能と判断した後、closing Issue、PRの順に外し、PRのラベル解除eventで同じheadの再reviewを要求する。
 
 ## 既存証跡の再利用
 
