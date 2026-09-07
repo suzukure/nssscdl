@@ -81,9 +81,11 @@ Anthropicは長期APIキーではなくGitHub OIDC / Workload Identity Federatio
 
 Claude reviewは1実行につき `--max-budget-usd 1.70` を設定し、上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとする。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
 
-利用量記録はverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加するRisk class、Action outcome、Schema validも含める。Risk class、Action outcome、Schema validはusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`Execution usage was unavailable.`を記録する。
+利用量記録stepはverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加するRisk class、Action outcome、Schema validも含める。Risk class、Action outcome、Schema validはusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`Execution usage was unavailable.`を記録する。集計失敗時だけはraw execution由来のstderrを通常logへ出さず、固定文言`Claude usage summarization failed.`を1行だけstderrへ出力する。
 
-`modelUsage` が1件以上ある場合、token fieldはClaude Code session全体のモデル別累積値として、対象fieldが全modelで数値の場合だけ合算する。1modelでも欠落・非数値ならそのfieldは`null`とし、query call内の累積値であるtop-level `usage`へfield単位でfallbackしない。`modelUsage`が空または利用不能の場合だけ、token fieldをtop-level `usage`から取得する。`estimated_cost_usd`はquery全体のSDK見積りである数値の`total_cost_usd`を優先し、利用不能な場合のみ、全modelで数値の`modelUsage.costUSD`を合算する。一部でも欠落・非数値なら`null`とする。両sourceの集計範囲は異なり得るため、利用量が欠落・不正でもreview結果の厳密検証とverdict投稿は継続する。
+`modelUsage` が1件以上ある場合、token fieldはClaude Code session全体のモデル別累積値として、対象fieldが全modelで数値の場合だけ合算する。1modelでも欠落・非数値ならそのfieldは`null`とし、query call内の累積値であるtop-level `usage`へfield単位でfallbackしない。`modelUsage`が空または利用不能の場合だけ、token fieldをtop-level `usage`から取得する。`estimated_cost_usd`はquery全体のSDK見積りである数値の`total_cost_usd`を優先し、利用不能な場合のみ、全modelで数値の`modelUsage.costUSD`を合算する。一部でも欠落・非数値なら`null`とする。`modelUsage`とtop-level `usage`は集計範囲が異なり得る。
+
+利用量が欠落・不正でも、review結果の厳密検証とverdict投稿は継続する。
 
 Claude Codeの標準5分prompt cacheを使用し、Issue #61の高リスク2実行分と、後継Issue #63で追跡する実際の通常PR 1実行分のcache creation/read tokenを合わせて評価する。1時間cacheはwrite単価が高く、自動再レビューを停止した運用では再利用機会が限定されるため、反復利用の実測根拠が得られるまで有効化しない。
 

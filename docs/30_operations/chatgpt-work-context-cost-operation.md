@@ -49,6 +49,8 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 - Actions失敗時は、最初にrun、job、失敗step、conclusion、head SHAを確認する。
 - Claude review失敗では、Job Summaryの`Claude review result`にある`Reason code`を最初に確認する。usage JSONは費用・利用量の補助証跡であり、失敗原因やverdictの判定には使わない。
 - ログ全文を最初から取得しない。
+- 成功runで[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#claude-api消費制御)に定義された利用量項目だけが必要な場合は、Actions Job logs APIで対象jobのlogを取得し、その中の`Record Claude review usage` step区間にある集計済みJSONの1行だけを読む。ほかのstep区間は読まない。
+- `Record Claude review usage` step区間に集計済みJSONがなく固定診断`Claude usage summarization failed.`だけがある場合は、Job Summaryの`Execution usage was unavailable.`で欠落を確認し、execution fileやraw logから再集計しない。
 - 失敗stepのログと、その直前の原因判定に必要な範囲だけを取得する。
 - エラーメッセージ、exit code、該当script、入力状態で原因を特定できない場合に限り、取得範囲を段階的に広げる。
 - 既にユーザーが提示したログは再取得せず、現在のrunと一致するかだけ確認する。
@@ -64,7 +66,7 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 
 ### 既存証跡の再利用
 
-- Actions Job SummaryまたはClaude review usage step logの集計済みJSONに費用、turn数、duration、token数があれば、その値を再計算しない。
+- Actions Job SummaryまたはClaude review usage step logの集計済みJSONに[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#claude-api消費制御)に定義された利用量項目があれば、その値を再計算しない。
 - PR本文に検証結果が記載されていれば、同じhead SHAに対して同じ検証を繰り返さない。
 - 最新head SHAが変わった場合だけ、変更の影響を受ける確認をやり直す。
 - mainへマージ済みのIssueについては、PR、merge commit、Issue stateの確認をもって完了判定し、過去レビュー全件を再調査しない。
@@ -200,7 +202,8 @@ GitHubリポジトリ suzukure/nssscdl のIssue #<番号>を読み取りで確�
 - 最新Actions runのjobと失敗step
 
 ログ全文は取得せず、失敗stepと必要な範囲だけ確認してください。
-同じSHA・runについて既存のJob SummaryやPR本文に証跡があれば再利用してください。
+成功runでAI開発・ClaudeレビューのGitHub運用に定義された利用量項目だけが必要な場合は、Actions Job logs APIで対象jobのlogを取得し、その中の`Record Claude review usage` step区間にある集計済みJSONの1行だけを読んでください。ほかのstep区間は読まないでください。集計済みJSONがなく固定診断`Claude usage summarization failed.`だけの場合は、Job Summaryの`Execution usage was unavailable.`で欠落を確認し、execution fileやraw logから再集計しないでください。
+同じSHA・runについて既存のJob Summary、Claude review usage step log、PR本文に証跡があれば再利用してください。
 現在地点、問題、次の1手を簡潔に報告してください。
 書き込みは行わないでください。
 ```

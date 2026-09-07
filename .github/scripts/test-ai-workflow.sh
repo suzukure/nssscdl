@@ -915,6 +915,8 @@ grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
 
 assert_usage_step_unavailable() {
   local fixture="${1:?fixture is required}"
+  # An empty expected diagnostic is valid for unset and missing execution files.
+  local expected_stderr="${2?expected stderr is required}"
   local stdout_path="$test_dir/usage-step-$fixture.stdout"
   local stderr_path="$test_dir/usage-step-$fixture.stderr"
   local summary_path="$test_dir/usage-step-$fixture-summary.md"
@@ -930,7 +932,7 @@ assert_usage_step_unavailable() {
   else
     GITHUB_STEP_SUMMARY="$summary_path" \
     RUNNER_TEMP="$test_dir/runner-temp" \
-    EXECUTION_FILE="$2" \
+    EXECUTION_FILE="$3" \
     ACTION_OUTCOME=success \
     VALIDATION_RESULT=false \
     REVIEW_RISK=low \
@@ -941,16 +943,16 @@ assert_usage_step_unavailable() {
     echo "Unavailable usage fixture wrote JSON to stdout: $fixture" >&2
     exit 1
   fi
-  if [ -s "$stderr_path" ]; then
-    echo "Unavailable usage fixture wrote diagnostics to stderr: $fixture" >&2
+  if [ "$(cat "$stderr_path")" != "$expected_stderr" ]; then
+    echo "Unexpected usage diagnostic for $fixture." >&2
     exit 1
   fi
   grep -Fqx 'Execution usage was unavailable.' "$summary_path"
 }
 
-assert_usage_step_unavailable unset-execution-file
-assert_usage_step_unavailable missing-execution-file "$test_dir/does-not-exist.json"
-assert_usage_step_unavailable summarizer-failure "$test_dir/no-success-execution.json"
+assert_usage_step_unavailable unset-execution-file ''
+assert_usage_step_unavailable missing-execution-file '' "$test_dir/does-not-exist.json"
+assert_usage_step_unavailable summarizer-failure 'Claude usage summarization failed.' "$test_dir/no-success-execution.json"
 
 if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
   echo 'Expected usage summarization without a result event to fail.' >&2
