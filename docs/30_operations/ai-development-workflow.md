@@ -79,7 +79,7 @@ Repository variables:
 
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
-AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、自動マージゲートとprotected-path判定を一本化するため、信頼済みbase commit由来の判定scriptを再利用する。Codex側は追加の判定を必要としないためinlineのままとする。
+AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、信頼済みbase commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は追加の判定を必要としないためinlineのままとする。
 
 ## GitHub Apps
 
@@ -165,7 +165,7 @@ default branchに次を適用する。
 - Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
 - Claudeのchange requestが3回に到達した。
 
-停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。許可済みのClaude change request follow-upでは、follow-up gate通過後にラベルを付けてからCodexを1回実行するため、その実行だけは継続するが、修正pushによる `synchronize` reviewは起動しない。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。job条件はevent payload時点でPRの停止ラベルを検出して早期にjobを止め、entry gateはClaude API呼び出し直前にPRとclosing Issueのラベルを再確認する二層構成である。人間が判断を記録し、再開可能と確認した後、closing Issue側を先に、PR側を最後に外す。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。PR側の `human-review-required` が外れたeventだけが明示的なClaude再レビュー要求となる。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
+停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。許可済みのClaude change request follow-upでは、follow-up gate通過後にラベルを付けてからCodexを1回実行するため、その実行だけは継続するが、修正pushによる `synchronize` reviewは起動しない。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。job条件はevent payload時点でPRの停止ラベルを検出して早期にjobを止め、entry gateはClaude API呼び出し直前にPRとclosing Issueのラベルを再確認する二層構成である。人間が判断を記録し、再開可能と確認した後、closing Issue側を先に、PR側を最後に外す。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。PR側の `human-review-required` が外れたeventだけが明示的なClaude再レビュー要求となる。このラベル解除順序の正本は本運用文書であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 

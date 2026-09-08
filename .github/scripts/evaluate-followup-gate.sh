@@ -19,6 +19,14 @@ emit_result() {
     '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason}'
 }
 
+followup_re_review_pause_reason() {
+  printf '%s\n' 'Automatic Claude re-review is paused. After checking the Codex follow-up, follow the label-removal order in docs/30_operations/ai-development-workflow.md#人間エスカレーション to request one new Claude review.'
+}
+
+human_decision_pause_reason() {
+  printf '%s\n' 'Codex follow-up is paused; a human must decide how to proceed.'
+}
+
 if [ "$author_login" != "$developer_app_slug" ] \
     && [ "$author_login" != "${developer_app_slug}[bot]" ] \
     && [ "$author_login" != "app/${developer_app_slug}" ]; then
@@ -56,7 +64,7 @@ review_count="$(
 
 if ! grep -Fxq -- '--- BEGIN REVIEW SUMMARY DATA ---' <<< "$review_body" \
     || ! grep -Fxq -- '--- END REVIEW SUMMARY DATA ---' <<< "$review_body"; then
-  emit_result false true false 'Could not parse the trusted reviewer summary; refusing automated follow-up.'
+  emit_result false true false "Could not parse the trusted reviewer summary; refusing automated follow-up. $(human_decision_pause_reason)"
   exit 0
 fi
 review_summary="$(
@@ -65,9 +73,9 @@ review_summary="$(
   }' <<< "$review_body"
 )"
 if grep -Eq '\[(REQUIREMENTS_CHANGE_REQUIRED|HUMAN_ESCALATION_RECOMMENDED)\]' <<< "$review_summary"; then
-  emit_result false true false 'Claude requested a human decision.'
+  emit_result false true false "Claude requested a human decision. $(human_decision_pause_reason)"
 elif [ "$review_count" -ge 3 ]; then
-  emit_result false true true "Automated review reached ${review_count} change-request rounds."
+  emit_result false true true "Automated review reached ${review_count} change-request rounds. $(human_decision_pause_reason)"
 else
-  emit_result true false false ''
+  emit_result true false false "$(followup_re_review_pause_reason)"
 fi

@@ -984,7 +984,12 @@ grep -Fq 'Claude review not run' "$repo_root/.github/workflows/claude-review.yml
 grep -Fq 'Gate Claude review entry' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
-grep -Fq 'Automatic Claude re-review is paused.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
+grep -Fq -- '--body "$reason"' "$repo_root/.github/workflows/ai-developer.yml"
+if grep -Fq 'Automatic Claude re-review is paused.' "$repo_root/.github/workflows/ai-developer.yml"; then
+  echo 'Expected follow-up re-review guidance to come from the follow-up gate.' >&2
+  exit 1
+fi
 grep -Fq 'apply-human-pause.sh' "$repo_root/.github/workflows/ai-developer.yml"
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$repo_root/.github/workflows/claude-review.yml"
@@ -1132,7 +1137,7 @@ MOCK_CASE=app-author
 export MOCK_CASE
 bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-jq -e '.continue == true and .escalate == false' <<< "$followup" > /dev/null
+jq -e '.continue == true and .escalate == false and (.reason | contains("Automatic Claude re-review is paused."))' <<< "$followup" > /dev/null
 
 MOCK_CASE=wrong-base
 export MOCK_CASE
@@ -1191,7 +1196,7 @@ unset MOCK_DIFF_FAIL
 MOCK_CASE=valid
 export MOCK_CASE
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-jq -e '.continue == true and .escalate == false' <<< "$followup" > /dev/null
+jq -e '.continue == true and .escalate == false and (.reason | contains("Automatic Claude re-review is paused."))' <<< "$followup" > /dev/null
 
 MOCK_CASE=human-label
 export MOCK_CASE
@@ -1212,12 +1217,12 @@ unset MOCK_ISSUE_PAUSED
 MOCK_CASE=three-reviews
 export MOCK_CASE
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-jq -e '.continue == false and .escalate == true and .notify == true' <<< "$followup" > /dev/null
+jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
 
 MOCK_CASE=app-three-reviews
 export MOCK_CASE
 followup="$(bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-jq -e '.continue == false and .escalate == true and .notify == true' <<< "$followup" > /dev/null
+jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
 
 MOCK_CASE=human-author
 export MOCK_CASE
