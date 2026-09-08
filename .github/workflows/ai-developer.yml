@@ -294,7 +294,7 @@ jobs:
             bash .github/scripts/apply-human-pause.sh \
               "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "${reason} Codex follow-up is paused; a human must decide how to proceed."
+              --body "$reason"
           elif [ "$continue" = 'true' ]; then
             if [[ "${HEAD_REF}" =~ ^ai/issue-([0-9]+)$ ]]; then
               issue_number="${BASH_REMATCH[1]}"
@@ -303,9 +303,8 @@ jobs:
             fi
             bash .github/scripts/apply-human-pause.sh \
               "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
-            reason='Codex may apply this follow-up, but automatic Claude re-review is paused until a human removes the labels.'
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body 'Automatic Claude re-review is paused. After checking the Codex follow-up, remove human-review-required from the closing Issue first and from this PR last to request one new Claude review.'
+              --body "$reason"
           fi
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "notify=${notify}" >> "$GITHUB_OUTPUT"
