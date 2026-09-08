@@ -8,13 +8,39 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 
 1. 人間が実装対象Issueを作成し、対象、受入条件、上流・下流影響を記録する。
 2. Issueコメントに `/codex develop` と投稿する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
-3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むPRを作成する。
+3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むDraft PRを作成する。同じIssueの追加修正は既存PRへ集約し、自動Ready化しない。人間が下記の準備確認を終えてReady for reviewへ変更すると、Claude reviewが起動する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
 5. ClaudeがPR、信頼済み会話、closing Issue、明示された後継Issueのsnapshot、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用し、Actionの `execution_file` からworkflowの固定JSON schemaで検証したreview結果だけを正本として、`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。JSON objectそのもの、または前後の文章の有無を問わず厳密に1個だけある `json` Markdown fence内のobjectだけを受理する。任意の波括弧部分は抽出せず、fenceまたは候補の欠落・複数、不正JSON、不正schemaは非機密な理由コードだけを記録して、verdictを推測せずfail-closedでjobを失敗させる。
 6. `REQUEST_CHANGES` の場合は、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付けて自動Claude再レビューを停止し、その状態でCodexが1回だけ修正する。人間が修正結果を確認した後、closing Issue側のラベルを先に、PR側のラベルを最後に外す。PRの `unlabeled` eventを明示的な再レビュー要求として扱い、同じheadをClaudeが1回レビューする。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
+
+## 関連修正の集約とレビュー準備
+
+Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすため、新規のIssue起点PRをDraftで作成する方式を採用した。レビュー単位は行数やファイル数ではなく「1つの確定判断と、その整合性を保つための関連修正」とする。
+
+Issueを確定する際は、対象ファイル・節・IDに加え、同じ判断に伴う参照、用語、追跡表、図、検証範囲を洗い出して本文へ記録する。無関係な変更や未決判断は混ぜず、巨大な変更になる場合は各PRが安全・整合的に成立する単位へ分ける。既存の別Issueを無断で取り込まず、範囲を広げる場合は人間の決定を先にIssue本文へ反映する。
+
+Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpushで更新しても自動Ready化はしない。必要な追加開発だけを同じIssueへ依頼し、変更が揃うまで同じPRへ集約する。生成PR本文と通常PRテンプレートの`Review readiness`欄は人間の確認記録であり、チェックボックス自体を機械的な認可・検証ゲートとは扱わない。
+
+人間は次を確認してからPR画面の **Ready for review** を実行する。
+
+- 同じ判断に伴う関連修正がIssueの許可範囲内で揃っている。
+- 影響するPOL / BR / REQ / AC / TC / CON / OOS、関連文書・図との整合を確認している。
+- 現在headに対する必要な検証結果がPR本文または最新の開発結果コメントにあり、失敗や未実施を隠していない。古いheadのチェック欄を完了証跡として使わない。
+- 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
+- PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
+
+`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
+
+既存の非Draft PRはこの変更で自動Draft化しない。通常の追加作業をレビュー前にまとめ直す場合、人間が追加pushより前にDraftへ戻し、既に進行中のClaude runがあれば別途確認・停止する。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。非Draftのままpushすると従来どおり`synchronize`でレビュー対象となる。
+
+`human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中の非Draft PRは従来どおり人間の確認後にclosing Issue、PRの順でラベルを外す。停止中のDraft PRは、準備・再開判断後に同じ順でラベルを外し、最後にReady化する。Draft中のラベル解除ではClaudeは起動しないため、Ready化がその後のレビュー要求になる。
+
+### 承認後の非Blocking改善
+
+承認後の非Blocking改善は、先行マージが安全性・正確性・要求整合性を損なわないことを人間が確認した場合だけ、次の関連保守Issueへまとめてよい。closing Issue本文へ残る影響、先行マージ可能な理由、後継Issue、範囲・完了条件・時期または順序を記録し、PR本文へ要約とリンクを反映する。詳細は「スコープ外影響と後継Issue」を正本とする。非Blockingという分類だけで延期せず、要求や判断を実質的に変更した場合は古い承認を流用せず再レビューする。不要な微修正pushで承認済みheadを変更しない。
 
 ## ChatGPT Workのコンテキスト・コスト管理
 

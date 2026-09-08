@@ -196,13 +196,17 @@ jobs:
               echo
               if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
               echo
-              echo '## Review'
+              echo '## Review readiness'
               echo
-              echo 'Claude review will run automatically. The review App merges only after the configured gates pass.'
+              echo '- [ ] Related references, terminology, traceability, and diagrams for this decision are updated together within the Issue scope.'
+              echo '- [ ] Validation results cover the current head; remaining impacts and follow-up decisions are recorded in the closing Issue.'
+              echo '- [ ] A human has checked the complete change and confirmed it is ready for Claude review.'
+              echo
+              echo 'This PR starts as Draft. Keep related corrections here, then have a human mark it Ready for review. Draft updates do not run Claude review. Follow docs/30_operations/ai-development-workflow.md for readiness checks and paused-review recovery.'
             } > "$body_file"
-            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$AI_BRANCH" --title "$ISSUE_TITLE" --body-file "$body_file")"
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$AI_BRANCH" --draft --title "$ISSUE_TITLE" --body-file "$body_file")"
             rm -f "$body_file"
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codex opened ${pr_url} for Claude review."
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codex opened ${pr_url} as Draft. Check related corrections and validation, then mark it Ready for review to request Claude review."
           else
             if [ -s "$CODEX_FINAL" ]; then
               gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"

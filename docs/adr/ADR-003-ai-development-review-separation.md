@@ -12,6 +12,7 @@ Issue #36で、Codex/OpenAIが開発し、Claudeが独立レビューし、検�
 ## 決定
 
 - developer Appとreviewer Appを別々に作り、developer Appは変更とPR、reviewer Appはレビューと承認後のsquash mergeを担当する。
+- Issue #125により、developer Appが新規作成するPRはDraftとし、同じ確定判断に伴う関連修正と検証をまとめてから人間がReady for reviewへ変更する。自動Ready化は行わない。準備確認と承認後の非Blocking改善の扱いは運用正本を参照する。
 - OpenAIはRepository secretのAPIキー、AnthropicはGitHub OIDC / Workload Identity Federationで認証する。
 - 通常処理は `pull_request` を使い、forkのPRには認証情報を渡さず、same-repository PRだけAIレビューする。base repositoryの権限で未信頼コードを動かす `pull_request_target` は使わない。
 - PR本文にはclosing keywordによる実在Issueの関連付けを必須とする。自動マージ時にも同じ条件を再検証する。

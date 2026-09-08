@@ -41,6 +41,14 @@ none
 - [ ] Affected diagrams/generated files were updated
 - [ ] No credential or sensitive value is included
 
+## Review readiness
+
+<!-- Keep work in Draft until the related corrections and validation are complete. A human marks it Ready for review. See docs/30_operations/ai-development-workflow.md for the canonical checklist and pause/restart procedure. -->
+
+- [ ] Related references, terminology, traceability, and diagrams for this decision are updated together within the Issue scope
+- [ ] Validation results cover the current head; remaining impacts and follow-up decisions are recorded in the closing Issue
+- [ ] A human has checked the complete change and confirmed it is ready for Claude review
+
 ## Reviewer notes
 
 <!-- Point Claude to the highest-risk or highest-judgment parts. -->

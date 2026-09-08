@@ -35,6 +35,8 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 - 親Issueと複数の子Issueを同じチャットで並行実装しない。
 - 同一Issueの修正・レビュー・マージ確認は、コンテキストが過大でない限り同じチャットで継続する。
 - チャット名は「Issue #番号 - 短い目的」とする。
+- 同じ確定判断に伴う参照・用語・追跡表・図の修正はIssue確定時に洗い出し、同じDraft PRへ集約する。無関係な判断や別Issueを無断でまとめない。
+- 新規の自動開発PRはDraftで作成される。人間が関連修正と現在headの検証結果を確認してReady for reviewへ変更する。準備確認と承認後の非Blocking改善の延期条件はai-development-workflow.mdの「関連修正の集約とレビュー準備」に従う。
 
 ### GitHub状態の取得
 
@@ -111,6 +113,8 @@ Project instructionsは会話上の方針であり、GitHubのRuleset、App権�
 5. マージとIssue完了の確認
 
 親Issueを扱うチャットは、子Issueの進捗集計と親Issueの完了判断に使用する。親Issueへ `/codex develop` を投稿して複数の子Issueを一括実装しない。
+
+Issueの範囲は1行・1参照ごとに細分化せず、同じ確定判断に伴う関連修正を最初に洗い出して定める。実装中は同じDraft PRで差分と検証を揃え、人間がReady化する。[関連修正の集約とレビュー準備](ai-development-workflow.md#関連修正の集約とレビュー準備)を正本とし、停止ラベルをDraftで代替したり、未決の子Issueをまとめて実装したりしない。
 
 ### 新しいチャットへ分ける条件
 

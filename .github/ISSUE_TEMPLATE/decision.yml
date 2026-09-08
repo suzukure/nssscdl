@@ -41,13 +41,13 @@ body:
     id: traceability
     attributes:
       label: Related specifications and artifacts
-      description: List POL/BR/REQ/AC/TC IDs, files, and related Issues.
+      description: List POL/BR/REQ/AC/TC/CON/OOS IDs, files, sections, and related Issues. Inventory references, terminology, traceability tables, and diagrams affected by this same decision so their corrections can be reviewed together; do not combine unrelated decisions.
     validations:
       required: true
   - type: textarea
     id: impact
     attributes:
       label: Upstream and downstream impact
-      description: Identify earlier-phase dependencies, blocked work, and downstream items to reassess.
+      description: Identify earlier-phase dependencies, blocked work, downstream items to reassess, and the validation needed before the Draft PR is marked Ready for review. Record scope exclusions and any safe follow-up explicitly.
     validations:
       required: true
