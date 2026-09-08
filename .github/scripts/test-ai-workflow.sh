@@ -352,8 +352,12 @@ assert_classifier_entry_failure missing-execution ''
 mkdir "$test_dir/execution-directory"
 assert_classifier_entry_failure non-regular-execution "$test_dir/execution-directory"
 
-if [ "$(id -u)" -eq 0 ]; then
-  echo 'Skipping unreadable validator and execution fixtures as root; root bypasses chmod 000 read checks.' >&2
+# Git Bash on Windows does not implement the POSIX mode checks used by these
+# fixtures. Keep them enabled on the Linux Actions runner (unless running root).
+posix_permissions=true
+case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
+if [ "$(id -u)" -eq 0 ] || [ "$posix_permissions" = false ]; then
+  echo 'Skipping unreadable validator and execution fixtures: root or Windows cannot enforce chmod 000 read checks.' >&2
 else
   unreadable_execution="$test_dir/unreadable-execution.json"
   cp "$test_dir/valid-execution-with-review.json" "$unreadable_execution"
@@ -411,7 +415,7 @@ mkdir "$unreadable_validator_scripts"
 cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$unreadable_validator_scripts/"
 cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$unreadable_validator_scripts/"
 chmod 000 "$unreadable_validator_scripts/validate-claude-review-output.sh"
-if [ "$(id -u)" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ] && [ "$posix_permissions" = true ]; then
   assert_execution_classification CLASSIFIER_INTERNAL_ERROR unreadable-validator \
     "$test_dir/valid-execution-with-review.json" \
     "$unreadable_validator_scripts/classify-claude-review-execution.sh"
@@ -541,13 +545,15 @@ fi
 extract_workflow_step() {
   local step_name="${1:?step name is required}"
   local output_path="${2:?output path is required}"
+  local workflow_file="${3:-$repo_root/.github/workflows/claude-review.yml}"
 
   awk -v step_name="$step_name" '
     $0 == "      - name: " step_name { step = 1 }
     step && /^        run: \|$/ { run = 1; next }
     run && /^      - name: / { exit }
+    run && /^  [[:alnum:]_-]+:$/ { exit }
     run { line = $0; sub(/^          /, "", line); print line }
-  ' "$repo_root/.github/workflows/claude-review.yml" > "$output_path"
+  ' "$workflow_file" > "$output_path"
   if [ ! -s "$output_path" ]; then
     echo "Could not extract the $step_name step." >&2
     exit 1
@@ -605,7 +611,7 @@ if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
   echo 'Workflow bootstrap used the stale event base SHA.' >&2
   exit 1
 fi
-if [ -x "$workflow_bootstrap_dir/validate-claude-review-output.sh" ]; then
+if [ "$posix_permissions" = true ] && [ -x "$workflow_bootstrap_dir/validate-claude-review-output.sh" ]; then
   echo 'Workflow bootstrap fixture did not reproduce git show file permissions.' >&2
   exit 1
 fi
@@ -1298,5 +1304,97 @@ if bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$tes
   echo 'Expected review-context failure for an oversized diff.' >&2
   exit 1
 fi
+
+# Exercise the actual Issue-entry publish step with all Git/GitHub writes
+# mocked. Creating a PR must preserve Draft until a human requests review;
+# updating an existing PR must not create another PR or change its stage.
+publish_step="$test_dir/publish-issue-pr.sh"
+extract_workflow_step 'Commit, push, and open or update PR' "$publish_step" \
+  "$repo_root/.github/workflows/ai-developer.yml"
+for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure; do
+  (
+    case_dir="$test_dir/publish-$publish_case"
+    mkdir "$case_dir"
+    cd "$case_dir"
+    printf '%s\n' 'Related references and validation checked.' > final.md
+    export PUBLISH_CASE="$publish_case" PUBLISH_LOG="$case_dir/calls.log"
+    export PUBLISH_BODY="$case_dir/body.md"
+    export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
+    export ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
+    git() {
+      printf 'git %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1" in
+        config|add|commit) return 0 ;;
+        diff) [ "$PUBLISH_CASE" = no-diff ] ;;
+        push) [ "$PUBLISH_CASE" != push-failure ] ;;
+        *) echo "Unexpected git call: $*" >&2; return 2 ;;
+      esac
+    }
+    gh() {
+      printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1 $2" in
+        'api /users/dev[bot]') echo 123 ;;
+        'pr list')
+          [ "$PUBLISH_CASE" != list-failure ] || return 1
+          case "$PUBLISH_CASE" in existing-*) echo 37 ;; esac
+          ;;
+        'pr create')
+          local saw_draft=false
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --draft) saw_draft=true ;;
+              --body-file) shift; cp "$1" "$PUBLISH_BODY" ;;
+            esac
+            shift
+          done
+          [ "$saw_draft" = true ] || return 2
+          [ "$PUBLISH_CASE" != create-failure ] || return 1
+          echo 'https://github.com/owner/repo/pull/37'
+          ;;
+        'pr comment'|'issue comment') return 0 ;;
+        *) echo "Unexpected gh call (including automatic stage change): $*" >&2; return 2 ;;
+      esac
+    }
+    export -f git gh
+    outcome=success
+    bash "$publish_step" > stdout 2> stderr || outcome=failure
+    assert_no_publish_call() {
+      if grep -Eq "$1" "$PUBLISH_LOG"; then
+        echo "Unexpected publish side effect in $PUBLISH_CASE: $1" >&2
+        exit 1
+      fi
+    }
+    case "$PUBLISH_CASE" in
+      *-failure) [ "$outcome" = failure ] ;;
+      *) [ "$outcome" = success ] ;;
+    esac
+    case "$PUBLISH_CASE" in
+      new)
+        grep -Fq 'gh pr create ' "$PUBLISH_LOG"
+        grep -Fq -- '--draft' "$PUBLISH_LOG"
+        grep -Fq 'Closes #36' "$PUBLISH_BODY"
+        grep -Fq '## Review readiness' "$PUBLISH_BODY"
+        grep -Fq 'Ready for review' "$PUBLISH_BODY"
+        grep -Fq 'as Draft.' "$PUBLISH_LOG"
+        ;;
+      existing-*)
+        grep -Fq 'git push ' "$PUBLISH_LOG"
+        grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
+        assert_no_publish_call 'gh pr create '
+        ;;
+      no-diff)
+        grep -Fq 'produced no repository changes' "$PUBLISH_LOG"
+        assert_no_publish_call 'git (commit|push)|gh pr create'
+        ;;
+      push-failure|list-failure)
+        assert_no_publish_call 'gh pr create '
+        ;;
+      create-failure)
+        assert_no_publish_call 'Codex opened'
+        ;;
+    esac
+    assert_no_publish_call 'gh pr (ready|edit)'
+  )
+done
 
 echo 'AI workflow fixture tests passed.'

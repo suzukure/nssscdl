@@ -38,6 +38,10 @@ If the repository and Issue appear to contradict each other and the Issue does n
 8. Run the most relevant available validation.
 9. Report what changed, what was validated, and any unresolved dependency.
 
+Treat one confirmed decision and its directly related corrections as one coherent change, not one PR per reference or line. Before finishing, check related references, terminology, traceability tables, and diagrams within the authorized Issue scope, and report validation for the complete change. Do not combine unrelated decisions or expand the Issue scope without a recorded human decision.
+
+New Issue-entry PRs are created as Draft by GitHub Actions. A human checks the complete change and marks it Ready for review; do not request or perform automatic promotion. Additional work on the same Issue reuses its existing PR. For non-blocking findings after approval, report whether deferral is safe; a human records any follow-up decision under the scope-out contract below. Do not silently defer correctness or requirements defects to reduce review cost.
+
 Do not create convenience documents such as `handoff.md`, `latest_discussion.md`, ad-hoc supplements, or parallel specifications merely to avoid updating the authoritative documents.
 
 Follow the repository's existing directory structure, file split, identifier scheme, terminology, naming conventions, and level of detail.
