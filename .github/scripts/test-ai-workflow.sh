@@ -1014,6 +1014,55 @@ fi
 
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 
+marker_response="$test_dir/marker-response.md"
+printf '%s\n' '[REQUIREMENTS_CHANGE_REQUIRED]' > "$marker_response"
+bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"
+
+printf '%s\r\n' '[REQUIREMENTS_CHANGE_REQUIRED]' > "$marker_response"
+bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"
+
+assert_marker_is_not_detected() {
+  local fixture_name="${1:?fixture name is required}"
+  local response="${2:?response is required}"
+
+  printf '%s\n' "$response" > "$marker_response"
+  if bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"; then
+    echo "Expected $fixture_name not to trigger a requirements-change pause." >&2
+    exit 1
+  fi
+}
+
+assert_marker_is_not_detected backtick '`[REQUIREMENTS_CHANGE_REQUIRED]`'
+assert_marker_is_not_detected indented '  [REQUIREMENTS_CHANGE_REQUIRED]'
+assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIRED]'
+assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
+assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
+
+# The follow-up notification runs after the PR checkout, so it must use the
+# trusted-base helper copied during context bootstrap rather than PR-head code.
+followup_workflow="$test_dir/respond-to-claude.yml"
+sed -n '/^  respond-to-claude:/,$p' "$repo_root/.github/workflows/ai-developer.yml" > "$followup_workflow"
+bootstrap_notify_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | cut -d: -f1)"
+notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
+if [ -z "$bootstrap_notify_line" ] || [ -z "$notify_step_line" ] || [ "$bootstrap_notify_line" -ge "$notify_step_line" ]; then
+  echo 'Follow-up requirement escalation notification is not bootstrapped from the trusted base.' >&2
+  exit 1
+fi
+grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
+if [ "$(grep -Fc 'marker_status=$?' "$repo_root/.github/workflows/ai-developer.yml")" -ne 2 ]; then
+  echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
+  exit 1
+fi
+if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$repo_root/.github/workflows/ai-developer.yml")" -ne 2 ]; then
+  echo 'Both Codex requirement-change gates must fail closed when the final response is missing or empty.' >&2
+  exit 1
+fi
+grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$repo_root/.github/workflows/ai-developer.yml"
+
 MOCK_CASE=valid
 export MOCK_CASE
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
