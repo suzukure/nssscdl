@@ -25,6 +25,7 @@ if [ -n "$pr_number" ]; then
     echo "Could not fetch PR #${pr_number}; refusing partial pause synchronization." >&2
     exit 1
   fi
+  issue_numbers+=("$pr_number")
   closing_issue_numbers="$(
     jq -r --arg prefix "$issue_prefix" \
       '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' \
