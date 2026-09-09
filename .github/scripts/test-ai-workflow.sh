@@ -991,6 +991,30 @@ grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
+# Issue-origin AI development must remain limited to an open Issue whose
+# comment body is the standalone command expression. Validate the entry job
+# itself so unrelated text elsewhere cannot satisfy these assertions.
+issue_entry_job="$test_dir/gate-issue-entry.yml"
+awk '
+  $0 == "  gate-issue-entry:" { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  gate-issue-entry:" { exit }
+  in_job { print }
+' "$repo_root/.github/workflows/ai-developer.yml" > "$issue_entry_job"
+if [ ! -s "$issue_entry_job" ]; then
+  echo 'Could not extract the gate-issue-entry job.' >&2
+  exit 1
+fi
+grep -Fqx "      github.event.issue.state == 'open' &&" "$issue_entry_job"
+grep -Fqx "      github.event.comment.body == '/codex develop'" "$issue_entry_job"
+if grep -Eq '^[[:space:]]*!\(?github\.event\.issue\.state|^[[:space:]]*!\(?github\.event\.comment\.body' "$issue_entry_job"; then
+  echo 'AI Developer Issue entry conditions must not be negated.' >&2
+  exit 1
+fi
+if grep -Eq '(contains|startsWith|endsWith)\([[:space:]]*github\.event\.comment\.body' "$issue_entry_job"; then
+  echo 'AI Developer Issue entry must not use partial or prefix/suffix matching for the command body.' >&2
+  exit 1
+fi
+
 # Both Codex invocations must remain reproducible and bounded. A timeout is
 # fatal by default, so the later requirement gate and publish step cannot run
 # after it expires.
