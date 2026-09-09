@@ -1043,6 +1043,14 @@ if [ "$(grep -Fc 'marker_status=$?' "$repo_root/.github/workflows/ai-developer.y
   echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
   exit 1
 fi
+if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$repo_root/.github/workflows/ai-developer.yml")" -ne 2 ]; then
+  echo 'Both Codex requirement-change gates must fail closed when the final response is missing or empty.' >&2
+  exit 1
+fi
+grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$repo_root/.github/workflows/ai-developer.yml"
+grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$repo_root/.github/workflows/ai-developer.yml"
 
 MOCK_CASE=valid
 export MOCK_CASE
