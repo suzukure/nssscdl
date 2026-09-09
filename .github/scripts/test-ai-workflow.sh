@@ -133,7 +133,8 @@ gh() {
     else
       printf '%s\n' 'diff --git a/x b/x'
     fi
-  elif [ "$1 $2" = 'label create' ] || [ "$1 $2" = 'issue edit' ]; then
+  elif [ "$1 $2" = 'label create' ] || [ "$1 $2" = 'issue edit' ] \
+      || [ "$1 $2" = 'pr comment' ]; then
     printf '%s\n' "$*" >> "${MOCK_GH_LOG:-/dev/null}"
   elif [ "$1 $2" = 'issue view' ]; then
     if [ "${MOCK_ENTRY_FETCH_FAIL:-false}" = 'true' ]; then
@@ -1046,6 +1047,59 @@ bootstrap_notify_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/notif
 notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
 if [ -z "$bootstrap_notify_line" ] || [ -z "$notify_step_line" ] || [ "$bootstrap_notify_line" -ge "$notify_step_line" ]; then
   echo 'Follow-up requirement escalation notification is not bootstrapped from the trusted base.' >&2
+  exit 1
+fi
+
+# Both successful follow-up paths must pause the PR and its closing Issue and
+# record the gate reason once before a Codex follow-up can start. The gate runs
+# from the trusted base checkout, so it delegates closing-Issue resolution to
+# the trusted pause helper instead of deriving an Issue number from the branch.
+followup_gate_script="$test_dir/gate-automated-follow-up.sh"
+awk '
+  /^      - name: Gate automated follow-up$/ { in_gate = 1; next }
+  in_gate && /^      - name: / { exit }
+  in_gate && /^        run: \|$/ { in_run = 1; next }
+  in_run { sub(/^          /, ""); print }
+' "$repo_root/.github/workflows/ai-developer.yml" > "$followup_gate_script"
+if [ ! -s "$followup_gate_script" ]; then
+  echo 'Could not extract the automated follow-up gate fixture.' >&2
+  exit 1
+fi
+if grep -Fq 'HEAD_REF' "$followup_gate_script"; then
+  echo 'Automated follow-up gate must not derive an Issue from the PR branch.' >&2
+  exit 1
+fi
+
+assert_followup_gate_pause() {
+  local fixture_name="${1:?fixture name is required}"
+  local mock_case="${2:?mock case is required}"
+  local expected_continue="${3:?expected continue value is required}"
+  local output_path="$test_dir/$fixture_name.output"
+  local log_path="$test_dir/$fixture_name.log"
+
+  : > "$output_path"
+  : > "$log_path"
+  MOCK_CASE="$mock_case" MOCK_GH_LOG="$log_path" \
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
+    bash "$followup_gate_script"
+  grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$log_path"
+  grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$log_path"
+  if [ "$(grep -Fc 'pr comment 37 --repo owner/repo --body ' "$log_path")" -ne 1 ]; then
+    echo "Expected $fixture_name to record one pause reason on the PR." >&2
+    exit 1
+  fi
+  grep -Fxq "continue=$expected_continue" "$output_path"
+}
+
+assert_followup_gate_pause followup-continue valid true
+assert_followup_gate_pause followup-escalate three-reviews false
+
+: > "$test_dir/followup-pause-failure.output"
+if MOCK_CASE=valid MOCK_PR_VIEW_FAIL=true GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 \
+    REVIEWER_APP_SLUG=review DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
+    GITHUB_OUTPUT="$test_dir/followup-pause-failure.output" bash "$followup_gate_script"; then
+  echo 'Expected automated follow-up to fail closed when closing Issue lookup fails.' >&2
   exit 1
 fi
 grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"

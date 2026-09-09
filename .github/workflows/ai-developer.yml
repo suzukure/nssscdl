@@ -289,7 +289,6 @@ jobs:
           REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
           DEVELOPER_APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           REVIEW_BODY: ${{ github.event.review.body }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -300,24 +299,10 @@ jobs:
           notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
 
-          if [ "$escalate" = 'true' ]; then
-            if [[ "${HEAD_REF}" =~ ^ai/issue-([0-9]+)$ ]]; then
-              issue_number="${BASH_REMATCH[1]}"
-            else
-              issue_number='-'
-            fi
+          if [ "$escalate" = 'true' ] || [ "$continue" = 'true' ]; then
+            # The pause helper resolves and labels the PR's closing Issues.
             bash .github/scripts/apply-human-pause.sh \
-              "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "$reason"
-          elif [ "$continue" = 'true' ]; then
-            if [[ "${HEAD_REF}" =~ ^ai/issue-([0-9]+)$ ]]; then
-              issue_number="${BASH_REMATCH[1]}"
-            else
-              issue_number='-'
-            fi
-            bash .github/scripts/apply-human-pause.sh \
-              "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
+              "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --body "$reason"
           fi
