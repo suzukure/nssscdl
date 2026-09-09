@@ -991,9 +991,9 @@ grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
-# Both Codex invocations must remain reproducible and bounded. A timeout is
-# fatal by default, so the later requirement gate and publish step cannot run
-# after it expires.
+# Both Codex invocations must remain reproducible and have a normal
+# runner-process timeout. A timeout is fatal by default, so the later
+# requirement gate and publish step cannot run after it expires.
 for codex_step_name in 'Run Codex developer' 'Run Codex follow-up'; do
   codex_step="$test_dir/${codex_step_name// /-}.yml"
   awk -v step_name="$codex_step_name" '

@@ -188,6 +188,16 @@ Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で�
 
 `pull_request` workflowはdefault branchにworkflowファイルが存在してから通常運用を開始する。初回導入PRは管理者が内容を確認し、reviewer Appによる一時レビューまたは手動レビューを経てマージする。通常の自動マージは `ai/issue-*` だけに限定されるため、bootstrap用ブランチは自動マージ対象外である。
 
+### Codex developer の timeout と再開
+
+`Run Codex developer` と `Run Codex follow-up` の `timeout-minutes: 30` は、runner workerが生存してCancellationを処理できる通常の実行で、30分を超えたprocessを終了させる防御層である。timeoutはfail-closedであり、この通常経路でtimeoutまたは失敗した場合、後続のrequirement gate、commit、pushは実行しない。
+
+ただし、この設定は30分のwall-clock上限を保証しない。GitHub-hosted runnerまたはrunner workerの通信喪失・非正常終了では、timeoutを執行する主体が失われ得る。Run #311では、jobが約64分後にfailureとなる一方でCodex stepが`in_progress`のまま完了metadataを残さず、job logも取得できなかった。このため直接原因は断定しないが、通常のCodex action hangよりrunner/worker喪失または同等の異常終了を最有力カテゴリとして扱う。
+
+`codex-version: 0.153.4` はworkflow定義で固定されている。しかしRun #311はlogとartifactを欠くため、このrunでそのversionが実際に使用され、warningがなかったという確認には使えない。最初のmain上の正常なAI Developer実行でversion/no-warningを確認するという未達の確認事項は維持する。
+
+#147、#148、#134の`/codex develop`は、runner喪失時にも有効なrunner外watchdogまたはserver-side停止手段を別Issueで比較・決定するまで再開しない。job-level timeoutもrunner外で上限を保証できることを確認できるまで、その候補を追加安全策として扱わない。同じrunner内のshell `timeout` はこの異常経路の対策にならない。再開時は人間が、採用した停止手段の有効性、対象runの開始・完了状態、そしてversion/no-warningの観測可能な証跡を確認する。これらを満たせない実行は、30分時点を越えて待機を継続せず、人間が停止して調査する。
+
 Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデルpreflightまたはモデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値とRepository variable値はログへ出さない。モデルIDについては前述のとおりIssue/PRの変更履歴・検証証跡へ記録してよいが、ログへは出さない。
 
 `.github/scripts/**` を変更した場合、または認可・信頼境界・closing Issue・merge gateのロジックを変更した場合は次を実行し、fixtureを確認する。
