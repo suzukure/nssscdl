@@ -91,7 +91,7 @@ jobs:
             echo '# Development request'
             echo
             gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --comments --json number,title,body,url,labels,comments \
+              --json number,title,body,url,labels,comments \
               --jq '
                 def data_lines:
                   split("\n") | map("DATA| " + .) | join("\n");
