@@ -118,9 +118,11 @@ jobs:
 
       - name: Run Codex developer
         id: codex
+        timeout-minutes: 30
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: 0.153.4
           permission-profile: :workspace
           model: ${{ vars.CODEX_MODEL }}
           effort: medium
@@ -360,9 +362,11 @@ jobs:
       - name: Run Codex follow-up
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         id: codex
+        timeout-minutes: 30
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: 0.153.4
           permission-profile: :workspace
           model: ${{ vars.CODEX_MODEL }}
           effort: medium
