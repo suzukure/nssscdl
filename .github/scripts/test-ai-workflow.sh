@@ -991,25 +991,27 @@ grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
-# The Issue-entry Codex invocation must remain reproducible and bounded. A
-# timeout is fatal by default, so the later requirement gate and publish step
-# cannot run after it expires.
-developer_codex_step="$test_dir/run-codex-developer.yml"
-awk '
-  /^      - name: Run Codex developer$/ { in_step = 1 }
-  in_step && /^      - name: / && $0 != "      - name: Run Codex developer" { exit }
-  in_step { print }
-' "$repo_root/.github/workflows/ai-developer.yml" > "$developer_codex_step"
-if [ ! -s "$developer_codex_step" ]; then
-  echo 'Could not extract the Run Codex developer step.' >&2
-  exit 1
-fi
-grep -Fqx '        timeout-minutes: 30' "$developer_codex_step"
-grep -Fqx '          codex-version: 0.153.4' "$developer_codex_step"
-if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$developer_codex_step"; then
-  echo 'Run Codex developer must fail closed when it times out or fails.' >&2
-  exit 1
-fi
+# Both Codex invocations must remain reproducible and bounded. A timeout is
+# fatal by default, so the later requirement gate and publish step cannot run
+# after it expires.
+for codex_step_name in 'Run Codex developer' 'Run Codex follow-up'; do
+  codex_step="$test_dir/${codex_step_name// /-}.yml"
+  awk -v step_name="$codex_step_name" '
+    $0 == "      - name: " step_name { in_step = 1 }
+    in_step && /^      - name: / && $0 != "      - name: " step_name { exit }
+    in_step { print }
+  ' "$repo_root/.github/workflows/ai-developer.yml" > "$codex_step"
+  if [ ! -s "$codex_step" ]; then
+    echo "Could not extract the $codex_step_name step." >&2
+    exit 1
+  fi
+  grep -Fqx '        timeout-minutes: 30' "$codex_step"
+  grep -Fqx '          codex-version: 0.153.4' "$codex_step"
+  if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_step"; then
+    echo "$codex_step_name must fail closed when it times out or fails." >&2
+    exit 1
+  fi
+done
 grep -Fq -- '--body "$reason"' "$repo_root/.github/workflows/ai-developer.yml"
 if grep -Fq 'Automatic Claude re-review is paused.' "$repo_root/.github/workflows/ai-developer.yml"; then
   echo 'Expected follow-up re-review guidance to come from the follow-up gate.' >&2
