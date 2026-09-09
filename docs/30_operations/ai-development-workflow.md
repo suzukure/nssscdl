@@ -161,7 +161,8 @@ default branchに次を適用する。
 
 次のいずれかで `human-review-required` を付け、自動修正と自動マージを停止する。
 
-- CodexまたはClaudeが `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。
+- Codexが、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。backtick・code block・字下げ・前後空白は付けず、CRLFは通常のplain-text行末として扱う。説明文中の言及は停止シグナルにしない。Codex最終応答が欠落または空の場合、または検出helperかtrusted bootstrapが失敗した場合も「マーカーなし」と扱わず、Issue起点とClaude review follow-upの両方で安全側に停止する。Claudeのマーカーはstructured review summaryからreviewer側が解釈するため、Codex最終応答の検出規則と意図的に異なる。
+- Claudeが `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。
 - Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
 - Claudeのchange requestが3回に到達した。
 
