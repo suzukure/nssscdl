@@ -38,6 +38,10 @@ gh() {
     if [ "${MOCK_PR_VIEW_FAIL:-false}" = 'true' ]; then
       return 1
     fi
+    if [ "${MOCK_PR_CLOSING_FETCH_FAIL:-false}" = 'true' ] \
+        && [[ "$*" == *'--json closingIssuesReferences'* ]]; then
+      return 1
+    fi
     case "${MOCK_CASE:-valid}" in
       no-links)
         printf '%s\n' '{"number":37,"title":"Test","body":"No link","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[],"commits":[],"closingIssuesReferences":[],"comments":[],"reviews":[],"labels":[]}'
@@ -1096,10 +1100,17 @@ assert_followup_gate_pause followup-continue valid true
 assert_followup_gate_pause followup-escalate three-reviews false
 
 : > "$test_dir/followup-pause-failure.output"
-if MOCK_CASE=valid MOCK_PR_VIEW_FAIL=true GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 \
+: > "$test_dir/followup-pause-failure.log"
+if MOCK_CASE=valid MOCK_PR_CLOSING_FETCH_FAIL=true \
+    MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 \
     REVIEWER_APP_SLUG=review DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
     GITHUB_OUTPUT="$test_dir/followup-pause-failure.output" bash "$followup_gate_script"; then
   echo 'Expected automated follow-up to fail closed when closing Issue lookup fails.' >&2
+  exit 1
+fi
+if grep -Eq '^(issue edit|pr comment) ' "$test_dir/followup-pause-failure.log"; then
+  echo 'Closing Issue lookup failure must not partially pause or comment on the PR.' >&2
   exit 1
 fi
 grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$repo_root/.github/workflows/ai-developer.yml"
