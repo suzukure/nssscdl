@@ -148,7 +148,7 @@ GitHub内部のmetadataまたは判定実装を原因として断定しない。
 4. repository workflowによる明示的dismissや、実際のheadまたはbase branchの更新などの別原因が確認されない。
 5. 同一base再設定の前後でhead SHA、実merge-base、実差分が変化していない。
 
-refresh後も同一head・同一実差分である場合だけ、同一headで得たBlockingなしClaude reviewを証跡として再利用できる。いずれかを満たさない場合、またはhead、実merge-base、実差分が変化した場合は古いreviewを再利用せず、通常の再review条件に従う。この手順は人間による例外的manual recoveryであり、workflowからPR baseを自動更新せず、調査目的だけでClaude reviewを繰り返さない。`Dismiss stale approvals`、最新pushへの承認必須、Code Owner保護その他の安全側rulesetは弱めない。protected path PRは従来どおり人間Code Ownerが最終reviewし、手動mergeする。
+refresh後も同一head・同一実差分である場合だけ、同一headで得たBlockingなしClaude reviewの**内容**を人間最終reviewの証跡として再利用できる。これはdismissされたGitHub reviewを`APPROVED`へ戻すものでも、Rulesetの承認要件を代替するものでもない。merge前に人間はPR画面で、承認1件以上と最新pushへの承認必須を含むRulesetの必須checkが充足していることを確認する。dismiss後もこの承認要件が充足していない場合は、現行headを人間が独立に最終reviewした後、GitHub上で新しい`APPROVE` reviewを投稿する。protected path PRではこのreviewと投稿を人間Code Ownerが行い、その後に手動mergeする。いずれかを満たさない場合、またはhead、実merge-base、実差分が変化した場合は古いreviewを再利用せず、通常の再review条件に従う。この手順は人間による例外的manual recoveryであり、workflowからPR baseを自動更新せず、調査目的だけでClaude reviewを繰り返さない。`Dismiss stale approvals`、最新pushへの承認必須、Code Owner保護その他の安全側rulesetは弱めない。
 
 ## Ruleset
 
