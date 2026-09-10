@@ -86,6 +86,7 @@ jobs:
           git show "${base_sha}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
+          git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
 
           mkdir -p .ai-context
           git show "${base_sha}:AGENTS.md" > .ai-context/AGENTS.base.md
@@ -131,6 +132,7 @@ jobs:
           prompt: |
             Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
             Implement the Issue in this working tree.
+            Keep the proposed repository change within 25 changed files, 2,000 total changed lines, and 10 new files. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
             Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
@@ -176,6 +178,102 @@ jobs:
           bash "$RUNNER_TEMP/notify-human.sh"
           "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}"
 
+      - name: Evaluate trusted diff guard
+        if: steps.development-gate.outputs.continue == 'true'
+        id: diff-guard
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .ai-context/request.md
+          rmdir .ai-context 2>/dev/null || true
+          git add -A
+
+          result_json=''
+          helper_status=0
+          set +e
+          result_json="$(bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")"
+          helper_status=$?
+          set -e
+
+          parsed=false
+          result=''
+          if [ -n "$result_json" ] && jq -e 'type == "object" and (.result | type == "string")' <<< "$result_json" > /dev/null 2>&1; then
+            parsed=true
+            result="$(jq -r .result <<< "$result_json")"
+          fi
+
+          if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]; then
+            echo 'continue=true' >> "$GITHUB_OUTPUT"
+            {
+              echo '### AI Developer diff guard'
+              echo
+              echo '- Result: pass'
+              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / 25"
+              echo "- Additions: $(jq -r .additions <<< "$result_json")"
+              echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
+              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / 2000"
+              echo "- New files: $(jq -r .new_files <<< "$result_json") / 10"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          reason='Trusted diff guard failed closed before repository write.'
+          if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]; then
+            reason='Trusted diff guard stopped an oversized repository change before commit/push/PR write.'
+          elif [ "$helper_status" -ne 0 ] && [ "$parsed" = true ] && [ "$result" = error ]; then
+            reason='Trusted diff guard could not safely measure the staged change; automated development is paused.'
+          elif [ "$parsed" = true ]; then
+            reason="Trusted diff guard returned unexpected result '${result}'; automated development is paused."
+          elif [ "$helper_status" -ne 0 ]; then
+            reason='Trusted diff guard helper failed without a valid machine-readable result; automated development is paused.'
+          else
+            reason='Trusted diff guard output could not be parsed; automated development is paused.'
+          fi
+
+          pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
+            --state open --json number --jq '.[0].number // empty')"
+          bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
+
+          diagnostics="$reason"
+          if [ "$parsed" = true ]; then
+            diagnostics+=$'\n\n'"Result: ${result}."
+            for field in changed_files additions deletions total_changed_lines new_files error; do
+              value="$(jq -r --arg field "$field" 'if has($field) then .[$field] else empty end' <<< "$result_json")"
+              if [ -n "$value" ]; then
+                diagnostics+=$'\n'"${field}: ${value}"
+              fi
+            done
+          fi
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$diagnostics"
+
+          {
+            echo '### AI Developer diff guard'
+            echo
+            echo "- Result: ${result:-unavailable}"
+            echo '- Thresholds: 25 changed files / 2,000 total changed lines / 10 new files'
+            if [ "$parsed" = true ]; then
+              for field in changed_files additions deletions total_changed_lines new_files error; do
+                value="$(jq -r --arg field "$field" 'if has($field) then .[$field] else empty end' <<< "$result_json")"
+                if [ -n "$value" ]; then
+                  echo "- ${field}: ${value}"
+                fi
+              done
+            fi
+            echo '- Decision: repository write blocked'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'continue=false' >> "$GITHUB_OUTPUT"
+
+      - name: Notify human of diff guard stop
+        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue != 'true'
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+        run: >-
+          bash "$RUNNER_TEMP/notify-human.sh"
+          "AI Developer diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}"
+
       - name: Commit, push, and open or update PR
         if: steps.development-gate.outputs.continue == 'true'
         env:
@@ -187,6 +285,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${{ steps.diff-guard.outputs.continue }}" != true ]; then
+            echo 'Trusted diff guard did not pass; refusing repository write.' >&2
+            exit 1
+          fi
           rm -f .ai-context/request.md
           rmdir .ai-context 2>/dev/null || true
 
