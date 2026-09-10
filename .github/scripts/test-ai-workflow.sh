@@ -635,6 +635,52 @@ fi
 grep -Fq 'Could not resolve the current base branch tip' "$test_dir/build-context-invalid.err"
 unset -f git
 
+# Native generation constraints come from current base, never the checkout.
+schema_step_script="$test_dir/prepare-native-schema.sh"
+extract_workflow_step 'Prepare native review schema' "$schema_step_script"
+untrusted_checkout="$test_dir/untrusted-checkout"
+mkdir -p "$untrusted_checkout/.github/workflows" "$untrusted_checkout/.github/scripts"
+printf '%s\n' '# review-json-schema: {"type":"object"}' > "$untrusted_checkout/.github/workflows/claude-review.yml"
+native_schema="$(sed -n 's/^# review-json-schema: //p' "$repo_root/.github/workflows/claude-review.yml")"
+jq -e '
+  .type == "object" and .additionalProperties == false and
+  (.required | sort) == (.properties | keys | sort) and
+  (.required | sort) == ["blocking_findings","linked_issues_checked","non_blocking_findings","summary","verdict"] and
+  .properties.verdict == {"type":"string","enum":["approve","request_changes"]} and
+  .properties.summary == {"type":"string"} and
+  all(.properties | to_entries[] | select(.key | endswith("findings") or . == "linked_issues_checked");
+    .value == {"type":"array","items":{"type":"string"}})
+' <<< "$native_schema" > /dev/null
+git() {
+  [ "$1" = show ] && [ "$2" = "$BASE_SHA:.github/workflows/claude-review.yml" ] || return 2
+  case "$MOCK_SCHEMA" in
+    current) command cat "$repo_root/.github/workflows/claude-review.yml" ;;
+    missing) echo 'name: Old workflow' ;;
+    invalid) echo '# review-json-schema: {' ;;
+    duplicate) command cat "$repo_root/.github/workflows/claude-review.yml"; echo '# review-json-schema: {}' ;;
+    *) return 1 ;;
+  esac
+}
+export -f git
+for mode in current bootstrap missing invalid duplicate unreadable; do
+  schema_base="$current_base_tip_sha"
+  mock_schema="$mode"
+  if [ "$mode" = bootstrap ]; then
+    schema_base=9bf6ffcf5caa1dc8f98629851f0557653de542f7
+    mock_schema=missing
+  fi
+  if (cd "$untrusted_checkout"; BASE_SHA="$schema_base" MOCK_SCHEMA="$mock_schema" \
+    GITHUB_OUTPUT="$test_dir/schema-$mode.outputs" \
+    bash "$schema_step_script") > /dev/null 2> "$test_dir/schema-$mode.err"; then
+    [[ "$mode" = current || "$mode" = bootstrap ]]
+    [ "$(cat "$test_dir/schema-$mode.outputs")" = "schema=$native_schema" ]
+  else
+    [[ "$mode" != current && "$mode" != bootstrap ]]
+    [ ! -s "$test_dir/schema-$mode.outputs" ]
+  fi
+done
+unset -f git
+
 # Exercise the workflow hand-off itself, not only the classifier. The action
 # execution file is untrusted; only the fixed classifier reason reaches its
 # outputs, Job Summary, and fail-closed save step.
@@ -654,6 +700,8 @@ GITHUB_OUTPUT="$test_dir/validate-valid.outputs" \
 GITHUB_STEP_SUMMARY="$test_dir/validate-valid.summary" \
 RUNNER_TEMP="$workflow_runner_temp" \
 EXECUTION_FILE="$test_dir/valid-execution-with-review.json" \
+ACTION_OUTCOME=success \
+STRUCTURED_OUTPUT="$valid_structured_review" \
 bash "$validate_step_script"
 grep -Fqx 'reason=REVIEW_VALID' "$test_dir/validate-valid.outputs"
 grep -Fqx 'valid=true' "$test_dir/validate-valid.outputs"
@@ -693,12 +741,15 @@ assert_workflow_failure_classification() {
   local output_path="$test_dir/workflow-$fixture_name.outputs"
   local summary_path="$test_dir/workflow-$fixture_name.summary"
   local stderr_path="$test_dir/workflow-$fixture_name.stderr"
+  local native_output=''
+  if [ "$#" -ge 5 ]; then native_output="$5"; fi
 
   GITHUB_OUTPUT="$output_path" \
   GITHUB_STEP_SUMMARY="$summary_path" \
   RUNNER_TEMP="$workflow_runner_temp" \
   EXECUTION_FILE="$execution_file" \
   ACTION_OUTCOME="$action_outcome" \
+  STRUCTURED_OUTPUT="$native_output" \
   bash "$validate_step_script"
   grep -Fqx "reason=$expected_reason" "$output_path"
   grep -Fqx 'valid=false' "$output_path"
@@ -721,17 +772,93 @@ assert_workflow_failure_classification TRANSIENT_RATE_LIMIT rate-limit \
   "$test_dir/rate-limited-execution.json"
 assert_workflow_failure_classification REVIEW_RESULT_MISSING missing-result \
   "$test_dir/no-success-execution.json"
-assert_workflow_failure_classification REVIEW_RESULT_AMBIGUOUS ambiguous-result \
+assert_workflow_failure_classification REVIEW_RESULT_MISSING ambiguous-free-text-without-native \
   "$test_dir/multiple-success-execution.json"
+# Without terminal success, legacy ambiguity remains fail-closed even when
+# native content is valid. Action failure still takes precedence.
+jq -cn --arg review "$valid_structured_review" '[
+  {type:"result",subtype:"success",is_error:false,result:$review},
+  {type:"result",subtype:"success",is_error:false,result:$review},
+  {type:"result",subtype:"unexpected_terminal",is_error:false}
+]' > "$test_dir/ambiguous-terminal-execution.json"
+assert_workflow_failure_classification REVIEW_RESULT_AMBIGUOUS ambiguous-without-terminal-success \
+  "$test_dir/ambiguous-terminal-execution.json" success "$valid_structured_review"
+assert_workflow_failure_classification CLAUDE_EXECUTION_FAILED ambiguous-action-failure \
+  "$test_dir/ambiguous-terminal-execution.json" failure "$valid_structured_review"
 assert_workflow_failure_classification REVIEW_JSON_INVALID invalid-json \
-  "$test_dir/invalid-review-execution.json"
+  "$test_dir/invalid-review-execution.json" success '{"sensitive-raw-claude-output":'
 assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH schema-mismatch \
-  "$test_dir/schema-mismatch-execution.json"
+  "$test_dir/schema-mismatch-execution.json" success '{"verdict":"approve"}'
 # A missing execution file after the Action itself failed is an execution
 # failure. The classifier's direct missing-input fixture above remains an
 # internal classifier-entry fault, so this workflow boundary stays explicit.
 assert_workflow_failure_classification CLAUDE_EXECUTION_FAILED action-failed-without-execution-file \
   '' failure
+
+# Even a well-formed native review cannot turn execution failures into verdicts.
+assert_workflow_failure_classification CLAUDE_EXECUTION_FAILED action-failed-with-native \
+  "$test_dir/valid-execution-with-review.json" failure "$valid_structured_review"
+assert_workflow_failure_classification RUN_BUDGET_LIMIT_REACHED budget-with-native \
+  "$test_dir/budget-limited-execution.json" failure "$valid_structured_review"
+assert_workflow_failure_classification ACCOUNT_SPEND_LIMIT_REACHED spend-with-native \
+  "$test_dir/spend-limited-execution.json" failure "$valid_structured_review"
+assert_workflow_failure_classification TRANSIENT_RATE_LIMIT rate-with-native \
+  "$test_dir/rate-limited-execution.json" failure "$valid_structured_review"
+assert_workflow_failure_classification REVIEW_RESULT_MISSING native-missing \
+  "$test_dir/valid-execution-with-review.json" success ''
+assert_workflow_failure_classification REVIEW_JSON_INVALID native-multiple-json \
+  "$test_dir/valid-execution-with-review.json" success '{} {}'
+mutation_number=0
+for mutation in \
+  '.extra = true' '.verdict = "unknown"' '.summary = 1' \
+  '.blocking_findings = [1]' '.non_blocking_findings = {}' \
+  '.linked_issues_checked = [false]' 'del(.summary)'; do
+  mutation_number=$((mutation_number + 1))
+  malformed_native="$(jq -c "$mutation" <<< "$valid_structured_review")"
+  assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH "native-schema-$mutation_number" \
+    "$test_dir/valid-execution-with-review.json" success "$malformed_native"
+done
+
+# No second Claude call: bad free-text is irrelevant when native content is valid.
+# Include recovered metadata errors and an untrusted checkout validator.
+printf '%s\n' 'exit 99' > "$untrusted_checkout/.github/scripts/validate-claude-review-output.sh"
+for execution in invalid-review schema-mismatch multiple-success rate-limit-then-success; do
+  (
+    cd "$untrusted_checkout"
+    ACTION_OUTCOME=success STRUCTURED_OUTPUT="$valid_structured_review" \
+      EXECUTION_FILE="$test_dir/$execution-execution.json" RUNNER_TEMP="$workflow_bootstrap_dir" \
+      GITHUB_OUTPUT="$test_dir/native-$execution.outputs" GITHUB_STEP_SUMMARY="$test_dir/native-$execution.summary" \
+      bash "$validate_step_script"
+    CLASSIFICATION_REASON=REVIEW_VALID RUNNER_TEMP="$workflow_bootstrap_dir" \
+      GITHUB_OUTPUT="$test_dir/native-$execution-save.outputs" bash "$save_step_script"
+  )
+  grep -Fqx 'reason=REVIEW_VALID' "$test_dir/native-$execution.outputs"
+  [ "$(cat "$workflow_bootstrap_dir/claude-review.json")" = "$valid_structured_review" ]
+done
+# A permissive head validator cannot admit native output rejected by base.
+printf '%s\n' 'echo "{}"' > "$untrusted_checkout/.github/scripts/validate-claude-review-output.sh"
+(
+  cd "$untrusted_checkout"
+  assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH untrusted-head-validator \
+    "$test_dir/valid-execution-with-review.json" success '{"verdict":"approve"}'
+)
+# The env hand-off is masked first using the pinned Action's serialization.
+mask_step_script="$test_dir/mask-native.sh"
+extract_workflow_step 'Mask native review output' "$mask_step_script"
+jq -cn --argjson review "$valid_structured_review" \
+  '[{type:"result",subtype:"success",is_error:false,structured_output:$review}]' > "$test_dir/native-mask.json"
+EXECUTION_FILE="$test_dir/native-mask.json" GITHUB_OUTPUT="$test_dir/native-mask.outputs" bash "$mask_step_script" > "$test_dir/native-mask.out"
+grep -Fqx "::add-mask::$valid_structured_review" "$test_dir/native-mask.out"
+grep -Fqx 'ready=true' "$test_dir/native-mask.outputs"
+EXECUTION_FILE="$test_dir/malformed-execution.json" GITHUB_OUTPUT="$test_dir/native-mask-invalid.outputs" bash "$mask_step_script"
+[ ! -s "$test_dir/native-mask-invalid.outputs" ]
+# Existing submission remains gated on REVIEW_VALID and successful save.
+grep -Fq "if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" \
+  "$repo_root/.github/workflows/claude-review.yml"
+if grep -Fq 'sensitive-raw-claude-output' "$test_dir"/workflow-*.outputs "$test_dir"/workflow-*.summary; then
+  echo 'Native validation leaked raw review content.' >&2
+  exit 1
+fi
 # If validation itself cannot publish a classification, Save structured review
 # receives the empty Actions output and must name that trusted-path fault
 # without recasting it as invalid review JSON.
@@ -1074,10 +1201,8 @@ fi
 grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict.' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'Verify the trusted classifier and validator bootstrap' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq "steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$repo_root/.github/workflows/claude-review.yml"
-if grep -Fq -- '--json-schema' "$repo_root/.github/workflows/claude-review.yml"; then
-  echo 'Expected execution_file validation instead of unsupported --json-schema forwarding.' >&2
-  exit 1
-fi
+grep -Fq -- "--json-schema '\${{ steps.review-schema.outputs.schema }}'" "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq "STRUCTURED_OUTPUT: \${{ steps.mask-native.outputs.ready == 'true' && steps.claude-attempt-1.outputs.structured_output || '' }}" "$repo_root/.github/workflows/claude-review.yml"
 if grep -Eq 'attempt (2|3) of 3' "$repo_root/.github/workflows/claude-review.yml"; then
   echo 'Expected duplicate full-review retries to be removed.' >&2
   exit 1
