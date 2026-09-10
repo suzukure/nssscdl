@@ -190,6 +190,74 @@ default branchに次を適用する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
+### Codex timeout・runner異常終了時の診断と再開
+
+AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する。
+
+* `develop-from-issue` と `respond-to-claude` のjob-level timeoutは15分とし、AI Developer全体の外側の停止境界として扱う。
+* `Run Codex developer` と `Run Codex follow-up` のstep-level timeoutは30分とし、Codex processに対する内側の防御として扱う。
+* step-level timeoutはrunner worker上で執行されるため、runner-lossやrunnerとの通信喪失時に30分をwall-clock上の絶対上限とは扱わない。
+* job-level timeoutも15分到達時にcancellationへ移行する境界であり、runner無応答時を含め「15分ちょうどで完全終了する」とは扱わない。
+
+#### Issue起点AI Developerの異常終了
+
+`develop-from-issue` がsuccess以外で終了した場合は、対象Codex jobとは別runnerで `handle-issue-developer-failure` を実行し、安全側へ停止する。
+
+failure handlerは次を行う。
+
+* closing Issueへ `human-review-required` を付与する。
+* 同じIssueに紐づくopen PRが存在する場合は、そのPRにも `human-review-required` を同期する。
+* PRが存在しない場合はIssueだけを停止状態とする。
+* 停止ラベル同期に失敗しても、その後の診断記録と通知を継続する。
+* Issueコメントへjob result、pause sync outcome、Actions Run URLを記録する。
+* `NOTIFICATION_WEBHOOK_URL` が設定されている場合はDiscord通知を試行する。
+* 自動retryは行わない。
+
+`pause sync outcome` がsuccessでない場合、人間は他の復旧作業より先に、Issueおよび存在するPRへ `human-review-required` が実際に付与されているか確認する。
+
+Issue起点のAI Developerを再実行する前に、少なくとも次を確認する。
+
+* 対象Issueが正しいこと。
+* 失敗したActions Run URLまたはrun ID。
+* `develop-from-issue` のjob result。
+* pause sync outcome。
+* `ai/issue-<Issue番号>` remote branchの有無と現在のhead。
+* 同じIssueに紐づくopen PRの有無とPR head。
+* timeoutまたは異常終了後に、予期しないcommit、push、PR作成・更新が発生していないこと。
+* 取得可能な範囲で、通常の長時間実行、runner-loss、設定不備、一時的な外部障害等のどのカテゴリが最有力か。
+
+再実行可能と人間が判断した後、停止ラベルがある場合は既存の停止解除規約どおり、closing Issue側を先に、PR側を最後に解除する。
+
+既存PRへ追加開発を継続する場合は、PRがDraftであることと、既に開始済みのClaude Reviewがないことを確認する。非Draft PRで `human-review-required` を解除するとClaude Reviewの再実行条件になり得るため、追加開発中に意図しないレビューを起動しない。
+
+その後、再実行が必要な場合だけ、Open Issueへ `/codex develop` を単独コメントとして投稿する。
+
+#### Claude review follow-upの異常終了
+
+Claude review follow-upでは、`Run Codex follow-up` の実行前に `Gate automated follow-up` がclosing IssueとPRへ `human-review-required` を付与している。
+
+このためCodex follow-upがtimeout、runner-loss、action failure等で異常終了しても、IssueとPRは人間確認が必要な停止状態を維持する。
+
+異常終了後にCodex follow-upを自動retryしない。現行workflowには、停止状態を維持したまま同じClaude指摘に対するCodex follow-upだけを安全に再実行する専用入口はない。
+
+人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除する。
+
+非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
+
+Codex follow-up専用retry入口が将来必要になった場合は、この復旧手順へ例外を追加せず、別Issueで設計・実装する。
+
+#### timeout後の作業分割判断
+
+timeoutや異常終了が発生したという事実だけで、作業量が大きすぎたとは判断しない。
+
+runner-lossやGitHub Actions基盤側の異常は、小さい変更でも発生し得るため、失敗原因がrunner-lossまたはinfrastructure failureと判断できる場合は、それだけを理由にIssueを分割しない。
+
+一方、runnerとログが正常に動作したままCodex実行が15分近く継続してjob-level timeoutした場合、または同じscopeで長時間化を繰り返した場合は、再実行前に作業量を見直す。
+
+分割する場合は、各IssueまたはPRが独立して実装、検証、レビューでき、安全性・正確性・要求整合性を単独で確認できる単位にする。
+
+過去にAI Developerの長時間化を避けるため分割した作業は、新たな根拠なく再統合して大きなAI Developer jobへ戻さない。
+
 Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で追跡する。
 
 ## Bootstrapと復旧
