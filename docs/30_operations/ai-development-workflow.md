@@ -123,7 +123,11 @@ Message Batches APIは非同期処理であり、即時のreview verdictを必�
 
 生成用Schemaは `claude-review.yml` の `review-json-schema` データ行をcurrent baseから取得する。導入前base `9bf6ffcf5caa1dc8f98629851f0557653de542f7` にデータ行がない場合だけ固定生成制約をbootstrapし、既存base validatorを必須とする。他のbaseでの欠落、取得失敗、破損は停止する。workflow自体の改変は既存のCode Owner境界で保護し、PR側workflowが検証処理を削除した場合まで実行時に阻止する保証は追加しない。
 
-Claude reviewの実行結果は、`Validate Claude review` stepがJob Summaryへ記録する `Reason code` を一次情報とする。`Record Claude review usage` の集計済みusage JSONと表は費用・利用量の補助証跡であり、失敗原因またはverdictを決めない。reason codeは信頼済みbase commit由来classifierがexecution file内の構造化されたresult/error metadataから付けるローカルな分類であり、Claude Providerの障害理由・復旧時刻・quotaを保証するものではない。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載・再集計しない。
+Claude reviewの実行結果は、`Validate Claude review` stepがJob Summaryへ記録する `Reason code` を一次情報とする。`Record Claude review usage` の集計済みusage JSONと表は費用・利用量の補助証跡であり、失敗原因またはverdictを決めない。reason codeは信頼済みbase commit由来classifierによる実行分類と、workflowによるnative入力検査・base validatorの検証結果から決めるローカルな分類であり、Claude Providerの障害理由・復旧時刻・quotaを保証するものではない。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載・再集計しない。
+
+Action successかつ最後のresultがsuccess/is_error=falseの場合、自由テキストresultの複数性は最終reasonを決めない。native出力がなければ `REVIEW_RESULT_MISSING`、あればnative検証結果を優先する。`REVIEW_RESULT_AMBIGUOUS` は下表の限定条件に残す。
+
+例外として `Mask native review output` step自体が失敗すると、`Validate Claude review` はskipされ、Job Summaryのreasonは記録されない。この場合は `Save structured review` の固定エラー `CLASSIFIER_INTERNAL_ERROR` とmask stepの成否を診断の起点とし、raw出力を転載せずマスク処理を調査する。保存・verdict投稿はfail-closedで停止する。mask stepが成功してもreadyを出さない場合は通常の分類経路を継続し、native入力を空として扱う。
 
 | Reason code | 判定 | 人間の復旧手順 |
 |---|---|---|
@@ -133,7 +137,7 @@ Claude reviewの実行結果は、`Validate Claude review` stepがJob Summaryへ
 | `TRANSIENT_RATE_LIMIT` | result subtypeまたはerror typeが`rate_limit_error`である。 | 制限が解消したと人が確認してから、同じheadで新しいreviewを起動する。自動再試行しない。 |
 | `CLAUDE_EXECUTION_FAILED` | Actionがexecution fileを残す前に失敗した、または上記以外のerror resultが記録された。 | Action実行、認証・設定、入力状態を必要最小限の非機密証跡で調査し、原因を解消してから再実行する。 |
 | `REVIEW_RESULT_MISSING` | 検証対象となる成功resultまたはnative出力がない。 | review出力の取得・検証経路を調査してから再実行する。 |
-| `REVIEW_RESULT_AMBIGUOUS` | 検証対象となる成功resultが複数ある。 | review出力の検証経路を調査してから再実行する。 |
+| `REVIEW_RESULT_AMBIGUOUS` | Action successだが最後のresultがsuccess/is_error=falseではなく、優先される実行失敗分類に該当せず、既存classifierの自由テキスト成功result候補が複数ある。 | review出力の検証経路を調査してから再実行する。 |
 | `REVIEW_JSON_INVALID` | execution containerまたはreview JSONが不正である。 | 出力・検証経路を調査してから再実行する。 |
 | `REVIEW_SCHEMA_MISMATCH` | review JSONが固定schemaに適合しない。 | 出力・検証経路を調査してから再実行する。 |
 | `CLASSIFIER_INTERNAL_ERROR` | 信頼済みclassifier/validatorのbootstrapまたは内部処理を確認できない。 | 信頼済みbase commit由来のclassifier/validator bootstrapを確認してから再実行する。 |

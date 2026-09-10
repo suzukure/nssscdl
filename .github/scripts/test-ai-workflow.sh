@@ -774,6 +774,17 @@ assert_workflow_failure_classification REVIEW_RESULT_MISSING missing-result \
   "$test_dir/no-success-execution.json"
 assert_workflow_failure_classification REVIEW_RESULT_MISSING ambiguous-free-text-without-native \
   "$test_dir/multiple-success-execution.json"
+# Without terminal success, legacy ambiguity remains fail-closed even when
+# native content is valid. Action failure still takes precedence.
+jq -cn --arg review "$valid_structured_review" '[
+  {type:"result",subtype:"success",is_error:false,result:$review},
+  {type:"result",subtype:"success",is_error:false,result:$review},
+  {type:"result",subtype:"unexpected_terminal",is_error:false}
+]' > "$test_dir/ambiguous-terminal-execution.json"
+assert_workflow_failure_classification REVIEW_RESULT_AMBIGUOUS ambiguous-without-terminal-success \
+  "$test_dir/ambiguous-terminal-execution.json" success "$valid_structured_review"
+assert_workflow_failure_classification CLAUDE_EXECUTION_FAILED ambiguous-action-failure \
+  "$test_dir/ambiguous-terminal-execution.json" failure "$valid_structured_review"
 assert_workflow_failure_classification REVIEW_JSON_INVALID invalid-json \
   "$test_dir/invalid-review-execution.json" success '{"sensitive-raw-claude-output":'
 assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH schema-mismatch \
