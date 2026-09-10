@@ -32,8 +32,14 @@ grep -Fq '          rm -f .ai-context/request.md' "$developer_job"
 grep -Fq '          git add -A' "$developer_job"
 grep -Fq 'result_json="$(bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")"' "$developer_job"
 
-# Exit status alone must never authorize repository write.
+# Exit status alone must never authorize repository write. A pass result must also
+# carry the complete numeric metrics contract expected from the trusted helper.
 grep -Fq '[ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]' "$developer_job"
+grep -Fq '.changed_files | type == "number"' "$developer_job"
+grep -Fq '.additions | type == "number"' "$developer_job"
+grep -Fq '.deletions | type == "number"' "$developer_job"
+grep -Fq '.total_changed_lines | type == "number"' "$developer_job"
+grep -Fq '.new_files | type == "number"' "$developer_job"
 grep -Fq "echo 'continue=true' >> \"\$GITHUB_OUTPUT\"" "$developer_job"
 grep -Fq "echo 'continue=false' >> \"\$GITHUB_OUTPUT\"" "$developer_job"
 grep -Fq 'Trusted diff guard output could not be parsed; automated development is paused.' "$developer_job"
@@ -47,16 +53,20 @@ grep -Fq '### AI Developer diff guard' "$developer_job"
 grep -Fq 'Notify human of diff guard stop' "$developer_job"
 grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$developer_job"
 
-# Preserve the existing outer publish condition, but add an inner trusted-guard check
-# before any commit, push, or PR write.
-publish_line="$(grep -n -F '      - name: Commit, push, and open or update PR' "$developer_job" | cut -d: -f1)"
-inner_guard_line="$(grep -n -F 'if [ "${{ steps.diff-guard.outputs.continue }}" != true ]; then' "$developer_job" | cut -d: -f1)"
-commit_line="$(grep -n -F '          git commit -m "Implement #${ISSUE_NUMBER} with Codex"' "$developer_job" | cut -d: -f1)"
-push_line="$(grep -n -F '          git push --set-upstream origin "$AI_BRANCH"' "$developer_job" | cut -d: -f1)"
-[ "$publish_line" -lt "$inner_guard_line" ]
-[ "$inner_guard_line" -lt "$commit_line" ]
-[ "$inner_guard_line" -lt "$push_line" ]
-grep -Fqx "        if: steps.development-gate.outputs.continue == 'true'" "$developer_job"
+# Repository write step itself must be skipped unless both gates pass. This keeps
+# an intentional guard stop from turning the whole job into a failure and avoids
+# duplicate pause/comment/notification via the generic failure handler.
+publish_step="$test_dir_placeholder"
+publish_if="$(awk '
+  /^      - name: Commit, push, and open or update PR$/ { found = 1; next }
+  found && /^        if: / { print; exit }
+  found && /^      - name: / { exit }
+' "$developer_job")"
+[ "$publish_if" = "        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue == 'true'" ]
+if grep -Fq 'if [ "${{ steps.diff-guard.outputs.continue }}" != true ]; then' "$developer_job"; then
+  echo 'Publish step must be skipped by its workflow condition, not fail inside the shell body.' >&2
+  exit 1
+fi
 
 # This Issue must not alter follow-up behavior yet.
 if grep -Fq 'evaluate-codex-diff-gate.sh' <(sed -n '/^  respond-to-claude:/,$p' "$workflow"); then
