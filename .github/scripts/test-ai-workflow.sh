@@ -1029,10 +1029,16 @@ grep -Fqx '      always() &&' "$handler"
 grep -Fqx "      needs.gate-issue-entry.outputs.continue == 'true' &&" "$handler"
 grep -Fqx "      needs.develop-from-issue.result != 'success'" "$handler"
 grep -Fqx '    runs-on: ubuntu-latest' "$handler"
-grep -Fqx '      pull-requests: read' "$handler"
+grep -Fqx '      pull-requests: write' "$handler"
 grep -Fq 'gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}"' "$handler"
 grep -Fq 'apply-human-pause.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"' "$handler"
 grep -Fq 'notify-human.sh' "$handler"
+grep -Fqx '        continue-on-error: true' "$handler"
+[ "$(grep -Fxc '        if: always()' "$handler")" -ge 2 ]
+grep -Fq 'PAUSE_SYNC_OUTCOME:' "$handler"
+grep -Fqx "      github.event_name == 'issue_comment' &&" "$handler"
+grep -Fqx '      github.event.issue.pull_request == null &&' "$handler"
+grep -Fqx "      needs.gate-issue-entry.result == 'success' &&" "$handler"
 if grep -Eqi '(rerun|retry|workflow_dispatch)' "$handler"; then
   echo 'Issue developer failure handler must not retry automation.' >&2
   exit 1
