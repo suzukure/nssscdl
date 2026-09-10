@@ -203,11 +203,11 @@ jobs:
           if [ -n "$result_json" ] && jq -e '
             type == "object" and
             (.result | type == "string") and
-            (.changed_files | type == "number") and
-            (.additions | type == "number") and
-            (.deletions | type == "number") and
-            (.total_changed_lines | type == "number") and
-            (.new_files | type == "number")
+            (.changed_files | type == "number" and . >= 0 and floor == .) and
+            (.additions | type == "number" and . >= 0 and floor == .) and
+            (.deletions | type == "number" and . >= 0 and floor == .) and
+            (.total_changed_lines | type == "number" and . >= 0 and floor == .) and
+            (.new_files | type == "number" and . >= 0 and floor == .)
           ' <<< "$result_json" > /dev/null 2>&1; then
             parsed=true
             result="$(jq -r .result <<< "$result_json")"
@@ -222,7 +222,7 @@ jobs:
               echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / 25"
               echo "- Additions: $(jq -r .additions <<< "$result_json")"
               echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
-              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / 2000"
+              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / 2,000"
               echo "- New files: $(jq -r .new_files <<< "$result_json") / 10"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -231,7 +231,7 @@ jobs:
           reason='Trusted diff guard failed closed before repository write.'
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]; then
             reason='Trusted diff guard stopped an oversized repository change before commit/push/PR write.'
-          elif [ "$helper_status" -ne 0 ] && [ "$parsed" = true ] && [ "$result" = error ]; then
+          elif [ "$parsed" = true ] && [ "$result" = error ]; then
             reason='Trusted diff guard could not safely measure the staged change; automated development is paused.'
           elif [ "$parsed" = true ]; then
             reason="Trusted diff guard returned unexpected result '${result}'; automated development is paused."
@@ -248,12 +248,23 @@ jobs:
           diagnostics="$reason"
           if [ "$parsed" = true ]; then
             diagnostics+=$'\n\n'"Result: ${result}."
-            for field in changed_files additions deletions total_changed_lines new_files error; do
-              value="$(jq -r --arg field "$field" 'if has($field) then .[$field] else empty end' <<< "$result_json")"
-              if [ -n "$value" ]; then
+            if [ "$result" = stop ]; then
+              for field in changed_files additions deletions total_changed_lines new_files; do
+                value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
                 diagnostics+=$'\n'"${field}: ${value}"
+              done
+            else
+              if [ "$result" = error ]; then
+                error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
+                if [ -n "$error_code" ]; then
+                  diagnostics+=$'\n'"error: ${error_code}"
+                fi
               fi
-            done
+              diagnostics+=$'\n'"Metrics: unavailable"
+            fi
+          else
+            diagnostics+=$'\n\n'"Result: unavailable."
+            diagnostics+=$'\n'"Metrics: unavailable"
           fi
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$diagnostics"
 
@@ -262,13 +273,19 @@ jobs:
             echo
             echo "- Result: ${result:-unavailable}"
             echo '- Thresholds: 25 changed files / 2,000 total changed lines / 10 new files'
-            if [ "$parsed" = true ]; then
-              for field in changed_files additions deletions total_changed_lines new_files error; do
-                value="$(jq -r --arg field "$field" 'if has($field) then .[$field] else empty end' <<< "$result_json")"
-                if [ -n "$value" ]; then
-                  echo "- ${field}: ${value}"
-                fi
+            if [ "$parsed" = true ] && [ "$result" = stop ]; then
+              for field in changed_files additions deletions total_changed_lines new_files; do
+                value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
+                echo "- ${field}: ${value}"
               done
+            else
+              if [ "$parsed" = true ] && [ "$result" = error ]; then
+                error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
+                if [ -n "$error_code" ]; then
+                  echo "- error: ${error_code}"
+                fi
+              fi
+              echo '- Metrics: unavailable'
             fi
             echo '- Decision: repository write blocked'
           } >> "$GITHUB_STEP_SUMMARY"
