@@ -1,0 +1,55 @@
+name: Temporary Issue 152 implementation
+on:
+  push:
+    branches: [ops/issue-152-job-timeout]
+permissions:
+  contents: write
+jobs:
+  implement-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Apply job timeout change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name suzukure
+          git config user.email 'jun1052@gmail.com'
+          git fetch origin main
+          git reset --hard origin/main
+          python3 - <<'PY'
+          from pathlib import Path
+          wf = Path('.github/workflows/ai-developer.yml')
+          s = wf.read_text()
+          replacements = [
+              ("  develop-from-issue:\n    name: Develop from Issue\n    needs: gate-issue-entry\n    if: needs.gate-issue-entry.outputs.continue == 'true'\n    runs-on: ubuntu-latest\n",
+               "  develop-from-issue:\n    name: Develop from Issue\n    needs: gate-issue-entry\n    if: needs.gate-issue-entry.outputs.continue == 'true'\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n"),
+              ("  respond-to-claude:\n    name: Respond to Claude\n    if: >-\n      github.event_name == 'pull_request_review' &&\n      github.event.review.state == 'changes_requested' &&\n      github.event.pull_request.head.repo.full_name == github.repository &&\n      startsWith(github.event.pull_request.head.ref, 'ai/issue-')\n    runs-on: ubuntu-latest\n",
+               "  respond-to-claude:\n    name: Respond to Claude\n    if: >-\n      github.event_name == 'pull_request_review' &&\n      github.event.review.state == 'changes_requested' &&\n      github.event.pull_request.head.repo.full_name == github.repository &&\n      startsWith(github.event.pull_request.head.ref, 'ai/issue-')\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n"),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit('workflow target mismatch')
+              s = s.replace(old, new)
+          wf.write_text(s)
+
+          test = Path('.github/scripts/test-ai-workflow.sh')
+          t = test.read_text()
+          marker = "# Both Codex invocations must remain reproducible and bounded. A timeout is\n"
+          addition = '''# Both Codex jobs must have a GitHub job-level wall-clock boundary that is\n# outside the runner-local Codex step timeout.\nfor codex_job in develop-from-issue respond-to-claude; do\n  job_block=\"$test_dir/${codex_job}-job.yml\"\n  awk -v job=\"$codex_job\" '\n    $0 == \"  \" job \":\" { in_job = 1 }\n    in_job && /^  [[:alnum:]_-]+:$/ && $0 != \"  \" job \":\" { exit }\n    in_job { print }\n  ' \"$repo_root/.github/workflows/ai-developer.yml\" > \"$job_block\"\n  if [ ! -s \"$job_block\" ]; then\n    echo \"Could not extract the $codex_job job.\" >&2\n    exit 1\n  fi\n  grep -Fqx '    timeout-minutes: 15' \"$job_block\"\ndone\n\n'''
+          if t.count(marker) != 1:
+              raise SystemExit('test insertion marker mismatch')
+          test.write_text(t.replace(marker, addition + marker))
+          PY
+          bash .github/scripts/test-ai-workflow.sh
+          bash -n .github/scripts/test-ai-workflow.sh
+          ruby -e "require 'yaml'; Dir['.github/workflows/*.{yml,yaml}'].each { |f| YAML.load_file(f, aliases: true) }"
+          git diff --check
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' '.github/scripts/test-ai-workflow.sh' '.github/workflows/ai-developer.yml' | sort)"
+          test "$changed" = "$expected"
+          git add .github/workflows/ai-developer.yml .github/scripts/test-ai-workflow.sh
+          git commit -m '[保守] AI Developer両jobに15分timeoutを追加する (#152)'
+          git push --force origin HEAD:ops/issue-152-job-timeout
