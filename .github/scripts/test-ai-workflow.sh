@@ -1015,6 +1015,26 @@ if grep -Eq '(contains|startsWith|endsWith)\([[:space:]]*github\.event\.comment\
   exit 1
 fi
 
+# Both Codex jobs must have a server-side wall-clock bound in addition to
+# the per-step timeout, so runner-loss cannot leave them unbounded.
+for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
+  codex_job="$test_dir/${codex_job_name}.yml"
+  awk -v job_name="$codex_job_name" '
+    $0 == "  " job_name ":" { in_job = 1 }
+    in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  " job_name ":" { exit }
+    in_job { print }
+  ' "$repo_root/.github/workflows/ai-developer.yml" > "$codex_job"
+  if [ ! -s "$codex_job" ]; then
+    echo "Could not extract the $codex_job_name job." >&2
+    exit 1
+  fi
+  grep -Fqx '    timeout-minutes: 15' "$codex_job"
+  if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
+    echo "$codex_job_name must fail closed." >&2
+    exit 1
+  fi
+done
+
 # Both Codex invocations must remain reproducible and bounded. A timeout is
 # fatal by default, so the later requirement gate and publish step cannot run
 # after it expires.

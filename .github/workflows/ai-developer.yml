@@ -50,6 +50,7 @@ jobs:
     needs: gate-issue-entry
     if: needs.gate-issue-entry.outputs.continue == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: codex-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -241,6 +242,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'ai/issue-')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: codex-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
