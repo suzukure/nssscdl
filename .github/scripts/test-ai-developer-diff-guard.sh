@@ -56,7 +56,6 @@ grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$developer_job"
 # Repository write step itself must be skipped unless both gates pass. This keeps
 # an intentional guard stop from turning the whole job into a failure and avoids
 # duplicate pause/comment/notification via the generic failure handler.
-publish_step="$test_dir_placeholder"
 publish_if="$(awk '
   /^      - name: Commit, push, and open or update PR$/ { found = 1; next }
   found && /^        if: / { print; exit }
