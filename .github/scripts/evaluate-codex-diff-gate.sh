@@ -5,6 +5,9 @@ readonly max_changed_files=25
 readonly max_changed_lines=2000
 readonly max_new_files=10
 
+# stdout is one JSON object. pass and stop exit 0; callers must use .result.
+# error exits non-zero. A non-numeric numstat (including binary or -diff paths)
+# cannot be measured safely, so it is an error rather than an omitted change.
 work_dir=''
 
 cleanup() {
@@ -18,25 +21,26 @@ emit_result() {
   local changed_files="${2:?changed files is required}"
   local additions="${3:?additions is required}"
   local deletions="${4:?deletions is required}"
-  local new_files="${5:?new files is required}"
-  local error="${6:-}"
+  local total_changed_lines="${5:?total changed lines is required}"
+  local new_files="${6:?new files is required}"
+  local error="${7:-}"
 
   if [ -n "$error" ]; then
     printf '{"result":"%s","changed_files":%s,"additions":%s,"deletions":%s,"total_changed_lines":%s,"new_files":%s,"error":"%s"}\n' \
-      "$result" "$changed_files" "$additions" "$deletions" "$((additions + deletions))" "$new_files" "$error"
+      "$result" "$changed_files" "$additions" "$deletions" "$total_changed_lines" "$new_files" "$error"
   else
     printf '{"result":"%s","changed_files":%s,"additions":%s,"deletions":%s,"total_changed_lines":%s,"new_files":%s}\n' \
-      "$result" "$changed_files" "$additions" "$deletions" "$((additions + deletions))" "$new_files"
+      "$result" "$changed_files" "$additions" "$deletions" "$total_changed_lines" "$new_files"
   fi
 }
 
 fail_closed() {
-  emit_result error 0 0 0 0 "${1:?error code is required}"
+  emit_result error 0 0 0 0 0 "${1:?error code is required}"
   exit 1
 }
 
 work_dir="$(mktemp -d)" || {
-  emit_result error 0 0 0 0 temporary_directory_unavailable
+  emit_result error 0 0 0 0 0 temporary_directory_unavailable
   exit 1
 }
 trap cleanup EXIT
@@ -63,9 +67,10 @@ additions=0
 deletions=0
 
 while IFS=$'\t' read -r added deleted _path; do
-  # Git reports binary changes as "-\t-" because they have no line count.
+  # Attributes supplied by the staged diff can also produce "-\t-". Do not
+  # omit such paths: fail closed because total_changed_lines is unknowable.
   if [ "$added" = '-' ] && [ "$deleted" = '-' ]; then
-    continue
+    fail_closed git_numstat_unavailable
   fi
   if [[ ! "$added" =~ ^[0-9]+$ ]] || [[ ! "$deleted" =~ ^[0-9]+$ ]]; then
     fail_closed git_numstat_malformed
@@ -78,7 +83,7 @@ total_changed_lines=$((additions + deletions))
 if [ "$changed_files" -gt "$max_changed_files" ] \
     || [ "$total_changed_lines" -gt "$max_changed_lines" ] \
     || [ "$new_files" -gt "$max_new_files" ]; then
-  emit_result stop "$changed_files" "$additions" "$deletions" "$new_files"
+  emit_result stop "$changed_files" "$additions" "$deletions" "$total_changed_lines" "$new_files"
 else
-  emit_result pass "$changed_files" "$additions" "$deletions" "$new_files"
+  emit_result pass "$changed_files" "$additions" "$deletions" "$total_changed_lines" "$new_files"
 fi
