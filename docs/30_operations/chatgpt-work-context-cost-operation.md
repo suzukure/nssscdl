@@ -4,7 +4,7 @@
 
 ChatGPT WorkをGitHub作業の対話窓口として使いながら、長大な会話、Actionsログ全文の反復取得、過剰なモデル選択、同一証跡の再調査によるコンテキスト消費を抑える。
 
-GitHub上のIssue、Pull Request、Actions、リポジトリを要求・決定・実行結果の正本とする。本書はChatGPT Work側の会話構成と調査方法を定め、[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md)を補完する。
+GitHub main上の正本文書を確定仕様、GitHub Issueを未決事項・検討状態の正本とする。Pull Request、review、Actionsは実行結果とレビュー対話の正本とする。本書はChatGPT Work側の会話構成と調査方法を定め、[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md)を補完する。
 
 ## ChatGPT Projectの設定
 
@@ -19,7 +19,7 @@ Project Sourcesは次の最小構成とする。
 
 GitHubの最新状態は、接続済みGitHubツールから都度取得する。利用中のChatGPT Work環境でGitHubリポジトリを継続的に参照できるProject Sourceとして追加可能であることを実際に確認できた場合は、`suzukure/nssscdl`をSourcesに加えてよい。追加可否を確認できない場合は必須構成に含めない。
 
-アップロードしたリポジトリファイルや状態要約は、その時点のsnapshotであり、最新Issue、PR、Actions、SHA確認の代替にしない。過去IssueごとのActionsログ、レビュー全文、チャットごとのhandoffをSourcesへ累積しない。確定事項はGitHubのIssue本文、PR本文、レビュー、リポジトリへ記録する。
+アップロードしたリポジトリファイルや状態要約は、その時点のsnapshotであり、最新Issue、PR、Actions、SHA確認の代替にしない。過去IssueごとのActionsログ、レビュー全文、チャット間引き継ぎをSourcesへ累積しない。確定事項はGitHub main上の正本文書へ、未決事項と検討状態はIssueへ記録する。
 
 ### Project instructions
 
@@ -30,17 +30,24 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 
 ### チャットの単位
 
-- 原則として、1つのGitHub Issueを1つのチャットで扱う。
-- 別Issueへ移る場合は、現在のIssueの状態、関連PR、未完了事項、次の一手を短く記録して、新しいチャットを開始する。
+- 原則として、1つのGitHub Issueを1つのチャットで開始する。これは上限ではない。
+- 同一Issueでも、GitHubから現在地点を短く再構成できる状態になったら、新しいチャットへ切り替えてよい。
+- 別Issueへ移る前に、継続検討が必要な現在地点をIssueへ記録して、新しいチャットを開始する。
 - 親Issueと複数の子Issueを同じチャットで並行実装しない。
-- 同一Issueの修正・レビュー・マージ確認は、コンテキストが過大でない限り同じチャットで継続する。
 - チャット名は「Issue #番号 - 短い目的」とする。
 - 同じ確定判断に伴う参照・用語・追跡表・図の修正はIssue確定時に洗い出し、同じDraft PRへ集約する。無関係な判断や別Issueを無断でまとめない。
 - 新規の自動開発PRはDraftで作成される。人間が関連修正と現在headの検証結果を確認してReady for reviewへ変更する。準備確認と承認後の非Blocking改善の延期条件はai-development-workflow.mdの「関連修正の集約とレビュー準備」に従う。
 
-### GitHub状態の取得
+### 同一Issue内のチャット分割とGitHub状態の取得
 
-- 各チャットの開始時に、対象Issue、関連PR、main SHA、PRのbase/head SHA、ラベル、最新レビュー、最新Actions結果をGitHubから読み取りで確認する。
+- 1つのまとまった要求・設計判断が確定し、その現在地点をIssue本文・コメントまたはmain上の正本文書へ記録した時、新しい独立した検討論点へ移る時、または確定事項・経緯の再説明や再検索が増えた時は、新しいチャットを優先する。
+- 要求・設計・GitHub反映を複数回行った後、Actionsログ・長文Issue・長い差分などの調査結果が会話へ蓄積し、GitHubの最新状態を読み直す方が短く安全な時も、新しいチャットを優先する。
+- 固定のメッセージ数、経過時間、推定token数を分割条件にしない。
+- GitHubへ現在地点が十分記録されていない場合は、先にIssueへ整理してから分割する。
+- 新しいチャットはIssue番号またはOI IDだけを継続キーとして開始し、過去チャット全文や長い引き継ぎを貼り直さない。GitHubに記録されていないProject内の明示的確定事項を確認する必要がある場合だけ、過去チャットを補助情報として使う。
+
+- 新しいチャットの開始時に、current main SHA、対象Issueの本文とstate、Issue上の最新の確定済み事項と未決事項、関連するmain上の正本文書をGitHubから読み取りで確認する。関連IssueまたはPRは必要な場合だけ確認する。
+- 実装・レビュー状態も扱うチャットでは、対象Issue、関連PR、PRのbase/head SHA、ラベル、最新レビュー、最新Actions結果も確認する。
 - 前チャットの記憶だけで現在状態を断定しない。
 - 一度取得した同じSHA・同じActions runの情報は、状態が変わっていない限り再取得しない。
 - GitHubのIssue本文、PR本文、レビュー、Actions Job Summary、およびClaude review usage step logの集計済みJSONを一次情報として扱う。
@@ -104,7 +111,7 @@ Project instructionsは会話上の方針であり、GitHubのRuleset、App権�
 
 ### 基本単位
 
-1 Issueにつき1チャットを基本とし、次の一連の作業を扱う。
+1 Issueにつき1チャットで開始することを基本とし、必要なら同一Issue内で新しいチャットへ分割して、次の一連の作業を扱う。
 
 1. Issueと関連状態の確認
 2. 実装または文書修正
@@ -118,13 +125,16 @@ Issueの範囲は1行・1参照ごとに細分化せず、同じ確定判断に�
 
 ### 新しいチャットへ分ける条件
 
-次のいずれかに該当する場合は、同じProject内で新しいチャットを開始する。
+次のいずれかに該当する場合は、同じProject内で新しいチャットを開始する。同一Issueでの分割も含む。
 
 - 別Issueの実装または判断へ移る。
 - 元Issueの作業と後継Issueの作業が混在し始めた。
-- 要求・設計判断と、その判断後の実装を分ける必要がある。
+- 1つのまとまった要求・設計判断をGitHubへ記録し、新しい独立した検討論点へ移る。
+- 過去の確定事項・経緯の再説明や再検索、または過去チャットとGitHub最新状態との照合が増え、GitHubから現在地点を再構成する方が短く安全である。
+- 複数回の要求・設計更新とGitHub反映、または長文Issue・長い差分・Actions調査結果の蓄積により、開始時の前提よりGitHubの最新状態を読み直す方が簡潔である。
 - Actionsの長時間実行や大量ログの原因調査を独立させる。
-- 過去経緯の再説明や誤った参照が増え、現在のIssueに必要な情報を短く保てない。
+
+固定のメッセージ数、経過時間、推定token数は分割条件にしない。分割前にGitHubへ現在地点を十分記録できない場合は、先にIssueへ整理する。
 
 チャット名は `Issue #<番号> - <短い目的>` とする。単一Issue内で調査チャットを分ける場合は、`Issue #<番号> - Actions障害調査` のように目的を付ける。
 
@@ -147,16 +157,14 @@ Issueの範囲は1行・1参照ごとに細分化せず、同じ確定判断に�
 
 ## GitHub状態の確認範囲
 
-新しいIssueチャットの開始時は、まず次を読み取りで確認する。
+新しいIssueチャットの開始時は、Issue番号またはOI IDを継続キーとして、まず次を読み取りで確認する。
 
-- Issueのstate、本文、ラベル
-- 関連するopen PR
-- main SHA、PRのbase SHAとhead SHA
-- 最新のClaude review
-- 最新Actions runのjob、conclusion、失敗step
-- closing Issueと明示された後継Issue
+- current main SHA
+- 対象Issueのstate、本文、ラベル、最新の確定済み事項と未決事項
+- 関連するmain上の正本文書
+- 必要な場合だけ、関連するopen PR、PRのbase SHAとhead SHA、最新のClaude review、最新Actions runのjob・conclusion・失敗step、closing Issueと明示された後継Issue
 
-状態が変わっていない同一SHA・同一runについて、全レビュー・全コメント・全ログを再取得しない。前回の報告を使う場合も、現在のstate・SHA・runとの一致を確認する。
+過去チャット全文や長い引き継ぎを最初から再構築せず、GitHubの最新状態を基準に必要情報だけ取得する。状態が変わっていない同一SHA・同一runについて、全レビュー・全コメント・全ログを再取得しない。前回の報告を使う場合も、現在のstate・SHA・runとの一致を確認する。
 
 ## Actionsログの段階的取得
 
@@ -187,7 +195,6 @@ Claude reviewの固定reason codeと復旧手順は[AI開発・Claudeレビュ�
 | Actions Job Summary / Claude review usage step log | run IDとhead SHAが同じ | rerun、新run、新head |
 | Issue本文の決定 | 本文の更新時刻・内容が同じ | 決定、範囲、完了条件の更新 |
 | main上の文書 | main SHAが同じ | mainの新しいcommit |
-| 過去のhandoff | 記載したIssue・PR・SHAを現在状態と照合済み | state、label、head、review、runの変更 |
 
 Claudeの費用、turn数、duration、input/output token、cache creation/read tokenはJob SummaryまたはClaude review usage step logの集計済みJSONに記録済みならその値を使う。execution fileやraw logから重複集計しない。
 
@@ -225,25 +232,9 @@ Actionsログは必要な失敗stepだけ取得し、既存の検証証跡を再
 最初は読み取りのみとし、結論と推奨対応を報告してください。
 ```
 
-## チャット完了時のhandoff
+## チャット終了時と再開
 
-Issue完了時または別チャットへ移る時は、次を短く記録する。
-
-```markdown
-## Completion handoff
-
-- Issue:
-- Related PR:
-- Final head / merge commit:
-- Final review:
-- Actions:
-- Decisions recorded in:
-- Follow-up Issues:
-- Remaining human action:
-- Exact next step:
-```
-
-handoffは接続情報であり、確定済み仕様や判断の正本ではない。確定事項とスコープ外影響・後継Issueは、先にGitHubのclosing Issue本文とPR本文へ反映する。
+チャット間引き継ぎ専用の`handoff.md`、`latest_discussion.md`、またはチャットを切るためだけの長文要約は作成しない。継続検討が必要な現在地点はIssueへ残し、確定した仕様・設計はIssueだけに残さずmain上の既存正本文書へ反映する。必要なら終了時に人間へ「次のチャットは Issue #N から再開」と短く案内する。
 
 ## 運用の確認
 
@@ -253,7 +244,9 @@ handoffは接続情報であり、確定済み仕様や判断の正本ではな�
 - Actionsログ全文を原因特定前に取得していないか。
 - 状況確認に過剰なモデル・reasoning effortを使っていないか。
 - 同一head SHA・run IDの証跡を繰り返し取得していないか。
-- handoffよりGitHub上の古い情報を優先していないか。
-- Project Sourcesへ一時ログや古いhandoffが累積していないか。
+- 新しいチャットで過去チャット全文を参照せず、GitHubから現在地点を再構成できたか。
+- GitHubから現在地点を再構成するための追加説明が過剰になっていないか、確定事項・未決事項を取り違えていないか。
+- 長期チャットを継続する必要がある代表的な例外があるか。
+- Project Sourcesへ一時ログやチャット間引き継ぎが累積していないか。
 
 見直し結果によってProject instructionsを変える場合は、本書も同時に更新する。

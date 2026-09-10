@@ -46,7 +46,7 @@ Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpus
 
 ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位でチャットを分け、Actionsログを失敗stepから段階的に取得し、作業内容に応じてモデルを選択する。同一head SHA・run IDのPR本文、review、Actions Job Summaryを再利用し、状態が変わっていない証跡を繰り返し調査しない。
 
-Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、完了時handoffの正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定事項の正本は引き続きGitHubのIssue本文、PR本文、review、リポジトリであり、チャットやhandoffだけに決定を残さない。
+Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、チャット終了時と再開の正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定仕様はGitHub main上の正本文書、未決事項・検討状態はIssueを正本とし、チャットだけに決定を残さない。
 
 ## スコープ外影響と後継Issue
 
