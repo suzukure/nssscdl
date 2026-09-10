@@ -200,7 +200,15 @@ jobs:
 
           parsed=false
           result=''
-          if [ -n "$result_json" ] && jq -e 'type == "object" and (.result | type == "string")' <<< "$result_json" > /dev/null 2>&1; then
+          if [ -n "$result_json" ] && jq -e '
+            type == "object" and
+            (.result | type == "string") and
+            (.changed_files | type == "number") and
+            (.additions | type == "number") and
+            (.deletions | type == "number") and
+            (.total_changed_lines | type == "number") and
+            (.new_files | type == "number")
+          ' <<< "$result_json" > /dev/null 2>&1; then
             parsed=true
             result="$(jq -r .result <<< "$result_json")"
           fi
@@ -275,7 +283,7 @@ jobs:
           "AI Developer diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}"
 
       - name: Commit, push, and open or update PR
-        if: steps.development-gate.outputs.continue == 'true'
+        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
@@ -285,10 +293,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ steps.diff-guard.outputs.continue }}" != true ]; then
-            echo 'Trusted diff guard did not pass; refusing repository write.' >&2
-            exit 1
-          fi
           rm -f .ai-context/request.md
           rmdir .ai-context 2>/dev/null || true
 
