@@ -234,6 +234,64 @@ jobs:
             fi
           fi
 
+  handle-issue-developer-failure:
+    name: Handle Issue developer failure
+    needs: [gate-issue-entry, develop-from-issue]
+    if: >-
+      always() &&
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      needs.gate-issue-entry.result == 'success' &&
+      needs.gate-issue-entry.outputs.continue == 'true' &&
+      needs.develop-from-issue.result != 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out trusted failure handler
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Synchronize human pause
+        id: pause-sync
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
+            --state open --json number --jq '.[0].number // empty')"
+          bash .github/scripts/apply-human-pause.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
+
+      - name: Record developer failure
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          JOB_RESULT: ${{ needs.develop-from-issue.result }}
+          PAUSE_SYNC_OUTCOME: ${{ steps.pause-sync.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
+            "AI Developer job ended with result '${JOB_RESULT}'. Automated development is paused pending a human decision. Pause sync outcome: ${PAUSE_SYNC_OUTCOME}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Notify human of developer failure
+        if: always()
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+          JOB_RESULT: ${{ needs.develop-from-issue.result }}
+          PAUSE_SYNC_OUTCOME: ${{ steps.pause-sync.outcome }}
+        run: >-
+          bash .github/scripts/notify-human.sh
+          "AI Developer job ended with result '${JOB_RESULT}', pause sync outcome '${PAUSE_SYNC_OUTCOME}', and requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
   respond-to-claude:
     name: Respond to Claude
     if: >-

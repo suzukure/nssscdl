@@ -1142,6 +1142,35 @@ if grep -Eq '(contains|startsWith|endsWith)\([[:space:]]*github\.event\.comment\
   exit 1
 fi
 
+# Issue-origin developer failures must be handled by a separate runner without
+# retrying Codex or depending on the failed job's workspace.
+handler="$test_dir/handle-issue-developer-failure.yml"
+awk '
+  $0 == "  handle-issue-developer-failure:" { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  handle-issue-developer-failure:" { exit }
+  in_job { print }
+' "$repo_root/.github/workflows/ai-developer.yml" > "$handler"
+[ -s "$handler" ]
+grep -Fqx '    needs: [gate-issue-entry, develop-from-issue]' "$handler"
+grep -Fqx '      always() &&' "$handler"
+grep -Fqx "      needs.gate-issue-entry.outputs.continue == 'true' &&" "$handler"
+grep -Fqx "      needs.develop-from-issue.result != 'success'" "$handler"
+grep -Fqx '    runs-on: ubuntu-latest' "$handler"
+grep -Fqx '      pull-requests: write' "$handler"
+grep -Fq 'gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}"' "$handler"
+grep -Fq 'apply-human-pause.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"' "$handler"
+grep -Fq 'notify-human.sh' "$handler"
+grep -Fqx '        continue-on-error: true' "$handler"
+[ "$(grep -Fxc '        if: always()' "$handler")" -ge 2 ]
+grep -Fq 'PAUSE_SYNC_OUTCOME:' "$handler"
+grep -Fqx "      github.event_name == 'issue_comment' &&" "$handler"
+grep -Fqx '      github.event.issue.pull_request == null &&' "$handler"
+grep -Fqx "      needs.gate-issue-entry.result == 'success' &&" "$handler"
+if grep -Eqi '(rerun|retry|workflow_dispatch)' "$handler"; then
+  echo 'Issue developer failure handler must not retry automation.' >&2
+  exit 1
+fi
+
 # Both Codex jobs must have a server-side wall-clock bound in addition to
 # the per-step timeout, so runner-loss cannot leave them unbounded.
 for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
