@@ -529,6 +529,7 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
+          git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
 
       - name: Validate Codex model configuration
@@ -558,6 +559,7 @@ jobs:
           prompt: |
             Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
             Address every blocking Claude finding in this working tree.
+            Keep the proposed repository change within 25 changed files, 2,000 total changed lines, and 10 new files. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
             Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
@@ -609,8 +611,134 @@ jobs:
           bash "$RUNNER_TEMP/notify-human.sh"
           "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
-      - name: Commit and answer review
+      - name: Evaluate trusted follow-up diff guard
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'
+        id: followup-diff-guard
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .ai-context/request.md
+          rmdir .ai-context 2>/dev/null || true
+          git add -A
+
+          result_json=''
+          helper_status=0
+          set +e
+          result_json="$(bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")"
+          helper_status=$?
+          set -e
+
+          parsed=false
+          result=''
+          if [ -n "$result_json" ] && jq -e '
+            type == "object" and
+            (.result | type == "string") and
+            (.changed_files | type == "number" and . >= 0 and floor == .) and
+            (.additions | type == "number" and . >= 0 and floor == .) and
+            (.deletions | type == "number" and . >= 0 and floor == .) and
+            (.total_changed_lines | type == "number" and . >= 0 and floor == .) and
+            (.new_files | type == "number" and . >= 0 and floor == .)
+          ' <<< "$result_json" > /dev/null 2>&1; then
+            parsed=true
+            result="$(jq -r .result <<< "$result_json")"
+          fi
+
+          if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]; then
+            echo 'continue=true' >> "$GITHUB_OUTPUT"
+            {
+              echo '### AI Developer follow-up diff guard'
+              echo
+              echo '- Result: pass'
+              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / 25"
+              echo "- Additions: $(jq -r .additions <<< "$result_json")"
+              echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
+              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / 2,000"
+              echo "- New files: $(jq -r .new_files <<< "$result_json") / 10"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          reason='Trusted follow-up diff guard failed closed before repository write.'
+          if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]; then
+            reason='Trusted follow-up diff guard stopped an oversized repository change before commit/push/PR write.'
+          elif [ "$parsed" = true ] && [ "$result" = error ]; then
+            reason='Trusted follow-up diff guard could not safely measure the staged change; automated follow-up is paused.'
+          elif [ "$parsed" = true ]; then
+            reason="Trusted follow-up diff guard returned unexpected result '${result}'; automated follow-up is paused."
+          elif [ "$helper_status" -ne 0 ]; then
+            reason='Trusted follow-up diff guard helper failed without a valid machine-readable result; automated follow-up is paused.'
+          else
+            reason='Trusted follow-up diff guard output could not be parsed; automated follow-up is paused.'
+          fi
+
+          if [[ "$HEAD_REF" =~ ^ai/issue-([0-9]+)$ ]]; then
+            issue_number="${BASH_REMATCH[1]}"
+          else
+            issue_number='-'
+          fi
+          bash "$RUNNER_TEMP/apply-human-pause.sh" \
+            "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
+
+          diagnostics="$reason"
+          if [ "$parsed" = true ]; then
+            diagnostics+=$'\n\n'"Result: ${result}."
+            if [ "$result" = stop ]; then
+              for field in changed_files additions deletions total_changed_lines new_files; do
+                value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
+                diagnostics+=$'\n'"${field}: ${value}"
+              done
+            else
+              if [ "$result" = error ]; then
+                error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
+                if [ -n "$error_code" ]; then
+                  diagnostics+=$'\n'"error: ${error_code}"
+                fi
+              fi
+              diagnostics+=$'\n'"Metrics: unavailable"
+            fi
+          else
+            diagnostics+=$'\n\n'"Result: unavailable."
+            diagnostics+=$'\n'"Metrics: unavailable"
+          fi
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$diagnostics"
+
+          {
+            echo '### AI Developer follow-up diff guard'
+            echo
+            echo "- Result: ${result:-unavailable}"
+            echo '- Thresholds: 25 changed files / 2,000 total changed lines / 10 new files'
+            if [ "$parsed" = true ] && [ "$result" = stop ]; then
+              for field in changed_files additions deletions total_changed_lines new_files; do
+                value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
+                echo "- ${field}: ${value}"
+              done
+            else
+              if [ "$parsed" = true ] && [ "$result" = error ]; then
+                error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
+                if [ -n "$error_code" ]; then
+                  echo "- error: ${error_code}"
+                fi
+              fi
+              echo '- Metrics: unavailable'
+            fi
+            echo '- Decision: repository write blocked'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'continue=false' >> "$GITHUB_OUTPUT"
+
+      - name: Notify human of follow-up diff guard stop
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+        run: >-
+          bash "$RUNNER_TEMP/notify-human.sh"
+          "AI Developer follow-up diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+
+      - name: Commit and answer review
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
