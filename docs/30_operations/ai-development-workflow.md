@@ -105,7 +105,7 @@ Anthropicは長期APIキーではなくGitHub OIDC / Workload Identity Federatio
 
 ## Claude API消費制御
 
-Claude reviewは1実行につき `--max-budget-usd 1.70` を設定し、上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとする。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
+Claude reviewのrun単位budgetはrisk classごとに設定する。protected pathsを含まないstandard review（`CLAUDE_MODEL_STANDARD`）は `--max-budget-usd 1.70`、protected pathsを含むhigh-risk review（`CLAUDE_MODEL`）は `--max-budget-usd 2.10` とする。上限到達、API失敗、出力不正をapproveへ変換せずfail-closedとし、自動retryしない。`--max-turns` は費用上限として扱わず、異常ループ検知へ別途必要になった場合だけ実測turn数以上の値を検討する。
 
 利用量記録stepはverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加するRisk class、Action outcome、Schema validも含める。Risk class、Action outcome、Schema validはusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`Execution usage was unavailable.`を記録する。集計失敗時だけはraw execution由来のstderrを通常logへ出さず、固定文言`Claude usage summarization failed.`を1行だけstderrへ出力する。
 
