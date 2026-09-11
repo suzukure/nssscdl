@@ -298,6 +298,10 @@ followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-g
 jq -e '.continue == false and .escalate == true' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
 jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
+if MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body"; then
+  echo 'Expected follow-up gate to fail closed when closing Issue lookup fails.' >&2
+  exit 1
+fi
 
 MOCK_GH_LOG="$test_dir/human-pause.log"
 export MOCK_GH_LOG
@@ -309,8 +313,15 @@ export MOCK_GH_LOG
 bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo - 37
 grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
 grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+MOCK_GH_LOG="$test_dir/human-pause-failure.log"
+: > "$MOCK_GH_LOG"
+export MOCK_GH_LOG
 if MOCK_PR_VIEW_FAIL=true bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo - 37; then
   echo 'Expected pause synchronization to fail when PR lookup fails.' >&2
+  exit 1
+fi
+if grep -Eq '^(label create|issue edit) ' "$MOCK_GH_LOG"; then
+  echo 'PR lookup failure must not partially create or apply pause labels.' >&2
   exit 1
 fi
 unset MOCK_GH_LOG
