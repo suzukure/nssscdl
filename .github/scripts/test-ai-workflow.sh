@@ -572,7 +572,10 @@ jq -cn --argjson review "$valid_structured_review" \
 EXECUTION_FILE="$test_dir/native-mask.json" GITHUB_OUTPUT="$test_dir/native-mask.outputs" bash "$mask_step_script" > "$test_dir/native-mask.out"
 grep -Fqx "::add-mask::$valid_structured_review" "$test_dir/native-mask.out"
 grep -Fqx 'ready=true' "$test_dir/native-mask.outputs"
-EXECUTION_FILE="$test_dir/malformed-execution.json" GITHUB_OUTPUT="$test_dir/native-mask-invalid.outputs" bash "$mask_step_script"
+# This fixture belongs to the workflow-step test; the similarly malformed
+# classifier container is exercised by test-claude-review-workflow.sh.
+printf '%s' '{' > "$test_dir/native-mask-malformed.json"
+EXECUTION_FILE="$test_dir/native-mask-malformed.json" GITHUB_OUTPUT="$test_dir/native-mask-invalid.outputs" bash "$mask_step_script"
 [ ! -s "$test_dir/native-mask-invalid.outputs" ]
 # Existing submission remains gated on REVIEW_VALID and successful save.
 grep -Fq "if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" \
