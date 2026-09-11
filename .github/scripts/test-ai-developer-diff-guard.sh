@@ -13,6 +13,7 @@ developer_job="$test_dir/develop-from-issue.yml"
 guard_script="$test_dir/diff-guard.sh"
 followup_job="$test_dir/respond-to-claude.yml"
 followup_guard_script="$test_dir/followup-diff-guard.sh"
+followup_notify_script="$test_dir/followup-diff-guard-notify.sh"
 
 awk '
   $0 == "  develop-from-issue:" { in_job = 1 }
@@ -28,7 +29,7 @@ extract_step_run() {
   awk -v step_name="$step_name" '
     $0 == "      - name: " step_name { in_step = 1; next }
     in_step && /^      - name: / { exit }
-    in_step && $0 == "        run: |" { in_run = 1; next }
+    in_step && ($0 == "        run: |" || $0 == "        run: >-") { in_run = 1; next }
     in_run {
       if ($0 ~ /^          /) sub(/^          /, "")
       print
@@ -41,10 +42,12 @@ extract_step_run "$developer_job" 'Evaluate trusted diff guard' "$guard_script"
 
 awk '
   $0 == "  respond-to-claude:" { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  respond-to-claude:" { exit }
   in_job { print }
 ' "$workflow" > "$followup_job"
 [ -s "$followup_job" ]
 extract_step_run "$followup_job" 'Evaluate trusted follow-up diff guard' "$followup_guard_script"
+extract_step_run "$followup_job" 'Notify human of follow-up diff guard stop' "$followup_notify_script"
 
 # Structural boundaries that are not practical to exercise in the extracted run body.
 grep -Fq 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job"
@@ -252,5 +255,6 @@ grep -Fq "if: steps.development-gate.outputs.continue == 'true' && steps.diff-gu
 grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$developer_job"
 grep -Fq '      - name: Notify human of follow-up diff guard stop' "$followup_job"
 grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'" "$followup_job"
+grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_notify_script"
 
 printf '%s\n' 'AI Developer diff guard fixture tests passed'
