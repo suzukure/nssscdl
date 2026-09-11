@@ -187,29 +187,6 @@ assert_review_rejected schema_mismatch extra-schema-key \
   bash "$repo_root/.github/scripts/validate-claude-review-output.sh" \
   '{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":[],"unexpected":true}'
 
-assert_bootstrap_matches() {
-  local terminator="${1:?terminator is required}"
-  local script_path="${2:?script path is required}"
-  local output_path="$test_dir/bootstrap-${terminator,,}.sh"
-
-  awk -v terminator="$terminator" '
-    /^          #!\/usr\/bin\/env bash$/ { candidate = 1; block = "" }
-    candidate { line = $0; sub(/^          /, "", line); block = block line ORS }
-    candidate && $0 == "          " terminator { printf "%s", block; exit }
-  ' "$repo_root/.github/workflows/claude-review.yml" | sed '$d' > "$output_path"
-
-  if ! cmp -s "$script_path" "$output_path"; then
-    echo "Bootstrap copy mismatch for $script_path (terminator: $terminator)." >&2
-    exit 1
-  fi
-}
-
-assert_bootstrap_matches VALIDATOR "$repo_root/.github/scripts/validate-claude-review-output.sh"
-assert_bootstrap_matches SUMMARIZER "$repo_root/.github/scripts/summarize-claude-usage.sh"
-assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
-assert_bootstrap_matches RISK_CLASSIFIER "$repo_root/.github/scripts/classify-claude-review-risk.sh"
-grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"' "$repo_root/.github/workflows/claude-review.yml"
-
 jq -cn --arg review "$fenced_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/valid-execution-with-review.json"
@@ -1065,25 +1042,6 @@ if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-suc
   exit 1
 fi
 
-if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$repo_root/.github/workflows/claude-review.yml")" -ne 1 ]; then
-  echo 'Expected exactly one Claude review invocation.' >&2
-  exit 1
-fi
-if [ "$(grep -Fc 'continue-on-error: true' "$repo_root/.github/workflows/claude-review.yml")" -ne 2 ]; then
-  echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
-  exit 1
-fi
-grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, unlabeled]' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq "github.event.label.name == 'human-review-required'" "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'CLAUDE_MODEL_STANDARD' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq -- '--max-budget-usd 1.70' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Record Claude review usage' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Claude review not run' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'Gate Claude review entry' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
-grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
