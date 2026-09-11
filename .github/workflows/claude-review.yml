@@ -336,10 +336,12 @@ jobs:
           if [ "$risk" = 'high' ]; then
             echo "model=$HIGH_RISK_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=high' >> "$GITHUB_OUTPUT"
+            echo 'budget_arg=--max-budget-usd 2.10' >> "$GITHUB_OUTPUT"
             echo 'Selected the high-risk review model.'
           elif [ "$risk" = 'standard' ]; then
             echo "model=$STANDARD_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=standard' >> "$GITHUB_OUTPUT"
+            echo 'budget_arg=--max-budget-usd 1.70' >> "$GITHUB_OUTPUT"
             echo 'Selected the standard review model.'
           else
             echo "Unsupported Claude review risk classification: ${risk}" >&2
@@ -387,7 +389,7 @@ jobs:
             Every finding must cite concrete repository evidence.
           claude_args: >-
             --model "${{ steps.review-model.outputs.model }}"
-            --max-budget-usd 1.70
+            ${{ steps.review-model.outputs.budget_arg }}
             --json-schema '${{ steps.review-schema.outputs.schema }}'
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
 
