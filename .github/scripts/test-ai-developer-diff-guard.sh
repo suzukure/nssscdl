@@ -44,6 +44,12 @@ codex_line="$(grep -n -F '      - name: Run Codex developer' "$developer_job" | 
 grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$developer_job"
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$developer_job"
 
+guard_stage_line="$(grep -n -F 'git add -A' "$guard_script" | head -n1 | cut -d: -f1)"
+guard_helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$guard_script" | head -n1 | cut -d: -f1)"
+[ -n "$guard_stage_line" ]
+[ -n "$guard_helper_line" ]
+[ "$guard_stage_line" -lt "$guard_helper_line" ]
+
 publish_if="$(awk '
   /^      - name: Commit, push, and open or update PR$/ { found = 1; next }
   found && /^        if: / { print; exit }
@@ -64,10 +70,12 @@ make_case_environment() {
   : > "$case_dir/summary"
   : > "$case_dir/gh.log"
   : > "$case_dir/pause.log"
+  : > "$case_dir/git.log"
 
   cat > "$case_dir/bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "$GIT_LOG"
 if [ "$#" -eq 2 ] && [ "$1" = add ] && [ "$2" = -A ]; then
   exit 0
 fi
@@ -126,8 +134,12 @@ run_case() {
     ISSUE_NUMBER='169' \
     GH_LOG="$case_dir/gh.log" \
     PAUSE_LOG="$case_dir/pause.log" \
+    GIT_LOG="$case_dir/git.log" \
       bash "$guard_script"
   )
+
+  grep -Fxq 'add -A' "$case_dir/git.log"
+  [ ! -e "$case_dir/.ai-context/request.md" ]
 }
 
 assert_no_metric_diagnostics() {
@@ -139,7 +151,7 @@ assert_no_metric_diagnostics() {
   fi
 }
 
-run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' 
+run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\'''
 grep -Fxq 'continue=true' "$test_dir/pass/github-output"
 [ ! -s "$test_dir/pass/gh.log" ]
 [ ! -s "$test_dir/pass/pause.log" ]
