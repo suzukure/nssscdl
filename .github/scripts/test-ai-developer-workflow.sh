@@ -281,7 +281,7 @@ fi
 
 for fixture in valid app-author; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
+  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automatic Claude re-review is paused."))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
