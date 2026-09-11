@@ -337,4 +337,113 @@ if MOCK_ENTRY_FETCH_FAIL=true bash "$repo_root/.github/scripts/evaluate-issue-en
   exit 1
 fi
 
+# Extract and exercise the actual Issue-entry publish step with all Git/GitHub
+# writes mocked. Creating a PR must preserve Draft until a human requests
+# review; updating an existing PR must not create another PR or change its
+# stage.
+extract_workflow_step() {
+  local step_name="${1:?step name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v step_name="$step_name" '
+    $0 == "      - name: " step_name { step = 1 }
+    step && /^        run: \|$/ { run = 1; next }
+    run && /^      - name: / { exit }
+    run && /^  [[:alnum:]_-]+:$/ { exit }
+    run { line = $0; sub(/^          /, "", line); print line }
+  ' "$workflow" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract the $step_name step." >&2
+    exit 1
+  fi
+}
+
+publish_step="$test_dir/publish-issue-pr.sh"
+extract_workflow_step 'Commit, push, and open or update PR' "$publish_step"
+for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure; do
+  (
+    case_dir="$test_dir/publish-$publish_case"
+    mkdir "$case_dir"
+    cd "$case_dir"
+    printf '%s\n' 'Related references and validation checked.' > final.md
+    export PUBLISH_CASE="$publish_case" PUBLISH_LOG="$case_dir/calls.log"
+    export PUBLISH_BODY="$case_dir/body.md"
+    export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
+    export ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
+    git() {
+      printf 'git %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1" in
+        config|add|commit) return 0 ;;
+        diff) [ "$PUBLISH_CASE" = no-diff ] ;;
+        push) [ "$PUBLISH_CASE" != push-failure ] ;;
+        *) echo "Unexpected git call: $*" >&2; return 2 ;;
+      esac
+    }
+    gh() {
+      printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1 $2" in
+        'api /users/dev[bot]') echo 123 ;;
+        'pr list')
+          [ "$PUBLISH_CASE" != list-failure ] || return 1
+          case "$PUBLISH_CASE" in existing-*) echo 37 ;; esac
+          ;;
+        'pr create')
+          local saw_draft=false
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --draft) saw_draft=true ;;
+              --body-file) shift; cp "$1" "$PUBLISH_BODY" ;;
+            esac
+            shift
+          done
+          [ "$saw_draft" = true ] || return 2
+          [ "$PUBLISH_CASE" != create-failure ] || return 1
+          echo 'https://github.com/owner/repo/pull/37'
+          ;;
+        'pr comment'|'issue comment') return 0 ;;
+        *) echo "Unexpected gh call (including automatic stage change): $*" >&2; return 2 ;;
+      esac
+    }
+    export -f git gh
+    outcome=success
+    bash "$publish_step" > stdout 2> stderr || outcome=failure
+    assert_no_publish_call() {
+      if grep -Eq "$1" "$PUBLISH_LOG"; then
+        echo "Unexpected publish side effect in $PUBLISH_CASE: $1" >&2
+        exit 1
+      fi
+    }
+    case "$PUBLISH_CASE" in
+      *-failure) [ "$outcome" = failure ] ;;
+      *) [ "$outcome" = success ] ;;
+    esac
+    case "$PUBLISH_CASE" in
+      new)
+        grep -Fq 'gh pr create ' "$PUBLISH_LOG"
+        grep -Fq -- '--draft' "$PUBLISH_LOG"
+        grep -Fq 'Closes #36' "$PUBLISH_BODY"
+        grep -Fq '## Review readiness' "$PUBLISH_BODY"
+        grep -Fq 'Ready for review' "$PUBLISH_BODY"
+        grep -Fq 'as Draft.' "$PUBLISH_LOG"
+        ;;
+      existing-*)
+        grep -Fq 'git push ' "$PUBLISH_LOG"
+        grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
+        assert_no_publish_call 'gh pr create '
+        ;;
+      no-diff)
+        grep -Fq 'produced no repository changes' "$PUBLISH_LOG"
+        assert_no_publish_call 'git (commit|push)|gh pr create'
+        ;;
+      push-failure|list-failure)
+        assert_no_publish_call 'gh pr create '
+        ;;
+      create-failure)
+        assert_no_publish_call 'Codex opened'
+        ;;
+    esac
+    assert_no_publish_call 'gh pr (ready|edit)'
+  )
+done
+
 printf '%s\n' 'AI Developer workflow fixture tests passed'
