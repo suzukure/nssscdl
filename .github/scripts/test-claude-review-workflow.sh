@@ -45,6 +45,89 @@ assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude
 assert_bootstrap_matches RISK_CLASSIFIER "$repo_root/.github/scripts/classify-claude-review-risk.sh"
 grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"' "$workflow"
 
+validator="$repo_root/.github/scripts/validate-claude-review-output.sh"
+valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
+validated_structured_review="$(bash "$validator" "$valid_structured_review")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_structured_review" > /dev/null
+
+fenced_structured_review="$(printf '```json\n%s\n```' "$valid_structured_review")"
+validated_fenced_review="$(bash "$validator" "$fenced_structured_review")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_fenced_review" > /dev/null
+
+surrounded_fenced_review="$(printf 'Review follows:\n```json\n%s\n```' "$valid_structured_review")"
+validated_surrounded_fenced_review="$(bash "$validator" "$surrounded_fenced_review")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_surrounded_fenced_review" > /dev/null
+
+assert_review_rejected() {
+  local expected_reason="${1:?expected reason is required}"
+  local fixture_name="${2:?fixture name is required}"
+  shift 2
+  local output_path="$test_dir/$fixture_name.out"
+  local error_path="$test_dir/$fixture_name.err"
+
+  if "$@" > "$output_path" 2> "$error_path"; then
+    echo "Expected $fixture_name to be rejected." >&2
+    exit 1
+  fi
+  if [ "$(cat "$error_path")" != "$expected_reason" ]; then
+    echo "Expected $fixture_name to report $expected_reason." >&2
+    exit 1
+  fi
+  if [ -s "$output_path" ]; then
+    echo "Rejected $fixture_name wrote a result to stdout." >&2
+    exit 1
+  fi
+  if grep -Fq 'sensitive-raw-claude-output' "$output_path" "$error_path"; then
+    echo "Rejected $fixture_name exposed raw Claude output." >&2
+    exit 1
+  fi
+}
+
+assert_review_rejected invalid_json empty-review bash "$validator" ''
+assert_review_rejected invalid_json prose-without-fence \
+  bash "$validator" 'Review follows: {"sensitive-raw-claude-output": true}'
+assert_review_rejected invalid_json malformed-json \
+  bash "$validator" '{"sensitive-raw-claude-output":'
+assert_review_rejected ambiguous_result multiple-fences \
+  bash "$validator" "$(printf '```json\n%s\n```\n```json\n%s\n```' "$valid_structured_review" "$valid_structured_review")"
+assert_review_rejected schema_mismatch incomplete-schema bash "$validator" '{"verdict":"approve"}'
+assert_review_rejected schema_mismatch wrong-summary-type \
+  bash "$validator" '{"verdict":"approve","summary":[],"blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":[]}'
+assert_review_rejected schema_mismatch extra-schema-key \
+  bash "$validator" '{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":[],"unexpected":true}'
+
+jq -cn --arg review "$fenced_structured_review" '[
+  {type:"result", subtype:"success", is_error:false, result:$review}
+]' > "$test_dir/valid-execution-with-review.json"
+validated_execution_review="$(bash "$validator" --execution-file "$test_dir/valid-execution-with-review.json")"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_execution_review" > /dev/null
+
+for fixture in no-success multiple-success error-result; do
+  case "$fixture" in
+    no-success)
+      fixture_json='[]'
+      ;;
+    multiple-success)
+      fixture_json="$(jq -cn --arg review "$valid_structured_review" '[
+        {type:"result", subtype:"success", is_error:false, result:$review},
+        {type:"result", subtype:"success", is_error:false, result:$review}
+      ]')"
+      ;;
+    error-result)
+      fixture_json="$(jq -cn --arg review "$valid_structured_review" '[
+        {type:"result", subtype:"success", is_error:true, result:$review}
+      ]')"
+      ;;
+  esac
+  printf '%s\n' "$fixture_json" > "$test_dir/$fixture-execution.json"
+  case "$fixture" in
+    no-success|error-result) expected_reason=missing_result ;;
+    multiple-success) expected_reason=ambiguous_result ;;
+  esac
+  assert_review_rejected "$expected_reason" "$fixture-execution" \
+    bash "$validator" --execution-file "$test_dir/$fixture-execution.json"
+done
+
 model_step="$test_dir/select-claude-review-model.sh"
 extract_step_run 'Select Claude review model' "$model_step"
 runner_temp="$test_dir/runner-temp"
