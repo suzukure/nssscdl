@@ -11,6 +11,9 @@ trap 'rm -rf "$test_dir"' EXIT
 
 developer_job="$test_dir/develop-from-issue.yml"
 guard_script="$test_dir/diff-guard.sh"
+followup_job="$test_dir/respond-to-claude.yml"
+followup_guard_script="$test_dir/followup-diff-guard.sh"
+followup_notify_script="$test_dir/followup-diff-guard-notify.sh"
 
 awk '
   $0 == "  develop-from-issue:" { in_job = 1 }
@@ -20,21 +23,31 @@ awk '
 [ -s "$developer_job" ]
 
 extract_step_run() {
-  local step_name="${1:?step name is required}"
-  local output="${2:?output path is required}"
+  local job="${1:?job path is required}"
+  local step_name="${2:?step name is required}"
+  local output="${3:?output path is required}"
   awk -v step_name="$step_name" '
     $0 == "      - name: " step_name { in_step = 1; next }
     in_step && /^      - name: / { exit }
-    in_step && $0 == "        run: |" { in_run = 1; next }
+    in_step && ($0 == "        run: |" || $0 == "        run: >-") { in_run = 1; next }
     in_run {
       if ($0 ~ /^          /) sub(/^          /, "")
       print
     }
-  ' "$developer_job" > "$output"
+  ' "$job" > "$output"
   [ -s "$output" ]
 }
 
-extract_step_run 'Evaluate trusted diff guard' "$guard_script"
+extract_step_run "$developer_job" 'Evaluate trusted diff guard' "$guard_script"
+
+awk '
+  $0 == "  respond-to-claude:" { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  respond-to-claude:" { exit }
+  in_job { print }
+' "$workflow" > "$followup_job"
+[ -s "$followup_job" ]
+extract_step_run "$followup_job" 'Evaluate trusted follow-up diff guard' "$followup_guard_script"
+extract_step_run "$followup_job" 'Notify human of follow-up diff guard stop' "$followup_notify_script"
 
 # Structural boundaries that are not practical to exercise in the extracted run body.
 grep -Fq 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job"
@@ -57,10 +70,25 @@ publish_if="$(awk '
 ' "$developer_job")"
 [ "$publish_if" = "        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue == 'true'" ]
 
-if grep -Fq 'evaluate-codex-diff-gate.sh' <(sed -n '/^  respond-to-claude:/,$p' "$workflow"); then
-  echo 'Issue #169 must not connect the diff guard to the Claude follow-up path.' >&2
-  exit 1
-fi
+grep -Fq 'git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$followup_job"
+followup_bootstrap_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$followup_job" | cut -d: -f1)"
+followup_codex_line="$(grep -n -F '      - name: Run Codex follow-up' "$followup_job" | cut -d: -f1)"
+[ "$followup_bootstrap_line" -lt "$followup_codex_line" ]
+grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$followup_job"
+grep -Fq 'Avoid broad formatting changes and large generated additions.' "$followup_job"
+
+followup_stage_line="$(grep -n -F 'git add -A' "$followup_guard_script" | head -n1 | cut -d: -f1)"
+followup_helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$followup_guard_script" | head -n1 | cut -d: -f1)"
+[ -n "$followup_stage_line" ]
+[ -n "$followup_helper_line" ]
+[ "$followup_stage_line" -lt "$followup_helper_line" ]
+
+followup_publish_if="$(awk '
+  /^      - name: Commit and answer review$/ { found = 1; next }
+  found && /^        if: / { print; exit }
+  found && /^      - name: / { exit }
+' "$followup_job")"
+[ "$followup_publish_if" = "        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'" ]
 
 make_case_environment() {
   local case_dir="${1:?case dir is required}"
@@ -90,7 +118,7 @@ set -euo pipefail
 if [ "$1" = pr ] && [ "$2" = list ]; then
   exit 0
 fi
-if [ "$1" = issue ] && [ "$2" = comment ]; then
+if { [ "$1" = issue ] || [ "$1" = pr ]; } && [ "$2" = comment ]; then
   shift 2
   body=''
   while [ "$#" -gt 0 ]; do
@@ -119,6 +147,7 @@ EOF
 run_case() {
   local name="${1:?case name is required}"
   local helper_body="${2:?helper body is required}"
+  local guard="${3:-$guard_script}"
   local case_dir="$test_dir/$name"
   make_case_environment "$case_dir"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' "$helper_body" > "$case_dir/runner/evaluate-codex-diff-gate.sh"
@@ -135,7 +164,9 @@ run_case() {
     GH_LOG="$case_dir/gh.log" \
     PAUSE_LOG="$case_dir/pause.log" \
     GIT_LOG="$case_dir/git.log" \
-      bash "$guard_script"
+      PR_NUMBER='172' \
+      HEAD_REF='ai/issue-170' \
+      bash "$guard"
   )
 
   grep -Fxq 'add -A' "$case_dir/git.log"
@@ -190,9 +221,40 @@ run_case malformed_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files
 grep -Fxq 'continue=false' "$test_dir/malformed_pass/github-output"
 grep -Fq 'could not be parsed' "$test_dir/malformed_pass/gh.log"
 
+run_case followup_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script"
+grep -Fxq 'continue=true' "$test_dir/followup_pass/github-output"
+[ ! -s "$test_dir/followup_pass/gh.log" ]
+[ ! -s "$test_dir/followup_pass/pause.log" ]
+grep -Fq -- '- Result: pass' "$test_dir/followup_pass/summary"
+
+run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script"
+grep -Fxq 'continue=false' "$test_dir/followup_stop/github-output"
+[ -s "$test_dir/followup_stop/pause.log" ]
+grep -Fq 'oversized repository change' "$test_dir/followup_stop/gh.log"
+grep -Fq 'changed_files: 26' "$test_dir/followup_stop/gh.log"
+
+run_case followup_error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable"}'\''; exit 1' "$followup_guard_script"
+grep -Fxq 'continue=false' "$test_dir/followup_error/github-output"
+grep -Fq 'Metrics: unavailable' "$test_dir/followup_error/gh.log"
+assert_no_metric_diagnostics "$test_dir/followup_error/gh.log"
+assert_no_metric_diagnostics "$test_dir/followup_error/summary"
+
+run_case followup_malformed 'printf '\''%s\n'\'' '\''not-json'\''' "$followup_guard_script"
+grep -Fxq 'continue=false' "$test_dir/followup_malformed/github-output"
+grep -Fq 'could not be parsed' "$test_dir/followup_malformed/gh.log"
+assert_no_metric_diagnostics "$test_dir/followup_malformed/gh.log"
+
+run_case followup_unexpected 'printf '\''%s\n'\'' '\''{"result":"later","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script"
+grep -Fxq 'continue=false' "$test_dir/followup_unexpected/github-output"
+grep -Fq "unexpected result 'later'" "$test_dir/followup_unexpected/gh.log"
+assert_no_metric_diagnostics "$test_dir/followup_unexpected/gh.log"
+
 # Notification remains a separate workflow step; verify its fail-closed trigger and trusted helper use.
 grep -Fq '      - name: Notify human of diff guard stop' "$developer_job"
 grep -Fq "if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue != 'true'" "$developer_job"
 grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$developer_job"
+grep -Fq '      - name: Notify human of follow-up diff guard stop' "$followup_job"
+grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'" "$followup_job"
+grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_notify_script"
 
 printf '%s\n' 'AI Developer diff guard fixture tests passed'
