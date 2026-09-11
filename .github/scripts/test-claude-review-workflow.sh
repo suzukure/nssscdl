@@ -128,6 +128,189 @@ for fixture in no-success multiple-success error-result; do
     bash "$validator" --execution-file "$test_dir/$fixture-execution.json"
 done
 
+assert_execution_classification() {
+  local expected_reason="${1:?expected reason is required}"
+  local fixture_name="${2:?fixture name is required}"
+  local execution_file="${3:?execution file is required}"
+  local classifier="${4:-$repo_root/.github/scripts/classify-claude-review-execution.sh}"
+  local review_file="$test_dir/$fixture_name.review.json"
+  local stdout_path="$test_dir/$fixture_name.classifier.out"
+  local stderr_path="$test_dir/$fixture_name.classifier.err"
+
+  bash "$classifier" \
+    "$execution_file" "$review_file" > "$stdout_path" 2> "$stderr_path"
+  if [ "$(cat "$stdout_path")" != "$expected_reason" ]; then
+    echo "Expected $fixture_name to be classified as $expected_reason." >&2
+    exit 1
+  fi
+  if [ -s "$stderr_path" ]; then
+    echo "Classifier wrote diagnostics for $fixture_name." >&2
+    exit 1
+  fi
+  if grep -Fq 'sensitive-raw-claude-output' "$stdout_path" "$stderr_path"; then
+    echo "Classifier exposed raw Claude output for $fixture_name." >&2
+    exit 1
+  fi
+  if [ "$expected_reason" != REVIEW_VALID ] && [ -e "$review_file" ]; then
+    echo "Classifier left a review file for rejected $fixture_name." >&2
+    exit 1
+  fi
+}
+
+assert_execution_classification REVIEW_VALID valid-execution-classification \
+  "$test_dir/valid-execution-with-review.json"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/valid-execution-classification.review.json" > /dev/null
+
+# A different TMPDIR must not prevent the classifier from atomically renaming
+# the normalized hand-off into the caller's output directory.
+mkdir "$test_dir/foreign-tmp"
+TMPDIR="$test_dir/foreign-tmp" bash "$repo_root/.github/scripts/classify-claude-review-execution.sh" \
+  "$test_dir/valid-execution-with-review.json" "$test_dir/cross-tmpdir.review.json" \
+  > "$test_dir/cross-tmpdir.classifier.out" 2> "$test_dir/cross-tmpdir.classifier.err"
+if [ "$(cat "$test_dir/cross-tmpdir.classifier.out")" != REVIEW_VALID ] \
+  || [ -s "$test_dir/cross-tmpdir.classifier.err" ]; then
+  echo 'Classifier did not safely hand off a review with a different TMPDIR.' >&2
+  exit 1
+fi
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/cross-tmpdir.review.json" > /dev/null
+
+# Readable malformed execution containers are untrusted review failures, while
+# missing, non-regular, and unreadable files are classifier entry failures.
+: > "$test_dir/empty-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID empty-execution \
+  "$test_dir/empty-execution.json"
+printf '%s\n' '{}' > "$test_dir/non-array-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID non-array-execution \
+  "$test_dir/non-array-execution.json"
+printf '%s' '{' > "$test_dir/malformed-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID malformed-execution \
+  "$test_dir/malformed-execution.json"
+
+assert_classifier_entry_failure() {
+  local fixture_name="${1:?fixture name is required}"
+  local execution_file="${2-}"
+  local review_file="$test_dir/$fixture_name.review.json"
+  local stdout_path="$test_dir/$fixture_name.classifier.out"
+  local stderr_path="$test_dir/$fixture_name.classifier.err"
+
+  bash "$repo_root/.github/scripts/classify-claude-review-execution.sh" \
+    "$execution_file" "$review_file" > "$stdout_path" 2> "$stderr_path"
+  if [ "$(cat "$stdout_path")" != CLASSIFIER_INTERNAL_ERROR ] || [ -s "$stderr_path" ]; then
+    echo "Expected $fixture_name to be a classifier entry failure." >&2
+    exit 1
+  fi
+  if [ -e "$review_file" ]; then
+    echo "Classifier left a review file for entry failure $fixture_name." >&2
+    exit 1
+  fi
+}
+
+assert_classifier_entry_failure missing-execution ''
+mkdir "$test_dir/execution-directory"
+assert_classifier_entry_failure non-regular-execution "$test_dir/execution-directory"
+
+# Git Bash on Windows does not implement the POSIX mode checks used by these
+# fixtures. Keep them enabled on the Linux Actions runner (unless running root).
+posix_permissions=true
+case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
+if [ "$(id -u)" -eq 0 ] || [ "$posix_permissions" = false ]; then
+  echo 'Skipping unreadable validator and execution fixtures: root or Windows cannot enforce chmod 000 read checks.' >&2
+else
+  unreadable_execution="$test_dir/unreadable-execution.json"
+  cp "$test_dir/valid-execution-with-review.json" "$unreadable_execution"
+  chmod 000 "$unreadable_execution"
+  assert_classifier_entry_failure unreadable-execution "$unreadable_execution"
+  chmod 600 "$unreadable_execution"
+fi
+
+# Trusted bootstrap scripts are written with `git show > file`, which does not
+# preserve their executable bits. The classifier must invoke its validator via
+# bash and retain its safe normalized review hand-off.
+bootstrap_scripts="$test_dir/bootstrap-scripts"
+mkdir "$bootstrap_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$bootstrap_scripts/"
+cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$bootstrap_scripts/"
+chmod 600 "$bootstrap_scripts/validate-claude-review-output.sh"
+assert_execution_classification REVIEW_VALID non-executable-bootstrap-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$bootstrap_scripts/classify-claude-review-execution.sh"
+jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+  "$test_dir/non-executable-bootstrap-validator.review.json" > /dev/null
+
+normalized_output_validator_scripts="$test_dir/normalized-output-validator-scripts"
+mkdir "$normalized_output_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$normalized_output_validator_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '{ \"normalization\": true }'" \
+  > "$normalized_output_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$normalized_output_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification REVIEW_VALID normalized-validator-output \
+  "$test_dir/valid-execution-with-review.json" \
+  "$normalized_output_validator_scripts/classify-claude-review-execution.sh"
+if [ "$(cat "$test_dir/normalized-validator-output.review.json")" != '{"normalization":true}' ]; then
+  echo 'Classifier did not normalize the validated review output.' >&2
+  exit 1
+fi
+
+missing_validator_scripts="$test_dir/missing-validator-scripts"
+mkdir "$missing_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$missing_validator_scripts/"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR missing-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$missing_validator_scripts/classify-claude-review-execution.sh"
+
+empty_validator_scripts="$test_dir/empty-validator-scripts"
+mkdir "$empty_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$empty_validator_scripts/"
+: > "$empty_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$empty_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR empty-validator \
+  "$test_dir/valid-execution-with-review.json" \
+  "$empty_validator_scripts/classify-claude-review-execution.sh"
+
+unreadable_validator_scripts="$test_dir/unreadable-validator-scripts"
+mkdir "$unreadable_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$unreadable_validator_scripts/"
+cp "$repo_root/.github/scripts/validate-claude-review-output.sh" "$unreadable_validator_scripts/"
+chmod 000 "$unreadable_validator_scripts/validate-claude-review-output.sh"
+if [ "$(id -u)" -ne 0 ] && [ "$posix_permissions" = true ]; then
+  assert_execution_classification CLASSIFIER_INTERNAL_ERROR unreadable-validator \
+    "$test_dir/valid-execution-with-review.json" \
+    "$unreadable_validator_scripts/classify-claude-review-execution.sh"
+fi
+chmod 600 "$unreadable_validator_scripts/validate-claude-review-output.sh"
+
+unknown_diagnostic_scripts="$test_dir/unknown-diagnostic-scripts"
+mkdir "$unknown_diagnostic_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$unknown_diagnostic_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" sensitive-raw-claude-output >&2' 'exit 1' \
+  > "$unknown_diagnostic_scripts/validate-claude-review-output.sh"
+chmod 600 "$unknown_diagnostic_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR unknown-validator-diagnostic \
+  "$test_dir/valid-execution-with-review.json" \
+  "$unknown_diagnostic_scripts/classify-claude-review-execution.sh"
+
+empty_output_validator_scripts="$test_dir/empty-output-validator-scripts"
+mkdir "$empty_output_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$empty_output_validator_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
+  > "$empty_output_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$empty_output_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR empty-validator-output \
+  "$test_dir/valid-execution-with-review.json" \
+  "$empty_output_validator_scripts/classify-claude-review-execution.sh"
+
+non_object_output_validator_scripts="$test_dir/non-object-output-validator-scripts"
+mkdir "$non_object_output_validator_scripts"
+cp "$repo_root/.github/scripts/classify-claude-review-execution.sh" "$non_object_output_validator_scripts/"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '[]'" \
+  > "$non_object_output_validator_scripts/validate-claude-review-output.sh"
+chmod 600 "$non_object_output_validator_scripts/validate-claude-review-output.sh"
+assert_execution_classification CLASSIFIER_INTERNAL_ERROR non-object-validator-output \
+  "$test_dir/valid-execution-with-review.json" \
+  "$non_object_output_validator_scripts/classify-claude-review-execution.sh"
+
 model_step="$test_dir/select-claude-review-model.sh"
 extract_step_run 'Select Claude review model' "$model_step"
 runner_temp="$test_dir/runner-temp"
