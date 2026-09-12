@@ -46,6 +46,102 @@ assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude
 assert_bootstrap_matches RISK_CLASSIFIER "$repo_root/.github/scripts/classify-claude-review-risk.sh"
 grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"' "$workflow"
 
+# This mock is intentionally limited to the entry-gate and risk-classifier
+# fixtures below. Cross-workflow gates remain covered by test-ai-workflow.sh.
+gh() {
+  if [ "$1 $2" = 'pr view' ]; then
+    case "${MOCK_CASE:-valid}" in
+      no-links)
+        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        ;;
+      pr-paused)
+        printf '%s\n' '{"labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      *)
+        printf '%s\n' '{"labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+    esac
+  elif [ "$1" = api ]; then
+    if [ "${MOCK_API_FAIL:-false}" = true ]; then
+      return 1
+    fi
+    if [ "$2" != 'repos/owner/repo/issues/36' ]; then
+      echo "Unexpected Issue API target: $*" >&2
+      return 2
+    fi
+    if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
+      printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
+    else
+      printf '%s\n' '{"labels":[]}'
+    fi
+  elif [ "$1 $2" = 'pr diff' ]; then
+    if [ "${MOCK_DIFF_FAIL:-false}" = true ]; then
+      return 1
+    fi
+    if [[ "$*" != *'--name-only'* ]]; then
+      echo "Unexpected PR diff invocation: $*" >&2
+      return 2
+    fi
+    printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
+  else
+    echo "Unexpected gh invocation: $*" >&2
+    return 2
+  fi
+}
+export -f gh
+
+MOCK_CASE=valid
+export MOCK_CASE
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
+
+MOCK_CASE=no-links
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
+
+MOCK_CASE=pr-paused
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
+
+MOCK_CASE=valid
+MOCK_ISSUE_PAUSED=true
+export MOCK_CASE MOCK_ISSUE_PAUSED
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+jq -e '.continue == false and (.reason | contains("Issue #36"))' <<< "$review_entry" > /dev/null
+unset MOCK_ISSUE_PAUSED
+
+MOCK_API_FAIL=true
+export MOCK_API_FAIL
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+  > /dev/null 2> "$test_dir/entry-gate-api-failure.err"; then
+  echo 'Expected Claude review entry to fail when a closing Issue cannot be fetched.' >&2
+  exit 1
+fi
+grep -Fq 'Could not fetch closing Issue #36; refusing Claude review.' "$test_dir/entry-gate-api-failure.err"
+unset MOCK_API_FAIL
+
+MOCK_CHANGED_PATH=src/CLAUDE.md
+export MOCK_CHANGED_PATH
+if [ "$(bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk)" != high ]; then
+  echo 'Expected a nested AI instruction file to use the high-risk model.' >&2
+  exit 1
+fi
+
+unset MOCK_CHANGED_PATH
+if [ "$(bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk)" != standard ]; then
+  echo 'Expected an ordinary change to use the standard review model.' >&2
+  exit 1
+fi
+
+MOCK_DIFF_FAIL=true
+export MOCK_DIFF_FAIL
+if bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk \
+  > /dev/null 2> "$test_dir/risk-classifier-diff-failure.err"; then
+  echo 'Expected model classification to fail when protected-path lookup fails.' >&2
+  exit 1
+fi
+unset MOCK_DIFF_FAIL
+
 validator="$repo_root/.github/scripts/validate-claude-review-output.sh"
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
 validated_structured_review="$(bash "$validator" "$valid_structured_review")"
