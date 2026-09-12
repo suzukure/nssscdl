@@ -637,6 +637,8 @@ fi
 grep -Fq '### Claude review usage' "$test_dir/usage-summary.md"
 grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
 
+jq -cn '[]' > "$test_dir/no-success-usage-execution.json"
+
 assert_usage_step_unavailable() {
   local fixture="${1:?fixture is required}"
   # An empty expected diagnostic is valid for unset and missing execution files.
@@ -676,10 +678,16 @@ assert_usage_step_unavailable() {
 
 assert_usage_step_unavailable unset-execution-file ''
 assert_usage_step_unavailable missing-execution-file '' "$test_dir/does-not-exist.json"
-assert_usage_step_unavailable summarizer-failure 'Claude usage summarization failed.' "$test_dir/no-success-execution.json"
+assert_usage_step_unavailable summarizer-failure 'Claude usage summarization failed.' "$test_dir/no-success-usage-execution.json"
 
-if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
+no_success_stderr="$test_dir/no-success-execution.stderr"
+if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-usage-execution.json" \
+  > /dev/null 2> "$no_success_stderr"; then
   echo 'Expected usage summarization without a result event to fail.' >&2
+  exit 1
+fi
+if ! grep -Fq 'Claude execution has no result event' "$no_success_stderr"; then
+  echo 'Expected missing result event diagnostic from usage summarization.' >&2
   exit 1
 fi
 
