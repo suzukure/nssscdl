@@ -102,7 +102,12 @@ if [ "$(grep -Fc 'DATA| - Issue: #36' "$test_dir/follow-up-review.md")" -ne 1 ];
 fi
 
 MOCK_CASE=valid
-MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #86\n- Follow-up Issue: #87\n- Follow-up Issue: #88\n- Follow-up Issue: #89\n- Follow-up Issue: #90\n- Follow-up Issue: #91'
+MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #86
+- Follow-up Issue: #87
+- Follow-up Issue: #88
+- Follow-up Issue: #89
+- Follow-up Issue: #90
+- Follow-up Issue: #91'
 MOCK_API_LOG="$test_dir/follow-up-limit-api.log"
 export MOCK_CASE MOCK_CLOSING_BODY MOCK_API_LOG
 if bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/follow-up-limit.md" 'dev'; then
