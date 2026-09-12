@@ -139,8 +139,10 @@ export -f gh
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
 fenced_structured_review="$(printf '```json\n%s\n```' "$valid_structured_review")"
 
-# The workflow-boundary fixtures from `valid-execution-with-review` through
-# `schema-mismatch` intentionally duplicate the corresponding named inputs in
+# The workflow-boundary fixtures `valid-execution-with-review`, `no-success`,
+# `multiple-success`, `failed`, `budget-limited`, `spend-limited`,
+# `rate-limited`, `rate-limit-then-success`, `invalid-review`, and
+# `schema-mismatch` intentionally duplicate the corresponding inputs in
 # test-claude-review-workflow.sh. Keep their event shapes and metadata aligned:
 # that script tests classifier reasons, while this one tests the workflow's
 # output, summary, and fail-closed handoff.
@@ -405,12 +407,13 @@ assert_workflow_failure_classification REVIEW_RESULT_MISSING missing-result \
   "$test_dir/no-success-execution.json"
 assert_workflow_failure_classification REVIEW_RESULT_MISSING ambiguous-free-text-without-native \
   "$test_dir/multiple-success-execution.json"
-# This mirrors test-claude-review-workflow.sh's `ambiguous-execution` fixture,
-# whose validator `ambiguous_result` maps to REVIEW_RESULT_AMBIGUOUS. Unlike
-# that direct classifier fixture, this workflow-boundary input has no terminal
-# success. Together with `ambiguous-free-text-without-native` above, it tests
-# the native-output rule; it also verifies action-failure priority even when
-# native output is valid.
+# `ambiguous-free-text-without-native` above uses the same two-success input
+# as test-claude-review-workflow.sh's `ambiguous-execution`: the classifier
+# alone maps validator `ambiguous_result` to REVIEW_RESULT_AMBIGUOUS, while
+# this boundary rederives REVIEW_RESULT_MISSING because native output is absent.
+# This distinct terminal-result fixture tests the native-output rule when it
+# reaches classification. `ambiguous-action-failure` below instead proves that
+# action failure takes priority even with valid native output.
 jq -cn --arg review "$valid_structured_review" '[
   {type:"result",subtype:"success",is_error:false,result:$review},
   {type:"result",subtype:"success",is_error:false,result:$review},

@@ -214,19 +214,17 @@ for retry_fixture in rate-limit spend-limit spend-limit-error-code; do
     "$test_dir/$retry_fixture-then-success.review.json" > /dev/null
 done
 
-# Two successful free-text result candidates make the validator diagnose
-# `ambiguous_result`, which the classifier maps to REVIEW_RESULT_AMBIGUOUS.
-# A terminal success only selects the validator path; its presence or absence
-# is not itself the classifier's ambiguity condition. See
-# test-ai-workflow.sh's `ambiguous-free-text-without-native` and
-# `ambiguous-without-terminal-success` fixtures: they additionally exercise
-# the workflow boundary's native-output rule and action-failure priority.
-jq -cn --arg review "$valid_structured_review" '[
-  {type:"result", subtype:"success", is_error:false, result:$review},
-  {type:"result", subtype:"success", is_error:false, result:$review}
-]' > "$test_dir/ambiguous-execution.json"
+# Reuse `multiple-success-execution`: its two successful free-text results
+# make the validator diagnose `ambiguous_result`, which the classifier maps to
+# REVIEW_RESULT_AMBIGUOUS. This keeps the validator and classifier checks on
+# the same input. A terminal success selects the validator path but is not the
+# ambiguity condition. In test-ai-workflow.sh, the same input is its
+# `ambiguous-free-text-without-native` fixture: absent native output makes the
+# workflow rederive REVIEW_RESULT_MISSING. Its separate
+# `ambiguous-without-terminal-success` and `ambiguous-action-failure` fixtures
+# cover the native-output rule and action-failure priority, respectively.
 assert_execution_classification REVIEW_RESULT_AMBIGUOUS ambiguous-execution \
-  "$test_dir/ambiguous-execution.json"
+  "$test_dir/multiple-success-execution.json"
 
 # A numeric HTTP status or unstructured API message is not an account-spend
 # signal, and must not be exposed while the classifier rejects the review.
