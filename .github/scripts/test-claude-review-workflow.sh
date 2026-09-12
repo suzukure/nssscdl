@@ -31,6 +31,7 @@ extract_step_run() {
     $0 == "      - name: " step_name { step = 1 }
     step && /^        run: \|$/ { run = 1; next }
     run && /^      - name: / { exit }
+    run && /^  [[:alnum:]_-]+:$/ { exit }
     run { line = $0; sub(/^          /, "", line); print line }
   ' "$workflow" > "$output_path"
   if [ ! -s "$output_path" ]; then
@@ -466,6 +467,221 @@ if TEST_RISK=high \
   exit 1
 fi
 grep -Fq 'CLAUDE_MODEL repository variable must contain a non-whitespace value.' "$test_dir/model-high-whitespace.stderr"
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    num_turns:9,
+    duration_ms:123456,
+    total_cost_usd:1.25,
+    modelUsage:{
+      "model-a":{
+        inputTokens:10,
+        outputTokens:3,
+        cacheCreationInputTokens:100,
+        cacheReadInputTokens:1000,
+        costUSD:0.75
+      },
+      "model-b":{
+        inputTokens:20,
+        outputTokens:4,
+        cacheCreationInputTokens:200,
+        cacheReadInputTokens:2000,
+        costUSD:0.75
+      }
+    }
+  }
+]' > "$test_dir/usage-execution.json"
+usage_summary="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/usage-execution.json")"
+jq -e '
+  .result_subtype == "success" and
+  .is_error == false and
+  .turns == 9 and
+  .duration_ms == 123456 and
+  .estimated_cost_usd == 1.25 and
+  .input_tokens == 30 and
+  .output_tokens == 7 and
+  .cache_creation_input_tokens == 300 and
+  .cache_read_input_tokens == 3000
+' <<< "$usage_summary" > /dev/null
+
+# error_max_budget is an unverified placeholder as of Issue #61; confirm it from a real budget-limit run before treating it as a CLI contract.
+jq -cn '[
+  {
+    type:"result",
+    subtype:"error_max_budget",
+    is_error:true,
+    usage:{
+      input_tokens:11,
+      output_tokens:2,
+      cache_creation_input_tokens:33,
+      cache_read_input_tokens:44
+    }
+  }
+]' > "$test_dir/fallback-usage-execution.json"
+fallback_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/fallback-usage-execution.json")"
+jq -e '
+  .result_subtype == "error_max_budget" and
+  .is_error == true and
+  .input_tokens == 11 and
+  .output_tokens == 2 and
+  .cache_creation_input_tokens == 33 and
+  .cache_read_input_tokens == 44
+' <<< "$fallback_usage" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{
+      "model-a":{
+        inputTokens:10,
+        outputTokens:3,
+        cacheCreationInputTokens:100,
+        cacheReadInputTokens:1000
+      },
+      "model-b":{
+        inputTokens:20,
+        cacheCreationInputTokens:200,
+        cacheReadInputTokens:2000
+      }
+    },
+    usage:{
+      input_tokens:111,
+      output_tokens:22,
+      cache_creation_input_tokens:333,
+      cache_read_input_tokens:4444
+    }
+  }
+]' > "$test_dir/partial-model-usage-execution.json"
+partial_model_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/partial-model-usage-execution.json")"
+jq -e '
+  .input_tokens == 30 and
+  .output_tokens == null and
+  .cache_creation_input_tokens == 300 and
+  .cache_read_input_tokens == 3000
+' <<< "$partial_model_usage" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{"model-a":{inputTokens:10}}
+  }
+]' > "$test_dir/missing-usage-execution.json"
+missing_usage="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/missing-usage-execution.json")"
+jq -e '
+  .input_tokens == 10 and
+  .output_tokens == null and
+  .cache_creation_input_tokens == null and
+  .cache_read_input_tokens == null
+' <<< "$missing_usage" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{
+      "model-a":{costUSD:0.75},
+      "model-b":{costUSD:0.5}
+    }
+  }
+]' > "$test_dir/model-cost-fallback-execution.json"
+model_cost_fallback="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/model-cost-fallback-execution.json")"
+jq -e '.estimated_cost_usd == 1.25' <<< "$model_cost_fallback" > /dev/null
+
+jq -cn '[
+  {
+    type:"result",
+    subtype:"success",
+    is_error:false,
+    modelUsage:{
+      "model-a":{costUSD:0.75},
+      "model-b":{}
+    }
+  }
+]' > "$test_dir/partial-model-cost-execution.json"
+partial_model_cost="$(bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/partial-model-cost-execution.json")"
+jq -e '.estimated_cost_usd == null' <<< "$partial_model_cost" > /dev/null
+
+usage_step_script="$test_dir/record-claude-review-usage.sh"
+extract_step_run 'Record Claude review usage' "$usage_step_script"
+
+mkdir -p "$test_dir/runner-temp"
+cp "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/runner-temp/summarize-claude-usage.sh"
+GITHUB_STEP_SUMMARY="$test_dir/usage-summary.md" \
+RUNNER_TEMP="$test_dir/runner-temp" \
+EXECUTION_FILE="$test_dir/usage-execution.json" \
+ACTION_OUTCOME=success \
+VALIDATION_RESULT=true \
+REVIEW_RISK=low \
+bash "$usage_step_script" > "$test_dir/usage-step.stdout" 2> "$test_dir/usage-step.stderr"
+if [ "$(wc -l < "$test_dir/usage-step.stdout")" -ne 1 ] \
+    || [ "$(cat "$test_dir/usage-step.stdout")" != "$usage_summary" ]; then
+  echo 'Expected the usage step to write exactly the aggregated JSON to stdout.' >&2
+  exit 1
+fi
+if [ -s "$test_dir/usage-step.stderr" ]; then
+  echo 'Expected the usage step to write no diagnostics to stderr.' >&2
+  exit 1
+fi
+if grep -Fq "$usage_summary" "$test_dir/usage-summary.md"; then
+  echo 'Usage JSON was written to the Job Summary instead of only stdout.' >&2
+  exit 1
+fi
+grep -Fq '### Claude review usage' "$test_dir/usage-summary.md"
+grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
+
+assert_usage_step_unavailable() {
+  local fixture="${1:?fixture is required}"
+  # An empty expected diagnostic is valid for unset and missing execution files.
+  local expected_stderr="${2?expected stderr is required}"
+  local stdout_path="$test_dir/usage-step-$fixture.stdout"
+  local stderr_path="$test_dir/usage-step-$fixture.stderr"
+  local summary_path="$test_dir/usage-step-$fixture-summary.md"
+
+  if [ "$fixture" = unset-execution-file ]; then
+    env -u EXECUTION_FILE \
+      GITHUB_STEP_SUMMARY="$summary_path" \
+      RUNNER_TEMP="$test_dir/runner-temp" \
+      ACTION_OUTCOME=success \
+      VALIDATION_RESULT=false \
+      REVIEW_RISK=low \
+      bash "$usage_step_script" > "$stdout_path" 2> "$stderr_path"
+  else
+    GITHUB_STEP_SUMMARY="$summary_path" \
+    RUNNER_TEMP="$test_dir/runner-temp" \
+    EXECUTION_FILE="$3" \
+    ACTION_OUTCOME=success \
+    VALIDATION_RESULT=false \
+    REVIEW_RISK=low \
+    bash "$usage_step_script" > "$stdout_path" 2> "$stderr_path"
+  fi
+
+  if [ -s "$stdout_path" ]; then
+    echo "Unavailable usage fixture wrote JSON to stdout: $fixture" >&2
+    exit 1
+  fi
+  if [ "$(cat "$stderr_path")" != "$expected_stderr" ]; then
+    echo "Unexpected usage diagnostic for $fixture." >&2
+    exit 1
+  fi
+  grep -Fqx 'Execution usage was unavailable.' "$summary_path"
+}
+
+assert_usage_step_unavailable unset-execution-file ''
+assert_usage_step_unavailable missing-execution-file '' "$test_dir/does-not-exist.json"
+assert_usage_step_unavailable summarizer-failure 'Claude usage summarization failed.' "$test_dir/no-success-execution.json"
+
+if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-execution.json" > /dev/null; then
+  echo 'Expected usage summarization without a result event to fail.' >&2
+  exit 1
+fi
 
 run_step="$test_dir/run-claude-review.yml"
 awk '
