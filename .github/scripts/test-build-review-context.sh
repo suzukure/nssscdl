@@ -45,7 +45,10 @@ gh() {
       --arg body "$issue_body" \
       '{number: $number, title: $title, state: $state, body: $body, labels: []}'
   elif [ "$1 $2" = 'pr diff' ]; then
-    if [ "${MOCK_LARGE_DIFF:-false}" = 'true' ]; then
+    if [[ "$*" == *'--name-only'* ]]; then
+      echo "Unexpected PR diff invocation: $*" >&2
+      return 2
+    elif [ "${MOCK_LARGE_DIFF:-false}" = 'true' ]; then
       head -c 400001 /dev/zero | tr '\0' x
     else
       printf '%s\n' 'diff --git a/x b/x'
