@@ -7,6 +7,12 @@ export workflow
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
+# Git Bash on Windows does not reproduce the POSIX permissions of bootstrap
+# scripts written by `git show`, nor enforce chmod 000 read checks. Keep these
+# checks enabled on the Linux Actions runner unless running as root.
+posix_permissions=true
+case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
+
 assert_bootstrap_matches() {
   local terminator="${1:?terminator is required}"
   local script_path="${2:?script path is required}"
@@ -83,19 +89,23 @@ gh() {
       echo "Unexpected Issue API target: $*" >&2
       return 2
     fi
+    issue_labels='[]'
     if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
-      printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
-    else
-      printf '%s\n' '{"labels":[]}'
+      issue_labels='[{"name":"human-review-required"}]'
     fi
+    jq -cn --argjson labels "$issue_labels" \
+      '{number: 36, title: "Closing Issue", state: "OPEN", body: "requirements", labels: $labels}'
   elif [ "$1 $2" = 'pr diff' ]; then
     if [ "${MOCK_DIFF_FAIL:-false}" = true ]; then
       return 1
     fi
     if [[ "$*" == *'--name-only'* ]]; then
       printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
-    else
+    elif [ "${MOCK_FULL_DIFF:-false}" = true ]; then
       printf '%s\n' 'diff --git a/x b/x'
+    else
+      echo "Unexpected PR diff invocation: $*" >&2
+      return 2
     fi
   else
     echo "Unexpected gh invocation: $*" >&2
@@ -168,6 +178,8 @@ stale_event_base_sha='1111111111111111111111111111111111111111'
 current_base_tip_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 workflow_bootstrap_dir="$test_dir/workflow-bootstrap"
 mkdir "$workflow_bootstrap_dir"
+workflow_step_cwd="$test_dir/workflow-step-cwd"
+mkdir "$workflow_step_cwd"
 workflow_git_show_log="$test_dir/workflow-git-show.log"
 workflow_base_ref_log="$test_dir/workflow-base-ref.log"
 git() {
@@ -192,17 +204,21 @@ git() {
 }
 export -f git
 export repo_root
-MOCK_BASE_TIP_SHA="$current_base_tip_sha" \
-MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
-MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
-GITHUB_OUTPUT="$test_dir/build-context.outputs" \
-GITHUB_REPOSITORY=owner/repo \
-RUNNER_TEMP="$workflow_bootstrap_dir" \
-BASE_REF=main \
-EVENT_BASE_SHA="$stale_event_base_sha" \
-PR_NUMBER=37 \
-TRUSTED_LOGINS=dev \
-bash "$build_context_step_script"
+(
+  cd "$workflow_step_cwd"
+  MOCK_FULL_DIFF=true \
+  MOCK_BASE_TIP_SHA="$current_base_tip_sha" \
+  MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
+  MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
+  GITHUB_OUTPUT="$test_dir/build-context.outputs" \
+  GITHUB_REPOSITORY=owner/repo \
+  RUNNER_TEMP="$workflow_bootstrap_dir" \
+  BASE_REF=main \
+  EVENT_BASE_SHA="$stale_event_base_sha" \
+  PR_NUMBER=37 \
+  TRUSTED_LOGINS=dev \
+  bash "$build_context_step_script"
+)
 grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
 grep -Fqx main "$workflow_base_ref_log"
 grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
@@ -210,21 +226,22 @@ if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
   echo 'Workflow bootstrap used the stale event base SHA.' >&2
   exit 1
 fi
-posix_permissions=true
-case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
 if [ "$posix_permissions" = true ] && [ -x "$workflow_bootstrap_dir/validate-claude-review-output.sh" ]; then
   echo 'Workflow bootstrap fixture did not reproduce git show file permissions.' >&2
   exit 1
 fi
-if MOCK_BASE_TIP_SHA=not-a-commit \
-  MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
-  GITHUB_OUTPUT="$test_dir/build-context-invalid.outputs" \
-  GITHUB_REPOSITORY=owner/repo \
-  RUNNER_TEMP="$workflow_bootstrap_dir" \
-  BASE_REF=main \
-  PR_NUMBER=37 \
-  TRUSTED_LOGINS=dev \
-  bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"; then
+if (
+  cd "$workflow_step_cwd"
+  MOCK_BASE_TIP_SHA=not-a-commit \
+    MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
+    GITHUB_OUTPUT="$test_dir/build-context-invalid.outputs" \
+    GITHUB_REPOSITORY=owner/repo \
+    RUNNER_TEMP="$workflow_bootstrap_dir" \
+    BASE_REF=main \
+    PR_NUMBER=37 \
+    TRUSTED_LOGINS=dev \
+    bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"
+); then
   echo 'Workflow bootstrap accepted an invalid current base tip.' >&2
   exit 1
 fi
@@ -658,10 +675,6 @@ assert_classifier_entry_failure missing-execution ''
 mkdir "$test_dir/execution-directory"
 assert_classifier_entry_failure non-regular-execution "$test_dir/execution-directory"
 
-# Git Bash on Windows does not implement the POSIX mode checks used by these
-# fixtures. Keep them enabled on the Linux Actions runner (unless running root).
-posix_permissions=true
-case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
 if [ "$(id -u)" -eq 0 ] || [ "$posix_permissions" = false ]; then
   echo 'Skipping unreadable validator and execution fixtures: root or Windows cannot enforce chmod 000 read checks.' >&2
 else

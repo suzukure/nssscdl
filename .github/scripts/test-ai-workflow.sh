@@ -68,22 +68,6 @@ gh() {
     if [ "${MOCK_API_FAIL:-false}" = 'true' ]; then
       return 1
     fi
-    if [[ "$2" =~ ^repos/owner/repo/git/ref/heads/ ]]; then
-      base_ref="${2#repos/owner/repo/git/ref/heads/}"
-      if [ -n "${MOCK_BASE_REF_LOG:-}" ]; then
-        printf '%s\n' "$base_ref" >> "$MOCK_BASE_REF_LOG"
-      fi
-      if [ "${MOCK_BASE_REF_FAIL:-false}" = 'true' ]; then
-        return 1
-      fi
-      base_sha="${MOCK_BASE_TIP_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-      if [[ "$*" == *'--jq .object.sha'* ]]; then
-        printf '%s\n' "$base_sha"
-      else
-        jq -cn --arg sha "$base_sha" '{object: {sha: $sha}}'
-      fi
-      return
-    fi
     if [[ "$*" =~ /issues/([0-9]+) ]]; then
       issue_number="${BASH_REMATCH[1]}"
     else
