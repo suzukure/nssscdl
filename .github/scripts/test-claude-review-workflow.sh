@@ -7,6 +7,12 @@ export workflow
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
+# Git Bash on Windows does not reproduce the POSIX permissions of bootstrap
+# scripts written by `git show`, nor enforce chmod 000 read checks. Keep these
+# checks enabled on the Linux Actions runner unless running as root.
+posix_permissions=true
+case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
+
 assert_bootstrap_matches() {
   local terminator="${1:?terminator is required}"
   local script_path="${2:?script path is required}"
@@ -47,8 +53,8 @@ assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude
 assert_bootstrap_matches RISK_CLASSIFIER "$repo_root/.github/scripts/classify-claude-review-risk.sh"
 grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"' "$workflow"
 
-# This mock is intentionally limited to the entry-gate and risk-classifier
-# fixtures below. Cross-workflow gates remain covered by test-ai-workflow.sh.
+# This mock is intentionally limited to Claude Review workflow fixtures.
+# Cross-workflow gates remain covered by test-ai-workflow.sh.
 gh() {
   if [ "$1 $2" = 'pr view' ]; then
     case "${MOCK_CASE:-valid}" in
@@ -59,31 +65,48 @@ gh() {
         printf '%s\n' '{"labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
         ;;
       *)
-        printf '%s\n' '{"labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
         ;;
     esac
   elif [ "$1" = api ]; then
     if [ "${MOCK_API_FAIL:-false}" = true ]; then
       return 1
     fi
+    if [[ "$2" =~ ^repos/owner/repo/git/ref/heads/ ]]; then
+      base_ref="${2#repos/owner/repo/git/ref/heads/}"
+      if [ -n "${MOCK_BASE_REF_LOG:-}" ]; then
+        printf '%s\n' "$base_ref" >> "$MOCK_BASE_REF_LOG"
+      fi
+      base_sha="${MOCK_BASE_TIP_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+      if [[ "$*" == *'--jq .object.sha'* ]]; then
+        printf '%s\n' "$base_sha"
+      else
+        jq -cn --arg sha "$base_sha" '{object: {sha: $sha}}'
+      fi
+      return
+    fi
     if [ "$2" != 'repos/owner/repo/issues/36' ]; then
       echo "Unexpected Issue API target: $*" >&2
       return 2
     fi
+    issue_labels='[]'
     if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
-      printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
-    else
-      printf '%s\n' '{"labels":[]}'
+      issue_labels='[{"name":"human-review-required"}]'
     fi
+    jq -cn --argjson labels "$issue_labels" \
+      '{number: 36, title: "Closing Issue", state: "OPEN", body: "requirements", labels: $labels}'
   elif [ "$1 $2" = 'pr diff' ]; then
     if [ "${MOCK_DIFF_FAIL:-false}" = true ]; then
       return 1
     fi
-    if [[ "$*" != *'--name-only'* ]]; then
+    if [[ "$*" == *'--name-only'* ]]; then
+      printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
+    elif [ "${MOCK_FULL_DIFF:-false}" = true ]; then
+      printf '%s\n' 'diff --git a/x b/x'
+    else
       echo "Unexpected PR diff invocation: $*" >&2
       return 2
     fi
-    printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
   else
     echo "Unexpected gh invocation: $*" >&2
     return 2
@@ -145,6 +168,98 @@ unset MOCK_DIFF_FAIL
 
 validator="$repo_root/.github/scripts/validate-claude-review-output.sh"
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
+
+# The event payload can retain a stale base SHA after main advances. The
+# workflow must resolve the current base ref and use that tip for every
+# bootstrap read, particularly the trusted execution classifier.
+build_context_step_script="$test_dir/build-review-context.sh"
+extract_step_run 'Build review context' "$build_context_step_script"
+stale_event_base_sha='1111111111111111111111111111111111111111'
+current_base_tip_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+workflow_bootstrap_dir="$test_dir/workflow-bootstrap"
+mkdir "$workflow_bootstrap_dir"
+workflow_step_cwd="$test_dir/workflow-step-cwd"
+mkdir "$workflow_step_cwd"
+workflow_git_show_log="$test_dir/workflow-git-show.log"
+workflow_base_ref_log="$test_dir/workflow-base-ref.log"
+git() {
+  case "$1" in
+    show)
+      printf '%s\n' "$2" >> "$MOCK_GIT_SHOW_LOG"
+      case "$2" in
+        "$MOCK_BASE_TIP_SHA:.github/scripts/build-review-context.sh") command cat "$repo_root/.github/scripts/build-review-context.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/validate-claude-review-output.sh") command cat "$repo_root/.github/scripts/validate-claude-review-output.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/summarize-claude-usage.sh") command cat "$repo_root/.github/scripts/summarize-claude-usage.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/evaluate-claude-review-entry-gate.sh") command cat "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/classify-claude-review-risk.sh") command cat "$repo_root/.github/scripts/classify-claude-review-risk.sh" ;;
+        "$MOCK_BASE_TIP_SHA:.github/scripts/classify-claude-review-execution.sh") command cat "$repo_root/.github/scripts/classify-claude-review-execution.sh" ;;
+        "$MOCK_BASE_TIP_SHA:CLAUDE.md") command cat "$repo_root/CLAUDE.md" ;;
+        "$MOCK_BASE_TIP_SHA:AGENTS.md") command cat "$repo_root/AGENTS.md" ;;
+        *) echo "Unexpected trusted bootstrap read: $2" >&2; return 2 ;;
+      esac
+      ;;
+    cat-file) return 0 ;;
+    *) command git "$@" ;;
+  esac
+}
+export -f git
+export repo_root
+(
+  cd "$workflow_step_cwd"
+  MOCK_FULL_DIFF=true \
+  MOCK_BASE_TIP_SHA="$current_base_tip_sha" \
+  MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
+  MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
+  GITHUB_OUTPUT="$test_dir/build-context.outputs" \
+  GITHUB_REPOSITORY=owner/repo \
+  RUNNER_TEMP="$workflow_bootstrap_dir" \
+  BASE_REF=main \
+  EVENT_BASE_SHA="$stale_event_base_sha" \
+  PR_NUMBER=37 \
+  TRUSTED_LOGINS=dev \
+  bash "$build_context_step_script"
+)
+grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
+grep -Fqx main "$workflow_base_ref_log"
+grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
+if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
+  echo 'Workflow bootstrap used the stale event base SHA.' >&2
+  exit 1
+fi
+if [ "$posix_permissions" = true ] && [ -x "$workflow_bootstrap_dir/validate-claude-review-output.sh" ]; then
+  echo 'Workflow bootstrap fixture did not reproduce git show file permissions.' >&2
+  exit 1
+fi
+if (
+  cd "$workflow_step_cwd"
+  MOCK_BASE_TIP_SHA=not-a-commit \
+    MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
+    GITHUB_OUTPUT="$test_dir/build-context-invalid.outputs" \
+    GITHUB_REPOSITORY=owner/repo \
+    RUNNER_TEMP="$workflow_bootstrap_dir" \
+    BASE_REF=main \
+    PR_NUMBER=37 \
+    TRUSTED_LOGINS=dev \
+    bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"
+); then
+  echo 'Workflow bootstrap accepted an invalid current base tip.' >&2
+  exit 1
+fi
+grep -Fq 'Could not resolve the current base branch tip' "$test_dir/build-context-invalid.err"
+unset -f git
+
+# The env hand-off is masked first using the pinned Action's serialization.
+mask_step_script="$test_dir/mask-native.sh"
+extract_step_run 'Mask native review output' "$mask_step_script"
+jq -cn --argjson review "$valid_structured_review" \
+  '[{type:"result",subtype:"success",is_error:false,structured_output:$review}]' > "$test_dir/native-mask.json"
+EXECUTION_FILE="$test_dir/native-mask.json" GITHUB_OUTPUT="$test_dir/native-mask.outputs" bash "$mask_step_script" > "$test_dir/native-mask.out"
+grep -Fqx "::add-mask::$valid_structured_review" "$test_dir/native-mask.out"
+grep -Fqx 'ready=true' "$test_dir/native-mask.outputs"
+printf '%s' '{' > "$test_dir/native-mask-malformed.json"
+EXECUTION_FILE="$test_dir/native-mask-malformed.json" GITHUB_OUTPUT="$test_dir/native-mask-invalid.outputs" bash "$mask_step_script"
+[ ! -s "$test_dir/native-mask-invalid.outputs" ]
+
 validated_structured_review="$(bash "$validator" "$valid_structured_review")"
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' <<< "$validated_structured_review" > /dev/null
 
@@ -560,10 +675,6 @@ assert_classifier_entry_failure missing-execution ''
 mkdir "$test_dir/execution-directory"
 assert_classifier_entry_failure non-regular-execution "$test_dir/execution-directory"
 
-# Git Bash on Windows does not implement the POSIX mode checks used by these
-# fixtures. Keep them enabled on the Linux Actions runner (unless running root).
-posix_permissions=true
-case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
 if [ "$(id -u)" -eq 0 ] || [ "$posix_permissions" = false ]; then
   echo 'Skipping unreadable validator and execution fixtures: root or Windows cannot enforce chmod 000 read checks.' >&2
 else
