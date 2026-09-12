@@ -139,6 +139,11 @@ export -f gh
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
 fenced_structured_review="$(printf '```json\n%s\n```' "$valid_structured_review")"
 
+# The workflow-boundary fixtures from `valid-execution-with-review` through
+# `schema-mismatch` intentionally duplicate the corresponding named inputs in
+# test-claude-review-workflow.sh. Keep their event shapes and metadata aligned:
+# that script tests classifier reasons, while this one tests the workflow's
+# output, summary, and fail-closed handoff.
 jq -cn --arg review "$fenced_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/valid-execution-with-review.json"
@@ -148,10 +153,6 @@ jq -cn --arg review "$valid_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/multiple-success-execution.json"
 
-# These workflow-boundary inputs intentionally duplicate the corresponding
-# direct-classifier fixtures in test-claude-review-workflow.sh. Keep their
-# event shape and metadata aligned: that script tests classifier reasons,
-# while this one tests the workflow's output, summary, and fail-closed handoff.
 jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
   > "$test_dir/failed-execution.json"
 
@@ -404,9 +405,12 @@ assert_workflow_failure_classification REVIEW_RESULT_MISSING missing-result \
   "$test_dir/no-success-execution.json"
 assert_workflow_failure_classification REVIEW_RESULT_MISSING ambiguous-free-text-without-native \
   "$test_dir/multiple-success-execution.json"
-# This mirrors the direct classifier ambiguity fixture: without terminal
-# success, legacy ambiguity remains fail-closed even when native content is
-# valid. This boundary fixture additionally verifies action-failure precedence.
+# This mirrors test-claude-review-workflow.sh's `ambiguous-execution` fixture,
+# whose validator `ambiguous_result` maps to REVIEW_RESULT_AMBIGUOUS. Unlike
+# that direct classifier fixture, this workflow-boundary input has no terminal
+# success. Together with `ambiguous-free-text-without-native` above, it tests
+# the native-output rule; it also verifies action-failure priority even when
+# native output is valid.
 jq -cn --arg review "$valid_structured_review" '[
   {type:"result",subtype:"success",is_error:false,result:$review},
   {type:"result",subtype:"success",is_error:false,result:$review},

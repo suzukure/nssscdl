@@ -214,13 +214,16 @@ for retry_fixture in rate-limit spend-limit spend-limit-error-code; do
     "$test_dir/$retry_fixture-then-success.review.json" > /dev/null
 done
 
-# With no successful terminal result, two legacy successful result strings are
-# ambiguous to the validator. This is the classifier-level counterpart to the
-# workflow-boundary fixture, which additionally verifies native-output rules.
+# Two successful free-text result candidates make the validator diagnose
+# `ambiguous_result`, which the classifier maps to REVIEW_RESULT_AMBIGUOUS.
+# A terminal success only selects the validator path; its presence or absence
+# is not itself the classifier's ambiguity condition. See
+# test-ai-workflow.sh's `ambiguous-free-text-without-native` and
+# `ambiguous-without-terminal-success` fixtures: they additionally exercise
+# the workflow boundary's native-output rule and action-failure priority.
 jq -cn --arg review "$valid_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review},
-  {type:"result", subtype:"success", is_error:false, result:$review},
-  {type:"result", subtype:"unexpected_terminal", is_error:false}
+  {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/ambiguous-execution.json"
 assert_execution_classification REVIEW_RESULT_AMBIGUOUS ambiguous-execution \
   "$test_dir/ambiguous-execution.json"
