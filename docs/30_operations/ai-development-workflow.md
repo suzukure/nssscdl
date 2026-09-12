@@ -200,7 +200,7 @@ helperのstdoutは1個の機械可読JSON objectであり、呼出側は `result
 
 `stop` またはerror系の停止では、developer経路はclosing Issueと存在するopen PRを、follow-up経路は対象PRと解決できるclosing Issueを `human-review-required` により停止する。続いてdeveloperはIssueへ、follow-upはPRへ、非機密な停止reasonを診断commentとして記録し、Step Summaryへresult、閾値、利用可能なmetricsまたは「Metrics: unavailable」、およびrepository writeをblockedした決定を記録する。停止通知はその後の専用stepで試行する。再開は「人間エスカレーション」の規約どおり、人間が判断を記録・確認した後にclosing Issue、PRの順でラベルを解除する。
 
-`evaluate-codex-diff-gate.sh` を変更した場合は `bash .github/scripts/test-evaluate-codex-diff-gate.sh` を実行する。AI Developer workflowの静的契約を変更した場合は `bash .github/scripts/test-ai-developer-workflow.sh` を、diff guardを変更した場合は `bash .github/scripts/test-ai-developer-diff-guard.sh` を実行する。Claude Review専用fixtureの責務（entry gate、risk classifier、model/budget配線、native output validator、execution classifier、usage計測、trusted bootstrap、workflow静的契約）を変更した場合は `bash .github/scripts/test-claude-review-workflow.sh` を実行する。`bash .github/scripts/test-ai-workflow.sh` は専用fixtureを置き換えない横断回帰であり、これらに加えて引き続き実行する。
+`evaluate-codex-diff-gate.sh` を変更した場合は `bash .github/scripts/test-evaluate-codex-diff-gate.sh` を実行する。AI Developer workflowの静的契約を変更した場合は `bash .github/scripts/test-ai-developer-workflow.sh` を、diff guardを変更した場合は `bash .github/scripts/test-ai-developer-diff-guard.sh` を実行する。Claude Review専用fixtureの責務（review context構築、entry gate、risk classifier、model/budget配線、native schema準備、native output masking、native output validator、execution classifier、usage計測、structured review保存、trusted bootstrap、workflow静的契約）を変更した場合は `bash .github/scripts/test-claude-review-workflow.sh` を実行する。`bash .github/scripts/test-ai-workflow.sh` は専用fixtureを置き換えない横断回帰であり、これらに加えて引き続き実行する。
 
 ### Codex timeout・runner異常終了時の診断と再開
 
