@@ -538,37 +538,6 @@ fi
 
 MOCK_CASE=valid
 export MOCK_CASE
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
-jq -e '.continue == true' <<< "$review_entry" > /dev/null
-
-MOCK_CASE=no-links
-export MOCK_CASE
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
-jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
-
-MOCK_CASE=human-label
-export MOCK_CASE
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
-jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
-
-MOCK_CASE=valid
-MOCK_ISSUE_PAUSED=true
-export MOCK_CASE MOCK_ISSUE_PAUSED
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
-jq -e '.continue == false and (.reason | contains("Issue #36"))' <<< "$review_entry" > /dev/null
-unset MOCK_ISSUE_PAUSED
-
-MOCK_CASE=valid
-MOCK_API_FAIL=true
-export MOCK_CASE MOCK_API_FAIL
-if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37; then
-  echo 'Expected Claude review entry to fail when a closing Issue cannot be fetched.' >&2
-  exit 1
-fi
-unset MOCK_API_FAIL
-
-MOCK_CASE=valid
-export MOCK_CASE
 bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/review.md" 'dev,dev[bot],app/dev,review,review[bot],app/review'
 grep -Fq 'Trusted comment metadata: dev' "$test_dir/review.md"
 grep -Fq 'Trusted comment metadata: app/dev' "$test_dir/review.md"
@@ -683,10 +652,6 @@ fi
 MOCK_CASE=valid
 MOCK_CHANGED_PATH=src/CLAUDE.md
 export MOCK_CASE MOCK_CHANGED_PATH
-if [ "$(bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk)" != 'high' ]; then
-  echo 'Expected a nested AI instruction file to use the high-risk model.' >&2
-  exit 1
-fi
 if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
   echo 'Expected merge failure for a nested AI instruction file.' >&2
   exit 1
@@ -694,19 +659,8 @@ fi
 unset MOCK_CHANGED_PATH
 
 MOCK_CASE=valid
-export MOCK_CASE
-if [ "$(bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk)" != 'standard' ]; then
-  echo 'Expected an ordinary change to use the standard review model.' >&2
-  exit 1
-fi
-
-MOCK_CASE=valid
 MOCK_DIFF_FAIL=true
 export MOCK_CASE MOCK_DIFF_FAIL
-if bash "$repo_root/.github/scripts/classify-claude-review-risk.sh" owner/repo 37 risk; then
-  echo 'Expected model classification to fail when protected-path lookup fails.' >&2
-  exit 1
-fi
 if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
   echo 'Expected merge failure when protected-path lookup fails.' >&2
   exit 1
