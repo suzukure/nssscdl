@@ -162,8 +162,9 @@ assert_execution_classification REVIEW_VALID valid-execution-classification \
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
   "$test_dir/valid-execution-classification.review.json" > /dev/null
 
-# A successful terminal result represents a completed retry and takes
-# precedence over earlier structured errors.
+# These structured execution-failure fixtures intentionally contain no
+# successful terminal result, so they exercise the classifier's fixed-reason
+# branches rather than its completed-retry path.
 jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
   > "$test_dir/failed-execution.json"
 assert_execution_classification CLAUDE_EXECUTION_FAILED failed-execution \
@@ -189,6 +190,8 @@ jq -cn '[{type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-c
 assert_execution_classification TRANSIENT_RATE_LIMIT rate-limited-execution \
   "$test_dir/rate-limited-execution.json"
 
+# A successful terminal result represents a completed retry and takes
+# precedence over each earlier structured error below.
 for retry_fixture in rate-limit spend-limit spend-limit-error-code; do
   case "$retry_fixture" in
     rate-limit)
@@ -210,6 +213,17 @@ for retry_fixture in rate-limit spend-limit spend-limit-error-code; do
   jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
     "$test_dir/$retry_fixture-then-success.review.json" > /dev/null
 done
+
+# With no successful terminal result, two legacy successful result strings are
+# ambiguous to the validator. This is the classifier-level counterpart to the
+# workflow-boundary fixture, which additionally verifies native-output rules.
+jq -cn --arg review "$valid_structured_review" '[
+  {type:"result", subtype:"success", is_error:false, result:$review},
+  {type:"result", subtype:"success", is_error:false, result:$review},
+  {type:"result", subtype:"unexpected_terminal", is_error:false}
+]' > "$test_dir/ambiguous-execution.json"
+assert_execution_classification REVIEW_RESULT_AMBIGUOUS ambiguous-execution \
+  "$test_dir/ambiguous-execution.json"
 
 # A numeric HTTP status or unstructured API message is not an account-spend
 # signal, and must not be exposed while the classifier rejects the review.
