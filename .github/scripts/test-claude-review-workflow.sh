@@ -773,6 +773,16 @@ assert_execution_classification CLASSIFIER_INTERNAL_ERROR non-object-validator-o
 
 model_step="$test_dir/select-claude-review-model.sh"
 extract_step_run 'Select Claude review model' "$model_step"
+# Keep the workflow variable names separate from the fixture model values
+# below, so an env miswire cannot be hidden by a passing selection fixture.
+model_step_env="$test_dir/select-claude-review-model.env.yml"
+awk '
+  $0 == "      - name: Select Claude review model" { step = 1 }
+  step && /^        run: \|$/ { exit }
+  step { print }
+' "$workflow" > "$model_step_env"
+grep -Fqx '          STANDARD_MODEL: ${{ vars.CLAUDE_MODEL_STANDARD }}' "$model_step_env"
+grep -Fqx '          HIGH_RISK_MODEL: ${{ vars.CLAUDE_MODEL }}' "$model_step_env"
 runner_temp="$test_dir/runner-temp"
 mkdir "$runner_temp"
 cat > "$runner_temp/classify-claude-review-risk.sh" <<'EOF'
