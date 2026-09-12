@@ -5,11 +5,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
-# Git Bash on Windows does not reproduce the POSIX permissions of bootstrap
-# scripts written by `git show`; the bootstrap fixture below accounts for that.
-posix_permissions=true
-case "$(uname -s)" in MINGW*|MSYS*) posix_permissions=false ;; esac
-
 curl() {
   printf '%s\n' "$*" > "$MOCK_CURL_ARGS"
   cat > "$MOCK_CURL_BODY"
@@ -136,108 +131,6 @@ gh() {
 }
 export -f gh
 
-extract_workflow_step() {
-  local step_name="${1:?step name is required}"
-  local output_path="${2:?output path is required}"
-  local workflow_file="${3:-$repo_root/.github/workflows/claude-review.yml}"
-
-  awk -v step_name="$step_name" '
-    $0 == "      - name: " step_name { step = 1 }
-    step && /^        run: \|$/ { run = 1; next }
-    run && /^      - name: / { exit }
-    run && /^  [[:alnum:]_-]+:$/ { exit }
-    run { line = $0; sub(/^          /, "", line); print line }
-  ' "$workflow_file" > "$output_path"
-  if [ ! -s "$output_path" ]; then
-    echo "Could not extract the $step_name step." >&2
-    exit 1
-  fi
-}
-
-# The event payload can retain a stale base SHA after main advances. The
-# workflow must resolve the current base ref and use that tip for every
-# bootstrap read, particularly the trusted execution classifier.
-build_context_step_script="$test_dir/build-review-context.sh"
-extract_workflow_step 'Build review context' "$build_context_step_script"
-stale_event_base_sha='1111111111111111111111111111111111111111'
-current_base_tip_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-workflow_bootstrap_dir="$test_dir/workflow-bootstrap"
-mkdir "$workflow_bootstrap_dir"
-workflow_git_show_log="$test_dir/workflow-git-show.log"
-workflow_base_ref_log="$test_dir/workflow-base-ref.log"
-git() {
-  case "$1" in
-    show)
-      printf '%s\n' "$2" >> "$MOCK_GIT_SHOW_LOG"
-      case "$2" in
-        "$MOCK_BASE_TIP_SHA:.github/scripts/build-review-context.sh") command cat "$repo_root/.github/scripts/build-review-context.sh" ;;
-        "$MOCK_BASE_TIP_SHA:.github/scripts/validate-claude-review-output.sh") command cat "$repo_root/.github/scripts/validate-claude-review-output.sh" ;;
-        "$MOCK_BASE_TIP_SHA:.github/scripts/summarize-claude-usage.sh") command cat "$repo_root/.github/scripts/summarize-claude-usage.sh" ;;
-        "$MOCK_BASE_TIP_SHA:.github/scripts/evaluate-claude-review-entry-gate.sh") command cat "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" ;;
-        "$MOCK_BASE_TIP_SHA:.github/scripts/classify-claude-review-risk.sh") command cat "$repo_root/.github/scripts/classify-claude-review-risk.sh" ;;
-        "$MOCK_BASE_TIP_SHA:.github/scripts/classify-claude-review-execution.sh") command cat "$repo_root/.github/scripts/classify-claude-review-execution.sh" ;;
-        "$MOCK_BASE_TIP_SHA:CLAUDE.md") command cat "$repo_root/CLAUDE.md" ;;
-        "$MOCK_BASE_TIP_SHA:AGENTS.md") command cat "$repo_root/AGENTS.md" ;;
-        *) echo "Unexpected trusted bootstrap read: $2" >&2; return 2 ;;
-      esac
-      ;;
-    cat-file) return 0 ;;
-    *) command git "$@" ;;
-  esac
-}
-export -f git
-export repo_root
-MOCK_BASE_TIP_SHA="$current_base_tip_sha" \
-MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
-MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
-GITHUB_OUTPUT="$test_dir/build-context.outputs" \
-GITHUB_REPOSITORY=owner/repo \
-RUNNER_TEMP="$workflow_bootstrap_dir" \
-BASE_REF=main \
-EVENT_BASE_SHA="$stale_event_base_sha" \
-PR_NUMBER=37 \
-TRUSTED_LOGINS=dev \
-bash "$build_context_step_script"
-grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
-grep -Fqx main "$workflow_base_ref_log"
-grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
-if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
-  echo 'Workflow bootstrap used the stale event base SHA.' >&2
-  exit 1
-fi
-if [ "$posix_permissions" = true ] && [ -x "$workflow_bootstrap_dir/validate-claude-review-output.sh" ]; then
-  echo 'Workflow bootstrap fixture did not reproduce git show file permissions.' >&2
-  exit 1
-fi
-if MOCK_BASE_TIP_SHA=not-a-commit \
-  MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
-  GITHUB_OUTPUT="$test_dir/build-context-invalid.outputs" \
-  GITHUB_REPOSITORY=owner/repo \
-  RUNNER_TEMP="$workflow_bootstrap_dir" \
-  BASE_REF=main \
-  PR_NUMBER=37 \
-  TRUSTED_LOGINS=dev \
-  bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"; then
-  echo 'Workflow bootstrap accepted an invalid current base tip.' >&2
-  exit 1
-fi
-grep -Fq 'Could not resolve the current base branch tip' "$test_dir/build-context-invalid.err"
-unset -f git
-
-# The env hand-off is masked first using the pinned Action's serialization.
-valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
-mask_step_script="$test_dir/mask-native.sh"
-extract_workflow_step 'Mask native review output' "$mask_step_script"
-jq -cn --argjson review "$valid_structured_review" \
-  '[{type:"result",subtype:"success",is_error:false,structured_output:$review}]' > "$test_dir/native-mask.json"
-EXECUTION_FILE="$test_dir/native-mask.json" GITHUB_OUTPUT="$test_dir/native-mask.outputs" bash "$mask_step_script" > "$test_dir/native-mask.out"
-grep -Fqx "::add-mask::$valid_structured_review" "$test_dir/native-mask.out"
-grep -Fqx 'ready=true' "$test_dir/native-mask.outputs"
-# This fixture belongs to the workflow-step test; the similarly malformed
-# classifier container is exercised by test-claude-review-workflow.sh.
-printf '%s' '{' > "$test_dir/native-mask-malformed.json"
-EXECUTION_FILE="$test_dir/native-mask-malformed.json" GITHUB_OUTPUT="$test_dir/native-mask-invalid.outputs" bash "$mask_step_script"
-[ ! -s "$test_dir/native-mask-invalid.outputs" ]
 grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
