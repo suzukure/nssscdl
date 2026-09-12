@@ -158,9 +158,6 @@ jq -cn '[{type:"result", subtype:"error_max_budget_usd", is_error:true}]' \
 jq -cn '[{type:"result", subtype:"enforced_spend_limit_reached", is_error:true}]' \
   > "$test_dir/spend-limited-execution.json"
 
-jq -cn '[{type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}}}]' \
-  > "$test_dir/spend-limited-error-code-execution.json"
-
 jq -cn '[{type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}}]' \
   > "$test_dir/rate-limited-execution.json"
 
@@ -168,19 +165,6 @@ jq -cn --arg review "$fenced_structured_review" '[
   {type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}},
   {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/rate-limit-then-success-execution.json"
-
-jq -cn --arg review "$fenced_structured_review" '[
-  {type:"error", error:{type:"enforced_spend_limit_reached", message:"sensitive-raw-claude-output"}},
-  {type:"result", subtype:"success", is_error:false, result:$review}
-]' > "$test_dir/spend-limit-error-then-success-execution.json"
-
-jq -cn --arg review "$fenced_structured_review" '[
-  {type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}, message:"sensitive-raw-claude-output"}},
-  {type:"result", subtype:"success", is_error:false, result:$review}
-]' > "$test_dir/spend-limit-then-success-execution.json"
-
-jq -cn '[{type:"error", status:429, message:"enforced_spend_limit_reached sensitive-raw-claude-output"}]' \
-  > "$test_dir/http-429-execution.json"
 
 jq -cn --arg review '{"sensitive-raw-claude-output":' \
   '[{type:"result", subtype:"success", is_error:false, result:$review}]' \

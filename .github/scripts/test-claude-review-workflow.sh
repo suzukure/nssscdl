@@ -162,9 +162,8 @@ assert_execution_classification REVIEW_VALID valid-execution-classification \
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
   "$test_dir/valid-execution-classification.review.json" > /dev/null
 
-# Classify fixed execution metadata without inspecting unstructured messages
-# or HTTP status. A successful terminal result represents a completed retry
-# and takes precedence over earlier structured errors.
+# A successful terminal result represents a completed retry and takes
+# precedence over earlier structured errors.
 jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
   > "$test_dir/failed-execution.json"
 assert_execution_classification CLAUDE_EXECUTION_FAILED failed-execution \
@@ -218,6 +217,20 @@ jq -cn '[{type:"error", status:429, message:"enforced_spend_limit_reached sensit
   > "$test_dir/http-429-execution.json"
 assert_execution_classification REVIEW_RESULT_MISSING http-429-execution \
   "$test_dir/http-429-execution.json"
+
+# Validator diagnostics for the terminal execution result retain their
+# distinct fixed classifications without exposing the raw result.
+jq -cn --arg review '{"sensitive-raw-claude-output":' \
+  '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
+  > "$test_dir/invalid-review-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID invalid-review-execution \
+  "$test_dir/invalid-review-execution.json"
+
+jq -cn --arg review '{"verdict":"approve"}' \
+  '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
+  > "$test_dir/schema-mismatch-execution.json"
+assert_execution_classification REVIEW_SCHEMA_MISMATCH schema-mismatch-execution \
+  "$test_dir/schema-mismatch-execution.json"
 
 # A different TMPDIR must not prevent the classifier from atomically renaming
 # the normalized hand-off into the caller's output directory.
