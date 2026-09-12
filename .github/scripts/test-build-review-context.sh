@@ -45,7 +45,7 @@ gh() {
       --arg body "$issue_body" \
       '{number: $number, title: $title, state: $state, body: $body, labels: []}'
   elif [ "$1 $2" = 'pr diff' ]; then
-    if [[ "$*" == *'--name-only'* ]]; then
+    if [ "$#" -ne 5 ] || [ "$3" != 37 ] || [ "$4" != '--repo' ] || [ "$5" != 'owner/repo' ]; then
       echo "Unexpected PR diff invocation: $*" >&2
       return 2
     elif [ "${MOCK_LARGE_DIFF:-false}" = 'true' ]; then
