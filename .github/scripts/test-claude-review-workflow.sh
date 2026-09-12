@@ -316,11 +316,10 @@ done
 # make the validator diagnose `ambiguous_result`, which the classifier maps to
 # REVIEW_RESULT_AMBIGUOUS. This keeps the validator and classifier checks on
 # the same input. A terminal success selects the validator path but is not the
-# ambiguity condition. In test-ai-workflow.sh, the same input is its
-# `ambiguous-free-text-without-native` fixture: absent native output makes the
-# workflow rederive REVIEW_RESULT_MISSING. Its separate
-# `ambiguous-without-terminal-success` and `ambiguous-action-failure` fixtures
-# cover the native-output rule and action-failure priority, respectively.
+# ambiguity condition. The later `ambiguous-free-text-without-native` workflow
+# fixture rederives REVIEW_RESULT_MISSING because native output is absent;
+# `ambiguous-without-terminal-success` and `ambiguous-action-failure` cover
+# the native-output rule and action-failure priority, respectively.
 assert_execution_classification REVIEW_RESULT_AMBIGUOUS ambiguous-execution \
   "$test_dir/multiple-success-execution.json"
 
@@ -441,11 +440,8 @@ CLASSIFICATION_REASON=REVIEW_VALID GITHUB_OUTPUT="$test_dir/save-valid.outputs" 
   RUNNER_TEMP="$workflow_runner_temp" bash "$save_step_script"
 jq -e '.verdict == "approve"' "$workflow_runner_temp/claude-review.json" > /dev/null
 
-jq -cn '[]' > "$test_dir/no-success-execution.json"
-jq -cn '[{type:"result", subtype:"success", is_error:true}]' > "$test_dir/failed-execution.json"
-jq -cn '[{type:"result", subtype:"error_max_budget_usd", is_error:true}]' > "$test_dir/budget-limited-execution.json"
-jq -cn '[{type:"result", subtype:"enforced_spend_limit_reached", is_error:true}]' > "$test_dir/spend-limited-execution.json"
-jq -cn '[{type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}}]' > "$test_dir/rate-limited-execution.json"
+# Reuse the classifier fixtures above so the workflow boundary checks retain
+# the same inputs. Only this terminal-result shape is unique to the boundary.
 jq -cn --arg review "$valid_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review},
   {type:"result", subtype:"success", is_error:false, result:$review},
@@ -471,10 +467,12 @@ assert_workflow_failure_classification ACCOUNT_SPEND_LIMIT_REACHED spend-with-na
 assert_workflow_failure_classification TRANSIENT_RATE_LIMIT rate-with-native "$test_dir/rate-limited-execution.json" failure "$valid_structured_review"
 assert_workflow_failure_classification REVIEW_RESULT_MISSING native-missing "$test_dir/valid-execution-with-review.json" success ''
 assert_workflow_failure_classification REVIEW_JSON_INVALID native-multiple-json "$test_dir/valid-execution-with-review.json" success '{} {}'
+mutation_number=0
 for mutation in '.extra = true' '.verdict = "unknown"' '.summary = 1' \
   '.blocking_findings = [1]' '.non_blocking_findings = {}' '.linked_issues_checked = [false]' 'del(.summary)'; do
+  mutation_number=$((mutation_number + 1))
   malformed_native="$(jq -c "$mutation" <<< "$valid_structured_review")"
-  assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH "native-schema-${mutation//[^a-z]/}" \
+  assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH "native-schema-$mutation_number" \
     "$test_dir/valid-execution-with-review.json" success "$malformed_native"
 done
 
@@ -494,7 +492,7 @@ printf '%s\n' 'echo "{}"' > "$untrusted_checkout/.github/scripts/validate-claude
 (cd "$untrusted_checkout"; assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH untrusted-head-validator \
   "$test_dir/valid-execution-with-review.json" success '{"verdict":"approve"}')
 
-if grep -Fq 'sensitive-raw-claude-output' "$test_dir"/workflow-*.outputs "$test_dir"/workflow-*.summary; then
+if grep -Fq 'sensitive-raw-claude-output' "$test_dir"/workflow-*.outputs "$test_dir"/workflow-*.summary "$test_dir"/workflow-*.stderr; then
   echo 'Workflow execution classification exposed raw Claude output.' >&2
   exit 1
 fi
