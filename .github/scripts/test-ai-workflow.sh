@@ -148,7 +148,10 @@ jq -cn --arg review "$valid_structured_review" '[
   {type:"result", subtype:"success", is_error:false, result:$review}
 ]' > "$test_dir/multiple-success-execution.json"
 
-# These inputs are consumed below by workflow-boundary fixtures.
+# These workflow-boundary inputs intentionally duplicate the corresponding
+# direct-classifier fixtures in test-claude-review-workflow.sh. Keep their
+# event shape and metadata aligned: that script tests classifier reasons,
+# while this one tests the workflow's output, summary, and fail-closed handoff.
 jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
   > "$test_dir/failed-execution.json"
 
@@ -401,8 +404,9 @@ assert_workflow_failure_classification REVIEW_RESULT_MISSING missing-result \
   "$test_dir/no-success-execution.json"
 assert_workflow_failure_classification REVIEW_RESULT_MISSING ambiguous-free-text-without-native \
   "$test_dir/multiple-success-execution.json"
-# Without terminal success, legacy ambiguity remains fail-closed even when
-# native content is valid. Action failure still takes precedence.
+# This mirrors the direct classifier ambiguity fixture: without terminal
+# success, legacy ambiguity remains fail-closed even when native content is
+# valid. This boundary fixture additionally verifies action-failure precedence.
 jq -cn --arg review "$valid_structured_review" '[
   {type:"result",subtype:"success",is_error:false,result:$review},
   {type:"result",subtype:"success",is_error:false,result:$review},
@@ -417,8 +421,9 @@ assert_workflow_failure_classification REVIEW_JSON_INVALID invalid-json \
 assert_workflow_failure_classification REVIEW_SCHEMA_MISMATCH schema-mismatch \
   "$test_dir/schema-mismatch-execution.json" success '{"verdict":"approve"}'
 # A missing execution file after the Action itself failed is an execution
-# failure. The classifier's direct missing-input fixture above remains an
-# internal classifier-entry fault, so this workflow boundary stays explicit.
+# failure. The dedicated classifier test's missing-input fixture in
+# test-claude-review-workflow.sh remains an internal classifier-entry fault,
+# so this workflow boundary stays explicit.
 assert_workflow_failure_classification CLAUDE_EXECUTION_FAILED action-failed-without-execution-file \
   '' failure
 
