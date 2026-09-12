@@ -162,6 +162,76 @@ assert_execution_classification REVIEW_VALID valid-execution-classification \
 jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
   "$test_dir/valid-execution-classification.review.json" > /dev/null
 
+# A successful terminal result represents a completed retry and takes
+# precedence over earlier structured errors.
+jq -cn '[{type:"result", subtype:"success", is_error:true}]' \
+  > "$test_dir/failed-execution.json"
+assert_execution_classification CLAUDE_EXECUTION_FAILED failed-execution \
+  "$test_dir/failed-execution.json"
+
+jq -cn '[{type:"result", subtype:"error_max_budget_usd", is_error:true}]' \
+  > "$test_dir/budget-limited-execution.json"
+assert_execution_classification RUN_BUDGET_LIMIT_REACHED budget-limited-execution \
+  "$test_dir/budget-limited-execution.json"
+
+jq -cn '[{type:"result", subtype:"enforced_spend_limit_reached", is_error:true}]' \
+  > "$test_dir/spend-limited-execution.json"
+assert_execution_classification ACCOUNT_SPEND_LIMIT_REACHED spend-limited-execution \
+  "$test_dir/spend-limited-execution.json"
+
+jq -cn '[{type:"error", error:{details:{error_code:"enforced_spend_limit_reached"}}}]' \
+  > "$test_dir/spend-limited-error-code-execution.json"
+assert_execution_classification ACCOUNT_SPEND_LIMIT_REACHED spend-limited-error-code-execution \
+  "$test_dir/spend-limited-error-code-execution.json"
+
+jq -cn '[{type:"error", error:{type:"rate_limit_error", message:"sensitive-raw-claude-output"}}]' \
+  > "$test_dir/rate-limited-execution.json"
+assert_execution_classification TRANSIENT_RATE_LIMIT rate-limited-execution \
+  "$test_dir/rate-limited-execution.json"
+
+for retry_fixture in rate-limit spend-limit spend-limit-error-code; do
+  case "$retry_fixture" in
+    rate-limit)
+      prior_error='{"type":"error", "error":{"type":"rate_limit_error", "message":"sensitive-raw-claude-output"}}'
+      ;;
+    spend-limit)
+      prior_error='{"type":"error", "error":{"type":"enforced_spend_limit_reached", "message":"sensitive-raw-claude-output"}}'
+      ;;
+    spend-limit-error-code)
+      prior_error='{"type":"error", "error":{"details":{"error_code":"enforced_spend_limit_reached"}, "message":"sensitive-raw-claude-output"}}'
+      ;;
+  esac
+  jq -cn --argjson prior_error "$prior_error" --arg review "$fenced_structured_review" '[
+    $prior_error,
+    {type:"result", subtype:"success", is_error:false, result:$review}
+  ]' > "$test_dir/$retry_fixture-then-success-execution.json"
+  assert_execution_classification REVIEW_VALID "$retry_fixture-then-success" \
+    "$test_dir/$retry_fixture-then-success-execution.json"
+  jq -e '.verdict == "approve" and .linked_issues_checked == ["#59"]' \
+    "$test_dir/$retry_fixture-then-success.review.json" > /dev/null
+done
+
+# A numeric HTTP status or unstructured API message is not an account-spend
+# signal, and must not be exposed while the classifier rejects the review.
+jq -cn '[{type:"error", status:429, message:"enforced_spend_limit_reached sensitive-raw-claude-output"}]' \
+  > "$test_dir/http-429-execution.json"
+assert_execution_classification REVIEW_RESULT_MISSING http-429-execution \
+  "$test_dir/http-429-execution.json"
+
+# Validator diagnostics for the terminal execution result retain their
+# distinct fixed classifications without exposing the raw result.
+jq -cn --arg review '{"sensitive-raw-claude-output":' \
+  '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
+  > "$test_dir/invalid-review-execution.json"
+assert_execution_classification REVIEW_JSON_INVALID invalid-review-execution \
+  "$test_dir/invalid-review-execution.json"
+
+jq -cn --arg review '{"verdict":"approve"}' \
+  '[{type:"result", subtype:"success", is_error:false, result:$review}]' \
+  > "$test_dir/schema-mismatch-execution.json"
+assert_execution_classification REVIEW_SCHEMA_MISMATCH schema-mismatch-execution \
+  "$test_dir/schema-mismatch-execution.json"
+
 # A different TMPDIR must not prevent the classifier from atomically renaming
 # the normalized hand-off into the caller's output directory.
 mkdir "$test_dir/foreign-tmp"
