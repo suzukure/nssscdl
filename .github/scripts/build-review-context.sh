@@ -102,13 +102,24 @@ done
     def reviewer_logins: ($reviewer_logins_csv | split(",") | map(select(length > 0)));
     def data_lines: split("\n") | map("DATA| " + .) | join("\n");
     def trusted_author:
-      ((.authorAssociation // "") as $association
-        | (["OWNER", "MEMBER", "COLLABORATOR"] | index($association)) != null)
-      or ((.author.login // "") as $login | (trusted_logins | index($login)) != null);
+      if type != "object" then false
+      else
+        ((.authorAssociation | if type == "string" then . else "" end) as $association
+          | (["OWNER", "MEMBER", "COLLABORATOR"] | index($association)) != null)
+        or ((.author | if type == "object" then (.login | if type == "string" then . else "" end) else "" end) as $login | (trusted_logins | index($login)) != null)
+      end;
+    def body_text:
+      if (.body | type) == "string" then .body else (.body | tojson) end;
+    def author_login_or_invalid:
+      if type != "object" then "<invalid author>"
+      elif (.author | type) != "object" then "<invalid author>"
+      elif (.author.login | type) != "string" then "<invalid author>"
+      else .author.login
+      end;
     def full_comment:
-      "### Trusted comment metadata: \(.author.login)\n\n--- BEGIN COMMENT DATA ---\n" + (.body | data_lines) + "\n--- END COMMENT DATA ---\n";
+      "### Trusted comment metadata: \(.author.login)\n\n--- BEGIN COMMENT DATA ---\n" + (body_text | data_lines) + "\n--- END COMMENT DATA ---\n";
     def full_review:
-      "### Trusted review metadata: \(.author.login) — \(.state)\n\n--- BEGIN REVIEW DATA ---\n" + ((.body // "") | data_lines) + "\n--- END REVIEW DATA ---\n";
+      "### Trusted review metadata: \(.author.login) — \(.state)\n\n--- BEGIN REVIEW DATA ---\n" + (body_text | data_lines) + "\n--- END REVIEW DATA ---\n";
     def abbreviated_review:
       "### Prior reviewer App review: \(.author.login) — \(.state) — \(.submittedAt)\n\n"
       + "- [REQUIREMENTS_CHANGE_REQUIRED]: " + (if (.body | contains("[REQUIREMENTS_CHANGE_REQUIRED]")) then "present" else "absent" end) + "\n"
@@ -166,7 +177,7 @@ done
     (if $conversation.fallback then "Conversation selection fallback: " + $conversation.fallback + ". Full trusted conversation is included."
      else empty end),
     ((if $conversation.mode == "selected" then
-        (.comments | map(select(trusted_author and (.createdAt | fromdateiso8601) > $conversation.latest_timestamp)) | sort_by(.createdAt)[] | full_comment),
+        (.comments | map(select(trusted_author) | . + { _timestamp: (.createdAt | fromdateiso8601) } | select(._timestamp > $conversation.latest_timestamp)) | sort_by(._timestamp)[] | full_comment),
         (.reviews | map(select(trusted_author)) | map(. + { _timestamp: (.submittedAt | fromdateiso8601) }) | sort_by(._timestamp)[] |
           if (.author.login as $login | (reviewer_logins | index($login)) != null) then
             if (.submittedAt | fromdateiso8601) < $conversation.latest_timestamp then abbreviated_review else full_review end
@@ -175,8 +186,8 @@ done
         (.comments[]? | select(trusted_author) | full_comment),
         (.reviews[]? | select(trusted_author) | full_review)
       end) // empty),
-    (([(.comments[]? | select(trusted_author | not) | .author.login),
-       (.reviews[]? | select(trusted_author | not) | .author.login)] | unique) as $excluded
+    (([(.comments[]? | select(trusted_author | not) | author_login_or_invalid),
+       (.reviews[]? | select(trusted_author | not) | author_login_or_invalid)] | unique) as $excluded
       | if ($excluded | length) > 0 then "Excluded untrusted conversation authors: " + ($excluded | join(", ")) else empty end)
   ' "$metadata"
 

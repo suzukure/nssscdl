@@ -212,6 +212,27 @@ if grep -Fq 'Conversation selection fallback:' "$test_dir/empty-body.md"; then
   exit 1
 fi
 
+# Selected comments, like reviews, are rendered in parsed timestamp order.
+comment_order_metadata="$(jq -c '.comments += [{author:{login:"dev"},authorAssociation:"NONE",body:"ordered comment second",createdAt:"2026-01-04T02:00:00Z"},{author:{login:"dev"},authorAssociation:"NONE",body:"ordered comment first",createdAt:"2026-01-04T01:00:00Z"}] | .comments |= reverse' <<< "$conversation_metadata")"
+build_conversation "$comment_order_metadata" "$test_dir/comment-order.md"
+expected_comment_order=$'DATA| developer response\nDATA| ordered comment first\nDATA| ordered comment second'
+if [ "$(rg '^DATA\\| (developer response|ordered comment (first|second))$' "$test_dir/comment-order.md")" != "$expected_comment_order" ]; then
+  echo 'Selected comment output was not ordered by createdAt.' >&2
+  exit 1
+fi
+
+# A CHANGES_REQUESTED verdict is also a formal boundary: its complete body and
+# later developer comment remain available while the earlier App review shrinks.
+changes_requested_metadata="$(jq -c '.reviews[3].state = "CHANGES_REQUESTED"' <<< "$conversation_metadata")"
+build_conversation "$changes_requested_metadata" "$test_dir/changes-requested.md"
+grep -Fq 'Trusted review metadata: app/review — CHANGES_REQUESTED' "$test_dir/changes-requested.md"
+grep -Fq 'latest formal review' "$test_dir/changes-requested.md"
+grep -Fq 'developer response' "$test_dir/changes-requested.md"
+if grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/changes-requested.md"; then
+  echo 'CHANGES_REQUESTED boundary retained an earlier reviewer-App body.' >&2
+  exit 1
+fi
+
 # Any ambiguity or malformed selection input falls back to the full trusted
 # conversation and says so in the generated context.
 for invalid_metadata in \
@@ -221,14 +242,26 @@ for invalid_metadata in \
   "$(jq -c '.reviews[1].submittedAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
   "$(jq -c 'del(.reviews[2].submittedAt)' <<< "$conversation_metadata")" \
   "$(jq -c '.reviews[2].submittedAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
+  "$(jq -c 'del(.comments[1].createdAt)' <<< "$conversation_metadata")" \
+  "$(jq -c '.comments[1].createdAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
   "$(jq -c '.reviews[0].submittedAt = .reviews[3].submittedAt' <<< "$conversation_metadata")" \
   "$(jq -c 'del(.reviews[5].submittedAt)' <<< "$conversation_metadata")" \
   "$(jq -c '.reviews[5].submittedAt = 5' <<< "$conversation_metadata")" \
+  "$(jq -c '.comments += [7]' <<< "$conversation_metadata")" \
+  "$(jq -c '.reviews += [7]' <<< "$conversation_metadata")" \
   "$(jq -c '.comments = {}' <<< "$conversation_metadata")"; do
   build_conversation "$invalid_metadata" "$test_dir/fallback.md"
   grep -Fq 'Conversation selection fallback:' "$test_dir/fallback.md"
   grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/fallback.md"
 done
+malformed_body_metadata="$(jq -c '.comments[1].body = ["malformed trusted comment body"]' <<< "$conversation_metadata")"
+build_conversation "$malformed_body_metadata" "$test_dir/malformed-body.md"
+grep -Fq 'Conversation selection fallback:' "$test_dir/malformed-body.md"
+grep -Fq 'DATA| ["malformed trusted comment body"]' "$test_dir/malformed-body.md"
+malformed_review_body_metadata="$(jq -c '.reviews[3].body = {malformed:"trusted review body"}' <<< "$conversation_metadata")"
+build_conversation "$malformed_review_body_metadata" "$test_dir/malformed-review-body.md"
+grep -Fq 'Conversation selection fallback:' "$test_dir/malformed-review-body.md"
+grep -Fq 'DATA| {"malformed":"trusted review body"}' "$test_dir/malformed-review-body.md"
 MOCK_CASE=conversation
 MOCK_METADATA="$conversation_metadata"
 export MOCK_CASE MOCK_METADATA
