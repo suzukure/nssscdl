@@ -9,6 +9,7 @@ trap 'rm -rf "$test_dir"' EXIT
 pause_record='{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":"0123456789abcdef0123456789abcdef01234567","payload":{"detail":"human decision required"}}'
 resume_record='{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"12345","payload":{"accepted_by":"trusted boundary"}}'
 normalization_record='{"version":1,"kind":"pause-normalization","reason":"state_inconsistent","target":"issue:220","source_pause_id":"12345","payload":{"normalization":"superseded"}}'
+pr_target_record='{"version":1,"kind":"pause","reason":"requirements_change","target":"pr:233"}'
 
 assert_round_trip() {
   local name="${1:?name is required}"
@@ -49,6 +50,7 @@ assert_rejected_block() {
 assert_round_trip pause "$pause_record"
 assert_round_trip resume "$resume_record"
 assert_round_trip normalization "$normalization_record"
+assert_round_trip pr-target "$pr_target_record"
 
 # The complete first-stage pause-reason vocabulary remains accepted.
 for reason in \
@@ -67,6 +69,12 @@ assert_rejected_record unknown-kind '{"version":1,"kind":"unknown","reason":"req
 assert_rejected_record unknown-reason '{"version":1,"kind":"pause","reason":"unknown","target":"issue:220"}'
 assert_rejected_record missing-target '{"version":1,"kind":"pause","reason":"requirements_change"}'
 assert_rejected_record target-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":220}'
+assert_rejected_record target-zero '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:0"}'
+assert_rejected_record target-leading-zero '{"version":1,"kind":"pause","reason":"requirements_change","target":"pr:0233"}'
+assert_rejected_record target-negative '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:-220"}'
+assert_rejected_record target-empty-number '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:"}'
+assert_rejected_record target-unknown-prefix '{"version":1,"kind":"pause","reason":"requirements_change","target":"comment:220"}'
+assert_rejected_record target-free-text '{"version":1,"kind":"pause","reason":"requirements_change","target":"Issue 220 awaiting decision"}'
 assert_rejected_record head-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":220}'
 assert_rejected_record payload-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","payload":[]}'
 assert_rejected_record pause-with-source-id '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","source_pause_id":"12345"}'
