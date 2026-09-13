@@ -1,0 +1,72 @@
+name: AI Workflow Regression
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-workflow-regression-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fixtures:
+    name: Fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run AI workflow fixtures
+        shell: bash
+        run: |
+          set -u -o pipefail
+          export LC_ALL=C
+          shopt -s nullglob
+          fixtures=(.github/scripts/test-*.sh)
+
+          if [ "${#fixtures[@]}" -eq 0 ]; then
+            echo 'No AI workflow fixtures matched .github/scripts/test-*.sh.' >&2
+            {
+              echo '## AI Workflow Regression'
+              echo
+              echo 'Result: **FAIL** (no matching fixtures)'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          failed=0
+          {
+            echo '## AI Workflow Regression'
+            echo
+            echo '| Fixture | Result |'
+            echo '| --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for fixture in "${fixtures[@]}"; do
+            echo "::group::Fixture: $fixture"
+            if bash "$fixture"; then
+              result='PASS'
+            else
+              result='FAIL'
+              failed=1
+            fi
+            echo '::endgroup::'
+            printf '| `%s` | %s |\n' "$fixture" "$result" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo 'Result: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"

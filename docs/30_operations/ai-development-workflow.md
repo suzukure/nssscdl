@@ -302,4 +302,6 @@ bash .github/scripts/test-claude-review-workflow.sh
 bash .github/scripts/test-ai-developer-workflow.sh
 ```
 
+`.github/scripts/**` または `.github/workflows/**` を変更するPRでは、独立した `AI Workflow Regression / Fixtures` が `.github/scripts/test-*.sh` を全件実行し、現在PR headに対する結果をGitHub Actionsへ残す。初回導入PRはBootstrap制約に従い、このworkflowがdefault branchへ反映された後の対象PRから通常のCI証跡となる。これは専用fixtureと横断fixtureの両方を実行するrepository側の独立証跡であり、Codex自身の関連validation実行・結果報告責務を置き換えない。Codex側でvalidationを実行できない場合は理由を記録し、CI結果を確認する。対象fixtureは外部サービスへ実アクセスせず、repository内で完結する。event、実行順、timeout、concurrencyなどの詳細は `.github/workflows/ai-workflow-regression.yml` を正本とする。
+
 `.github/workflows/**` を変更したが上記fixtureの対象外と判断した場合は、その理由をPR本文へ記録する。

@@ -98,6 +98,35 @@ export -f gh
 
 grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
+regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
+test -f "$regression_workflow"
+grep -Fxq 'name: AI Workflow Regression' "$regression_workflow"
+grep -Fq 'types: [opened, synchronize, reopened]' "$regression_workflow"
+grep -Fq -- "- '.github/scripts/**'" "$regression_workflow"
+grep -Fq -- "- '.github/workflows/**'" "$regression_workflow"
+grep -A1 '^permissions:$' "$regression_workflow" | grep -Fxq '  contents: read'
+grep -Fq 'group: ai-workflow-regression-${{ github.event.pull_request.number }}' "$regression_workflow"
+grep -Fq 'cancel-in-progress: true' "$regression_workflow"
+grep -Fq 'name: Fixtures' "$regression_workflow"
+grep -Fq 'runs-on: ubuntu-latest' "$regression_workflow"
+grep -Fq 'timeout-minutes: 10' "$regression_workflow"
+grep -Fq 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803' "$regression_workflow"
+grep -Fq 'ref: ${{ github.event.pull_request.head.sha }}' "$regression_workflow"
+grep -Fq 'persist-credentials: false' "$regression_workflow"
+grep -Fq 'export LC_ALL=C' "$regression_workflow"
+grep -Fq 'fixtures=(.github/scripts/test-*.sh)' "$regression_workflow"
+grep -Fq 'if [ "${#fixtures[@]}" -eq 0 ]; then' "$regression_workflow"
+grep -Fq 'for fixture in "${fixtures[@]}"; do' "$regression_workflow"
+grep -Fq 'if bash "$fixture"; then' "$regression_workflow"
+if grep -Eq '^[[:space:]]+[A-Za-z-]+: write$' "$regression_workflow"; then
+  echo 'AI Workflow Regression grants a write permission.' >&2
+  exit 1
+fi
+if grep -Fq 'secrets.' "$regression_workflow"; then
+  echo 'AI Workflow Regression passes a repository secret.' >&2
+  exit 1
+fi
+
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'git/ref/heads/${BASE_REF}' "$repo_root/.github/workflows/claude-review.yml"
