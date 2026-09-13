@@ -80,7 +80,7 @@ validate_record() {
       and (.reason | type == "string" and known_reason)
       and (.target | valid_target)
       and ((has("paused_head") | not)
-        or (.paused_head | type == "string" and test("^[0-9a-f]{40}$")))
+        or (.paused_head | type == "string" and test("\\A[0-9a-f]{40}\\z")))
       and ((has("payload") | not) or (.payload | type == "object"))
       and (if .kind == "pause" then
         has("source_pause_id") | not
