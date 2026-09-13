@@ -82,5 +82,17 @@ $pause_record
 <!-- ai-human-pause-record:start -->
 $resume_record
 <!-- ai-human-pause-record:end -->"
+assert_rejected_block invalid-then-valid-json "<!-- ai-human-pause-record:start -->
+{\"version\":2}
+$pause_record
+<!-- ai-human-pause-record:end -->"
+assert_rejected_block valid-then-invalid-json "<!-- ai-human-pause-record:start -->
+$pause_record
+{\"version\":2}
+<!-- ai-human-pause-record:end -->"
+assert_rejected_block two-valid-json "<!-- ai-human-pause-record:start -->
+$pause_record
+$pause_record
+<!-- ai-human-pause-record:end -->"
 
 echo 'human-pause-record tests passed.'

@@ -35,7 +35,7 @@ validate_record() {
   # unknown top-level field into workflow state.  A pause receives its ID from
   # the trusted comment boundary later; records that refer to a pause require
   # that ID here.
-  jq -e '
+  jq -e -s '
     def nonempty_string:
       type == "string" and length > 0;
     def known_reason:
@@ -55,23 +55,26 @@ validate_record() {
         "resume_transition_failed",
         "state_inconsistent"
       );
-    type == "object"
-    and ([keys_unsorted[] | IN(
-      "version", "kind", "reason", "target", "paused_head",
-      "source_pause_id", "payload"
-    )] | all)
-    and .version == 1
-    and (.kind | IN("pause", "ai-resume-accepted", "pause-normalization"))
-    and (.reason | type == "string" and known_reason)
-    and (.target | nonempty_string)
-    and ((has("paused_head") | not)
-      or (.paused_head | type == "string" and test("^[0-9a-f]{40}$")))
-    and ((has("payload") | not) or (.payload | type == "object"))
-    and (if .kind == "pause" then
-      has("source_pause_id") | not
-    else
-      (.source_pause_id | nonempty_string)
-    end)
+    length == 1
+    and (.[0] |
+      type == "object"
+      and ([keys_unsorted[] | IN(
+        "version", "kind", "reason", "target", "paused_head",
+        "source_pause_id", "payload"
+      )] | all)
+      and .version == 1
+      and (.kind | IN("pause", "ai-resume-accepted", "pause-normalization"))
+      and (.reason | type == "string" and known_reason)
+      and (.target | nonempty_string)
+      and ((has("paused_head") | not)
+        or (.paused_head | type == "string" and test("^[0-9a-f]{40}$")))
+      and ((has("payload") | not) or (.payload | type == "object"))
+      and (if .kind == "pause" then
+        has("source_pause_id") | not
+      else
+        (.source_pause_id | nonempty_string)
+      end)
+    )
   ' > /dev/null <<< "$record_json" || fail_closed 'record failed schema validation'
 }
 
@@ -79,7 +82,8 @@ create_record() {
   local record_json="${1:?record JSON is required}"
   validate_record "$record_json"
   printf '%s\n' "$block_start"
-  jq -cS . <<< "$record_json"
+  jq -cS -s 'if length == 1 then .[0] else error("expected one JSON value") end' \
+    <<< "$record_json"
   printf '%s\n' "$block_end"
 }
 
@@ -114,7 +118,8 @@ parse_record() {
   fi
   [ -n "$extracted" ] || fail_closed 'record block is empty'
   validate_record "$extracted"
-  jq -cS . <<< "$extracted"
+  jq -cS -s 'if length == 1 then .[0] else error("expected one JSON value") end' \
+    <<< "$extracted"
 }
 
 [ "$#" -eq 2 ] || usage
