@@ -204,7 +204,7 @@ default branchに次を適用する。
 - `pause-normalization.reason` はnormalization後に有効となるreasonである。normalization前のreasonは `source_pause_id` の因果chainを辿って導出し、重複する `from_reason` fieldはrecordに保持しない。
 - `ai-resume-accepted.reason` はresume受理時点で有効なreasonである。
 
-`target` は自由文字列ではなく、`^(issue|pr):[1-9][0-9]*$` に適合する `issue:<number>` または `pr:<number>` でなければならない。`<number>` は1以上の10進整数である。schema validatorは単一recordの形式と許可済みreasonだけをfail-closedで検証し、`source_pause_id` のchain解決、chainから導出したeffective reasonと `ai-resume-accepted.reason` の一致確認、または探索対象ConversationのIssue/PR種別・番号とrecord targetの一致確認は行わない。これらの因果・探索境界の検証は後続のlifecycle reconciliationおよびConversation探索でfail-closedに行う。
+`target` は自由文字列ではなく、文字列全体が `issue:<number>` または `pr:<number>` でなければならない。`<number>` は先頭0なしの1以上の10進整数である。厳密な形式検証はschema validatorを正本とする。schema validatorは単一recordの形式と許可済みreasonだけをfail-closedで検証し、`source_pause_id` のchain解決、chainから導出したeffective reasonと `ai-resume-accepted.reason` の一致確認、または探索対象ConversationのIssue/PR種別・番号とrecord targetの一致確認は行わない。これらの因果・探索境界の検証は後続のlifecycle reconciliationおよびConversation探索でfail-closedに行う。
 
 ### trusted diff guard
 

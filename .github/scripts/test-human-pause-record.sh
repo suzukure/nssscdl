@@ -75,6 +75,7 @@ assert_rejected_record target-negative '{"version":1,"kind":"pause","reason":"re
 assert_rejected_record target-empty-number '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:"}'
 assert_rejected_record target-unknown-prefix '{"version":1,"kind":"pause","reason":"requirements_change","target":"comment:220"}'
 assert_rejected_record target-free-text '{"version":1,"kind":"pause","reason":"requirements_change","target":"Issue 220 awaiting decision"}'
+assert_rejected_record target-trailing-newline '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220\n"}'
 assert_rejected_record head-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":220}'
 assert_rejected_record payload-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","payload":[]}'
 assert_rejected_record pause-with-source-id '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","source_pause_id":"12345"}'

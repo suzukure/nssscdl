@@ -67,7 +67,7 @@ validate_record() {
         "state_inconsistent"
       );
     def valid_target:
-      type == "string" and test("^(issue|pr):[1-9][0-9]*$");
+      type == "string" and test("\\A(issue|pr):[1-9][0-9]*\\z");
     length == 1
     and (.[0] |
       type == "object"
