@@ -196,6 +196,16 @@ default branchに次を適用する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
+### human pause record のschema契約
+
+コメントへ埋め込むversion 1のrecordは `.github/scripts/human-pause-record.sh` をschema validationの正本とする。`reason` はそのrecordが扱う有効なpause reasonであり、`kind` ごとの意味は次のとおりである。
+
+- `pause.reason` はpause作成時の初期reasonである。
+- `pause-normalization.reason` はnormalization後に有効となるreasonである。normalization前のreasonは `source_pause_id` の因果chainを辿って導出し、重複する `from_reason` fieldはrecordに保持しない。
+- `ai-resume-accepted.reason` はresume受理時点で有効なreasonである。
+
+`target` は自由文字列ではなく、文字列全体が `issue:<number>` または `pr:<number>` でなければならない。`<number>` は先頭0なしの1以上の10進整数である。厳密な形式検証はschema validatorを正本とする。schema validatorは単一recordの形式と許可済みreasonだけをfail-closedで検証し、`source_pause_id` のchain解決、chainから導出したeffective reasonと `ai-resume-accepted.reason` の一致確認、または探索対象ConversationのIssue/PR種別・番号とrecord targetの一致確認は行わない。これらの因果・探索境界の検証は後続のlifecycle reconciliationおよびConversation探索でfail-closedに行う。
+
 ### trusted diff guard
 
 Issue起点developerとClaude review follow-upの両方で、Codex実行後かつrepository write（commit、push、PR作成・更新またはreview応答）前に、全変更をstagingした上でtrusted diff guardを評価する。両経路ともPR headやCodexが変更した作業ツリーのhelperを実行せず、current base commitから `$RUNNER_TEMP/evaluate-codex-diff-gate.sh` として取得した `evaluate-codex-diff-gate.sh` を使用する。取得・bootstrapに失敗した場合も安全側へ停止する。

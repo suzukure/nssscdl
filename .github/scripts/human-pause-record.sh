@@ -10,6 +10,17 @@ set -euo pipefail
 #   {"kind":"pause",...}
 #   <!-- ai-human-pause-record:end -->
 #
+# Schema contract:
+#   reason is the effective pause reason for the record's kind:
+#     pause: the reason when the pause is created
+#     pause-normalization: the reason effective after normalization
+#     ai-resume-accepted: the reason effective when resume is accepted
+#   A normalization does not retain a redundant from_reason.  Consumers that
+#   need a pre-normalization reason derive it by following source_pause_id.
+#   target is exactly issue:<positive decimal number> or pr:<positive decimal
+#   number>.  This helper validates one record only: it does not resolve a
+#   source_pause_id chain or match target to a conversation being searched.
+#
 # Commands:
 #   create <record-json>  validate and emit one record block
 #   parse <file>          extract exactly one block, validate it, emit JSON
@@ -55,6 +66,8 @@ validate_record() {
         "resume_transition_failed",
         "state_inconsistent"
       );
+    def valid_target:
+      type == "string" and test("\\A(issue|pr):[1-9][0-9]*\\z");
     length == 1
     and (.[0] |
       type == "object"
@@ -65,7 +78,7 @@ validate_record() {
       and .version == 1
       and (.kind | IN("pause", "ai-resume-accepted", "pause-normalization"))
       and (.reason | type == "string" and known_reason)
-      and (.target | nonempty_string)
+      and (.target | valid_target)
       and ((has("paused_head") | not)
         or (.paused_head | type == "string" and test("^[0-9a-f]{40}$")))
       and ((has("payload") | not) or (.payload | type == "object"))
