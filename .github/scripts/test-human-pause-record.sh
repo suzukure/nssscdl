@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+helper="$repo_root/.github/scripts/human-pause-record.sh"
+test_dir="$(mktemp -d)"
+trap 'rm -rf "$test_dir"' EXIT
+
+pause_record='{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":"0123456789abcdef0123456789abcdef01234567","payload":{"detail":"human decision required"}}'
+resume_record='{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"12345","payload":{"accepted_by":"trusted boundary"}}'
+normalization_record='{"version":1,"kind":"pause-normalization","reason":"state_inconsistent","target":"issue:220","source_pause_id":"12345","payload":{"normalization":"superseded"}}'
+
+assert_round_trip() {
+  local name="${1:?name is required}"
+  local record="${2:?record is required}"
+  local created="$test_dir/$name.md"
+  local expected actual
+
+  bash "$helper" create "$record" > "$created"
+  expected="$(jq -cS . <<< "$record")"
+  actual="$(bash "$helper" parse "$created")"
+  [ "$actual" = "$expected" ]
+}
+
+assert_rejected_record() {
+  local name="${1:?name is required}"
+  local record="${2:?record is required}"
+
+  if bash "$helper" validate "$record" > /dev/null 2>&1; then
+    echo "Expected $name to be rejected." >&2
+    exit 1
+  fi
+}
+
+assert_rejected_block() {
+  local name="${1:?name is required}"
+  local content="${2:?content is required}"
+  local record_file="$test_dir/$name.md"
+
+  printf '%s\n' "$content" > "$record_file"
+  if bash "$helper" parse "$record_file" > /dev/null 2>&1; then
+    echo "Expected $name block to be rejected." >&2
+    exit 1
+  fi
+}
+
+# Each lifecycle record is generated and reparsed independently.  In
+# particular, a trusted resume acceptance is not a normalization record.
+assert_round_trip pause "$pause_record"
+assert_round_trip resume "$resume_record"
+assert_round_trip normalization "$normalization_record"
+
+# The complete first-stage pause-reason vocabulary remains accepted.
+for reason in \
+  requirements_change scope_decision diff_guard_exceeded diff_guard_error \
+  non_blocking_decision round_limit validation_failed validation_timeout \
+  claude_execution_failed developer_execution_failed explicit_human_escalation \
+  review_disagreement_decision resume_transition_failed state_inconsistent; do
+  bash "$helper" validate \
+    "{\"version\":1,\"kind\":\"pause\",\"reason\":\"$reason\",\"target\":\"issue:220\"}"
+done
+
+# Required fields, optional fields, enums, and types all fail closed.
+assert_rejected_record malformed-json '{'
+assert_rejected_record unknown-version '{"version":2,"kind":"pause","reason":"requirements_change","target":"issue:220"}'
+assert_rejected_record unknown-kind '{"version":1,"kind":"unknown","reason":"requirements_change","target":"issue:220"}'
+assert_rejected_record unknown-reason '{"version":1,"kind":"pause","reason":"unknown","target":"issue:220"}'
+assert_rejected_record missing-target '{"version":1,"kind":"pause","reason":"requirements_change"}'
+assert_rejected_record target-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":220}'
+assert_rejected_record head-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":220}'
+assert_rejected_record payload-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","payload":[]}'
+assert_rejected_record pause-with-source-id '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","source_pause_id":"12345"}'
+assert_rejected_record resume-missing-source-id '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220"}'
+assert_rejected_record normalization-missing-source-id '{"version":1,"kind":"pause-normalization","reason":"state_inconsistent","target":"issue:220"}'
+assert_rejected_record unknown-top-level-field '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","free_text":"do not use this"}'
+
+assert_rejected_block missing-end "<!-- ai-human-pause-record:start -->
+$pause_record"
+assert_rejected_block two-records "<!-- ai-human-pause-record:start -->
+$pause_record
+<!-- ai-human-pause-record:end -->
+<!-- ai-human-pause-record:start -->
+$resume_record
+<!-- ai-human-pause-record:end -->"
+assert_rejected_block invalid-then-valid-json "<!-- ai-human-pause-record:start -->
+{\"version\":2}
+$pause_record
+<!-- ai-human-pause-record:end -->"
+assert_rejected_block valid-then-invalid-json "<!-- ai-human-pause-record:start -->
+$pause_record
+{\"version\":2}
+<!-- ai-human-pause-record:end -->"
+assert_rejected_block two-valid-json "<!-- ai-human-pause-record:start -->
+$pause_record
+$pause_record
+<!-- ai-human-pause-record:end -->"
+
+echo 'human-pause-record tests passed.'
