@@ -16,6 +16,12 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
 
+## Claude Reviewへ渡すtrusted conversationの選択
+
+Claude Reviewのreview contextでは、reviewer Appによる最新のformal review（`APPROVED` または `CHANGES_REQUESTED`）を会話履歴の境界とする。境界より古いreviewer App reviewは本文を含めず、author、state、submittedAt、`[REQUIREMENTS_CHANGE_REQUIRED]` と `[HUMAN_ESCALATION_RECOMMENDED]` の有無だけを保持する。境界より古いtrusted comment本文は含めない。一方、trusted humanまたはdeveloper Appによるreview本文と、最新formal review以後に必要なtrusted conversationは保持する。
+
+formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
+
 ## 関連修正の集約とレビュー準備
 
 Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすため、新規のIssue起点PRをDraftで作成する方式を採用した。レビュー単位は行数やファイル数ではなく「1つの確定判断と、その整合性を保つための関連修正」とする。
