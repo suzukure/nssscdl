@@ -77,6 +77,7 @@ assert_rejected_record target-unknown-prefix '{"version":1,"kind":"pause","reaso
 assert_rejected_record target-free-text '{"version":1,"kind":"pause","reason":"requirements_change","target":"Issue 220 awaiting decision"}'
 assert_rejected_record target-trailing-newline '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220\n"}'
 assert_rejected_record head-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":220}'
+assert_rejected_record head-trailing-newline '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":"0123456789abcdef0123456789abcdef01234567\n"}'
 assert_rejected_record payload-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","payload":[]}'
 assert_rejected_record pause-with-source-id '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","source_pause_id":"12345"}'
 assert_rejected_record resume-missing-source-id '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220"}'
