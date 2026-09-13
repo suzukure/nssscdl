@@ -18,8 +18,10 @@ set -euo pipefail
 #   A normalization does not retain a redundant from_reason.  Consumers that
 #   need a pre-normalization reason derive it by following source_pause_id.
 #   target is exactly issue:<positive decimal number> or pr:<positive decimal
-#   number>.  This helper validates one record only: it does not resolve a
-#   source_pause_id chain or match target to a conversation being searched.
+#   number>.  paused_head, when present, is exactly a 40-character lowercase
+#   hexadecimal Git SHA-1 with no leading or trailing whitespace.  This helper
+#   validates one record only: it does not resolve a source_pause_id chain or
+#   match target to a conversation being searched.
 #
 # Commands:
 #   create <record-json>  validate and emit one record block
@@ -80,7 +82,7 @@ validate_record() {
       and (.reason | type == "string" and known_reason)
       and (.target | valid_target)
       and ((has("paused_head") | not)
-        or (.paused_head | type == "string" and test("^[0-9a-f]{40}$")))
+        or (.paused_head | type == "string" and test("\\A[0-9a-f]{40}\\z")))
       and ((has("payload") | not) or (.payload | type == "object"))
       and (if .kind == "pause" then
         has("source_pause_id") | not
