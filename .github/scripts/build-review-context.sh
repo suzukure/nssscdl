@@ -123,10 +123,11 @@ done
           or any($metadata.reviews[]?; (type != "object") or ((.author | type) != "object") or ((.author.login | type) != "string") or ((.authorAssociation | type) != "string") or ((.state | type) != "string") or ((.body | type) != "string"))
         then { fallback: "conversation metadata has an unexpected type" }
         else
-          [ $metadata.reviews[] | select(trusted_author and (.author.login as $login | reviewer_logins | index($login))) ] as $reviewer_reviews
+          [ $metadata.reviews[] | select(trusted_author) ] as $trusted_reviews
+          | [ $trusted_reviews[] | select(.author.login as $login | reviewer_logins | index($login)) ] as $reviewer_reviews
           | [ $reviewer_reviews[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED")) ] as $formal_reviews
           | if ($formal_reviews | length) == 0 then { mode: "full" }
-            elif any($reviewer_reviews[]; (.submittedAt | type) != "string" or (try (.submittedAt | fromdateiso8601) catch null) == null)
+            elif any($trusted_reviews[]; (.submittedAt | type) != "string" or (try (.submittedAt | fromdateiso8601) catch null) == null)
               or any($metadata.comments[] | select(trusted_author); (.createdAt | type) != "string" or (try (.createdAt | fromdateiso8601) catch null) == null)
             then { fallback: "relevant conversation timestamps are missing or invalid" }
             else
@@ -166,7 +167,7 @@ done
      else empty end),
     ((if $conversation.mode == "selected" then
         (.comments | map(select(trusted_author and (.createdAt | fromdateiso8601) > $conversation.latest_timestamp)) | sort_by(.createdAt)[] | full_comment),
-        (.reviews[] | select(trusted_author) |
+        (.reviews | map(select(trusted_author) + { _timestamp: (.submittedAt | fromdateiso8601) }) | sort_by(._timestamp)[] |
           if (.author.login as $login | (reviewer_logins | index($login)) != null) then
             if (.submittedAt | fromdateiso8601) < $conversation.latest_timestamp then abbreviated_review else full_review end
           else full_review end)

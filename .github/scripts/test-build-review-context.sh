@@ -163,6 +163,7 @@ conversation_metadata="$(jq -cn '
    reviews:[
      {author:{login:"review[bot]"},authorAssociation:"NONE",state:"CHANGES_REQUESTED",body:"old review [REQUIREMENTS_CHANGE_REQUIRED] [HUMAN_ESCALATION_RECOMMENDED]",submittedAt:"2026-01-02T00:00:00Z"},
      {author:{login:"owner"},authorAssociation:"OWNER",state:"APPROVED",body:"human decision",submittedAt:"2026-01-02T12:00:00Z"},
+     {author:{login:"app/dev"},authorAssociation:"NONE",state:"APPROVED",body:"developer decision",submittedAt:"2026-01-02T18:00:00Z"},
      {author:{login:"app/review"},authorAssociation:"NONE",state:"APPROVED",body:"latest formal review",submittedAt:"2026-01-03T00:00:00Z"},
      {author:{login:"review"},authorAssociation:"NONE",state:"COMMENTED",body:"post-formal reviewer detail",submittedAt:"2026-01-05T00:00:00Z"},
      {author:{login:"attacker"},authorAssociation:"NONE",state:"APPROVED",body:"untrusted review",submittedAt:"2026-01-06T00:00:00Z"}]}'
@@ -172,6 +173,7 @@ grep -Fq 'latest formal review' "$test_dir/selected.md"
 grep -Fq 'post-formal reviewer detail' "$test_dir/selected.md"
 grep -Fq 'developer response' "$test_dir/selected.md"
 grep -Fq 'human decision' "$test_dir/selected.md"
+grep -Fq 'developer decision' "$test_dir/selected.md"
 grep -Fq '[REQUIREMENTS_CHANGE_REQUIRED]: present' "$test_dir/selected.md"
 grep -Fq '[HUMAN_ESCALATION_RECOMMENDED]: present' "$test_dir/selected.md"
 if grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/selected.md" \
@@ -181,18 +183,29 @@ if grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/selected.md" 
   exit 1
 fi
 
+expected_review_order=$'### Prior reviewer App review: review[bot] — CHANGES_REQUESTED — 2026-01-02T00:00:00Z\n### Trusted review metadata: owner — APPROVED\n### Trusted review metadata: app/dev — APPROVED\n### Trusted review metadata: app/review — APPROVED\n### Trusted review metadata: review — COMMENTED'
+if [ "$(rg '^### (Prior reviewer App review|Trusted review metadata):' "$test_dir/selected.md")" != "$expected_review_order" ]; then
+  echo 'Selected review output was not ordered by submittedAt.' >&2
+  exit 1
+fi
+
 # Selection must not depend on API array order, and a first review without a
-# formal verdict retains the existing complete trusted conversation.
+# formal verdict retains the existing complete trusted conversation. Review
+# output must also remain in timestamp order when the API array is reversed.
 reversed_metadata="$(jq -c '.comments |= reverse | .reviews |= reverse' <<< "$conversation_metadata")"
 build_conversation "$reversed_metadata" "$test_dir/reversed.md"
-for text in 'latest formal review' 'post-formal reviewer detail' 'developer response' 'human decision' '[REQUIREMENTS_CHANGE_REQUIRED]: present'; do
+for text in 'latest formal review' 'post-formal reviewer detail' 'developer response' 'human decision' 'developer decision' '[REQUIREMENTS_CHANGE_REQUIRED]: present'; do
   grep -Fq "$text" "$test_dir/reversed.md"
 done
+if [ "$(rg '^### (Prior reviewer App review|Trusted review metadata):' "$test_dir/reversed.md")" != "$expected_review_order" ]; then
+  echo 'Reversed API reviews changed selected review output order.' >&2
+  exit 1
+fi
 initial_metadata="$(jq -c '.reviews = [.reviews[] | select(.state == "COMMENTED")]' <<< "$conversation_metadata")"
 build_conversation "$initial_metadata" "$test_dir/initial.md"
 grep -Fq 'post-formal reviewer detail' "$test_dir/initial.md"
 grep -Fq 'old human comment' "$test_dir/initial.md"
-empty_body_metadata="$(jq -c '.reviews[2].body = "" | .comments[1].body = ""' <<< "$conversation_metadata")"
+empty_body_metadata="$(jq -c '.reviews[3].body = "" | .comments[1].body = ""' <<< "$conversation_metadata")"
 build_conversation "$empty_body_metadata" "$test_dir/empty-body.md"
 if grep -Fq 'Conversation selection fallback:' "$test_dir/empty-body.md"; then
   echo 'Empty conversation bodies must remain valid.' >&2
@@ -204,7 +217,11 @@ fi
 for invalid_metadata in \
   "$(jq -c 'del(.reviews[0].submittedAt)' <<< "$conversation_metadata")" \
   "$(jq -c '.reviews[0].submittedAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
-  "$(jq -c '.reviews[0].submittedAt = .reviews[2].submittedAt' <<< "$conversation_metadata")" \
+  "$(jq -c 'del(.reviews[1].submittedAt)' <<< "$conversation_metadata")" \
+  "$(jq -c '.reviews[1].submittedAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
+  "$(jq -c 'del(.reviews[2].submittedAt)' <<< "$conversation_metadata")" \
+  "$(jq -c '.reviews[2].submittedAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
+  "$(jq -c '.reviews[0].submittedAt = .reviews[3].submittedAt' <<< "$conversation_metadata")" \
   "$(jq -c '.comments = {}' <<< "$conversation_metadata")"; do
   build_conversation "$invalid_metadata" "$test_dir/fallback.md"
   grep -Fq 'Conversation selection fallback:' "$test_dir/fallback.md"
