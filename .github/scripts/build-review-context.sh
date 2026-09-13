@@ -120,7 +120,7 @@ done
         elif (reviewer_logins | length) == 0 or (reviewer_logins | unique | length) != (reviewer_logins | length)
         then { fallback: "reviewer App login candidates are missing or ambiguous" }
         elif any($metadata.comments[]?; (type != "object") or ((.author | type) != "object") or ((.author.login | type) != "string") or ((.authorAssociation | type) != "string") or ((.body | type) != "string"))
-          or any($metadata.reviews[]?; (type != "object") or ((.author | type) != "object") or ((.author.login | type) != "string") or ((.authorAssociation | type) != "string") or ((.state | type) != "string") or ((.body | type) != "string"))
+          or any($metadata.reviews[]?; (type != "object") or ((.author | type) != "object") or ((.author.login | type) != "string") or ((.authorAssociation | type) != "string") or ((.state | type) != "string") or ((.body | type) != "string") or ((.submittedAt | type) != "string"))
         then { fallback: "conversation metadata has an unexpected type" }
         else
           [ $metadata.reviews[] | select(trusted_author) ] as $trusted_reviews
@@ -167,7 +167,7 @@ done
      else empty end),
     ((if $conversation.mode == "selected" then
         (.comments | map(select(trusted_author and (.createdAt | fromdateiso8601) > $conversation.latest_timestamp)) | sort_by(.createdAt)[] | full_comment),
-        (.reviews | map(select(trusted_author) + { _timestamp: (.submittedAt | fromdateiso8601) }) | sort_by(._timestamp)[] |
+        (.reviews | map(select(trusted_author)) | map(. + { _timestamp: (.submittedAt | fromdateiso8601) }) | sort_by(._timestamp)[] |
           if (.author.login as $login | (reviewer_logins | index($login)) != null) then
             if (.submittedAt | fromdateiso8601) < $conversation.latest_timestamp then abbreviated_review else full_review end
           else full_review end)

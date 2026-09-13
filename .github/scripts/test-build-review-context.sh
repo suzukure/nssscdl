@@ -222,6 +222,8 @@ for invalid_metadata in \
   "$(jq -c 'del(.reviews[2].submittedAt)' <<< "$conversation_metadata")" \
   "$(jq -c '.reviews[2].submittedAt = "not-a-timestamp"' <<< "$conversation_metadata")" \
   "$(jq -c '.reviews[0].submittedAt = .reviews[3].submittedAt' <<< "$conversation_metadata")" \
+  "$(jq -c 'del(.reviews[5].submittedAt)' <<< "$conversation_metadata")" \
+  "$(jq -c '.reviews[5].submittedAt = 5' <<< "$conversation_metadata")" \
   "$(jq -c '.comments = {}' <<< "$conversation_metadata")"; do
   build_conversation "$invalid_metadata" "$test_dir/fallback.md"
   grep -Fq 'Conversation selection fallback:' "$test_dir/fallback.md"
