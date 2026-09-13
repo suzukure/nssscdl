@@ -54,6 +54,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],app/${{ steps.dev-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
+          REVIEWER_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
         shell: bash
         run: |
           set -euo pipefail
@@ -290,7 +291,7 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
-          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS"
+          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}"
 
       - name: Gate Claude review entry
         id: review-entry
