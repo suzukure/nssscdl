@@ -49,8 +49,6 @@ validate_record() {
   # the trusted comment boundary later; records that refer to a pause require
   # that ID here.
   jq -e -s '
-    def nonempty_string:
-      type == "string" and length > 0;
     def known_reason:
       IN(
         "requirements_change",
@@ -70,6 +68,8 @@ validate_record() {
       );
     def valid_target:
       type == "string" and test("\\A(issue|pr):[1-9][0-9]*\\z");
+    def valid_pause_id:
+      type == "string" and test("\\A[1-9][0-9]*\\z");
     length == 1
     and (.[0] |
       type == "object"
@@ -87,7 +87,7 @@ validate_record() {
       and (if .kind == "pause" then
         has("source_pause_id") | not
       else
-        (.source_pause_id | nonempty_string)
+        (.source_pause_id | valid_pause_id)
       end)
     )
   ' > /dev/null <<< "$record_json" || fail_closed 'record failed schema validation'

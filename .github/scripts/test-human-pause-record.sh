@@ -85,6 +85,12 @@ assert_rejected_record payload-wrong-type '{"version":1,"kind":"pause","reason":
 assert_rejected_record pause-with-source-id '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","source_pause_id":"12345"}'
 assert_rejected_record resume-missing-source-id '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220"}'
 assert_rejected_record normalization-missing-source-id '{"version":1,"kind":"pause-normalization","reason":"state_inconsistent","target":"issue:220"}'
+assert_rejected_record source-id-empty '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":""}'
+assert_rejected_record source-id-free-text '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"previous pause"}'
+assert_rejected_record source-id-zero '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"0"}'
+assert_rejected_record source-id-negative '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"-12345"}'
+assert_rejected_record source-id-leading-zero '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"012345"}'
+assert_rejected_record source-id-decimal '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"12.5"}'
 assert_rejected_record unknown-top-level-field '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","free_text":"do not use this"}'
 
 assert_rejected_block missing-end "<!-- ai-human-pause-record:start -->
