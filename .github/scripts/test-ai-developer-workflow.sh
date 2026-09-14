@@ -400,7 +400,7 @@ publish_step="$test_dir/publish-issue-pr.sh"
 publish_step_source="$test_dir/publish-issue-pr.yml"
 extract_workflow_step 'Commit, push, and open or update PR' "$publish_step_source"
 extract_workflow_step_run "$publish_step_source" "$publish_step"
-for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure; do
+for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure commit-a-regression commit-am-regression; do
   (
     case_dir="$test_dir/publish-$publish_case"
     mkdir "$case_dir"
@@ -410,10 +410,30 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
     export PUBLISH_BODY="$case_dir/body.md"
     export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
     export ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
+    publish_script="$publish_step"
+    case "$PUBLISH_CASE" in
+      commit-a-regression)
+        publish_script="$case_dir/publish-with-commit-a.sh"
+        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -a -m "Implement #${ISSUE_NUMBER} with Codex"/' \
+          "$publish_step" > "$publish_script"
+        ;;
+      commit-am-regression)
+        publish_script="$case_dir/publish-with-commit-am.sh"
+        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -am "Implement #${ISSUE_NUMBER} with Codex"/' \
+          "$publish_step" > "$publish_script"
+        ;;
+    esac
     git() {
       printf 'git %s\n' "$*" >> "$PUBLISH_LOG"
       case "$1" in
-        config|commit) return 0 ;;
+        config) return 0 ;;
+        commit)
+          if [ "$#" -ne 3 ] || [ "$2" != '-m' ] || [ "$3" != 'Implement #36 with Codex' ]; then
+            echo 'Publish must not commit unguarded worktree changes.' >&2
+            return 2
+          fi
+          return 0
+          ;;
         add)
           echo 'Publish must not stage post-guard worktree changes.' >&2
           return 2
@@ -450,7 +470,7 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
     }
     export -f git gh
     outcome=success
-    bash "$publish_step" > stdout 2> stderr || outcome=failure
+    bash "$publish_script" > stdout 2> stderr || outcome=failure
     assert_no_publish_call() {
       if grep -Eq "$1" "$PUBLISH_LOG"; then
         echo "Unexpected publish side effect in $PUBLISH_CASE: $1" >&2
@@ -458,7 +478,7 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
       fi
     }
     case "$PUBLISH_CASE" in
-      *-failure) [ "$outcome" = failure ] ;;
+      *-failure|*-regression) [ "$outcome" = failure ] ;;
       *) [ "$outcome" = success ] ;;
     esac
     case "$PUBLISH_CASE" in
@@ -484,6 +504,9 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         ;;
       create-failure)
         assert_no_publish_call 'Codex opened'
+        ;;
+      *-regression)
+        assert_no_publish_call 'git push|gh pr (create|comment)|gh issue comment'
         ;;
     esac
     assert_no_publish_call 'gh pr (ready|edit)'
