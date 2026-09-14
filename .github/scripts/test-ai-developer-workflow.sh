@@ -413,7 +413,11 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
     git() {
       printf 'git %s\n' "$*" >> "$PUBLISH_LOG"
       case "$1" in
-        config|add|commit) return 0 ;;
+        config|commit) return 0 ;;
+        add)
+          echo 'Publish must not stage post-guard worktree changes.' >&2
+          return 2
+          ;;
         diff) [ "$PUBLISH_CASE" = no-diff ] ;;
         push) [ "$PUBLISH_CASE" != push-failure ] ;;
         *) echo "Unexpected git call: $*" >&2; return 2 ;;
