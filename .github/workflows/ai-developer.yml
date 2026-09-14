@@ -618,8 +618,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f .ai-context/request.md
-          rmdir .ai-context 2>/dev/null || true
+          rm -rf .ai-context
+          git reset -- .ai-context
           git add -A
 
           result_json=''
@@ -745,14 +745,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f .ai-context/request.md
-          rmdir .ai-context 2>/dev/null || true
           bot_login="${APP_SLUG}[bot]"
           bot_id="$(gh api "/users/${bot_login}" --jq .id)"
           git config user.name "$bot_login"
           git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"
 
-          git add -A
           if git diff --cached --quiet; then
             if [ -s "$CODEX_FINAL" ]; then
               gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
