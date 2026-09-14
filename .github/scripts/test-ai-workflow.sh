@@ -122,8 +122,16 @@ if grep -Eq '^[[:space:]]+[A-Za-z-]+: write$' "$regression_workflow"; then
   echo 'AI Workflow Regression grants a write permission.' >&2
   exit 1
 fi
+if grep -Eq '^[[:space:]]*permissions:[[:space:]]*write-all([[:space:]]*(#.*)?)?$' "$regression_workflow"; then
+  echo 'AI Workflow Regression grants write-all permission.' >&2
+  exit 1
+fi
 if grep -Fq 'secrets.' "$regression_workflow"; then
   echo 'AI Workflow Regression passes a repository secret.' >&2
+  exit 1
+fi
+if grep -Eq 'github\.token|^[[:space:]]+GH_TOKEN:' "$regression_workflow"; then
+  echo 'AI Workflow Regression passes a repository credential.' >&2
   exit 1
 fi
 

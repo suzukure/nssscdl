@@ -65,8 +65,10 @@ jobs:
           done
 
           if [ "$failed" -ne 0 ]; then
+            echo >> "$GITHUB_STEP_SUMMARY"
             echo 'Result: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
+          echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
