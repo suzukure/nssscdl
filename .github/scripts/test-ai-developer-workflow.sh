@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+repo_root="$(cd "$repo_root" && pwd)"
 workflow="$repo_root/.github/workflows/ai-developer.yml"
 
 [ -f "$workflow" ]
@@ -153,6 +154,36 @@ assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIR
 assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
 assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
 
+extract_workflow_step() {
+  local step_name="${1:?step name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v step_name="$step_name" '
+    $0 == "      - name: " step_name { in_step = 1 }
+    in_step && /^      - name: / && $0 != "      - name: " step_name { exit }
+    in_step && /^  [[:alnum:]_-]+:$/ { exit }
+    in_step { print }
+  ' "$workflow" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract the $step_name step." >&2
+    exit 1
+  fi
+}
+
+extract_workflow_step_run() {
+  local step_path="${1:?step path is required}"
+  local output_path="${2:?output path is required}"
+
+  awk '
+    /^        run: \|$/ { in_run = 1; next }
+    in_run { line = $0; sub(/^          /, "", line); print line }
+  ' "$step_path" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract the run body from $step_path." >&2
+    exit 1
+  fi
+}
+
 # The follow-up notification runs after the PR checkout, so it must use the
 # trusted-base helper copied during context bootstrap rather than PR-head code.
 followup_workflow="$test_dir/respond-to-claude.yml"
@@ -248,18 +279,22 @@ review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nS
 
 # The trusted-base follow-up gate must resolve closing Issues through the pause
 # helper, synchronize both labels, and record exactly one reason on the PR.
+followup_gate_step="$test_dir/gate-automated-follow-up.yml"
 followup_gate_script="$test_dir/gate-automated-follow-up.sh"
-awk '
-  /^      - name: Gate automated follow-up$/ { in_gate = 1; next }
-  in_gate && /^      - name: / { exit }
-  in_gate && /^        run: \|$/ { in_run = 1; next }
-  in_run { sub(/^          /, ""); print }
-' "$workflow" > "$followup_gate_script"
-[ -s "$followup_gate_script" ]
-if grep -Fq 'HEAD_REF' "$followup_gate_script"; then
-  echo 'Automated follow-up gate must not derive an Issue from the PR branch.' >&2
+extract_workflow_step 'Gate automated follow-up' "$followup_gate_step"
+if grep -Eq 'HEAD_REF|head\.ref|ai/issue-' "$followup_gate_step"; then
+  echo 'Automated follow-up gate must not derive a closing Issue from the PR branch.' >&2
   exit 1
 fi
+extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
+
+# The fixture verifies that, even when its checkout root differs from this
+# repository root, the gate resolves helpers only beneath that checkout's
+# .github directory. Existing bootstrap assertions cover the base-derived
+# trust boundary. Invoke the extracted script from outside that checkout root.
+followup_gate_workdir="$test_dir/gate-automated-follow-up-workdir"
+mkdir "$followup_gate_workdir"
+ln -s "$repo_root/.github" "$followup_gate_workdir/.github"
 
 assert_followup_gate_pause() {
   local fixture_name="${1:?fixture name is required}"
@@ -273,7 +308,7 @@ assert_followup_gate_pause() {
   MOCK_CASE="$mock_case" MOCK_GH_LOG="$log_path" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
     DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
-    bash "$followup_gate_script"
+    bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
   grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$log_path"
   grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$log_path"
   [ "$(grep -Fc 'pr comment 37 --repo owner/repo --body ' "$log_path")" -eq 1 ]
@@ -289,12 +324,13 @@ if MOCK_CASE=valid MOCK_PR_CLOSING_FETCH_FAIL=true \
     MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
     DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
-    GITHUB_OUTPUT="$test_dir/followup-pause-failure.output" bash "$followup_gate_script"; then
+    GITHUB_OUTPUT="$test_dir/followup-pause-failure.output" \
+    bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"; then
   echo 'Expected automated follow-up to fail closed when closing Issue lookup fails.' >&2
   exit 1
 fi
-if grep -Eq '^(issue edit|pr comment) ' "$test_dir/followup-pause-failure.log"; then
-  echo 'Closing Issue lookup failure must not partially pause or comment on the PR.' >&2
+if [ -s "$test_dir/followup-pause-failure.log" ]; then
+  echo 'Closing Issue lookup failure must not perform any GitHub write.' >&2
   exit 1
 fi
 
@@ -360,25 +396,10 @@ fi
 # writes mocked. Creating a PR must preserve Draft until a human requests
 # review; updating an existing PR must not create another PR or change its
 # stage.
-extract_workflow_step() {
-  local step_name="${1:?step name is required}"
-  local output_path="${2:?output path is required}"
-
-  awk -v step_name="$step_name" '
-    $0 == "      - name: " step_name { step = 1 }
-    step && /^        run: \|$/ { run = 1; next }
-    run && /^      - name: / { exit }
-    run && /^  [[:alnum:]_-]+:$/ { exit }
-    run { line = $0; sub(/^          /, "", line); print line }
-  ' "$workflow" > "$output_path"
-  if [ ! -s "$output_path" ]; then
-    echo "Could not extract the $step_name step." >&2
-    exit 1
-  fi
-}
-
 publish_step="$test_dir/publish-issue-pr.sh"
-extract_workflow_step 'Commit, push, and open or update PR' "$publish_step"
+publish_step_source="$test_dir/publish-issue-pr.yml"
+extract_workflow_step 'Commit, push, and open or update PR' "$publish_step_source"
+extract_workflow_step_run "$publish_step_source" "$publish_step"
 for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure; do
   (
     case_dir="$test_dir/publish-$publish_case"
