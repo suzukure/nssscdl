@@ -33,6 +33,25 @@ if grep -Eq '(contains|startsWith|endsWith)\([[:space:]]*github\.event\.comment\
   exit 1
 fi
 
+# Issue context is retrieved through the structured `comments` JSON field.
+# GitHub CLI rejects combining that form with the legacy --comments flag.
+issue_context_step="$test_dir/prepare-branch-and-issue-context.yml"
+awk '
+  $0 == "      - name: Prepare branch and Issue context" { in_step = 1 }
+  in_step && /^      - name: / && $0 != "      - name: Prepare branch and Issue context" { exit }
+  in_step { print }
+' "$workflow" > "$issue_context_step"
+if [ ! -s "$issue_context_step" ]; then
+  echo 'Could not extract the Prepare branch and Issue context step.' >&2
+  exit 1
+fi
+grep -Fqx "            gh issue view \"\$ISSUE_NUMBER\" --repo \"\$GITHUB_REPOSITORY\" \\" "$issue_context_step"
+grep -Fqx "              --json number,title,body,url,labels,comments \\" "$issue_context_step"
+if grep -Fq -- '--comments' "$issue_context_step"; then
+  echo 'Issue context retrieval must not combine --comments with --json.' >&2
+  exit 1
+fi
+
 # Issue-origin developer failures must be handled by a separate runner without
 # retrying Codex or depending on the failed job's workspace.
 handler="$test_dir/handle-issue-developer-failure.yml"
