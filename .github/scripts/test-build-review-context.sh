@@ -184,7 +184,7 @@ if grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/selected.md" 
 fi
 
 expected_review_order=$'### Prior reviewer App review: review[bot] — CHANGES_REQUESTED — 2026-01-02T00:00:00Z\n### Trusted review metadata: owner — APPROVED\n### Trusted review metadata: app/dev — APPROVED\n### Trusted review metadata: app/review — APPROVED\n### Trusted review metadata: review — COMMENTED'
-if [ "$(rg '^### (Prior reviewer App review|Trusted review metadata):' "$test_dir/selected.md")" != "$expected_review_order" ]; then
+if [ "$(grep -E '^### (Prior reviewer App review|Trusted review metadata):' "$test_dir/selected.md")" != "$expected_review_order" ]; then
   echo 'Selected review output was not ordered by submittedAt.' >&2
   exit 1
 fi
@@ -197,7 +197,7 @@ build_conversation "$reversed_metadata" "$test_dir/reversed.md"
 for text in 'latest formal review' 'post-formal reviewer detail' 'developer response' 'human decision' 'developer decision' '[REQUIREMENTS_CHANGE_REQUIRED]: present'; do
   grep -Fq "$text" "$test_dir/reversed.md"
 done
-if [ "$(rg '^### (Prior reviewer App review|Trusted review metadata):' "$test_dir/reversed.md")" != "$expected_review_order" ]; then
+if [ "$(grep -E '^### (Prior reviewer App review|Trusted review metadata):' "$test_dir/reversed.md")" != "$expected_review_order" ]; then
   echo 'Reversed API reviews changed selected review output order.' >&2
   exit 1
 fi
@@ -216,7 +216,7 @@ fi
 comment_order_metadata="$(jq -c '.comments += [{author:{login:"dev"},authorAssociation:"NONE",body:"ordered comment second",createdAt:"2026-01-04T02:00:00Z"},{author:{login:"dev"},authorAssociation:"NONE",body:"ordered comment first",createdAt:"2026-01-04T01:00:00Z"}] | .comments |= reverse' <<< "$conversation_metadata")"
 build_conversation "$comment_order_metadata" "$test_dir/comment-order.md"
 expected_comment_order=$'DATA| developer response\nDATA| ordered comment first\nDATA| ordered comment second'
-if [ "$(rg '^DATA\\| (developer response|ordered comment (first|second))$' "$test_dir/comment-order.md")" != "$expected_comment_order" ]; then
+if [ "$(grep -E '^DATA\\| (developer response|ordered comment (first|second))$' "$test_dir/comment-order.md")" != "$expected_comment_order" ]; then
   echo 'Selected comment output was not ordered by createdAt.' >&2
   exit 1
 fi
@@ -275,7 +275,7 @@ grep -Fq 'Conversation selection fallback: reviewer App login candidates are mis
 # trusted reviewer-App token output, never a pull-request head value.
 grep -Fq 'REVIEWER_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq '"$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}"' "$repo_root/.github/workflows/claude-review.yml"
-if rg -q 'REVIEWER_LOGINS:.*pull_request\.head' "$repo_root/.github/workflows/claude-review.yml"; then
+if grep -Eq 'REVIEWER_LOGINS:.*pull_request\.head' "$repo_root/.github/workflows/claude-review.yml"; then
   echo 'Reviewer identity must not derive from pull-request head data.' >&2
   exit 1
 fi
