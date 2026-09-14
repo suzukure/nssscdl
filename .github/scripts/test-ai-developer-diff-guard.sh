@@ -59,9 +59,22 @@ grep -Fq 'Avoid broad formatting changes and large generated additions.' "$devel
 
 guard_stage_line="$(grep -n -F 'git add -A' "$guard_script" | head -n1 | cut -d: -f1)"
 guard_helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$guard_script" | head -n1 | cut -d: -f1)"
+guard_unstage_line="$(grep -n -F 'git reset -- .ai-context' "$guard_script" | head -n1 | cut -d: -f1)"
 [ -n "$guard_stage_line" ]
 [ -n "$guard_helper_line" ]
+[ -n "$guard_unstage_line" ]
+[ "$guard_unstage_line" -lt "$guard_stage_line" ]
 [ "$guard_stage_line" -lt "$guard_helper_line" ]
+
+# The Issue-origin publisher must commit precisely the index that the guard
+# evaluated; it must not stage a post-guard worktree change.
+publish_stage_count="$(awk '
+  /^      - name: Commit, push, and open or update PR$/ { in_step = 1; next }
+  in_step && /^      - name: / { exit }
+  in_step && /git add -A/ { count++ }
+  END { print count + 0 }
+' "$developer_job")"
+[ "$publish_stage_count" -eq 0 ]
 
 publish_if="$(awk '
   /^      - name: Commit, push, and open or update PR$/ { found = 1; next }
@@ -105,6 +118,9 @@ make_case_environment() {
 set -euo pipefail
 printf '%s\n' "$*" >> "$GIT_LOG"
 if [ "$#" -eq 2 ] && [ "$1" = add ] && [ "$2" = -A ]; then
+  exit 0
+fi
+if [ "$#" -eq 3 ] && [ "$1" = reset ] && [ "$2" = -- ] && [ "$3" = .ai-context ]; then
   exit 0
 fi
 echo "unexpected git invocation: $*" >&2
@@ -170,6 +186,9 @@ run_case() {
   )
 
   grep -Fxq 'add -A' "$case_dir/git.log"
+  if [ "$guard" = "$guard_script" ]; then
+    grep -Fxq 'reset -- .ai-context' "$case_dir/git.log"
+  fi
   [ ! -e "$case_dir/.ai-context/request.md" ]
 }
 
