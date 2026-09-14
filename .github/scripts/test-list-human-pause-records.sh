@@ -14,6 +14,9 @@ $record_end"
 issue_body="$record_start
 {\"version\":1,\"kind\":\"pause\",\"reason\":\"requirements_change\",\"target\":\"issue:36\"}
 $record_end"
+other_pr_body="$record_start
+{\"version\":1,\"kind\":\"pause\",\"reason\":\"requirements_change\",\"target\":\"pr:38\"}
+$record_end"
 
 gh() {
   [ "$1" = api ] || { echo "Unexpected gh invocation: $*" >&2; return 2; }
@@ -27,13 +30,14 @@ gh() {
 }
 export -f gh
 
-MOCK_PR_COMMENTS="$(jq -cn --arg pause "$pause_body" '
+MOCK_PR_COMMENTS="$(jq -cn --arg pause "$pause_body" --arg other_pr "$other_pr_body" '
   [[
     {id:101, node_id:"MDQ6", body:$pause, performed_via_github_app:{id:99}},
     {id:102, body:$pause, performed_via_github_app:{id:88}},
     {id:103, body:"not a record", performed_via_github_app:{id:99}},
     {id:104, body:( $pause | sub("pr:37"; "issue:36")), performed_via_github_app:{id:99}},
-    {id:105, body:$pause, performed_via_github_app:null}
+    {id:105, body:$pause, performed_via_github_app:null},
+    {id:107, body:$other_pr, performed_via_github_app:{id:99}}
   ], [
     {id:106, body:$pause, performed_via_github_app:{id:99}}
   ]]
