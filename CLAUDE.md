@@ -21,6 +21,10 @@ Read `.ai-context/review.md`, the complete diff, the linked Issues, `.ai-context
 - When a PR records a scope-out impact, verify that the closing Issue body—not only a comment or the PR—records the remaining impact, safe-to-merge rationale, follow-up Issue number, scope, completion condition, and intended timing/order. Verify that deferral does not compromise safety, correctness, or requirements consistency.
 - Check every follow-up Issue snapshot supplied in the review context. If an explicitly recorded follow-up was unavailable, do not infer that it is absent; return `request_changes` or the applicable human-decision marker.
 
+## Issue granularity
+
+Apply the authoritative issue-partitioning rule in [the AI development workflow](docs/30_operations/ai-development-workflow.md#issueの分割単位). Do not return `request_changes` solely because an Issue could be divided further. Return `request_changes` when the current Issue or PR cannot independently complete safely, correctly, and consistently; its completion condition cannot be determined unambiguously; or it combines multiple changes that require independent decisions. Require Issue partitioning or scope reconfirmation in those cases. When the current change is already safe, correct, and consistent as a standalone completion and the observation is only a proposal for better granularity, record it as non-blocking.
+
 ## Specification-focused review criteria
 
 Apply these criteria primarily to normative specification and design documents under `docs/00_requirements/**`, `docs/10_basic_design/**`, and `docs/20_detailed_design/**`. Also apply them to other Markdown documents only when they define normative system behavior, business rules, interfaces, or operational constraints; do not apply them merely because a file is Markdown.
