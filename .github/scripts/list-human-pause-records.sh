@@ -39,6 +39,9 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 comments_json="$tmp_dir/comments.json"
 records_jsonl="$tmp_dir/records.jsonl"
+# An empty trusted history is a valid result.  Create the JSONL input before
+# filtering so jq --slurpfile below consistently produces an empty array.
+: > "$records_jsonl"
 
 # --slurp preserves pagination boundaries. The nested arrays are validated
 # below before flattening so an unexpected API response cannot become state.

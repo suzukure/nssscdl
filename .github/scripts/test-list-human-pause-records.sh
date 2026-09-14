@@ -21,6 +21,7 @@ gh() {
   case "$*" in
     */issues/37/comments*) printf '%s\n' "$MOCK_PR_COMMENTS" ;;
     */issues/36/comments*) printf '%s\n' "$MOCK_ISSUE_COMMENTS" ;;
+    */issues/38/comments*) printf '%s\n' "$MOCK_EMPTY_COMMENTS" ;;
     *) echo "Unexpected Conversation endpoint: $*" >&2; return 2 ;;
   esac
 }
@@ -38,7 +39,8 @@ MOCK_PR_COMMENTS="$(jq -cn --arg pause "$pause_body" '
   ]]
 ')"
 MOCK_ISSUE_COMMENTS="$(jq -cn --arg issue "$issue_body" '[[{id:201, body:$issue, performed_via_github_app:{id:99}}]]')"
-export MOCK_PR_COMMENTS MOCK_ISSUE_COMMENTS
+MOCK_EMPTY_COMMENTS='[[]]'
+export MOCK_PR_COMMENTS MOCK_ISSUE_COMMENTS MOCK_EMPTY_COMMENTS
 
 bash "$helper" owner/repo 36 37 99 > "$test_dir/pr.json"
 jq -e '
@@ -49,5 +51,10 @@ jq -e '
 
 bash "$helper" owner/repo 36 - 99 > "$test_dir/issue.json"
 jq -e '.target == "issue:36" and [.records[].pause_id] == ["201"]' "$test_dir/issue.json" > /dev/null
+
+# No trusted, schema-valid, target-matching records is a normal history, not
+# an API or lifecycle error.
+bash "$helper" owner/repo 38 - 99 > "$test_dir/empty.json"
+jq -e '.target == "issue:38" and .records == []' "$test_dir/empty.json" > /dev/null
 
 echo 'list-human-pause-records tests passed.'
