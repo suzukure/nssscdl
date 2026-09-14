@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+repo_root="$(cd "$repo_root" && pwd)"
 workflow="$repo_root/.github/workflows/ai-developer.yml"
 
 [ -f "$workflow" ]
@@ -178,7 +179,7 @@ extract_workflow_step_run() {
     in_run { line = $0; sub(/^          /, "", line); print line }
   ' "$step_path" > "$output_path"
   if [ ! -s "$output_path" ]; then
-    echo "Could not extract the step run body." >&2
+    echo "Could not extract the run body from $step_path." >&2
     exit 1
   fi
 }
@@ -281,15 +282,16 @@ review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nS
 followup_gate_step="$test_dir/gate-automated-follow-up.yml"
 followup_gate_script="$test_dir/gate-automated-follow-up.sh"
 extract_workflow_step 'Gate automated follow-up' "$followup_gate_step"
-if grep -Fq 'HEAD_REF' "$followup_gate_step"; then
-  echo 'Automated follow-up gate must not derive an Issue from the PR branch.' >&2
+if grep -Eq 'HEAD_REF|head\.ref|ai/issue-' "$followup_gate_step"; then
+  echo 'Automated follow-up gate must not derive a closing Issue from the PR branch.' >&2
   exit 1
 fi
 extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
 
-# The production step runs after checking out trusted base automation. Model
-# that checkout in a fixture worktree, then invoke the extracted script from
-# outside the repository root.
+# The fixture verifies that, even when its checkout root differs from this
+# repository root, the gate resolves helpers only beneath that checkout's
+# .github directory. Existing bootstrap assertions cover the base-derived
+# trust boundary. Invoke the extracted script from outside that checkout root.
 followup_gate_workdir="$test_dir/gate-automated-follow-up-workdir"
 mkdir "$followup_gate_workdir"
 ln -s "$repo_root/.github" "$followup_gate_workdir/.github"
