@@ -147,9 +147,13 @@ followup_publish_if="$(awk '
 
 make_case_environment() {
   local case_dir="${1:?case dir is required}"
+  local contract="${2-}"
+  if [ -z "$contract" ]; then
+    contract='{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10}'
+  fi
   mkdir -p "$case_dir/bin" "$case_dir/runner" "$case_dir/.ai-context"
   : > "$case_dir/.ai-context/request.md"
-  printf '%s\n' '{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10}' > "$case_dir/runner/codex-diff-guard-contract.json"
+  printf '%s\n' "$contract" > "$case_dir/runner/codex-diff-guard-contract.json"
   : > "$case_dir/github-output"
   : > "$case_dir/summary"
   : > "$case_dir/gh.log"
@@ -209,8 +213,12 @@ run_case() {
   local name="${1:?case name is required}"
   local helper_body="${2:?helper body is required}"
   local guard="${3:-$guard_script}"
+  local contract="${4-}"
+  if [ -z "$contract" ]; then
+    contract='{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10}'
+  fi
   local case_dir="$test_dir/$name"
-  make_case_environment "$case_dir"
+  make_case_environment "$case_dir" "$contract"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' "$helper_body" > "$case_dir/runner/evaluate-codex-diff-gate.sh"
   chmod +x "$case_dir/runner/evaluate-codex-diff-gate.sh"
 
@@ -232,6 +240,37 @@ run_case() {
 
   assert_runtime_guard_setup_order "$case_dir/git.log" "$name"
   [ ! -e "$case_dir/.ai-context/request.md" ]
+}
+
+assert_invalid_contract_fails_closed() {
+  local name="${1:?case name is required}"
+  local contract="${2:?contract is required}"
+  local guard="${3:-$guard_script}"
+  local case_dir="$test_dir/$name"
+  make_case_environment "$case_dir" "$contract"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+    'printf helper-invoked > "$RUNNER_TEMP/helper.log"' > "$case_dir/runner/evaluate-codex-diff-gate.sh"
+  chmod +x "$case_dir/runner/evaluate-codex-diff-gate.sh"
+
+  if (
+    cd "$case_dir"
+    PATH="$case_dir/bin:$PATH" \
+    RUNNER_TEMP="$case_dir/runner" \
+    GITHUB_OUTPUT="$case_dir/github-output" \
+    GITHUB_STEP_SUMMARY="$case_dir/summary" \
+    GITHUB_REPOSITORY='owner/repo' \
+    ISSUE_NUMBER='169' PR_NUMBER='172' HEAD_REF='ai/issue-170' \
+    GH_LOG="$case_dir/gh.log" PAUSE_LOG="$case_dir/pause.log" GIT_LOG="$case_dir/git.log" \
+      bash "$guard"
+  ); then
+    echo "$name accepted an invalid trusted diff guard contract." >&2
+    exit 1
+  fi
+  [ ! -e "$case_dir/runner/helper.log" ]
+  [ ! -s "$case_dir/github-output" ]
+  [ ! -s "$case_dir/summary" ]
+  [ ! -s "$case_dir/gh.log" ]
+  [ ! -s "$case_dir/pause.log" ]
 }
 
 assert_runtime_guard_setup_order() {
@@ -366,14 +405,19 @@ assert_no_metric_diagnostics() {
   fi
 }
 
-run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\'''
+fixture_contract='{"max_changed_files":3,"max_changed_lines":40,"max_new_files":2}'
+run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$guard_script" "$fixture_contract"
 grep -Fxq 'continue=true' "$test_dir/pass/github-output"
 [ ! -s "$test_dir/pass/gh.log" ]
 [ ! -s "$test_dir/pass/pause.log" ]
 grep -Fq -- '- Result: pass' "$test_dir/pass/summary"
-grep -Fq -- '- Changed files: 2 / 25' "$test_dir/pass/summary"
-grep -Fq -- '- Total changed lines: 13 / 2000' "$test_dir/pass/summary"
-grep -Fq -- '- New files: 1 / 10' "$test_dir/pass/summary"
+grep -Fq -- '- Changed files: 2 / 3' "$test_dir/pass/summary"
+grep -Fq -- '- Total changed lines: 13 / 40' "$test_dir/pass/summary"
+grep -Fq -- '- New files: 1 / 2' "$test_dir/pass/summary"
+
+assert_invalid_contract_fails_closed contract_missing '{}'
+assert_invalid_contract_fails_closed contract_schema_invalid '{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10,"unexpected":true}'
+assert_invalid_contract_fails_closed contract_value_invalid '{"max_changed_files":0,"max_changed_lines":2000,"max_new_files":10}'
 
 run_case stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\'''
 grep -Fxq 'continue=false' "$test_dir/stop/github-output"
@@ -407,14 +451,18 @@ run_case malformed_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files
 grep -Fxq 'continue=false' "$test_dir/malformed_pass/github-output"
 grep -Fq 'could not be parsed' "$test_dir/malformed_pass/gh.log"
 
-run_case followup_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script"
+run_case followup_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=true' "$test_dir/followup_pass/github-output"
 [ ! -s "$test_dir/followup_pass/gh.log" ]
 [ ! -s "$test_dir/followup_pass/pause.log" ]
 grep -Fq -- '- Result: pass' "$test_dir/followup_pass/summary"
-grep -Fq -- '- Changed files: 2 / 25' "$test_dir/followup_pass/summary"
-grep -Fq -- '- Total changed lines: 13 / 2000' "$test_dir/followup_pass/summary"
-grep -Fq -- '- New files: 1 / 10' "$test_dir/followup_pass/summary"
+grep -Fq -- '- Changed files: 2 / 3' "$test_dir/followup_pass/summary"
+grep -Fq -- '- Total changed lines: 13 / 40' "$test_dir/followup_pass/summary"
+grep -Fq -- '- New files: 1 / 2' "$test_dir/followup_pass/summary"
+
+assert_invalid_contract_fails_closed followup_contract_missing '{}' "$followup_guard_script"
+assert_invalid_contract_fails_closed followup_contract_schema_invalid '{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10,"unexpected":true}' "$followup_guard_script"
+assert_invalid_contract_fails_closed followup_contract_value_invalid '{"max_changed_files":0,"max_changed_lines":2000,"max_new_files":10}' "$followup_guard_script"
 
 run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script"
 grep -Fxq 'continue=false' "$test_dir/followup_stop/github-output"

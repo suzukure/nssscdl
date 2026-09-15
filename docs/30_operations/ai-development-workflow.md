@@ -233,7 +233,9 @@ Issue起点developerとClaude review follow-upの両方で、Codex実行後か�
 
 helperのstdoutは1個の機械可読JSON objectであり、呼出側は `result` と全ての非負整数metricsを検証する。helperのexit statusが0で、JSONが妥当であり、かつ `result=pass` の場合にだけrepository writeへ進む。`result=pass` 後からrepository writeまで、guardが評価したindexを維持する。再度の `git add` その他のindex更新、または `git commit -a` / `git commit -am` により、未評価のworktree変更をcommit対象へ追加してはならない。repository writeの対象は、guardが評価してpassしたstaged diffと同一でなければならない。`stop`、`error`、未知のresult、helper異常終了、出力parse失敗またはmetrics不正は、いずれもwriteを許可しないfail-closed停止とする。
 
-評価対象はstaged diffであり、hard stop閾値は changed files 25、additionsとdeletionsの合計である total changed lines 2,000、new files 10である。各値が閾値ちょうどなら `pass`、いずれか一つでも超過すれば `stop` とする。binary変更、staged `.gitattributes` の `-diff` などでnumstatを数値化できない場合は、変更を省略したり0として扱わず `error` で停止する。bypassは設けない。正当な大規模作業または数値化不能な変更は、安全性・正確性・要求整合性を保てるIssueへ分割するか、人間実装へ切り替える。
+hard stop閾値のproduction正本は、base-derivedの `.github/scripts/evaluate-codex-diff-gate.sh` にある3定数である。helperの `--contract` invocationは、その同じ定数から `max_changed_files`、`max_changed_lines`、`max_new_files` だけを含むJSON objectをstdoutへ出力する。Issue起点とfollow-upのbootstrapは、base commitから取得したhelperのこの出力をschemaと正の整数値として検証してから、runtime-onlyの `.ai-context/diff-guard-contract.json` へtrusted contextとして渡す。Codexへの早期抑止指示とJob Summaryの閾値表示はこのcontextから導出し、hard-stop判定も同helperの定数を使用する。PR headやCodexが変更したworktreeのcontractでこれらを上書きしてはならない。contractの取得、parse、schema、または値の検証に失敗した場合はfail-closedで停止し、repository writeへ進まない。
+
+評価対象はstaged diffである。changed files、additionsとdeletionsの合計である total changed lines、new filesの各値がcontractの対応する閾値ちょうどなら `pass`、いずれか一つでも超過すれば `stop` とする。binary変更、staged `.gitattributes` の `-diff` などでnumstatを数値化できない場合は、変更を省略したり0として扱わず `error` で停止する。bypassは設けない。正当な大規模作業または数値化不能な変更は、安全性・正確性・要求整合性を保てるIssueへ分割するか、人間実装へ切り替える。
 
 `stop` またはerror系の停止では、developer経路はclosing Issueと存在するopen PRを、follow-up経路は対象PRと解決できるclosing Issueを `human-review-required` により停止する。続いてdeveloperはIssueへ、follow-upはPRへ、非機密な停止reasonを診断commentとして記録し、Step Summaryへresult、閾値、利用可能なmetricsまたは「Metrics: unavailable」、およびrepository writeをblockedした決定を記録する。停止通知はその後の専用stepで試行する。再開は「人間エスカレーション」の規約どおり、人間が判断を記録・確認した後にclosing Issue、PRの順でラベルを解除する。
 
