@@ -227,7 +227,7 @@ default branchに次を適用する。
 
 `.github/scripts/list-human-pause-records.sh` はこのprimitiveを用いてtrusted Conversation recordを列挙する。trusted GitHub App IDを入力として受け、REST Issue comments APIの `performed_via_github_app.id` と一致するcommentだけを候補にする。PRがあればPR番号、なければIssue番号のConversationだけを探索し、双方を混在させない。stdoutは単一のJSON object `{target, records:[{pause_id, record}]}` とし、trustedかつschema-validで探索対象と`target`が一致するrecordが0件でも成功して `records: []` を返す。REST comment `id` を`pause_id`として返す。untrusted、schema不正、または`target`不一致のcommentはskipし、Conversation取得失敗またはAPI応答shape不正はfail-closedとする。このhelperはrecord数からactive / consumed / supersededを判定しない。
 
-`.github/scripts/validate-human-pause-record-graph.sh` はlisting helperのstdoutをstdinで受け、構造的にvalidな場合だけ同じJSONをstdoutへ返す。`pause_id` の重複、存在しない`source_pause_id`、self reference、cycle、および一つのpredecessorへの複数successorをfail-closedで拒否する。recordの列挙順、root数、record数は意味論に使用せず、複数の独立rootまたは過去chainを許容する。このhelperはtrusted性・schema・targetを再検証せず、lifecycle status、effective reason、active pauseも導出しない。
+`.github/scripts/validate-human-pause-record-graph.sh` はlisting helperのstdoutをstdinで受け、構造的にvalidな場合だけ同じJSONをstdoutへ返す。`pause_id` の重複、存在しない`source_pause_id`、self reference、cycle、および一つのpredecessorへの複数successorをfail-closedで拒否する。forkを禁止するため、各chainは構造上linearであり、一つのpredecessorが持てるsuccessorは高々一つである。recordの列挙順、root数、record数は意味論に使用せず、複数の独立rootまたは過去chainを許容する。このhelperはtrusted性・schema・targetを再検証せず、lifecycle status、effective reason、active pauseも導出しない。
 
 ### trusted diff guard
 
