@@ -229,9 +229,9 @@ default branchに次を適用する。
 
 ### trusted diff guard
 
-Issue起点developerとClaude review follow-upの両方で、Codex実行後かつrepository write（commit、push、PR作成・更新またはreview応答）前に、全変更をstagingした上でtrusted diff guardを評価する。両経路ともPR headやCodexが変更した作業ツリーのhelperを実行せず、current base commitから `$RUNNER_TEMP/evaluate-codex-diff-gate.sh` として取得した `evaluate-codex-diff-gate.sh` を使用する。取得・bootstrapに失敗した場合も安全側へ停止する。
+Issue起点developerとClaude review follow-upの両方で、Codex実行後かつrepository write（commit、push、PR作成・更新またはreview応答）前に、runtime-onlyの `.ai-context` をworktreeとindexから除外し、それ以外の変更をstagingしてindexを確定する。trusted diff guardはこのstaged diffを評価する。両経路ともPR headやCodexが変更した作業ツリーのhelperを実行せず、current base commitから `$RUNNER_TEMP/evaluate-codex-diff-gate.sh` として取得した `evaluate-codex-diff-gate.sh` を使用する。取得・bootstrapに失敗した場合も安全側へ停止する。
 
-helperのstdoutは1個の機械可読JSON objectであり、呼出側は `result` と全ての非負整数metricsを検証する。helperのexit statusが0で、JSONが妥当であり、かつ `result=pass` の場合にだけrepository writeへ進む。`stop`、`error`、未知のresult、helper異常終了、出力parse失敗またはmetrics不正は、いずれもwriteを許可しないfail-closed停止とする。
+helperのstdoutは1個の機械可読JSON objectであり、呼出側は `result` と全ての非負整数metricsを検証する。helperのexit statusが0で、JSONが妥当であり、かつ `result=pass` の場合にだけrepository writeへ進む。`result=pass` 後からrepository writeまで、guardが評価したindexを維持する。再度の `git add` その他のindex更新、または `git commit -a` / `git commit -am` により、未評価のworktree変更をcommit対象へ追加してはならない。repository writeの対象は、guardが評価してpassしたstaged diffと同一でなければならない。`stop`、`error`、未知のresult、helper異常終了、出力parse失敗またはmetrics不正は、いずれもwriteを許可しないfail-closed停止とする。
 
 評価対象はstaged diffであり、hard stop閾値は changed files 25、additionsとdeletionsの合計である total changed lines 2,000、new files 10である。各値が閾値ちょうどなら `pass`、いずれか一つでも超過すれば `stop` とする。binary変更、staged `.gitattributes` の `-diff` などでnumstatを数値化できない場合は、変更を省略したり0として扱わず `error` で停止する。bypassは設けない。正当な大規模作業または数値化不能な変更は、安全性・正確性・要求整合性を保てるIssueへ分割するか、人間実装へ切り替える。
 
