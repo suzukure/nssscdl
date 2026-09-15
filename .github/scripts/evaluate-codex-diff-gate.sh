@@ -5,6 +5,20 @@ readonly max_changed_files=25
 readonly max_changed_lines=2000
 readonly max_new_files=10
 
+emit_contract() {
+  printf '{"max_changed_files":%s,"max_changed_lines":%s,"max_new_files":%s}\n' \
+    "$max_changed_files" "$max_changed_lines" "$max_new_files"
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = --contract ]; then
+  emit_contract
+  exit 0
+fi
+if [ "$#" -ne 0 ]; then
+  echo 'Usage: evaluate-codex-diff-gate.sh [--contract]' >&2
+  exit 2
+fi
+
 # stdout is one JSON object. pass and stop exit 0; callers must use .result.
 # error exits non-zero. A non-numeric numstat (including binary or -diff paths)
 # cannot be measured safely, so it is an error rather than an omitted change.

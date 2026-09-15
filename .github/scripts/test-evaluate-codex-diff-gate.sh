@@ -10,6 +10,15 @@ readonly max_changed_files=25
 readonly max_changed_lines=2000
 readonly max_new_files=10
 
+contract_output="$(bash "$helper" --contract)"
+jq -e '
+  . == {
+    max_changed_files: 25,
+    max_changed_lines: 2000,
+    max_new_files: 10
+  }
+' <<< "$contract_output" > /dev/null
+
 new_repo() {
   local name="${1:?repository name is required}"
   local directory

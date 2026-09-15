@@ -55,10 +55,16 @@ extract_step_run "$followup_job" 'Commit and answer review' "$followup_commit_sc
 
 # Structural boundaries that are not practical to exercise in the extracted run body.
 grep -Fq 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job"
+grep -Fq 'bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"' "$developer_job"
+grep -Fq 'cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json' "$developer_job"
 bootstrap_line="$(grep -n -F 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job" | cut -d: -f1)"
 codex_line="$(grep -n -F '      - name: Run Codex developer' "$developer_job" | cut -d: -f1)"
 [ "$bootstrap_line" -lt "$codex_line" ]
-grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$developer_job"
+grep -Fq '.ai-context/diff-guard-contract.json completely' "$developer_job"
+if grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$developer_job"; then
+  echo 'Issue-origin Codex prompt must use the trusted contract context.' >&2
+  exit 1
+fi
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$developer_job"
 
 assert_guard_setup_order() {
@@ -115,10 +121,16 @@ publish_if="$(awk '
 [ "$publish_if" = "        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue == 'true'" ]
 
 grep -Fq 'git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$followup_job"
+grep -Fq 'bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"' "$followup_job"
+grep -Fq 'cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json' "$followup_job"
 followup_bootstrap_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$followup_job" | cut -d: -f1)"
 followup_codex_line="$(grep -n -F '      - name: Run Codex follow-up' "$followup_job" | cut -d: -f1)"
 [ "$followup_bootstrap_line" -lt "$followup_codex_line" ]
-grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$followup_job"
+grep -Fq '.ai-context/diff-guard-contract.json completely' "$followup_job"
+if grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$followup_job"; then
+  echo 'Follow-up Codex prompt must use the trusted contract context.' >&2
+  exit 1
+fi
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$followup_job"
 
 assert_guard_setup_order "$followup_guard_script" 'Follow-up'
@@ -137,6 +149,7 @@ make_case_environment() {
   local case_dir="${1:?case dir is required}"
   mkdir -p "$case_dir/bin" "$case_dir/runner" "$case_dir/.ai-context"
   : > "$case_dir/.ai-context/request.md"
+  printf '%s\n' '{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10}' > "$case_dir/runner/codex-diff-guard-contract.json"
   : > "$case_dir/github-output"
   : > "$case_dir/summary"
   : > "$case_dir/gh.log"
@@ -359,6 +372,8 @@ grep -Fxq 'continue=true' "$test_dir/pass/github-output"
 [ ! -s "$test_dir/pass/pause.log" ]
 grep -Fq -- '- Result: pass' "$test_dir/pass/summary"
 grep -Fq -- '- Changed files: 2 / 25' "$test_dir/pass/summary"
+grep -Fq -- '- Total changed lines: 13 / 2000' "$test_dir/pass/summary"
+grep -Fq -- '- New files: 1 / 10' "$test_dir/pass/summary"
 
 run_case stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\'''
 grep -Fxq 'continue=false' "$test_dir/stop/github-output"
@@ -397,6 +412,9 @@ grep -Fxq 'continue=true' "$test_dir/followup_pass/github-output"
 [ ! -s "$test_dir/followup_pass/gh.log" ]
 [ ! -s "$test_dir/followup_pass/pause.log" ]
 grep -Fq -- '- Result: pass' "$test_dir/followup_pass/summary"
+grep -Fq -- '- Changed files: 2 / 25' "$test_dir/followup_pass/summary"
+grep -Fq -- '- Total changed lines: 13 / 2000' "$test_dir/followup_pass/summary"
+grep -Fq -- '- New files: 1 / 10' "$test_dir/followup_pass/summary"
 
 run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script"
 grep -Fxq 'continue=false' "$test_dir/followup_stop/github-output"
