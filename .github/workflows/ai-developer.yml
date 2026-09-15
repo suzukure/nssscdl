@@ -141,6 +141,7 @@ jobs:
           prompt: |
             Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
             Implement the Issue in this working tree.
+            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
             Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
             Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
@@ -588,6 +589,7 @@ jobs:
           prompt: |
             Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
             Address every blocking Claude finding in this working tree.
+            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
             Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
             Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
