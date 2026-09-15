@@ -88,15 +88,17 @@ assert_publisher_git_allowlist() {
   # and `git update-index` in addition to commit modes that absorb worktree
   # changes. The publisher may only configure identity, inspect the guarded
   # index, commit it exactly, and push it.
-  command_count="$(grep -Ec '^[[:space:]]*(if[[:space:]]+)?git([[:space:]]|$)' "$script")"
+  # Match a shell-command token, not only a line-leading command.  A write
+  # hidden after `&&` or `;` must be subject to the same allowlist.
+  command_count="$(grep -Ec '(^|[[:space:];&|()])git([[:space:]]|$)' "$script" || true)"
   if [ "$command_count" -ne 5 ] \
       || ! grep -Fxq 'git config user.name "$bot_login"' "$script" \
       || ! grep -Fxq 'git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"' "$script" \
       || ! grep -Fxq 'if git diff --cached --quiet; then' "$script" \
       || ! grep -Fxq "$commit_line" "$script" \
       || ! grep -Fxq "$push_line" "$script"; then
-    echo "$label publisher must use only the guarded-index git allowlist." >&2
-    exit 1
+    echo "$label publisher contains a git invocation outside the guarded-index allowlist." >&2
+    return 1
   fi
 }
 
@@ -215,9 +217,20 @@ run_case() {
       bash "$guard"
   )
 
-  grep -Fxq 'reset -- .ai-context' "$case_dir/git.log"
-  grep -Fxq 'add -A' "$case_dir/git.log"
+  assert_runtime_guard_setup_order "$case_dir/git.log" "$name"
   [ ! -e "$case_dir/.ai-context/request.md" ]
+}
+
+assert_runtime_guard_setup_order() {
+  local git_log="${1:?git log is required}"
+  local label="${2:?label is required}"
+  local reset_line stage_line
+  reset_line="$(grep -n -Fx 'reset -- .ai-context' "$git_log" | head -n1 | cut -d: -f1)"
+  stage_line="$(grep -n -Fx 'add -A' "$git_log" | head -n1 | cut -d: -f1)"
+  if [ -z "$reset_line" ] || [ -z "$stage_line" ] || ! [ "$reset_line" -lt "$stage_line" ]; then
+    echo "$label runtime guard must unstage runtime context before staging." >&2
+    exit 1
+  fi
 }
 
 run_publisher_case() {
@@ -244,7 +257,10 @@ run_publisher_case() {
         config) return 0 ;;
         diff) return 1 ;;
         commit)
-          [ "$#" -eq 3 ] && [ "$2" = -m ] && [ "$3" = "$PUBLISH_COMMIT_MESSAGE" ] || return 2
+          if ! [ "$#" -eq 3 ] || ! [ "$2" = -m ] || ! [ "$3" = "$PUBLISH_COMMIT_MESSAGE" ]; then
+            echo "Publisher invoked a git command outside the guarded-index allowlist: $*" >&2
+            return 2
+          fi
           return 0
           ;;
         push) return 0 ;;
@@ -278,21 +294,48 @@ assert_publisher_bypass_is_blocked() {
   local route="${1:?route is required}"
   local publisher="${2:?publisher script is required}"
   local commit_message="${3:?commit message is required}"
-  local variant_name injection case_dir
-  for variant_name in git-c-add git-stage git-update-index git-commit-a git-commit-am; do
+  local variant_name injection expected_call case_dir stderr_file static_commit static_push
+  case "$route" in
+    issue-origin)
+      static_commit='git commit -m "Implement #${ISSUE_NUMBER} with Codex"'
+      static_push='git push --set-upstream origin "$AI_BRANCH"'
+      ;;
+    followup)
+      static_commit='git commit -m "Address Claude review for PR #${PR_NUMBER}"'
+      static_push='git push origin "HEAD:${HEAD_REF}"'
+      ;;
+    *)
+      echo "Unknown publisher route: $route" >&2
+      exit 1
+      ;;
+  esac
+  for variant_name in git-c-add git-stage git-update-index git-commit-a git-commit-am git-after-and git-after-semicolon; do
     case "$variant_name" in
-      git-c-add) injection='git -C . add -A' ;;
-      git-stage) injection='git stage -A' ;;
-      git-update-index) injection='git update-index --add guarded-file' ;;
-      git-commit-a) injection="git commit -a -m \"$commit_message\"" ;;
-      git-commit-am) injection="git commit -am \"$commit_message\"" ;;
+      git-c-add) injection='git -C . add -A'; expected_call='git -C . add -A' ;;
+      git-stage) injection='git stage -A'; expected_call='git stage -A' ;;
+      git-update-index) injection='git update-index --add guarded-file'; expected_call='git update-index --add guarded-file' ;;
+      git-commit-a) injection="git commit -a -m \"$commit_message\""; expected_call="git commit -a -m $commit_message" ;;
+      git-commit-am) injection="git commit -am \"$commit_message\""; expected_call="git commit -am $commit_message" ;;
+      git-after-and) injection=': && git -C . add -A'; expected_call='git -C . add -A' ;;
+      git-after-semicolon) injection=':; git stage -A'; expected_call='git stage -A' ;;
     esac
     case_dir="$test_dir/publisher-${route}-${variant_name}"
-    if run_publisher_case "${route}-${variant_name}" "$publisher" "$commit_message" "$injection" \
-        2>"$test_dir/publisher-${route}-${variant_name}.stderr"; then
+    stderr_file="$test_dir/publisher-${route}-${variant_name}.stderr"
+    run_publisher_case "${route}-${variant_name}" "$publisher" "$commit_message" "$injection" \
+      >"$test_dir/publisher-${route}-${variant_name}.stdout" 2>"$stderr_file" && {
       echo "$route publisher accepted post-guard $variant_name staging." >&2
       exit 1
+    }
+    if assert_publisher_git_allowlist "$case_dir/publisher.sh" "$route mutation" \
+        "$static_commit" "$static_push" > /dev/null 2>&1; then
+      echo "$route publisher static allowlist accepted $variant_name." >&2
+      exit 1
     fi
+    if ! grep -Fxq "$expected_call" "$case_dir/calls.log"; then
+      echo "$route publisher did not invoke the injected $variant_name git command." >&2
+      exit 1
+    fi
+    grep -Fq 'Publisher invoked a git command outside the guarded-index allowlist:' "$stderr_file"
     if grep -Eq 'git push|gh (pr create|pr comment|issue comment)' "$case_dir/calls.log" \
         || grep -Fxq "git commit -m $commit_message" "$case_dir/calls.log"; then
       echo "$route publisher performed a publish side effect after $variant_name." >&2
