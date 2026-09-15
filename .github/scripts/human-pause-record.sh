@@ -17,6 +17,9 @@ set -euo pipefail
 #     ai-resume-accepted: the reason effective when resume is accepted
 #   A normalization does not retain a redundant from_reason.  Consumers that
 #   need a pre-normalization reason derive it by following source_pause_id.
+#   A pause without source_pause_id is an independent root; one with a valid
+#   source_pause_id is a replacement pause.  Its lifecycle validity is outside
+#   this single-record validator.
 #   target is exactly issue:<positive decimal number> or pr:<positive decimal
 #   number>.  paused_head, when present, is exactly a 40-character lowercase
 #   hexadecimal Git SHA-1 with no leading or trailing whitespace.  This helper
@@ -85,7 +88,7 @@ validate_record() {
         or (.paused_head | type == "string" and test("\\A[0-9a-f]{40}\\z")))
       and ((has("payload") | not) or (.payload | type == "object"))
       and (if .kind == "pause" then
-        has("source_pause_id") | not
+        ((has("source_pause_id") | not) or (.source_pause_id | valid_pause_id))
       else
         (.source_pause_id | valid_pause_id)
       end)
