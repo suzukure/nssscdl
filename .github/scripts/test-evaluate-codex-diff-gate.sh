@@ -10,6 +10,36 @@ readonly max_changed_files=25
 readonly max_changed_lines=2000
 readonly max_new_files=10
 
+contract_output="$(bash "$helper" --contract)"
+jq -e '
+  . == {
+    max_changed_files: 25,
+    max_changed_lines: 2000,
+    max_new_files: 10
+  }
+' <<< "$contract_output" > /dev/null
+
+assert_contract_usage_error() {
+  local output_file="$1"
+  local error_file="$2"
+  local status
+  shift 2
+  set +e
+  bash "$helper" "$@" > "$output_file" 2> "$error_file"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    echo "Expected --contract misuse to fail: $*" >&2
+    exit 1
+  fi
+  [ "$status" -eq 2 ]
+  [ ! -s "$output_file" ]
+  grep -Fxq 'Usage: evaluate-codex-diff-gate.sh [--contract]' "$error_file"
+}
+
+assert_contract_usage_error "$test_dir/unknown-contract.out" "$test_dir/unknown-contract.err" --unknown
+assert_contract_usage_error "$test_dir/repeated-contract.out" "$test_dir/repeated-contract.err" --contract --contract
+
 new_repo() {
   local name="${1:?repository name is required}"
   local directory

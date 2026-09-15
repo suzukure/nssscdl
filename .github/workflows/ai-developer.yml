@@ -87,9 +87,18 @@ jobs:
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
+          bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
 
           mkdir -p .ai-context
           git show "${base_sha}:AGENTS.md" > .ai-context/AGENTS.base.md
+          cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json
           {
             echo '# Development request'
             echo
@@ -130,9 +139,10 @@ jobs:
           model: ${{ vars.CODEX_MODEL }}
           effort: medium
           prompt: |
-            Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
+            Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
             Implement the Issue in this working tree.
-            Keep the proposed repository change within 25 changed files, 2,000 total changed lines, and 10 new files. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
+            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
+            Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
             Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
@@ -191,6 +201,20 @@ jobs:
           git reset -- .ai-context
           git add -A
 
+          if ! jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null; then
+            echo 'Trusted diff guard contract is unavailable or malformed.' >&2
+            exit 1
+          fi
+          max_changed_files="$(jq -r .max_changed_files "$RUNNER_TEMP/codex-diff-guard-contract.json")"
+          max_changed_lines="$(jq -r .max_changed_lines "$RUNNER_TEMP/codex-diff-guard-contract.json")"
+          max_new_files="$(jq -r .max_new_files "$RUNNER_TEMP/codex-diff-guard-contract.json")"
+
           result_json=''
           helper_status=0
           set +e
@@ -219,11 +243,11 @@ jobs:
               echo '### AI Developer diff guard'
               echo
               echo '- Result: pass'
-              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / 25"
+              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / ${max_changed_files}"
               echo "- Additions: $(jq -r .additions <<< "$result_json")"
               echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
-              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / 2,000"
-              echo "- New files: $(jq -r .new_files <<< "$result_json") / 10"
+              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / ${max_changed_lines}"
+              echo "- New files: $(jq -r .new_files <<< "$result_json") / ${max_new_files}"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -272,7 +296,7 @@ jobs:
             echo '### AI Developer diff guard'
             echo
             echo "- Result: ${result:-unavailable}"
-            echo '- Thresholds: 25 changed files / 2,000 total changed lines / 10 new files'
+            echo "- Thresholds: ${max_changed_files} changed files / ${max_changed_lines} total changed lines / ${max_new_files} new files"
             if [ "$parsed" = true ] && [ "$result" = stop ]; then
               for field in changed_files additions deletions total_changed_lines new_files; do
                 value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
@@ -527,6 +551,15 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
+          bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
+          cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
 
       - name: Validate Codex model configuration
@@ -554,9 +587,10 @@ jobs:
           effort: medium
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
           prompt: |
-            Read .ai-context/AGENTS.base.md and .ai-context/request.md completely. The base-commit AGENTS copy is the governing instruction file.
+            Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
             Address every blocking Claude finding in this working tree.
-            Keep the proposed repository change within 25 changed files, 2,000 total changed lines, and 10 new files. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
+            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
+            Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
             Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
           output-file: ${{ runner.temp }}/codex-final.md
 
@@ -622,6 +656,20 @@ jobs:
           git reset -- .ai-context
           git add -A
 
+          if ! jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null; then
+            echo 'Trusted follow-up diff guard contract is unavailable or malformed.' >&2
+            exit 1
+          fi
+          max_changed_files="$(jq -r .max_changed_files "$RUNNER_TEMP/codex-diff-guard-contract.json")"
+          max_changed_lines="$(jq -r .max_changed_lines "$RUNNER_TEMP/codex-diff-guard-contract.json")"
+          max_new_files="$(jq -r .max_new_files "$RUNNER_TEMP/codex-diff-guard-contract.json")"
+
           result_json=''
           helper_status=0
           set +e
@@ -650,11 +698,11 @@ jobs:
               echo '### AI Developer follow-up diff guard'
               echo
               echo '- Result: pass'
-              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / 25"
+              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / ${max_changed_files}"
               echo "- Additions: $(jq -r .additions <<< "$result_json")"
               echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
-              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / 2,000"
-              echo "- New files: $(jq -r .new_files <<< "$result_json") / 10"
+              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / ${max_changed_lines}"
+              echo "- New files: $(jq -r .new_files <<< "$result_json") / ${max_new_files}"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -707,7 +755,7 @@ jobs:
             echo '### AI Developer follow-up diff guard'
             echo
             echo "- Result: ${result:-unavailable}"
-            echo '- Thresholds: 25 changed files / 2,000 total changed lines / 10 new files'
+            echo "- Thresholds: ${max_changed_files} changed files / ${max_changed_lines} total changed lines / ${max_new_files} new files"
             if [ "$parsed" = true ] && [ "$result" = stop ]; then
               for field in changed_files additions deletions total_changed_lines new_files; do
                 value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"

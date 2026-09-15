@@ -55,10 +55,17 @@ extract_step_run "$followup_job" 'Commit and answer review' "$followup_commit_sc
 
 # Structural boundaries that are not practical to exercise in the extracted run body.
 grep -Fq 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job"
+grep -Fq 'bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"' "$developer_job"
+grep -Fq 'cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json' "$developer_job"
 bootstrap_line="$(grep -n -F 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job" | cut -d: -f1)"
 codex_line="$(grep -n -F '      - name: Run Codex developer' "$developer_job" | cut -d: -f1)"
 [ "$bootstrap_line" -lt "$codex_line" ]
-grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$developer_job"
+grep -Fq '.ai-context/diff-guard-contract.json completely' "$developer_job"
+grep -Fq 'maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.' "$developer_job"
+if grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$developer_job"; then
+  echo 'Issue-origin Codex prompt must use the trusted contract context.' >&2
+  exit 1
+fi
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$developer_job"
 
 assert_guard_setup_order() {
@@ -115,10 +122,17 @@ publish_if="$(awk '
 [ "$publish_if" = "        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue == 'true'" ]
 
 grep -Fq 'git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$followup_job"
+grep -Fq 'bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"' "$followup_job"
+grep -Fq 'cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json' "$followup_job"
 followup_bootstrap_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$followup_job" | cut -d: -f1)"
 followup_codex_line="$(grep -n -F '      - name: Run Codex follow-up' "$followup_job" | cut -d: -f1)"
 [ "$followup_bootstrap_line" -lt "$followup_codex_line" ]
-grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$followup_job"
+grep -Fq '.ai-context/diff-guard-contract.json completely' "$followup_job"
+grep -Fq 'maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.' "$followup_job"
+if grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$followup_job"; then
+  echo 'Follow-up Codex prompt must use the trusted contract context.' >&2
+  exit 1
+fi
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$followup_job"
 
 assert_guard_setup_order "$followup_guard_script" 'Follow-up'
@@ -135,8 +149,13 @@ followup_publish_if="$(awk '
 
 make_case_environment() {
   local case_dir="${1:?case dir is required}"
+  local contract="${2-}"
+  if [ -z "$contract" ]; then
+    contract='{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10}'
+  fi
   mkdir -p "$case_dir/bin" "$case_dir/runner" "$case_dir/.ai-context"
   : > "$case_dir/.ai-context/request.md"
+  printf '%s\n' "$contract" > "$case_dir/runner/codex-diff-guard-contract.json"
   : > "$case_dir/github-output"
   : > "$case_dir/summary"
   : > "$case_dir/gh.log"
@@ -196,8 +215,12 @@ run_case() {
   local name="${1:?case name is required}"
   local helper_body="${2:?helper body is required}"
   local guard="${3:-$guard_script}"
+  local contract="${4-}"
+  if [ -z "$contract" ]; then
+    contract='{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10}'
+  fi
   local case_dir="$test_dir/$name"
-  make_case_environment "$case_dir"
+  make_case_environment "$case_dir" "$contract"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' "$helper_body" > "$case_dir/runner/evaluate-codex-diff-gate.sh"
   chmod +x "$case_dir/runner/evaluate-codex-diff-gate.sh"
 
@@ -219,6 +242,68 @@ run_case() {
 
   assert_runtime_guard_setup_order "$case_dir/git.log" "$name"
   [ ! -e "$case_dir/.ai-context/request.md" ]
+}
+
+assert_invalid_contract_fails_closed() {
+  local name="${1:?case name is required}"
+  local contract="${2:?contract is required}"
+  local guard="${3:-$guard_script}"
+  local case_dir="$test_dir/$name"
+  make_case_environment "$case_dir" "$contract"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+    'printf helper-invoked > "$RUNNER_TEMP/helper.log"' > "$case_dir/runner/evaluate-codex-diff-gate.sh"
+  chmod +x "$case_dir/runner/evaluate-codex-diff-gate.sh"
+
+  if (
+    cd "$case_dir"
+    PATH="$case_dir/bin:$PATH" \
+    RUNNER_TEMP="$case_dir/runner" \
+    GITHUB_OUTPUT="$case_dir/github-output" \
+    GITHUB_STEP_SUMMARY="$case_dir/summary" \
+    GITHUB_REPOSITORY='owner/repo' \
+    ISSUE_NUMBER='169' PR_NUMBER='172' HEAD_REF='ai/issue-170' \
+    GH_LOG="$case_dir/gh.log" PAUSE_LOG="$case_dir/pause.log" GIT_LOG="$case_dir/git.log" \
+      bash "$guard"
+  ); then
+    echo "$name accepted an invalid trusted diff guard contract." >&2
+    exit 1
+  fi
+  [ ! -e "$case_dir/runner/helper.log" ]
+  [ ! -s "$case_dir/github-output" ]
+  [ ! -s "$case_dir/summary" ]
+  [ ! -s "$case_dir/gh.log" ]
+  [ ! -s "$case_dir/pause.log" ]
+}
+
+assert_missing_contract_fails_closed() {
+  local name="${1:?case name is required}"
+  local guard="${2:-$guard_script}"
+  local case_dir="$test_dir/$name"
+  make_case_environment "$case_dir"
+  rm "$case_dir/runner/codex-diff-guard-contract.json"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+    'printf helper-invoked > "$RUNNER_TEMP/helper.log"' > "$case_dir/runner/evaluate-codex-diff-gate.sh"
+  chmod +x "$case_dir/runner/evaluate-codex-diff-gate.sh"
+
+  if (
+    cd "$case_dir"
+    PATH="$case_dir/bin:$PATH" \
+    RUNNER_TEMP="$case_dir/runner" \
+    GITHUB_OUTPUT="$case_dir/github-output" \
+    GITHUB_STEP_SUMMARY="$case_dir/summary" \
+    GITHUB_REPOSITORY='owner/repo' \
+    ISSUE_NUMBER='169' PR_NUMBER='172' HEAD_REF='ai/issue-170' \
+    GH_LOG="$case_dir/gh.log" PAUSE_LOG="$case_dir/pause.log" GIT_LOG="$case_dir/git.log" \
+      bash "$guard"
+  ); then
+    echo "$name accepted a missing trusted diff guard contract." >&2
+    exit 1
+  fi
+  [ ! -e "$case_dir/runner/helper.log" ]
+  [ ! -s "$case_dir/github-output" ]
+  [ ! -s "$case_dir/summary" ]
+  [ ! -s "$case_dir/gh.log" ]
+  [ ! -s "$case_dir/pause.log" ]
 }
 
 assert_runtime_guard_setup_order() {
@@ -353,28 +438,38 @@ assert_no_metric_diagnostics() {
   fi
 }
 
-run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\'''
+fixture_contract='{"max_changed_files":3,"max_changed_lines":40,"max_new_files":2}'
+run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$guard_script" "$fixture_contract"
 grep -Fxq 'continue=true' "$test_dir/pass/github-output"
 [ ! -s "$test_dir/pass/gh.log" ]
 [ ! -s "$test_dir/pass/pause.log" ]
 grep -Fq -- '- Result: pass' "$test_dir/pass/summary"
-grep -Fq -- '- Changed files: 2 / 25' "$test_dir/pass/summary"
+grep -Fq -- '- Changed files: 2 / 3' "$test_dir/pass/summary"
+grep -Fq -- '- Total changed lines: 13 / 40' "$test_dir/pass/summary"
+grep -Fq -- '- New files: 1 / 2' "$test_dir/pass/summary"
 
-run_case stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\'''
+assert_invalid_contract_fails_closed contract_missing '{}'
+assert_missing_contract_fails_closed contract_file_missing
+assert_invalid_contract_fails_closed contract_schema_invalid '{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10,"unexpected":true}'
+assert_invalid_contract_fails_closed contract_value_invalid '{"max_changed_files":0,"max_changed_lines":2000,"max_new_files":10}'
+
+run_case stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/stop/github-output"
 [ -s "$test_dir/stop/pause.log" ]
 grep -Fq 'oversized repository change' "$test_dir/stop/gh.log"
 grep -Fq 'changed_files: 26' "$test_dir/stop/gh.log"
 grep -Fq 'total_changed_lines: 2100' "$test_dir/stop/gh.log"
 grep -Fq -- '- changed_files: 26' "$test_dir/stop/summary"
+grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/stop/summary"
 
-run_case error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable"}'\''; exit 1'
+run_case error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable"}'\''; exit 1' "$guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/error/github-output"
 [ -s "$test_dir/error/pause.log" ]
 grep -Fq 'could not safely measure' "$test_dir/error/gh.log"
 grep -Fq 'error: git_numstat_unavailable' "$test_dir/error/gh.log"
 grep -Fq 'Metrics: unavailable' "$test_dir/error/gh.log"
 grep -Fq -- '- Metrics: unavailable' "$test_dir/error/summary"
+grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/error/summary"
 assert_no_metric_diagnostics "$test_dir/error/gh.log"
 assert_no_metric_diagnostics "$test_dir/error/summary"
 
@@ -392,21 +487,31 @@ run_case malformed_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files
 grep -Fxq 'continue=false' "$test_dir/malformed_pass/github-output"
 grep -Fq 'could not be parsed' "$test_dir/malformed_pass/gh.log"
 
-run_case followup_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script"
+run_case followup_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=true' "$test_dir/followup_pass/github-output"
 [ ! -s "$test_dir/followup_pass/gh.log" ]
 [ ! -s "$test_dir/followup_pass/pause.log" ]
 grep -Fq -- '- Result: pass' "$test_dir/followup_pass/summary"
+grep -Fq -- '- Changed files: 2 / 3' "$test_dir/followup_pass/summary"
+grep -Fq -- '- Total changed lines: 13 / 40' "$test_dir/followup_pass/summary"
+grep -Fq -- '- New files: 1 / 2' "$test_dir/followup_pass/summary"
 
-run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script"
+assert_invalid_contract_fails_closed followup_contract_missing '{}' "$followup_guard_script"
+assert_missing_contract_fails_closed followup_contract_file_missing "$followup_guard_script"
+assert_invalid_contract_fails_closed followup_contract_schema_invalid '{"max_changed_files":25,"max_changed_lines":2000,"max_new_files":10,"unexpected":true}' "$followup_guard_script"
+assert_invalid_contract_fails_closed followup_contract_value_invalid '{"max_changed_files":0,"max_changed_lines":2000,"max_new_files":10}' "$followup_guard_script"
+
+run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/followup_stop/github-output"
 [ -s "$test_dir/followup_stop/pause.log" ]
 grep -Fq 'oversized repository change' "$test_dir/followup_stop/gh.log"
 grep -Fq 'changed_files: 26' "$test_dir/followup_stop/gh.log"
+grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/followup_stop/summary"
 
-run_case followup_error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable"}'\''; exit 1' "$followup_guard_script"
+run_case followup_error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable"}'\''; exit 1' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/followup_error/github-output"
 grep -Fq 'Metrics: unavailable' "$test_dir/followup_error/gh.log"
+grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/followup_error/summary"
 assert_no_metric_diagnostics "$test_dir/followup_error/gh.log"
 assert_no_metric_diagnostics "$test_dir/followup_error/summary"
 
