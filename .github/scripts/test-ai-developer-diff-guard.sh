@@ -14,6 +14,7 @@ guard_script="$test_dir/diff-guard.sh"
 followup_job="$test_dir/respond-to-claude.yml"
 followup_guard_script="$test_dir/followup-diff-guard.sh"
 followup_notify_script="$test_dir/followup-diff-guard-notify.sh"
+publish_script="$test_dir/publish-issue-pr.sh"
 followup_commit_script="$test_dir/followup-commit.sh"
 
 awk '
@@ -40,6 +41,7 @@ extract_step_run() {
 }
 
 extract_step_run "$developer_job" 'Evaluate trusted diff guard' "$guard_script"
+extract_step_run "$developer_job" 'Commit, push, and open or update PR' "$publish_script"
 
 awk '
   $0 == "  respond-to-claude:" { in_job = 1 }
@@ -59,24 +61,49 @@ codex_line="$(grep -n -F '      - name: Run Codex developer' "$developer_job" | 
 grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$developer_job"
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$developer_job"
 
-guard_stage_line="$(grep -n -F 'git add -A' "$guard_script" | head -n1 | cut -d: -f1)"
-guard_helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$guard_script" | head -n1 | cut -d: -f1)"
-guard_unstage_line="$(grep -n -F 'git reset -- .ai-context' "$guard_script" | head -n1 | cut -d: -f1)"
-[ -n "$guard_stage_line" ]
-[ -n "$guard_helper_line" ]
-[ -n "$guard_unstage_line" ]
-[ "$guard_unstage_line" -lt "$guard_stage_line" ]
-[ "$guard_stage_line" -lt "$guard_helper_line" ]
+assert_guard_setup_order() {
+  local script="${1:?guard script is required}"
+  local label="${2:?label is required}"
+  local remove_line reset_line stage_line helper_line
+  remove_line="$(grep -n -F 'rm -rf .ai-context' "$script" | head -n1 | cut -d: -f1)"
+  reset_line="$(grep -n -F 'git reset -- .ai-context' "$script" | head -n1 | cut -d: -f1)"
+  stage_line="$(grep -n -F 'git add -A' "$script" | head -n1 | cut -d: -f1)"
+  helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$script" | head -n1 | cut -d: -f1)"
+  [ -n "$remove_line" ] && [ -n "$reset_line" ] && [ -n "$stage_line" ] && [ -n "$helper_line" ]
+  if ! [ "$remove_line" -lt "$reset_line" ] || ! [ "$reset_line" -lt "$stage_line" ] || ! [ "$stage_line" -lt "$helper_line" ]; then
+    echo "$label guard must remove and unstage runtime context before staging." >&2
+    exit 1
+  fi
+}
 
-# The Issue-origin publisher must commit precisely the index that the guard
-# evaluated; it must not stage a post-guard worktree change.
-publish_stage_count="$(awk '
-  /^      - name: Commit, push, and open or update PR$/ { in_step = 1; next }
-  in_step && /^      - name: / { exit }
-  in_step && /git add -A/ { count++ }
-  END { print count + 0 }
-' "$developer_job")"
-[ "$publish_stage_count" -eq 0 ]
+assert_publisher_git_allowlist() {
+  local script="${1:?publisher script is required}"
+  local label="${2:?label is required}"
+  local commit_line="${3:?commit command is required}"
+  local push_line="${4:?push command is required}"
+  local command_count
+
+  # This is deliberately an allowlist, rather than a denylist for `git add`:
+  # it rejects alternate index writers such as `git -C ... add`, `git stage`,
+  # and `git update-index` in addition to commit modes that absorb worktree
+  # changes. The publisher may only configure identity, inspect the guarded
+  # index, commit it exactly, and push it.
+  command_count="$(grep -Ec '^[[:space:]]*(if[[:space:]]+)?git([[:space:]]|$)' "$script")"
+  if [ "$command_count" -ne 5 ] \
+      || ! grep -Fxq 'git config user.name "$bot_login"' "$script" \
+      || ! grep -Fxq 'git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"' "$script" \
+      || ! grep -Fxq 'if git diff --cached --quiet; then' "$script" \
+      || ! grep -Fxq "$commit_line" "$script" \
+      || ! grep -Fxq "$push_line" "$script"; then
+    echo "$label publisher must use only the guarded-index git allowlist." >&2
+    exit 1
+  fi
+}
+
+assert_guard_setup_order "$guard_script" 'Issue-origin'
+assert_publisher_git_allowlist "$publish_script" 'Issue-origin' \
+  'git commit -m "Implement #${ISSUE_NUMBER} with Codex"' \
+  'git push --set-upstream origin "$AI_BRANCH"'
 
 publish_if="$(awk '
   /^      - name: Commit, push, and open or update PR$/ { found = 1; next }
@@ -92,28 +119,10 @@ followup_codex_line="$(grep -n -F '      - name: Run Codex follow-up' "$followup
 grep -Fq '25 changed files, 2,000 total changed lines, and 10 new files' "$followup_job"
 grep -Fq 'Avoid broad formatting changes and large generated additions.' "$followup_job"
 
-followup_stage_line="$(grep -n -F 'git add -A' "$followup_guard_script" | head -n1 | cut -d: -f1)"
-followup_helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$followup_guard_script" | head -n1 | cut -d: -f1)"
-followup_unstage_line="$(grep -n -F 'git reset -- .ai-context' "$followup_guard_script" | head -n1 | cut -d: -f1)"
-[ -n "$followup_stage_line" ]
-[ -n "$followup_helper_line" ]
-[ -n "$followup_unstage_line" ]
-[ "$followup_unstage_line" -lt "$followup_stage_line" ]
-[ "$followup_stage_line" -lt "$followup_helper_line" ]
-
-# A follow-up commit must use exactly the index evaluated by the guard.  In
-# particular, it cannot stage a later worktree change or use commit options
-# that implicitly include unstaged tracked changes.  Keep the sole commit
-# invocation exact so aliases such as --all are rejected as well.
-if grep -Eq '(^|[[:space:]])git[[:space:]]+add([[:space:]]|$)' "$followup_commit_script"; then
-  echo 'Follow-up publisher must not stage changes after the diff guard.' >&2
-  exit 1
-fi
-if [ "$(grep -Ec '^[[:space:]]*git[[:space:]]+commit([[:space:]]|$)' "$followup_commit_script")" -ne 1 ] \
-    || ! grep -Fxq 'git commit -m "Address Claude review for PR #${PR_NUMBER}"' "$followup_commit_script"; then
-  echo 'Follow-up publisher must commit only the guarded index.' >&2
-  exit 1
-fi
+assert_guard_setup_order "$followup_guard_script" 'Follow-up'
+assert_publisher_git_allowlist "$followup_commit_script" 'Follow-up' \
+  'git commit -m "Address Claude review for PR #${PR_NUMBER}"' \
+  'git push origin "HEAD:${HEAD_REF}"'
 
 followup_publish_if="$(awk '
   /^      - name: Commit and answer review$/ { found = 1; next }
@@ -137,9 +146,11 @@ make_case_environment() {
 set -euo pipefail
 printf '%s\n' "$*" >> "$GIT_LOG"
 if [ "$#" -eq 2 ] && [ "$1" = add ] && [ "$2" = -A ]; then
+  [ ! -e .ai-context/request.md ]
   exit 0
 fi
 if [ "$#" -eq 3 ] && [ "$1" = reset ] && [ "$2" = -- ] && [ "$3" = .ai-context ]; then
+  [ ! -e .ai-context/request.md ]
   exit 0
 fi
 echo "unexpected git invocation: $*" >&2
@@ -204,11 +215,90 @@ run_case() {
       bash "$guard"
   )
 
+  grep -Fxq 'reset -- .ai-context' "$case_dir/git.log"
   grep -Fxq 'add -A' "$case_dir/git.log"
-  if [ "$guard" = "$guard_script" ]; then
-    grep -Fxq 'reset -- .ai-context' "$case_dir/git.log"
-  fi
   [ ! -e "$case_dir/.ai-context/request.md" ]
+}
+
+run_publisher_case() {
+  local name="${1:?case name is required}"
+  local publisher="${2:?publisher script is required}"
+  local commit_message="${3:?commit message is required}"
+  local injection="${4-}"
+  local case_dir="$test_dir/publisher-$name"
+  mkdir -p "$case_dir"
+  : > "$case_dir/calls.log"
+  printf '%s\n' 'result summary' > "$case_dir/final.md"
+
+  if [ -n "$injection" ]; then
+    sed "/^git commit -m /i\\$injection" "$publisher" > "$case_dir/publisher.sh"
+  else
+    cp "$publisher" "$case_dir/publisher.sh"
+  fi
+
+  (
+    cd "$case_dir"
+    git() {
+      printf 'git %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1" in
+        config) return 0 ;;
+        diff) return 1 ;;
+        commit)
+          [ "$#" -eq 3 ] && [ "$2" = -m ] && [ "$3" = "$PUBLISH_COMMIT_MESSAGE" ] || return 2
+          return 0
+          ;;
+        push) return 0 ;;
+        *)
+          echo "Publisher invoked a git command outside the guarded-index allowlist: $*" >&2
+          return 2
+          ;;
+      esac
+    }
+    gh() {
+      printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1 $2" in
+        'api /users/dev[bot]') echo 123 ;;
+        'pr list') return 0 ;;
+        'pr create') echo 'https://github.com/owner/repo/pull/37' ;;
+        'pr comment'|'issue comment') return 0 ;;
+        *) return 2 ;;
+      esac
+    }
+    export -f git gh
+    PUBLISH_LOG="$case_dir/calls.log" \
+    PUBLISH_COMMIT_MESSAGE="$commit_message" \
+    GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36 PR_NUMBER=37 \
+    ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 HEAD_REF=ai/issue-36 \
+    CODEX_FINAL="$case_dir/final.md" \
+      bash "$case_dir/publisher.sh"
+  )
+}
+
+assert_publisher_bypass_is_blocked() {
+  local route="${1:?route is required}"
+  local publisher="${2:?publisher script is required}"
+  local commit_message="${3:?commit message is required}"
+  local variant_name injection case_dir
+  for variant_name in git-c-add git-stage git-update-index git-commit-a git-commit-am; do
+    case "$variant_name" in
+      git-c-add) injection='git -C . add -A' ;;
+      git-stage) injection='git stage -A' ;;
+      git-update-index) injection='git update-index --add guarded-file' ;;
+      git-commit-a) injection="git commit -a -m \"$commit_message\"" ;;
+      git-commit-am) injection="git commit -am \"$commit_message\"" ;;
+    esac
+    case_dir="$test_dir/publisher-${route}-${variant_name}"
+    if run_publisher_case "${route}-${variant_name}" "$publisher" "$commit_message" "$injection" \
+        2>"$test_dir/publisher-${route}-${variant_name}.stderr"; then
+      echo "$route publisher accepted post-guard $variant_name staging." >&2
+      exit 1
+    fi
+    if grep -Eq 'git push|gh (pr create|pr comment|issue comment)' "$case_dir/calls.log" \
+        || grep -Fxq "git commit -m $commit_message" "$case_dir/calls.log"; then
+      echo "$route publisher performed a publish side effect after $variant_name." >&2
+      exit 1
+    fi
+  done
 }
 
 assert_no_metric_diagnostics() {
@@ -286,6 +376,20 @@ run_case followup_unexpected 'printf '\''%s\n'\'' '\''{"result":"later","changed
 grep -Fxq 'continue=false' "$test_dir/followup_unexpected/github-output"
 grep -Fq "unexpected result 'later'" "$test_dir/followup_unexpected/gh.log"
 assert_no_metric_diagnostics "$test_dir/followup_unexpected/gh.log"
+
+# Exercise both extracted publishers. The normal case demonstrates that the
+# exact guarded index can still be committed and pushed; each mutation models
+# either a post-guard index write or a commit mode that absorbs worktree
+# changes, and must stop before an allowed commit, push, or GitHub publication
+# side effect.
+run_publisher_case issue-origin "$publish_script" 'Implement #36 with Codex'
+grep -Fq 'git commit -m Implement #36 with Codex' "$test_dir/publisher-issue-origin/calls.log"
+grep -Fq 'git push --set-upstream origin ai/issue-36' "$test_dir/publisher-issue-origin/calls.log"
+run_publisher_case followup "$followup_commit_script" 'Address Claude review for PR #37'
+grep -Fq 'git commit -m Address Claude review for PR #37' "$test_dir/publisher-followup/calls.log"
+grep -Fq 'git push origin HEAD:ai/issue-36' "$test_dir/publisher-followup/calls.log"
+assert_publisher_bypass_is_blocked issue-origin "$publish_script" 'Implement #36 with Codex'
+assert_publisher_bypass_is_blocked followup "$followup_commit_script" 'Address Claude review for PR #37'
 
 # Notification remains a separate workflow step; verify its fail-closed trigger and trusted helper use.
 grep -Fq '      - name: Notify human of diff guard stop' "$developer_job"
