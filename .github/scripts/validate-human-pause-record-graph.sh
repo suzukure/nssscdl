@@ -16,7 +16,7 @@ input="$(cat)" || fail_closed 'could not read input'
 # The listing helper owns trust, schema, and target validation.  This boundary
 # only requires the envelope fields needed to resolve graph edges.  A record
 # with no source_pause_id is a root; record order has no meaning here.
-jq -e -s '
+jq -ce '
   def valid_envelope:
     type == "object"
     and (.target | type == "string")
@@ -39,24 +39,26 @@ jq -e -s '
       else walk($sources[$current] // null; $seen + [$current])
       end;
     any($sources | keys[]; walk(.; []));
-  length == 1 and (.[0] |
-    ([.records[].pause_id]) as $ids
-    | (source_map) as $sources
-    | valid_envelope
-    and (($ids | length) == ($ids | unique | length))
-    and all(.records[];
-      (.record.source_pause_id? // null) as $source
-      | $source == null or ($ids | index($source)) != null
-    )
-    and all(.records[];
-      (.record.source_pause_id? // null) as $source
-      | $source == null or $source != .pause_id
-    )
-    and ([.records[] | .record.source_pause_id? // empty]
-      | group_by(.) | all(length == 1))
-    and (has_cycle($sources) | not)
-  )
-' > /dev/null <<< "$input" || fail_closed 'record graph is structurally invalid'
-
-jq -c -s 'if length == 1 then .[0] else error("expected one JSON value") end' \
-  <<< "$input"
+  . as $graph
+  | [inputs] as $additional_values
+  | if $additional_values != [] then
+      error("expected one JSON value")
+    else
+      (([.records[].pause_id]) as $ids
+      | (source_map) as $sources
+      | valid_envelope
+      and (($ids | length) == ($ids | unique | length))
+      and all(.records[];
+        (.record.source_pause_id? // null) as $source
+        | $source == null or ($ids | index($source)) != null
+      )
+      and all(.records[];
+        (.record.source_pause_id? // null) as $source
+        | $source == null or $source != .pause_id
+      )
+      and ([.records[] | .record.source_pause_id? // empty]
+        | group_by(.) | all(length == 1))
+      and (has_cycle($sources) | not)) as $valid
+      | if $valid then $graph else error("record graph is structurally invalid") end
+    end
+' <<< "$input" || fail_closed 'record graph is structurally invalid'
