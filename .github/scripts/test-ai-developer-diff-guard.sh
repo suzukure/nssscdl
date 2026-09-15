@@ -14,6 +14,7 @@ guard_script="$test_dir/diff-guard.sh"
 followup_job="$test_dir/respond-to-claude.yml"
 followup_guard_script="$test_dir/followup-diff-guard.sh"
 followup_notify_script="$test_dir/followup-diff-guard-notify.sh"
+followup_commit_script="$test_dir/followup-commit.sh"
 
 awk '
   $0 == "  develop-from-issue:" { in_job = 1 }
@@ -48,6 +49,7 @@ awk '
 [ -s "$followup_job" ]
 extract_step_run "$followup_job" 'Evaluate trusted follow-up diff guard' "$followup_guard_script"
 extract_step_run "$followup_job" 'Notify human of follow-up diff guard stop' "$followup_notify_script"
+extract_step_run "$followup_job" 'Commit and answer review' "$followup_commit_script"
 
 # Structural boundaries that are not practical to exercise in the extracted run body.
 grep -Fq 'git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' "$developer_job"
@@ -92,9 +94,26 @@ grep -Fq 'Avoid broad formatting changes and large generated additions.' "$follo
 
 followup_stage_line="$(grep -n -F 'git add -A' "$followup_guard_script" | head -n1 | cut -d: -f1)"
 followup_helper_line="$(grep -n -F 'evaluate-codex-diff-gate.sh' "$followup_guard_script" | head -n1 | cut -d: -f1)"
+followup_unstage_line="$(grep -n -F 'git reset -- .ai-context' "$followup_guard_script" | head -n1 | cut -d: -f1)"
 [ -n "$followup_stage_line" ]
 [ -n "$followup_helper_line" ]
+[ -n "$followup_unstage_line" ]
+[ "$followup_unstage_line" -lt "$followup_stage_line" ]
 [ "$followup_stage_line" -lt "$followup_helper_line" ]
+
+# A follow-up commit must use exactly the index evaluated by the guard.  In
+# particular, it cannot stage a later worktree change or use commit options
+# that implicitly include unstaged tracked changes.  Keep the sole commit
+# invocation exact so aliases such as --all are rejected as well.
+if grep -Eq '(^|[[:space:]])git[[:space:]]+add([[:space:]]|$)' "$followup_commit_script"; then
+  echo 'Follow-up publisher must not stage changes after the diff guard.' >&2
+  exit 1
+fi
+if [ "$(grep -Ec '^[[:space:]]*git[[:space:]]+commit([[:space:]]|$)' "$followup_commit_script")" -ne 1 ] \
+    || ! grep -Fxq 'git commit -m "Address Claude review for PR #${PR_NUMBER}"' "$followup_commit_script"; then
+  echo 'Follow-up publisher must commit only the guarded index.' >&2
+  exit 1
+fi
 
 followup_publish_if="$(awk '
   /^      - name: Commit and answer review$/ { found = 1; next }
