@@ -23,10 +23,10 @@ jq -ce '
     and (.records | type == "array")
     and all(.records[];
       type == "object"
-      and (.pause_id | type == "string" and test("^[1-9][0-9]*$"))
+      and (.pause_id | type == "string" and test("\\A[1-9][0-9]*\\z"))
       and (.record | type == "object")
       and ((.record | has("source_pause_id") | not)
-        or (.record.source_pause_id | type == "string"))
+        or (.record.source_pause_id | type == "string" and test("\\A[1-9][0-9]*\\z")))
     );
   def follow($entries; $successors; $pause_id):
     [$entries[$pause_id]]

@@ -63,6 +63,8 @@ assert_rejected missing-effective '{"target":"issue:273","chains":[{}]}'
 assert_rejected non-object-effective '{"target":"issue:273","chains":[{"effective":null}]}'
 assert_rejected unknown-effective-status '{"target":"issue:273","chains":[{"effective":{"status":"superseded","pause_id":"101","reason":"requirements_change"}}]}'
 assert_rejected malformed-effective-fields '{"target":"issue:273","chains":[{"effective":{"status":"active","pause_id":101,"reason":null}}]}'
+assert_rejected invalid-active-pause-id "$(envelope "$(chain active 01 requirements_change)")"
+assert_rejected invalid-consumed-pause-id "$(envelope "$(chain consumed 01 requirements_change)")"
 assert_rejected multiple-json-values '{"target":"issue:273","chains":[]}
 {"target":"issue:273","chains":[]}'
 

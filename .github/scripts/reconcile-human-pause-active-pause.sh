@@ -11,11 +11,11 @@ fail_closed() {
 
 input="$(cat)" || fail_closed 'could not read input'
 
-output="$(jq -ce '
+jq -ce '
   def valid_effective:
     type == "object"
     and (.status == "active" or .status == "consumed")
-    and (.pause_id | type == "string")
+    and (.pause_id | type == "string" and test("\\A[1-9][0-9]*\\z"))
     and (.reason | type == "string");
   def valid_envelope:
     type == "object"
@@ -39,7 +39,4 @@ output="$(jq -ce '
           {target: $input.target, result: "state_inconsistent"}
         end
     end
-' <<< "$input")" || fail_closed 'could not reconcile active pause'
-
-[ -n "$output" ] || fail_closed 'could not reconcile active pause'
-printf '%s\n' "$output"
+' <<< "$input" || fail_closed 'could not reconcile active pause'

@@ -73,6 +73,7 @@ assert_decomposes shuffled-multiple-chains "$(graph "$root_2" "$child_3" "$root_
 
 assert_rejected malformed-envelope '{"target":"issue:281","records":[{"pause_id":"1"}]}'
 assert_rejected non-decimal-pause-id '{"target":"issue:281","records":[{"pause_id":"a","record":{}}]}'
+assert_rejected invalid-source-pause-id "$(graph "$(record 20 '01')")"
 assert_rejected broken-source "$(graph "$(record 21 999)")"
 assert_rejected cycle "$(graph "$(record 31 32)" "$(record 32 31)")"
 assert_rejected fork "$(graph "$(record 41 -)" "$(record 42 41)" "$(record 43 41)")"

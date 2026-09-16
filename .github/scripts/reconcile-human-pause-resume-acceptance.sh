@@ -14,13 +14,15 @@ input="$(cat)" || fail_closed 'could not read input'
 jq -ce '
   def valid_entry:
     type == "object"
-    and (.pause_id | type == "string" and test("^[1-9][0-9]*$"))
+    and (.pause_id | type == "string" and test("\\A[1-9][0-9]*\\z"))
     and (.record | type == "object")
-    and (.record.kind | type == "string");
+    and (.record.kind | type == "string")
+    and ((.record | has("source_pause_id") | not)
+      or (.record.source_pause_id | type == "string" and test("\\A[1-9][0-9]*\\z")));
   def valid_pre_resume:
     type == "object"
     and .status == "active"
-    and (.pause_id | type == "string" and test("^[1-9][0-9]*$"))
+    and (.pause_id | type == "string" and test("\\A[1-9][0-9]*\\z"))
     and (.reason | type == "string");
   def valid_envelope:
     type == "object"
@@ -29,8 +31,11 @@ jq -ce '
     and all(.chains[];
       type == "object"
       and (.records | type == "array")
+      and (.records | length > 0)
       and all(.records[]; valid_entry)
-      and (.pre_resume | valid_pre_resume));
+      and (.pre_resume | valid_pre_resume)
+      and (.pre_resume.pause_id as $pause_id
+        | any(.records[]; .pause_id == $pause_id)));
   def effective:
     .pre_resume as $pre_resume
     | [.records[] | select(.record.kind == "ai-resume-accepted")] as $accepted

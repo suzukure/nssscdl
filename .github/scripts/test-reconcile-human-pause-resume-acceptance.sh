@@ -84,6 +84,9 @@ assert_rejected acceptance-not-terminal "$(envelope "$(chain "$(pre_resume 102 s
 assert_rejected source-mismatch "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$(entry 103 ai-resume-accepted scope_decision 101)")")"
 assert_rejected reason-mismatch "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$(entry 103 ai-resume-accepted requirements_change 102)")")"
 assert_rejected invalid-pre-resume '{"target":"issue:278","chains":[{"records":[],"pre_resume":{"status":"consumed","pause_id":"101","reason":"requirements_change"}}]}'
+assert_rejected invalid-source-pause-id "$(envelope "$(chain "$(pre_resume 101 requirements_change)" "$(entry 101 pause requirements_change 01)")")"
+assert_rejected empty-records-chain '{"target":"issue:278","chains":[{"records":[],"pre_resume":{"status":"active","pause_id":"101","reason":"requirements_change"}}]}'
+assert_rejected pre-resume-id-not-in-records "$(envelope "$(chain "$(pre_resume 999 requirements_change)" "$root_101")")"
 assert_rejected multiple-json-values "$active_input
 $active_input"
 
