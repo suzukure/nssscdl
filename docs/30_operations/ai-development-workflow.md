@@ -231,6 +231,8 @@ default branchに次を適用する。
 
 `.github/scripts/decompose-human-pause-record-graph.sh` はvalidated graphのstdoutをstdinで受け、同じ`target`と`{records:[...]}`からなる`chains`を返す。各chainは`source_pause_id`を持たないrootからterminalまで因果順に並べ、全recordをちょうど1回だけ含める。複数chainはroot `pause_id`を正の10進整数として精度に依存せず比較した昇順で返すため、入力列挙順に依存しない。空の`records`は空の`chains`となる。このhelperはgraph validatorの信頼性・schema・構造検証を重複せず、機械的に読めないenvelopeまたは一意に完全分解できない入力だけをfail-closedで拒否する。lifecycle status、effective reason、active pauseは導出しない。
 
+`.github/scripts/derive-human-pause-pre-resume-state.sh` はchain decompositionのstdoutをstdinで受け、`target`、各chain、各`records`を保持したまま各chainへ`pre_resume`を付加する。root `pause`を初期stateとし、replacement `pause`または`pause-normalization`は直前のeffective pauseをsupersedeして、そのrecord自身の外側`pause_id`と`reason`を新しいstateとする。最初の`ai-resume-accepted`より前だけを解釈し、acceptance自身とsuffixの意味論は扱わない。chainは独立に処理し、normalizationの前reasonはsource chainからのみ導出して自由文fieldに依存しない。pre-acceptance prefixが意味論上解釈不能な場合はfail-closedとし、Conversation全体のactive集約、acceptanceのconsumed判定、production workflow wiringは扱わない。
+
 ### trusted diff guard
 
 Issue起点developerとClaude review follow-upの両方で、Codex実行後かつrepository write（commit、push、PR作成・更新またはreview応答）前に、runtime-onlyの `.ai-context` をworktreeとindexから除外し、それ以外の変更をstagingしてindexを確定する。trusted diff guardはこのstaged diffを評価する。両経路ともPR headやCodexが変更した作業ツリーのhelperを実行せず、current base commitから `$RUNNER_TEMP/evaluate-codex-diff-gate.sh` として取得した `evaluate-codex-diff-gate.sh` を使用する。取得・bootstrapに失敗した場合も安全側へ停止する。
