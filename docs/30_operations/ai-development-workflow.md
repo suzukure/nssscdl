@@ -233,6 +233,8 @@ default branchに次を適用する。
 
 `.github/scripts/derive-human-pause-pre-resume-state.sh` はchain decompositionのstdoutをstdinで受け、`target`、各chain、各`records`を保持したまま各chainへ`pre_resume`を付加する。root `pause`を初期stateとし、replacement `pause`または`pause-normalization`は直前のeffective pauseをsupersedeして、そのrecord自身の外側`pause_id`と`reason`を新しいstateとする。最初の`ai-resume-accepted`より前だけを解釈し、acceptance自身とsuffixの意味論は扱わない。chainは独立に処理し、normalizationの前reasonはsource chainからのみ導出して自由文fieldに依存しない。pre-acceptance prefixが意味論上解釈不能な場合はfail-closedとし、Conversation全体のactive集約、acceptanceのconsumed判定、production workflow wiringは扱わない。
 
+`.github/scripts/reconcile-human-pause-resume-acceptance.sh` はpre-resume derivationのstdoutをstdinで受け、`target`、各chain、各`records`、各`pre_resume`を保持したまま各chainへ`effective`を付加する。`ai-resume-accepted` がないchainは`pre_resume`のpause identityとreasonを持つ`active`となる。acceptanceが1件だけありchain terminalで、その`source_pause_id`と`reason`が`pre_resume`と一致するときだけ、同じpause identityとreasonを持つ`consumed`となり、acceptance自身の外側`pause_id`は`accepted_record_id`として保持する。複数acceptance、terminalでないacceptance、sourceまたはreasonの不一致、または有効でない`pre_resume`はfail-closedとする。このhelperはreplacement / normalizationからのpre-resume state再導出、Conversation全体の集約、production workflow wiringを扱わない。
+
 ### trusted diff guard
 
 Issue起点developerとClaude review follow-upの両方で、Codex実行後かつrepository write（commit、push、PR作成・更新またはreview応答）前に、runtime-onlyの `.ai-context` をworktreeとindexから除外し、それ以外の変更をstagingしてindexを確定する。trusted diff guardはこのstaged diffを評価する。両経路ともPR headやCodexが変更した作業ツリーのhelperを実行せず、current base commitから `$RUNNER_TEMP/evaluate-codex-diff-gate.sh` として取得した `evaluate-codex-diff-gate.sh` を使用する。取得・bootstrapに失敗した場合も安全側へ停止する。
