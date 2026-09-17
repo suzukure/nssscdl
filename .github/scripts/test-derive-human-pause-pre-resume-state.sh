@@ -80,6 +80,9 @@ assert_derives independent-chains "$multiple_input" "$multiple_expected"
 assert_derives empty-chain-set '{"target":"issue:277","chains":[]}' \
   '{"target":"issue:277","chains":[]}'
 assert_rejected empty-chain '{"target":"issue:277","chains":[{"records":[]}]}'
+assert_rejected invalid-source-pause-id "$(envelope "$(chain "$root_101" "$(entry 302 ai-resume-accepted scope_decision 01)")")"
+assert_rejected trailing-newline-pause-id "$(envelope "$(chain "$(entry $'301\n' pause requirements_change)")")"
+assert_rejected trailing-newline-source-pause-id "$(envelope "$(chain "$root_101" "$(entry 302 ai-resume-accepted scope_decision $'101\n')")")"
 assert_rejected non-root-first "$(envelope "$(chain "$(entry 301 pause-normalization state_inconsistent 300)")")"
 assert_rejected transition-source-not-effective "$(envelope "$(chain "$root_101" "$(entry 302 pause scope_decision 999)")")"
 assert_rejected unknown-prefix-kind "$(envelope "$(chain "$root_101" "$(entry 303 other scope_decision 101)")")"

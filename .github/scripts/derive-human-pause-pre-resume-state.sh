@@ -16,11 +16,11 @@ input="$(cat)" || fail_closed 'could not read input'
 jq -ce '
   def valid_entry:
     type == "object"
-    and (.pause_id | type == "string" and test("^[1-9][0-9]*$"))
+    and (.pause_id | type == "string" and test("\\A[1-9][0-9]*\\z"))
     and (.record | type == "object")
     and (.record.kind | type == "string")
     and ((.record | has("source_pause_id") | not)
-      or (.record.source_pause_id | type == "string"));
+      or (.record.source_pause_id | type == "string" and test("\\A[1-9][0-9]*\\z")));
   def valid_envelope:
     type == "object"
     and (.target | type == "string")
