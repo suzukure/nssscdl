@@ -71,11 +71,12 @@ assert_decomposes empty-records '{"target":"issue:281","records":[]}' \
 # Shuffling does not change either the chain order or the causal record order.
 assert_decomposes shuffled-multiple-chains "$(graph "$root_2" "$child_3" "$root_100")" "$multiple_expected"
 
-assert_rejected malformed-envelope '{"target":"issue:281","records":[{"pause_id":"1"}]}'
+assert_rejected record-entry-missing-record '{"target":"issue:281","records":[{"pause_id":"1"}]}'
 assert_rejected non-array-records '{"target":"issue:281","records":{}}'
 assert_rejected non-string-target '{"target":281,"records":[]}'
 assert_rejected non-object-record-entry '{"target":"issue:281","records":[null]}'
 assert_rejected non-decimal-pause-id '{"target":"issue:281","records":[{"pause_id":"a","record":{}}]}'
+# An invalid source_pause_id cannot match a strict pause_id, so these also exercise broken-source rejection.
 assert_rejected broken-source-invalid-format "$(graph "$(record 20 '01')")"
 assert_rejected trailing-newline-pause-id "$(graph "$(record $'20\n' -)")"
 assert_rejected broken-source-trailing-newline "$(graph "$(record 21 $'20\n')")"

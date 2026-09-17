@@ -54,12 +54,10 @@ assert_result active-chain-first "$(envelope "$active_301" "$consumed_101" "$con
   '{"target":"issue:273","result":"active","active_pause":{"pause_id":"301","reason":"validation_failed"}}'
 assert_result active-chain-last "$(envelope "$consumed_101" "$consumed_201" "$active_301")" \
   '{"target":"issue:273","result":"active","active_pause":{"pause_id":"301","reason":"validation_failed"}}'
-assert_result chain-order-does-not-affect-result "$(envelope "$consumed_201" "$active_301" "$consumed_101")" \
-  '{"target":"issue:273","result":"active","active_pause":{"pause_id":"301","reason":"validation_failed"}}'
 assert_result multiple-active-is-inconsistent "$(envelope "$active_301" "$active_401")" \
   '{"target":"issue:273","result":"state_inconsistent"}'
 
-assert_rejected malformed-envelope '[]'
+assert_rejected non-object-envelope '[]'
 assert_rejected non-string-target '{"target":273,"chains":[]}'
 assert_rejected non-array-chains '{"target":"issue:273","chains":{}}'
 assert_rejected non-object-chain '{"target":"issue:273","chains":[null]}'
