@@ -47,6 +47,14 @@ Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすた�
 
 Issueを確定する際は、対象ファイル・節・IDに加え、同じ判断に伴う参照、用語、追跡表、図、検証範囲を洗い出して本文へ記録する。既存の別Issueを無断で取り込まず、範囲を広げる場合は人間の決定を先にIssue本文へ反映する。
 
+### Issue本文におけるcurrent implementation contract
+
+Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時点で有効な実装契約、すなわちscope、責務境界、入出力interface、完了条件および検証範囲を表していることを確認する。trusted conversationでこれらの実装判断が更新され、本文の記述が古くなった場合は、実行前にcurrent contractをIssue本文へ同期する。
+
+本文と矛盾する過去のtrusted commentの技術契約は履歴として残してよいが、削除ではなく、Issue本文からcurrent contractが一意に判断でき、過去契約が置き換えられたことが分かる状態にする。本文と矛盾しない補足説明や進捗コメントまで機械的に複製する必要はない。
+
+この実行前規約は、`develop-from-issue` がIssue本文とtrusted commentをDevelopment requestへ連結するIssue起点経路へ直接適用する。Claude review follow-upは既存のPR、review、closing Issueに基づくfollow-up gateと再開契約を維持し、本規約による本文同期手順またはcontext選択方式を追加しない。
+
 Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpushで更新しても自動Ready化はしない。必要な追加開発だけを同じIssueへ依頼し、変更が揃うまで同じPRへ集約する。生成PR本文と通常PRテンプレートの`Review readiness`欄は人間の確認記録であり、チェックボックス自体を機械的な認可・検証ゲートとは扱わない。
 
 人間は次を確認してからPR画面の **Ready for review** を実行する。
@@ -290,6 +298,8 @@ Issue起点のAI Developerを再実行する前に、少なくとも次を確認
 * 同じIssueに紐づくopen PRの有無とPR head。
 * timeoutまたは異常終了後に、予期しないcommit、push、PR作成・更新が発生していないこと。
 * 取得可能な範囲で、通常の長時間実行、runner-loss、設定不備、一時的な外部障害等のどのカテゴリが最有力か。
+* 「Issue本文におけるcurrent implementation contract」に従い、Issue本文が現在有効なscope、interface、完了条件を表し、trusted commentに新旧の競合する技術契約がある場合も本文からcurrent contractを一意に判断できること。
+* 契約が未決または相互に矛盾する状態なら、同一の `/codex develop` を単純retryせず、実装判断を確定してIssue本文へ同期してから再実行すること。
 
 再実行可能と人間が判断した後、停止ラベルがある場合は既存の停止解除規約どおり、closing Issue側を先に、PR側を最後に解除する。
 
