@@ -245,6 +245,10 @@ default branchに次を適用する。
 
 `.github/scripts/reconcile-human-pause-active-pause.sh` はresume acceptance reconciliationのstdoutをstdinで受け、各chainの`effective`をConversation単位で集約する。`effective`のstatus、pause identity、reasonが有効な`active` / `consumed`であることだけを検証し、record graph、replacement / normalization、またはacceptance semanticsを再解釈しない。`chains` の列挙順には依存せず、active chainの件数と内容だけで結果を決定する。activeが0件なら`{target, result: "no_active_pause"}`、1件ならその`effective.pause_id`と`effective.reason`を持つ`{target, result: "active", active_pause}`、2件以上なら`{target, result: "state_inconsistent"}`を返す。未知statusまたは集約に必要なshapeが不正な入力はfail-closedとし、production workflow wiringは扱わない。
 
+`.github/scripts/parse-ai-resume-command.sh` はstdinからちょうど1個のJSON objectを受け、`body`、`actor`、`author_association` がすべてstringでなければfail-closedで拒否する。複数JSON value、object以外、必須field欠落、型不正もfail-closedとする。`OWNER`、`MEMBER`、`COLLABORATOR` 以外のassociation、または`/ai resume` commandでないcommentは`{"result":"ignore"}`を返す。trusted actorのresume系commentでは、1行全体に厳密一致する小文字の`/ai resume develop`、`validate`、`review`、`fix`、`follow-up #N`、`no-action`だけを受理し、`follow-up`の`N`は先頭0なしの1以上の10進整数とする。通常actionは`{result:"accepted", actor, action}`、follow-upは正のJSON numberの`follow_up_issue`を加えたaccepted objectを返し、その他は`{result:"reject", code:"invalid_command"}`を返す。このhelperはactive pause解決、GitHub target、allowlist、dispatch、production workflow wiringを扱わない。
+
+`parse-ai-resume-command.sh` を変更した場合は `bash .github/scripts/test-parse-ai-resume-command.sh` を実行する。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
