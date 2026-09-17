@@ -80,6 +80,14 @@ assert_derives independent-chains "$multiple_input" "$multiple_expected"
 assert_derives empty-chain-set '{"target":"issue:277","chains":[]}' \
   '{"target":"issue:277","chains":[]}'
 assert_rejected empty-chain '{"target":"issue:277","chains":[{"records":[]}]}'
+assert_rejected non-object-envelope '[]'
+assert_rejected non-object-record-entry '{"target":"issue:277","chains":[{"records":[null]}]}'
+assert_rejected non-decimal-pause-id "$(envelope "$(chain "$(entry 30a pause requirements_change)")")"
+assert_rejected missing-target '{"chains":[]}'
+assert_rejected non-string-target '{"target":277,"chains":[]}'
+assert_rejected missing-root-reason "$(envelope "$(chain "$(jq -c 'del(.record.reason)' <<< "$root_101")")")"
+assert_rejected non-string-root-reason "$(envelope "$(chain "$(jq -c '.record.reason = 101' <<< "$root_101")")")"
+assert_rejected acceptance-first "$(envelope "$(chain "$(entry 301 ai-resume-accepted requirements_change)")")"
 assert_rejected invalid-source-pause-id "$(envelope "$(chain "$root_101" "$(entry 302 ai-resume-accepted scope_decision 01)")")"
 assert_rejected trailing-newline-pause-id "$(envelope "$(chain "$(entry $'301\n' pause requirements_change)")")"
 assert_rejected trailing-newline-source-pause-id "$(envelope "$(chain "$root_101" "$(entry 302 ai-resume-accepted scope_decision $'101\n')")")"

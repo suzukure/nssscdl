@@ -66,6 +66,12 @@ active_expected="$(jq -cn --argjson record "$root_101" \
 assert_reconciles no-acceptance-remains-active "$active_input" "$active_expected"
 
 replacement_102="$(entry 102 pause scope_decision 101)"
+normalization_103="$(entry 103 pause-normalization state_inconsistent 102)"
+replacement_normalization_chain="$(chain "$(pre_resume 103 state_inconsistent)" "$root_101" "$replacement_102" "$normalization_103")"
+replacement_normalization_expected="$(jq -cn --argjson records "[$root_101,$replacement_102,$normalization_103]" \
+  '{target: "issue:278", chains: [{records: $records, pre_resume: {status: "active", pause_id: "103", reason: "state_inconsistent"}, effective: {status: "active", pause_id: "103", reason: "state_inconsistent"}}]}')"
+assert_reconciles no-acceptance-after-replacement-and-normalization "$(envelope "$replacement_normalization_chain")" "$replacement_normalization_expected"
+
 accepted_103="$(entry 103 ai-resume-accepted scope_decision 102)"
 consumed_chain="$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_103")"
 consumed_input="$(envelope "$consumed_chain")"
@@ -85,7 +91,7 @@ assert_rejected source-mismatch "$(envelope "$(chain "$(pre_resume 102 scope_dec
 assert_rejected reason-mismatch "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$(entry 103 ai-resume-accepted requirements_change 102)")")"
 assert_rejected invalid-pre-resume '{"target":"issue:278","chains":[{"records":[],"pre_resume":{"status":"consumed","pause_id":"101","reason":"requirements_change"}}]}'
 assert_rejected invalid-source-pause-id "$(envelope "$(chain "$(pre_resume 101 requirements_change)" "$(entry 101 pause requirements_change 01)")")"
-assert_rejected trailing-newline-pause-id "$(envelope "$(chain "$(pre_resume 101 requirements_change)" "$(entry $'101\n' pause requirements_change)")")"
+assert_rejected trailing-newline-pause-id "$(envelope "$(chain "$(pre_resume 101 requirements_change)" "$root_101" "$(entry $'102\n' pause scope_decision 101)")")"
 assert_rejected trailing-newline-source-pause-id "$(envelope "$(chain "$(pre_resume 101 requirements_change)" "$(entry 101 pause requirements_change $'101\n')")")"
 assert_rejected trailing-newline-pre-resume-pause-id "$(envelope "$(chain "$(pre_resume $'101\n' requirements_change)" "$root_101")")"
 assert_rejected empty-records-chain '{"target":"issue:278","chains":[{"records":[],"pre_resume":{"status":"active","pause_id":"101","reason":"requirements_change"}}]}'
