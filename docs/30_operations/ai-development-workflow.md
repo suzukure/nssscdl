@@ -235,9 +235,9 @@ default branchに次を適用する。
 
 `.github/scripts/reconcile-human-pause-resume-acceptance.sh` はpre-resume derivationのstdoutをstdinで受け、`target`、各chain、各`records`、各`pre_resume`を保持したまま各chainへ`effective`を付加する。`ai-resume-accepted` がないchainは`pre_resume`のpause identityとreasonを持つ`active`となる。acceptanceが1件だけありchain terminalで、その`source_pause_id`と`reason`が`pre_resume`と一致するときだけ、同じpause identityとreasonを持つ`consumed`となり、acceptance自身の外側`pause_id`は`accepted_record_id`として保持する。複数acceptance、terminalでないacceptance、sourceまたはreasonの不一致、有効でない`pre_resume`、empty `records` chain、または`pre_resume.pause_id`が当該chainの`records[].pause_id`に属さない人工入力はfail-closedとする。このhelperはreplacement / normalizationからのpre-resume state再導出、Conversation全体の集約、production workflow wiringを扱わない。
 
-schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
-
 `.github/scripts/reconcile-human-pause-active-pause.sh` はresume acceptance reconciliationのstdoutをstdinで受け、各chainの`effective`をConversation単位で集約する。`effective`のstatus、pause identity、reasonが有効な`active` / `consumed`であることだけを検証し、record graph、replacement / normalization、またはacceptance semanticsを再解釈しない。`chains` の列挙順には依存せず、active chainの件数と内容だけで結果を決定する。activeが0件なら`{target, result: "no_active_pause"}`、1件ならその`effective.pause_id`と`effective.reason`を持つ`{target, result: "active", active_pause}`、2件以上なら`{target, result: "state_inconsistent"}`を返す。未知statusまたは集約に必要なshapeが不正な入力はfail-closedとし、production workflow wiringは扱わない。
+
+schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
 
