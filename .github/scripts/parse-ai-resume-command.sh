@@ -12,6 +12,9 @@ fail_closed() {
 input="$(cat)" || fail_closed 'could not read input'
 
 jq -cse '
+  def follow_up:
+    [capture("\\A/ai resume follow-up #(?<issue>[1-9][0-9]*)\\z")]
+    | first // null;
   if length != 1 then
     error("expected exactly one JSON object")
   elif (.[0] | type) != "object" then
@@ -37,14 +40,15 @@ jq -cse '
         {result: "accepted", actor: $input.actor, action: "fix"}
       elif $input.body == "/ai resume no-action" then
         {result: "accepted", actor: $input.actor, action: "no-action"}
-      elif ($input.body | test("^/ai resume follow-up #[1-9][0-9]*$")) then
-        ($input.body
-         | capture("^/ai resume follow-up #(?<issue>[1-9][0-9]*)$").issue
-         | tonumber) as $follow_up_issue
-        | {result: "accepted", actor: $input.actor, action: "follow-up",
-           follow_up_issue: $follow_up_issue}
       else
-        {result: "reject", code: "invalid_command"}
+        ($input.body | follow_up) as $follow_up
+        | if $follow_up == null then
+            {result: "reject", code: "invalid_command"}
+          else
+            ($follow_up.issue | tonumber) as $follow_up_issue
+            | {result: "accepted", actor: $input.actor, action: "follow-up",
+               follow_up_issue: $follow_up_issue}
+          end
       end
   end
 ' <<< "$input" || fail_closed 'input could not be parsed safely'

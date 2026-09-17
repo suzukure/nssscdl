@@ -52,6 +52,12 @@ for malformed in \
   $'/ai resume develop\nextra' \
   '/ai resume develop extra' \
   $'```\n/ai resume develop\n```' \
+  ' /ai resume follow-up #1' \
+  '/ai resume follow-up #1 ' \
+  $'/ai resume follow-up #1\n' \
+  $'/ai resume follow-up #1\nextra' \
+  $'prefix\n/ai resume follow-up #1' \
+  $'```\n/ai resume follow-up #1\n```' \
   '/ai resume deploy' \
   '/AI resume develop' \
   '/ai  resume develop' \
