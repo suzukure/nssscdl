@@ -72,15 +72,22 @@ assert_decomposes empty-records '{"target":"issue:281","records":[]}' \
 assert_decomposes shuffled-multiple-chains "$(graph "$root_2" "$child_3" "$root_100")" "$multiple_expected"
 
 assert_rejected malformed-envelope '{"target":"issue:281","records":[{"pause_id":"1"}]}'
+assert_rejected non-array-records '{"target":"issue:281","records":{}}'
+assert_rejected non-string-target '{"target":281,"records":[]}'
+assert_rejected non-object-record-entry '{"target":"issue:281","records":[null]}'
 assert_rejected non-decimal-pause-id '{"target":"issue:281","records":[{"pause_id":"a","record":{}}]}'
-assert_rejected invalid-source-pause-id "$(graph "$(record 20 '01')")"
+assert_rejected broken-source-invalid-format "$(graph "$(record 20 '01')")"
 assert_rejected trailing-newline-pause-id "$(graph "$(record $'20\n' -)")"
-assert_rejected trailing-newline-source-pause-id "$(graph "$(record 21 $'20\n')")"
+assert_rejected broken-source-trailing-newline "$(graph "$(record 21 $'20\n')")"
 assert_rejected broken-source "$(graph "$(record 21 999)")"
 assert_rejected cycle "$(graph "$(record 31 32)" "$(record 32 31)")"
 assert_rejected fork "$(graph "$(record 41 -)" "$(record 42 41)" "$(record 43 41)")"
 assert_rejected duplicate-pause-id "$(graph "$(record 51 -)" "$(record 51 -)")"
 assert_rejected multiple-json-values "$root_2
 $root_100"
+if bash "$helper" < /dev/null > /dev/null 2>&1; then
+  echo 'Expected empty-stdin to be rejected.' >&2
+  exit 1
+fi
 
 echo 'decompose-human-pause-record-graph tests passed.'
