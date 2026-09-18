@@ -1,0 +1,12 @@
+name: Background cancel probe
+description: Test-only composite action for GitHub Actions background/cancel semantics.
+
+runs:
+  using: composite
+  steps:
+    - name: Write marker and remain active
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf '%s\n' ready > "$RUNNER_TEMP/background-cancel-probe"
+        sleep 300
