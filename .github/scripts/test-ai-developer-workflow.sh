@@ -158,17 +158,22 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   fi
 done
 
-# Issue-origin development uses the OpenAI action only for secure runtime
-# setup, then runs codex exec as a normal shell step so the step timeout is an
-# effective process bound. Claude follow-up remains on the pinned action.
+# Issue-origin development uses the pinned OpenAI action for setup-only
+# runtime preparation, resolves trusted native/action-helper paths, then runs
+# the hardened native Codex process tree inside a bounded systemd service
+# cgroup. Claude follow-up remains on the pinned action.
 prepare_step="$test_dir/Prepare-Codex-developer-runtime.yml"
 setup_step="$test_dir/Setup-Codex-developer-runtime.yml"
+resolver_step="$test_dir/Resolve-trusted-Codex-developer-runtime.yml"
+prompt_step="$test_dir/Prepare-fixed-Codex-developer-prompt.yml"
 developer_step="$test_dir/Run-Codex-developer.yml"
 followup_step="$test_dir/Run-Codex-follow-up.yml"
 
 for pair in \
   "Prepare Codex developer runtime|$prepare_step" \
   "Setup Codex developer runtime|$setup_step" \
+  "Resolve trusted Codex developer runtime|$resolver_step" \
+  "Prepare fixed Codex developer prompt|$prompt_step" \
   "Run Codex developer|$developer_step" \
   "Run Codex follow-up|$followup_step"; do
   step_name="${pair%%|*}"
@@ -187,31 +192,135 @@ done
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$prepare_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$prepare_step"
 grep -Fq 'mkdir -p "$CODEX_HOME"' "$prepare_step"
+grep -Fq 'rm -f "$CODEX_HOME/config.toml"' "$prepare_step"
 grep -Fq 'rm -f "$CODEX_FINAL"' "$prepare_step"
 
 grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$setup_step"
 grep -Fqx '          openai-api-key: ${{ secrets.OPENAI_API_KEY }}' "$setup_step"
 grep -Fqx '          codex-version: 0.153.4' "$setup_step"
 grep -Fqx '          codex-home: ${{ runner.temp }}/codex-home' "$setup_step"
+grep -Fqx '          safety-strategy: unsafe' "$setup_step"
 if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$setup_step"; then
   echo 'Secure Codex setup must not enter the action wrapper execution path.' >&2
   exit 1
 fi
 
+grep -Fqx '        id: codex_runtime' "$resolver_step"
+grep -Fqx '        timeout-minutes: 3' "$resolver_step"
+grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$resolver_step"
+grep -Fq 'launcher="$(command -v codex)"' "$resolver_step"
+grep -Fq 'test "$(basename "$entry")" = codex.js' "$resolver_step"
+grep -Fq 'test "$(realpath "$package_root/bin/codex.js")" = "$entry"' "$resolver_step"
+grep -Fq 'mainPackage.name !== "@openai/codex"' "$resolver_step"
+grep -Fq 'mainPackage.version !== "0.153.4"' "$resolver_step"
+grep -Fq 'platformPackage = "@openai/codex-linux-x64"' "$resolver_step"
+grep -Fq 'targetTriple = "x86_64-unknown-linux-musl"' "$resolver_step"
+grep -Fq 'platformPackage = "@openai/codex-linux-arm64"' "$resolver_step"
+grep -Fq 'targetTriple = "aarch64-unknown-linux-musl"' "$resolver_step"
+grep -Fq 'const require = createRequire(entry);' "$resolver_step"
+grep -Fq '"vendor",' "$resolver_step"
+grep -Fq '"bin",' "$resolver_step"
+grep -Fq '"codex",' "$resolver_step"
+grep -Fq 'fs.accessSync(nativePath, fs.constants.X_OK);' "$resolver_step"
+grep -Fq "test \"\$native_version\" = 'codex-cli 0.153.4'" "$resolver_step"
+grep -Fq '_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e' "$resolver_step"
+grep -Fq 'actual_blob="$(git hash-object "$action_main")"' "$resolver_step"
+grep -Fq 'test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$resolver_step"
+grep -Fq 'supplementaryGroupIds:$groups' "$resolver_step"
+grep -Fq "printf 'native_path=%s\\n' \"\$native_path\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'package_root=%s\\n' \"\$package_root\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'action_main=%s\\n' \"\$action_main\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'runner_credentials=%s\\n' \"\$credentials\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$resolver_step"; then
+  echo 'Trusted Codex resolver must not receive repository secrets.' >&2
+  exit 1
+fi
+
+grep -Fqx '          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md' "$prompt_step"
+grep -Fqx '        timeout-minutes: 3' "$prompt_step"
+grep -Fq "cat > \"\$CODEX_PROMPT_FILE\" <<'CODEX_PROMPT'" "$prompt_step"
+grep -Fq 'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely.' "$prompt_step"
+grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
+if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$prompt_step"; then
+  echo 'Fixed developer prompt preparation must not receive repository secrets.' >&2
+  exit 1
+fi
+
+grep -Fqx '        id: codex' "$developer_step"
 grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
+grep -Fqx '          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md' "$developer_step"
 grep -Fqx '          CODEX_MODEL: ${{ vars.CODEX_MODEL }}' "$developer_step"
 grep -Fqx '          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action' "$developer_step"
-grep -Fq 'exec codex exec \' "$developer_step"
-grep -Fq -- '--skip-git-repo-check \' "$developer_step"
-grep -Fq -- '--cd "$GITHUB_WORKSPACE" \' "$developer_step"
-grep -Fq -- '--output-last-message "$CODEX_FINAL" \' "$developer_step"
-grep -Fq -- '--model "$CODEX_MODEL" \' "$developer_step"
+grep -Fqx '          CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}' "$developer_step"
+grep -Fqx '          CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}' "$developer_step"
+grep -Fqx '          ACTION_MAIN: ${{ steps.codex_runtime.outputs.action_main }}' "$developer_step"
+grep -Fqx '          RUNNER_CREDENTIALS: ${{ steps.codex_runtime.outputs.runner_credentials }}' "$developer_step"
+grep -Fqx "          CODEX_RUNTIME_MAX_SEC: \${{ github.event.comment.body == '/codex develop extended' && 1780 || 700 }}" "$developer_step"
+grep -Fq 'test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$developer_step"
+grep -Fq 'allowed_top_level = {"model_provider", "model_providers"}' "$developer_step"
+grep -Fq 'provider_name != "codex-action-responses-proxy"' "$developer_step"
+grep -Fq 'set(providers) != {provider_name}' "$developer_step"
+grep -Fq 'provider.get("wire_api") != "responses"' "$developer_step"
+grep -Fq 'parsed.hostname != "127.0.0.1"' "$developer_step"
+grep -Fq 'parsed.path != "/v1"' "$developer_step"
+grep -Fq 'test "$current_credentials" = "$RUNNER_CREDENTIALS"' "$developer_step"
+grep -Fq 'case "$CODEX_RUNTIME_MAX_SEC" in' "$developer_step"
+grep -Fq '700|1780)' "$developer_step"
+if grep -Fq 'sudo -n -E' "$developer_step"; then
+  echo 'Root phase must not preserve the whole developer step environment.' >&2
+  exit 1
+fi
+grep -Fq 'exec sudo -n -- ' "$developer_step"
+grep -Fq 'drop-sudo ' "$developer_step"
+grep -Fq -- '--root-phase ' "$developer_step"
+grep -Fq '/usr/bin/systemd-run ' "$developer_step"
+grep -Fq -- '--wait ' "$developer_step"
+grep -Fq -- '--collect ' "$developer_step"
+grep -Fq -- '--property=Type=exec ' "$developer_step"
+grep -Fq -- '--property="RuntimeMaxSec=${runtime_max_sec}s" ' "$developer_step"
+grep -Fq -- '--property=TimeoutStopSec=5s ' "$developer_step"
+grep -Fq -- '--property=KillMode=control-group ' "$developer_step"
+grep -Fq -- '--property=SendSIGKILL=yes ' "$developer_step"
+grep -Fq '/usr/bin/setpriv ' "$developer_step"
+grep -Fq -- '-- /usr/bin/env -i ' "$developer_step"
+grep -Fq -- '--reuid="$uid" ' "$developer_step"
+grep -Fq -- '--regid="$nobody_gid" ' "$developer_step"
+grep -Fq -- '--clear-groups ' "$developer_step"
+grep -Fq -- '--no-new-privs ' "$developer_step"
+grep -Fq -- '--bounding-set=-all ' "$developer_step"
+grep -Fq -- '--inh-caps=-all ' "$developer_step"
+grep -Fq -- '--ambient-caps=-all ' "$developer_step"
+grep -Fq '"HOME=$runner_home"' "$developer_step"
+grep -Fq '"USER=$runner_user"' "$developer_step"
+grep -Fq '"LOGNAME=$runner_user"' "$developer_step"
+grep -Fq '"PATH=$runner_path"' "$developer_step"
+grep -Fq '"RUNNER_TEMP=$runner_temp"' "$developer_step"
+grep -Fq '"GITHUB_WORKSPACE=$code_workspace"' "$developer_step"
+grep -Fq '"CODEX_HOME=$codex_home"' "$developer_step"
+grep -Fq '"CODEX_FINAL=$codex_final"' "$developer_step"
+grep -Fq '"CODEX_PROMPT_FILE=$codex_prompt_file"' "$developer_step"
+grep -Fq '"CODEX_MODEL=$codex_model"' "$developer_step"
+grep -Fq '"CODEX_NATIVE=$codex_native"' "$developer_step"
+grep -Fq '"CODEX_PACKAGE_ROOT=$codex_package_root"' "$developer_step"
+grep -Fq '"CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator"' "$developer_step"
+grep -Fq 'CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" ' "$developer_step"
+grep -Fq 'CODEX_MANAGED_BY_NPM=1 ' "$developer_step"
+grep -Fq '"$CODEX_NATIVE" exec ' "$developer_step"
+grep -Fq -- '--skip-git-repo-check ' "$developer_step"
+grep -Fq -- '--cd "$GITHUB_WORKSPACE" ' "$developer_step"
+grep -Fq -- '--output-last-message "$CODEX_FINAL" ' "$developer_step"
+grep -Fq -- '--model "$CODEX_MODEL" ' "$developer_step"
 grep -Fq -- "--config 'model_reasoning_effort=\"medium\"' \\" "$developer_step"
-grep -Fq -- "--config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_step"
-if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$developer_step"; then
-  echo 'Direct Codex developer step must not receive the OpenAI API key.' >&2
+grep -Fq -- "--config 'default_permissions=\":workspace\"' \\" "$developer_step"
+grep -Fq '< "$CODEX_PROMPT_FILE"' "$developer_step"
+if grep -Fq 'exec codex exec' "$developer_step"; then
+  echo 'Hardened developer step must bypass the npm Node launcher.' >&2
+  exit 1
+fi
+if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key|DEV_APP_PRIVATE_KEY|NOTIFICATION_WEBHOOK_URL' "$developer_step"; then
+  echo 'Hardened Codex developer service must not receive repository secrets.' >&2
   exit 1
 fi
 developer_run="$test_dir/Run-Codex-developer-run.sh"
@@ -221,13 +330,11 @@ awk '
 ' "$developer_step" > "$developer_run"
 test -s "$developer_run"
 if grep -Fq '${{' "$developer_run"; then
-  echo 'Direct Codex run body must not interpolate GitHub expressions.' >&2
+  echo 'Hardened Codex run body must not interpolate GitHub expressions.' >&2
   exit 1
 fi
-grep -Fqx "            --config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_step"
-grep -Fqx '          CODEX_PROMPT' "$developer_step"
 if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$developer_step"; then
-  echo 'Direct Codex developer step must fail closed.' >&2
+  echo 'Hardened Codex developer step must fail closed.' >&2
   exit 1
 fi
 
@@ -237,11 +344,16 @@ grep -Fqx '          codex-version: 0.153.4' "$followup_step"
 
 prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
 setup_line="$(grep -nF '      - name: Setup Codex developer runtime' "$workflow" | cut -d: -f1)"
+resolver_line="$(grep -nF '      - name: Resolve trusted Codex developer runtime' "$workflow" | cut -d: -f1)"
+prompt_line="$(grep -nF '      - name: Prepare fixed Codex developer prompt' "$workflow" | cut -d: -f1)"
 developer_line="$(grep -nF '      - name: Run Codex developer' "$workflow" | cut -d: -f1)"
 gate_line="$(grep -nF '      - name: Gate requirement changes' "$workflow" | cut -d: -f1)"
-if [ -z "$prepare_line" ] || [ -z "$setup_line" ] || [ -z "$developer_line" ] || [ -z "$gate_line" ] ||
-   [ "$prepare_line" -ge "$setup_line" ] || [ "$setup_line" -ge "$developer_line" ] || [ "$developer_line" -ge "$gate_line" ]; then
-  echo 'Codex secure setup, direct execution, and requirement gate order is invalid.' >&2
+if [ -z "$prepare_line" ] || [ -z "$setup_line" ] || [ -z "$resolver_line" ] || [ -z "$prompt_line" ] ||
+   [ -z "$developer_line" ] || [ -z "$gate_line" ] ||
+   [ "$prepare_line" -ge "$setup_line" ] || [ "$setup_line" -ge "$resolver_line" ] ||
+   [ "$resolver_line" -ge "$prompt_line" ] || [ "$prompt_line" -ge "$developer_line" ] ||
+   [ "$developer_line" -ge "$gate_line" ]; then
+  echo 'Codex setup, trusted resolution, fixed prompt, hardened execution, and requirement gate order is invalid.' >&2
   exit 1
 fi
 
