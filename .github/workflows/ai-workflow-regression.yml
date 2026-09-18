@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
+      - '.github/actions/**'
       - '.github/scripts/**'
       - '.github/workflows/**'
 
@@ -78,6 +79,10 @@ jobs:
     name: Background Cancel Probe
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      PROBE_MARKER: ${{ runner.temp }}/background-cancel-probe.marker
+      PROBE_PID: ${{ runner.temp }}/background-cancel-probe.pid
+      PROBE_DONE: ${{ runner.temp }}/background-cancel-probe.done
     steps:
       - name: Check out pull request head
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -90,26 +95,40 @@ jobs:
         uses: ./.github/actions/background-cancel-probe
         background: true
 
-      - name: Verify marker
+      - name: Verify marker and running process
         shell: bash
         run: |
           set -euo pipefail
           for _ in {1..30}; do
-            if [ -s "$RUNNER_TEMP/background-cancel-probe" ]; then
-              test "$(cat "$RUNNER_TEMP/background-cancel-probe")" = ready
+            if [ -s "$PROBE_MARKER" ] && [ -s "$PROBE_PID" ]; then
+              test "$(cat "$PROBE_MARKER")" = ready
+              pid="$(cat "$PROBE_PID")"
+              kill -0 "$pid"
+              test ! -e "$PROBE_DONE"
               exit 0
             fi
             sleep 1
           done
-          echo 'Background composite action did not publish its marker.' >&2
+          echo 'Background composite action did not publish observable running state.' >&2
           exit 1
 
       - name: Stop composite probe
         cancel: probe
 
-      - name: Verify continuation after cancel
+      - name: Verify termination and continuation after cancel
         shell: bash
         run: |
           set -euo pipefail
-          test -s "$RUNNER_TEMP/background-cancel-probe"
-          test "$(cat "$RUNNER_TEMP/background-cancel-probe")" = ready
+          test -s "$PROBE_MARKER"
+          test "$(cat "$PROBE_MARKER")" = ready
+          test -s "$PROBE_PID"
+          pid="$(cat "$PROBE_PID")"
+          for _ in {1..30}; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              test ! -e "$PROBE_DONE"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Background probe process $pid is still alive after cancel." >&2
+          exit 1
