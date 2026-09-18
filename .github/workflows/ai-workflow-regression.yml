@@ -72,3 +72,44 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  background-cancel-probe:
+    name: Background Cancel Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Start composite probe
+        id: probe
+        uses: ./.github/actions/background-cancel-probe
+        background: true
+
+      - name: Verify marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in {1..30}; do
+            if [ -s "$RUNNER_TEMP/background-cancel-probe" ]; then
+              test "$(cat "$RUNNER_TEMP/background-cancel-probe")" = ready
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Background composite action did not publish its marker.' >&2
+          exit 1
+
+      - name: Stop composite probe
+        cancel: probe
+
+      - name: Verify continuation after cancel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/background-cancel-probe"
+          test "$(cat "$RUNNER_TEMP/background-cancel-probe")" = ready
