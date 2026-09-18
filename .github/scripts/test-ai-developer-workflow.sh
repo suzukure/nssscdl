@@ -214,12 +214,22 @@ if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$developer_step"; then
   echo 'Direct Codex developer step must not receive the OpenAI API key.' >&2
   exit 1
 fi
+developer_run="$test_dir/Run-Codex-developer-run.sh"
+extract_workflow_step_run "$developer_step" > "$developer_run"
+test -s "$developer_run"
+if grep -Fq '${{' "$developer_run"; then
+  echo 'Direct Codex run body must not interpolate GitHub expressions.' >&2
+  exit 1
+fi
+grep -Fqx "            --config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_run"
+grep -Fqx '          CODEX_PROMPT' "$developer_run"
 if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$developer_step"; then
   echo 'Direct Codex developer step must fail closed.' >&2
   exit 1
 fi
 
 grep -Fqx '        timeout-minutes: 30' "$followup_step"
+grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_step"
 grep -Fqx '          codex-version: 0.153.4' "$followup_step"
 
 prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
