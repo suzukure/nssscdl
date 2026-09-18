@@ -23,8 +23,52 @@ if [ ! -s "$issue_entry_job" ]; then
   echo 'Could not extract the gate-issue-entry job.' >&2
   exit 1
 fi
-grep -Fqx "      github.event.issue.state == 'open' &&" "$issue_entry_job"
-grep -Fqx "      github.event.comment.body == '/codex develop'" "$issue_entry_job"
+assert_issue_entry_grouping() {
+  local entry_job="${1:?entry job is required}"
+  local open_line close_line normal_line extended_line
+  local event_line pr_line state_line comment_trust_line issue_trust_line pause_line
+
+  open_line="$(grep -nFx '      (' "$entry_job" | cut -d: -f1)"
+  close_line="$(grep -nFx '      )' "$entry_job" | cut -d: -f1)"
+  normal_line="$(grep -nFx "        github.event.comment.body == '/codex develop' ||" "$entry_job" | cut -d: -f1)"
+  extended_line="$(grep -nFx "        github.event.comment.body == '/codex develop extended'" "$entry_job" | cut -d: -f1)"
+  event_line="$(grep -nFx "      github.event_name == 'issue_comment' &&" "$entry_job" | cut -d: -f1)"
+  pr_line="$(grep -nFx '      github.event.issue.pull_request == null &&' "$entry_job" | cut -d: -f1)"
+  state_line="$(grep -nFx "      github.event.issue.state == 'open' &&" "$entry_job" | cut -d: -f1)"
+  comment_trust_line="$(grep -nFx "      contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.comment.author_association) &&" "$entry_job" | cut -d: -f1)"
+  issue_trust_line="$(grep -nFx "      contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.issue.author_association) &&" "$entry_job" | cut -d: -f1)"
+  pause_line="$(grep -nFx "      !contains(github.event.issue.labels.*.name, 'human-review-required') &&" "$entry_job" | cut -d: -f1)"
+
+  for line in "$open_line" "$close_line" "$normal_line" "$extended_line"     "$event_line" "$pr_line" "$state_line" "$comment_trust_line" "$issue_trust_line" "$pause_line"; do
+    if [[ ! "$line" =~ ^[0-9]+$ ]]; then
+      return 1
+    fi
+  done
+
+  [ "$(grep -Fc '||' "$entry_job")" -eq 1 ] &&
+    [ "$event_line" -lt "$open_line" ] &&
+    [ "$pr_line" -lt "$open_line" ] &&
+    [ "$state_line" -lt "$open_line" ] &&
+    [ "$comment_trust_line" -lt "$open_line" ] &&
+    [ "$issue_trust_line" -lt "$open_line" ] &&
+    [ "$pause_line" -lt "$open_line" ] &&
+    [ "$open_line" -lt "$normal_line" ] &&
+    [ "$normal_line" -lt "$extended_line" ] &&
+    [ "$extended_line" -lt "$close_line" ]
+}
+
+if ! assert_issue_entry_grouping "$issue_entry_job"; then
+  echo 'AI Developer Issue entry must apply every trust and pause condition to both develop commands.' >&2
+  exit 1
+fi
+
+ungrouped_issue_entry="$test_dir/gate-issue-entry-ungrouped.yml"
+sed '/^      ($/d; /^      )$/d' "$issue_entry_job" > "$ungrouped_issue_entry"
+if assert_issue_entry_grouping "$ungrouped_issue_entry"; then
+  echo 'Issue entry grouping regression fixture unexpectedly passed without command parentheses.' >&2
+  exit 1
+fi
+
 if grep -Eq '^[[:space:]]*!\(?github\.event\.issue\.state|^[[:space:]]*!\(?github\.event\.comment\.body' "$issue_entry_job"; then
   echo 'AI Developer Issue entry conditions must not be negated.' >&2
   exit 1
@@ -89,7 +133,9 @@ if grep -Fq 'Automatic Claude re-review is paused.' "$workflow"; then
 fi
 
 # Both Codex jobs must have a server-side wall-clock bound in addition to
-# the per-step timeout, so runner-loss cannot leave them unbounded.
+# the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
+# development uses a fixed 35-minute exception only for the explicit extended
+# command; normal development and Claude follow-up remain at 15 minutes.
 for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   codex_job="$test_dir/${codex_job_name}.yml"
   awk -v job_name="$codex_job_name" '
@@ -101,7 +147,11 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
     echo "Could not extract the $codex_job_name job." >&2
     exit 1
   fi
-  grep -Fqx '    timeout-minutes: 15' "$codex_job"
+  if [ "$codex_job_name" = 'develop-from-issue' ]; then
+    grep -Fqx "    timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}" "$codex_job"
+  else
+    grep -Fqx '    timeout-minutes: 15' "$codex_job"
+  fi
   if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
     echo "$codex_job_name must fail closed." >&2
     exit 1
