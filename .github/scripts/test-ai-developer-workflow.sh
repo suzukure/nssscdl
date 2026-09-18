@@ -215,14 +215,17 @@ if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$developer_step"; then
   exit 1
 fi
 developer_run="$test_dir/Run-Codex-developer-run.sh"
-extract_workflow_step_run "$developer_step" > "$developer_run"
+awk '
+  found { print }
+  $0 == "        run: |" { found = 1 }
+' "$developer_step" > "$developer_run"
 test -s "$developer_run"
 if grep -Fq '${{' "$developer_run"; then
   echo 'Direct Codex run body must not interpolate GitHub expressions.' >&2
   exit 1
 fi
-grep -Fqx "            --config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_run"
-grep -Fqx '          CODEX_PROMPT' "$developer_run"
+grep -Fqx "            --config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_step"
+grep -Fqx '          CODEX_PROMPT' "$developer_step"
 if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$developer_step"; then
   echo 'Direct Codex developer step must fail closed.' >&2
   exit 1
