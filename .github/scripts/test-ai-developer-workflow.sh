@@ -158,27 +158,92 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   fi
 done
 
-# Both Codex invocations must remain reproducible and bounded. A timeout is
-# fatal by default, so the later requirement gate and publish step cannot run
-# after it expires.
-for codex_step_name in 'Run Codex developer' 'Run Codex follow-up'; do
-  codex_step="$test_dir/${codex_step_name// /-}.yml"
-  awk -v step_name="$codex_step_name" '
+# Issue-origin development uses the OpenAI action only for secure runtime
+# setup, then runs codex exec as a normal shell step so the step timeout is an
+# effective process bound. Claude follow-up remains on the pinned action.
+prepare_step="$test_dir/Prepare-Codex-developer-runtime.yml"
+setup_step="$test_dir/Setup-Codex-developer-runtime.yml"
+developer_step="$test_dir/Run-Codex-developer.yml"
+followup_step="$test_dir/Run-Codex-follow-up.yml"
+
+for pair in \
+  "Prepare Codex developer runtime|$prepare_step" \
+  "Setup Codex developer runtime|$setup_step" \
+  "Run Codex developer|$developer_step" \
+  "Run Codex follow-up|$followup_step"; do
+  step_name="${pair%%|*}"
+  step_path="${pair#*|}"
+  awk -v step_name="$step_name" '
     $0 == "      - name: " step_name { in_step = 1 }
     in_step && /^      - name: / && $0 != "      - name: " step_name { exit }
     in_step { print }
-  ' "$workflow" > "$codex_step"
-  if [ ! -s "$codex_step" ]; then
-    echo "Could not extract the $codex_step_name step." >&2
-    exit 1
-  fi
-  grep -Fqx '        timeout-minutes: 30' "$codex_step"
-  grep -Fqx '          codex-version: 0.153.4' "$codex_step"
-  if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_step"; then
-    echo "$codex_step_name must fail closed when it times out or fails." >&2
+  ' "$workflow" > "$step_path"
+  if [ ! -s "$step_path" ]; then
+    echo "Could not extract the $step_name step." >&2
     exit 1
   fi
 done
+
+grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$prepare_step"
+grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$prepare_step"
+grep -Fq 'mkdir -p "$CODEX_HOME"' "$prepare_step"
+grep -Fq 'rm -f "$CODEX_FINAL"' "$prepare_step"
+
+grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$setup_step"
+grep -Fqx '          openai-api-key: ${{ secrets.OPENAI_API_KEY }}' "$setup_step"
+grep -Fqx '          codex-version: 0.153.4' "$setup_step"
+grep -Fqx '          codex-home: ${{ runner.temp }}/codex-home' "$setup_step"
+if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$setup_step"; then
+  echo 'Secure Codex setup must not enter the action wrapper execution path.' >&2
+  exit 1
+fi
+
+grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
+grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
+grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
+grep -Fqx '          CODEX_MODEL: ${{ vars.CODEX_MODEL }}' "$developer_step"
+grep -Fqx '          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action' "$developer_step"
+grep -Fq 'exec codex exec \' "$developer_step"
+grep -Fq -- '--skip-git-repo-check \' "$developer_step"
+grep -Fq -- '--cd "$GITHUB_WORKSPACE" \' "$developer_step"
+grep -Fq -- '--output-last-message "$CODEX_FINAL" \' "$developer_step"
+grep -Fq -- '--model "$CODEX_MODEL" \' "$developer_step"
+grep -Fq -- "--config 'model_reasoning_effort=\"medium\"' \\" "$developer_step"
+grep -Fq -- "--config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_step"
+if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$developer_step"; then
+  echo 'Direct Codex developer step must not receive the OpenAI API key.' >&2
+  exit 1
+fi
+developer_run="$test_dir/Run-Codex-developer-run.sh"
+awk '
+  found { print }
+  $0 == "        run: |" { found = 1 }
+' "$developer_step" > "$developer_run"
+test -s "$developer_run"
+if grep -Fq '${{' "$developer_run"; then
+  echo 'Direct Codex run body must not interpolate GitHub expressions.' >&2
+  exit 1
+fi
+grep -Fqx "            --config 'default_permissions=\":workspace\"' <<'CODEX_PROMPT'" "$developer_step"
+grep -Fqx '          CODEX_PROMPT' "$developer_step"
+if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$developer_step"; then
+  echo 'Direct Codex developer step must fail closed.' >&2
+  exit 1
+fi
+
+grep -Fqx '        timeout-minutes: 30' "$followup_step"
+grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_step"
+grep -Fqx '          codex-version: 0.153.4' "$followup_step"
+
+prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
+setup_line="$(grep -nF '      - name: Setup Codex developer runtime' "$workflow" | cut -d: -f1)"
+developer_line="$(grep -nF '      - name: Run Codex developer' "$workflow" | cut -d: -f1)"
+gate_line="$(grep -nF '      - name: Gate requirement changes' "$workflow" | cut -d: -f1)"
+if [ -z "$prepare_line" ] || [ -z "$setup_line" ] || [ -z "$developer_line" ] || [ -z "$gate_line" ] ||
+   [ "$prepare_line" -ge "$setup_line" ] || [ "$setup_line" -ge "$developer_line" ] || [ "$developer_line" -ge "$gate_line" ]; then
+  echo 'Codex secure setup, direct execution, and requirement gate order is invalid.' >&2
+  exit 1
+fi
 
 marker_response="$test_dir/marker-response.md"
 printf '%s\n' '[REQUIREMENTS_CHANGE_REQUIRED]' > "$marker_response"

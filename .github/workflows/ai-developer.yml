@@ -131,24 +131,49 @@ jobs:
             exit 1
           fi
 
-      - name: Run Codex developer
-        id: codex
-        timeout-minutes: 30
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+      - name: Prepare Codex developer runtime
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          rm -f "$CODEX_FINAL"
+
+      - name: Setup Codex developer runtime
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: 0.153.4
-          permission-profile: :workspace
-          model: ${{ vars.CODEX_MODEL }}
-          effort: medium
-          prompt: |
-            Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
-            Implement the Issue in this working tree.
-            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
-            Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
-            Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
-          output-file: ${{ runner.temp }}/codex-final.md
+          codex-home: ${{ runner.temp }}/codex-home
 
+      - name: Run Codex developer
+        id: codex
+        timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v codex >/dev/null
+          test -s "$CODEX_HOME/config.toml"
+          exec codex exec \
+            --skip-git-repo-check \
+            --cd "$GITHUB_WORKSPACE" \
+            --output-last-message "$CODEX_FINAL" \
+            --model "$CODEX_MODEL" \
+            --config 'model_reasoning_effort="medium"' \
+            --config 'default_permissions=":workspace"' <<'CODEX_PROMPT'
+          Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
+          Implement the Issue in this working tree.
+          The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
+          Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
+          Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
+          CODEX_PROMPT
       - name: Gate requirement changes
         id: development-gate
         env:
@@ -581,7 +606,7 @@ jobs:
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         id: codex
         timeout-minutes: 30
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: 0.153.4
