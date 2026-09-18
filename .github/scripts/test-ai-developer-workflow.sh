@@ -198,7 +198,7 @@ if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$setup_step"; then
   exit 1
 fi
 
-grep -Fqx "        timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
+grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
 grep -Fqx '          CODEX_MODEL: ${{ vars.CODEX_MODEL }}' "$developer_step"
