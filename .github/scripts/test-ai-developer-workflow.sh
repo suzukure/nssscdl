@@ -245,7 +245,7 @@ if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$prompt_step"; then
 fi
 
 grep -Fqx '        id: codex' "$developer_step"
-grep -Fqx "        timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
+grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
 grep -Fqx '          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md' "$developer_step"
@@ -255,7 +255,7 @@ grep -Fqx '          CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }
 grep -Fqx '          CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}' "$developer_step"
 grep -Fqx '          ACTION_MAIN: ${{ steps.codex_runtime.outputs.action_main }}' "$developer_step"
 grep -Fqx '          RUNNER_CREDENTIALS: ${{ steps.codex_runtime.outputs.runner_credentials }}' "$developer_step"
-grep -Fqx "          CODEX_RUNTIME_MAX_SEC: ${{ github.event.comment.body == '/codex develop extended' && 1780 || 700 }}" "$developer_step"
+grep -Fqx "          CODEX_RUNTIME_MAX_SEC: \${{ github.event.comment.body == '/codex develop extended' && 1780 || 700 }}" "$developer_step"
 grep -Fq 'test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$developer_step"
 grep -Fq 'test "$current_credentials" = "$RUNNER_CREDENTIALS"' "$developer_step"
 grep -Fq 'case "$CODEX_RUNTIME_MAX_SEC" in' "$developer_step"
