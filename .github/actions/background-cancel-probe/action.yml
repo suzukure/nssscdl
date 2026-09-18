@@ -4,9 +4,16 @@ description: Test-only composite action for GitHub Actions background/cancel sem
 runs:
   using: composite
   steps:
-    - name: Write marker and remain active
+    - name: Write probe state and remain active
       shell: bash
       run: |
         set -euo pipefail
-        printf '%s\n' ready > "$RUNNER_TEMP/background-cancel-probe"
+        : "${PROBE_MARKER:?PROBE_MARKER is required}"
+        : "${PROBE_PID:?PROBE_PID is required}"
+        : "${PROBE_DONE:?PROBE_DONE is required}"
+        printf '%s\n' "$$" > "$PROBE_PID"
+        printf '%s\n' ready > "$PROBE_MARKER"
+        # Keep the natural completion at or beyond the 5-minute job cap so a
+        # no-op cancel cannot produce a false-positive success.
         sleep 300
+        printf '%s\n' done > "$PROBE_DONE"
