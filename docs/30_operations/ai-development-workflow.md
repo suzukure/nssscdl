@@ -273,24 +273,34 @@ AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する
 
 * 通常の `develop-from-issue` と `respond-to-claude` のjob-level timeoutは15分とし、AI Developer全体の外側の停止境界として扱う。
 * 人間が明示的に `/codex develop extended` を選んだIssue起点runだけ、`develop-from-issue` のjob-level timeoutを延長する。具体値と利用条件は「human-approved extended-run」を正本とする。この延長はIssue起点だけに適用する。`respond-to-claude` も同じv1.12 wrapper code pathを使うが、同型hangは未実測であり、現状はjob-level 15分がfail-closedな外側境界として機能するため本Issueでは変更しない。同型hangを実測した場合は別Issueでdirect exec分離の要否を再評価する。
-* Issue起点developerでは、pin済みOpenAI公式Actionをsecure setup専用で使い、actual `codex exec` を通常の `run:` stepとして実行する。direct developer stepのtimeoutは通常commandで12分、`/codex develop extended` で30分とする。
+* Issue起点developerでは、pin済みOpenAI公式Actionをsecure setup専用で使い、setup後にtrusted npm packageからCodex 0.153.4のnative executableをfail-closedに解決し、そのnative binaryを通常の `run:` stepからshell `exec` する。direct developer stepのtimeoutは通常commandで12分、`/codex develop extended` で30分とする。
 * Claude follow-upは従来どおりpin済みOpenAI Actionの `Run Codex follow-up` を使用し、step-level timeout設定は30分のままとする。ただしjob-level 15分が先に到達するため、この30分は実効的な内側backstopではない。follow-up経路は本Issueのscope外とし、同型hangを実測した場合に別途整合化する。
-* developerのdirect `run:` timeoutはrunner worker上の実効process boundとして扱う。runner-lossやrunnerとの通信喪失時の最終停止境界はjob-level timeoutとする。
+* developerのdirect `run:` timeoutはrunnerが追跡するnative Codex PIDのprocess boundとして扱う。#316のruntime proofではtimeout後もdescendant processが残り得るため、timeout/failure後に同jobでrepository writeへ進まないことを安全境界とする。runner-lossやrunnerとの通信喪失時の最終停止境界はjob-level timeoutとする。
 * job-level timeoutも設定値到達時にcancellationへ移行する境界であり、runner無応答時を含め「設定値ちょうどで完全終了する」とは扱わない。
 
 #### Issue起点developerのCodex実行境界
 
-2026-09-18の調査 #309 / #312 では、pin中 `openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e` v1.12のwrapper hangと本repoのRun #829 / #833が強く一致した。さらにPR #314のruntime probeでは、GitHub Actions `cancel:` によりbackground composite step自体はCanceledへ遷移しても、composite内部のbash / sleep processがjob cleanupまで残存することを確認した。このためbackground/cancelをproduction Codex process停止境界には使用しない。
+2026-09-18の調査 #309 では、Issue起点AI Developerの長時間停止について段階的にruntime境界を切り分けた。
 
-Issue起点developerは、OpenAI公式Actionを**secure setup専用**で呼び、prompt / prompt-file / output-fileを渡さない。Actionにはactor permission check、Codex CLI / Responses proxy installation、local proxy config、GitHub-hosted Linux user namespace準備、drop-sudo、sudo除去確認だけを担当させる。explicit `CODEX_HOME` はAction呼び出し前にrunner userで作成する。
+* #312 / PR #314ではGitHub Actionsの `background` / `cancel` を実測した。background composite step自体をCanceledへ遷移できても、composite内部processがjob cleanupまで残存したため、runner native `cancel` だけをproduction Codex process停止境界には使用しない。
+* #313 / PR #315ではpin中 `openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e` v1.12をsecure setup専用に分離し、npmの `codex exec` を通常 `run:` stepで実行した。しかし#307 / Run #838でもdeveloper stepはjob cancellationまで収束しなかった。
+* #316 / Run #57ではCodexを使わないrunner probeを実施した。literal `timeout-minutes: 1` とexpression版timeoutはいずれも約75秒で発火し、runnerがdirect parent PIDへSIGINT、続いてSIGTERMを送りparentを停止することを確認した。一方、同じprocess group / sessionのdescendantは後続step開始時にも生存した。またdirect parentが先にexitしdescendantだけがstdout/stderrを保持するケースでは、stepは約5秒で後続stepへ進んだ。したがってRun #838は「step timeout機構一般の故障」または「終了済みparentのstdioをdescendantだけが保持」のどちらかだけでは説明しない。
+* exact `@openai/codex@0.153.4` のnpm `codex` commandはNode launcherで、platform package内native Codexを `spawn(..., { stdio: "inherit" })` し、SIGINT / SIGTERM / SIGHUPをchildへforwardしてnative child exitまでNode親が待つ構造である。
+* #318 / Run #58では、pin済みActionのsetup-only実行後に、trusted npm packageからplatform native executableをfail-closedに解決できることをsecretなしで確認した。Linux x64では `x86_64-unknown-linux-musl` のnative binaryを解決し、npm launcherとnative directの双方が `codex-cli 0.153.4` を返した。
 
-setup完了後、actual `codex exec` は通常の `run:` stepで起動する。direct stepへ `OPENAI_API_KEY` は渡さず、setup Actionが `CODEX_HOME/config.toml` に設定したlocalhost Responses API proxyを使用する。direct step開始時に `codex` がPATH上に存在することと `CODEX_HOME/config.toml` が非空であることをpreflight確認する。CLI optionはworkflow側の固定値だけとし、`--skip-git-repo-check`、workspace、final output path、trusted `CODEX_MODEL`、`model_reasoning_effort="medium"`、`default_permissions=":workspace"` を固定する。環境も `CODEX_HOME` と `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_github_action` を固定し、Issue本文やcommentから追加CLI optionを組み立てない。
+Issue起点developerは、OpenAI公式Actionを**secure setup専用**で呼び、prompt / prompt-file / output-fileを渡さない。Actionにはactor permission check、Codex CLI / Responses proxy installation、local proxy config、GitHub-hosted Linux user namespace準備、drop-sudo、sudo除去確認を担当させる。explicit `CODEX_HOME` はAction呼び出し前にrunner userで作成する。OpenAI API keyを受け取るのはこのsetup Actionだけであり、後続resolver / native developer stepへAPI keyを渡さない。
 
-direct stepがsuccessし、`codex-final.md` が存在し空でない場合だけ既存のrequirement change gate、trusted diff guard、commit / push / Draft PRへ進む。direct step timeout / failure、final response missing / empty、setup failureはfail-closedで既存failure handlerへ進み、automatic retryしない。
+setup完了後、`Resolve native Codex developer executable` はrunner PATH上の `command -v codex` だけを起点にtrusted executableを解決する。workspace、Issue本文、commentからpathまたはpackage名を受け取らない。resolverはnpm entrypointをrealpath化し、main packageが `@openai/codex@0.153.4` であることを確認する。exact npm launcherと同じNode `createRequire(codexEntry)` semanticsでLinux x64 / arm64のplatform packageを解決し、platform package配下の `vendor/<target>/bin/codex` がregular executableであることを検証する。unsupported platform / version mismatch / package resolution failure / native executable不正はfail-closedとする。さらにnpm launcherとnative `--version` の一致を確認してからnative pathとvalidated package rootだけをstep outputへ渡す。
 
-setup/direct分離はupstream実装へ依存するため、#307のruntime再検証では少なくとも次を確認する。Actionがインストールした `codex` が後続stepのPATHで解決できること、setup Actionが起動したlocalhost Responses API proxyがsetup完了後も利用可能であること、prompt位置引数なしの `codex exec` がstdinをpromptとして受け取ること、`default_permissions=":workspace"` がCodex CLI 0.153.4でhonorされ既存 `:workspace` と同等のwrite境界になることを、取得可能な非機密証跡で確認する。特にpermission profileがhonorされない場合は実効sandboxを推測せずfail-closedとし、#309へ戻る。
+actual developerはnpm Node launcherを経由せず、resolverが返したnative Codexをshell `exec` する。npm launcher parityとして `CODEX_MANAGED_PACKAGE_ROOT=<validated package root>` と `CODEX_MANAGED_BY_NPM=1` を付与し、`CODEX_MANAGED_BY_BUN` / `CODEX_MANAGED_BY_PNPM` / `CODEX_MANAGED_BY_VITE_PLUS` はunsetする。これによりrunnerが直接追跡するdeveloper processをnative Codex自身に合わせる。
 
-upstream `openai/codex-action` でwrapper lifecycle修正（調査時点のPR #151相当）が公式mainへ反映された場合は、このsetup/direct分離を撤去して通常Action実行へ戻せるか別途再評価する。
+native developer stepではsetup Actionが `CODEX_HOME/config.toml` に設定したlocalhost Responses API proxyを利用する。CLI optionはworkflow側の固定値だけとし、`--skip-git-repo-check`、workspace、final output path、trusted `CODEX_MODEL`、`model_reasoning_effort="medium"`、`default_permissions=":workspace"` を固定する。環境も `CODEX_HOME` と `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_github_action` を固定し、Issue本文やcommentから追加CLI optionを組み立てない。
+
+native developer stepがsuccessし、`codex-final.md` が存在し空でない場合だけ既存のrequirement change gate、trusted diff guard、commit / push / Draft PRへ進む。resolver failure、native developer timeout / failure、final response missing / empty、setup failureはfail-closedで既存failure handlerへ進み、automatic retryしない。#316でtimeout後もdescendant processが残り得ることを確認しているため、developer timeout/failureを `continue-on-error` で握り潰したり、失敗後に同jobでrepository writeへ進む例外は設けない。
+
+#320 main反映後の#307 runtime再検証では、branch / PR / unexpected repository write不存在とcurrent implementation contractを再確認し、`human-review-required` を人間判断で解除した後、通常 `/codex develop` を1回だけ投入する。取得可能な非機密証跡で、native resolver成功、setup Actionが構成したlocalhost proxy経由のnative Codex実行、stdin prompt、`default_permissions=":workspace"` の実効write境界、native developerのtimeout/終了状態、成功時のrequirement gate / diff guard / Draft PR到達を確認する。native directでもjob timeoutまでstepが収束しない、permission profileをhonorしていると確認できない、またはsetup/native前提が成立しない場合はautomatic retryせず#309へ戻る。
+
+upstream `openai/codex-action` でwrapper lifecycle修正（調査時点のPR #151相当）が公式mainへ反映された場合は、現行のsecure setup + native direct分離を撤去して通常Action実行へ戻せるか別途再評価する。
 
 #### Issue起点AI Developerの異常終了
 
@@ -335,7 +345,7 @@ Issue起点のAI Developerを再実行する前に、少なくとも次を確認
 
 extended-runのjob-level timeoutは35分固定とし、direct `Run Codex developer` stepは通常commandの12分に対する例外として30分とする。35分はextended時のdirect step 30分にsetup、post-gate、repository write処理の余裕を持たせつつ、runner-loss時のserver-side hard capを残すための例外値である。通常commandはjob-level 15分 / direct step 12分とし、最大3分をsetup・post-gate・repository writeへ残す設計である。この余白の実効性は#307のruntime再検証で確認し、15分job cap内で後処理へ到達できない場合はautomatic retryせず#309へ戻って値を再評価する。任意timeout入力、通常15分runからのautomatic fallback、automatic retry、fail-open、停止ラベルのbypassは設けない。extended-runではCodex完了後のrepository write途中でjob cancellationへ到達し、push済みの `ai/issue-<Issue番号>` branchに対応するopen PRが存在しない状態が残る可能性もある。この場合は再実行前にbranch head、open PR、closing Issueの対応を照合し、予期しないcommit / push / PR writeがないことを確認してから復旧判断する。
 
-extended-runでもtimeoutまたは異常終了した場合は、同じcommandを自動または単純retryしない。failure handlerによる停止を維持し、正常長時間処理、runner-loss、model/provider差、別実行経路の必要性を再調査する。extended-runの実地検証は #307 / Run #833 `35316054357` で1回実施済みで、Codex Action wrapperが完了せず収束しなかった。#313反映後の #307 ではbranch / PR / unexpected write不存在とcurrent contractを再確認したうえで通常 `/codex develop` を1回だけ投入し、secure setup + direct exec経路を再検証する。収束しなければautomatic retryせず #309 の再調査へ戻る。`/codex develop extended` を投稿してもIssueへ診断commentが付かず、`human-review-required` も付かず、developer jobの記録も見当たらない場合は、job-level timeout式を含むworkflowの評価・起動前失敗の可能性を考慮し、Actions run一覧で当該eventのworkflow状態を確認する。
+extended-runでもtimeoutまたは異常終了した場合は、同じcommandを自動または単純retryしない。failure handlerによる停止を維持し、正常長時間処理、runner-loss、model/provider差、別実行経路の必要性を再調査する。extended-runの実地検証は #307 / Run #833 `35316054357` で1回実施済みで、Codex Action wrapperが完了せず収束しなかった。#320反映後の #307 ではbranch / PR / unexpected write不存在とcurrent contractを再確認したうえで通常 `/codex develop` を1回だけ投入し、secure setup + native direct exec経路を再検証する。収束しなければautomatic retryせず #309 の再調査へ戻る。`/codex develop extended` を投稿してもIssueへ診断commentが付かず、`human-review-required` も付かず、developer jobの記録も見当たらない場合は、job-level timeout式を含むworkflowの評価・起動前失敗の可能性を考慮し、Actions run一覧で当該eventのworkflow状態を確認する。
 
 #### Claude review follow-upの異常終了
 
