@@ -102,6 +102,7 @@ regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
 test -f "$regression_workflow"
 grep -Fxq 'name: AI Workflow Regression' "$regression_workflow"
 grep -Fq 'types: [opened, synchronize, reopened]' "$regression_workflow"
+grep -Fq -- "- '.github/actions/**'" "$regression_workflow"
 grep -Fq -- "- '.github/scripts/**'" "$regression_workflow"
 grep -Fq -- "- '.github/workflows/**'" "$regression_workflow"
 grep -A1 '^permissions:$' "$regression_workflow" | grep -Fxq '  contents: read'
@@ -118,6 +119,48 @@ grep -Fq 'fixtures=(.github/scripts/test-*.sh)' "$regression_workflow"
 grep -Fq 'if [ "${#fixtures[@]}" -eq 0 ]; then' "$regression_workflow"
 grep -Fq 'for fixture in "${fixtures[@]}"; do' "$regression_workflow"
 grep -Fq 'if bash "$fixture"; then' "$regression_workflow"
+
+probe_action="$repo_root/.github/actions/background-cancel-probe/action.yml"
+test -f "$probe_action"
+grep -Fq 'using: composite' "$probe_action"
+grep -Fq ': "${PROBE_MARKER:?PROBE_MARKER is required}"' "$probe_action"
+grep -Fq ': "${PROBE_PID:?PROBE_PID is required}"' "$probe_action"
+grep -Fq ': "${PROBE_DONE:?PROBE_DONE is required}"' "$probe_action"
+grep -Fq 'printf '"'"'%s\n'"'"' "$" > "$PROBE_PID"' "$probe_action"
+grep -Fq 'sleep 300' "$probe_action"
+grep -Fq 'printf '"'"'%s\n'"'"' done > "$PROBE_DONE"' "$probe_action"
+if grep -Eq 'secrets\.|github\.token|GH_TOKEN' "$probe_action"; then
+  echo 'Background cancel probe must not consume a repository credential.' >&2
+  exit 1
+fi
+
+probe_job="$test_dir/background-cancel-probe.yml"
+awk '
+  /^  background-cancel-probe:$/ { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  background-cancel-probe:" { exit }
+  in_job { print }
+' "$regression_workflow" > "$probe_job"
+test -s "$probe_job"
+grep -Fq '    name: Background Cancel Probe' "$probe_job"
+grep -Fq '    runs-on: ubuntu-latest' "$probe_job"
+grep -Fq '    timeout-minutes: 5' "$probe_job"
+grep -Fq '      PROBE_MARKER: ${{ runner.temp }}/background-cancel-probe.marker' "$probe_job"
+grep -Fq '      PROBE_PID: ${{ runner.temp }}/background-cancel-probe.pid' "$probe_job"
+grep -Fq '      PROBE_DONE: ${{ runner.temp }}/background-cancel-probe.done' "$probe_job"
+grep -Fq '          persist-credentials: false' "$probe_job"
+grep -Fq '        id: probe' "$probe_job"
+grep -Fq '        uses: ./.github/actions/background-cancel-probe' "$probe_job"
+grep -Fq '        background: true' "$probe_job"
+grep -Fq '        cancel: probe' "$probe_job"
+grep -Fq '      - name: Verify termination and continuation after cancel' "$probe_job"
+grep -Fq '          if ! kill -0 "$pid" 2>/dev/null; then' "$probe_job"
+grep -Fq '              test ! -e "$PROBE_DONE"' "$probe_job"
+cancel_line="$(grep -nF '        cancel: probe' "$probe_job" | cut -d: -f1)"
+verify_line="$(grep -nF '      - name: Verify termination and continuation after cancel' "$probe_job" | cut -d: -f1)"
+if [ -z "$cancel_line" ] || [ -z "$verify_line" ] || [ "$cancel_line" -ge "$verify_line" ]; then
+  echo 'Background cancel probe must verify process termination after runner-native cancel.' >&2
+  exit 1
+fi
 if grep -Eq '^[[:space:]]+[A-Za-z-]+: write$' "$regression_workflow"; then
   echo 'AI Workflow Regression grants a write permission.' >&2
   exit 1
