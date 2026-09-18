@@ -126,7 +126,7 @@ grep -Fq 'using: composite' "$probe_action"
 grep -Fq ': "${PROBE_MARKER:?PROBE_MARKER is required}"' "$probe_action"
 grep -Fq ': "${PROBE_PID:?PROBE_PID is required}"' "$probe_action"
 grep -Fq ': "${PROBE_DONE:?PROBE_DONE is required}"' "$probe_action"
-grep -Fq 'printf '"'"'%s\n'"'"' "$" > "$PROBE_PID"' "$probe_action"
+grep -Eq 'printf .+ "\\$\\$" > "\\$PROBE_PID"$' "$probe_action"
 grep -Fq 'sleep 300' "$probe_action"
 grep -Fq 'printf '"'"'%s\n'"'"' done > "$PROBE_DONE"' "$probe_action"
 if grep -Eq 'secrets\.|github\.token|GH_TOKEN' "$probe_action"; then
