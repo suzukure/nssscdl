@@ -24,7 +24,8 @@ if [ ! -s "$issue_entry_job" ]; then
   exit 1
 fi
 grep -Fqx "      github.event.issue.state == 'open' &&" "$issue_entry_job"
-grep -Fqx "      github.event.comment.body == '/codex develop'" "$issue_entry_job"
+grep -Fqx "        github.event.comment.body == '/codex develop' ||" "$issue_entry_job"
+grep -Fqx "        github.event.comment.body == '/codex develop extended'" "$issue_entry_job"
 if grep -Eq '^[[:space:]]*!\(?github\.event\.issue\.state|^[[:space:]]*!\(?github\.event\.comment\.body' "$issue_entry_job"; then
   echo 'AI Developer Issue entry conditions must not be negated.' >&2
   exit 1
@@ -89,7 +90,9 @@ if grep -Fq 'Automatic Claude re-review is paused.' "$workflow"; then
 fi
 
 # Both Codex jobs must have a server-side wall-clock bound in addition to
-# the per-step timeout, so runner-loss cannot leave them unbounded.
+# the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
+# development uses a fixed 35-minute exception only for the explicit extended
+# command; normal development and Claude follow-up remain at 15 minutes.
 for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   codex_job="$test_dir/${codex_job_name}.yml"
   awk -v job_name="$codex_job_name" '
@@ -101,7 +104,11 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
     echo "Could not extract the $codex_job_name job." >&2
     exit 1
   fi
-  grep -Fqx '    timeout-minutes: 15' "$codex_job"
+  if [ "$codex_job_name" = 'develop-from-issue' ]; then
+    grep -Fqx "    timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}" "$codex_job"
+  else
+    grep -Fqx '    timeout-minutes: 15' "$codex_job"
+  fi
   if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
     echo "$codex_job_name must fail closed." >&2
     exit 1
