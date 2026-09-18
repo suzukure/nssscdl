@@ -226,10 +226,10 @@ grep -Fq '_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e'
 grep -Fq 'actual_blob="$(git hash-object "$action_main")"' "$resolver_step"
 grep -Fq 'test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$resolver_step"
 grep -Fq 'supplementaryGroupIds:$groups' "$resolver_step"
-grep -Fq "printf 'native_path=%s\\n' "\$native_path" >> "\$GITHUB_OUTPUT"" "$resolver_step"
-grep -Fq "printf 'package_root=%s\\n' "\$package_root" >> "\$GITHUB_OUTPUT"" "$resolver_step"
-grep -Fq "printf 'action_main=%s\\n' "\$action_main" >> "\$GITHUB_OUTPUT"" "$resolver_step"
-grep -Fq "printf 'runner_credentials=%s\\n' "\$credentials" >> "\$GITHUB_OUTPUT"" "$resolver_step"
+grep -Fq "printf 'native_path=%s\\n' \"\$native_path\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'package_root=%s\\n' \"\$package_root\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'action_main=%s\\n' \"\$action_main\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'runner_credentials=%s\\n' \"\$credentials\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$resolver_step"; then
   echo 'Trusted Codex resolver must not receive repository secrets.' >&2
   exit 1
