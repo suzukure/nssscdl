@@ -105,7 +105,7 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
     exit 1
   fi
   if [ "$codex_job_name" = 'develop-from-issue' ]; then
-    grep -Fqx "    timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}" "$codex_job"
+    grep -Fqx "    timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}" "$codex_job"
   else
     grep -Fqx '    timeout-minutes: 15' "$codex_job"
   fi
