@@ -72,3 +72,110 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  native-codex-resolver-probe:
+    name: Native Codex Resolver Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install Codex runtime only
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+
+      - name: Resolve and verify native Codex
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+
+          export CODEX_ENTRY="$entry"
+          export CODEX_PACKAGE_ROOT="$package_root"
+          resolver_output="$(
+            node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createRequire } from "node:module";
+
+          const entry = process.env.CODEX_ENTRY;
+          const packageRoot = process.env.CODEX_PACKAGE_ROOT;
+          const mainPackage = JSON.parse(
+            fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+          );
+          if (mainPackage.name !== "@openai/codex") {
+            throw new Error(`unexpected package name: ${mainPackage.name}`);
+          }
+          if (mainPackage.version !== "0.153.4") {
+            throw new Error(`unexpected package version: ${mainPackage.version}`);
+          }
+
+          let platformPackage;
+          let targetTriple;
+          if (process.platform === "linux" && process.arch === "x64") {
+            platformPackage = "@openai/codex-linux-x64";
+            targetTriple = "x86_64-unknown-linux-musl";
+          } else if (process.platform === "linux" && process.arch === "arm64") {
+            platformPackage = "@openai/codex-linux-arm64";
+            targetTriple = "aarch64-unknown-linux-musl";
+          } else {
+            throw new Error(
+              `unsupported probe platform: ${process.platform}/${process.arch}`,
+            );
+          }
+
+          const require = createRequire(entry);
+          const platformPackageJson = require.resolve(
+            `${platformPackage}/package.json`,
+          );
+          const nativePath = path.join(
+            path.dirname(platformPackageJson),
+            "vendor",
+            targetTriple,
+            "bin",
+            "codex",
+          );
+          const nativeStat = fs.statSync(nativePath);
+          if (!nativeStat.isFile()) {
+            throw new Error("native codex is not a regular file");
+          }
+          fs.accessSync(nativePath, fs.constants.X_OK);
+
+          process.stdout.write(
+            JSON.stringify({
+              packageRoot,
+              nativePath: fs.realpathSync(nativePath),
+              targetTriple,
+              version: mainPackage.version,
+            }),
+          );
+          NODE
+          )"
+
+          native="$(jq -r '.nativePath' <<<"$resolver_output")"
+          target="$(jq -r '.targetTriple' <<<"$resolver_output")"
+          version="$(jq -r '.version' <<<"$resolver_output")"
+          resolved_root="$(jq -r '.packageRoot' <<<"$resolver_output")"
+          test "$resolved_root" = "$package_root"
+          test -x "$native"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          grep -Fq "$version" <<<"$launcher_version"
+
+          printf 'PROBE_DATA native-resolver target=%s version=%s launcher_version=%q native_version=%q\n' \
+            "$target" "$version" "$launcher_version" "$native_version"
