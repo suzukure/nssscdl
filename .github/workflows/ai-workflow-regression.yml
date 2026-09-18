@@ -72,3 +72,244 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  hardened-timeout-probe:
+    name: Hardened Timeout Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Install pinned Codex Action runtime without execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          safety-strategy: unsafe
+
+      - name: Resolve trusted pinned Action helper
+        id: trusted_action
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA trusted-action blob=%s uid=%s gid=%s\n' "$actual_blob" "$uid" "$gid"
+
+      - name: Run hardened signal-resistant process with timeout
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          ACTION_MAIN: ${{ steps.trusted_action.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.trusted_action.outputs.runner_credentials }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          start_ns="$(date +%s%N)"
+          printf '%s\n' "$start_ns" > "$RUNNER_TEMP/hardened-probe-start"
+
+          cat > "$RUNNER_TEMP/hardened-probe.py" <<'PY'
+          import os
+          import pathlib
+          import signal
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+
+          stat = pathlib.Path("/proc/self/stat").read_text().split()
+          root.joinpath("hardened-child-identity").write_text(
+              f"{os.getpid()} {stat[21]}\n"
+          )
+
+          status = {}
+          for line in pathlib.Path("/proc/self/status").read_text().splitlines():
+              if ":" in line:
+                  key, value = line.split(":", 1)
+                  status[key] = value.strip()
+
+          keys = [
+              "Uid",
+              "Gid",
+              "Groups",
+              "NoNewPrivs",
+              "CapInh",
+              "CapPrm",
+              "CapEff",
+              "CapBnd",
+              "CapAmb",
+          ]
+          root.joinpath("hardened-security-status").write_text(
+              "\n".join(f"{key}={status.get(key, '')}" for key in keys) + "\n"
+          )
+          root.joinpath("hardened-process-meta").write_text(
+              f"pid={os.getpid()} ppid={os.getppid()} "
+              f"pgid={os.getpgid(0)} sid={os.getsid(0)}\n"
+          )
+
+          def mark(sig, _frame):
+              with root.joinpath("hardened-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+
+          signal.signal(signal.SIGINT, mark)
+          signal.signal(signal.SIGTERM, mark)
+          root.joinpath("hardened-ready").write_text("ready\n")
+
+          while True:
+              time.sleep(1)
+          PY
+
+          uid="$(id -u)"
+          test "$uid" -ne 0
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          node="$(command -v node)"
+          python="$(command -v python3)"
+          node_options="${NODE_OPTIONS:-}"
+
+          exec sudo -n -E -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /bin/sh -c '
+              set -eu
+
+              action_main="$1"
+              runner_user="$2"
+              uid="$3"
+              nobody_gid="$4"
+              runner_home="$5"
+              runner_path="$6"
+              node="$7"
+              node_options="$8"
+              credentials="$9"
+              python="${10}"
+              probe="${11}"
+
+              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
+                drop-sudo \
+                --root-phase \
+                --user "$runner_user" \
+                --group sudo \
+                --runner-credentials "$credentials"
+
+              exec /usr/bin/setpriv \
+                --reuid="$uid" \
+                --regid="$nobody_gid" \
+                --clear-groups \
+                --no-new-privs \
+                --bounding-set=-all \
+                --inh-caps=-all \
+                --ambient-caps=-all \
+                -- /usr/bin/env \
+                -u SUDO_COMMAND -u SUDO_USER -u SUDO_UID -u SUDO_GID \
+                "HOME=$runner_home" \
+                "USER=$runner_user" \
+                "LOGNAME=$runner_user" \
+                "PATH=$runner_path" \
+                "NODE_OPTIONS=$node_options" \
+                "$python" "$probe"
+            ' codex-hardened-probe \
+            "$ACTION_MAIN" \
+            "$runner_user" \
+            "$uid" \
+            "$nobody_gid" \
+            "$runner_home" \
+            "$runner_path" \
+            "$node" \
+            "$node_options" \
+            "$RUNNER_CREDENTIALS" \
+            "$python" \
+            "$RUNNER_TEMP/hardened-probe.py"
+
+      - name: Diagnose hardened timeout
+        if: always()
+        shell: bash
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_CONCLUSION: ${{ steps.probe.conclusion }}
+        run: |
+          set -euo pipefail
+
+          test -s "$RUNNER_TEMP/hardened-probe-start"
+          test -s "$RUNNER_TEMP/hardened-child-identity"
+          test -s "$RUNNER_TEMP/hardened-security-status"
+          test -s "$RUNNER_TEMP/hardened-process-meta"
+          test -s "$RUNNER_TEMP/hardened-ready"
+
+          elapsed_ns="$(( $(date +%s%N) - $(cat "$RUNNER_TEMP/hardened-probe-start") ))"
+          elapsed_ms="$(( elapsed_ns / 1000000 ))"
+
+          read -r pid start_time < "$RUNNER_TEMP/hardened-child-identity"
+          child_alive=false
+          if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start_time" ]; then
+            child_alive=true
+          fi
+
+          signals="$(tr '\n' ',' < "$RUNNER_TEMP/hardened-signals" 2>/dev/null || true)"
+          uid_status="$(sed -n 's/^Uid=//p' "$RUNNER_TEMP/hardened-security-status")"
+          gid_status="$(sed -n 's/^Gid=//p' "$RUNNER_TEMP/hardened-security-status")"
+          groups_status="$(sed -n 's/^Groups=//p' "$RUNNER_TEMP/hardened-security-status")"
+          no_new_privs="$(sed -n 's/^NoNewPrivs=//p' "$RUNNER_TEMP/hardened-security-status")"
+          cap_inh="$(sed -n 's/^CapInh=//p' "$RUNNER_TEMP/hardened-security-status")"
+          cap_prm="$(sed -n 's/^CapPrm=//p' "$RUNNER_TEMP/hardened-security-status")"
+          cap_eff="$(sed -n 's/^CapEff=//p' "$RUNNER_TEMP/hardened-security-status")"
+          cap_bnd="$(sed -n 's/^CapBnd=//p' "$RUNNER_TEMP/hardened-security-status")"
+          cap_amb="$(sed -n 's/^CapAmb=//p' "$RUNNER_TEMP/hardened-security-status")"
+
+          sudo_available=true
+          if ! sudo -n true 2>/dev/null; then
+            sudo_available=false
+          fi
+
+          printf 'PROBE_DATA hardened outcome=%s conclusion=%s elapsed_ms=%s child_alive=%s signals=%s sudo_available=%s process_meta=%s uid=%q gid=%q groups=%q no_new_privs=%s cap_inh=%s cap_prm=%s cap_eff=%s cap_bnd=%s cap_amb=%s\n' \
+            "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" "$child_alive" "$signals" "$sudo_available" \
+            "$(cat "$RUNNER_TEMP/hardened-process-meta")" \
+            "$uid_status" "$gid_status" "$groups_status" "$no_new_privs" \
+            "$cap_inh" "$cap_prm" "$cap_eff" "$cap_bnd" "$cap_amb"
+
+          test "$PROBE_OUTCOME" = failure
+          test "$elapsed_ms" -ge 55000
+          test "$elapsed_ms" -lt 150000
+          test "$sudo_available" = false
+          test "$no_new_privs" = 1
+          test -z "$groups_status"
+          test "$cap_inh" = 0000000000000000
+          test "$cap_prm" = 0000000000000000
+          test "$cap_eff" = 0000000000000000
+          test "$cap_bnd" = 0000000000000000
+          test "$cap_amb" = 0000000000000000
+
+      - name: Cleanup hardened probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -s "$RUNNER_TEMP/hardened-child-identity" ]; then
+            read -r pid start_time < "$RUNNER_TEMP/hardened-child-identity"
+            if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start_time" ]; then
+              kill -KILL "$pid" || true
+            fi
+          fi
