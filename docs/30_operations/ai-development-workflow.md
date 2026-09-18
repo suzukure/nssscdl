@@ -277,6 +277,10 @@ AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する
 * step-level timeoutはrunner worker上で執行されるため、runner-lossやrunnerとの通信喪失時に30分をwall-clock上の絶対上限とは扱わない。
 * job-level timeoutも設定値到達時にcancellationへ移行する境界であり、runner無応答時を含め「設定値ちょうどで完全終了する」とは扱わない。
 
+GitHub Actionsの `background` / `cancel` は、GitHub公式workflow syntaxで定義されたrunner primitiveである。公式仕様では `background: true` を `run` / `uses` stepへ指定でき、composite action自体もbackground stepとして実行できる。後続の `cancel: <step-id>` は対象background stepへ終了シグナルを送り、猶予内に終了しなければ強制停止する。一次参照: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsbackground および同ページの `jobs.<job_id>.steps[*].cancel` 節。
+
+本repoでは #312 / PR #314 の `.github/actions/background-cancel-probe/action.yml` と `AI Workflow Regression / Background Cancel Probe` を、production Codex workflowへ適用する前のruntime proofとして使用する。probeはsecret / network / repository writeを使わず、background composite actionがrunner上で起動し、明示したPIDの生存をcancel前に確認し、runner native `cancel` 後にそのPIDが消失し自然完走markerが作られていないこと、さらに同jobの後続stepへ継続できることを確認する。probeのsleepは5分job cap以上を維持し、cancelがno-opでも自然完走による偽陽性successにならないようにする。
+
 #### Issue起点AI Developerの異常終了
 
 `develop-from-issue` がsuccess以外で終了した場合は、対象Codex jobとは別runnerで `handle-issue-developer-failure` を実行し、安全側へ停止する。
@@ -356,7 +360,7 @@ Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で�
 
 Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデルpreflightまたはモデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値とRepository variable値はログへ出さない。モデルIDについては前述のとおりIssue/PRの変更履歴・検証証跡へ記録してよいが、ログへは出さない。
 
-`.github/scripts/**` を変更した場合、または認可・信頼境界・closing Issue・merge gateのロジックを変更した場合は次を実行し、fixtureを確認する。
+`.github/actions/**` または `.github/scripts/**` を変更した場合、または認可・信頼境界・closing Issue・merge gateのロジックを変更した場合は次を実行し、fixtureを確認する。
 
 ```bash
 bash .github/scripts/test-ai-workflow.sh
@@ -366,4 +370,4 @@ bash .github/scripts/test-ai-developer-workflow.sh
 
 `.github/workflows/**` を変更したが上記fixtureの対象外と判断した場合は、その理由をPR本文へ記録する。
 
-`.github/scripts/**` または `.github/workflows/**` を変更するPRでは、独立した `AI Workflow Regression / Fixtures` が `.github/scripts/test-*.sh` を全件実行し、現在PR headに対する結果をGitHub Actionsへ残す。初回導入PRはBootstrap制約に従い、このworkflowがdefault branchへ反映された後の対象PRから通常のCI証跡となる。これは専用fixtureと横断fixtureの両方を実行するrepository側の独立証跡であり、Codex自身の関連validation実行・結果報告責務を置き換えない。Codex側でvalidationを実行できない場合は理由を記録し、CI結果を確認する。対象fixtureは外部サービスへ実アクセスせず、repository内で完結する。起動対象pathを含むevent、実行順、timeout、concurrencyなどの詳細は `.github/workflows/ai-workflow-regression.yml` を正本とする。PR本文で上記コードブロックの手動fixtureを対象外と記録しても、この全件自動実行は免除されない。
+`.github/actions/**`、`.github/scripts/**` または `.github/workflows/**` を変更するPRでは、独立した `AI Workflow Regression / Fixtures` が `.github/scripts/test-*.sh` を全件実行し、現在PR headに対する結果をGitHub Actionsへ残す。初回導入PRはBootstrap制約に従い、このworkflowがdefault branchへ反映された後の対象PRから通常のCI証跡となる。これは専用fixtureと横断fixtureの両方を実行するrepository側の独立証跡であり、Codex自身の関連validation実行・結果報告責務を置き換えない。Codex側でvalidationを実行できない場合は理由を記録し、CI結果を確認する。対象fixtureは外部サービスへ実アクセスせず、repository内で完結する。起動対象pathを含むevent、実行順、timeout、concurrencyなどの詳細は `.github/workflows/ai-workflow-regression.yml` を正本とする。PR本文で上記コードブロックの手動fixtureを対象外と記録しても、この全件自動実行は免除されない。
