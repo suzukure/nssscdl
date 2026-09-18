@@ -79,16 +79,22 @@ jobs:
     name: Background Cancel Probe
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    env:
-      PROBE_MARKER: ${{ runner.temp }}/background-cancel-probe.marker
-      PROBE_PID: ${{ runner.temp }}/background-cancel-probe.pid
-      PROBE_DONE: ${{ runner.temp }}/background-cancel-probe.done
     steps:
       - name: Check out pull request head
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+
+      - name: Configure probe paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "PROBE_MARKER=$RUNNER_TEMP/background-cancel-probe.marker"
+            echo "PROBE_PID=$RUNNER_TEMP/background-cancel-probe.pid"
+            echo "PROBE_DONE=$RUNNER_TEMP/background-cancel-probe.done"
+          } >> "$GITHUB_ENV"
 
       - name: Start composite probe
         id: probe
