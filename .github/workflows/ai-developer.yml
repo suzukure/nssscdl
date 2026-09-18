@@ -159,6 +159,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          command -v codex >/dev/null
+          test -s "$CODEX_HOME/config.toml"
           exec codex exec \
             --skip-git-repo-check \
             --cd "$GITHUB_WORKSPACE" \
@@ -604,7 +606,7 @@ jobs:
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         id: codex
         timeout-minutes: 30
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: 0.153.4
