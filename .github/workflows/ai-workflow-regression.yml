@@ -72,3 +72,322 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  stdio-descendant-cleanup-probe:
+    name: Stdio Descendant Cleanup Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Spawn descendant and exit parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          root.joinpath("stdio-probe-start").write_text(str(time.time_ns()))
+          child_code = r"""
+          import os
+          import pathlib
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          root.joinpath("stdio-child-ready").write_text("ready\n")
+          time.sleep(300)
+          root.joinpath("stdio-child-natural-done").write_text("done\n")
+          """
+          child = subprocess.Popen([sys.executable, "-c", child_code])
+          stat = pathlib.Path(f"/proc/{child.pid}/stat").read_text().split()
+          root.joinpath("stdio-child-identity").write_text(f"{child.pid} {stat[21]}\n")
+          print(f"spawned descendant pid={child.pid}")
+          PY
+
+      - name: Verify post-parent process state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="$RUNNER_TEMP/stdio-child-identity"
+          test -s "$identity"
+          read -r pid start_time < "$identity"
+          elapsed_ns="$(( $(date +%s%N) - $(cat "$RUNNER_TEMP/stdio-probe-start") ))"
+          elapsed_ms="$(( elapsed_ns / 1000000 ))"
+          printf 'elapsed_ms=%s\n' "$elapsed_ms"
+          printf 'child_pid=%s\n' "$pid"
+
+          alive=false
+          if [ -r "/proc/$pid/stat" ]; then
+            current_start="$(awk '{print $22}' "/proc/$pid/stat")"
+            if [ "$current_start" = "$start_time" ]; then
+              alive=true
+            fi
+          fi
+          printf 'child_alive_after_parent_step=%s\n' "$alive"
+
+          {
+            echo '## Stdio descendant cleanup probe'
+            echo
+            echo "- elapsed_ms: `$elapsed_ms`"
+            echo "- child_alive_after_parent_step: `$alive`"
+            echo "- natural_done_marker: `$([ -e "$RUNNER_TEMP/stdio-child-natural-done" ] && echo true || echo false)`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          test "$alive" = false
+          test ! -e "$RUNNER_TEMP/stdio-child-natural-done"
+
+      - name: Cleanup descendant
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="$RUNNER_TEMP/stdio-child-identity"
+          if [ -s "$identity" ]; then
+            read -r pid start_time < "$identity"
+            if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start_time" ]; then
+              kill -KILL "$pid" || true
+            fi
+          fi
+
+  literal-step-timeout-probe:
+    name: Literal Step Timeout Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Run signal-resistant process with literal timeout
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec python3 - <<'PY'
+          import os
+          import pathlib
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          root.joinpath("literal-start").write_text(str(time.time_ns()))
+
+          def identity(pid):
+              stat = pathlib.Path(f"/proc/{pid}/stat").read_text().split()
+              return f"{pid} {stat[21]}"
+
+          def mark_parent(sig, _frame):
+              with root.joinpath("literal-parent-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+
+          signal.signal(signal.SIGINT, mark_parent)
+          signal.signal(signal.SIGTERM, mark_parent)
+
+          child_code = r"""
+          import os
+          import pathlib
+          import signal
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          def mark(sig, _frame):
+              with root.joinpath("literal-child-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+          signal.signal(signal.SIGINT, mark)
+          signal.signal(signal.SIGTERM, mark)
+          root.joinpath("literal-child-ready").write_text("ready\n")
+          while True:
+              time.sleep(1)
+          """
+          child = subprocess.Popen([sys.executable, "-c", child_code])
+          root.joinpath("literal-parent-identity").write_text(identity(os.getpid()) + "\n")
+          root.joinpath("literal-child-identity").write_text(identity(child.pid) + "\n")
+          root.joinpath("literal-process-meta").write_text(
+              f"parent_pid={os.getpid()} parent_pgid={os.getpgid(0)} parent_sid={os.getsid(0)} "
+              f"child_pid={child.pid} child_pgid={os.getpgid(child.pid)} child_sid={os.getsid(child.pid)}\n"
+          )
+          while True:
+              time.sleep(1)
+          PY
+
+      - name: Diagnose literal timeout
+        if: always()
+        shell: bash
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_CONCLUSION: ${{ steps.probe.conclusion }}
+        run: |
+          set -euo pipefail
+          alive_same() {
+            local file="$1"
+            [ -s "$file" ] || return 1
+            local pid start_time current
+            read -r pid start_time < "$file"
+            [ -r "/proc/$pid/stat" ] || return 1
+            current="$(awk '{print $22}' "/proc/$pid/stat")"
+            [ "$current" = "$start_time" ]
+          }
+
+          elapsed_ns="$(( $(date +%s%N) - $(cat "$RUNNER_TEMP/literal-start") ))"
+          elapsed_ms="$(( elapsed_ns / 1000000 ))"
+          parent_alive=false
+          child_alive=false
+          alive_same "$RUNNER_TEMP/literal-parent-identity" && parent_alive=true
+          alive_same "$RUNNER_TEMP/literal-child-identity" && child_alive=true
+
+          {
+            echo '## Literal step timeout probe'
+            echo
+            echo "- outcome: `$PROBE_OUTCOME`"
+            echo "- conclusion: `$PROBE_CONCLUSION`"
+            echo "- elapsed_ms: `$elapsed_ms`"
+            echo "- parent_alive: `$parent_alive`"
+            echo "- child_alive: `$child_alive`"
+            echo "- process_meta: `$(cat "$RUNNER_TEMP/literal-process-meta" 2>/dev/null || echo unavailable)`"
+            echo "- parent_signals: `$(tr '\n' ',' < "$RUNNER_TEMP/literal-parent-signals" 2>/dev/null || true)`"
+            echo "- child_signals: `$(tr '\n' ',' < "$RUNNER_TEMP/literal-child-signals" 2>/dev/null || true)`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          test "$PROBE_OUTCOME" = failure
+          test "$elapsed_ms" -ge 55000
+          test "$elapsed_ms" -lt 150000
+          test "$parent_alive" = false
+          test "$child_alive" = false
+
+      - name: Cleanup literal probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in "$RUNNER_TEMP/literal-parent-identity" "$RUNNER_TEMP/literal-child-identity"; do
+            if [ -s "$file" ]; then
+              read -r pid start_time < "$file"
+              if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start_time" ]; then
+                kill -KILL "$pid" || true
+              fi
+            fi
+          done
+
+  expression-step-timeout-probe:
+    name: Expression Step Timeout Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Run signal-resistant process with expression timeout
+        id: probe
+        continue-on-error: true
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 1 || 2 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec python3 - <<'PY'
+          import os
+          import pathlib
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          root.joinpath("expression-start").write_text(str(time.time_ns()))
+
+          def identity(pid):
+              stat = pathlib.Path(f"/proc/{pid}/stat").read_text().split()
+              return f"{pid} {stat[21]}"
+
+          def mark_parent(sig, _frame):
+              with root.joinpath("expression-parent-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+
+          signal.signal(signal.SIGINT, mark_parent)
+          signal.signal(signal.SIGTERM, mark_parent)
+
+          child_code = r"""
+          import os
+          import pathlib
+          import signal
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          def mark(sig, _frame):
+              with root.joinpath("expression-child-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+          signal.signal(signal.SIGINT, mark)
+          signal.signal(signal.SIGTERM, mark)
+          root.joinpath("expression-child-ready").write_text("ready\n")
+          while True:
+              time.sleep(1)
+          """
+          child = subprocess.Popen([sys.executable, "-c", child_code])
+          root.joinpath("expression-parent-identity").write_text(identity(os.getpid()) + "\n")
+          root.joinpath("expression-child-identity").write_text(identity(child.pid) + "\n")
+          root.joinpath("expression-process-meta").write_text(
+              f"parent_pid={os.getpid()} parent_pgid={os.getpgid(0)} parent_sid={os.getsid(0)} "
+              f"child_pid={child.pid} child_pgid={os.getpgid(child.pid)} child_sid={os.getsid(child.pid)}\n"
+          )
+          while True:
+              time.sleep(1)
+          PY
+
+      - name: Diagnose expression timeout
+        if: always()
+        shell: bash
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_CONCLUSION: ${{ steps.probe.conclusion }}
+        run: |
+          set -euo pipefail
+          alive_same() {
+            local file="$1"
+            [ -s "$file" ] || return 1
+            local pid start_time current
+            read -r pid start_time < "$file"
+            [ -r "/proc/$pid/stat" ] || return 1
+            current="$(awk '{print $22}' "/proc/$pid/stat")"
+            [ "$current" = "$start_time" ]
+          }
+
+          elapsed_ns="$(( $(date +%s%N) - $(cat "$RUNNER_TEMP/expression-start") ))"
+          elapsed_ms="$(( elapsed_ns / 1000000 ))"
+          parent_alive=false
+          child_alive=false
+          alive_same "$RUNNER_TEMP/expression-parent-identity" && parent_alive=true
+          alive_same "$RUNNER_TEMP/expression-child-identity" && child_alive=true
+
+          {
+            echo '## Expression step timeout probe'
+            echo
+            echo "- outcome: `$PROBE_OUTCOME`"
+            echo "- conclusion: `$PROBE_CONCLUSION`"
+            echo "- elapsed_ms: `$elapsed_ms`"
+            echo "- parent_alive: `$parent_alive`"
+            echo "- child_alive: `$child_alive`"
+            echo "- process_meta: `$(cat "$RUNNER_TEMP/expression-process-meta" 2>/dev/null || echo unavailable)`"
+            echo "- parent_signals: `$(tr '\n' ',' < "$RUNNER_TEMP/expression-parent-signals" 2>/dev/null || true)`"
+            echo "- child_signals: `$(tr '\n' ',' < "$RUNNER_TEMP/expression-child-signals" 2>/dev/null || true)`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          test "$PROBE_OUTCOME" = failure
+          test "$elapsed_ms" -ge 55000
+          test "$elapsed_ms" -lt 150000
+          test "$parent_alive" = false
+          test "$child_alive" = false
+
+      - name: Cleanup expression probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in "$RUNNER_TEMP/expression-parent-identity" "$RUNNER_TEMP/expression-child-identity"; do
+            if [ -s "$file" ]; then
+              read -r pid start_time < "$file"
+              if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start_time" ]; then
+                kill -KILL "$pid" || true
+              fi
+            fi
+          done
