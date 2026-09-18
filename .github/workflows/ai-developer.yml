@@ -139,6 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CODEX_HOME"
+          rm -f "$CODEX_HOME/config.toml"
           rm -f "$CODEX_FINAL"
 
       - name: Setup Codex developer runtime
@@ -151,6 +152,7 @@ jobs:
 
       - name: Resolve trusted Codex developer runtime
         id: codex_runtime
+        timeout-minutes: 3
         env:
           CODEX_HOME: ${{ runner.temp }}/codex-home
         shell: bash
@@ -268,6 +270,7 @@ jobs:
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex developer prompt
+        timeout-minutes: 3
         env:
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
         shell: bash
@@ -304,6 +307,53 @@ jobs:
           test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
           test -s "$CODEX_HOME/config.toml"
           test -s "$CODEX_PROMPT_FILE"
+
+          python3 - "$CODEX_HOME/config.toml" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+          import urllib.parse
+
+          config_path = pathlib.Path(sys.argv[1])
+          with config_path.open("rb") as fh:
+              config = tomllib.load(fh)
+
+          allowed_top_level = {"model_provider", "model_providers"}
+          unexpected = sorted(set(config) - allowed_top_level)
+          if unexpected:
+              raise SystemExit(
+                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+              )
+
+          provider_name = config.get("model_provider")
+          if provider_name != "codex-action-responses-proxy":
+              raise SystemExit("unexpected Codex model_provider")
+
+          providers = config.get("model_providers")
+          if not isinstance(providers, dict) or set(providers) != {provider_name}:
+              raise SystemExit("unexpected Codex model_providers shape")
+          provider = providers[provider_name]
+          if not isinstance(provider, dict):
+              raise SystemExit("unexpected Codex provider config")
+          if provider.get("wire_api") != "responses":
+              raise SystemExit("Codex proxy provider must use responses wire API")
+
+          parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
+          if (
+              parsed.scheme != "http"
+              or parsed.hostname != "127.0.0.1"
+              or parsed.port is None
+              or not (1 <= parsed.port <= 65535)
+              or parsed.path != "/v1"
+              or parsed.params
+              or parsed.query
+              or parsed.fragment
+              or parsed.username is not None
+              or parsed.password is not None
+          ):
+              raise SystemExit("Codex proxy provider must be loopback http /v1")
+          PY
+
           case "$CODEX_RUNTIME_MAX_SEC" in
             700|1780) ;;
             *)
@@ -358,7 +408,7 @@ jobs:
           CODEX_RUN
           chmod 700 "$RUNNER_TEMP/run-native-codex.sh"
 
-          exec sudo -n -E -- \
+          exec sudo -n -- \
             env -u ENV -u BASH_ENV -u SHELLOPTS \
             /bin/sh -c '
               set -eu
@@ -409,8 +459,7 @@ jobs:
                   --bounding-set=-all \
                   --inh-caps=-all \
                   --ambient-caps=-all \
-                  -- /usr/bin/env \
-                  -u SUDO_COMMAND -u SUDO_USER -u SUDO_UID -u SUDO_GID \
+                  -- /usr/bin/env -i \
                   "HOME=$runner_home" \
                   "USER=$runner_user" \
                   "LOGNAME=$runner_user" \
