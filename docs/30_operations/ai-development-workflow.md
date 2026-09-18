@@ -273,9 +273,22 @@ AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する
 
 * 通常の `develop-from-issue` と `respond-to-claude` のjob-level timeoutは15分とし、AI Developer全体の外側の停止境界として扱う。
 * 人間が明示的に `/codex develop extended` を選んだIssue起点runだけ、`develop-from-issue` のjob-level timeoutを延長する。具体値と利用条件は「human-approved extended-run」を正本とする。この延長はIssue起点だけに適用し、`respond-to-claude` は前項の通常値を維持する。今回の再調査で同型timeoutを実測したのはIssue起点だけであり、follow-up経路で同型timeoutが実測された場合は別Issueで再評価する。
-* `Run Codex developer` と `Run Codex follow-up` のstep-level timeoutは30分とし、Codex processに対する内側の防御として扱う。
-* step-level timeoutはrunner worker上で執行されるため、runner-lossやrunnerとの通信喪失時に30分をwall-clock上の絶対上限とは扱わない。
+* Issue起点developerでは、pin済みOpenAI公式Actionをsecure setup専用で使い、actual `codex exec` を通常の `run:` stepとして実行する。direct developer stepのtimeoutは通常commandで12分、`/codex develop extended` で30分とする。
+* Claude follow-upは従来どおりpin済みOpenAI Actionの `Run Codex follow-up` を使用し、step-level timeoutは30分とする。
+* developerのdirect `run:` timeoutはrunner worker上の実効process boundとして扱う。runner-lossやrunnerとの通信喪失時の最終停止境界はjob-level timeoutとする。
 * job-level timeoutも設定値到達時にcancellationへ移行する境界であり、runner無応答時を含め「設定値ちょうどで完全終了する」とは扱わない。
+
+#### Issue起点developerのCodex実行境界
+
+2026-09-18の調査 #309 / #312 では、pin中 `openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e` v1.12のwrapper hangと本repoのRun #829 / #833が強く一致した。さらにPR #314のruntime probeでは、GitHub Actions `cancel:` によりbackground composite step自体はCanceledへ遷移しても、composite内部のbash / sleep processがjob cleanupまで残存することを確認した。このためbackground/cancelをproduction Codex process停止境界には使用しない。
+
+Issue起点developerは、OpenAI公式Actionを**secure setup専用**で呼び、prompt / prompt-file / output-fileを渡さない。Actionにはactor permission check、Codex CLI / Responses proxy installation、local proxy config、GitHub-hosted Linux user namespace準備、drop-sudo、sudo除去確認だけを担当させる。explicit `CODEX_HOME` はAction呼び出し前にrunner userで作成する。
+
+setup完了後、actual `codex exec` は通常の `run:` stepで起動する。direct stepへ `OPENAI_API_KEY` は渡さず、setup Actionが `CODEX_HOME/config.toml` に設定したlocalhost Responses API proxyを使用する。CLI optionはworkflow側の固定値だけとし、`--skip-git-repo-check`、workspace、final output path、trusted `CODEX_MODEL`、`model_reasoning_effort="medium"`、`default_permissions=":workspace"` を固定する。Issue本文やcommentから追加CLI optionを組み立てない。
+
+direct stepがsuccessし、`codex-final.md` が存在する場合だけ既存のrequirement change gate、trusted diff guard、commit / push / Draft PRへ進む。direct step timeout / failure、final response missing、setup failureはfail-closedで既存failure handlerへ進み、automatic retryしない。
+
+upstream `openai/codex-action` でwrapper lifecycle修正（調査時点のPR #151相当）が公式mainへ反映された場合は、このsetup/direct分離を撤去して通常Action実行へ戻せるか別途再評価する。
 
 #### Issue起点AI Developerの異常終了
 
