@@ -72,3 +72,310 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  cgroup-hard-timeout-probe:
+    name: Cgroup Hard Timeout Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Install pinned Codex Action runtime without execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          safety-strategy: unsafe
+
+      - name: Resolve trusted pinned Action helper
+        id: trusted_action
+        shell: bash
+        run: |
+          set -euo pipefail
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA cgroup-trust blob=%s uid=%s gid=%s\n' "$actual_blob" "$uid" "$gid"
+
+      - name: Run hardened escaped descendant in transient service
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          ACTION_MAIN: ${{ steps.trusted_action.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.trusted_action.outputs.runner_credentials }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          printf '%s\n' "$(date +%s%N)" > "$RUNNER_TEMP/cgroup-probe-start"
+
+          cat > "$RUNNER_TEMP/cgroup-probe.py" <<'PY'
+          import os
+          import pathlib
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+
+          def identity(pid):
+              stat = pathlib.Path(f"/proc/{pid}/stat").read_text().split()
+              return f"{pid} {stat[21]}"
+
+          def status_snapshot(prefix):
+              status = {}
+              for line in pathlib.Path("/proc/self/status").read_text().splitlines():
+                  if ":" in line:
+                      key, value = line.split(":", 1)
+                      status[key] = value.strip()
+              keys = [
+                  "Uid", "Gid", "Groups", "NoNewPrivs",
+                  "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb",
+              ]
+              root.joinpath(f"{prefix}-security-status").write_text(
+                  "\n".join(f"{key}={status.get(key, '')}" for key in keys) + "\n"
+              )
+              cgroup = pathlib.Path("/proc/self/cgroup").read_text()
+              root.joinpath(f"{prefix}-cgroup").write_text(cgroup)
+
+          def mark_parent(sig, _frame):
+              with root.joinpath("cgroup-parent-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+
+          signal.signal(signal.SIGINT, mark_parent)
+          signal.signal(signal.SIGTERM, mark_parent)
+
+          root.joinpath("cgroup-parent-identity").write_text(
+              identity(os.getpid()) + "\n"
+          )
+          root.joinpath("cgroup-parent-meta").write_text(
+              f"pid={os.getpid()} ppid={os.getppid()} "
+              f"pgid={os.getpgid(0)} sid={os.getsid(0)}\n"
+          )
+          status_snapshot("cgroup-parent")
+
+          child_code = r"""
+          import os
+          import pathlib
+          import signal
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          stat = pathlib.Path("/proc/self/stat").read_text().split()
+          root.joinpath("cgroup-child-identity").write_text(
+              f"{os.getpid()} {stat[21]}\n"
+          )
+          root.joinpath("cgroup-child-meta").write_text(
+              f"pid={os.getpid()} ppid={os.getppid()} "
+              f"pgid={os.getpgid(0)} sid={os.getsid(0)}\n"
+          )
+          root.joinpath("cgroup-child-cgroup").write_text(
+              pathlib.Path("/proc/self/cgroup").read_text()
+          )
+          def mark(sig, _frame):
+              with root.joinpath("cgroup-child-signals").open("a") as fh:
+                  fh.write(f"{sig}\n")
+          signal.signal(signal.SIGINT, mark)
+          signal.signal(signal.SIGTERM, mark)
+          root.joinpath("cgroup-child-ready").write_text("ready\n")
+          while True:
+              time.sleep(1)
+          """
+
+          subprocess.Popen(
+              [sys.executable, "-c", child_code],
+              start_new_session=True,
+              env=os.environ.copy(),
+          )
+          root.joinpath("cgroup-parent-ready").write_text("ready\n")
+          while True:
+              time.sleep(1)
+          PY
+
+          uid="$(id -u)"
+          test "$uid" -ne 0
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          runner_temp="$RUNNER_TEMP"
+          node="$(command -v node)"
+          python="$(command -v python3)"
+          node_options="${NODE_OPTIONS:-}"
+          unit="codex-cgroup-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          exec sudo -n -E -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /bin/sh -c '
+              set -eu
+              action_main="$1"
+              runner_user="$2"
+              uid="$3"
+              nobody_gid="$4"
+              runner_home="$5"
+              runner_path="$6"
+              runner_temp="$7"
+              node="$8"
+              node_options="$9"
+              credentials="${10}"
+              python="${11}"
+              probe="${12}"
+              unit="${13}"
+
+              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
+                drop-sudo \
+                --root-phase \
+                --user "$runner_user" \
+                --group sudo \
+                --runner-credentials "$credentials"
+
+              set +e
+              /usr/bin/systemd-run \
+                --quiet \
+                --wait \
+                --collect \
+                --unit="$unit" \
+                --property=Type=exec \
+                --property=RuntimeMaxSec=20s \
+                --property=TimeoutStopSec=5s \
+                --property=KillMode=control-group \
+                --property=SendSIGKILL=yes \
+                /usr/bin/setpriv \
+                  --reuid="$uid" \
+                  --regid="$nobody_gid" \
+                  --clear-groups \
+                  --no-new-privs \
+                  --bounding-set=-all \
+                  --inh-caps=-all \
+                  --ambient-caps=-all \
+                  -- /usr/bin/env \
+                  -u SUDO_COMMAND -u SUDO_USER -u SUDO_UID -u SUDO_GID \
+                  "HOME=$runner_home" \
+                  "USER=$runner_user" \
+                  "LOGNAME=$runner_user" \
+                  "PATH=$runner_path" \
+                  "RUNNER_TEMP=$runner_temp" \
+                  "NODE_OPTIONS=$node_options" \
+                  "$python" "$probe"
+              rc=$?
+              set -e
+              printf "%s\n" "$rc" > "$runner_temp/cgroup-systemd-run-status"
+              exit 0
+            ' codex-cgroup-probe \
+            "$ACTION_MAIN" \
+            "$runner_user" \
+            "$uid" \
+            "$nobody_gid" \
+            "$runner_home" \
+            "$runner_path" \
+            "$runner_temp" \
+            "$node" \
+            "$node_options" \
+            "$RUNNER_CREDENTIALS" \
+            "$python" \
+            "$RUNNER_TEMP/cgroup-probe.py" \
+            "$unit"
+
+      - name: Diagnose cgroup hard timeout
+        if: always()
+        shell: bash
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_CONCLUSION: ${{ steps.probe.conclusion }}
+        run: |
+          set -euo pipefail
+
+          for file in \
+            cgroup-probe-start \
+            cgroup-systemd-run-status \
+            cgroup-parent-identity \
+            cgroup-child-identity \
+            cgroup-parent-security-status \
+            cgroup-parent-cgroup \
+            cgroup-child-cgroup; do
+            test -s "$RUNNER_TEMP/$file"
+          done
+
+          elapsed_ns="$(( $(date +%s%N) - $(cat "$RUNNER_TEMP/cgroup-probe-start") ))"
+          elapsed_ms="$(( elapsed_ns / 1000000 ))"
+
+          alive_same() {
+            local file="$1"
+            local pid start_time current
+            read -r pid start_time < "$file"
+            [ -r "/proc/$pid/stat" ] || return 1
+            current="$(awk '{print $22}' "/proc/$pid/stat")"
+            [ "$current" = "$start_time" ]
+          }
+
+          parent_alive=false
+          child_alive=false
+          alive_same "$RUNNER_TEMP/cgroup-parent-identity" && parent_alive=true
+          alive_same "$RUNNER_TEMP/cgroup-child-identity" && child_alive=true
+
+          parent_signals="$(tr '\n' ',' < "$RUNNER_TEMP/cgroup-parent-signals" 2>/dev/null || true)"
+          child_signals="$(tr '\n' ',' < "$RUNNER_TEMP/cgroup-child-signals" 2>/dev/null || true)"
+          systemd_status="$(cat "$RUNNER_TEMP/cgroup-systemd-run-status")"
+          no_new_privs="$(sed -n 's/^NoNewPrivs=//p' "$RUNNER_TEMP/cgroup-parent-security-status")"
+          groups_status="$(sed -n 's/^Groups=//p' "$RUNNER_TEMP/cgroup-parent-security-status")"
+          cap_bnd="$(sed -n 's/^CapBnd=//p' "$RUNNER_TEMP/cgroup-parent-security-status")"
+          parent_cgroup="$(tr '\n' ';' < "$RUNNER_TEMP/cgroup-parent-cgroup")"
+          child_cgroup="$(tr '\n' ';' < "$RUNNER_TEMP/cgroup-child-cgroup")"
+
+          sudo_available=true
+          if ! sudo -n true 2>/dev/null; then
+            sudo_available=false
+          fi
+
+          printf 'PROBE_DATA cgroup outcome=%s conclusion=%s elapsed_ms=%s systemd_status=%s parent_alive=%s child_alive=%s parent_signals=%s child_signals=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s parent_cgroup=%q child_cgroup=%q parent_meta=%s child_meta=%s\n' \
+            "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" "$systemd_status" \
+            "$parent_alive" "$child_alive" "$parent_signals" "$child_signals" \
+            "$sudo_available" "$no_new_privs" "$groups_status" "$cap_bnd" \
+            "$parent_cgroup" "$child_cgroup" \
+            "$(cat "$RUNNER_TEMP/cgroup-parent-meta")" \
+            "$(cat "$RUNNER_TEMP/cgroup-child-meta")"
+
+          test "$PROBE_OUTCOME" = success
+          test "$elapsed_ms" -ge 18000
+          test "$elapsed_ms" -lt 55000
+          test "$sudo_available" = false
+          test "$no_new_privs" = 1
+          test -z "$groups_status"
+          test "$cap_bnd" = 0000000000000000
+          test "$parent_alive" = false
+          test "$child_alive" = false
+
+      - name: Cleanup cgroup probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in "$RUNNER_TEMP/cgroup-parent-identity" "$RUNNER_TEMP/cgroup-child-identity"; do
+            if [ -s "$file" ]; then
+              read -r pid start_time < "$file"
+              if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start_time" ]; then
+                kill -KILL "$pid" || true
+              fi
+            fi
+          done
