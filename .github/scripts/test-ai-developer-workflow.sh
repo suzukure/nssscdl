@@ -159,16 +159,19 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
 done
 
 # Issue-origin development uses the OpenAI action only for secure runtime
-# setup, then runs codex exec as a normal shell step so the step timeout is an
-# effective process bound. Claude follow-up remains on the pinned action.
+# setup, resolves the trusted native Codex executable from the pinned npm
+# package, then execs that native binary as the runner-tracked process. Claude
+# follow-up remains on the pinned action.
 prepare_step="$test_dir/Prepare-Codex-developer-runtime.yml"
 setup_step="$test_dir/Setup-Codex-developer-runtime.yml"
+resolver_step="$test_dir/Resolve-native-Codex-developer-executable.yml"
 developer_step="$test_dir/Run-Codex-developer.yml"
 followup_step="$test_dir/Run-Codex-follow-up.yml"
 
 for pair in \
   "Prepare Codex developer runtime|$prepare_step" \
   "Setup Codex developer runtime|$setup_step" \
+  "Resolve native Codex developer executable|$resolver_step" \
   "Run Codex developer|$developer_step" \
   "Run Codex follow-up|$followup_step"; do
   step_name="${pair%%|*}"
@@ -198,12 +201,47 @@ if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$setup_step"; then
   exit 1
 fi
 
+grep -Fqx '        id: native_codex' "$resolver_step"
+grep -Fq 'launcher="$(command -v codex)"' "$resolver_step"
+grep -Fq 'test "$(basename "$entry")" = codex.js' "$resolver_step"
+grep -Fq 'test "$(realpath "$package_root/bin/codex.js")" = "$entry"' "$resolver_step"
+grep -Fq 'mainPackage.name !== "@openai/codex"' "$resolver_step"
+grep -Fq 'mainPackage.version !== "0.153.4"' "$resolver_step"
+grep -Fq 'platformPackage = "@openai/codex-linux-x64"' "$resolver_step"
+grep -Fq 'targetTriple = "x86_64-unknown-linux-musl"' "$resolver_step"
+grep -Fq 'platformPackage = "@openai/codex-linux-arm64"' "$resolver_step"
+grep -Fq 'targetTriple = "aarch64-unknown-linux-musl"' "$resolver_step"
+grep -Fq 'const require = createRequire(entry);' "$resolver_step"
+grep -Fq '"vendor",' "$resolver_step"
+grep -Fq '"bin",' "$resolver_step"
+grep -Fq '"codex",' "$resolver_step"
+grep -Fq 'fs.accessSync(nativePath, fs.constants.X_OK);' "$resolver_step"
+grep -Fq "test \"\$native_version\" = 'codex-cli 0.153.4'" "$resolver_step"
+grep -Fq "printf 'native_path=%s\\n' \"\$native_path\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+grep -Fq "printf 'package_root=%s\\n' \"\$package_root\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
+if grep -Eq 'OPENAI_API_KEY|secrets\\.|openai-api-key' "$resolver_step"; then
+  echo 'Native Codex resolver must not receive the OpenAI API key.' >&2
+  exit 1
+fi
+
 grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}" "$developer_step"
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
 grep -Fqx '          CODEX_MODEL: ${{ vars.CODEX_MODEL }}' "$developer_step"
 grep -Fqx '          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action' "$developer_step"
-grep -Fq 'exec codex exec \' "$developer_step"
+grep -Fqx '          CODEX_NATIVE: ${{ steps.native_codex.outputs.native_path }}' "$developer_step"
+grep -Fqx '          CODEX_PACKAGE_ROOT: ${{ steps.native_codex.outputs.package_root }}' "$developer_step"
+if grep -Fq 'exec codex exec' "$developer_step"; then
+  echo 'Direct Codex developer step must bypass the npm Node launcher.' >&2
+  exit 1
+fi
+grep -Fq 'exec env \' "$developer_step"
+grep -Fq '            -u CODEX_MANAGED_BY_BUN \' "$developer_step"
+grep -Fq '            -u CODEX_MANAGED_BY_PNPM \' "$developer_step"
+grep -Fq '            -u CODEX_MANAGED_BY_VITE_PLUS \' "$developer_step"
+grep -Fq '            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \' "$developer_step"
+grep -Fq '            CODEX_MANAGED_BY_NPM=1 \' "$developer_step"
+grep -Fq '            "$CODEX_NATIVE" exec \' "$developer_step"
 grep -Fq -- '--skip-git-repo-check \' "$developer_step"
 grep -Fq -- '--cd "$GITHUB_WORKSPACE" \' "$developer_step"
 grep -Fq -- '--output-last-message "$CODEX_FINAL" \' "$developer_step"
@@ -237,11 +275,13 @@ grep -Fqx '          codex-version: 0.153.4' "$followup_step"
 
 prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
 setup_line="$(grep -nF '      - name: Setup Codex developer runtime' "$workflow" | cut -d: -f1)"
+resolver_line="$(grep -nF '      - name: Resolve native Codex developer executable' "$workflow" | cut -d: -f1)"
 developer_line="$(grep -nF '      - name: Run Codex developer' "$workflow" | cut -d: -f1)"
 gate_line="$(grep -nF '      - name: Gate requirement changes' "$workflow" | cut -d: -f1)"
-if [ -z "$prepare_line" ] || [ -z "$setup_line" ] || [ -z "$developer_line" ] || [ -z "$gate_line" ] ||
-   [ "$prepare_line" -ge "$setup_line" ] || [ "$setup_line" -ge "$developer_line" ] || [ "$developer_line" -ge "$gate_line" ]; then
-  echo 'Codex secure setup, direct execution, and requirement gate order is invalid.' >&2
+if [ -z "$prepare_line" ] || [ -z "$setup_line" ] || [ -z "$resolver_line" ] || [ -z "$developer_line" ] || [ -z "$gate_line" ] ||
+   [ "$prepare_line" -ge "$setup_line" ] || [ "$setup_line" -ge "$resolver_line" ] ||
+   [ "$resolver_line" -ge "$developer_line" ] || [ "$developer_line" -ge "$gate_line" ]; then
+  echo 'Codex secure setup, native resolution, direct execution, and requirement gate order is invalid.' >&2
   exit 1
 fi
 
