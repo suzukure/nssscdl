@@ -272,7 +272,7 @@ Issue起点とfollow-upのbootstrapは、base commitから取得したhelperのc
 AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する。
 
 * 通常の `develop-from-issue` と `respond-to-claude` のjob-level timeoutは15分とし、AI Developer全体の外側の停止境界として扱う。
-* 人間が明示的に `/codex develop extended` を選んだIssue起点runだけ、`develop-from-issue` のjob-level timeoutを延長する。具体値と利用条件は「human-approved extended-run」を正本とする。`respond-to-claude` は15分のままとする。
+* 人間が明示的に `/codex develop extended` を選んだIssue起点runだけ、`develop-from-issue` のjob-level timeoutを延長する。具体値と利用条件は「human-approved extended-run」を正本とする。この延長はIssue起点だけに適用し、`respond-to-claude` は前項の通常値を維持する。今回の再調査で同型timeoutを実測したのはIssue起点だけであり、follow-up経路で同型timeoutが実測された場合は別Issueで再評価する。
 * `Run Codex developer` と `Run Codex follow-up` のstep-level timeoutは30分とし、Codex processに対する内側の防御として扱う。
 * step-level timeoutはrunner worker上で執行されるため、runner-lossやrunnerとの通信喪失時に30分をwall-clock上の絶対上限とは扱わない。
 * job-level timeoutも設定値到達時にcancellationへ移行する境界であり、runner無応答時を含め「設定値ちょうどで完全終了する」とは扱わない。
@@ -314,13 +314,13 @@ Issue起点のAI Developerを再実行する前に、少なくとも次を確認
 
 #### human-approved extended-run
 
-`/codex develop extended` は通常runの代替ではなく、十分に閉じたcurrent implementation contractでも15分job timeoutが再現した場合の人間承認付き例外とする。
+`/codex develop extended` は通常runの代替ではなく、十分に閉じたcurrent implementation contractでも15分job timeoutが再現した場合の人間承認付き例外とする。timeout実測がない段階から最初の実行でextendedを選ぶことは運用違反とし、automation側は過去failure reasonを推測して機械判定しない。
 
 使用前に、Issue起点の異常終了で定めるRun / branch / PR / unexpected write / current contractの確認を完了し、再開可能と人間が判断する。Issueまたは関連PRに `human-review-required` が残っている間はextended commandも起動しないため、既存の停止解除規約どおりclosing Issue側、必要ならPR側の順に解除してからcommandを投稿する。
 
 extended-runのjob-level timeoutは35分固定、`Run Codex developer` stepは30分のままとする。35分はCodex stepの固定30分にsetup、post-gate、repository write処理の余裕を持たせつつ、runner-loss時のserver-side hard capを残すための例外値である。任意timeout入力、通常15分runからのautomatic fallback、automatic retry、fail-open、停止ラベルのbypassは設けない。extended-runではCodex完了後のrepository write途中でjob cancellationへ到達し、push済みの `ai/issue-<Issue番号>` branchに対応するopen PRが存在しない状態が残る可能性もある。この場合は再実行前にbranch head、open PR、closing Issueの対応を照合し、予期しないcommit / push / PR writeがないことを確認してから復旧判断する。
 
-extended-runでもtimeoutまたは異常終了した場合は、同じcommandを自動または単純retryしない。failure handlerによる停止を維持し、正常長時間処理、runner-loss、model/provider差、別実行経路の必要性を再調査する。
+extended-runでもtimeoutまたは異常終了した場合は、同じcommandを自動または単純retryしない。failure handlerによる停止を維持し、正常長時間処理、runner-loss、model/provider差、別実行経路の必要性を再調査する。初回のextended-run実地検証は #307 で1回だけ行う。`/codex develop extended` を投稿してもIssueへ診断commentが付かず、`human-review-required` も付かず、developer jobの記録も見当たらない場合は、job-level timeout式を含むworkflowの評価・起動前失敗の可能性を考慮し、Actions run一覧で当該eventのworkflow状態を確認する。
 
 #### Claude review follow-upの異常終了
 
