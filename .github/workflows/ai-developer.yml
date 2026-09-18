@@ -147,9 +147,12 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: 0.153.4
           codex-home: ${{ runner.temp }}/codex-home
+          safety-strategy: unsafe
 
-      - name: Resolve native Codex developer executable
-        id: native_codex
+      - name: Resolve trusted Codex developer runtime
+        id: codex_runtime
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
         shell: bash
         run: |
           set -euo pipefail
@@ -242,43 +245,217 @@ jobs:
           test "$launcher_version" = "$native_version"
           test "$native_version" = 'codex-cli 0.153.4'
 
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
           printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
-          printf 'Resolved native Codex 0.153.4 for %s.\n' "$target_triple"
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'Resolved trusted Codex 0.153.4 runtime for %s (Action blob %s).\n' \
+            "$target_triple" "$actual_blob"
 
-      - name: Run Codex developer
-        timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
+      - name: Prepare fixed Codex developer prompt
         env:
-          CODEX_HOME: ${{ runner.temp }}/codex-home
-          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
-          CODEX_NATIVE: ${{ steps.native_codex.outputs.native_path }}
-          CODEX_PACKAGE_ROOT: ${{ steps.native_codex.outputs.package_root }}
+          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
         shell: bash
         run: |
           set -euo pipefail
-          test -x "$CODEX_NATIVE"
-          test -s "$CODEX_HOME/config.toml"
-          exec env \
-            -u CODEX_MANAGED_BY_BUN \
-            -u CODEX_MANAGED_BY_PNPM \
-            -u CODEX_MANAGED_BY_VITE_PLUS \
-            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
-            CODEX_MANAGED_BY_NPM=1 \
-            "$CODEX_NATIVE" exec \
-            --skip-git-repo-check \
-            --cd "$GITHUB_WORKSPACE" \
-            --output-last-message "$CODEX_FINAL" \
-            --model "$CODEX_MODEL" \
-            --config 'model_reasoning_effort="medium"' \
-            --config 'default_permissions=":workspace"' <<'CODEX_PROMPT'
+          cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
           Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
           Implement the Issue in this working tree.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
           Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
           Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
           CODEX_PROMPT
+
+      - name: Run Codex developer
+        id: codex
+        timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
+          CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}
+          ACTION_MAIN: ${{ steps.codex_runtime.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.codex_runtime.outputs.runner_credentials }}
+          CODEX_RUNTIME_MAX_SEC: ${{ github.event.comment.body == '/codex develop extended' && 1780 || 700 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x "$CODEX_NATIVE"
+          test -f "$ACTION_MAIN"
+          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+          test -s "$CODEX_HOME/config.toml"
+          test -s "$CODEX_PROMPT_FILE"
+          case "$CODEX_RUNTIME_MAX_SEC" in
+            700|1780) ;;
+            *)
+              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              exit 1
+              ;;
+          esac
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          current_credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+          test "$current_credentials" = "$RUNNER_CREDENTIALS"
+          test "$uid" -ne 0
+
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          unit="codex-developer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cat > "$RUNNER_TEMP/run-native-codex.sh" <<'CODEX_RUN'
+          #!/bin/sh
+          set -eu
+          exec env \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            CODEX_HOME="$CODEX_HOME" \
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$CODEX_NATIVE" exec \
+              --skip-git-repo-check \
+              --cd "$GITHUB_WORKSPACE" \
+              --output-last-message "$CODEX_FINAL" \
+              --model "$CODEX_MODEL" \
+              --config 'model_reasoning_effort="medium"' \
+              --config 'default_permissions=":workspace"' \
+              < "$CODEX_PROMPT_FILE"
+          CODEX_RUN
+          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"
+
+          exec sudo -n -E -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /bin/sh -c '
+              set -eu
+              action_main="$1"
+              runner_user="$2"
+              uid="$3"
+              nobody_gid="$4"
+              runner_home="$5"
+              runner_path="$6"
+              runner_temp="$7"
+              node="$8"
+              credentials="$9"
+              runtime_max_sec="${10}"
+              unit="${11}"
+              launcher="${12}"
+              code_workspace="${13}"
+              codex_home="${14}"
+              codex_final="${15}"
+              codex_prompt_file="${16}"
+              codex_model="${17}"
+              codex_native="${18}"
+              codex_package_root="${19}"
+              originator="${20}"
+
+              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
+                drop-sudo \
+                --root-phase \
+                --user "$runner_user" \
+                --group sudo \
+                --runner-credentials "$credentials"
+
+              set +e
+              /usr/bin/systemd-run \
+                --quiet \
+                --wait \
+                --collect \
+                --unit="$unit" \
+                --property=Type=exec \
+                --property="RuntimeMaxSec=${runtime_max_sec}s" \
+                --property=TimeoutStopSec=5s \
+                --property=KillMode=control-group \
+                --property=SendSIGKILL=yes \
+                /usr/bin/setpriv \
+                  --reuid="$uid" \
+                  --regid="$nobody_gid" \
+                  --clear-groups \
+                  --no-new-privs \
+                  --bounding-set=-all \
+                  --inh-caps=-all \
+                  --ambient-caps=-all \
+                  -- /usr/bin/env \
+                  -u SUDO_COMMAND -u SUDO_USER -u SUDO_UID -u SUDO_GID \
+                  "HOME=$runner_home" \
+                  "USER=$runner_user" \
+                  "LOGNAME=$runner_user" \
+                  "PATH=$runner_path" \
+                  "RUNNER_TEMP=$runner_temp" \
+                  "GITHUB_WORKSPACE=$code_workspace" \
+                  "CODEX_HOME=$codex_home" \
+                  "CODEX_FINAL=$codex_final" \
+                  "CODEX_PROMPT_FILE=$codex_prompt_file" \
+                  "CODEX_MODEL=$codex_model" \
+                  "CODEX_NATIVE=$codex_native" \
+                  "CODEX_PACKAGE_ROOT=$codex_package_root" \
+                  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
+                  /bin/sh "$launcher"
+              rc=$?
+              set -e
+
+              /usr/bin/journalctl \
+                --unit="$unit" \
+                --no-pager \
+                --output=cat \
+                --lines=200 || true
+              exit "$rc"
+            ' codex-developer \
+            "$ACTION_MAIN" \
+            "$runner_user" \
+            "$uid" \
+            "$nobody_gid" \
+            "$runner_home" \
+            "$runner_path" \
+            "$RUNNER_TEMP" \
+            "$(command -v node)" \
+            "$RUNNER_CREDENTIALS" \
+            "$CODEX_RUNTIME_MAX_SEC" \
+            "$unit" \
+            "$RUNNER_TEMP/run-native-codex.sh" \
+            "$GITHUB_WORKSPACE" \
+            "$CODEX_HOME" \
+            "$CODEX_FINAL" \
+            "$CODEX_PROMPT_FILE" \
+            "$CODEX_MODEL" \
+            "$CODEX_NATIVE" \
+            "$CODEX_PACKAGE_ROOT" \
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+
       - name: Gate requirement changes
         id: development-gate
         env:
