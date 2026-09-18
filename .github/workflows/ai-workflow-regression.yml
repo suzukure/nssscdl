@@ -440,6 +440,7 @@ jobs:
 
                 observer_deadline=$(( $(date +%s) + 740 ))
                 unit_seen_loaded=false
+                workload_seen=false
                 while :; do
                   if ! kill -0 "$waiter_pid" 2>/dev/null; then
                     set +e
@@ -500,8 +501,13 @@ jobs:
                     printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-loaded"
                   fi
 
+                  if [ -s "${marker_prefix}-request" ]; then
+                    workload_seen=true
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-workload-seen"
+                  fi
+
                   terminal_observed=false
-                  if [ "$unit_seen_loaded" = true ] && [ "$show_rc" -eq 0 ]; then
+                  if [ "$unit_seen_loaded" = true ] && [ "$workload_seen" = true ] && [ "$show_rc" -eq 0 ]; then
                     if [ "$load_state" = loaded ] && { [ "$active_state" = inactive ] || [ "$active_state" = failed ]; }; then
                       terminal_observed=true
                     elif [ "$load_state" = not-found ]; then
