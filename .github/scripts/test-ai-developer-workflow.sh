@@ -236,7 +236,7 @@ if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$resolver_step"; then
 fi
 
 grep -Fqx '          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md' "$prompt_step"
-grep -Fq "cat > "\$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'" "$prompt_step"
+grep -Fq "cat > \"\$CODEX_PROMPT_FILE\" <<'CODEX_PROMPT'" "$prompt_step"
 grep -Fq 'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely.' "$prompt_step"
 grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
 if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$prompt_step"; then
