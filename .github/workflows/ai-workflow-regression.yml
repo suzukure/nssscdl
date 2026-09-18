@@ -72,3 +72,560 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  codex-systemd-long-runtime-probe:
+    name: Codex systemd 700s wait probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [wait]
+    steps:
+      - name: Install pinned Codex Action runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          codex-home: ${{ runner.temp }}/codex-probe-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted native Codex and Action helper
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(jq -r .name "$package_root/package.json")" = '@openai/codex'
+          test "$(jq -r .version "$package_root/package.json")" = '0.153.4'
+
+          case "$(uname -m)" in
+            x86_64)
+              platform_package='@openai/codex-linux-x64'
+              target_triple='x86_64-unknown-linux-musl'
+              ;;
+            aarch64|arm64)
+              platform_package='@openai/codex-linux-arm64'
+              target_triple='aarch64-unknown-linux-musl'
+              ;;
+            *)
+              echo "Unsupported Codex platform: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          platform_json="$(
+            node -e '
+              const { createRequire } = require("node:module");
+              const req = createRequire(process.argv[1]);
+              process.stdout.write(req.resolve(process.argv[2] + "/package.json"));
+            ' "$entry" "$platform_package"
+          )"
+          native_path="$(realpath "$(dirname "$platform_json")/vendor/$target_triple/bin/codex")"
+          test -x "$native_path"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          test "$native_version" = 'codex-cli 0.153.4'
+
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA runtime version=%q target=%q action_blob=%s uid=%s gid=%s\n' \
+            "$native_version" "$target_triple" "$actual_blob" "$uid" "$gid"
+
+      - name: Run actual Codex cgroup probe
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 13
+        shell: bash
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+          CODEX_HOME: ${{ runner.temp }}/codex-probe-home
+          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
+          ACTION_MAIN: ${{ steps.runtime.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.runtime.outputs.runner_credentials }}
+        run: |
+          set -euo pipefail
+
+          case "$PROBE_MODE" in
+            wait|poll) ;;
+            *)
+              echo "Unexpected probe mode: $PROBE_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          unit="codex-systemd-${PROBE_MODE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s\n' "$unit" > "${marker_prefix}-unit"
+          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-start"
+
+          cat > "$RUNNER_TEMP/hanging-responses-server.py" <<'PY'
+          import http.server
+          import os
+          import pathlib
+          import time
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          mode = os.environ["PROBE_MODE"]
+          prefix = root / f"codex-systemd-{mode}"
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  raw_length = self.headers.get("Content-Length")
+                  if raw_length is None:
+                      raise RuntimeError("missing Content-Length")
+                  length = int(raw_length)
+                  if length <= 0:
+                      raise RuntimeError("empty request body")
+                  body = self.rfile.read(length)
+                  if len(body) != length:
+                      raise RuntimeError("short request body")
+                  prefix.with_name(prefix.name + "-request").write_text(
+                      f"path={self.path}\ncontent_length={length}\n"
+                  )
+                  time.sleep(900)
+
+              def log_message(self, format, *args):
+                  return
+
+          server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+          prefix.with_name(prefix.name + "-server-port").write_text(
+              f"{server.server_address[1]}\n"
+          )
+          prefix.with_name(prefix.name + "-server-pid").write_text(
+              f"{os.getpid()}\n"
+          )
+          server.handle_request()
+          PY
+
+          PROBE_MODE="$PROBE_MODE" \
+            python3 "$RUNNER_TEMP/hanging-responses-server.py" \
+            >"${marker_prefix}-server.stdout" \
+            2>"${marker_prefix}-server.stderr" &
+          server_pid=$!
+
+          for _ in $(seq 1 100); do
+            if [ -s "${marker_prefix}-server-port" ]; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo 'Local Responses server exited before publishing its port.' >&2
+              cat "${marker_prefix}-server.stderr" >&2 || true
+              exit 1
+            fi
+            sleep 0.1
+          done
+          test -s "${marker_prefix}-server-port"
+          port="$(cat "${marker_prefix}-server-port")"
+          case "$port" in
+            ''|*[!0-9]*)
+              echo 'Local Responses server returned an invalid port.' >&2
+              exit 1
+              ;;
+          esac
+
+          mkdir -p "$CODEX_HOME"
+          cat > "$CODEX_HOME/config.toml" <<EOF
+          model_provider = "local-hang"
+
+          [model_providers.local-hang]
+          name = "Local hanging Responses probe"
+          base_url = "http://127.0.0.1:${port}/v1"
+          wire_api = "responses"
+          requires_openai_auth = false
+          request_max_retries = 0
+          stream_max_retries = 0
+          stream_idle_timeout_ms = 120000
+          EOF
+          chmod 755 "$CODEX_HOME"
+          chmod 644 "$CODEX_HOME/config.toml"
+
+          cat > "$RUNNER_TEMP/codex-systemd-probe-prompt.txt" <<'PROMPT'
+          Reply with OK only. Do not inspect or modify files.
+          PROMPT
+          chmod 644 "$RUNNER_TEMP/codex-systemd-probe-prompt.txt"
+
+          cat > "$RUNNER_TEMP/run-native-codex-probe.sh" <<'CODEX_RUN'
+          #!/bin/sh
+          set -eu
+
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          start_time="$(awk '{print $22}' /proc/$$/stat)"
+          printf '%s %s\n' "$$" "$start_time" > "${marker_prefix}-codex-identity"
+          cat /proc/$$/cgroup > "${marker_prefix}-codex-cgroup"
+
+          awk '
+            /^(Uid|Gid|Groups|NoNewPrivs|CapInh|CapPrm|CapEff|CapBnd|CapAmb):/ {
+              key=$1
+              sub(/:$/, "", key)
+              $1=""
+              sub(/^[[:space:]]+/, "")
+              print key "=" $0
+            }
+          ' /proc/$$/status > "${marker_prefix}-security-status"
+
+          exec env \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            CODEX_HOME="$CODEX_HOME" \
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_github_action \
+            "$CODEX_NATIVE" exec \
+              --skip-git-repo-check \
+              --cd "$RUNNER_TEMP" \
+              --model gpt-5.6-terra \
+              --config 'default_permissions=":workspace"' \
+              < "$CODEX_PROMPT_FILE"
+          CODEX_RUN
+          chmod 700 "$RUNNER_TEMP/run-native-codex-probe.sh"
+
+          test -x "$CODEX_NATIVE"
+          test -f "$ACTION_MAIN"
+          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+          test -s "$CODEX_HOME/config.toml"
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          current_credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+          test "$current_credentials" = "$RUNNER_CREDENTIALS"
+          test "$uid" -ne 0
+
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+
+          exec sudo -n -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /bin/bash -c '
+              set -euo pipefail
+
+              action_main="$1"
+              runner_user="$2"
+              uid="$3"
+              nobody_gid="$4"
+              runner_home="$5"
+              runner_path="$6"
+              runner_temp="$7"
+              node="$8"
+              credentials="$9"
+              unit="${10}"
+              launcher="${11}"
+              codex_home="${12}"
+              codex_native="${13}"
+              codex_package_root="${14}"
+              prompt_file="${15}"
+              probe_mode="${16}"
+              marker_prefix="${17}"
+
+              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
+                drop-sudo \
+                --root-phase \
+                --user "$runner_user" \
+                --group sudo \
+                --runner-credentials "$credentials"
+
+              systemd_cmd=(
+                /usr/bin/systemd-run
+                --quiet
+                --unit="$unit"
+                --property=Type=exec
+                --property=RuntimeMaxSec=700s
+                --property=TimeoutStopSec=5s
+                --property=KillMode=control-group
+                --property=SendSIGKILL=yes
+              )
+              payload=(
+                /usr/bin/setpriv
+                --reuid="$uid"
+                --regid="$nobody_gid"
+                --clear-groups
+                --no-new-privs
+                --bounding-set=-all
+                --inh-caps=-all
+                --ambient-caps=-all
+                --
+                /usr/bin/env
+                -i
+                "HOME=$runner_home"
+                "USER=$runner_user"
+                "LOGNAME=$runner_user"
+                "PATH=$runner_path"
+                "RUNNER_TEMP=$runner_temp"
+                "PROBE_MODE=$probe_mode"
+                "CODEX_HOME=$codex_home"
+                "CODEX_NATIVE=$codex_native"
+                "CODEX_PACKAGE_ROOT=$codex_package_root"
+                "CODEX_PROMPT_FILE=$prompt_file"
+                /bin/sh "$launcher"
+              )
+
+              if [ "$probe_mode" = wait ]; then
+                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-before"
+                set +e
+                "${systemd_cmd[@]}" --wait --collect "${payload[@]}"
+                rc=$?
+                set -e
+                printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
+                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-return"
+                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-before"
+                /usr/bin/journalctl \
+                  --unit="$unit" \
+                  --no-pager \
+                  --output=cat \
+                  --lines=200 || true
+                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-after"
+                exit 0
+              fi
+
+              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-before"
+              "${systemd_cmd[@]}" --no-block "${payload[@]}"
+              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-return"
+
+              deadline=$(( $(date +%s) + 40 ))
+              while :; do
+                set +e
+                state="$(
+                  /usr/bin/systemctl show "$unit" \
+                    --property=ActiveState \
+                    --property=SubState \
+                    --property=Result \
+                    --property=ExecMainCode \
+                    --property=ExecMainStatus \
+                    --property=MainPID \
+                    --property=ControlGroup
+                )"
+                show_rc=$?
+                set -e
+                printf "%s\n" "$state" > "${marker_prefix}-poll-last-state"
+                printf "%s\n" "$show_rc" > "${marker_prefix}-poll-last-show-status"
+
+                active_state="$(printf "%s\n" "$state" | sed -n "s/^ActiveState=//p")"
+                if [ "$show_rc" -eq 0 ] && { [ "$active_state" = inactive ] || [ "$active_state" = failed ]; }; then
+                  printf "%s\n" "$state" > "${marker_prefix}-poll-terminal-state"
+                  printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-return"
+                  /usr/bin/systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+                  exit 0
+                fi
+
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  printf "%s\n" "$state" > "${marker_prefix}-poll-deadline-state"
+                  printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-deadline"
+                  /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit" >/dev/null 2>&1 || true
+                  /usr/bin/systemctl stop "$unit" >/dev/null 2>&1 || true
+                  /usr/bin/systemctl show "$unit" \
+                    --property=ActiveState \
+                    --property=SubState \
+                    --property=Result \
+                    --property=ExecMainCode \
+                    --property=ExecMainStatus \
+                    --property=MainPID \
+                    --property=ControlGroup \
+                    > "${marker_prefix}-poll-post-cleanup-state" 2>&1 || true
+                  exit 0
+                fi
+                sleep 1
+              done
+            ' codex-systemd-probe \
+            "$ACTION_MAIN" \
+            "$runner_user" \
+            "$uid" \
+            "$nobody_gid" \
+            "$runner_home" \
+            "$runner_path" \
+            "$RUNNER_TEMP" \
+            "$(command -v node)" \
+            "$RUNNER_CREDENTIALS" \
+            "$unit" \
+            "$RUNNER_TEMP/run-native-codex-probe.sh" \
+            "$CODEX_HOME" \
+            "$CODEX_NATIVE" \
+            "$CODEX_PACKAGE_ROOT" \
+            "$RUNNER_TEMP/codex-systemd-probe-prompt.txt" \
+            "$PROBE_MODE" \
+            "$marker_prefix"
+
+      - name: Diagnose actual Codex cgroup probe
+        if: always()
+        shell: bash
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_CONCLUSION: ${{ steps.probe.conclusion }}
+        run: |
+          set -euo pipefail
+
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          test -s "${marker_prefix}-start"
+          test -s "${marker_prefix}-unit"
+          test -s "${marker_prefix}-request"
+          test -s "${marker_prefix}-codex-identity"
+          test -s "${marker_prefix}-codex-cgroup"
+          test -s "${marker_prefix}-security-status"
+
+          request_path="$(sed -n 's/^path=//p' "${marker_prefix}-request")"
+          request_length="$(sed -n 's/^content_length=//p' "${marker_prefix}-request")"
+          test "$request_path" = /v1/responses
+          case "$request_length" in
+            ''|*[!0-9]*|0)
+              echo 'Codex request marker has an invalid body length.' >&2
+              exit 1
+              ;;
+          esac
+
+          alive_same() {
+            local file="$1"
+            local pid start_time current
+            read -r pid start_time < "$file"
+            [ -r "/proc/$pid/stat" ] || return 1
+            current="$(awk '{print $22}' "/proc/$pid/stat")"
+            [ "$current" = "$start_time" ]
+          }
+
+          codex_alive=false
+          alive_same "${marker_prefix}-codex-identity" && codex_alive=true
+
+          no_new_privs="$(sed -n 's/^NoNewPrivs=//p' "${marker_prefix}-security-status")"
+          groups_status="$(sed -n 's/^Groups=//p' "${marker_prefix}-security-status")"
+          cap_bnd="$(sed -n 's/^CapBnd=//p' "${marker_prefix}-security-status")"
+          codex_cgroup="$(tr '\n' ';' < "${marker_prefix}-codex-cgroup")"
+          unit="$(cat "${marker_prefix}-unit")"
+
+          sudo_available=true
+          if ! sudo -n true 2>/dev/null; then
+            sudo_available=false
+          fi
+
+          waiter_return=false
+          [ -s "${marker_prefix}-waiter-return" ] && waiter_return=true
+          poll_return=false
+          [ -s "${marker_prefix}-poll-return" ] && poll_return=true
+          poll_deadline=false
+          [ -s "${marker_prefix}-poll-deadline" ] && poll_deadline=true
+
+          elapsed_ns="$(( $(date +%s%N) - $(cat "${marker_prefix}-start") ))"
+          elapsed_ms="$(( elapsed_ns / 1000000 ))"
+
+          systemd_status=missing
+          if [ -s "${marker_prefix}-systemd-run-status" ]; then
+            systemd_status="$(cat "${marker_prefix}-systemd-run-status")"
+          fi
+
+          terminal_state=missing
+          if [ -s "${marker_prefix}-poll-terminal-state" ]; then
+            terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-terminal-state")"
+          elif [ -s "${marker_prefix}-poll-deadline-state" ]; then
+            terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-deadline-state")"
+          fi
+
+          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s waiter_return=%s poll_return=%s poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
+            "$PROBE_MODE" "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" \
+            "$request_path" "$request_length" "$codex_alive" "$waiter_return" \
+            "$poll_return" "$poll_deadline" "$systemd_status" "$sudo_available" \
+            "$no_new_privs" "$groups_status" "$cap_bnd" "$codex_cgroup" "$terminal_state"
+
+          test "$sudo_available" = false
+          test "$no_new_privs" = 1
+          test -z "$groups_status"
+          test "$cap_bnd" = 0000000000000000
+          case "$codex_cgroup" in
+            *"/system.slice/${unit}.service"*) ;;
+            *)
+              echo "Codex was not observed in expected cgroup: $codex_cgroup" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$PROBE_MODE" = wait ]; then
+            test "$codex_alive" = false
+            if [ "$waiter_return" = true ]; then
+              test "$elapsed_ms" -ge 680000
+              test "$elapsed_ms" -lt 770000
+              test "$systemd_status" != missing
+            else
+              test "$PROBE_OUTCOME" = failure
+              test "$elapsed_ms" -ge 770000
+            fi
+          else
+            test "$poll_return" = true
+            test "$poll_deadline" = false
+            test "$codex_alive" = false
+            test "$elapsed_ms" -ge 680000
+            test "$elapsed_ms" -lt 770000
+            test -s "${marker_prefix}-poll-terminal-state"
+          fi
+
+      - name: Cleanup localhost probe server
+        if: always()
+        shell: bash
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+
+          if [ -s "${marker_prefix}-server-pid" ]; then
+            server_pid="$(cat "${marker_prefix}-server-pid")"
+            case "$server_pid" in
+              ''|*[!0-9]*) ;;
+              *)
+                kill "$server_pid" 2>/dev/null || true
+                sleep 0.2
+                kill -KILL "$server_pid" 2>/dev/null || true
+                ;;
+            esac
+          fi
+
+          if [ -s "${marker_prefix}-codex-identity" ]; then
+            read -r codex_pid codex_start < "${marker_prefix}-codex-identity"
+            if [ -r "/proc/$codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$codex_pid/stat")" = "$codex_start" ]; then
+              kill -KILL "$codex_pid" 2>/dev/null || true
+            fi
+          fi
