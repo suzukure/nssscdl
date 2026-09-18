@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-set -x
 
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 repo_root="$(cd "$repo_root" && pwd)"
@@ -221,7 +220,7 @@ grep -Fq '"vendor",' "$resolver_step"
 grep -Fq '"bin",' "$resolver_step"
 grep -Fq '"codex",' "$resolver_step"
 grep -Fq 'fs.accessSync(nativePath, fs.constants.X_OK);' "$resolver_step"
-grep -Fq "test "\$native_version" = 'codex-cli 0.153.4'" "$resolver_step"
+grep -Fq "test \"\$native_version\" = 'codex-cli 0.153.4'" "$resolver_step"
 grep -Fq '_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e' "$resolver_step"
 grep -Fq 'actual_blob="$(git hash-object "$action_main")"' "$resolver_step"
 grep -Fq 'test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$resolver_step"
