@@ -148,20 +148,125 @@ jobs:
           codex-version: 0.153.4
           codex-home: ${{ runner.temp }}/codex-home
 
+      - name: Resolve native Codex developer executable
+        id: native_codex
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(realpath "$package_root/bin/codex.js")" = "$entry"
+
+          export CODEX_ENTRY="$entry"
+          export CODEX_PACKAGE_ROOT="$package_root"
+          resolver_output="$(
+            node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createRequire } from "node:module";
+
+          const entry = process.env.CODEX_ENTRY;
+          const packageRoot = process.env.CODEX_PACKAGE_ROOT;
+          const mainPackage = JSON.parse(
+            fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+          );
+          if (mainPackage.name !== "@openai/codex") {
+            throw new Error(`unexpected package name: ${mainPackage.name}`);
+          }
+          if (mainPackage.version !== "0.153.4") {
+            throw new Error(`unexpected package version: ${mainPackage.version}`);
+          }
+
+          let platformPackage;
+          let targetTriple;
+          if (process.platform === "linux" && process.arch === "x64") {
+            platformPackage = "@openai/codex-linux-x64";
+            targetTriple = "x86_64-unknown-linux-musl";
+          } else if (process.platform === "linux" && process.arch === "arm64") {
+            platformPackage = "@openai/codex-linux-arm64";
+            targetTriple = "aarch64-unknown-linux-musl";
+          } else {
+            throw new Error(
+              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+            );
+          }
+
+          const require = createRequire(entry);
+          const platformPackageJson = require.resolve(
+            `${platformPackage}/package.json`,
+          );
+          const nativePath = path.join(
+            path.dirname(platformPackageJson),
+            "vendor",
+            targetTriple,
+            "bin",
+            "codex",
+          );
+          const nativeStat = fs.statSync(nativePath);
+          if (!nativeStat.isFile()) {
+            throw new Error("native codex is not a regular file");
+          }
+          fs.accessSync(nativePath, fs.constants.X_OK);
+
+          process.stdout.write(
+            JSON.stringify({
+              nativePath: fs.realpathSync(nativePath),
+              packageRoot,
+              targetTriple,
+            }),
+          );
+          NODE
+          )"
+
+          native_path="$(jq -r '.nativePath' <<<"$resolver_output")"
+          resolved_root="$(jq -r '.packageRoot' <<<"$resolver_output")"
+          target_triple="$(jq -r '.targetTriple' <<<"$resolver_output")"
+          test "$resolved_root" = "$package_root"
+          test -x "$native_path"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          test "$native_version" = 'codex-cli 0.153.4'
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'Resolved native Codex 0.153.4 for %s.\n' "$target_triple"
+
       - name: Run Codex developer
-        id: codex
         timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
         env:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_MODEL: ${{ vars.CODEX_MODEL }}
           CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
+          CODEX_NATIVE: ${{ steps.native_codex.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.native_codex.outputs.package_root }}
         shell: bash
         run: |
           set -euo pipefail
-          command -v codex >/dev/null
+          test -x "$CODEX_NATIVE"
           test -s "$CODEX_HOME/config.toml"
-          exec codex exec \
+          exec env \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            "$CODEX_NATIVE" exec \
             --skip-git-repo-check \
             --cd "$GITHUB_WORKSPACE" \
             --output-last-message "$CODEX_FINAL" \
