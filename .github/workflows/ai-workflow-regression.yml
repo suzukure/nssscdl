@@ -132,6 +132,7 @@ jobs:
 
           natural_done=false
           [ -e "$RUNNER_TEMP/stdio-child-natural-done" ] && natural_done=true
+          printf 'PROBE_DATA stdio elapsed_ms=%s child_alive=%s natural_done=%s\n' "$elapsed_ms" "$alive" "$natural_done"
           {
             echo '## Stdio descendant cleanup probe'
             echo
@@ -246,6 +247,8 @@ jobs:
           process_meta="$(cat "$RUNNER_TEMP/literal-process-meta" 2>/dev/null || echo unavailable)"
           parent_signals="$(tr '\n' ',' < "$RUNNER_TEMP/literal-parent-signals" 2>/dev/null || true)"
           child_signals="$(tr '\n' ',' < "$RUNNER_TEMP/literal-child-signals" 2>/dev/null || true)"
+          printf 'PROBE_DATA literal outcome=%s conclusion=%s elapsed_ms=%s parent_alive=%s child_alive=%s parent_signals=%s child_signals=%s process_meta=%s\n' \
+            "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" "$parent_alive" "$child_alive" "$parent_signals" "$child_signals" "$process_meta"
           {
             echo '## Literal step timeout probe'
             echo
@@ -366,6 +369,8 @@ jobs:
           process_meta="$(cat "$RUNNER_TEMP/expression-process-meta" 2>/dev/null || echo unavailable)"
           parent_signals="$(tr '\n' ',' < "$RUNNER_TEMP/expression-parent-signals" 2>/dev/null || true)"
           child_signals="$(tr '\n' ',' < "$RUNNER_TEMP/expression-child-signals" 2>/dev/null || true)"
+          printf 'PROBE_DATA expression outcome=%s conclusion=%s elapsed_ms=%s parent_alive=%s child_alive=%s parent_signals=%s child_signals=%s process_meta=%s\n' \
+            "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" "$parent_alive" "$child_alive" "$parent_signals" "$child_signals" "$process_meta"
           {
             echo '## Expression step timeout probe'
             echo
