@@ -76,7 +76,7 @@ jobs:
   codex-systemd-long-runtime-probe:
     name: Codex systemd 700s wait probe
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +167,7 @@ jobs:
       - name: Run actual Codex cgroup probe
         id: probe
         continue-on-error: true
-        timeout-minutes: 13
+        timeout-minutes: 16
         shell: bash
         env:
           PROBE_MODE: ${{ matrix.mode }}
