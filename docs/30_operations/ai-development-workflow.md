@@ -272,10 +272,10 @@ Issue起点とfollow-upのbootstrapは、base commitから取得したhelperのc
 AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する。
 
 * 通常の `develop-from-issue` と `respond-to-claude` のjob-level timeoutは15分とし、AI Developer全体の外側の停止境界として扱う。
-* 人間が明示的に `/codex develop extended` を選んだIssue起点runだけ、`develop-from-issue` のjob-level timeoutを35分固定とする。`respond-to-claude` は15分のままとする。
+* 人間が明示的に `/codex develop extended` を選んだIssue起点runだけ、`develop-from-issue` のjob-level timeoutを延長する。具体値と利用条件は「human-approved extended-run」を正本とする。`respond-to-claude` は15分のままとする。
 * `Run Codex developer` と `Run Codex follow-up` のstep-level timeoutは30分とし、Codex processに対する内側の防御として扱う。
 * step-level timeoutはrunner worker上で執行されるため、runner-lossやrunnerとの通信喪失時に30分をwall-clock上の絶対上限とは扱わない。
-* job-level timeoutも設定値到達時にcancellationへ移行する境界であり、runner無応答時を含め「15分または35分ちょうどで完全終了する」とは扱わない。
+* job-level timeoutも設定値到達時にcancellationへ移行する境界であり、runner無応答時を含め「設定値ちょうどで完全終了する」とは扱わない。
 
 #### Issue起点AI Developerの異常終了
 
@@ -318,7 +318,7 @@ Issue起点のAI Developerを再実行する前に、少なくとも次を確認
 
 使用前に、Issue起点の異常終了で定めるRun / branch / PR / unexpected write / current contractの確認を完了し、再開可能と人間が判断する。Issueまたは関連PRに `human-review-required` が残っている間はextended commandも起動しないため、既存の停止解除規約どおりclosing Issue側、必要ならPR側の順に解除してからcommandを投稿する。
 
-extended-runのjob-level timeoutは35分固定、`Run Codex developer` stepは30分のままとする。35分はCodex stepの固定30分にsetup、post-gate、repository write処理の余裕を持たせつつ、runner-loss時のserver-side hard capを残すための例外値である。任意timeout入力、通常15分runからのautomatic fallback、automatic retry、fail-open、停止ラベルのbypassは設けない。
+extended-runのjob-level timeoutは35分固定、`Run Codex developer` stepは30分のままとする。35分はCodex stepの固定30分にsetup、post-gate、repository write処理の余裕を持たせつつ、runner-loss時のserver-side hard capを残すための例外値である。任意timeout入力、通常15分runからのautomatic fallback、automatic retry、fail-open、停止ラベルのbypassは設けない。extended-runではCodex完了後のrepository write途中でjob cancellationへ到達し、push済みの `ai/issue-<Issue番号>` branchに対応するopen PRが存在しない状態が残る可能性もある。この場合は再実行前にbranch head、open PR、closing Issueの対応を照合し、予期しないcommit / push / PR writeがないことを確認してから復旧判断する。
 
 extended-runでもtimeoutまたは異常終了した場合は、同じcommandを自動または単純retryしない。failure handlerによる停止を維持し、正常長時間処理、runner-loss、model/provider差、別実行経路の必要性を再調査する。
 
@@ -342,7 +342,7 @@ timeoutや異常終了が発生したという事実だけで、作業量が大�
 
 runner-lossやGitHub Actions基盤側の異常は、小さい変更でも発生し得るため、失敗原因がrunner-lossまたはinfrastructure failureと判断できる場合は、それだけを理由にIssueを分割しない。
 
-一方、runnerとログが正常に動作したままCodex実行が15分近く継続してjob-level timeoutした場合、または同じscopeで長時間化を繰り返した場合は、再実行前に作業量を見直す。
+一方、runnerとログが正常に動作したままCodex実行が当該runのjob-level timeout値近くまで継続してtimeoutした場合、または同じscopeで長時間化を繰り返した場合は、再実行前に作業量を見直す。
 
 分割する場合は、各IssueまたはPRが独立して実装、検証、レビューでき、安全性・正確性・要求整合性を単独で確認できる単位にする。
 
