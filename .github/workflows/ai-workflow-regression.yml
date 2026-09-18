@@ -409,20 +409,146 @@ jobs:
 
               if [ "$probe_mode" = wait ]; then
                 printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-before"
+
                 set +e
-                "${systemd_cmd[@]}" --wait --collect "${payload[@]}"
-                rc=$?
+                "${systemd_cmd[@]}" --wait --collect "${payload[@]}" &
+                waiter_pid=$!
                 set -e
-                printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
-                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-return"
-                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-before"
-                /usr/bin/journalctl \
-                  --unit="$unit" \
-                  --no-pager \
-                  --output=cat \
-                  --lines=200 || true
-                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-after"
-                exit 0
+                printf "%s\n" "$waiter_pid" > "${marker_prefix}-waiter-pid"
+
+                identity_alive() {
+                  identity_file="$1"
+                  [ -s "$identity_file" ] || return 2
+                  read -r observed_pid observed_start < "$identity_file"
+                  [ -r "/proc/$observed_pid/stat" ] || return 1
+                  current_start="$(awk "{print \$22}" "/proc/$observed_pid/stat")"
+                  [ "$current_start" = "$observed_start" ]
+                }
+
+                record_codex_alive() {
+                  output_file="$1"
+                  codex_alive=unknown
+                  if [ -s "${marker_prefix}-codex-identity" ]; then
+                    if identity_alive "${marker_prefix}-codex-identity"; then
+                      codex_alive=true
+                    else
+                      codex_alive=false
+                    fi
+                  fi
+                  printf "%s\n" "$codex_alive" > "$output_file"
+                }
+
+                observer_deadline=$(( $(date +%s) + 740 ))
+                while :; do
+                  if ! kill -0 "$waiter_pid" 2>/dev/null; then
+                    set +e
+                    wait "$waiter_pid"
+                    rc=$?
+                    set -e
+                    printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-return"
+                    printf "false\n" > "${marker_prefix}-waiter-stuck"
+                    record_codex_alive "${marker_prefix}-codex-alive-at-waiter-return"
+
+                    set +e
+                    /usr/bin/systemctl show "$unit" \
+                      --property=ActiveState \
+                      --property=SubState \
+                      --property=Result \
+                      --property=ExecMainCode \
+                      --property=ExecMainStatus \
+                      --property=MainPID \
+                      --property=ControlGroup \
+                      > "${marker_prefix}-observer-after-waiter-state" 2>&1
+                    printf "%s\n" "$?" > "${marker_prefix}-observer-after-waiter-show-status"
+                    set -e
+
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-before"
+                    /usr/bin/journalctl \
+                      --unit="$unit" \
+                      --no-pager \
+                      --output=cat \
+                      --lines=200 || true
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-after"
+                    exit 0
+                  fi
+
+                  set +e
+                  state="$(
+                    /usr/bin/systemctl show "$unit" \
+                      --property=ActiveState \
+                      --property=SubState \
+                      --property=Result \
+                      --property=ExecMainCode \
+                      --property=ExecMainStatus \
+                      --property=MainPID \
+                      --property=ControlGroup 2>&1
+                  )"
+                  show_rc=$?
+                  set -e
+                  printf "%s\n" "$state" > "${marker_prefix}-observer-last-state"
+                  printf "%s\n" "$show_rc" > "${marker_prefix}-observer-last-show-status"
+
+                  active_state="$(printf "%s\n" "$state" | sed -n "s/^ActiveState=//p")"
+                  if [ "$show_rc" -eq 0 ] && { [ "$active_state" = inactive ] || [ "$active_state" = failed ]; }; then
+                    printf "%s\n" "$state" > "${marker_prefix}-observer-terminal-state"
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-terminal"
+                    record_codex_alive "${marker_prefix}-codex-alive-at-terminal"
+
+                    waiter_grace_deadline=$(( $(date +%s) + 10 ))
+                    while kill -0 "$waiter_pid" 2>/dev/null && [ "$(date +%s)" -lt "$waiter_grace_deadline" ]; do
+                      sleep 0.5
+                    done
+
+                    if kill -0 "$waiter_pid" 2>/dev/null; then
+                      printf "true\n" > "${marker_prefix}-waiter-stuck"
+                      kill -KILL "$waiter_pid" 2>/dev/null || true
+                      set +e
+                      wait "$waiter_pid"
+                      rc=$?
+                      set -e
+                      printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
+                      printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-forced-return"
+                    else
+                      printf "false\n" > "${marker_prefix}-waiter-stuck"
+                      set +e
+                      wait "$waiter_pid"
+                      rc=$?
+                      set -e
+                      printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
+                      printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-return"
+                    fi
+
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-before"
+                    /usr/bin/journalctl \
+                      --unit="$unit" \
+                      --no-pager \
+                      --output=cat \
+                      --lines=200 || true
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-after"
+                    exit 0
+                  fi
+
+                  if [ "$(date +%s)" -ge "$observer_deadline" ]; then
+                    printf "%s\n" "$state" > "${marker_prefix}-observer-deadline-state"
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-deadline"
+                    record_codex_alive "${marker_prefix}-codex-alive-at-deadline"
+                    printf "true\n" > "${marker_prefix}-waiter-stuck"
+
+                    /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit" >/dev/null 2>&1 || true
+                    /usr/bin/systemctl stop "$unit" >/dev/null 2>&1 || true
+                    kill -KILL "$waiter_pid" 2>/dev/null || true
+                    set +e
+                    wait "$waiter_pid"
+                    rc=$?
+                    set -e
+                    printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-forced-return"
+                    exit 0
+                  fi
+
+                  sleep 1
+                done
               fi
 
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-before"
@@ -545,6 +671,12 @@ jobs:
 
           waiter_return=false
           [ -s "${marker_prefix}-waiter-return" ] && waiter_return=true
+          waiter_stuck=unknown
+          [ -s "${marker_prefix}-waiter-stuck" ] && waiter_stuck="$(cat "${marker_prefix}-waiter-stuck")"
+          observer_terminal=false
+          [ -s "${marker_prefix}-observer-terminal" ] && observer_terminal=true
+          observer_deadline=false
+          [ -s "${marker_prefix}-observer-deadline" ] && observer_deadline=true
           poll_return=false
           [ -s "${marker_prefix}-poll-return" ] && poll_return=true
           poll_deadline=false
@@ -559,17 +691,22 @@ jobs:
           fi
 
           terminal_state=missing
-          if [ -s "${marker_prefix}-poll-terminal-state" ]; then
+          if [ -s "${marker_prefix}-observer-terminal-state" ]; then
+            terminal_state="$(tr '\n' ';' < "${marker_prefix}-observer-terminal-state")"
+          elif [ -s "${marker_prefix}-observer-deadline-state" ]; then
+            terminal_state="$(tr '\n' ';' < "${marker_prefix}-observer-deadline-state")"
+          elif [ -s "${marker_prefix}-poll-terminal-state" ]; then
             terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-terminal-state")"
           elif [ -s "${marker_prefix}-poll-deadline-state" ]; then
             terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-deadline-state")"
           fi
 
-          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s waiter_return=%s poll_return=%s poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
+          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s waiter_return=%s waiter_stuck=%s observer_terminal=%s observer_deadline=%s poll_return=%s poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
             "$PROBE_MODE" "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" \
-            "$request_path" "$request_length" "$codex_alive" "$waiter_return" \
-            "$poll_return" "$poll_deadline" "$systemd_status" "$sudo_available" \
-            "$no_new_privs" "$groups_status" "$cap_bnd" "$codex_cgroup" "$terminal_state"
+            "$request_path" "$request_length" "$codex_alive" "$waiter_return" "$waiter_stuck" \
+            "$observer_terminal" "$observer_deadline" "$poll_return" "$poll_deadline" \
+            "$systemd_status" "$sudo_available" "$no_new_privs" "$groups_status" \
+            "$cap_bnd" "$codex_cgroup" "$terminal_state"
 
           test "$sudo_available" = false
           test "$no_new_privs" = 1
@@ -584,14 +721,28 @@ jobs:
           esac
 
           if [ "$PROBE_MODE" = wait ]; then
-            test "$codex_alive" = false
+            test "$PROBE_OUTCOME" = success
+            test "$systemd_status" != missing
+
             if [ "$waiter_return" = true ]; then
+              test "$waiter_stuck" = false
+              test "$codex_alive" = false
+              test "$observer_deadline" = false
               test "$elapsed_ms" -ge 680000
               test "$elapsed_ms" -lt 770000
-              test "$systemd_status" != missing
+            elif [ "$observer_terminal" = true ]; then
+              test "$waiter_stuck" = true
+              test "$codex_alive" = false
+              test "$observer_deadline" = false
+              test "$elapsed_ms" -ge 680000
+              test "$elapsed_ms" -lt 770000
+            elif [ "$observer_deadline" = true ]; then
+              test "$waiter_stuck" = true
+              test "$elapsed_ms" -ge 730000
+              test "$elapsed_ms" -lt 780000
             else
-              test "$PROBE_OUTCOME" = failure
-              test "$elapsed_ms" -ge 770000
+              echo 'Observer produced no terminal, waiter-return, or deadline result.' >&2
+              exit 1
             fi
           else
             test "$poll_return" = true
