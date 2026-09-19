@@ -72,3 +72,256 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  codex-host-hardening-idle-control:
+    name: Host hardening idle control
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        hardening: [disabled, enabled]
+    env:
+      CONTROL_HARDENING: ${{ matrix.hardening }}
+      PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Install pinned Codex Action runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          codex-home: ${{ runner.temp }}/codex-probe-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted native Codex and Action helper
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(jq -r .name "$package_root/package.json")" = '@openai/codex'
+          test "$(jq -r .version "$package_root/package.json")" = '0.153.4'
+
+          case "$(uname -m)" in
+            x86_64)
+              platform_package='@openai/codex-linux-x64'
+              target_triple='x86_64-unknown-linux-musl'
+              ;;
+            aarch64|arm64)
+              platform_package='@openai/codex-linux-arm64'
+              target_triple='aarch64-unknown-linux-musl'
+              ;;
+            *)
+              echo "Unsupported Codex platform: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          platform_json="$(
+            node -e '
+              const { createRequire } = require("node:module");
+              const req = createRequire(process.argv[1]);
+              process.stdout.write(req.resolve(process.argv[2] + "/package.json"));
+            ' "$entry" "$platform_package"
+          )"
+          native_path="$(realpath "$(dirname "$platform_json")/vendor/$target_triple/bin/codex")"
+          test -x "$native_path"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          test "$native_version" = 'codex-cli 0.153.4'
+
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA runtime version=%q target=%q action_blob=%s uid=%s gid=%s\n' \
+            "$native_version" "$target_triple" "$actual_blob" "$uid" "$gid"
+
+      - name: Prepare idle control evidence
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/idle-control-evidence"
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          data = {
+              "schema_version": 1,
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "head_sha": os.environ["PROBE_HEAD"],
+              "hardening": os.environ["CONTROL_HARDENING"],
+              "image_os": os.environ.get("ImageOS"),
+              "image_version": os.environ.get("ImageVersion"),
+              "start_utc_ns": time.time_ns(),
+              "start_boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+          }
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/control.json"
+          path.write_text(json.dumps(data, sort_keys=True) + "\n")
+          PY
+
+      - name: Apply host hardening comparison condition
+        id: condition
+        timeout-minutes: 2
+        shell: bash
+        env:
+          ACTION_MAIN: ${{ steps.runtime.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.runtime.outputs.runner_credentials }}
+        run: |
+          set -euo pipefail
+          test -f "$ACTION_MAIN"
+          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          current_credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+          test "$current_credentials" = "$RUNNER_CREDENTIALS"
+          test "$uid" -ne 0
+
+          case "$CONTROL_HARDENING" in
+            enabled)
+              sudo -n -- \
+                env -u ENV -u BASH_ENV -u SHELLOPTS \
+                /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+                /usr/bin/env -u NODE_OPTIONS "$(command -v node)" "$ACTION_MAIN" \
+                drop-sudo --root-phase --user "$(id -un)" --group sudo \
+                --runner-credentials "$RUNNER_CREDENTIALS"
+              if sudo -n true 2>/dev/null; then
+                echo 'Host hardening did not remove sudo access.' >&2
+                exit 1
+              fi
+              ;;
+            disabled)
+              sudo -n true
+              ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Wait slice 1 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 2 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 3 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 4 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 5 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 6 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 7 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 8 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 9 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 10 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 11 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 12 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 50
+
+      - name: Finalize idle control evidence
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CONDITION_OUTCOME: ${{ steps.condition.outcome }}
+          PRIOR_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/control.json"
+          data = json.loads(path.read_text())
+          data["end_utc_ns"] = time.time_ns()
+          data["end_boottime_ns"] = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+          data["elapsed_seconds"] = (data["end_boottime_ns"] - data["start_boottime_ns"]) / 1e9
+          data["condition_outcome"] = os.environ["CONDITION_OUTCOME"]
+          data["prior_job_status"] = os.environ["PRIOR_JOB_STATUS"]
+          path.write_text(json.dumps(data, sort_keys=True) + "\n")
+          print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+          PY
+
+      - name: Upload idle control evidence
+        id: upload
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: idle-control-${{ matrix.hardening }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/idle-control-evidence/control.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Evidence artifact upload succeeded with artifact ID
+        if: always() && steps.upload.outcome == 'success'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_ID" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+          printf 'PROBE_DATA artifact_id=%s\n' "$ARTIFACT_ID"
+
+      - name: Evidence artifact upload failed
+        if: always() && steps.upload.outcome == 'failure'
+        timeout-minutes: 1
+        run: echo 'PROBE_DATA upload_outcome=failure'
+
+      - name: Evidence artifact upload outcome unavailable
+        if: always() && steps.upload.outcome != 'success' && steps.upload.outcome != 'failure'
+        timeout-minutes: 1
+        run: echo 'PROBE_DATA upload_outcome=unavailable'
