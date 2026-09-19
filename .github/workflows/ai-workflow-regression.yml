@@ -215,7 +215,7 @@ jobs:
                   prefix.with_name(prefix.name + "-request").write_text(
                       f"path={self.path}\ncontent_length={length}\n"
                   )
-                  time.sleep(900)
+                  time.sleep(730)
 
               def log_message(self, format, *args):
                   return
@@ -536,8 +536,8 @@ jobs:
               ;;
           esac
 
-          printf 'PROBE_TRACE sleep-before epoch=%s seconds=740\n' "$(date +%s)"
-          /bin/sleep 740
+          printf 'PROBE_TRACE sleep-before epoch=%s seconds=710\n' "$(date +%s)"
+          /bin/sleep 710
           printf 'PROBE_TRACE sleep-after epoch=%s\n' "$(date +%s)"
 
           poll_iteration=1
