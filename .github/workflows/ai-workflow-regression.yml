@@ -411,7 +411,10 @@ jobs:
                 printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-before"
 
                 set +e
-                "${systemd_cmd[@]}" --wait --collect "${payload[@]}" &
+                "${systemd_cmd[@]}" --wait --collect "${payload[@]}" \
+                  </dev/null \
+                  >"${marker_prefix}-waiter.stdout" \
+                  2>"${marker_prefix}-waiter.stderr" &
                 waiter_pid=$!
                 set -e
                 printf "%s\n" "$waiter_pid" > "${marker_prefix}-waiter-pid"
@@ -562,12 +565,20 @@ jobs:
 
                     /usr/bin/timeout 5s /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit" >/dev/null 2>&1 || true
                     kill -KILL "$waiter_pid" 2>/dev/null || true
-                    set +e
-                    wait "$waiter_pid"
-                    rc=$?
-                    set -e
-                    printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-forced-return"
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-kill-sent"
+
+                    waiter_alive_after_kill=false
+                    for _ in $(seq 1 20); do
+                      if ! kill -0 "$waiter_pid" 2>/dev/null; then
+                        break
+                      fi
+                      sleep 0.1
+                    done
+                    if kill -0 "$waiter_pid" 2>/dev/null; then
+                      waiter_alive_after_kill=true
+                    fi
+                    printf "%s\n" "$waiter_alive_after_kill" > "${marker_prefix}-waiter-alive-after-kill"
+                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-return"
                     exit 0
                   fi
 
@@ -697,6 +708,10 @@ jobs:
           [ -s "${marker_prefix}-waiter-return" ] && waiter_return=true
           waiter_stuck=unknown
           [ -s "${marker_prefix}-waiter-stuck" ] && waiter_stuck="$(cat "${marker_prefix}-waiter-stuck")"
+          waiter_kill_sent=false
+          [ -s "${marker_prefix}-waiter-kill-sent" ] && waiter_kill_sent=true
+          waiter_alive_after_kill=missing
+          [ -s "${marker_prefix}-waiter-alive-after-kill" ] && waiter_alive_after_kill="$(cat "${marker_prefix}-waiter-alive-after-kill")"
 
           codex_alive_at_waiter_return=missing
           [ -s "${marker_prefix}-codex-alive-at-waiter-return" ] && codex_alive_at_waiter_return="$(cat "${marker_prefix}-codex-alive-at-waiter-return")"
@@ -733,13 +748,14 @@ jobs:
             terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-deadline-state")"
           fi
 
-          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s codex_alive_at_waiter_return=%s codex_alive_at_terminal=%s codex_alive_at_deadline=%s waiter_return=%s waiter_stuck=%s observer_terminal=%s observer_deadline=%s poll_return=%s poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
+          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s codex_alive_at_waiter_return=%s codex_alive_at_terminal=%s codex_alive_at_deadline=%s waiter_return=%s waiter_stuck=%s waiter_kill_sent=%s waiter_alive_after_kill=%s observer_terminal=%s observer_deadline=%s poll_return=%s poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
             "$PROBE_MODE" "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" \
             "$request_path" "$request_length" "$codex_alive" \
             "$codex_alive_at_waiter_return" "$codex_alive_at_terminal" "$codex_alive_at_deadline" \
-            "$waiter_return" "$waiter_stuck" "$observer_terminal" "$observer_deadline" \
-            "$poll_return" "$poll_deadline" "$systemd_status" "$sudo_available" "$no_new_privs" \
-            "$groups_status" "$cap_bnd" "$codex_cgroup" "$terminal_state"
+            "$waiter_return" "$waiter_stuck" "$waiter_kill_sent" "$waiter_alive_after_kill" \
+            "$observer_terminal" "$observer_deadline" "$poll_return" "$poll_deadline" \
+            "$systemd_status" "$sudo_available" "$no_new_privs" "$groups_status" \
+            "$cap_bnd" "$codex_cgroup" "$terminal_state"
 
           test "$sudo_available" = false
           test "$no_new_privs" = 1
@@ -755,9 +771,9 @@ jobs:
 
           if [ "$PROBE_MODE" = wait ]; then
             test "$PROBE_OUTCOME" = success
-            test "$systemd_status" != missing
 
             if [ "$waiter_return" = true ]; then
+              test "$systemd_status" != missing
               test "$waiter_stuck" = false
               test "$codex_alive" = false
               test "$observer_deadline" = false
@@ -771,6 +787,7 @@ jobs:
               test "$elapsed_ms" -lt 770000
             elif [ "$observer_deadline" = true ]; then
               test "$waiter_stuck" = true
+              test "$waiter_kill_sent" = true
               test "$elapsed_ms" -ge 730000
               test "$elapsed_ms" -lt 780000
             else
