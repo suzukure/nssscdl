@@ -283,7 +283,7 @@ jobs:
           set -eu
 
           marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          start_time="$(awk '{print $22}' /proc/$$/stat)"
+          start_time="$(awk "{print \\$22}" /proc/$$/stat)"
           printf '%s %s\n' "$$" "$start_time" > "${marker_prefix}-codex-identity"
           cat /proc/$$/cgroup > "${marker_prefix}-codex-cgroup"
 
@@ -640,7 +640,7 @@ jobs:
                   poll_codex_alive=false
                   if [ -s "${marker_prefix}-codex-identity" ]; then
                     read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
-                    if [ -r "/proc/$poll_codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
+                    if [ -r "/proc/$poll_codex_pid/stat" ] && [ "$(awk "{print \\$22}" "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
                       poll_codex_alive=true
                     fi
                   fi
@@ -655,7 +655,7 @@ jobs:
                   poll_codex_alive=unknown
                   if [ -s "${marker_prefix}-codex-identity" ]; then
                     read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
-                    if [ -r "/proc/$poll_codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
+                    if [ -r "/proc/$poll_codex_pid/stat" ] && [ "$(awk "{print \\$22}" "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
                       poll_codex_alive=true
                     else
                       poll_codex_alive=false
@@ -721,7 +721,7 @@ jobs:
             local pid start_time current
             read -r pid start_time < "$file"
             [ -r "/proc/$pid/stat" ] || return 1
-            current="$(awk '{print $22}' "/proc/$pid/stat")"
+            current="$(awk "{print \\$22}" "/proc/$pid/stat")"
             [ "$current" = "$start_time" ]
           }
 
@@ -876,7 +876,7 @@ jobs:
 
           if [ -s "${marker_prefix}-codex-identity" ]; then
             read -r codex_pid codex_start < "${marker_prefix}-codex-identity"
-            if [ -r "/proc/$codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$codex_pid/stat")" = "$codex_start" ]; then
+            if [ -r "/proc/$codex_pid/stat" ] && [ "$(awk "{print \\$22}" "/proc/$codex_pid/stat")" = "$codex_start" ]; then
               kill -KILL "$codex_pid" 2>/dev/null || true
             fi
           fi
