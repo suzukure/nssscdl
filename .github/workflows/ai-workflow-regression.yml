@@ -74,13 +74,13 @@ jobs:
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
 
   codex-systemd-long-runtime-probe:
-    name: Codex systemd 700s wait probe
+    name: Codex systemd 700s poll probe
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        mode: [wait]
+        mode: [poll]
     steps:
       - name: Install pinned Codex Action runtime without model execution
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
@@ -590,46 +590,81 @@ jobs:
               "${systemd_cmd[@]}" --no-block "${payload[@]}"
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-return"
 
-              deadline=$(( $(date +%s) + 40 ))
+              deadline=$(( $(date +%s) + 740 ))
+              poll_unit_seen_loaded=false
+              poll_workload_seen=false
               while :; do
                 set +e
                 state="$(
                   /usr/bin/systemctl show "$unit" \
+                    --property=LoadState \
                     --property=ActiveState \
                     --property=SubState \
                     --property=Result \
                     --property=ExecMainCode \
                     --property=ExecMainStatus \
                     --property=MainPID \
-                    --property=ControlGroup
+                    --property=ControlGroup 2>&1
                 )"
                 show_rc=$?
                 set -e
                 printf "%s\n" "$state" > "${marker_prefix}-poll-last-state"
                 printf "%s\n" "$show_rc" > "${marker_prefix}-poll-last-show-status"
 
+                load_state="$(printf "%s\n" "$state" | sed -n "s/^LoadState=//p")"
                 active_state="$(printf "%s\n" "$state" | sed -n "s/^ActiveState=//p")"
-                if [ "$show_rc" -eq 0 ] && { [ "$active_state" = inactive ] || [ "$active_state" = failed ]; }; then
+
+                if [ "$show_rc" -eq 0 ] && [ "$load_state" = loaded ]; then
+                  poll_unit_seen_loaded=true
+                  printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-loaded"
+                fi
+
+                if [ -s "${marker_prefix}-request" ]; then
+                  poll_workload_seen=true
+                  printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-workload-seen"
+                fi
+
+                terminal_observed=false
+                if [ "$poll_unit_seen_loaded" = true ] && [ "$poll_workload_seen" = true ] && [ "$show_rc" -eq 0 ]; then
+                  if [ "$load_state" = loaded ] && { [ "$active_state" = inactive ] || [ "$active_state" = failed ]; }; then
+                    terminal_observed=true
+                  elif [ "$load_state" = not-found ]; then
+                    terminal_observed=true
+                  fi
+                fi
+
+                if [ "$terminal_observed" = true ]; then
                   printf "%s\n" "$state" > "${marker_prefix}-poll-terminal-state"
                   printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-return"
-                  /usr/bin/systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+
+                  poll_codex_alive=false
+                  if [ -s "${marker_prefix}-codex-identity" ]; then
+                    read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
+                    if [ -r "/proc/$poll_codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
+                      poll_codex_alive=true
+                    fi
+                  fi
+                  printf "%s\n" "$poll_codex_alive" > "${marker_prefix}-codex-alive-at-poll-terminal"
                   exit 0
                 fi
 
                 if [ "$(date +%s)" -ge "$deadline" ]; then
                   printf "%s\n" "$state" > "${marker_prefix}-poll-deadline-state"
                   printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-deadline"
-                  /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit" >/dev/null 2>&1 || true
-                  /usr/bin/systemctl stop "$unit" >/dev/null 2>&1 || true
-                  /usr/bin/systemctl show "$unit" \
-                    --property=ActiveState \
-                    --property=SubState \
-                    --property=Result \
-                    --property=ExecMainCode \
-                    --property=ExecMainStatus \
-                    --property=MainPID \
-                    --property=ControlGroup \
-                    > "${marker_prefix}-poll-post-cleanup-state" 2>&1 || true
+
+                  poll_codex_alive=unknown
+                  if [ -s "${marker_prefix}-codex-identity" ]; then
+                    read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
+                    if [ -r "/proc/$poll_codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
+                      poll_codex_alive=true
+                    else
+                      poll_codex_alive=false
+                    fi
+                  fi
+                  printf "%s\n" "$poll_codex_alive" > "${marker_prefix}-codex-alive-at-poll-deadline"
+
+                  /usr/bin/timeout 5s /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit" >/dev/null 2>&1 || true
+                  printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-cleanup-issued"
                   exit 0
                 fi
                 sleep 1
@@ -728,6 +763,10 @@ jobs:
           [ -s "${marker_prefix}-poll-return" ] && poll_return=true
           poll_deadline=false
           [ -s "${marker_prefix}-poll-deadline" ] && poll_deadline=true
+          codex_alive_at_poll_terminal=missing
+          [ -s "${marker_prefix}-codex-alive-at-poll-terminal" ] && codex_alive_at_poll_terminal="$(cat "${marker_prefix}-codex-alive-at-poll-terminal")"
+          codex_alive_at_poll_deadline=missing
+          [ -s "${marker_prefix}-codex-alive-at-poll-deadline" ] && codex_alive_at_poll_deadline="$(cat "${marker_prefix}-codex-alive-at-poll-deadline")"
 
           elapsed_ns="$(( $(date +%s%N) - $(cat "${marker_prefix}-start") ))"
           elapsed_ms="$(( elapsed_ns / 1000000 ))"
@@ -748,12 +787,13 @@ jobs:
             terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-deadline-state")"
           fi
 
-          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s codex_alive_at_waiter_return=%s codex_alive_at_terminal=%s codex_alive_at_deadline=%s waiter_return=%s waiter_stuck=%s waiter_kill_sent=%s waiter_alive_after_kill=%s observer_terminal=%s observer_deadline=%s poll_return=%s poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
+          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s codex_alive_at_waiter_return=%s codex_alive_at_terminal=%s codex_alive_at_deadline=%s waiter_return=%s waiter_stuck=%s waiter_kill_sent=%s waiter_alive_after_kill=%s observer_terminal=%s observer_deadline=%s poll_return=%s poll_deadline=%s codex_alive_at_poll_terminal=%s codex_alive_at_poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
             "$PROBE_MODE" "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" \
             "$request_path" "$request_length" "$codex_alive" \
             "$codex_alive_at_waiter_return" "$codex_alive_at_terminal" "$codex_alive_at_deadline" \
             "$waiter_return" "$waiter_stuck" "$waiter_kill_sent" "$waiter_alive_after_kill" \
             "$observer_terminal" "$observer_deadline" "$poll_return" "$poll_deadline" \
+            "$codex_alive_at_poll_terminal" "$codex_alive_at_poll_deadline" \
             "$systemd_status" "$sudo_available" "$no_new_privs" "$groups_status" \
             "$cap_bnd" "$codex_cgroup" "$terminal_state"
 
@@ -795,12 +835,22 @@ jobs:
               exit 1
             fi
           else
-            test "$poll_return" = true
-            test "$poll_deadline" = false
-            test "$codex_alive" = false
-            test "$elapsed_ms" -ge 680000
-            test "$elapsed_ms" -lt 770000
-            test -s "${marker_prefix}-poll-terminal-state"
+            if [ "$poll_return" = true ]; then
+              test "$poll_deadline" = false
+              test "$codex_alive_at_poll_terminal" = false
+              test "$codex_alive" = false
+              test "$elapsed_ms" -ge 680000
+              test "$elapsed_ms" -lt 770000
+              test -s "${marker_prefix}-poll-terminal-state"
+            elif [ "$poll_deadline" = true ]; then
+              test "$elapsed_ms" -ge 730000
+              test "$elapsed_ms" -lt 780000
+              test "$codex_alive_at_poll_deadline" != missing
+              test -s "${marker_prefix}-poll-deadline-state"
+            else
+              echo 'Poll probe produced neither terminal nor deadline result.' >&2
+              exit 1
+            fi
           fi
 
       - name: Cleanup localhost probe server
