@@ -1206,6 +1206,7 @@ Preview表示に個人情報を過剰に含めず、対象確認と影響理解�
 - 各対象Reservationの `classification = NULL`、`automatic_classification` は保持
 - 対応する `SlotOccupancy` 終了
 - 開始前Slotを最新状態から予約可否判定可能な状態へ戻す
+- 対象Studentを論理宛先とする通常予約系の未配信 `NotificationIntent` のうち、客観的に失効するものを失効終端として確定
 - 個人情報削除・匿名化の後続処理が必要であることを失われない形で永続化
 - `AuditLog`
 
@@ -1250,6 +1251,8 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 ### 17.5 通知・履歴・成功Response
 
 `BR-116` に従い、生徒削除に伴う `system_cancelled(reason_code = student_deleted)` について専用キャンセルメールNotificationIntentは生成しない。
+
+削除確定時は、対象Studentを論理宛先とする通常予約系の未配信Intentのうち客観的に失効するものを、削除Transaction内で配信成功とは区別した失効終端として整合させる。失効済みIntentは新たに再送せず、未配信であった事実、失効理由・時刻等の必要最小限の監査・障害解析情報だけを既存Retention方針の範囲で扱う。通知履歴・Deliveryを理由に氏名・連絡先メール等の削除対象個人情報を保持・復元しない。
 
 開始済み・過去Reservationは削除を理由に取消さず、必要な業務履歴として扱う。ただし、個人情報の削除・匿名化後に不要な直接個人情報を履歴へ残さず、`BR-126〜BR-128` の保持・再登録・Backup方針と整合させる。
 
@@ -1361,7 +1364,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 ## 19. 管理者向け通知失敗Dashboard・個別再送API基本形
 
-本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。
+本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく、現在も通知義務が有効で管理者対応を要する `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。
 
 ### 19.1 主要Endpointと認可
 
@@ -1376,21 +1379,21 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 ### 19.2 Dashboard・Query View
 
-未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通常予約系の未解決NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。
+現在管理者対応を要する未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通知義務が有効な通常予約系の未解決NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。業務上の客観的な有効条件を失って失効したIntentは、未配信であっても警告件数・通常の失敗一覧から除外する。
 
-失敗一覧では、少なくとも種別、予約日時、生徒名、失敗時の実送信先、失敗理由、失敗日時、再送状態を画面表示可能なApplication View Modelとして返せる形とする。詳細Queryでは、通知内容の要約、Delivery Attempt履歴、今回の再送先、再送可否および必要な対応を確認できる形とする。再送前の確認はこの詳細Queryを基に管理画面で行い、専用Preview APIは設けない。
+失敗一覧では、少なくとも種別、予約日時、生徒名、失敗時の実送信先、失敗理由、失敗日時、再送状態を画面表示可能なApplication View Modelとして返せる形とする。詳細Queryでは、通知内容の要約、Delivery Attempt履歴、今回の再送先、再送可否および必要な対応を確認できる形とする。詳細確認後に通知義務が失効した場合は、古い表示を根拠に再送可能とせず、最新の再送不可状態または再確認要求を返せるようにする。再送前の確認はこの詳細Queryを基に管理画面で行い、専用Preview APIは設けない。
 
 Provider等の生Error、Message ID、内部技術情報を画面または公開APIへ露出せず、失敗理由は安全なApplication Errorまたは業務上の理由へ抽象化する。氏名・送信先その他の個人情報は、管理者の対応に必要な最小限に限定し、削除・保持要求を優先する。
 
 ### 19.3 個別再送の状態と成功Response
 
-個別再送は最終失敗後に管理者が明示的に開始する。再送受付済み、送信中、Provider受理済みで配信結果待ちのいずれも未解決を維持し、その間の並行する追加再送を許可しない。最終失敗では未解決を維持して最新理由を表示し、Provider受理後の結果が不明な場合は結果確認中として盲目的な追加送信を行わない。
+個別再送は最終失敗後に管理者が明示的に開始する。再送受付済み、送信中、Provider受理済みで配信結果待ちのいずれも未解決を維持し、その間の並行する追加再送を許可しない。最終失敗では通知義務が有効な限り未解決を維持して最新理由を表示し、Provider受理後の結果が不明な場合は結果確認中として盲目的な追加送信を行わない。
 
-再送要求の永続化に成功したResponseは `202 Accepted` とする。これは「再送を受け付けた」ことを表し、Provider受理または配信成功を表さない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとする。開封確認は要求しない。
+再送要求の永続化に成功したResponseは `202 Accepted` とする。これは「再送を受け付けた」ことを表し、Provider受理または配信成功を表さない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとする。開封確認は要求しない。通知義務の失効は配信成功とは別の終端であり、Provider配信成功として表示・集計しない。
 
 ### 19.4 Confirm時再検証・Transaction境界
 
-再送Commandは、最新の未解決状態、対象通知の再送可否、実送信時に有効な宛先、および先行する再送・解決状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。
+再送Commandは、最新の未解決状態、通知種別固有の客観的な有効条件、対象通知の再送可否、実送信時に有効な宛先、および先行する再送・解決・失効状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。物理的な失効更新が未反映でも、現在の業務状態から通知義務が失効している場合は送信しない。
 
 正常受付では `05_BookingAndConcurrency.md` §13.8を正とし、再送要求の永続化、同時再送防止、Admin Actorと対象通知を追跡できるAuditLogを同一の業務Transactionで確定する。外部Providerへの送信はCommit後に行う。再送は元のReservation、確定時classification、アプリ内通知の確認状態を変更せず、送信失敗で確定済み業務状態をRollbackしない。
 
@@ -1398,11 +1401,15 @@ Provider等の生Error、Message ID、内部技術情報を画面または公開
 
 通常予約系通知の再送先は `05_BookingAndConcurrency.md` §13.4に従う実送信時の有効な連絡先とし、任意宛先入力は提供しない。失敗時の実送信先と今回の再送先を区別し、元のIntentが表す業務事実、予約確認の確定時classification、元の発生時点を保持する。再送であることを明示し、現在の業務状態はシステム画面で確認できるようにする。
 
-### 19.5 Retry境界と未決事項
+### 19.5 通知義務の失効とRetry境界
 
-Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。
+`05_BookingAndConcurrency.md` §13.9を正とし、配信結果と通知義務の有効性を別の意味として扱う。通知種別ごとの客観的な有効条件を失ったIntentは、配信成功とは区別した失効終端として以後再送しない。本節の失効は管理者の任意判断による「対応済み」を意味しない。
 
-削除済み生徒、期限切れReminder等の再送抑止・終了状態、認証・所有確認メールおよび旧メールSecurity Noticeへの適用は、本節で決定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+生徒削除確定後は、その生徒を論理宛先とする通常予約系の未配信Intentを新たに再送しない。未解決通知を理由に氏名・連絡先メール等の個人情報を保持・復元せず、個人情報削除要求を優先する。ReminderはLesson開始前かつ対象ReservationがReminder対象として有効な間だけ再送可能とし、Lesson開始時刻の到来、またはCancellation等でLessonが実施されないことが確定した場合は失効させる。
+
+生徒削除・Reservation取消等の明示的Commandで失効が確定する場合は、可能な限り原因となる業務Transactionで失効を整合させる。Lesson開始時刻到来だけのために専用失効Jobを正しさの前提とせず、Dashboard Queryと再送Commandでも現在時刻・最新業務状態から有効性を再評価する。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。失効済みIntent専用の恒常的な閲覧UIは初期リリースへ追加しない。
+
+Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。認証・所有確認メールおよび旧メールSecurity Noticeへの適用境界、自動Retry上限到達後の最終処理、任意の管理者「対応済み」は本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
 
 ## 20. 詳細設計へ送る事項
 
@@ -1447,6 +1454,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - 旧メールSecurity Noticeの通知義務・Delivery・失敗時表示の具体形
 - プロフィール代理支援固有のConflict / Business Rejection Application Error Code
 - 通知失敗DashboardのPagination / Filter / Sort、Response Schema、表示用状態・業務理由の具体形
+- NotificationIntentの配信結果と通知義務有効性を分離する物理状態、失効理由、永続化／導出方式、DB Schema
 - 再送要求の具体的な識別子、保存、Delivery Attempt状態遷移、試行単位の冪等性Guard
 - Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合
 
@@ -1498,8 +1506,9 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - BR-091 連絡先メール一意
 - BR-099 セキュリティ利用停止
 - BR-100 生徒削除
-- BR-116 スクール都合キャンセル通知
+- BR-113 リマインド
 - BR-114 通知失敗
+- BR-116 スクール都合キャンセル通知
 - BR-120 最小プロフィール
 - BR-122 削除権限
 - BR-123 削除時即時無効化
@@ -1518,6 +1527,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - REQ-005 予約履歴
 - REQ-007 プロフィール変更
 - REQ-008 生徒一括予約
+- REQ-102 24時間Reminder
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
 - REQ-105 通知失敗管理
@@ -1536,6 +1546,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - REQ-311 生徒削除
 - REQ-312 削除時予約処理
 - REQ-313 スクール都合キャンセル
+- REQ-314 通知失敗Dashboard
 - REQ-315 欠席記録
 - REQ-316 セキュリティ利用停止管理
 - REQ-317 プロフィール代理支援
@@ -1558,6 +1569,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - 一括予約ConfirmのExpected Stateは、選択Slot集合、対象月、最新N、Slot予約可能状態、新規classification、既存未開始Reservationへのclassification影響を再確認する業務的Snapshotとする。Serverは最新確定状態から再計算し、ClientのExpected Stateを更新値・正本として扱わない。Expected Stateとは別に操作識別子によるIdempotencyを適用し、同一内容の再送で新規Reservationを重複作成せず、異なる内容での同一識別子再利用を別操作として実行せずRejectする方針をIssue #72で確定した。
 - 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
 - 通知失敗Dashboardは通常予約系の未解決NotificationIntentを件数単位とし、詳細Queryによる確認後に個別手動再送を受け付ける。再送受付は202であり、Provider配信成功確認まで解決としない。再送は同じIntentのDelivery Attemptとして扱い、同時再送を防ぎ、元の業務状態を変更しない方針を2026-09-06に確定した。
+- 要求仕様v1.20に従い、配信結果と通知義務の有効性を分離し、客観的な有効条件を失ったIntentは配信成功とは別の失効終端として以後再送しない。生徒削除では個人情報削除を優先し、ReminderはLesson開始前かつ対象Reservationが有効な間だけ再送可能とする。Dashboardは現在管理者対応を要する未解決だけを警告・通常一覧対象とし、Query / 再送Commandでも最新状態から有効性を再評価する方針を2026-09-19に確定した。
 - 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。要求仕様v1.8の `AC-301-010` と整合する。
 - 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
 - 公開済み月の将来枠変更は再公開を要求せず、正常Commit後ただちに最新確定状態として扱う。
@@ -1574,7 +1586,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - Security Suspensionは休会・退会・削除・Reservation取消とは別のSecurity Access Stateとして扱い、設定・解除には専用Preview APIを設けず管理画面上の確定前説明で `AC-316-001〜003` を満たす。
 - Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は認証・Session基本設計で確定する。
 - Security SuspensionとStudent Write Commandの並行時は先行正常Commitを優先し、停止が先行Commitされた場合は後続Student WriteをCommit時Guardで成立させない。停止・解除自体ではReservation、SlotOccupancy、月間算入、classificationを変更しない。
-- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
+- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、客観的に失効する通常予約系未配信NotificationIntentの失効終端、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
 - 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再Previewへ戻す。Lesson開始済み・過去Reservationは削除を理由に遡及キャンセルしない。
 - 生徒削除Commandの成功と個人情報の実削除・匿名化完了は分離し、後者は24時間以内の後続処理とする。生徒削除起因system cancellationには専用キャンセルメールを生成しない。
 - プロフィール代理支援は氏名変更と連絡先メール変更開始を別Commandとし、汎用プロフィールPATCHへ統合しない。氏名は正常Commitで即時反映し、連絡先メールは新メール所有確認完了まで旧メールを有効な連絡先として維持する。

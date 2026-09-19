@@ -4,7 +4,7 @@
 
 ## 現行ベースライン
 
-- 要求仕様: v1.19
+- 要求仕様: v1.20
 - 対象REQ: 64（機能44 + 非機能20）
 - 対象AC: 221
 - 対応済AC: 208
@@ -14,7 +14,7 @@
 - 合計TC: 156
 - AC Coverage: 94.1%
 
-v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_RequirementsV1.6V1.7TestSpecification.md` および `04a_RequirementsTestTraceability_v1.6_v1.7.md` で、一括予約を追加したv1.18 / v1.19の変更は `02c_BulkReservationTestSpecification.md` および `04b_BulkReservationTraceability.md` で追補する。
+v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_RequirementsV1.6V1.7TestSpecification.md` および `04a_RequirementsTestTraceability_v1.6_v1.7.md` で、一括予約を追加したv1.18 / v1.19の変更は `02c_BulkReservationTestSpecification.md` および `04b_BulkReservationTraceability.md` で追補する。v1.20は既存REQ / ACの通知ライフサイクル意味を明確化し新規AC IDを追加しないため、`02_FunctionalTestSpecification.md` の既存 `TC-F-102-01` / `TC-F-105-02` / `TC-F-314-01` を拡張して回帰確認する。
 
 ## 適用方針
 

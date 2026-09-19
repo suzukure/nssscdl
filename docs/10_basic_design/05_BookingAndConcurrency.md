@@ -733,19 +733,31 @@ Intent単位の通知義務の同一性とDelivery Attempt単位の再送要求�
 
 ### 13.8 通知失敗の個別手動再送
 
-`REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` に従い、通常予約系Intentの最終配信失敗は、同じ通知義務（`NotificationIntent`）を単位として管理者が確認し、個別に手動再送できる。配送試行ごとに未解決件数を重複計上しない。一括予約Confirmの予約確認は、既存どおり1操作につき1 Intent・1通であり、複数の予約日時をそのIntentの通知内容として確認できる。
+`REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` に従い、通常予約系Intentのうち最終配信失敗かつ通知義務が現在も有効なものは、同じ通知義務（`NotificationIntent`）を単位として管理者が確認し、個別に手動再送できる。配送試行ごとに未解決件数を重複計上しない。一括予約Confirmの予約確認は、既存どおり1操作につき1 Intent・1通であり、複数の予約日時をそのIntentの通知内容として確認できる。
 
 手動再送では新しいNotificationIntentを作成しない。同一Intentに属する新しいDelivery Attemptを開始する。通信上同じ再送要求を再送した場合は同じDelivery Attemptとして冪等に扱い、最終失敗後に管理者が明示的に開始した新たな手動再送だけを、同じIntentに属する別のDelivery Attemptとする。Intent単位の通知義務の同一性と、Delivery Attempt単位の再送要求の同一性を混同しない。具体的な識別子、保存期間、一意性Guardは詳細設計で定める。
 
-再送Commandは、最新の未解決状態、対象Intentの再送可否、実送信時に有効な連絡先、先行する再送または解決状態をTransaction内で再検証する。管理者が詳細で確認した宛先、再送可否または重要な状態が変化していた場合は、確定状態を無言で上書き・送信せず、原則Conflictとして最新状態の再確認へ戻す。
+再送Commandは、最新の未解決状態、通知種別固有の客観的な有効条件、対象Intentの再送可否、実送信時に有効な連絡先、先行する再送・解決・失効状態をTransaction内で再検証する。管理者が詳細で確認した宛先、再送可否または重要な状態が変化していた場合は、確定状態を無言で上書き・送信せず、原則Conflictとして最新状態の再確認へ戻す。
 
 正常受付では、再送要求の永続化、同時再送を防ぐ状態、認証済み管理者Actorと対象Intentを追跡できるAuditLogを同一Transactionで確定する。外部Providerへの送信はCommit後に行う。再送操作は元のReservation、確定時classification、アプリ内通知の確認状態を変更せず、送信失敗・結果不明を理由にそれらの確定済み業務状態をRollbackしない。
 
-再送受付済み、送信中、Provider受理済みで配信結果待ちの間は未解決を維持し、並行する追加再送を許可しない。Provider受理だけでは解決としない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとし、開封確認は要求しない。最終失敗では未解決を維持して最新の業務上の失敗理由を表示する。Provider受理後の結果が不明な場合も結果確認中として扱い、盲目的な追加送信を行わない。Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。
+再送受付済み、送信中、Provider受理済みで配信結果待ちの間は未解決を維持し、並行する追加再送を許可しない。Provider受理だけでは解決としない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとし、開封確認は要求しない。最終失敗では通知義務が有効な限り未解決を維持して最新の業務上の失敗理由を表示する。通知義務が客観的な有効条件を失った場合は13.9の失効として扱い、配信成功と同一視しない。Provider受理後の結果が不明な場合も結果確認中として扱い、盲目的な追加送信を行わない。Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。
 
 通常予約系Intentの再送先は13.4に従い、実送信時の有効な連絡先とする。失敗時に実際に送った宛先と今回の再送先を区別して記録・表示できるようにし、管理者による任意宛先入力は提供しない。元のIntentが表す業務事実を保持し、予約確認の確定時classificationを再送時の最新classificationへ無言で置換しない。再送であることと元の発生時点を明示し、現在の業務状態はシステム画面で確認できるようにする。
 
-削除済み生徒、期限切れReminder等の再送抑止・終了状態、認証・所有確認メールおよび旧メールSecurity Noticeへの適用は、この通常予約系の基本形の対象外である。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合は、未検証のProvider能力を保証せず、後続の通知設計・詳細設計で具体化する。
+### 13.9 通知義務の失効
+
+`BR-113 / BR-114 / AC-102-001 / AC-105-003 / AC-314-001` に従い、`NotificationIntent` の配信結果と通知義務の有効性を別の意味として扱う。Provider配信成功による解決と、業務上の客観的な有効条件を失ったことによる失効終端を同一状態・同一意味にしない。配信失敗しただけでは失効せず、通知種別ごとの客観条件を満たさなくなった場合だけ失効できる。本節の失効は管理者の任意判断による「対応済み」を意味しない。
+
+生徒削除が確定した場合、その生徒を論理宛先とする通常予約系の未配信Intentを新たに再送しない。未解決通知を理由に氏名・連絡先メール等の削除対象個人情報を保持延長・復元せず、`REQ-934 / AC-940-005` の削除・匿名化を優先する。削除Commandによって客観的に失効が確定する対象Intentは、可能な限り削除の業務Transaction境界で失効を整合させる。
+
+Reminderは、Lesson開始前かつ対象ReservationがReminder対象として有効な間だけ通知義務を持つ。24時間前の初回送信が失敗してもこの条件を満たす限り時刻だけを理由に直ちに失効させない。Lesson開始時刻の到来、または生徒キャンセル、スクール都合キャンセル、生徒削除起因のsystem cancellation等により対象ReservationでLessonが実施されないことが確定した場合は、既存Reminder Intentを失効させ以後再送しない。
+
+生徒削除やReservation取消等、明示的Commandで失効が確定する場合は可能な限りその業務Transactionで失効を確定する。一方、Lesson開始時刻の到来のような時刻経過だけのために専用の失効更新Jobを正しさの前提としない。Dashboard Queryおよび再送Commandは現在時刻と最新業務状態から通知義務の有効性を再評価し、物理的な失効更新がまだ反映されていなくても、業務上の有効条件を失ったIntentを再送可能として扱わない。再送Commandを最終Guardとし、詳細確認後に削除、取消、Lesson開始等が先行した場合も送信しない。
+
+Dashboard警告件数と通常の通知失敗一覧は、現在管理者対応を要する未解決Intentを対象とする。失効済みIntentは未配信でも警告件数・通常再送対象から除外するが、配信成功として扱わない。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、その配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。初期リリースでは失効済み通知専用の恒常的な閲覧UIを追加しない。通知義務が存在したこと、未配信であったこと、失効理由・時刻等は既存Retention方針の範囲で必要最小限保持するが、生徒削除では通知履歴・Deliveryを理由に氏名・連絡先メール等の個人情報を保持しない。
+
+配信結果と通知義務有効性を分離する物理状態、失効理由、永続化・導出の具体方式、DB Schemaは詳細設計へ送る。認証・所有確認メールおよび旧メールSecurity Noticeへの適用境界は別途確定し、自動Retry上限到達後の最終処理・任意の管理者「対応済み」も本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合は、未検証のProvider能力を保証せず、後続の通知設計・詳細設計で具体化する。
 
 ## 14. 未来Slotの現在状態Invariant
 
@@ -976,6 +988,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
 - 通知失敗の再送要求・Delivery Attemptの具体的な識別子、保存、冪等性Guard、状態遷移
+- NotificationIntentの配信結果と通知義務有効性を分離する物理状態、失効理由、永続化／導出方式、DB Schema
 - Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価
 - 一括予約ConfirmのExpected Stateの具体表現、Guard SQL、集合書込みSQL、Conflict Responseの具体Wire表現
 - 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送Response表現
@@ -1005,6 +1018,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - AuditLogを成功した重要業務Commandと同一Transactionへ含め、監査単位を業務Commandとし、Conflict監査を分離する方針は2026-08-28に確定した。
 - NotificationIntentを通知義務として業務状態と同一Transactionへ含め、外部送信とDelivery状態を分離する方針は2026-08-28に確定した。
 - 通知失敗Dashboardは通常予約系の未解決NotificationIntentを件数単位とし、個別手動再送では同一Intentに新たなDelivery Attemptを開始する。再送受付・同時再送防止・管理者Actorと対象IntentのAuditLogを同一Transactionで確定し、外部送信はCommit後とする方針を2026-09-06に確定した。Provider配信成功確認まで未解決を維持し、Provider受理だけでは解決としない。
+- 要求仕様v1.20に従い、配信結果と通知義務の有効性を分離し、客観的な有効条件を失ったIntentは配信成功とは別の失効終端として以後再送しない。生徒削除では個人情報削除を優先し、ReminderはLesson開始前かつ対象Reservationが有効な間だけ再送可能とする。明示的な業務Commandで確定する失効は可能な限り同一Transactionで整合させ、時刻経過による失効は専用Jobを正しさの前提とせずQuery / Commandで最新状態から再評価する方針を2026-09-19に確定した。
 - D1重要Write Commandで `withSession("first-primary").batch()` とPrepared Statementを基本とし、Transaction内Guard、集合指向SQL、安定したApplication Errorへの変換、Writeの盲目的Retry禁止を採用する方針は2026-08-28に確定した。
 - 利用者向け内部エラー非露出の方針は要求仕様v1.4の `POL-014` / `BR-133` / `REQ-914` として上位要求化し、本書4章をその実現設計としてトレースする。
 - Invariant違反について、Command Guardと1時間ごとのIntegrity Scanの二系統検知、IntegrityIncidentの独立永続化、内部異常コード、原則503への抽象化、影響対象単位のFail Closed、Alert集約、明示Repair、再Scan後の解決判定を2026-08-28に確定した。
