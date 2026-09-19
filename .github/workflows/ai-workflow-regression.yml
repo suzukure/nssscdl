@@ -215,6 +215,9 @@ jobs:
                   prefix.with_name(prefix.name + "-request").write_text(
                       f"path={self.path}\ncontent_length={length}\n"
                   )
+                  prefix.with_name(prefix.name + "-request-clock").write_text(
+                      f"{time.time_ns()} {time.clock_gettime_ns(time.CLOCK_BOOTTIME)}\n"
+                  )
                   time.sleep(730)
 
               def log_message(self, format, *args):
@@ -284,6 +287,7 @@ jobs:
 
           marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
           start_time="$(awk '{print $22}' /proc/$$/stat)"
+          printf '%s %s\n' "$(date +%s%N)" "$(cut -d ' ' -f1 /proc/uptime)" > "${marker_prefix}-launcher-clock"
           printf '%s %s\n' "$$" "$start_time" > "${marker_prefix}-codex-identity"
           cat /proc/$$/cgroup > "${marker_prefix}-codex-cgroup"
 
@@ -457,7 +461,9 @@ jobs:
               )
 
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-before"
+              printf "%s %s\n" "$(date +%s%N)" "$(cut -d " " -f1 /proc/uptime)" > "${marker_prefix}-bootstrap-before-clock"
               "${systemd_cmd[@]}" --no-block "${payload[@]}"
+              printf "%s %s\n" "$(date +%s%N)" "$(cut -d " " -f1 /proc/uptime)" > "${marker_prefix}-bootstrap-after-clock"
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-return"
 
               /usr/bin/systemd-run \
@@ -573,14 +579,92 @@ jobs:
         shell: bash
         env:
           PROBE_MODE: ${{ matrix.mode }}
+          PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          test -s "${marker_prefix}-observer-gate-return"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import time
+          from decimal import Decimal
+
+          def classify(identity, proc_root):
+              result = dict(classification="unknown", reason="invalid_identity",
+                            pid=None, expected_start=None, observed_start=None, proc_state=None)
+              parts = identity.split()
+              if len(parts) != 2 or not all(p.isascii() and p.isdecimal() for p in parts):
+                  return result
+              pid, start = map(int, parts)
+              if pid <= 1 or start <= 0:
+                  return result
+              result.update(pid=pid, expected_start=start)
+              try:
+                  raw = (proc_root / str(pid) / "stat").read_text()
+                  # comm may contain spaces and parentheses; fields after the last ')' start at field 3.
+                  if not raw.startswith(str(pid) + " (") or ") " not in raw:
+                      raise ValueError()
+                  fields = raw.rsplit(") ", 1)[1].split()
+                  observed = int(fields[19])
+                  if len(fields[0]) != 1 or observed <= 0:
+                      raise ValueError()
+                  result.update(observed_start=observed, proc_state=fields[0])
+                  result.update(classification="same_identity_present" if observed == start else "absent",
+                                reason="identity_match" if observed == start else "pid_reused")
+              except FileNotFoundError:
+                  result.update(classification="absent", reason="proc_not_found")
+              except (OSError, ValueError, IndexError):
+                  result.update(reason="proc_unreadable_or_invalid")
+              return result
+
+          def main():
+              prefix = pathlib.Path(os.environ["RUNNER_TEMP"]) / ("codex-systemd-" + os.environ["PROBE_MODE"])
+              def marker(suffix):
+                  return prefix.with_name(prefix.name + "-" + suffix)
+              try:
+                  identity = marker("codex-identity").read_text()
+                  gate = marker("observer-gate-return").read_text().strip()
+                  if not gate.isdecimal():
+                      raise ValueError()
+                  result = classify(identity, pathlib.Path("/proc"))
+              except (OSError, ValueError):
+                  result = classify("", pathlib.Path("/proc"))
+                  result["reason"] = "startup_evidence_unavailable"
+              result.update(schema_version=1, run_id=os.environ["GITHUB_RUN_ID"],
+                            run_attempt=os.environ["GITHUB_RUN_ATTEMPT"], head_sha=os.environ["PROBE_HEAD"],
+                            snapshot_utc_ns=time.time_ns(),
+                            snapshot_boottime_ns=time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                            cleanup_kill_planned=result["classification"] == "same_identity_present")
+              clocks = {}
+              for suffix in ("launcher-clock", "bootstrap-before-clock", "bootstrap-after-clock", "request-clock"):
+                  try:
+                      utc, boot = marker(suffix).read_text().split()
+                      boot_ns = int(boot) if suffix == "request-clock" else int(Decimal(boot) * 1000000000)
+                      utc_ns = int(utc)
+                      if min(boot_ns, utc_ns) <= 0:
+                          raise ValueError()
+                      clocks[suffix] = dict(utc_ns=utc_ns, boottime_ns=boot_ns,
+                          elapsed_to_snapshot_ns=result["snapshot_boottime_ns"] - boot_ns)
+                  except (OSError, ValueError, ArithmeticError):
+                      clocks[suffix] = None
+              result["clocks"] = clocks
+              evidence = pathlib.Path(os.environ["RUNNER_TEMP"]) / "codex-probe-evidence"
+              evidence.mkdir(exist_ok=True)
+              # Only explicitly selected numeric/state fields; no environment dump or raw marker/log upload.
+              (evidence / "snapshot.json").write_text(json.dumps(result, indent=2) + "\n")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write("classification=" + result["classification"] + "\n")
+              marker("snapshot-classification").write_text(result["classification"] + "\n")
+
+          if __name__ == "__main__":
+              main()
+          PY
+          classification="$(cat "${marker_prefix}-snapshot-classification")"
+          test "$classification" != unknown
           read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
           poll_codex_alive=false
-          if [ -r "/proc/$poll_codex_pid/stat" ] && \
-            [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
+          if [ "$classification" = same_identity_present ]; then
             poll_codex_alive=true
           fi
           printf 'CodexPID=%s\nCodexAlive=%s\nObservation=proc-after-sleep\n' \
@@ -599,6 +683,23 @@ jobs:
           fi
           printf 'PROBE_TRACE snapshot-return epoch=%s alive=%s\n' \
             "$(date +%s)" "$poll_codex_alive"
+
+      - name: "Evidence: original Codex PID absent"
+        if: always() && steps.probe.outputs.classification == 'absent'
+        timeout-minutes: 1
+        run: jq -e '.classification == "absent"' "$RUNNER_TEMP/codex-probe-evidence/snapshot.json"
+
+      - name: "Evidence: same Codex PID present"
+        if: always() && steps.probe.outputs.classification == 'same_identity_present'
+        timeout-minutes: 1
+        run: jq -e '.classification == "same_identity_present"' "$RUNNER_TEMP/codex-probe-evidence/snapshot.json"
+
+      - name: "Evidence: observation unavailable"
+        if: always() && steps.probe.outputs.classification != 'absent' && steps.probe.outputs.classification != 'same_identity_present'
+        timeout-minutes: 1
+        env:
+          CLASSIFICATION: ${{ steps.probe.outputs.classification }}
+        run: test -z "$CLASSIFICATION" || test "$CLASSIFICATION" = unknown
 
       - name: Diagnose actual Codex cgroup probe
         if: always()
@@ -785,6 +886,18 @@ jobs:
               exit 1
             fi
           fi
+
+      - name: Upload Codex PID snapshot evidence
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-pid-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/codex-probe-evidence/snapshot.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
 
       - name: Cleanup localhost probe server
         if: always()
