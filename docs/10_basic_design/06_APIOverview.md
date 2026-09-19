@@ -1206,6 +1206,7 @@ Preview表示に個人情報を過剰に含めず、対象確認と影響理解�
 - 各対象Reservationの `classification = NULL`、`automatic_classification` は保持
 - 対応する `SlotOccupancy` 終了
 - 開始前Slotを最新状態から予約可否判定可能な状態へ戻す
+- 対象Studentを論理宛先とする通常予約系の未配信 `NotificationIntent` のうち、客観的に失効するものを失効終端として確定
 - 個人情報削除・匿名化の後続処理が必要であることを失われない形で永続化
 - `AuditLog`
 
@@ -1250,6 +1251,8 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 ### 17.5 通知・履歴・成功Response
 
 `BR-116` に従い、生徒削除に伴う `system_cancelled(reason_code = student_deleted)` について専用キャンセルメールNotificationIntentは生成しない。
+
+削除確定時は、対象Studentを論理宛先とする通常予約系の未配信Intentのうち客観的に失効するものを、削除Transaction内で配信成功とは区別した失効終端として整合させる。失効済みIntentは新たに再送せず、未配信であった事実、失効理由・時刻等の必要最小限の監査・障害解析情報だけを既存Retention方針の範囲で扱う。通知履歴・Deliveryを理由に氏名・連絡先メール等の削除対象個人情報を保持・復元しない。
 
 開始済み・過去Reservationは削除を理由に取消さず、必要な業務履歴として扱う。ただし、個人情報の削除・匿名化後に不要な直接個人情報を履歴へ残さず、`BR-126〜BR-128` の保持・再登録・Backup方針と整合させる。
 
@@ -1583,7 +1586,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - Security Suspensionは休会・退会・削除・Reservation取消とは別のSecurity Access Stateとして扱い、設定・解除には専用Preview APIを設けず管理画面上の確定前説明で `AC-316-001〜003` を満たす。
 - Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は認証・Session基本設計で確定する。
 - Security SuspensionとStudent Write Commandの並行時は先行正常Commitを優先し、停止が先行Commitされた場合は後続Student WriteをCommit時Guardで成立させない。停止・解除自体ではReservation、SlotOccupancy、月間算入、classificationを変更しない。
-- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
+- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、客観的に失効する通常予約系未配信NotificationIntentの失効終端、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
 - 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再Previewへ戻す。Lesson開始済み・過去Reservationは削除を理由に遡及キャンセルしない。
 - 生徒削除Commandの成功と個人情報の実削除・匿名化完了は分離し、後者は24時間以内の後続処理とする。生徒削除起因system cancellationには専用キャンセルメールを生成しない。
 - プロフィール代理支援は氏名変更と連絡先メール変更開始を別Commandとし、汎用プロフィールPATCHへ統合しない。氏名は正常Commitで即時反映し、連絡先メールは新メール所有確認完了まで旧メールを有効な連絡先として維持する。
