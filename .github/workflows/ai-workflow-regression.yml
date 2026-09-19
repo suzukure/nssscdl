@@ -190,6 +190,144 @@ jobs:
           path.write_text(json.dumps(data, sort_keys=True) + "\n")
           PY
 
+      - name: Prepare bounded connection diagnostics
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/idle-connection-probe.py" <<'PY'
+          import json, os, pathlib, socket, stat, subprocess, sys, time, urllib.parse
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence"
+          out.mkdir(exist_ok=True)
+          mode, phase = sys.argv[1:3]
+          if mode == "inventory":
+              rows, errors = [], []
+              def walk_error(error):
+                  errors.append({"path": error.filename, "errno": error.errno})
+              for root, dirs, files in os.walk("/run", followlinks=False, onerror=walk_error):
+                  for name in files:
+                      p = os.path.join(root, name)
+                      try:
+                          s = os.lstat(p)
+                          if stat.S_ISSOCK(s.st_mode):
+                              rows.append({"path": p, "uid": s.st_uid, "gid": s.st_gid,
+                                           "mode": oct(stat.S_IMODE(s.st_mode)), "dev": s.st_dev, "inode": s.st_ino})
+                      except OSError as e:
+                          errors.append({"path": p, "errno": e.errno})
+              data = {"phase": phase, "utc_ns": time.time_ns(), "sockets": rows, "errors": errors}
+              p = out / ("sockets-" + phase + ".json")
+              p.write_text(json.dumps(data, sort_keys=True) + "\n")
+              p.chmod(0o644)
+              sys.exit(0)
+          if mode != "network":
+              raise SystemExit(2)
+          results_url = urllib.parse.urlsplit(os.environ.get("ACTIONS_RESULTS_URL", ""))
+          results_host = results_url.hostname or ""
+          if results_url.scheme != "https" or not results_host.endswith(".actions.githubusercontent.com"):
+              results_host = ""
+          targets = {"github": "github.com", "api": "api.github.com", "results": results_host}
+          records = {}
+          for key, host in targets.items():
+              r = {"host": host, "dns": "unavailable", "https": "unavailable", "classification": "unknown"}
+              if host:
+                  try:
+                      p = subprocess.run([sys.executable, "-c",
+                          "import socket,sys; socket.getaddrinfo(sys.argv[1],443)", host],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                      r["dns"] = "ok" if p.returncode == 0 else "error"
+                  except subprocess.TimeoutExpired:
+                      r["dns"] = "timeout"
+                  try:
+                      p = subprocess.run(["curl", "--disable", "--silent", "--output", "/dev/null",
+                          "--write-out", "%{http_code}", "--connect-timeout", "3", "--max-time", "5",
+                          "--proto", "=https", "https://" + host + "/"],
+                          capture_output=True, text=True, timeout=6)
+                      r["curl_exit"] = p.returncode
+                      r["http_status"] = p.stdout if p.stdout.isdigit() and len(p.stdout) == 3 else ""
+                      r["https"] = ("reachable" if p.returncode == 0 and r["http_status"] != "000"
+                                    and r["http_status"] else
+                                    {5: "proxy_dns", 6: "dns", 7: "connect", 28: "timeout",
+                                     35: "tls", 60: "tls_verify"}.get(p.returncode, "other"))
+                  except subprocess.TimeoutExpired:
+                      r["https"] = "timeout"
+                  r["classification"] = ("dns_error" if r["dns"] != "ok" else
+                                         "ok" if r["https"] == "reachable" else "https_error")
+              records[key] = r
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(key + "=" + r["classification"] + "\n")
+          data = {"phase": phase, "utc_ns": time.time_ns(),
+                  "boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME), "targets": records}
+          (out / ("network-" + phase + ".json")).write_text(json.dumps(data, sort_keys=True) + "\n")
+          print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+          PY
+
+      - name: Diagnose connections before
+        id: net_before
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/idle-connection-probe.py" network before
+
+      - name: Evidence before github ok
+        if: always() && (steps.net_before.outputs.github == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before github dns_error
+        if: always() && (steps.net_before.outputs.github == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before github https_error
+        if: always() && (steps.net_before.outputs.github == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before github unknown
+        if: always() && (steps.net_before.outputs.github != 'ok' && steps.net_before.outputs.github != 'dns_error' && steps.net_before.outputs.github != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api ok
+        if: always() && (steps.net_before.outputs.api == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api dns_error
+        if: always() && (steps.net_before.outputs.api == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api https_error
+        if: always() && (steps.net_before.outputs.api == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api unknown
+        if: always() && (steps.net_before.outputs.api != 'ok' && steps.net_before.outputs.api != 'dns_error' && steps.net_before.outputs.api != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results ok
+        if: always() && (steps.net_before.outputs.results == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results dns_error
+        if: always() && (steps.net_before.outputs.results == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results https_error
+        if: always() && (steps.net_before.outputs.results == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results unknown
+        if: always() && (steps.net_before.outputs.results != 'ok' && steps.net_before.outputs.results != 'dns_error' && steps.net_before.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
       - name: Apply host hardening comparison condition
         id: condition
         timeout-minutes: 2
@@ -212,24 +350,148 @@ jobs:
           test "$current_credentials" = "$RUNNER_CREDENTIALS"
           test "$uid" -ne 0
 
+          sudo -n -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 40s \
+            /bin/bash -c '
+              set -euo pipefail
+              export RUNNER_TEMP="$1"
+              /usr/bin/python3 "$1/idle-connection-probe.py" inventory before
+              if [ "$2" = enabled ]; then
+                /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+                /usr/bin/env -u NODE_OPTIONS "$3" "$4" \
+                  drop-sudo --root-phase --user "$5" --group sudo \
+                  --runner-credentials "$6" > "$1/idle-hardening-helper.log" 2>&1
+              elif [ "$2" != disabled ]; then
+                exit 1
+              fi
+              /usr/bin/python3 "$1/idle-connection-probe.py" inventory after
+              if [ "$2" = enabled ]; then
+                /usr/bin/python3 - "$1" <<'"'"'PY'"'"'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          # Persist only allowlisted helper messages; never upload raw helper output.
+          lines = (root / "idle-hardening-helper.log").read_text().splitlines()
+          paths = [x.removeprefix("Restricted access to ").removesuffix(".")
+                   for x in lines if x.startswith("Restricted access to /run/")]
+          p = root / "idle-control-evidence/hardening-changes.json"
+          p.write_text(json.dumps({"restricted_sockets": paths}) + "\n")
+          p.chmod(0o644)
+          PY
+              fi
+            ' idle-diagnostics "$RUNNER_TEMP" "$CONTROL_HARDENING" \
+            "$(command -v node)" "$ACTION_MAIN" "$(id -un)" "$RUNNER_CREDENTIALS"
+
           case "$CONTROL_HARDENING" in
             enabled)
-              sudo -n -- \
-                env -u ENV -u BASH_ENV -u SHELLOPTS \
-                /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
-                /usr/bin/env -u NODE_OPTIONS "$(command -v node)" "$ACTION_MAIN" \
-                drop-sudo --root-phase --user "$(id -un)" --group sudo \
-                --runner-credentials "$RUNNER_CREDENTIALS"
               if sudo -n true 2>/dev/null; then
                 echo 'Host hardening did not remove sudo access.' >&2
                 exit 1
               fi
               ;;
-            disabled)
-              sudo -n true
-              ;;
+            disabled) sudo -n true ;;
             *) exit 1 ;;
           esac
+
+      - name: Diagnose connections immediate
+        id: net_immediate
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/idle-connection-probe.py" network immediate
+
+      - name: Evidence immediate github ok
+        if: always() && (steps.net_immediate.outputs.github == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate github dns_error
+        if: always() && (steps.net_immediate.outputs.github == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate github https_error
+        if: always() && (steps.net_immediate.outputs.github == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate github unknown
+        if: always() && (steps.net_immediate.outputs.github != 'ok' && steps.net_immediate.outputs.github != 'dns_error' && steps.net_immediate.outputs.github != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api ok
+        if: always() && (steps.net_immediate.outputs.api == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api dns_error
+        if: always() && (steps.net_immediate.outputs.api == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api https_error
+        if: always() && (steps.net_immediate.outputs.api == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api unknown
+        if: always() && (steps.net_immediate.outputs.api != 'ok' && steps.net_immediate.outputs.api != 'dns_error' && steps.net_immediate.outputs.api != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results ok
+        if: always() && (steps.net_immediate.outputs.results == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results dns_error
+        if: always() && (steps.net_immediate.outputs.results == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results https_error
+        if: always() && (steps.net_immediate.outputs.results == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results unknown
+        if: always() && (steps.net_immediate.outputs.results != 'ok' && steps.net_immediate.outputs.results != 'dns_error' && steps.net_immediate.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Upload early connection evidence
+        id: early_upload
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: early-connections-${{ matrix.hardening }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/idle-control-evidence/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Evidence early upload success
+        if: always() && steps.early_upload.outcome == 'success'
+        timeout-minutes: 1
+        env:
+          ARTIFACT_ID: ${{ steps.early_upload.outputs.artifact-id }}
+        run: |
+          case "$ARTIFACT_ID" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+
+      - name: Evidence early upload failure
+        if: always() && steps.early_upload.outcome == 'failure'
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence early upload unknown
+        if: always() && steps.early_upload.outcome != 'success' && steps.early_upload.outcome != 'failure'
+        timeout-minutes: 1
+        run: "true"
 
       - name: Wait slice 1 of 12
         timeout-minutes: 2
@@ -268,6 +530,73 @@ jobs:
         timeout-minutes: 2
         run: /bin/sleep 50
 
+      - name: Diagnose connections late
+        id: net_late
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/idle-connection-probe.py" network late
+
+      - name: Evidence late github ok
+        if: always() && (steps.net_late.outputs.github == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late github dns_error
+        if: always() && (steps.net_late.outputs.github == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late github https_error
+        if: always() && (steps.net_late.outputs.github == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late github unknown
+        if: always() && (steps.net_late.outputs.github != 'ok' && steps.net_late.outputs.github != 'dns_error' && steps.net_late.outputs.github != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api ok
+        if: always() && (steps.net_late.outputs.api == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api dns_error
+        if: always() && (steps.net_late.outputs.api == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api https_error
+        if: always() && (steps.net_late.outputs.api == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api unknown
+        if: always() && (steps.net_late.outputs.api != 'ok' && steps.net_late.outputs.api != 'dns_error' && steps.net_late.outputs.api != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results ok
+        if: always() && (steps.net_late.outputs.results == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results dns_error
+        if: always() && (steps.net_late.outputs.results == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results https_error
+        if: always() && (steps.net_late.outputs.results == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results unknown
+        if: always() && (steps.net_late.outputs.results != 'ok' && steps.net_late.outputs.results != 'dns_error' && steps.net_late.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
       - name: Finalize idle control evidence
         if: always()
         timeout-minutes: 1
@@ -298,7 +627,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: idle-control-${{ matrix.hardening }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/idle-control-evidence/control.json
+          path: ${{ runner.temp }}/idle-control-evidence/*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
