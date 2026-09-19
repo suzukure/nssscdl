@@ -232,9 +232,12 @@ jobs:
               if host:
                   try:
                       p = subprocess.run([sys.executable, "-c",
-                          "import socket,sys; socket.getaddrinfo(sys.argv[1],443)", host],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                          "import socket,sys\ntry: socket.getaddrinfo(sys.argv[1],443)\nexcept socket.gaierror as e: print(e.errno); sys.exit(1)", host],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=4)
                       r["dns"] = "ok" if p.returncode == 0 else "error"
+                      value = p.stdout.strip()
+                      if value.lstrip("-").isdigit():
+                          r["gai_errno"] = int(value)
                   except subprocess.TimeoutExpired:
                       r["dns"] = "timeout"
                   try:
@@ -328,6 +331,169 @@ jobs:
         timeout-minutes: 1
         run: "true"
 
+      - name: Prepare bounded resolver observer
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/resolver-observer.py" <<'PY'
+          import json, os, pathlib, subprocess, sys, time
+          ROOT = pathlib.Path(os.environ["RUNNER_TEMP"])
+          OUT = ROOT / "idle-control-evidence"
+          STATE = OUT / "resolver-observer.json"
+          STOP = ROOT / "resolver-observer-stop"
+          PROPS = ["Type", "User", "WatchdogUSec", "NotifyAccess", "Restart", "MainPID",
+                   "ActiveState", "SubState", "Result", "NRestarts", "ExecMainCode",
+                   "ExecMainStatus", "WatchdogTimestampMonotonic", "ExecMainStartTimestampMonotonic"]
+          def command(args, seconds=3):
+              try:
+                  p = subprocess.run(args, capture_output=True, text=True, timeout=seconds,
+                                     env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+                  return p.returncode, p.stdout
+              except subprocess.TimeoutExpired:
+                  return 124, ""
+          def save(data):
+              p = STATE.with_suffix(".tmp")
+              p.write_text(json.dumps(data, sort_keys=True) + "\n")
+              p.chmod(0o644)
+              p.replace(STATE)
+          def sample():
+              code, value = command(["/usr/bin/systemctl", "show", "systemd-resolved.service",
+                                     "--no-pager", "--property=" + ",".join(PROPS)])
+              fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+              fields = {k: v for k, v in fields.items() if k in PROPS}
+              result = {"utc_ns": time.time_ns(), "boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                        "query_exit": code, "properties": fields}
+              pid = fields.get("MainPID", "")
+              if pid.isdigit() and int(pid) > 0:
+                  try:
+                      text = pathlib.Path("/proc", pid, "stat").read_text()
+                      tail = text[text.rfind(")") + 2:].split()
+                      result["pid_start_ticks"] = tail[19]
+                      result["pid_state"] = tail[0]
+                  except OSError:
+                      result["pid_read"] = "unavailable"
+              return result
+          def classify(data):
+              samples = data.get("samples", [])
+              valid = [s for s in samples if s.get("query_exit") == 0 and
+                       s.get("properties", {}).get("ActiveState")]
+              if not data.get("done") or len(valid) != len(samples) or len(valid) < 2:
+                  return "unknown"
+              if data.get("watchdog_events", 0) or any(s["properties"].get("Result") == "watchdog" for s in valid):
+                  return "watchdog"
+              first, last = valid[0]["properties"], valid[-1]["properties"]
+              counts = [s["properties"].get("NRestarts", "") for s in valid]
+              if all(x.isdigit() for x in counts) and max(map(int, counts)) > int(counts[0]):
+                  return "restarted"
+              identities = {(s["properties"].get("MainPID"), s.get("pid_start_ticks")) for s in valid
+                            if s["properties"].get("MainPID") not in ["", "0"] and s.get("pid_start_ticks")}
+              if len(identities) > 1:
+                  return "restarted"
+              if last.get("ActiveState") != "active" or last.get("SubState") != "running":
+                  return "not_running"
+              if (data.get("stop_reason") == "requested" and all(x.isdigit() for x in counts)
+                      and len(identities) == 1 and
+                      all(s["properties"].get("ActiveState") == "active" and
+                          s["properties"].get("SubState") == "running" and s.get("pid_start_ticks")
+                          for s in valid)):
+                  return "stable"
+              return "unknown"
+          def main():
+              mode = sys.argv[1]
+              if mode == "start":
+                  STOP.unlink(missing_ok=True)
+                  version_code, version = command(["/usr/bin/systemctl", "--version"])
+                  conf = {}
+                  for file, prefix in [("/etc/nsswitch.conf", "hosts:"), ("/etc/resolv.conf", "nameserver")]:
+                      try:
+                          conf[file] = [l.strip() for l in pathlib.Path(file).read_text().splitlines()
+                                        if l.strip().startswith(prefix)]
+                      except OSError:
+                          conf[file] = ["unavailable"]
+                  conf["resolv_link"] = os.path.realpath("/etc/resolv.conf")
+                  data = {"started_utc_ns": time.time_ns(), "started_boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                          "version_exit": version_code, "systemd_version": version.splitlines()[:1],
+                          "resolver_config": conf, "samples": [sample()], "done": False}
+                  save(data)
+                  p = subprocess.Popen(["/usr/bin/timeout", "--signal=TERM", "--kill-after=5s", "910s",
+                                        "/usr/bin/python3", __file__, "observe"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, start_new_session=True,
+                                       env={"RUNNER_TEMP": str(ROOT), "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"})
+                  (ROOT / "resolver-observer-launched").write_text(str(p.pid) + "\n")
+                  return
+              if mode == "observe":
+                  data = json.loads(STATE.read_text())
+                  data["observer_pid"] = os.getpid()
+                  text = pathlib.Path("/proc/self/stat").read_text()
+                  data["observer_start_ticks"] = text[text.rfind(")") + 2:].split()[19]
+                  deadline = time.monotonic() + 900
+                  next_sample = time.monotonic()
+                  while not STOP.exists() and time.monotonic() < deadline:
+                      if time.monotonic() >= next_sample:
+                          data["samples"].append(sample())
+                          save(data)
+                          next_sample = time.monotonic() + 15
+                      time.sleep(0.5)
+                  data["samples"].append(sample())
+                  code, value = command(["/usr/bin/journalctl", "-u", "systemd-resolved.service",
+                                         "--since=@" + str(data["started_utc_ns"] // 1000000000),
+                                         "--output=json", "--no-pager", "-n", "100"], 4)
+                  events = 0
+                  for line in value.splitlines():
+                      try:
+                          msg = json.loads(line).get("MESSAGE", "").lower()
+                          if "watchdog timeout" in msg or "failed with result 'watchdog'" in msg:
+                              events += 1
+                      except (ValueError, AttributeError):
+                          pass
+                  data.update(done=True, stop_reason="requested" if STOP.exists() else "deadline",
+                              journal_exit=code, watchdog_events=events,
+                              ended_utc_ns=time.time_ns())
+                  save(data)
+                  return
+              if mode == "finish":
+                  STOP.touch()
+                  deadline = time.monotonic() + 15
+                  data = {}
+                  while time.monotonic() < deadline:
+                      try:
+                          data = json.loads(STATE.read_text())
+                          if data.get("done"):
+                              break
+                      except (OSError, ValueError):
+                          pass
+                      time.sleep(0.5)
+                  exited = False
+                  exit_deadline = time.monotonic() + 2
+                  while data.get("done") and time.monotonic() < exit_deadline:
+                      try:
+                          text = pathlib.Path("/proc", str(data["observer_pid"]), "stat").read_text()
+                          tail = text[text.rfind(")") + 2:].split()
+                          exited = tail[0] == "Z" or tail[19] != data["observer_start_ticks"]
+                      except FileNotFoundError:
+                          exited = True
+                      except (OSError, KeyError, IndexError):
+                          break
+                      if exited:
+                          break
+                      time.sleep(0.1)
+                  data["process_exit_observed"] = exited
+                  status = classify(data)
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write("state=" + status + "\n")
+                      f.write("observer_done=" + ("yes" if data.get("done") and exited else "no") + "\n")
+                  print("PROBE_DATA resolver_state=" + status)
+                  print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+                  if not data.get("done") or not exited:
+                      raise SystemExit(1)
+                  return
+              raise SystemExit(2)
+          if __name__ == "__main__":
+              main()
+          PY
+
       - name: Apply host hardening comparison condition
         id: condition
         timeout-minutes: 2
@@ -356,6 +522,9 @@ jobs:
             /bin/bash -c '
               set -euo pipefail
               export RUNNER_TEMP="$1"
+              /usr/bin/python3 "$1/resolver-observer.py" start
+              test -s "$1/resolver-observer-launched"
+              test -s "$1/idle-control-evidence/resolver-observer.json"
               /usr/bin/python3 "$1/idle-connection-probe.py" inventory before
               if [ "$2" = enabled ]; then
                 /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
@@ -594,6 +763,49 @@ jobs:
 
       - name: Evidence late results unknown
         if: always() && (steps.net_late.outputs.results != 'ok' && steps.net_late.outputs.results != 'dns_error' && steps.net_late.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Finish resolver observer
+        id: resolver
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/resolver-observer.py" finish
+
+      - name: Evidence resolver watchdog
+        if: always() && (steps.resolver.outputs.state == 'watchdog')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restarted
+        if: always() && (steps.resolver.outputs.state == 'restarted')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver not_running
+        if: always() && (steps.resolver.outputs.state == 'not_running')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver stable
+        if: always() && (steps.resolver.outputs.state == 'stable')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver unknown
+        if: always() && (steps.resolver.outputs.state == 'unknown' || steps.resolver.outputs.state == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver observer completed
+        if: always() && steps.resolver.outputs.observer_done == 'yes'
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver observer incomplete
+        if: always() && steps.resolver.outputs.observer_done != 'yes'
         timeout-minutes: 1
         run: "true"
 
