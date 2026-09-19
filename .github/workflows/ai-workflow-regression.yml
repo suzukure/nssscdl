@@ -73,14 +73,17 @@ jobs:
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
 
-  codex-systemd-long-runtime-probe:
-    name: Codex systemd 700s poll probe
+  codex-host-hardening-idle-control:
+    name: Host hardening idle control
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        mode: [poll]
+        hardening: [disabled, enabled]
+    env:
+      CONTROL_HARDENING: ${{ matrix.hardening }}
+      PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Install pinned Codex Action runtime without model execution
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
@@ -164,214 +167,40 @@ jobs:
           printf 'PROBE_DATA runtime version=%q target=%q action_blob=%s uid=%s gid=%s\n' \
             "$native_version" "$target_triple" "$actual_blob" "$uid" "$gid"
 
-      - name: Prepare actual Codex cgroup probe
-        id: probe-prepare
-        timeout-minutes: 2
+      - name: Prepare idle control evidence
+        timeout-minutes: 1
         shell: bash
-        env:
-          PROBE_MODE: ${{ matrix.mode }}
-          CODEX_HOME: ${{ runner.temp }}/codex-probe-home
-          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
-          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
-          ACTION_MAIN: ${{ steps.runtime.outputs.action_main }}
-          RUNNER_CREDENTIALS: ${{ steps.runtime.outputs.runner_credentials }}
         run: |
           set -euo pipefail
-
-          case "$PROBE_MODE" in
-            wait|poll) ;;
-            *)
-              echo "Unexpected probe mode: $PROBE_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          unit="codex-systemd-${PROBE_MODE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf '%s\n' "$unit" > "${marker_prefix}-unit"
-          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-start"
-
-          cat > "$RUNNER_TEMP/hanging-responses-server.py" <<'PY'
-          import http.server
-          import os
-          import pathlib
-          import time
-
-          root = pathlib.Path(os.environ["RUNNER_TEMP"])
-          mode = os.environ["PROBE_MODE"]
-          prefix = root / f"codex-systemd-{mode}"
-
-          class Handler(http.server.BaseHTTPRequestHandler):
-              def do_POST(self):
-                  raw_length = self.headers.get("Content-Length")
-                  if raw_length is None:
-                      raise RuntimeError("missing Content-Length")
-                  length = int(raw_length)
-                  if length <= 0:
-                      raise RuntimeError("empty request body")
-                  body = self.rfile.read(length)
-                  if len(body) != length:
-                      raise RuntimeError("short request body")
-                  prefix.with_name(prefix.name + "-request").write_text(
-                      f"path={self.path}\ncontent_length={length}\n"
-                  )
-                  prefix.with_name(prefix.name + "-request-clock").write_text(
-                      f"{time.time_ns()} {time.clock_gettime_ns(time.CLOCK_BOOTTIME)}\n"
-                  )
-                  time.sleep(730)
-
-              def log_message(self, format, *args):
-                  return
-
-          server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-          prefix.with_name(prefix.name + "-server-port").write_text(
-              f"{server.server_address[1]}\n"
-          )
-          prefix.with_name(prefix.name + "-server-pid").write_text(
-              f"{os.getpid()}\n"
-          )
-          server.handle_request()
+          mkdir -p "$RUNNER_TEMP/idle-control-evidence"
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          data = {
+              "schema_version": 1,
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "head_sha": os.environ["PROBE_HEAD"],
+              "hardening": os.environ["CONTROL_HARDENING"],
+              "image_os": os.environ.get("ImageOS"),
+              "image_version": os.environ.get("ImageVersion"),
+              "start_utc_ns": time.time_ns(),
+              "start_boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+          }
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/control.json"
+          path.write_text(json.dumps(data, sort_keys=True) + "\n")
           PY
 
-          env -u RUNNER_TRACKING_ID PROBE_MODE="$PROBE_MODE" \
-            nohup python3 "$RUNNER_TEMP/hanging-responses-server.py" \
-            </dev/null \
-            >"${marker_prefix}-server.stdout" \
-            2>"${marker_prefix}-server.stderr" &
-          server_pid=$!
-
-          for _ in $(seq 1 100); do
-            if [ -s "${marker_prefix}-server-port" ]; then
-              break
-            fi
-            if ! kill -0 "$server_pid" 2>/dev/null; then
-              echo 'Local Responses server exited before publishing its port.' >&2
-              cat "${marker_prefix}-server.stderr" >&2 || true
-              exit 1
-            fi
-            sleep 0.1
-          done
-          test -s "${marker_prefix}-server-port"
-          port="$(cat "${marker_prefix}-server-port")"
-          case "$port" in
-            ''|*[!0-9]*)
-              echo 'Local Responses server returned an invalid port.' >&2
-              exit 1
-              ;;
-          esac
-
-          mkdir -p "$CODEX_HOME"
-          cat > "$CODEX_HOME/config.toml" <<EOF
-          model_provider = "local-hang"
-
-          [model_providers.local-hang]
-          name = "Local hanging Responses probe"
-          base_url = "http://127.0.0.1:${port}/v1"
-          wire_api = "responses"
-          requires_openai_auth = false
-          request_max_retries = 0
-          stream_max_retries = 0
-          stream_idle_timeout_ms = 120000
-          EOF
-          chmod 755 "$CODEX_HOME"
-          chmod 644 "$CODEX_HOME/config.toml"
-
-          cat > "$RUNNER_TEMP/codex-systemd-probe-prompt.txt" <<'PROMPT'
-          Reply with OK only. Do not inspect or modify files.
-          PROMPT
-          chmod 644 "$RUNNER_TEMP/codex-systemd-probe-prompt.txt"
-
-          cat > "$RUNNER_TEMP/run-native-codex-probe.sh" <<'CODEX_RUN'
-          #!/bin/sh
-          set -eu
-
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          start_time="$(awk '{print $22}' /proc/$$/stat)"
-          printf '%s %s\n' "$(date +%s%N)" "$(cut -d ' ' -f1 /proc/uptime)" > "${marker_prefix}-launcher-clock"
-          printf '%s %s\n' "$$" "$start_time" > "${marker_prefix}-codex-identity"
-          cat /proc/$$/cgroup > "${marker_prefix}-codex-cgroup"
-
-          awk '
-            /^(Uid|Gid|Groups|NoNewPrivs|CapInh|CapPrm|CapEff|CapBnd|CapAmb):/ {
-              key=$1
-              sub(/:$/, "", key)
-              $1=""
-              sub(/^[[:space:]]+/, "")
-              print key "=" $0
-            }
-          ' /proc/$$/status > "${marker_prefix}-security-status"
-
-          exec env \
-            -u CODEX_MANAGED_BY_BUN \
-            -u CODEX_MANAGED_BY_PNPM \
-            -u CODEX_MANAGED_BY_VITE_PLUS \
-            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
-            CODEX_MANAGED_BY_NPM=1 \
-            CODEX_HOME="$CODEX_HOME" \
-            CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_github_action \
-            "$CODEX_NATIVE" exec \
-              --skip-git-repo-check \
-              --cd "$RUNNER_TEMP" \
-              --model gpt-5.6-terra \
-              --config 'default_permissions=":workspace"' \
-              < "$CODEX_PROMPT_FILE"
-          CODEX_RUN
-          chmod 700 "$RUNNER_TEMP/run-native-codex-probe.sh"
-
-          test -x "$CODEX_NATIVE"
-          test -f "$ACTION_MAIN"
-          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
-          test -s "$CODEX_HOME/config.toml"
-
-          uid="$(id -u)"
-          gid="$(id -g)"
-          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
-          current_credentials="$(jq -cn \
-            --argjson uid "$uid" \
-            --argjson gid "$gid" \
-            --argjson groups "$groups_json" \
-            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
-          test "$current_credentials" = "$RUNNER_CREDENTIALS"
-          test "$uid" -ne 0
-
-          nobody_gid="$(id -g nobody)"
-          case "$nobody_gid" in
-            ''|*[!0-9]*|0)
-              echo 'Could not resolve a safe nobody gid.' >&2
-              exit 1
-              ;;
-          esac
-
-          runner_user="$(id -un)"
-          runner_home="$HOME"
-          runner_path="$PATH"
-
-          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-prepare-return"
-
-      - name: Bootstrap actual Codex cgroup probe
-        id: probe-bootstrap
-        continue-on-error: true
+      - name: Apply host hardening comparison condition
+        id: condition
         timeout-minutes: 2
         shell: bash
         env:
-          PROBE_MODE: ${{ matrix.mode }}
-          CODEX_HOME: ${{ runner.temp }}/codex-probe-home
-          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
-          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
           ACTION_MAIN: ${{ steps.runtime.outputs.action_main }}
           RUNNER_CREDENTIALS: ${{ steps.runtime.outputs.runner_credentials }}
         run: |
           set -euo pipefail
-          test "$PROBE_MODE" = poll
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          test -s "${marker_prefix}-prepare-return"
-          test -s "${marker_prefix}-unit"
-          unit="$(cat "${marker_prefix}-unit")"
-          test -s "$CODEX_HOME/config.toml"
-          test -x "$CODEX_NATIVE"
           test -f "$ACTION_MAIN"
           test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
-
           uid="$(id -u)"
           gid="$(id -g)"
           groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
@@ -383,157 +212,24 @@ jobs:
           test "$current_credentials" = "$RUNNER_CREDENTIALS"
           test "$uid" -ne 0
 
-          nobody_gid="$(id -g nobody)"
-          case "$nobody_gid" in
-            ''|*[!0-9]*|0)
-              echo 'Could not resolve a safe nobody gid.' >&2
-              exit 1
+          case "$CONTROL_HARDENING" in
+            enabled)
+              sudo -n -- \
+                env -u ENV -u BASH_ENV -u SHELLOPTS \
+                /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+                /usr/bin/env -u NODE_OPTIONS "$(command -v node)" "$ACTION_MAIN" \
+                drop-sudo --root-phase --user "$(id -un)" --group sudo \
+                --runner-credentials "$RUNNER_CREDENTIALS"
+              if sudo -n true 2>/dev/null; then
+                echo 'Host hardening did not remove sudo access.' >&2
+                exit 1
+              fi
               ;;
-          esac
-          runner_user="$(id -un)"
-          runner_home="$HOME"
-          runner_path="$PATH"
-
-          sudo -n -- \
-            env -u ENV -u BASH_ENV -u SHELLOPTS \
-            /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
-            /bin/bash -c '
-              set -euo pipefail
-
-              action_main="$1"
-              runner_user="$2"
-              uid="$3"
-              nobody_gid="$4"
-              runner_home="$5"
-              runner_path="$6"
-              runner_temp="$7"
-              node="$8"
-              credentials="$9"
-              unit="${10}"
-              launcher="${11}"
-              codex_home="${12}"
-              codex_native="${13}"
-              codex_package_root="${14}"
-              prompt_file="${15}"
-              probe_mode="${16}"
-              marker_prefix="${17}"
-
-              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
-                drop-sudo \
-                --root-phase \
-                --user "$runner_user" \
-                --group sudo \
-                --runner-credentials "$credentials"
-
-              systemd_cmd=(
-                /usr/bin/systemd-run
-                --quiet
-                --unit="$unit"
-                --property=Type=exec
-                --property=RuntimeMaxSec=700s
-                --property=TimeoutStopSec=5s
-                --property=KillMode=control-group
-                --property=SendSIGKILL=yes
-              )
-              payload=(
-                /usr/bin/setpriv
-                --reuid="$uid"
-                --regid="$nobody_gid"
-                --clear-groups
-                --no-new-privs
-                --bounding-set=-all
-                --inh-caps=-all
-                --ambient-caps=-all
-                --
-                /usr/bin/env
-                -i
-                "HOME=$runner_home"
-                "USER=$runner_user"
-                "LOGNAME=$runner_user"
-                "PATH=$runner_path"
-                "RUNNER_TEMP=$runner_temp"
-                "PROBE_MODE=$probe_mode"
-                "CODEX_HOME=$codex_home"
-                "CODEX_NATIVE=$codex_native"
-                "CODEX_PACKAGE_ROOT=$codex_package_root"
-                "CODEX_PROMPT_FILE=$prompt_file"
-                /bin/sh "$launcher"
-              )
-
-              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-before"
-              printf "%s %s\n" "$(date +%s%N)" "$(cut -d " " -f1 /proc/uptime)" > "${marker_prefix}-bootstrap-before-clock"
-              "${systemd_cmd[@]}" --no-block "${payload[@]}"
-              printf "%s %s\n" "$(date +%s%N)" "$(cut -d " " -f1 /proc/uptime)" > "${marker_prefix}-bootstrap-after-clock"
-              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-return"
-
-              /usr/bin/systemd-run \
-                --quiet \
-                --unit="${unit}-watchdog" \
-                --on-active=755s \
-                /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit"
-              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-watchdog-armed"
-              exit 0
-            ' codex-systemd-probe \
-            "$ACTION_MAIN" \
-            "$runner_user" \
-            "$uid" \
-            "$nobody_gid" \
-            "$runner_home" \
-            "$runner_path" \
-            "$RUNNER_TEMP" \
-            "$(command -v node)" \
-            "$RUNNER_CREDENTIALS" \
-            "$unit" \
-            "$RUNNER_TEMP/run-native-codex-probe.sh" \
-            "$CODEX_HOME" \
-            "$CODEX_NATIVE" \
-            "$CODEX_PACKAGE_ROOT" \
-            "$RUNNER_TEMP/codex-systemd-probe-prompt.txt" \
-            "$PROBE_MODE" \
-            "$marker_prefix"
-
-          test -s "${marker_prefix}-no-block-return"
-          test -s "${marker_prefix}-watchdog-armed"
-          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-bootstrap-return"
-
-      - name: Gate actual Codex cgroup probe observation
-        id: probe-gate
-        if: steps.probe-bootstrap.outcome == 'success'
-        timeout-minutes: 2
-        shell: bash
-        env:
-          PROBE_MODE: ${{ matrix.mode }}
-        run: |
-          set -euo pipefail
-          test "$PROBE_MODE" = poll
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          test -s "${marker_prefix}-prepare-return"
-          test -s "${marker_prefix}-bootstrap-return"
-          test -s "${marker_prefix}-unit"
-          startup_deadline=$(( $(date +%s) + 60 ))
-          printf 'PROBE_TRACE gate-start epoch=%s\n' "$(date +%s)"
-
-          while [ ! -s "${marker_prefix}-request" ] || [ ! -s "${marker_prefix}-codex-identity" ]; do
-            if [ "$(date +%s)" -ge "$startup_deadline" ]; then
-              printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-poll-startup-failure"
-              printf 'PROBE_TRACE startup-failure epoch=%s request=%s identity=%s\n' \
-                "$(date +%s)" \
-                "$([ -s "${marker_prefix}-request" ] && printf present || printf missing)" \
-                "$([ -s "${marker_prefix}-codex-identity" ] && printf present || printf missing)"
-              exit 1
-            fi
-            sleep 1
-          done
-
-          read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
-          case "$poll_codex_pid:$poll_codex_start" in
-            *[!0-9:]*|:*|*:)
-              echo 'Invalid Codex PID identity marker.' >&2
-              exit 1
+            disabled)
+              sudo -n true
               ;;
+            *) exit 1 ;;
           esac
-          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-observer-gate-return"
-          printf 'PROBE_TRACE gate-return epoch=%s\n' "$(date +%s)"
 
       - name: Wait slice 1 of 12
         timeout-minutes: 2
@@ -572,357 +268,60 @@ jobs:
         timeout-minutes: 2
         run: /bin/sleep 50
 
-      - name: Snapshot actual Codex PID after RuntimeMax
-        id: probe
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: bash
-        env:
-          PROBE_MODE: ${{ matrix.mode }}
-          PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          python3 - <<'PY'
-          import json
-          import os
-          import pathlib
-          import time
-          from decimal import Decimal
-
-          def classify(identity, proc_root):
-              result = dict(classification="unknown", reason="invalid_identity",
-                            pid=None, expected_start=None, observed_start=None, proc_state=None)
-              parts = identity.split()
-              if len(parts) != 2 or not all(p.isascii() and p.isdecimal() for p in parts):
-                  return result
-              pid, start = map(int, parts)
-              if pid <= 1 or start <= 0:
-                  return result
-              result.update(pid=pid, expected_start=start)
-              try:
-                  raw = (proc_root / str(pid) / "stat").read_text()
-                  # comm may contain spaces and parentheses; fields after the last ')' start at field 3.
-                  if not raw.startswith(str(pid) + " (") or ") " not in raw:
-                      raise ValueError()
-                  fields = raw.rsplit(") ", 1)[1].split()
-                  observed = int(fields[19])
-                  if len(fields[0]) != 1 or observed <= 0:
-                      raise ValueError()
-                  result.update(observed_start=observed, proc_state=fields[0])
-                  result.update(classification="same_identity_present" if observed == start else "absent",
-                                reason="identity_match" if observed == start else "pid_reused")
-              except FileNotFoundError:
-                  result.update(classification="absent", reason="proc_not_found")
-              except (OSError, ValueError, IndexError):
-                  result.update(reason="proc_unreadable_or_invalid")
-              return result
-
-          def main():
-              prefix = pathlib.Path(os.environ["RUNNER_TEMP"]) / ("codex-systemd-" + os.environ["PROBE_MODE"])
-              def marker(suffix):
-                  return prefix.with_name(prefix.name + "-" + suffix)
-              try:
-                  identity = marker("codex-identity").read_text()
-                  gate = marker("observer-gate-return").read_text().strip()
-                  if not gate.isdecimal():
-                      raise ValueError()
-                  result = classify(identity, pathlib.Path("/proc"))
-              except (OSError, ValueError):
-                  result = classify("", pathlib.Path("/proc"))
-                  result["reason"] = "startup_evidence_unavailable"
-              result.update(schema_version=1, run_id=os.environ["GITHUB_RUN_ID"],
-                            run_attempt=os.environ["GITHUB_RUN_ATTEMPT"], head_sha=os.environ["PROBE_HEAD"],
-                            snapshot_utc_ns=time.time_ns(),
-                            snapshot_boottime_ns=time.clock_gettime_ns(time.CLOCK_BOOTTIME),
-                            cleanup_kill_planned=result["classification"] == "same_identity_present")
-              clocks = {}
-              for suffix in ("launcher-clock", "bootstrap-before-clock", "bootstrap-after-clock", "request-clock"):
-                  try:
-                      utc, boot = marker(suffix).read_text().split()
-                      boot_ns = int(boot) if suffix == "request-clock" else int(Decimal(boot) * 1000000000)
-                      utc_ns = int(utc)
-                      if min(boot_ns, utc_ns) <= 0:
-                          raise ValueError()
-                      clocks[suffix] = dict(utc_ns=utc_ns, boottime_ns=boot_ns,
-                          elapsed_to_snapshot_ns=result["snapshot_boottime_ns"] - boot_ns)
-                  except (OSError, ValueError, ArithmeticError):
-                      clocks[suffix] = None
-              result["clocks"] = clocks
-              evidence = pathlib.Path(os.environ["RUNNER_TEMP"]) / "codex-probe-evidence"
-              evidence.mkdir(exist_ok=True)
-              # Only explicitly selected numeric/state fields; no environment dump or raw marker/log upload.
-              (evidence / "snapshot.json").write_text(json.dumps(result, indent=2) + "\n")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-                  out.write("classification=" + result["classification"] + "\n")
-              marker("snapshot-classification").write_text(result["classification"] + "\n")
-
-          if __name__ == "__main__":
-              main()
-          PY
-          classification="$(cat "${marker_prefix}-snapshot-classification")"
-          test "$classification" != unknown
-          read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
-          poll_codex_alive=false
-          if [ "$classification" = same_identity_present ]; then
-            poll_codex_alive=true
-          fi
-          printf 'CodexPID=%s\nCodexAlive=%s\nObservation=proc-after-sleep\n' \
-            "$poll_codex_pid" "$poll_codex_alive" > "${marker_prefix}-poll-last-state"
-
-          if [ "$poll_codex_alive" = false ]; then
-            cp "${marker_prefix}-poll-last-state" "${marker_prefix}-poll-terminal-state"
-            printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-return"
-            printf "%s\n" false > "${marker_prefix}-codex-alive-at-poll-terminal"
-          else
-            cp "${marker_prefix}-poll-last-state" "${marker_prefix}-poll-deadline-state"
-            printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-deadline"
-            printf "%s\n" true > "${marker_prefix}-codex-alive-at-poll-deadline"
-            kill -KILL "$poll_codex_pid" 2>/dev/null || true
-            printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-cleanup-issued"
-          fi
-          printf 'PROBE_TRACE snapshot-return epoch=%s alive=%s\n' \
-            "$(date +%s)" "$poll_codex_alive"
-
-      - name: "Evidence: original Codex PID absent"
-        if: always() && steps.probe.outputs.classification == 'absent'
-        timeout-minutes: 1
-        run: jq -e '.classification == "absent"' "$RUNNER_TEMP/codex-probe-evidence/snapshot.json"
-
-      - name: "Evidence: same Codex PID present"
-        if: always() && steps.probe.outputs.classification == 'same_identity_present'
-        timeout-minutes: 1
-        run: jq -e '.classification == "same_identity_present"' "$RUNNER_TEMP/codex-probe-evidence/snapshot.json"
-
-      - name: "Evidence: observation unavailable"
-        if: always() && steps.probe.outputs.classification != 'absent' && steps.probe.outputs.classification != 'same_identity_present'
-        timeout-minutes: 1
-        env:
-          CLASSIFICATION: ${{ steps.probe.outputs.classification }}
-        run: test -z "$CLASSIFICATION" || test "$CLASSIFICATION" = unknown
-
-      - name: Diagnose actual Codex cgroup probe
+      - name: Finalize idle control evidence
         if: always()
+        timeout-minutes: 1
         shell: bash
         env:
-          PROBE_MODE: ${{ matrix.mode }}
-          PROBE_OUTCOME: ${{ steps.probe.outcome }}
-          PROBE_CONCLUSION: ${{ steps.probe.conclusion }}
+          CONDITION_OUTCOME: ${{ steps.condition.outcome }}
+          PRIOR_JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/control.json"
+          data = json.loads(path.read_text())
+          data["end_utc_ns"] = time.time_ns()
+          data["end_boottime_ns"] = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+          data["elapsed_seconds"] = (data["end_boottime_ns"] - data["start_boottime_ns"]) / 1e9
+          data["condition_outcome"] = os.environ["CONDITION_OUTCOME"]
+          data["prior_job_status"] = os.environ["PRIOR_JOB_STATUS"]
+          path.write_text(json.dumps(data, sort_keys=True) + "\n")
+          print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+          PY
 
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          printf 'PROBE_TRACE diagnose-start epoch=%s outcome=%s conclusion=%s\n' \
-            "$(date +%s)" "$PROBE_OUTCOME" "$PROBE_CONCLUSION"
-          for suffix in \
-            prepare-return bootstrap-return no-block-return watchdog-armed \
-            request codex-identity codex-cgroup security-status poll-last-state \
-            poll-last-show-status poll-return poll-terminal-state poll-deadline \
-            poll-deadline-state poll-cleanup-issued
-          do
-            if [ -e "${marker_prefix}-${suffix}" ]; then
-              printf 'PROBE_TRACE marker-present=%s\n' "$suffix"
-            else
-              printf 'PROBE_TRACE marker-missing=%s\n' "$suffix"
-            fi
-          done
-          if [ -s "${marker_prefix}-poll-last-state" ]; then
-            printf 'PROBE_TRACE last-state=%q\n' \
-              "$(tr '\n' ';' < "${marker_prefix}-poll-last-state")"
-          fi
-          if [ -s "${marker_prefix}-server.stderr" ]; then
-            printf 'PROBE_TRACE server-stderr-present=true\n'
-          fi
-          test -s "${marker_prefix}-start"
-          test -s "${marker_prefix}-unit"
-          test -s "${marker_prefix}-request"
-          test -s "${marker_prefix}-codex-identity"
-          test -s "${marker_prefix}-codex-cgroup"
-          test -s "${marker_prefix}-security-status"
-
-          request_path="$(sed -n 's/^path=//p' "${marker_prefix}-request")"
-          request_length="$(sed -n 's/^content_length=//p' "${marker_prefix}-request")"
-          test "$request_path" = /v1/responses
-          case "$request_length" in
-            ''|*[!0-9]*|0)
-              echo 'Codex request marker has an invalid body length.' >&2
-              exit 1
-              ;;
-          esac
-
-          alive_same() {
-            local file="$1"
-            local pid start_time current
-            read -r pid start_time < "$file"
-            [ -r "/proc/$pid/stat" ] || return 1
-            current="$(awk '{print $22}' "/proc/$pid/stat")"
-            [ "$current" = "$start_time" ]
-          }
-
-          codex_alive=false
-          alive_same "${marker_prefix}-codex-identity" && codex_alive=true
-
-          no_new_privs="$(sed -n 's/^NoNewPrivs=//p' "${marker_prefix}-security-status")"
-          groups_status="$(sed -n 's/^Groups=//p' "${marker_prefix}-security-status")"
-          cap_bnd="$(sed -n 's/^CapBnd=//p' "${marker_prefix}-security-status")"
-          codex_cgroup="$(tr '\n' ';' < "${marker_prefix}-codex-cgroup")"
-          unit="$(cat "${marker_prefix}-unit")"
-
-          sudo_available=true
-          if ! sudo -n true 2>/dev/null; then
-            sudo_available=false
-          fi
-
-          waiter_return=false
-          [ -s "${marker_prefix}-waiter-return" ] && waiter_return=true
-          waiter_stuck=unknown
-          [ -s "${marker_prefix}-waiter-stuck" ] && waiter_stuck="$(cat "${marker_prefix}-waiter-stuck")"
-          waiter_kill_sent=false
-          [ -s "${marker_prefix}-waiter-kill-sent" ] && waiter_kill_sent=true
-          waiter_alive_after_kill=missing
-          [ -s "${marker_prefix}-waiter-alive-after-kill" ] && waiter_alive_after_kill="$(cat "${marker_prefix}-waiter-alive-after-kill")"
-
-          codex_alive_at_waiter_return=missing
-          [ -s "${marker_prefix}-codex-alive-at-waiter-return" ] && codex_alive_at_waiter_return="$(cat "${marker_prefix}-codex-alive-at-waiter-return")"
-          codex_alive_at_terminal=missing
-          [ -s "${marker_prefix}-codex-alive-at-terminal" ] && codex_alive_at_terminal="$(cat "${marker_prefix}-codex-alive-at-terminal")"
-          codex_alive_at_deadline=missing
-          [ -s "${marker_prefix}-codex-alive-at-deadline" ] && codex_alive_at_deadline="$(cat "${marker_prefix}-codex-alive-at-deadline")"
-
-          observer_terminal=false
-          [ -s "${marker_prefix}-observer-terminal" ] && observer_terminal=true
-          observer_deadline=false
-          [ -s "${marker_prefix}-observer-deadline" ] && observer_deadline=true
-          poll_return=false
-          [ -s "${marker_prefix}-poll-return" ] && poll_return=true
-          poll_deadline=false
-          [ -s "${marker_prefix}-poll-deadline" ] && poll_deadline=true
-          codex_alive_at_poll_terminal=missing
-          [ -s "${marker_prefix}-codex-alive-at-poll-terminal" ] && codex_alive_at_poll_terminal="$(cat "${marker_prefix}-codex-alive-at-poll-terminal")"
-          codex_alive_at_poll_deadline=missing
-          [ -s "${marker_prefix}-codex-alive-at-poll-deadline" ] && codex_alive_at_poll_deadline="$(cat "${marker_prefix}-codex-alive-at-poll-deadline")"
-
-          elapsed_ns="$(( $(date +%s%N) - $(cat "${marker_prefix}-start") ))"
-          elapsed_ms="$(( elapsed_ns / 1000000 ))"
-
-          systemd_status=missing
-          if [ -s "${marker_prefix}-systemd-run-status" ]; then
-            systemd_status="$(cat "${marker_prefix}-systemd-run-status")"
-          fi
-
-          terminal_state=missing
-          if [ -s "${marker_prefix}-observer-terminal-state" ]; then
-            terminal_state="$(tr '\n' ';' < "${marker_prefix}-observer-terminal-state")"
-          elif [ -s "${marker_prefix}-observer-deadline-state" ]; then
-            terminal_state="$(tr '\n' ';' < "${marker_prefix}-observer-deadline-state")"
-          elif [ -s "${marker_prefix}-poll-terminal-state" ]; then
-            terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-terminal-state")"
-          elif [ -s "${marker_prefix}-poll-deadline-state" ]; then
-            terminal_state="$(tr '\n' ';' < "${marker_prefix}-poll-deadline-state")"
-          fi
-
-          printf 'PROBE_DATA codex-systemd mode=%s outcome=%s conclusion=%s elapsed_ms=%s request_path=%q request_length=%s codex_alive=%s codex_alive_at_waiter_return=%s codex_alive_at_terminal=%s codex_alive_at_deadline=%s waiter_return=%s waiter_stuck=%s waiter_kill_sent=%s waiter_alive_after_kill=%s observer_terminal=%s observer_deadline=%s poll_return=%s poll_deadline=%s codex_alive_at_poll_terminal=%s codex_alive_at_poll_deadline=%s systemd_status=%s sudo_available=%s no_new_privs=%s groups=%q cap_bnd=%s cgroup=%q terminal_state=%q\n' \
-            "$PROBE_MODE" "$PROBE_OUTCOME" "$PROBE_CONCLUSION" "$elapsed_ms" \
-            "$request_path" "$request_length" "$codex_alive" \
-            "$codex_alive_at_waiter_return" "$codex_alive_at_terminal" "$codex_alive_at_deadline" \
-            "$waiter_return" "$waiter_stuck" "$waiter_kill_sent" "$waiter_alive_after_kill" \
-            "$observer_terminal" "$observer_deadline" "$poll_return" "$poll_deadline" \
-            "$codex_alive_at_poll_terminal" "$codex_alive_at_poll_deadline" \
-            "$systemd_status" "$sudo_available" "$no_new_privs" "$groups_status" \
-            "$cap_bnd" "$codex_cgroup" "$terminal_state"
-
-          test "$sudo_available" = false
-          test "$no_new_privs" = 1
-          test -z "$groups_status"
-          test "$cap_bnd" = 0000000000000000
-          case "$codex_cgroup" in
-            *"/system.slice/${unit}.service"*) ;;
-            *)
-              echo "Codex was not observed in expected cgroup: $codex_cgroup" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ "$PROBE_MODE" = wait ]; then
-            test "$PROBE_OUTCOME" = success
-
-            if [ "$waiter_return" = true ]; then
-              test "$systemd_status" != missing
-              test "$waiter_stuck" = false
-              test "$codex_alive" = false
-              test "$observer_deadline" = false
-              test "$elapsed_ms" -ge 680000
-              test "$elapsed_ms" -lt 770000
-            elif [ "$observer_terminal" = true ]; then
-              test "$waiter_stuck" = true
-              test "$codex_alive" = false
-              test "$observer_deadline" = false
-              test "$elapsed_ms" -ge 680000
-              test "$elapsed_ms" -lt 770000
-            elif [ "$observer_deadline" = true ]; then
-              test "$waiter_stuck" = true
-              test "$waiter_kill_sent" = true
-              test "$elapsed_ms" -ge 730000
-              test "$elapsed_ms" -lt 780000
-            else
-              echo 'Observer produced no terminal, waiter-return, or deadline result.' >&2
-              exit 1
-            fi
-          else
-            if [ "$poll_return" = true ]; then
-              test "$poll_deadline" = false
-              test "$codex_alive_at_poll_terminal" = false
-              test "$codex_alive" = false
-              test "$elapsed_ms" -ge 680000
-              test "$elapsed_ms" -lt 770000
-              test -s "${marker_prefix}-poll-terminal-state"
-            elif [ "$poll_deadline" = true ]; then
-              test "$elapsed_ms" -ge 730000
-              test "$elapsed_ms" -lt 780000
-              test "$codex_alive_at_poll_deadline" != missing
-              test -s "${marker_prefix}-poll-deadline-state"
-            else
-              echo 'Poll probe produced neither terminal nor deadline result.' >&2
-              exit 1
-            fi
-          fi
-
-      - name: Upload Codex PID snapshot evidence
+      - name: Upload idle control evidence
+        id: upload
         if: always()
         continue-on-error: true
         timeout-minutes: 1
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: codex-pid-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/codex-probe-evidence/snapshot.json
+          name: idle-control-${{ matrix.hardening }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/idle-control-evidence/control.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Cleanup localhost probe server
-        if: always()
+      - name: Evidence artifact upload succeeded with artifact ID
+        if: always() && steps.upload.outcome == 'success'
+        timeout-minutes: 1
         shell: bash
         env:
-          PROBE_MODE: ${{ matrix.mode }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
         run: |
           set -euo pipefail
-          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          case "$ARTIFACT_ID" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+          printf 'PROBE_DATA artifact_id=%s\n' "$ARTIFACT_ID"
 
-          if [ -s "${marker_prefix}-server-pid" ]; then
-            server_pid="$(cat "${marker_prefix}-server-pid")"
-            case "$server_pid" in
-              ''|*[!0-9]*) ;;
-              *)
-                kill "$server_pid" 2>/dev/null || true
-                sleep 0.2
-                kill -KILL "$server_pid" 2>/dev/null || true
-                ;;
-            esac
-          fi
+      - name: Evidence artifact upload failed
+        if: always() && steps.upload.outcome == 'failure'
+        timeout-minutes: 1
+        run: echo 'PROBE_DATA upload_outcome=failure'
 
-          if [ -s "${marker_prefix}-codex-identity" ]; then
-            read -r codex_pid codex_start < "${marker_prefix}-codex-identity"
-            if [ -r "/proc/$codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$codex_pid/stat")" = "$codex_start" ]; then
-              kill -KILL "$codex_pid" 2>/dev/null || true
-            fi
-          fi
+      - name: Evidence artifact upload outcome unavailable
+        if: always() && steps.upload.outcome != 'success' && steps.upload.outcome != 'failure'
+        timeout-minutes: 1
+        run: echo 'PROBE_DATA upload_outcome=unavailable'
