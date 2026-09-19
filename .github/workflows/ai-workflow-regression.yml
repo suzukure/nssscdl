@@ -536,40 +536,30 @@ jobs:
               ;;
           esac
 
-          while :; do
-            poll_iteration=$(( poll_iteration + 1 ))
-            poll_codex_alive=false
-            if [ -r "/proc/$poll_codex_pid/stat" ] && \
-              [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
-              poll_codex_alive=true
-            fi
-            printf 'CodexPID=%s\nCodexAlive=%s\nObservation=proc\n' \
-              "$poll_codex_pid" "$poll_codex_alive" > "${marker_prefix}-poll-last-state"
-            printf 'PROBE_TRACE proc epoch=%s iteration=%s alive=%s\n' \
-              "$(date +%s)" "$poll_iteration" "$poll_codex_alive"
+          printf 'PROBE_TRACE sleep-before epoch=%s seconds=740\n' "$(date +%s)"
+          /bin/sleep 740
+          printf 'PROBE_TRACE sleep-after epoch=%s\n' "$(date +%s)"
 
-            if [ "$poll_codex_alive" = false ]; then
-              printf 'PROBE_TRACE terminal epoch=%s iteration=%s\n' \
-                "$(date +%s)" "$poll_iteration"
-              cp "${marker_prefix}-poll-last-state" "${marker_prefix}-poll-terminal-state"
-              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-return"
-              printf "%s\n" "$poll_codex_alive" > "${marker_prefix}-codex-alive-at-poll-terminal"
-              break
-            fi
+          poll_iteration=1
+          poll_codex_alive=false
+          if [ -r "/proc/$poll_codex_pid/stat" ] && \
+            [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
+            poll_codex_alive=true
+          fi
+          printf 'CodexPID=%s\nCodexAlive=%s\nObservation=proc-after-sleep\n' \
+            "$poll_codex_pid" "$poll_codex_alive" > "${marker_prefix}-poll-last-state"
 
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              printf 'PROBE_TRACE deadline epoch=%s iteration=%s\n' \
-                "$(date +%s)" "$poll_iteration"
-              cp "${marker_prefix}-poll-last-state" "${marker_prefix}-poll-deadline-state"
-              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-deadline"
-
-              printf "%s\n" "$poll_codex_alive" > "${marker_prefix}-codex-alive-at-poll-deadline"
-              kill -KILL "$poll_codex_pid" 2>/dev/null || true
-              printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-cleanup-issued"
-              break
-            fi
-            sleep 1
-          done
+          if [ "$poll_codex_alive" = false ]; then
+            cp "${marker_prefix}-poll-last-state" "${marker_prefix}-poll-terminal-state"
+            printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-return"
+            printf "%s\n" false > "${marker_prefix}-codex-alive-at-poll-terminal"
+          else
+            cp "${marker_prefix}-poll-last-state" "${marker_prefix}-poll-deadline-state"
+            printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-deadline"
+            printf "%s\n" true > "${marker_prefix}-codex-alive-at-poll-deadline"
+            kill -KILL "$poll_codex_pid" 2>/dev/null || true
+            printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-cleanup-issued"
+          fi
           printf 'PROBE_TRACE observer-return epoch=%s iteration=%s\n' \
             "$(date +%s)" "$poll_iteration"
 
