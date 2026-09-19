@@ -490,11 +490,10 @@ jobs:
           test -s "${marker_prefix}-watchdog-armed"
           printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-bootstrap-return"
 
-      - name: Observe actual Codex cgroup probe
-        id: probe
+      - name: Gate actual Codex cgroup probe observation
+        id: probe-gate
         if: steps.probe-bootstrap.outcome == 'success'
-        continue-on-error: true
-        timeout-minutes: 14
+        timeout-minutes: 2
         shell: bash
         env:
           PROBE_MODE: ${{ matrix.mode }}
@@ -505,16 +504,8 @@ jobs:
           test -s "${marker_prefix}-prepare-return"
           test -s "${marker_prefix}-bootstrap-return"
           test -s "${marker_prefix}-unit"
-          unit="$(cat "${marker_prefix}-unit")"
-
-          # Observe only the recorded Codex PID as the normal runner user.
-          # Avoid systemctl/D-Bus and their completion pipes in this phase.
-
-          deadline=$(( $(date +%s) + 740 ))
           startup_deadline=$(( $(date +%s) + 60 ))
-          poll_iteration=0
-          printf 'PROBE_TRACE observer-start epoch=%s deadline=%s unit=%q\n' \
-            "$(date +%s)" "$deadline" "$unit"
+          printf 'PROBE_TRACE gate-start epoch=%s\n' "$(date +%s)"
 
           while [ ! -s "${marker_prefix}-request" ] || [ ! -s "${marker_prefix}-codex-identity" ]; do
             if [ "$(date +%s)" -ge "$startup_deadline" ]; then
@@ -535,12 +526,58 @@ jobs:
               exit 1
               ;;
           esac
+          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-observer-gate-return"
+          printf 'PROBE_TRACE gate-return epoch=%s\n' "$(date +%s)"
 
-          printf 'PROBE_TRACE sleep-before epoch=%s seconds=710\n' "$(date +%s)"
-          /bin/sleep 710
-          printf 'PROBE_TRACE sleep-after epoch=%s\n' "$(date +%s)"
+      - name: Wait slice 1 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 2 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 3 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 4 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 5 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 6 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 7 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 8 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 9 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 10 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 11 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 12 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 50
 
-          poll_iteration=1
+      - name: Snapshot actual Codex PID after RuntimeMax
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          test -s "${marker_prefix}-observer-gate-return"
+          read -r poll_codex_pid poll_codex_start < "${marker_prefix}-codex-identity"
           poll_codex_alive=false
           if [ -r "/proc/$poll_codex_pid/stat" ] && \
             [ "$(awk '{print $22}' "/proc/$poll_codex_pid/stat")" = "$poll_codex_start" ]; then
@@ -560,8 +597,8 @@ jobs:
             kill -KILL "$poll_codex_pid" 2>/dev/null || true
             printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-cleanup-issued"
           fi
-          printf 'PROBE_TRACE observer-return epoch=%s iteration=%s\n' \
-            "$(date +%s)" "$poll_iteration"
+          printf 'PROBE_TRACE snapshot-return epoch=%s alive=%s\n' \
+            "$(date +%s)" "$poll_codex_alive"
 
       - name: Diagnose actual Codex cgroup probe
         if: always()
