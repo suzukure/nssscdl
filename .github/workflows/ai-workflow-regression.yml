@@ -283,7 +283,7 @@ jobs:
           set -eu
 
           marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
-          start_time="$(awk "{print \\$22}" /proc/$$/stat)"
+          start_time="$(awk '{print $22}' /proc/$$/stat)"
           printf '%s %s\n' "$$" "$start_time" > "${marker_prefix}-codex-identity"
           cat /proc/$$/cgroup > "${marker_prefix}-codex-cgroup"
 
@@ -513,11 +513,18 @@ jobs:
           deadline=$(( $(date +%s) + 740 ))
           poll_unit_seen_loaded=false
           poll_workload_seen=false
+          poll_iteration=0
+          printf 'PROBE_TRACE observer-start epoch=%s deadline=%s unit=%q\n' \
+            "$(date +%s)" "$deadline" "$unit"
 
           while :; do
+            poll_iteration=$(( poll_iteration + 1 ))
+            printf 'PROBE_TRACE show-before epoch=%s iteration=%s\n' \
+              "$(date +%s)" "$poll_iteration"
             set +e
             state="$(
-              /usr/bin/timeout 3s /usr/bin/systemctl show "$unit" \
+              /usr/bin/timeout --signal=TERM --kill-after=2s 3s \
+                /usr/bin/systemctl show "$unit" \
                 --property=LoadState \
                 --property=ActiveState \
                 --property=SubState \
@@ -529,6 +536,8 @@ jobs:
             )"
             show_rc=$?
             set -e
+            printf 'PROBE_TRACE show-after epoch=%s iteration=%s rc=%s\n' \
+              "$(date +%s)" "$poll_iteration" "$show_rc"
             printf "%s\n" "$state" > "${marker_prefix}-poll-last-state"
             printf "%s\n" "$show_rc" > "${marker_prefix}-poll-last-show-status"
 
@@ -555,6 +564,8 @@ jobs:
             fi
 
             if [ "$terminal_observed" = true ]; then
+              printf 'PROBE_TRACE terminal epoch=%s iteration=%s\n' \
+                "$(date +%s)" "$poll_iteration"
               printf "%s\n" "$state" > "${marker_prefix}-poll-terminal-state"
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-return"
 
@@ -570,6 +581,8 @@ jobs:
             fi
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
+              printf 'PROBE_TRACE deadline epoch=%s iteration=%s\n' \
+                "$(date +%s)" "$poll_iteration"
               printf "%s\n" "$state" > "${marker_prefix}-poll-deadline-state"
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-poll-deadline"
 
@@ -589,6 +602,8 @@ jobs:
             fi
             sleep 1
           done
+          printf 'PROBE_TRACE observer-return epoch=%s iteration=%s\n' \
+            "$(date +%s)" "$poll_iteration"
 
       - name: Diagnose actual Codex cgroup probe
         if: always()
@@ -601,6 +616,27 @@ jobs:
           set -euo pipefail
 
           marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          printf 'PROBE_TRACE diagnose-start epoch=%s outcome=%s conclusion=%s\n' \
+            "$(date +%s)" "$PROBE_OUTCOME" "$PROBE_CONCLUSION"
+          for suffix in \
+            prepare-return bootstrap-return no-block-return watchdog-armed \
+            request codex-identity codex-cgroup security-status poll-last-state \
+            poll-last-show-status poll-return poll-terminal-state poll-deadline \
+            poll-deadline-state poll-cleanup-issued
+          do
+            if [ -e "${marker_prefix}-${suffix}" ]; then
+              printf 'PROBE_TRACE marker-present=%s\n' "$suffix"
+            else
+              printf 'PROBE_TRACE marker-missing=%s\n' "$suffix"
+            fi
+          done
+          if [ -s "${marker_prefix}-poll-last-state" ]; then
+            printf 'PROBE_TRACE last-state=%q\n' \
+              "$(tr '\n' ';' < "${marker_prefix}-poll-last-state")"
+          fi
+          if [ -s "${marker_prefix}-server.stderr" ]; then
+            printf 'PROBE_TRACE server-stderr-present=true\n'
+          fi
           test -s "${marker_prefix}-start"
           test -s "${marker_prefix}-unit"
           test -s "${marker_prefix}-request"
@@ -623,7 +659,7 @@ jobs:
             local pid start_time current
             read -r pid start_time < "$file"
             [ -r "/proc/$pid/stat" ] || return 1
-            current="$(awk "{print \\$22}" "/proc/$pid/stat")"
+            current="$(awk '{print $22}' "/proc/$pid/stat")"
             [ "$current" = "$start_time" ]
           }
 
@@ -778,7 +814,7 @@ jobs:
 
           if [ -s "${marker_prefix}-codex-identity" ]; then
             read -r codex_pid codex_start < "${marker_prefix}-codex-identity"
-            if [ -r "/proc/$codex_pid/stat" ] && [ "$(awk "{print \\$22}" "/proc/$codex_pid/stat")" = "$codex_start" ]; then
+            if [ -r "/proc/$codex_pid/stat" ] && [ "$(awk '{print $22}' "/proc/$codex_pid/stat")" = "$codex_start" ]; then
               kill -KILL "$codex_pid" 2>/dev/null || true
             fi
           fi
