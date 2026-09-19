@@ -344,6 +344,7 @@ jobs:
 
           exec sudo -n -- \
             env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 780s \
             /bin/bash -c '
               set -euo pipefail
 
@@ -456,7 +457,7 @@ jobs:
                     record_codex_alive "${marker_prefix}-codex-alive-at-waiter-return"
 
                     set +e
-                    /usr/bin/systemctl show "$unit" \
+                    /usr/bin/timeout 3s /usr/bin/systemctl show "$unit" \
                       --property=LoadState \
                       --property=ActiveState \
                       --property=SubState \
@@ -481,7 +482,7 @@ jobs:
 
                   set +e
                   state="$(
-                    /usr/bin/systemctl show "$unit" \
+                    /usr/bin/timeout 3s /usr/bin/systemctl show "$unit" \
                       --property=LoadState \
                       --property=ActiveState \
                       --property=SubState \
@@ -596,7 +597,7 @@ jobs:
               while :; do
                 set +e
                 state="$(
-                  /usr/bin/systemctl show "$unit" \
+                  /usr/bin/timeout 3s /usr/bin/systemctl show "$unit" \
                     --property=LoadState \
                     --property=ActiveState \
                     --property=SubState \
