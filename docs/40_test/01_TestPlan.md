@@ -5,9 +5,9 @@
 | 項目 | 内容 |
 |---|---|
 | 対象システム | Net Shogi School レッスン予約システム |
-| 要求ベースライン | `docs/00_requirements/` v1.19 |
-| ベースライン確認日 | 2026-09-05 |
-| Git基準 | `main` commit `a3f7502fbcba7da89b4fb9caa175b7888ae78be1` 時点の要求仕様 |
+| 要求ベースライン | `docs/00_requirements/` v1.20 |
+| ベースライン確認日 | 2026-09-19 |
+| Git基準 | GitHub `main` 上の要求仕様v1.20。要求版は `docs/00_requirements/00_RevisionHistory.md` を正本とする。 |
 | 参照標準 | ISO/IEC/IEEE 29119-3:2021（Test documentation） |
 | テストレベル | System Test / Acceptance Test を中心とし、必要に応じIntegration / Operational Testを含む |
 | テスト方式 | Requirements-based, risk-based, black-box |
@@ -24,7 +24,7 @@
 - 複数Schedule変更が競合で全体未適用となる場合に、検出できた競合対象・業務上の理由・再確認に必要な最新状態を管理者へ説明できること
 - 標準／追加分類の非遡及性と再計算
 - 認証・権限・個人情報保護
-- 通知失敗と業務状態の分離
+- 通知失敗と業務状態の分離、および配信結果と通知義務有効性・失効の区別
 - 可用性、性能、RPO/RTO、Backup、監査等の非機能要求
 - 対象外機能が意図せず製品要件へ混入していないこと
 
