@@ -164,10 +164,9 @@ jobs:
           printf 'PROBE_DATA runtime version=%q target=%q action_blob=%s uid=%s gid=%s\n' \
             "$native_version" "$target_triple" "$actual_blob" "$uid" "$gid"
 
-      - name: Run actual Codex cgroup probe
-        id: probe
-        continue-on-error: true
-        timeout-minutes: 16
+      - name: Prepare actual Codex cgroup probe
+        id: probe-prepare
+        timeout-minutes: 2
         shell: bash
         env:
           PROBE_MODE: ${{ matrix.mode }}
@@ -231,8 +230,9 @@ jobs:
           server.handle_request()
           PY
 
-          PROBE_MODE="$PROBE_MODE" \
-            python3 "$RUNNER_TEMP/hanging-responses-server.py" \
+          env -u RUNNER_TRACKING_ID PROBE_MODE="$PROBE_MODE" \
+            nohup python3 "$RUNNER_TEMP/hanging-responses-server.py" \
+            </dev/null \
             >"${marker_prefix}-server.stdout" \
             2>"${marker_prefix}-server.stderr" &
           server_pid=$!
@@ -342,6 +342,54 @@ jobs:
           runner_home="$HOME"
           runner_path="$PATH"
 
+          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-prepare-return"
+
+      - name: Bootstrap actual Codex cgroup probe
+        id: probe-bootstrap
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+          CODEX_HOME: ${{ runner.temp }}/codex-probe-home
+          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
+          ACTION_MAIN: ${{ steps.runtime.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.runtime.outputs.runner_credentials }}
+        run: |
+          set -euo pipefail
+          test "$PROBE_MODE" = poll
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          test -s "${marker_prefix}-prepare-return"
+          test -s "${marker_prefix}-unit"
+          unit="$(cat "${marker_prefix}-unit")"
+          test -s "$CODEX_HOME/config.toml"
+          test -x "$CODEX_NATIVE"
+          test -f "$ACTION_MAIN"
+          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          current_credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+          test "$current_credentials" = "$RUNNER_CREDENTIALS"
+          test "$uid" -ne 0
+
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+
           sudo -n -- \
             env -u ENV -u BASH_ENV -u SHELLOPTS \
             /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
@@ -408,185 +456,6 @@ jobs:
                 /bin/sh "$launcher"
               )
 
-              if [ "$probe_mode" = wait ]; then
-                printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-before"
-
-                set +e
-                "${systemd_cmd[@]}" --wait --collect "${payload[@]}" \
-                  </dev/null \
-                  >"${marker_prefix}-waiter.stdout" \
-                  2>"${marker_prefix}-waiter.stderr" &
-                waiter_pid=$!
-                set -e
-                printf "%s\n" "$waiter_pid" > "${marker_prefix}-waiter-pid"
-
-                identity_alive() {
-                  identity_file="$1"
-                  [ -s "$identity_file" ] || return 2
-                  read -r observed_pid observed_start < "$identity_file"
-                  [ -r "/proc/$observed_pid/stat" ] || return 1
-                  current_start="$(awk "{print \$22}" "/proc/$observed_pid/stat")"
-                  [ "$current_start" = "$observed_start" ]
-                }
-
-                record_codex_alive() {
-                  output_file="$1"
-                  codex_alive=unknown
-                  if [ -s "${marker_prefix}-codex-identity" ]; then
-                    if identity_alive "${marker_prefix}-codex-identity"; then
-                      codex_alive=true
-                    else
-                      codex_alive=false
-                    fi
-                  fi
-                  printf "%s\n" "$codex_alive" > "$output_file"
-                }
-
-                observer_deadline=$(( $(date +%s) + 740 ))
-                unit_seen_loaded=false
-                workload_seen=false
-                while :; do
-                  if ! kill -0 "$waiter_pid" 2>/dev/null; then
-                    set +e
-                    wait "$waiter_pid"
-                    rc=$?
-                    set -e
-                    printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-return"
-                    printf "false\n" > "${marker_prefix}-waiter-stuck"
-                    record_codex_alive "${marker_prefix}-codex-alive-at-waiter-return"
-
-                    set +e
-                    /usr/bin/timeout 3s /usr/bin/systemctl show "$unit" \
-                      --property=LoadState \
-                      --property=ActiveState \
-                      --property=SubState \
-                      --property=Result \
-                      --property=ExecMainCode \
-                      --property=ExecMainStatus \
-                      --property=MainPID \
-                      --property=ControlGroup \
-                      > "${marker_prefix}-observer-after-waiter-state" 2>&1
-                    printf "%s\n" "$?" > "${marker_prefix}-observer-after-waiter-show-status"
-                    set -e
-
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-before"
-                    /usr/bin/journalctl \
-                      --unit="$unit" \
-                      --no-pager \
-                      --output=cat \
-                      --lines=200 || true
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-after"
-                    exit 0
-                  fi
-
-                  set +e
-                  state="$(
-                    /usr/bin/timeout 3s /usr/bin/systemctl show "$unit" \
-                      --property=LoadState \
-                      --property=ActiveState \
-                      --property=SubState \
-                      --property=Result \
-                      --property=ExecMainCode \
-                      --property=ExecMainStatus \
-                      --property=MainPID \
-                      --property=ControlGroup 2>&1
-                  )"
-                  show_rc=$?
-                  set -e
-                  printf "%s\n" "$state" > "${marker_prefix}-observer-last-state"
-                  printf "%s\n" "$show_rc" > "${marker_prefix}-observer-last-show-status"
-
-                  load_state="$(printf "%s\n" "$state" | sed -n "s/^LoadState=//p")"
-                  active_state="$(printf "%s\n" "$state" | sed -n "s/^ActiveState=//p")"
-
-                  if [ "$show_rc" -eq 0 ] && [ "$load_state" = loaded ]; then
-                    unit_seen_loaded=true
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-loaded"
-                  fi
-
-                  if [ -s "${marker_prefix}-request" ]; then
-                    workload_seen=true
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-workload-seen"
-                  fi
-
-                  terminal_observed=false
-                  if [ "$unit_seen_loaded" = true ] && [ "$workload_seen" = true ] && [ "$show_rc" -eq 0 ]; then
-                    if [ "$load_state" = loaded ] && { [ "$active_state" = inactive ] || [ "$active_state" = failed ]; }; then
-                      terminal_observed=true
-                    elif [ "$load_state" = not-found ]; then
-                      terminal_observed=true
-                    fi
-                  fi
-
-                  if [ "$terminal_observed" = true ]; then
-                    printf "%s\n" "$state" > "${marker_prefix}-observer-terminal-state"
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-terminal"
-                    record_codex_alive "${marker_prefix}-codex-alive-at-terminal"
-
-                    waiter_grace_deadline=$(( $(date +%s) + 10 ))
-                    while kill -0 "$waiter_pid" 2>/dev/null && [ "$(date +%s)" -lt "$waiter_grace_deadline" ]; do
-                      sleep 0.5
-                    done
-
-                    if kill -0 "$waiter_pid" 2>/dev/null; then
-                      printf "true\n" > "${marker_prefix}-waiter-stuck"
-                      kill -KILL "$waiter_pid" 2>/dev/null || true
-                      set +e
-                      wait "$waiter_pid"
-                      rc=$?
-                      set -e
-                      printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
-                      printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-forced-return"
-                    else
-                      printf "false\n" > "${marker_prefix}-waiter-stuck"
-                      set +e
-                      wait "$waiter_pid"
-                      rc=$?
-                      set -e
-                      printf "%s\n" "$rc" > "${marker_prefix}-systemd-run-status"
-                      printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-return"
-                    fi
-
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-before"
-                    /usr/bin/journalctl \
-                      --unit="$unit" \
-                      --no-pager \
-                      --output=cat \
-                      --lines=200 || true
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-journal-after"
-                    exit 0
-                  fi
-
-                  if [ "$(date +%s)" -ge "$observer_deadline" ]; then
-                    printf "%s\n" "$state" > "${marker_prefix}-observer-deadline-state"
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-deadline"
-                    record_codex_alive "${marker_prefix}-codex-alive-at-deadline"
-                    printf "true\n" > "${marker_prefix}-waiter-stuck"
-
-                    /usr/bin/timeout 5s /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$unit" >/dev/null 2>&1 || true
-                    kill -KILL "$waiter_pid" 2>/dev/null || true
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-waiter-kill-sent"
-
-                    waiter_alive_after_kill=false
-                    for _ in $(seq 1 20); do
-                      if ! kill -0 "$waiter_pid" 2>/dev/null; then
-                        break
-                      fi
-                      sleep 0.1
-                    done
-                    if kill -0 "$waiter_pid" 2>/dev/null; then
-                      waiter_alive_after_kill=true
-                    fi
-                    printf "%s\n" "$waiter_alive_after_kill" > "${marker_prefix}-waiter-alive-after-kill"
-                    printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-observer-return"
-                    exit 0
-                  fi
-
-                  sleep 1
-                done
-              fi
-
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-before"
               "${systemd_cmd[@]}" --no-block "${payload[@]}"
               printf "%s\n" "$(date +%s%N)" > "${marker_prefix}-no-block-return"
@@ -617,12 +486,29 @@ jobs:
             "$PROBE_MODE" \
             "$marker_prefix"
 
-          # The privileged bootstrap has returned. From here on, observe the
-          # system unit as the normal runner user so no root process owns the
-          # long-running step lifecycle.
-          test "$PROBE_MODE" = poll
           test -s "${marker_prefix}-no-block-return"
           test -s "${marker_prefix}-watchdog-armed"
+          printf '%s\n' "$(date +%s%N)" > "${marker_prefix}-bootstrap-return"
+
+      - name: Observe actual Codex cgroup probe
+        id: probe
+        if: steps.probe-bootstrap.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 14
+        shell: bash
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          test "$PROBE_MODE" = poll
+          marker_prefix="$RUNNER_TEMP/codex-systemd-$PROBE_MODE"
+          test -s "${marker_prefix}-prepare-return"
+          test -s "${marker_prefix}-bootstrap-return"
+          test -s "${marker_prefix}-unit"
+          unit="$(cat "${marker_prefix}-unit")"
+
+          # Observe the system unit only as the normal runner user. The
+          # privileged bootstrap has already completed in the previous step.
 
           deadline=$(( $(date +%s) + 740 ))
           poll_unit_seen_loaded=false
