@@ -70,6 +70,8 @@ assert m.ALLOWED_MODELS == {
     "deepseek-ai/DeepSeek-V4-Flash-0731",
     "deepseek-ai/DeepSeek-V4.1-Flash",
 }
+assert m.MAX_TOOL_CALLS == 24
+assert m.MAX_ROUNDS == m.MAX_TOOL_CALLS + 1
 
 os.environ["DEEPINFRA_API_KEY"] = "secret-deepinfra-12345"
 os.environ["GH_TOKEN"] = "github_pat_secret_12345"
@@ -220,6 +222,34 @@ assert analysis["summary"] == "summary"
 assert seen[0][0] == "get_issue"
 assert usage["total_tokens"] == 42
 assert abs(usage["estimated_cost_usd"] - 0.003) < 1e-12
+
+# The round budget must permit every allowed single-tool read round plus
+# one final submit_analysis round.
+responses = [
+    {
+        "usage": {},
+        "choices": [{"message": {"content": None, "tool_calls": [{
+            "id": f"budget-call-{i}", "type": "function",
+            "function": {"name": "get_issue", "arguments": json.dumps({"issue_number": 328})}
+        }]}}],
+    }
+    for i in range(m.MAX_TOOL_CALLS)
+] + [{
+    "usage": {},
+    "choices": [{"message": {"content": None, "tool_calls": [{
+        "id": "budget-submit", "type": "function",
+        "function": {"name": "submit_analysis", "arguments": json.dumps(good)}
+    }]}}],
+}]
+start_seen = len(seen)
+analysis, _ = m.investigate(
+    "owner/repo",
+    328,
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "a" * 40,
+)
+assert analysis["summary"] == "summary"
+assert len(seen) - start_seen == m.MAX_TOOL_CALLS
 
 m.call_chat = lambda *_: {
     "usage": {},
