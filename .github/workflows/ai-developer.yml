@@ -1061,9 +1061,57 @@ jobs:
           bash .github/scripts/notify-human.sh
           "AI Developer job ended with result '${JOB_RESULT}', pause sync outcome '${PAUSE_SYNC_OUTCOME}', and requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
+  draft-after-claude-changes:
+    name: Draft after Claude changes requested
+    if: >-
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Create reviewer App token for identity verification
+        id: review-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Verify review author
+        id: verify-reviewer
+        env:
+          EXPECTED_LOGIN: ${{ steps.review-token.outputs.app-slug }}[bot]
+          ACTUAL_LOGIN: ${{ github.event.review.user.login }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_slug="${EXPECTED_LOGIN%\[bot\]}"
+          if [ "$ACTUAL_LOGIN" = "$EXPECTED_LOGIN" ] || [ "$ACTUAL_LOGIN" = "$expected_slug" ]; then
+            echo 'trusted=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN"
+            echo 'trusted=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Convert pull request to Draft
+        if: steps.verify-reviewer.outputs.trusted == 'true'
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ]; then
+            gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo
+          fi
+
   respond-to-claude:
     name: Respond to Claude
+    needs: draft-after-claude-changes
     if: >-
+      needs.draft-after-claude-changes.result == 'success' &&
       github.event_name == 'pull_request_review' &&
       github.event.review.state == 'changes_requested' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -1434,6 +1482,7 @@ jobs:
 
           git commit -m "Address Claude review for PR #${PR_NUMBER}"
           git push origin "HEAD:${HEAD_REF}"
+          gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
           if [ -s "$CODEX_FINAL" ]; then
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
           else

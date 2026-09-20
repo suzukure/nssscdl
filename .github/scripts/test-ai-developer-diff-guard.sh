@@ -361,7 +361,7 @@ run_publisher_case() {
         'api /users/dev[bot]') echo 123 ;;
         'pr list') return 0 ;;
         'pr create') echo 'https://github.com/owner/repo/pull/37' ;;
-        'pr comment'|'issue comment') return 0 ;;
+        'pr ready'|'pr comment'|'issue comment') return 0 ;;
         *) return 2 ;;
       esac
     }
@@ -536,6 +536,7 @@ grep -Fq 'git push --set-upstream origin ai/issue-36' "$test_dir/publisher-issue
 run_publisher_case followup "$followup_commit_script" 'Address Claude review for PR #37'
 grep -Fq 'git commit -m Address Claude review for PR #37' "$test_dir/publisher-followup/calls.log"
 grep -Fq 'git push origin HEAD:ai/issue-36' "$test_dir/publisher-followup/calls.log"
+grep -Fq 'gh pr ready 37 --repo owner/repo' "$test_dir/publisher-followup/calls.log"
 assert_publisher_bypass_is_blocked issue-origin "$publish_script" 'Implement #36 with Codex'
 assert_publisher_bypass_is_blocked followup "$followup_commit_script" 'Address Claude review for PR #37'
 

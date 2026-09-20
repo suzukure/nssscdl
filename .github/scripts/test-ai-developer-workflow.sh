@@ -127,6 +127,34 @@ if grep -Eqi '(rerun|retry|workflow_dispatch)' "$handler"; then
 fi
 grep -Fq -- '--body "$reason"' "$workflow"
 grep -Fq 'apply-human-pause.sh' "$workflow"
+draft_after_changes_workflow="$test_dir/draft-after-claude-changes.yml"
+awk '
+  $0 == "  draft-after-claude-changes:" { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  draft-after-claude-changes:" { exit }
+  in_job { print }
+' "$workflow" > "$draft_after_changes_workflow"
+[ -s "$draft_after_changes_workflow" ]
+grep -Fqx '    name: Draft after Claude changes requested' "$draft_after_changes_workflow"
+grep -Fqx '      pull-requests: write' "$draft_after_changes_workflow"
+grep -Fq "github.event.review.state == 'changes_requested'" "$draft_after_changes_workflow"
+grep -Fq 'Create reviewer App token for identity verification' "$draft_after_changes_workflow"
+grep -Fq 'Ignoring change request from untrusted reviewer:' "$draft_after_changes_workflow"
+grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow"
+grep -Fqx '    needs: draft-after-claude-changes' "$workflow"
+grep -Fq "needs.draft-after-claude-changes.result == 'success'" "$workflow"
+followup_commit_step="$test_dir/commit-and-answer-review.yml"
+awk '
+  $0 == "      - name: Commit and answer review" { in_step = 1 }
+  in_step && /^      - name: / && $0 != "      - name: Commit and answer review" { exit }
+  in_step { print }
+' "$workflow" > "$followup_commit_step"
+[ -s "$followup_commit_step" ]
+grep -Fq 'git push origin "HEAD:${HEAD_REF}"' "$followup_commit_step"
+grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$followup_commit_step"
+if grep -Fq -- '--undo' "$followup_commit_step"; then
+  echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
+  exit 1
+fi
 if grep -Fq 'Automatic Claude re-review is paused.' "$workflow"; then
   echo 'Expected follow-up re-review guidance to come from the follow-up gate.' >&2
   exit 1

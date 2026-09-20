@@ -11,7 +11,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むDraft PRを作成する。同じIssueの追加修正は既存PRへ集約し、自動Ready化しない。人間が下記の準備確認を終えてReady for reviewへ変更すると、Claude reviewが起動する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
 5. ClaudeがPR、信頼済み会話、closing Issue、明示された後継Issueのsnapshot、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用する。Actionへ現行5-key JSON Schemaを渡し、`structured_output` をreview内容の第一入力として、current base由来の `validate-claude-review-output.sh` を通過した結果だけを投稿する。`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。native出力は厳密に1個のJSON値として読み、欠落・不正JSON・schema不一致は非機密な固定reason codeでfail-closed停止する。自由テキスト `result` やMarkdown fenceへfallbackせず、verdictを推測しない。
-6. `REQUEST_CHANGES` の場合は、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付けて自動Claude再レビューを停止し、その状態でCodexが1回だけ修正する。人間が修正結果を確認した後、closing Issue側のラベルを先に、PR側のラベルを最後に外す。PRの `unlabeled` eventを明示的な再レビュー要求として扱い、同じheadをClaudeが1回レビューする。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
+6. `REQUEST_CHANGES` の場合は、reviewer Appを確認したtrusted workflowがPRをDraftへ戻す。`ai/issue-*` では、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付け、その状態でCodexが1回だけ修正する。Codex正常完了、requirements gate、trusted diff guard、commit/pushの全成功後だけtrusted workflowがPRをReady for reviewへ戻し、そのReady eventが現在headへの再レビューを1回要求する。gate停止・Codex異常終了・push失敗ではReadyへ戻さない。Codex対象外PRは人間または既存の明示操作でReadyへ戻す。停止ラベルを人間が解除する場合はclosing Issue側を先に、PR側を最後に外す。非Draft PRでのPR `unlabeled` eventは明示的な再レビュー要求として維持する。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
@@ -65,9 +65,9 @@ Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpus
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
 
-`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
+`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とし、verdict投稿時にも現在headとの一致を要求する。Ready後にheadが変わった場合はstaleなverdictを投稿せず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
-既存の非Draft PRはこの変更で自動Draft化しない。通常の追加作業をレビュー前にまとめ直す場合、人間が追加pushより前にDraftへ戻し、既に進行中のClaude runがあれば別途確認・停止する。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。非Draftのままpushすると従来どおり`synchronize`でレビュー対象となる。
+Claudeの`REQUEST_CHANGES`後はreviewer Appを確認したtrusted workflowがPRをDraftへ戻す。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
 
 `human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中の非Draft PRは従来どおり人間の確認後にclosing Issue、PRの順でラベルを外す。停止中のDraft PRは、準備・再開判断後に同じ順でラベルを外し、最後にReady化する。Draft中のラベル解除ではClaudeは起動しないため、Ready化がその後のレビュー要求になる。
 
@@ -379,7 +379,7 @@ Issue起点のAI Developerを再実行する前に、少なくとも次を確認
 
 再実行可能と人間が判断した後、停止ラベルがある場合は既存の停止解除規約どおり、closing Issue側を先に、PR側を最後に解除する。
 
-既存PRへ追加開発を継続する場合は、PRがDraftであることと、既に開始済みのClaude Reviewがないことを確認する。非Draft PRで `human-review-required` を解除するとClaude Reviewの再実行条件になり得るため、追加開発中に意図しないレビューを起動しない。
+既存PRへ追加開発を継続する場合は、PRがDraftであることと、既に開始済みのClaude Reviewがないことを確認する。非Draft PRで `human-review-required` を解除するとClaude Reviewの再実行条件になり得るため、追加開発中に意図しないレビューを起動しない。pushの`synchronize`だけではClaude Reviewを起動しない。
 
 その後、再実行が必要な場合は原則としてOpen Issueへ `/codex develop` を単独コメントとして投稿する。十分に閉じたcurrent contractでも15分timeoutが再現し、通常runの単純retryではなく人間がextended-runを明示承認した場合だけ、次節の条件で `/codex develop extended` を使用する。
 
@@ -401,7 +401,7 @@ Claude review follow-upでは、`Run Codex follow-up` の実行前に `Gate auto
 
 異常終了後にCodex follow-upを自動retryしない。現行workflowには、停止状態を維持したまま同じClaude指摘に対するCodex follow-upだけを安全に再実行する専用入口はない。
 
-人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除する。
+人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除する。PRはDraftのままなので、その後に人間または明示的なtrusted経路がReady for reviewへ戻して再レビューを要求する。
 
 非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
 
