@@ -396,14 +396,14 @@ jobs:
           test "$(/usr/bin/id -u)" = "$expected_uid"
           test "$(/usr/bin/id -g)" = "$expected_gid"
 
-          groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/$/status)"
+          groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
           test -z "$groups_status"
 
-          no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/$/status)"
+          no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
           test "$no_new_privs" = 1
 
           for field in CapInh CapPrm CapEff CapBnd CapAmb; do
-            value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/$/status)"
+            value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
             test "$value" = 0000000000000000
           done
 
