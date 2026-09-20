@@ -125,6 +125,16 @@ if grep -Eqi '(rerun|retry|workflow_dispatch)' "$handler"; then
   echo 'Issue developer failure handler must not retry automation.' >&2
   exit 1
 fi
+followup_failure_handler="$test_dir/handle-claude-followup-failure.yml"
+awk '
+  $0 == "  handle-claude-followup-failure:" { in_job = 1 }
+  in_job { print }
+' "$workflow" > "$followup_failure_handler"
+[ -s "$followup_failure_handler" ]
+grep -Fqx '    needs: respond-to-claude' "$followup_failure_handler"
+grep -Fqx "      needs.respond-to-claude.result == 'failure' &&" "$followup_failure_handler"
+grep -Fq 'apply-human-pause.sh' "$followup_failure_handler"
+grep -Fq 'Codex follow-up ended abnormally' "$followup_failure_handler"
 grep -Fq -- '--body "$reason"' "$workflow"
 grep -Fq 'apply-human-pause.sh' "$workflow"
 draft_after_changes_workflow="$test_dir/draft-after-claude-changes.yml"
@@ -155,8 +165,8 @@ if grep -Fq -- '--undo' "$followup_commit_step"; then
   echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
   exit 1
 fi
-if grep -Fq 'Automatic Claude re-review is paused.' "$workflow"; then
-  echo 'Expected follow-up re-review guidance to come from the follow-up gate.' >&2
+if ! grep -Fq 'Automated Codex follow-up passed the entry gate' "$repo_root/.github/scripts/evaluate-followup-gate.sh"; then
+  echo 'Expected the follow-up gate to describe the successful re-review path.' >&2
   exit 1
 fi
 
@@ -731,12 +741,26 @@ assert_followup_gate_pause() {
   grep -Fxq "continue=$expected_continue" "$output_path"
 }
 
-assert_followup_gate_pause followup-continue valid true
+assert_followup_gate_continue() {
+  local output_path="$test_dir/followup-continue.output"
+  local log_path="$test_dir/followup-continue.log"
+
+  : > "$output_path"
+  : > "$log_path"
+  MOCK_CASE=valid MOCK_GH_LOG="$log_path" \
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
+    bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
+  [ ! -s "$log_path" ]
+  grep -Fxq 'continue=true' "$output_path"
+}
+
+assert_followup_gate_continue
 assert_followup_gate_pause followup-escalate three-reviews false
 
 : > "$test_dir/followup-pause-failure.output"
 : > "$test_dir/followup-pause-failure.log"
-if MOCK_CASE=valid MOCK_PR_CLOSING_FETCH_FAIL=true \
+if MOCK_CASE=three-reviews MOCK_PR_CLOSING_FETCH_FAIL=true \
     MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
     DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
@@ -752,7 +776,7 @@ fi
 
 for fixture in valid app-author; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automatic Claude re-review is paused."))' <<< "$followup" > /dev/null
+  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automated Codex follow-up passed the entry gate"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null

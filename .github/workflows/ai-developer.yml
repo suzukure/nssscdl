@@ -1179,7 +1179,7 @@ jobs:
           notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
 
-          if [ "$escalate" = 'true' ] || [ "$continue" = 'true' ]; then
+          if [ "$escalate" = 'true' ]; then
             # The pause helper resolves and labels the PR's closing Issues.
             bash .github/scripts/apply-human-pause.sh \
               "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
@@ -1488,3 +1488,44 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
           fi
+
+  handle-claude-followup-failure:
+    name: Handle Claude follow-up failure
+    needs: respond-to-claude
+    if: >-
+      always() &&
+      needs.respond-to-claude.result == 'failure' &&
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'ai/issue-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Create developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+
+      - name: Check out trusted automation
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Pause failed follow-up
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/apply-human-pause.sh \
+            "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body 'Codex follow-up ended abnormally; automated follow-up is paused pending a human decision.'
