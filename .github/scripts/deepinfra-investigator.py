@@ -740,6 +740,7 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
         raise InvestigatorError("issue bootstrap exceeds tool-result context budget")
     usage = {"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"estimated_cost_usd":0.0}
     force_submit = False
+    no_tool_retry_used = False
 
     for round_no in range(1, MAX_ROUNDS + 1):
         if force_submit:
@@ -775,8 +776,44 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
         if "tool_calls" in raw_msg:
             assistant["tool_calls"] = raw_msg["tool_calls"]
         tool_calls = assistant.get("tool_calls")
-        if not isinstance(tool_calls, list) or not tool_calls or len(tool_calls) > 8:
-            raise InvestigatorError("investigator stopped without valid tool calls")
+
+        invalid_tool_calls = (
+            not isinstance(tool_calls, list)
+            or not tool_calls
+            or len(tool_calls) > 8
+        )
+        if invalid_tool_calls:
+            if no_tool_retry_used:
+                raise InvestigatorError("investigator stopped without valid tool calls after retry")
+            no_tool_retry_used = True
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Protocol reminder: respond by calling one or more supplied read-only tools, "
+                    "or call submit_analysis if the evidence is already sufficient. "
+                    "Do not end this read phase with ordinary text."
+                ),
+            })
+            tool_trace.append({
+                "round": round_no,
+                "tool": "protocol_retry",
+                "reason": "missing_or_invalid_tool_calls",
+                "ok": True,
+            })
+            response = call_chat(model, messages, tools)
+            accumulate_usage(usage, response)
+            _, raw_msg = first_message(response, "tool retry")
+            assistant = {"role":"assistant","content":raw_msg.get("content")}
+            if "tool_calls" in raw_msg:
+                assistant["tool_calls"] = raw_msg["tool_calls"]
+            tool_calls = assistant.get("tool_calls")
+            if (
+                not isinstance(tool_calls, list)
+                or not tool_calls
+                or len(tool_calls) > 8
+            ):
+                raise InvestigatorError("investigator stopped without valid tool calls after retry")
+
         parsed = [parsed_tool_call(x) for x in tool_calls]
         submits = [x for x in parsed if x[0] == "submit_analysis"]
         if submits:
