@@ -389,6 +389,48 @@ jobs:
           cat > "$RUNNER_TEMP/run-native-codex.sh" <<'CODEX_RUN'
           #!/bin/sh
           set -eu
+
+          expected_uid="${1:?expected uid is required}"
+          expected_gid="${2:?expected gid is required}"
+
+          test "$(/usr/bin/id -u)" = "$expected_uid"
+          test "$(/usr/bin/id -g)" = "$expected_gid"
+
+          groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/$/status)"
+          test -z "$groups_status"
+
+          no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/$/status)"
+          test "$no_new_privs" = 1
+
+          for field in CapInh CapPrm CapEff CapBnd CapAmb; do
+            value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/$/status)"
+            test "$value" = 0000000000000000
+          done
+
+          if /usr/bin/sudo -n true >/dev/null 2>&1; then
+            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            exit 40
+          fi
+
+          /usr/bin/python3 - <<'PY'
+          import socket
+
+          try:
+              sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          except OSError:
+              pass
+          else:
+              sock.close()
+              raise SystemExit("service-local hardening preflight unexpectedly allows AF_UNIX")
+
+          try:
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          except OSError as exc:
+              raise SystemExit(f"service-local hardening preflight blocks AF_INET: {exc}")
+          else:
+              sock.close()
+          PY
+
           exec env \
             -u CODEX_MANAGED_BY_BUN \
             -u CODEX_MANAGED_BY_PNPM \
@@ -433,13 +475,6 @@ jobs:
               codex_package_root="${19}"
               originator="${20}"
 
-              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
-                drop-sudo \
-                --root-phase \
-                --user "$runner_user" \
-                --group sudo \
-                --runner-credentials "$credentials"
-
               set +e
               /usr/bin/systemd-run \
                 --quiet \
@@ -451,6 +486,10 @@ jobs:
                 --property=TimeoutStopSec=5s \
                 --property=KillMode=control-group \
                 --property=SendSIGKILL=yes \
+                --property=NoNewPrivileges=yes \
+                --property="RestrictAddressFamilies=~AF_UNIX" \
+                --property=SystemCallArchitectures=native \
+                --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" \
                 /usr/bin/setpriv \
                   --reuid="$uid" \
                   --regid="$nobody_gid" \
@@ -473,7 +512,7 @@ jobs:
                   "CODEX_NATIVE=$codex_native" \
                   "CODEX_PACKAGE_ROOT=$codex_package_root" \
                   "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
-                  /bin/sh "$launcher"
+                  /bin/sh "$launcher" "$uid" "$nobody_gid"
               rc=$?
               set -e
 
