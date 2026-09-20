@@ -159,31 +159,47 @@ def tool_defs() -> list[dict[str, Any]]:
             "limit": {"type": "integer", "minimum": 1, "maximum": 200}
         }, ["base", "head"]),
         f("submit_analysis", "Finish with structured analysis only. This performs no write or action.", {
-            "summary": {"type": "string"},
-            "hypotheses": {"type": "array", "items": {
+            "summary": {"type": "string", "maxLength": 10000},
+            "hypotheses": {"type": "array", "minItems": 1, "maxItems": 20, "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string"}, "statement": {"type": "string"},
+                    "id": {"type": "string", "maxLength": 80},
+                    "statement": {"type": "string", "maxLength": 4000},
                     "status": {"type": "string", "enum": ["supported", "weakened", "refuted", "open"]},
                     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-                    "evidence": {"type": "array", "items": {
+                    "evidence": {"type": "array", "maxItems": 30, "items": {
                         "type": "object",
-                        "properties": {"source": {"type": "string"}, "observation": {"type": "string"}},
+                        "properties": {
+                            "source": {"type": "string", "maxLength": 500},
+                            "observation": {"type": "string", "maxLength": 4000}
+                        },
                         "required": ["source", "observation"], "additionalProperties": False
                     }},
-                    "gaps": {"type": "array", "items": {"type": "string"}}
+                    "gaps": {"type": "array", "maxItems": 20,
+                             "items": {"type": "string", "maxLength": 2000}}
                 },
                 "required": ["id", "statement", "status", "confidence", "evidence", "gaps"],
                 "additionalProperties": False
             }},
-            "unresolved_causality": {"type": "array", "items": {"type": "string"}},
+            "unresolved_causality": {
+                "type": "array", "maxItems": 30,
+                "items": {"type": "string", "maxLength": 2000}
+            },
             "next_probe": {"anyOf": [{"type": "null"}, {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string"}, "purpose": {"type": "string"},
-                    "intervention": {"type": "string"}, "control": {"type": "string"},
-                    "expected_discriminating_results": {"type": "array", "items": {"type": "string"}},
-                    "safety_constraints": {"type": "array", "items": {"type": "string"}}
+                    "title": {"type": "string", "maxLength": 4000},
+                    "purpose": {"type": "string", "maxLength": 4000},
+                    "intervention": {"type": "string", "maxLength": 4000},
+                    "control": {"type": "string", "maxLength": 4000},
+                    "expected_discriminating_results": {
+                        "type": "array", "maxItems": 20,
+                        "items": {"type": "string", "maxLength": 2000}
+                    },
+                    "safety_constraints": {
+                        "type": "array", "maxItems": 20,
+                        "items": {"type": "string", "maxLength": 2000}
+                    }
                 },
                 "required": ["title", "purpose", "intervention", "control",
                              "expected_discriminating_results", "safety_constraints"],
@@ -191,10 +207,11 @@ def tool_defs() -> list[dict[str, Any]]:
             }]},
             "escalation": {
                 "type": "object",
+                "description": "Advisory only. Set recommended=true exactly when target is v4_1 or astra; otherwise use recommended=false and target=none.",
                 "properties": {
                     "recommended": {"type": "boolean"},
                     "target": {"type": "string", "enum": ["none", "v4_1", "astra"]},
-                    "reason": {"type": "string"}
+                    "reason": {"type": "string", "maxLength": 4000}
                 },
                 "required": ["recommended", "target", "reason"],
                 "additionalProperties": False
@@ -329,7 +346,11 @@ def validate_analysis(v: Any) -> dict[str, Any]:
             req_str(e["source"], "source", 500); req_str(e["observation"], "observation", 4000)
         if not isinstance(h["gaps"], list) or len(h["gaps"]) > 20 or not all(isinstance(x,str) and len(x)<=2000 for x in h["gaps"]):
             raise InvestigatorError("invalid gaps")
-    if not isinstance(v["unresolved_causality"], list) or len(v["unresolved_causality"]) > 30:
+    if (
+        not isinstance(v["unresolved_causality"], list)
+        or len(v["unresolved_causality"]) > 30
+        or not all(isinstance(x, str) and len(x) <= 2000 for x in v["unresolved_causality"])
+    ):
         raise InvestigatorError("invalid unresolved_causality")
     p = v["next_probe"]
     if p is not None:
@@ -347,8 +368,7 @@ def validate_analysis(v: Any) -> dict[str, Any]:
     if not isinstance(e["recommended"], bool) or e["target"] not in {"none","v4_1","astra"}:
         raise InvestigatorError("invalid escalation fields")
     req_str(e["reason"], "escalation.reason", 4000)
-    if e["recommended"] != (e["target"] != "none"):
-        raise InvestigatorError("inconsistent escalation")
+    e["recommended"] = e["target"] != "none"
     return v
 
 
