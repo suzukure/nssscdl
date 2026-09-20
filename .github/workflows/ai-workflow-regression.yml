@@ -290,25 +290,44 @@ jobs:
                   if index == 0:
                       names = [name for name in (tool_name(t) for t in tools) if name]
                       write_marker("-tool-names.json", json.dumps(names, sort_keys=True))
-                      name, arguments = build_call(tools)
-                      write_marker("-selected-tool", name)
-                      write_marker("-selected-arguments.json", json.dumps(arguments, sort_keys=True))
-                      events = [
-                          {
-                              "type": "response.created",
-                              "response": {"id": "resp-probe-1"},
-                          },
-                          {
-                              "type": "response.output_item.done",
-                              "item": {
-                                  "type": "function_call",
-                                  "call_id": call_id,
-                                  "name": name,
-                                  "arguments": json.dumps(arguments, separators=(",", ":")),
+                      try:
+                          name, arguments = build_call(tools)
+                      except RuntimeError as exc:
+                          write_marker("-adapter-error", str(exc))
+                          write_marker("-request-count", str(index + 1))
+                          events = [
+                              {
+                                  "type": "response.output_item.done",
+                                  "item": {
+                                      "type": "message",
+                                      "role": "assistant",
+                                      "id": "msg-probe-discovery",
+                                      "content": [
+                                          {"type": "output_text", "text": "probe-discovery-complete"}
+                                      ],
+                                  },
                               },
-                          },
-                          completed("resp-probe-1"),
-                      ]
+                              completed("resp-probe-discovery"),
+                          ]
+                      else:
+                          write_marker("-selected-tool", name)
+                          write_marker("-selected-arguments.json", json.dumps(arguments, sort_keys=True))
+                          events = [
+                              {
+                                  "type": "response.created",
+                                  "response": {"id": "resp-probe-1"},
+                              },
+                              {
+                                  "type": "response.output_item.done",
+                                  "item": {
+                                      "type": "function_call",
+                                      "call_id": call_id,
+                                      "name": name,
+                                      "arguments": json.dumps(arguments, separators=(",", ":")),
+                                  },
+                              },
+                              completed("resp-probe-1"),
+                          ]
                   else:
                       outputs = [
                           item for item in inputs
@@ -616,6 +635,15 @@ jobs:
             "$PROBE_BOUNDARY" "$PROBE_OUTCOME" "$codex_rc"
           cat "${marker}-codex.stdout" || true
           cat "${marker}-codex.stderr" >&2 || true
+          cat "${marker}-server.stderr" >&2 || true
+          if [ -s "${marker}-tool-names.json" ]; then
+            printf 'PROBE_DATA tool_names=%s\n' "$(cat "${marker}-tool-names.json")"
+          fi
+          if [ -s "${marker}-adapter-error" ]; then
+            printf 'PROBE_DATA adapter_error=%q\n' "$(cat "${marker}-adapter-error")"
+            echo 'Probe adapter needs the actual Codex 0.153.4 command-tool contract.' >&2
+            exit 1
+          fi
 
           test -s "${marker}-selected-tool"
           test -s "${marker}-selected-arguments.json"
