@@ -224,7 +224,7 @@ assert usage["total_tokens"] == 42
 assert abs(usage["estimated_cost_usd"] - 0.003) < 1e-12
 
 # The round budget must permit every allowed single-tool read round plus
-# one final submit_analysis round.
+# one strict structured-output finalization round.
 responses = [
     {
         "usage": {},
@@ -234,13 +234,15 @@ responses = [
         }]}}],
     }
     for i in range(m.MAX_TOOL_CALLS)
-] + [{
-    "usage": {},
-    "choices": [{"message": {"content": None, "tool_calls": [{
-        "id": "budget-submit", "type": "function",
-        "function": {"name": "submit_analysis", "arguments": json.dumps(good)}
-    }]}}],
-}]
+]
+structured_seen = []
+m.call_structured_final = lambda model, messages, schema: (
+    structured_seen.append((model, schema)),
+    {
+        "usage": {},
+        "choices": [{"message": {"content": json.dumps(good)}}],
+    },
+)[1]
 start_seen = len(seen)
 analysis, _ = m.investigate(
     "owner/repo",
@@ -250,6 +252,11 @@ analysis, _ = m.investigate(
 )
 assert analysis["summary"] == "summary"
 assert len(seen) - start_seen == m.MAX_TOOL_CALLS
+assert len(structured_seen) == 1
+assert structured_seen[0][0] == "deepseek-ai/DeepSeek-V4-Flash-0731"
+assert structured_seen[0][1]["required"] == [
+    "summary", "hypotheses", "unresolved_causality", "next_probe", "escalation"
+]
 
 m.call_chat = lambda *_: {
     "usage": {},
