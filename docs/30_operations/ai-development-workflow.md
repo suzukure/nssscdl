@@ -268,6 +268,10 @@ default branchに次を適用する。
 
 `parse-ai-resume-command.sh` を変更した場合は `bash .github/scripts/test-parse-ai-resume-command.sh` を実行する。
 
+`.github/scripts/inspect-ai-resume-target.sh <repo> <issue|pr> <number>` はstdinから#299のaccepted command objectをちょうど1個だけ受け、`owner/repo`と先頭0なしの正整数targetを検証してcurrent target metadataをfail-closedで正規化する。open non-PR Issueは`command`、`target:"issue:N"`、`issue:{number,state:"open"}`、`pull_request:null`を返す。open PRは`target:"pr:N"`、`issue:null`、およびnumber、open state、base/head ref、40桁のcurrent head SHA、branch名が`ai/issue-N`の場合だけの`branch_issue_number`、same-repository closing Issue URLだけをsort/uniqueした`closing_issue_numbers`を固定shapeで返す。PR branchとclosing Issueのrelation、branch Issueのopen判定、canonical closing Issue、dispatch、production workflow wiringは扱わない。GitHub response、stdin、target、またはstateのshape不正・closed targetはすべて停止する。
+
+`inspect-ai-resume-target.sh` を変更した場合は `bash .github/scripts/test-inspect-ai-resume-target.sh` を実行する。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
