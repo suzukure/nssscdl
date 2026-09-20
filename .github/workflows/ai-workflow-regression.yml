@@ -72,3 +72,646 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  codex-bwrap-prereq-probe:
+    name: Codex bwrap prereq probe (${{ matrix.boundary }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    strategy:
+      fail-fast: false
+      matrix:
+        boundary: [runner-direct, setpriv-only]
+    steps:
+      - name: Install pinned Codex Action runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          codex-home: ${{ runner.temp }}/codex-exec-tool-probe-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted native Codex
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(jq -r .name "$package_root/package.json")" = '@openai/codex'
+          test "$(jq -r .version "$package_root/package.json")" = '0.153.4'
+
+          case "$(uname -m)" in
+            x86_64)
+              platform_package='@openai/codex-linux-x64'
+              target_triple='x86_64-unknown-linux-musl'
+              ;;
+            aarch64|arm64)
+              platform_package='@openai/codex-linux-arm64'
+              target_triple='aarch64-unknown-linux-musl'
+              ;;
+            *)
+              echo "Unsupported Codex platform: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          platform_json="$(
+            node -e '
+              const { createRequire } = require("node:module");
+              const req = createRequire(process.argv[1]);
+              process.stdout.write(req.resolve(process.argv[2] + "/package.json"));
+            ' "$entry" "$platform_package"
+          )"
+          native_path="$(realpath "$(dirname "$platform_json")/vendor/$target_triple/bin/codex")"
+          test -x "$native_path"
+
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$native_version" = 'codex-cli 0.153.4'
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA runtime version=%q target=%q\n' "$native_version" "$target_triple"
+
+      - name: Start trusted localhost Responses fixture
+        id: server
+        shell: bash
+        env:
+          PROBE_BOUNDARY: ${{ matrix.boundary }}
+        run: |
+          set -euo pipefail
+
+          marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
+          fixture="$GITHUB_WORKSPACE/.codex-exec-tool-probe-fixture"
+          printf 'codex-exec-tool-probe-ok\n' > "$fixture"
+
+          cat > "$RUNNER_TEMP/codex-exec-tool-responses.py" <<'PY'
+          import http.server
+          import json
+          import os
+          import pathlib
+          import shlex
+          import threading
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          boundary = os.environ["PROBE_BOUNDARY"]
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          fixture = (workspace / ".codex-exec-tool-probe-fixture").resolve()
+          marker = root / f"codex-exec-tool-{boundary}"
+          call_id = "call_codex_exec_tool_probe"
+
+          def write_marker(suffix, text):
+              marker.with_name(marker.name + suffix).write_text(
+                  text if text.endswith("\n") else text + "\n",
+                  encoding="utf-8",
+              )
+
+          def tool_name(tool):
+              if not isinstance(tool, dict):
+                  return None
+              name = tool.get("name")
+              if isinstance(name, str):
+                  return name
+              fn = tool.get("function")
+              if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+                  return fn["name"]
+              return None
+
+          def tool_parameters(tool):
+              if not isinstance(tool, dict):
+                  return {}
+              params = tool.get("parameters")
+              if isinstance(params, dict):
+                  return params
+              fn = tool.get("function")
+              if isinstance(fn, dict) and isinstance(fn.get("parameters"), dict):
+                  return fn["parameters"]
+              return {}
+
+          def build_call(tools):
+              for tool in tools:
+                  if isinstance(tool, dict) and tool.get("type") == "local_shell":
+                      return "local_shell", {
+                          "command": ["/usr/bin/cat", str(fixture)],
+                          "timeout_ms": None,
+                          "working_directory": str(workspace),
+                          "env": None,
+                          "user": None,
+                      }
+
+              known = {}
+              for tool in tools:
+                  name = tool_name(tool)
+                  if name in {"exec_command", "shell_command"}:
+                      known[name] = tool
+
+              if "exec_command" in known:
+                  params = tool_parameters(known["exec_command"])
+                  props = params.get("properties") if isinstance(params, dict) else {}
+                  props = props if isinstance(props, dict) else {}
+                  args = {"cmd": f"/usr/bin/cat {shlex.quote(str(fixture))}"}
+                  if "workdir" in props:
+                      args["workdir"] = str(workspace)
+                  if "yield_time_ms" in props:
+                      args["yield_time_ms"] = 10000
+                  return "exec_command", args
+
+              if "shell_command" in known:
+                  params = tool_parameters(known["shell_command"])
+                  props = params.get("properties") if isinstance(params, dict) else {}
+                  props = props if isinstance(props, dict) else {}
+                  command_schema = props.get("command")
+                  command_schema = command_schema if isinstance(command_schema, dict) else {}
+                  if command_schema.get("type") == "array":
+                      command = ["/usr/bin/cat", str(fixture)]
+                  else:
+                      command = f"/usr/bin/cat {shlex.quote(str(fixture))}"
+                  args = {"command": command}
+                  if "workdir" in props:
+                      args["workdir"] = str(workspace)
+                  return "shell_command", args
+
+              raise RuntimeError("no supported local command tool in Responses request")
+
+          def sse(events):
+              chunks = []
+              for event in events:
+                  chunks.append(f"event: {event['type']}\n")
+                  chunks.append("data: " + json.dumps(event, separators=(",", ":")) + "\n\n")
+              return "".join(chunks).encode("utf-8")
+
+          def completed(response_id):
+              return {
+                  "type": "response.completed",
+                  "response": {
+                      "id": response_id,
+                      "usage": {
+                          "input_tokens": 0,
+                          "input_tokens_details": None,
+                          "output_tokens": 0,
+                          "output_tokens_details": None,
+                          "total_tokens": 0,
+                      },
+                  },
+              }
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              post_count = 0
+
+              def do_GET(self):
+                  payload = json.dumps({"data": []}).encode("utf-8")
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(payload)))
+                  self.end_headers()
+                  self.wfile.write(payload)
+
+              def do_POST(self):
+                  if self.path != "/v1/responses":
+                      self.send_error(404)
+                      return
+
+                  raw_length = self.headers.get("Content-Length")
+                  if raw_length is None:
+                      self.send_error(411)
+                      return
+                  body = self.rfile.read(int(raw_length))
+                  request = json.loads(body)
+                  index = Handler.post_count
+                  Handler.post_count += 1
+
+                  inputs = request.get("input")
+                  inputs = inputs if isinstance(inputs, list) else []
+                  tools = request.get("tools")
+                  tools = tools if isinstance(tools, list) else []
+
+                  if index == 0:
+                      names = [name for name in (tool_name(t) for t in tools) if name]
+                      descriptors = []
+                      for tool in tools:
+                          if not isinstance(tool, dict):
+                              continue
+                          descriptors.append({
+                              "type": tool.get("type"),
+                              "name": tool_name(tool),
+                          })
+                      write_marker("-tool-names.json", json.dumps(names, sort_keys=True))
+                      write_marker("-tool-descriptors.json", json.dumps(descriptors, sort_keys=True))
+
+                      nested_args = {
+                          "cmd": f"/usr/bin/cat {shlex.quote(str(fixture))}",
+                          "workdir": str(workspace),
+                          "yield_time_ms": 10000,
+                          "max_output_tokens": 1000,
+                      }
+                      code = (
+                          "const result = await tools.exec_command("
+                          + json.dumps(nested_args, separators=(",", ":"))
+                          + "); text(result.output);"
+                      )
+                      write_marker("-selected-tool", "exec")
+                      write_marker("-selected-arguments.json", json.dumps(nested_args, sort_keys=True))
+                      write_marker("-selected-code", code)
+                      events = [
+                          {
+                              "type": "response.created",
+                              "response": {"id": "resp-probe-1"},
+                          },
+                          {
+                              "type": "response.output_item.done",
+                              "item": {
+                                  "type": "custom_tool_call",
+                                  "call_id": call_id,
+                                  "name": "exec",
+                                  "input": code,
+                              },
+                          },
+                          completed("resp-probe-1"),
+                      ]
+                  else:
+                      outputs = [
+                          item for item in inputs
+                          if isinstance(item, dict)
+                          and item.get("type") in {"custom_tool_call_output", "function_call_output"}
+                          and item.get("call_id") == call_id
+                      ]
+                      if len(outputs) != 1:
+                          raise RuntimeError("expected exactly one tool call output")
+                      write_marker("-tool-output-type", str(outputs[0].get("type")))
+                      output = outputs[0].get("output")
+                      if isinstance(output, str):
+                          output_text = output
+                      else:
+                          output_text = json.dumps(output, ensure_ascii=False)
+                      write_marker("-tool-output", output_text[:12000])
+                      write_marker("-request-count", str(index + 1))
+                      events = [
+                          {
+                              "type": "response.output_item.done",
+                              "item": {
+                                  "type": "message",
+                                  "role": "assistant",
+                                  "id": "msg-probe-final",
+                                  "content": [
+                                      {"type": "output_text", "text": "probe-finished"}
+                                  ],
+                              },
+                          },
+                          completed("resp-probe-2"),
+                      ]
+
+                  payload = sse(events)
+                  self.send_response(200)
+                  self.send_header("Content-Type", "text/event-stream")
+                  self.send_header("Cache-Control", "no-cache")
+                  self.send_header("Connection", "close")
+                  self.send_header("Content-Length", str(len(payload)))
+                  self.end_headers()
+                  self.wfile.write(payload)
+                  self.wfile.flush()
+
+              def log_message(self, format, *args):
+                  return
+
+          server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+          write_marker("-server-port", str(server.server_address[1]))
+          write_marker("-server-pid", str(os.getpid()))
+          server.serve_forever()
+          PY
+
+          PROBE_BOUNDARY="$PROBE_BOUNDARY" \
+          python3 "$RUNNER_TEMP/codex-exec-tool-responses.py" \
+            > "${marker}-server.stdout" \
+            2> "${marker}-server.stderr" &
+          server_pid=$!
+
+          for _ in $(seq 1 100); do
+            if [ -s "${marker}-server-port" ]; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo 'Local Responses fixture exited before publishing port.' >&2
+              cat "${marker}-server.stderr" >&2 || true
+              exit 1
+            fi
+            sleep 0.1
+          done
+          test -s "${marker}-server-port"
+          port="$(cat "${marker}-server-port")"
+          case "$port" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+
+          codex_home="$RUNNER_TEMP/codex-exec-tool-home-$PROBE_BOUNDARY"
+          mkdir -p "$codex_home"
+          cat > "$codex_home/config.toml" <<EOF
+          model_provider = "local-tool-probe"
+
+          [model_providers.local-tool-probe]
+          name = "Local trusted tool probe"
+          base_url = "http://127.0.0.1:${port}/v1"
+          wire_api = "responses"
+          requires_openai_auth = false
+          request_max_retries = 0
+          stream_max_retries = 0
+          stream_idle_timeout_ms = 20000
+          EOF
+          chmod 755 "$codex_home"
+          chmod 644 "$codex_home/config.toml"
+
+          prompt_file="$RUNNER_TEMP/codex-exec-tool-prompt-$PROBE_BOUNDARY.txt"
+          cat > "$prompt_file" <<'PROMPT'
+          Follow the provider response. Do not make additional changes. Finish after the supplied tool call.
+          PROMPT
+          chmod 644 "$prompt_file"
+
+          printf 'codex_home=%s\n' "$codex_home" >> "$GITHUB_OUTPUT"
+          printf 'prompt_file=%s\n' "$prompt_file" >> "$GITHUB_OUTPUT"
+          printf 'fixture=%s\n' "$fixture" >> "$GITHUB_OUTPUT"
+          printf 'server_pid=%s\n' "$server_pid" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA server boundary=%s port=%s pid=%s\n' \
+            "$PROBE_BOUNDARY" "$port" "$server_pid"
+
+      - name: Capture host integrity baseline
+        id: host_before
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notify="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          resolved="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState \
+              --property=SubState \
+              --property=MainPID \
+              --property=NRestarts
+          )"
+          grep -Fxq 'ActiveState=active' <<< "$resolved"
+          grep -Fxq 'SubState=running' <<< "$resolved"
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          {
+            printf 'notify=%s\n' "$notify"
+            printf 'dbus=%s\n' "$dbus"
+            printf 'resolved_b64=%s\n' "$(printf '%s' "$resolved" | base64 -w0)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run actual Codex exec tool path under launcher boundary
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          PROBE_BOUNDARY: ${{ matrix.boundary }}
+          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
+          CODEX_HOME: ${{ steps.server.outputs.codex_home }}
+          CODEX_PROMPT_FILE: ${{ steps.server.outputs.prompt_file }}
+        run: |
+          set -euo pipefail
+
+          case "$PROBE_BOUNDARY" in
+            runner-direct|setpriv-only) ;;
+            *) exit 1 ;;
+          esac
+
+          marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
+          launcher="$RUNNER_TEMP/run-codex-exec-tool-$PROBE_BOUNDARY.sh"
+
+          cat > "$launcher" <<'CODEX_RUN'
+          #!/bin/sh
+          set -eu
+
+          marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
+          awk '
+            /^(Uid|Gid|Groups|NoNewPrivs|CapInh|CapPrm|CapEff|CapBnd|CapAmb):/ {
+              key=$1
+              sub(/:$/, "", key)
+              $1=""
+              sub(/^[[:space:]]+/, "")
+              print key "=" $0
+            }
+          ' /proc/$$/status > "${marker}-security-status"
+
+          if /usr/bin/sudo -n true >/dev/null 2>&1; then
+            printf 'true\n' > "${marker}-sudo-available"
+          else
+            printf 'false\n' > "${marker}-sudo-available"
+          fi
+
+          /usr/bin/python3 - "${marker}-sockets.json" <<'PY'
+          import json
+          import pathlib
+          import socket
+          import sys
+
+          result = {}
+          for name, family in (("af_unix", socket.AF_UNIX), ("af_inet", socket.AF_INET)):
+              try:
+                  sock = socket.socket(family, socket.SOCK_STREAM)
+              except OSError as exc:
+                  result[name] = "denied"
+                  result[name + "_errno"] = exc.errno
+              else:
+                  sock.close()
+                  result[name] = "available"
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(result, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          set +e
+          env \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            CODEX_HOME="$CODEX_HOME" \
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_github_action \
+            "$CODEX_NATIVE" exec \
+              --skip-git-repo-check \
+              --cd "$GITHUB_WORKSPACE" \
+              --model gpt-5.6-terra \
+              --config 'default_permissions=":workspace"' \
+              < "$CODEX_PROMPT_FILE" \
+              > "${marker}-codex.stdout" \
+              2> "${marker}-codex.stderr"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > "${marker}-codex.rc"
+          exit 0
+          CODEX_RUN
+          chmod 700 "$launcher"
+
+          uid="$(id -u)"
+          test "$uid" -ne 0
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0) exit 1 ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+
+          payload=(
+            /usr/bin/env -i
+            "HOME=$runner_home"
+            "USER=$runner_user"
+            "LOGNAME=$runner_user"
+            "PATH=$runner_path"
+            "RUNNER_TEMP=$RUNNER_TEMP"
+            "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+            "PROBE_BOUNDARY=$PROBE_BOUNDARY"
+            "CODEX_NATIVE=$CODEX_NATIVE"
+            "CODEX_PACKAGE_ROOT=$CODEX_PACKAGE_ROOT"
+            "CODEX_HOME=$CODEX_HOME"
+            "CODEX_PROMPT_FILE=$CODEX_PROMPT_FILE"
+            /bin/sh "$launcher"
+          )
+
+          if [ "$PROBE_BOUNDARY" = runner-direct ]; then
+            "${payload[@]}"
+          else
+            sudo -n -- \
+              /usr/bin/setpriv \
+                --reuid="$uid" \
+                --regid="$nobody_gid" \
+                --clear-groups \
+                --no-new-privs \
+                --bounding-set=-all \
+                --inh-caps=-all \
+                --ambient-caps=-all \
+                -- \
+                "${payload[@]}"
+          fi
+
+      - name: Diagnose actual Codex exec launcher prerequisites
+        if: always()
+        shell: bash
+        env:
+          PROBE_BOUNDARY: ${{ matrix.boundary }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          BEFORE_NOTIFY: ${{ steps.host_before.outputs.notify }}
+          BEFORE_DBUS: ${{ steps.host_before.outputs.dbus }}
+          BEFORE_RESOLVED_B64: ${{ steps.host_before.outputs.resolved_b64 }}
+        run: |
+          set -euo pipefail
+
+          marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
+          test -s "${marker}-security-status"
+          test -s "${marker}-sudo-available"
+          test -s "${marker}-sockets.json"
+          test -s "${marker}-codex.rc"
+          test -f "${marker}-codex.stdout"
+          test -f "${marker}-codex.stderr"
+
+          jq -e '.af_unix == "available" and .af_inet == "available"' "${marker}-sockets.json" >/dev/null
+
+          case "$PROBE_BOUNDARY" in
+            runner-direct)
+              test "$(cat "${marker}-sudo-available")" = true
+              grep -Fxq 'NoNewPrivs=0' "${marker}-security-status"
+              ;;
+            setpriv-only)
+              test "$(cat "${marker}-sudo-available")" = false
+              grep -Fxq 'NoNewPrivs=1' "${marker}-security-status"
+              grep -Fxq 'Groups=' "${marker}-security-status"
+              for field in CapInh CapPrm CapEff CapBnd CapAmb; do
+                grep -Fxq "$field=0000000000000000" "${marker}-security-status"
+              done
+              ;;
+            *) exit 1 ;;
+          esac
+
+          codex_rc="$(cat "${marker}-codex.rc")"
+          printf 'PROBE_DATA codex-exec boundary=%s probe_outcome=%s codex_rc=%s\n' \
+            "$PROBE_BOUNDARY" "$PROBE_OUTCOME" "$codex_rc"
+          cat "${marker}-codex.stdout" || true
+          cat "${marker}-codex.stderr" >&2 || true
+          cat "${marker}-server.stderr" >&2 || true
+          if [ -s "${marker}-tool-names.json" ]; then
+            printf 'PROBE_DATA tool_names=%s\n' "$(cat "${marker}-tool-names.json")"
+          fi
+          if [ -s "${marker}-tool-descriptors.json" ]; then
+            printf 'PROBE_DATA tool_descriptors=%s\n' "$(cat "${marker}-tool-descriptors.json")"
+          fi
+          test -s "${marker}-selected-tool"
+          test -s "${marker}-selected-arguments.json"
+          test -s "${marker}-selected-code"
+          test -s "${marker}-tool-output-type"
+          test -s "${marker}-tool-output"
+          test -s "${marker}-request-count"
+          test "$(cat "${marker}-request-count")" -ge 2
+
+          tool_output="$(cat "${marker}-tool-output")"
+          printf 'PROBE_DATA tool=%s output_type=%s tool_output=%q\n' \
+            "$(cat "${marker}-selected-tool")" \
+            "$(cat "${marker}-tool-output-type")" \
+            "$tool_output"
+
+          if grep -Fq 'codex-exec-tool-probe-ok' "${marker}-tool-output"; then
+            sandbox_result=success
+          elif grep -Fq 'bwrap: loopback:' "${marker}-tool-output"; then
+            sandbox_result=bwrap_failure
+          else
+            echo 'Unexpected nested tool result.' >&2
+            exit 1
+          fi
+          printf 'PROBE_DATA launcher=%s sandbox_result=%s security=%q\n' \
+            "$PROBE_BOUNDARY" "$sandbox_result" "$(tr '\n' ';' < "${marker}-security-status")"
+
+          after_notify="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          after_dbus="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          after_resolved="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState \
+              --property=SubState \
+              --property=MainPID \
+              --property=NRestarts
+          )"
+
+          test "$after_notify" = "$BEFORE_NOTIFY"
+          test "$after_dbus" = "$BEFORE_DBUS"
+          test "$(printf '%s' "$after_resolved" | base64 -w0)" = "$BEFORE_RESOLVED_B64"
+          grep -Fxq 'ActiveState=active' <<< "$after_resolved"
+          grep -Fxq 'SubState=running' <<< "$after_resolved"
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          printf 'PROBE_DATA host_integrity boundary=%s unchanged\n' "$PROBE_BOUNDARY"
+
+      - name: Cleanup trusted localhost Responses fixture
+        if: always()
+        shell: bash
+        env:
+          PROBE_BOUNDARY: ${{ matrix.boundary }}
+          SERVER_PID: ${{ steps.server.outputs.server_pid }}
+          FIXTURE: ${{ steps.server.outputs.fixture }}
+        run: |
+          set -euo pipefail
+
+          case "$SERVER_PID" in
+            ''|*[!0-9]*) ;;
+            *)
+              kill "$SERVER_PID" 2>/dev/null || true
+              sleep 0.2
+              kill -KILL "$SERVER_PID" 2>/dev/null || true
+              ;;
+          esac
+          rm -f "$FIXTURE"
