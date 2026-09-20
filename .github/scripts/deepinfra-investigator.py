@@ -288,6 +288,9 @@ def execute(name: str, a: dict[str, Any], repo: str, base_sha: str) -> dict[str,
         jid = req_int(a.get("job_id"), "job_id", 1)
         pattern = req_str(a.get("pattern"), "pattern", 160)
         context = req_int(a.get("context_lines", 8), "context_lines", 0, 30)
+        job = gh_json(repo, f"actions/jobs/{jid}")
+        if job.get("run_id") != rid:
+            raise InvestigatorError("job_id does not belong to run_id")
         lines = run(["gh", "run", "view", str(rid), "--repo", repo, "--job", str(jid), "--log"],
                     github=True, timeout=35).splitlines()
         indexes: set[int] = set()
