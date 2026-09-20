@@ -123,6 +123,16 @@ DeepInfra Investigatorは、信頼済みIssue上のコメント `/deepseek analy
 
 調査workflowは `actions: read` / `contents: read` / `issues: read` のread-only権限だけを持ち、repository write、Issue/PR write、workflow dispatch、任意shell実行をモデルへ提供しない。結果はActions Step Summaryと7日保持artifactへ出力する。API失敗、schema不正、context取得失敗等はfail-closedとし、自動probe実行やproduction AI Developerの変更へ進めない。詳細な実行契約とtool allowlistの正本は `.github/workflows/deepinfra-investigator.yml` と `.github/scripts/deepinfra-investigator.py` とする。
 
+### DeepInfra Review Benchmark
+
+Claude Reviewのprovider移行評価は、production review経路と分離した手動のDeepInfra Review Benchmarkで行う。評価の検討状態と凍結済みexpected resultの正本はIssue #342とし、benchmark runnerへexpected verdictやexpected findingを渡してはならない。
+
+Stage A runnerはdefault branch上の `workflow_dispatch` から、workflowに固定されたcase IDとmodel IDを1組だけ選んで起動する。任意PR番号、任意SHA、任意prompt、任意model IDは受理せず、自動matrix・自動retry・automatic fallbackを行わない。モデルvisible contextはcurrent mainの `CLAUDE.md` / `AGENTS.md` と、固定caseのbase→selected head差分・selected head時点の変更ファイル・current closing/follow-up Issue snapshotから決定論的に構成する。historical Claude review本文、Issue #342のexpected result、selected headより後のPR commitはcontextへ含めない。Stage Aはcurrent-contract synthetic replayであり、mutableなIssue/PR情報を使用するためexact historical replayとは表現しない。
+
+workflow権限はcontents/issues read-onlyとし、モデルへtoolやrepository write経路を公開しない。DeepInfra API callは既存 `DEEPINFRA_API_KEY` と `.github/scripts/deepinfra-investigator.py` のshared transport / secret redaction境界を再利用する。結果はproduction Claude Reviewへ投稿せず、Actions Step Summaryと7日保持artifactだけへ出力する。structured result schemaはcurrent `.github/workflows/claude-review.yml` のreview JSON schemaを読み、schema mismatch・free-form result・truncationはfail-closedとする。
+
+Stage Aで許可するcase/model集合、固定SHA、context上限、単一run cost guardの正本は `.github/scripts/deepinfra-review-benchmark.py` とする。価格表は評価時点のDeepInfra公表価格をtrusted configurationとして固定し、paid run開始前に現行価格を再確認する。Issue #342で承認されたDeepInfra評価費用は全体で$10をhard ceiling、Stage Aは$2を目標上限とし、runnerは累積費用を自動で増やすfan-outを持たない。各runのprompt/completion token、provider/local estimated cost、duration、context hashを成果物へ記録する。Stage A paid execution、Stage B/C、shadow運用、production Claude Review provider変更はrunner実装Issueとは別Issueで扱う。
+
 ## GitHub Apps
 
 developer Appとreviewer Appを分離し、対象リポジトリだけへインストールする。
