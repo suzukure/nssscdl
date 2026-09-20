@@ -328,8 +328,23 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
 journalctl_count="$(grep -Fc '/usr/bin/journalctl' "$developer_step" || true)"
-test "$journalctl_count" = 1
-grep -Fq '/usr/bin/journalctl \' "$developer_step"
+test "$journalctl_count" = 2
+grep -Fq 'if [ "$rc" -eq 0 ]; then' "$developer_step"
+grep -Fq 'preflight_marker="$(' "$developer_step"
+grep -Fq -- "--grep='^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\.$' \\" "$developer_step"
+grep -Fq -- '--lines=1' "$developer_step"
+grep -Fq "test \"\$preflight_marker\" = 'Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.'" "$developer_step"
+if ! awk '
+  /if \[ "\$rc" -eq 0 \]; then/ { in_check = 1 }
+  in_check && /--grep='\''\^Service-local hardening preflight verified AF_UNIX\/AF_INET and protected UNIX socket boundary\\\.\$'\''/ { exact_grep = 1 }
+  in_check && /test "\$preflight_marker" =/ { exact_test = 1 }
+  in_check && /^              fi$/ { check_closed = 1 }
+  check_closed && /exit "\$rc"/ { service_rc_returned = 1 }
+  END { exit !(exact_grep && exact_test && check_closed && service_rc_returned) }
+' "$developer_step"; then
+  echo 'Successful service completion must verify the exact preflight marker before returning the service result.' >&2
+  exit 1
+fi
 grep -Fq -- '--unit="$unit" \' "$developer_step"
 grep -Fq -- '--no-pager \' "$developer_step"
 grep -Fq -- '--output=cat \' "$developer_step"
