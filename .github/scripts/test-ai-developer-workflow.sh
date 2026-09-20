@@ -164,6 +164,11 @@ awk '
 ' "$workflow" > "$followup_commit_step"
 [ -s "$followup_commit_step" ]
 grep -Fq 'git push origin "HEAD:${HEAD_REF}"' "$followup_commit_step"
+grep -Fq 'expected_head="$(git rev-parse HEAD)"' "$followup_commit_step"
+grep -Fq 'gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid' "$followup_commit_step"
+grep -Fq 'if [ "$current_head" = "$expected_head" ]; then' "$followup_commit_step"
+grep -Fq 'EVENT_HEAD: ${{ github.event.pull_request.head.sha }}' "$followup_commit_step"
+grep -Fq 'if [ "$current_head" != "$EVENT_HEAD" ]; then' "$followup_commit_step"
 grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$followup_commit_step"
 if grep -Fq -- '--undo' "$followup_commit_step"; then
   echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2

@@ -88,7 +88,7 @@ assert_publisher_git_allowlist() {
   local label="${2:?label is required}"
   local commit_line="${3:?commit command is required}"
   local push_line="${4:?push command is required}"
-  local command_count
+  local command_count expected_command_count=5
 
   # This is deliberately an allowlist, rather than a denylist for `git add`:
   # it rejects alternate index writers such as `git -C ... add`, `git stage`,
@@ -98,7 +98,10 @@ assert_publisher_git_allowlist() {
   # Match a shell-command token, not only a line-leading command.  A write
   # hidden after `&&` or `;` must be subject to the same allowlist.
   command_count="$(grep -Ec '(^|[[:space:];&|()])git([[:space:]]|$)' "$script" || true)"
-  if [ "$command_count" -ne 5 ] \
+  if grep -Fq 'git rev-parse HEAD' "$script"; then
+    expected_command_count=6
+  fi
+  if [ "$command_count" -ne "$expected_command_count" ] \
       || ! grep -Fxq 'git config user.name "$bot_login"' "$script" \
       || ! grep -Fxq 'git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"' "$script" \
       || ! grep -Fxq 'if git diff --cached --quiet; then' "$script" \
@@ -323,6 +326,8 @@ run_publisher_case() {
   local publisher="${2:?publisher script is required}"
   local commit_message="${3:?commit message is required}"
   local injection="${4-}"
+  local remote_head="${5-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  local expected_head="${6-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   local case_dir="$test_dir/publisher-$name"
   mkdir -p "$case_dir"
   : > "$case_dir/calls.log"
@@ -349,6 +354,10 @@ run_publisher_case() {
           return 0
           ;;
         push) return 0 ;;
+        rev-parse)
+          printf '%s\n' "$PUBLISH_EXPECTED_HEAD"
+          return 0
+          ;;
         *)
           echo "Publisher invoked a git command outside the guarded-index allowlist: $*" >&2
           return 2
@@ -361,6 +370,10 @@ run_publisher_case() {
         'api /users/dev[bot]') echo 123 ;;
         'pr list') return 0 ;;
         'pr create') echo 'https://github.com/owner/repo/pull/37' ;;
+        'pr view')
+          printf '%s\n' "$PUBLISH_REMOTE_HEAD"
+          return 0
+          ;;
         'pr ready'|'pr comment'|'issue comment') return 0 ;;
         *) return 2 ;;
       esac
@@ -368,6 +381,9 @@ run_publisher_case() {
     export -f git gh
     PUBLISH_LOG="$case_dir/calls.log" \
     PUBLISH_COMMIT_MESSAGE="$commit_message" \
+    PUBLISH_REMOTE_HEAD="$remote_head" \
+    PUBLISH_EXPECTED_HEAD="$expected_head" \
+    EVENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36 PR_NUMBER=37 \
     ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 HEAD_REF=ai/issue-36 \
     CODEX_FINAL="$case_dir/final.md" \
@@ -537,6 +553,14 @@ run_publisher_case followup "$followup_commit_script" 'Address Claude review for
 grep -Fq 'git commit -m Address Claude review for PR #37' "$test_dir/publisher-followup/calls.log"
 grep -Fq 'git push origin HEAD:ai/issue-36' "$test_dir/publisher-followup/calls.log"
 grep -Fq 'gh pr ready 37 --repo owner/repo' "$test_dir/publisher-followup/calls.log"
+if run_publisher_case followup-stale-head "$followup_commit_script" 'Address Claude review for PR #37' '' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
+  echo 'Follow-up publisher readied a PR before its pushed head was visible.' >&2
+  exit 1
+fi
+if grep -Fq 'gh pr ready' "$test_dir/publisher-followup-stale-head/calls.log"; then
+  echo 'Follow-up publisher readied a PR with a stale remote head.' >&2
+  exit 1
+fi
 assert_publisher_bypass_is_blocked issue-origin "$publish_script" 'Implement #36 with Codex'
 assert_publisher_bypass_is_blocked followup "$followup_commit_script" 'Address Claude review for PR #37'
 
