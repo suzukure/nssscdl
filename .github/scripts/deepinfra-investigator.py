@@ -22,11 +22,13 @@ ALLOWED_MODELS = {
 MAX_TOOL_CALLS = 24
 MAX_ROUNDS = MAX_TOOL_CALLS + 1
 MAX_TOOL_CHARS = 400_000
+MAX_BOOTSTRAP_CHARS = 120_000
 LATEST_ISSUE_COMMENTS = 6
 MAX_ISSUE_COMMENTS = 500
 ISSUE_BODY_CHARS = 8_000
 LATEST_COMMENT_CHARS = 4_500
 ISSUE_COMMENT_CHARS = 12_000
+COMMENT_INDEX_FIRST_LINE_CHARS = 120
 
 
 class InvestigatorError(RuntimeError):
@@ -119,7 +121,7 @@ def gh_json(repo: str, endpoint: str, timeout: int = 25) -> Any:
         raise InvestigatorError("GitHub API returned non-JSON") from exc
 
 
-def first_nonempty_line(text: str, limit: int = 280) -> str:
+def first_nonempty_line(text: str, limit: int = COMMENT_INDEX_FIRST_LINE_CHARS) -> str:
     for line in text.splitlines():
         line = line.strip()
         if line:
@@ -132,23 +134,42 @@ def is_investigator_command(text: str) -> bool:
 
 
 def issue_snapshot(repo: str, num: int) -> dict[str, Any]:
-    issue = gh_json(repo, f"issues/{num}")
-    if not isinstance(issue, dict):
-        raise InvestigatorError("GitHub issue response is not an object")
-    total = issue.get("comments", 0)
-    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
-        raise InvestigatorError("GitHub issue comments count is invalid")
-    if total > MAX_ISSUE_COMMENTS:
-        raise InvestigatorError(f"issue exceeds {MAX_ISSUE_COMMENTS}-comment bootstrap limit")
+    for attempt in range(2):
+        issue = gh_json(repo, f"issues/{num}")
+        if not isinstance(issue, dict):
+            raise InvestigatorError("GitHub issue response is not an object")
+        total = issue.get("comments", 0)
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise InvestigatorError("GitHub issue comments count is invalid")
+        if total > MAX_ISSUE_COMMENTS:
+            raise InvestigatorError(f"issue exceeds {MAX_ISSUE_COMMENTS}-comment bootstrap limit")
 
-    comments: list[dict[str, Any]] = []
-    pages = max(1, (total + 99) // 100)
-    for page in range(1, pages + 1):
-        batch = gh_json(repo, f"issues/{num}/comments?per_page=100&page={page}")
-        if not isinstance(batch, list):
-            raise InvestigatorError("GitHub issue comments response is not an array")
-        comments.extend(x for x in batch if isinstance(x, dict))
-    comments = comments[:total] if total else []
+        comments: list[dict[str, Any]] = []
+        pages = max(1, (total + 99) // 100)
+        for page in range(1, pages + 1):
+            batch = gh_json(repo, f"issues/{num}/comments?per_page=100&page={page}")
+            if not isinstance(batch, list):
+                raise InvestigatorError("GitHub issue comments response is not an array")
+            comments.extend(x for x in batch if isinstance(x, dict))
+
+        current = gh_json(repo, f"issues/{num}")
+        if not isinstance(current, dict):
+            raise InvestigatorError("GitHub issue response is not an object")
+        current_total = current.get("comments", 0)
+        stable = (
+            not isinstance(current_total, bool)
+            and isinstance(current_total, int)
+            and current_total == total
+            and len(comments) == total
+        )
+        if not stable:
+            if attempt == 0:
+                continue
+            raise InvestigatorError("issue comments changed during bootstrap")
+        issue = current
+        break
+    else:
+        raise InvestigatorError("issue snapshot could not stabilize")
 
     evidence_comments = [
         item for item in comments
@@ -163,7 +184,7 @@ def issue_snapshot(repo: str, num: int) -> dict[str, Any]:
         "html_url": issue.get("html_url"),
         "labels": [x.get("name") for x in issue.get("labels", []) if isinstance(x, dict)],
         "body": clipped(issue.get("body") or "", ISSUE_BODY_CHARS),
-        "comments_total": total,
+        "comments_total": len(comments),
         "latest_comments_newest_first": [{
             "id": item.get("id"),
             "user": (item.get("user") or {}).get("login") if isinstance(item.get("user"), dict) else None,
@@ -182,29 +203,60 @@ def issue_snapshot(repo: str, num: int) -> dict[str, Any]:
     }
 
 
+def snapshot_prompt_json(snapshot: dict[str, Any]) -> str:
+    raw = sanitize(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")))
+    if len(raw) <= MAX_BOOTSTRAP_CHARS:
+        return raw
+
+    compact = json.loads(raw)
+    for item in compact.get("comment_index_oldest_first", []):
+        if isinstance(item, dict):
+            item["first_line"] = ""
+    compact["comment_index_first_lines_compacted"] = True
+    raw = sanitize(json.dumps(compact, ensure_ascii=False, separators=(",", ":")))
+    if len(raw) > MAX_BOOTSTRAP_CHARS:
+        raise InvestigatorError("issue bootstrap exceeds context budget")
+    return raw
+
+
+def trace_text(value: Any, max_len: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = sanitize(value)
+    value = re.sub(r"[\x00-\x1f\x7f]+", " ", value).strip()
+    return value[:max_len]
+
+
+def trace_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def safe_trace_entry(round_no: int, name: str, a: dict[str, Any]) -> dict[str, Any]:
-    entry: dict[str, Any] = {"round": round_no, "tool": name}
+    safe_name = trace_text(name, 80) or "invalid"
+    entry: dict[str, Any] = {"round": round_no, "tool": safe_name}
     if name == "get_issue":
-        entry["issue_number"] = a.get("issue_number")
+        entry["issue_number"] = trace_int(a.get("issue_number"))
     elif name == "get_issue_comment":
-        entry["comment_id"] = a.get("comment_id")
+        entry["comment_id"] = trace_int(a.get("comment_id"))
     elif name in {"get_run_jobs", "get_run_artifacts"}:
-        entry["run_id"] = a.get("run_id")
+        entry["run_id"] = trace_int(a.get("run_id"))
     elif name == "get_job_log_excerpt":
-        entry["run_id"] = a.get("run_id")
-        entry["job_id"] = a.get("job_id")
+        entry["run_id"] = trace_int(a.get("run_id"))
+        entry["job_id"] = trace_int(a.get("job_id"))
     elif name == "read_file":
-        entry["path"] = a.get("path")
-        entry["start_line"] = a.get("start_line")
-        entry["end_line"] = a.get("end_line")
+        entry["path"] = trace_text(a.get("path"), 500)
+        entry["start_line"] = trace_int(a.get("start_line"))
+        entry["end_line"] = trace_int(a.get("end_line"))
     elif name == "list_repo_paths":
-        entry["prefix"] = a.get("prefix", "")
+        entry["prefix"] = trace_text(a.get("prefix", ""), 300)
     elif name == "search_repository":
         query = a.get("query")
-        entry["query_chars"] = len(query) if isinstance(query, str) else None
+        entry["query_chars"] = min(len(query), 120) if isinstance(query, str) else None
     elif name == "compare_commits":
-        entry["base"] = a.get("base")
-        entry["head"] = a.get("head")
+        entry["base"] = trace_text(a.get("base"), 40)
+        entry["head"] = trace_text(a.get("head"), 40)
     return entry
 
 
@@ -584,7 +636,7 @@ def investigate(
         "latest_comment_ids": latest_ids,
         "ok": True,
     }]
-    snapshot_json = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    snapshot_json = snapshot_prompt_json(snapshot)
 
     user = f"""You are a read-only software debugging investigator for nssscdl.
 Investigate difficult cross-file, workflow, runtime and logic failures using evidence.
@@ -618,7 +670,9 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
     messages: list[dict[str, Any]] = [{"role":"user","content":user}]
     tools = tool_defs()
     calls = 0
-    chars = 0
+    chars = len(snapshot_json)
+    if chars > MAX_TOOL_CHARS:
+        raise InvestigatorError("issue bootstrap exceeds tool-result context budget")
     usage = {"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"estimated_cost_usd":0.0}
 
     for round_no in range(1, MAX_ROUNDS + 1):
