@@ -616,14 +616,36 @@ jobs:
           import pathlib
           import sys
 
+          import stat
+
           result = {}
           for path in os.environ["CANDIDATE_SOCKET_PATHS"].split():
               try:
-                  os.stat(path)
+                  st = os.stat(path)
               except OSError as exc:
-                  result[path] = {"visible": False, "errno": exc.errno}
+                  result[path] = {
+                      "stat_ok": False,
+                      "errno": exc.errno,
+                      "mode": None,
+                      "is_socket": None,
+                      "readable": False,
+                      "writable": False,
+                      "executable": False,
+                  }
               else:
-                  result[path] = {"visible": True, "errno": None}
+                  result[path] = {
+                      "stat_ok": True,
+                      "errno": None,
+                      "mode": stat.S_IMODE(st.st_mode),
+                      "is_socket": stat.S_ISSOCK(st.st_mode),
+                      "readable": os.access(path, os.R_OK),
+                      "writable": os.access(path, os.W_OK),
+                      "executable": os.access(path, os.X_OK),
+                      "dev": st.st_dev,
+                      "ino": st.st_ino,
+                      "uid": st.st_uid,
+                      "gid": st.st_gid,
+                  }
 
           pathlib.Path(sys.argv[1]).write_text(
               json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
@@ -796,6 +818,7 @@ jobs:
 
           before_candidate_json="$(printf '%s' "$BEFORE_CANDIDATE_B64" | base64 -d)"
           service_candidate_json="$(cat "${marker}-candidate-paths.json")"
+          printf 'PROBE_DATA candidate_service_view=%s\n' "$service_candidate_json"
           python3 - "$before_candidate_json" "$service_candidate_json" <<'PY'
           import json
           import sys
@@ -807,13 +830,27 @@ jobs:
 
           for path, host in before.items():
               observed = service[path]
-              if host.get("present") and observed.get("visible") is not False:
-                  raise SystemExit(f"host-present candidate remained visible: {path}")
-              if host.get("present"):
-                  print(
-                      "PROBE_DATA candidate_masked "
-                      f"path={path} errno={observed.get('errno')}"
+              if not host.get("present"):
+                  continue
+              if observed.get("stat_ok") is not True:
+                  raise SystemExit(f"inaccessible replacement missing for host-present path: {path}")
+              if observed.get("mode") != 0:
+                  raise SystemExit(
+                      f"inaccessible replacement mode is not 000 for {path}: "
+                      f"{observed.get('mode')}"
                   )
+              if observed.get("writable") is not False:
+                  raise SystemExit(f"inaccessible replacement remained writable: {path}")
+              if observed.get("dev") == host.get("dev") and observed.get("ino") == host.get("ino"):
+                  raise SystemExit(f"host socket inode still exposed in service namespace: {path}")
+              print(
+                  "PROBE_DATA candidate_masked "
+                  f"path={path} mode={observed.get('mode')} "
+                  f"socket={observed.get('is_socket')} "
+                  f"writable={observed.get('writable')} "
+                  f"host_devino={host.get('dev')}:{host.get('ino')} "
+                  f"service_devino={observed.get('dev')}:{observed.get('ino')}"
+              )
           PY
           printf 'PROBE_DATA inaccessible_sockets_service=success\n'
 
