@@ -364,7 +364,9 @@ permission_mutation_lines="$(
 )"
 test "$(printf '%s\n' "$permission_mutation_lines" | grep -c .)" -eq 1
 printf '%s\n' "$permission_mutation_lines" |
-  grep -Eq '^[[:space:]]*chmod 700 "\$RUNNER_TEMP/run-native-codex\.sh"[[:space:]]*  echo 'Production developer path must not mutate sudoers or group membership.' >&2
+  grep -Fqx '          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"'
+if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$developer_step"; then
+  echo 'Production developer path must not mutate sudoers or group membership.' >&2
   exit 1
 fi
 grep -Fq '/usr/bin/systemd-run ' "$developer_step"
