@@ -598,9 +598,9 @@ jobs:
             --property=SystemCallArchitectures=native
             '--property=SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register'
           )
+          set +e
           sudo -n -- \
             /usr/bin/systemd-run \
-              --quiet \
               --wait \
               --collect \
               --unit="$unit" \
@@ -626,7 +626,19 @@ jobs:
                   "CODEX_PACKAGE_ROOT=$CODEX_PACKAGE_ROOT" \
                   "CODEX_HOME=$CODEX_HOME" \
                   "CODEX_PROMPT_FILE=$CODEX_PROMPT_FILE" \
-                  /bin/sh "$launcher"
+                  /bin/sh "$launcher" \
+            > "${marker}-systemd-run.stdout" \
+            2> "${marker}-systemd-run.stderr"
+          systemd_rc=$?
+          set -e
+          printf '%s\n' "$systemd_rc" > "${marker}-systemd-run.rc"
+          sudo -n journalctl \
+            --unit="$unit" \
+            --no-pager \
+            --output=cat \
+            --lines=200 \
+            > "${marker}-unit.log" 2>&1 || true
+          exit 0
 
       - name: Diagnose actual Codex exec tool path
         if: always()
@@ -641,6 +653,11 @@ jobs:
           set -euo pipefail
 
           marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
+          test -s "${marker}-systemd-run.rc"
+          printf 'PROBE_DATA systemd_run_rc=%s\n' "$(cat "${marker}-systemd-run.rc")"
+          cat "${marker}-systemd-run.stdout" || true
+          cat "${marker}-systemd-run.stderr" >&2 || true
+          cat "${marker}-unit.log" >&2 || true
           test -s "${marker}-security-status"
           test -s "${marker}-sudo-available"
           test -s "${marker}-sockets.json"
