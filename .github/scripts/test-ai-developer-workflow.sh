@@ -284,9 +284,12 @@ if grep -Fq 'drop-sudo ' "$developer_step" || grep -Fq -- '--root-phase ' "$deve
   echo 'Production developer path must not invoke host-global drop-sudo root phase.' >&2
   exit 1
 fi
-developer_step_flat="$(sed ':a;N;$!ba;s/\\\n/ /g' "$developer_step")"
-if grep -Eq '((chmod|chown|setfacl)[^;]{0,240}/run/|/run/[^;]{0,240}(chmod|chown|setfacl)|sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' <<<"$developer_step_flat"; then
-  echo 'Production developer path must not mutate host service sockets, sudoers, ACLs, or group membership.' >&2
+if grep -Fq '/run/' "$developer_step"; then
+  echo 'Production developer path must not reference host /run state; add an explicit reviewed allowlist before introducing any exception.' >&2
+  exit 1
+fi
+if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$developer_step"; then
+  echo 'Production developer path must not mutate sudoers or group membership.' >&2
   exit 1
 fi
 grep -Fq '/usr/bin/systemd-run ' "$developer_step"
