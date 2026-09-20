@@ -97,10 +97,13 @@ request_changes = {
     "linked_issues_checked": ["#313"],
 }
 assert m.validate_review(request_changes) is request_changes
+assert m.validate_review({**approve, "blocking_findings": ["contradiction"]})["verdict"] == "approve"
+assert m.validate_review({**request_changes, "blocking_findings": []})["verdict"] == "request_changes"
 for bad in (
-    {**approve, "blocking_findings": ["contradiction"]},
-    {**request_changes, "blocking_findings": []},
     {**approve, "verdict": "maybe"},
+    {**approve, "summary": 123},
+    {**approve, "blocking_findings": [123]},
+    {key: value for key, value in approve.items() if key != "summary"},
 ):
     try:
         m.validate_review(bad)
