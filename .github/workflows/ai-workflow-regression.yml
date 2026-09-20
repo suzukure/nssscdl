@@ -74,13 +74,13 @@ jobs:
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
 
   codex-host-hardening-idle-control:
-    name: Host hardening idle control
+    name: Notify socket isolation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        hardening: [disabled, enabled]
+        hardening: [control, notify_only]
     env:
       CONTROL_HARDENING: ${{ matrix.hardening }}
       PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -399,6 +399,30 @@ jobs:
                           for s in valid)):
                   return "stable"
               return "unknown"
+          def evidence_facets(data):
+              samples = data.get("samples", [])
+              valid = [s for s in samples if s.get("query_exit") == 0 and
+                       s.get("properties", {}).get("ActiveState")]
+              complete = bool(data.get("done")) and len(valid) == len(samples) and len(valid) >= 2
+              watchdog = "unknown"
+              restart = "unknown"
+              final = "unknown"
+              if valid:
+                  if data.get("watchdog_events", 0) or any(s["properties"].get("Result") == "watchdog" for s in valid):
+                      watchdog = "present"
+                  elif complete and data.get("journal_exit") == 0:
+                      watchdog = "not_observed"
+                  counts = [s["properties"].get("NRestarts", "") for s in valid]
+                  ids = {(s["properties"].get("MainPID"), s.get("pid_start_ticks")) for s in valid
+                         if s["properties"].get("MainPID") not in ("", "0") and s.get("pid_start_ticks")}
+                  if len(ids) > 1 or (all(x.isdigit() for x in counts) and max(map(int, counts)) > int(counts[0])):
+                      restart = "present"
+                  elif complete and all(x.isdigit() for x in counts):
+                      restart = "not_observed"
+                  if data.get("done") and data.get("stop_reason") == "requested" and samples[-1] == valid[-1]:
+                      p = valid[-1]["properties"]
+                      final = "running" if p.get("ActiveState") == "active" and p.get("SubState") == "running" else "not_running"
+              return {"watchdog_evidence": watchdog, "restart_evidence": restart, "final_state": final}
           def main():
               mode = sys.argv[1]
               if mode == "start":
@@ -481,8 +505,12 @@ jobs:
                       time.sleep(0.1)
                   data["process_exit_observed"] = exited
                   status = classify(data)
+                  facets = evidence_facets(data)
+                  (OUT / "resolver-summary.json").write_text(json.dumps({"classification": status, **facets, "observer_done": bool(data.get("done")), "process_exit_observed": exited}, sort_keys=True) + "\n")
                   with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                       f.write("state=" + status + "\n")
+                      for key, value in facets.items():
+                          f.write(key + "=" + value + "\n")
                       f.write("observer_done=" + ("yes" if data.get("done") and exited else "no") + "\n")
                   print("PROBE_DATA resolver_state=" + status)
                   print("PROBE_DATA " + json.dumps(data, sort_keys=True))
@@ -494,28 +522,58 @@ jobs:
               main()
           PY
 
-      - name: Apply host hardening comparison condition
+      - name: Prepare notify-only condition
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/notify-condition.py" <<'PY'
+          import json, os, pathlib, stat, sys, time
+          def restrict(mode, path="/run/systemd/notify"):
+              if mode not in ("control", "notify_only"):
+                  raise ValueError("Unknown condition")
+              before = os.lstat(path)
+              if not stat.S_ISSOCK(before.st_mode) or before.st_uid != 0 or stat.S_IMODE(before.st_mode) != 0o777:
+                  raise ValueError("Expected root-owned notify socket with mode 0777")
+              fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+              try:
+                  current = os.fstat(fd)
+                  if not stat.S_ISSOCK(current.st_mode) or (current.st_dev, current.st_ino, current.st_uid,
+                          current.st_gid, stat.S_IMODE(current.st_mode)) != (before.st_dev, before.st_ino,
+                          before.st_uid, before.st_gid, 0o777):
+                      raise ValueError("Socket identity changed")
+                  if mode == "notify_only":
+                      os.chmod("/proc/self/fd/" + str(fd), 0o700)
+                  after = os.fstat(fd)
+                  named = os.lstat(path)
+                  expected = 0o700 if mode == "notify_only" else 0o777
+                  if (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino):
+                      raise ValueError("Socket path replaced")
+                  if stat.S_IMODE(after.st_mode) != expected or (after.st_uid, after.st_gid) != (before.st_uid, before.st_gid):
+                      raise ValueError("Unexpected result")
+                  return {"condition": mode, "path": path, "dev": after.st_dev, "inode": after.st_ino,
+                          "uid": after.st_uid, "gid": after.st_gid, "before_mode": "0o777",
+                          "after_mode": oct(stat.S_IMODE(after.st_mode)), "utc_ns": time.time_ns()}
+              finally:
+                  os.close(fd)
+          if __name__ == "__main__":
+              data = restrict(sys.argv[1])
+              p = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/notify-condition.json"
+              p.write_text(json.dumps(data, sort_keys=True) + "\n")
+              p.chmod(0o644)
+          PY
+
+      - name: Apply notify socket comparison condition
         id: condition
         timeout-minutes: 2
         shell: bash
-        env:
-          ACTION_MAIN: ${{ steps.runtime.outputs.action_main }}
-          RUNNER_CREDENTIALS: ${{ steps.runtime.outputs.runner_credentials }}
         run: |
           set -euo pipefail
-          test -f "$ACTION_MAIN"
-          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
-          uid="$(id -u)"
-          gid="$(id -g)"
-          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
-          current_credentials="$(jq -cn \
-            --argjson uid "$uid" \
-            --argjson gid "$gid" \
-            --argjson groups "$groups_json" \
-            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
-          test "$current_credentials" = "$RUNNER_CREDENTIALS"
-          test "$uid" -ne 0
-
+          test "$(id -u)" -ne 0
+          case "$CONTROL_HARDENING" in
+            control|notify_only) ;;
+            *) exit 1 ;;
+          esac
           sudo -n -- \
             env -u ENV -u BASH_ENV -u SHELLOPTS \
             /usr/bin/timeout --signal=TERM --kill-after=5s 40s \
@@ -526,41 +584,10 @@ jobs:
               test -s "$1/resolver-observer-launched"
               test -s "$1/idle-control-evidence/resolver-observer.json"
               /usr/bin/python3 "$1/idle-connection-probe.py" inventory before
-              if [ "$2" = enabled ]; then
-                /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
-                /usr/bin/env -u NODE_OPTIONS "$3" "$4" \
-                  drop-sudo --root-phase --user "$5" --group sudo \
-                  --runner-credentials "$6" > "$1/idle-hardening-helper.log" 2>&1
-              elif [ "$2" != disabled ]; then
-                exit 1
-              fi
+              /usr/bin/python3 "$1/notify-condition.py" "$2"
               /usr/bin/python3 "$1/idle-connection-probe.py" inventory after
-              if [ "$2" = enabled ]; then
-                /usr/bin/python3 - "$1" <<'"'"'PY'"'"'
-          import json, pathlib, sys
-          root = pathlib.Path(sys.argv[1])
-          # Persist only allowlisted helper messages; never upload raw helper output.
-          lines = (root / "idle-hardening-helper.log").read_text().splitlines()
-          paths = [x.removeprefix("Restricted access to ").removesuffix(".")
-                   for x in lines if x.startswith("Restricted access to /run/")]
-          p = root / "idle-control-evidence/hardening-changes.json"
-          p.write_text(json.dumps({"restricted_sockets": paths}) + "\n")
-          p.chmod(0o644)
-          PY
-              fi
-            ' idle-diagnostics "$RUNNER_TEMP" "$CONTROL_HARDENING" \
-            "$(command -v node)" "$ACTION_MAIN" "$(id -un)" "$RUNNER_CREDENTIALS"
-
-          case "$CONTROL_HARDENING" in
-            enabled)
-              if sudo -n true 2>/dev/null; then
-                echo 'Host hardening did not remove sudo access.' >&2
-                exit 1
-              fi
-              ;;
-            disabled) sudo -n true ;;
-            *) exit 1 ;;
-          esac
+            ' notify-isolation "$RUNNER_TEMP" "$CONTROL_HARDENING"
+          sudo -n true
 
       - name: Diagnose connections immediate
         id: net_immediate
@@ -796,6 +823,51 @@ jobs:
 
       - name: Evidence resolver unknown
         if: always() && (steps.resolver.outputs.state == 'unknown' || steps.resolver.outputs.state == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver watchdog_evidence present
+        if: always() && (steps.resolver.outputs.watchdog_evidence == 'present')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver watchdog_evidence not_observed
+        if: always() && (steps.resolver.outputs.watchdog_evidence == 'not_observed')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver watchdog_evidence unknown
+        if: always() && (steps.resolver.outputs.watchdog_evidence == 'unknown' || steps.resolver.outputs.watchdog_evidence == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restart_evidence present
+        if: always() && (steps.resolver.outputs.restart_evidence == 'present')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restart_evidence not_observed
+        if: always() && (steps.resolver.outputs.restart_evidence == 'not_observed')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restart_evidence unknown
+        if: always() && (steps.resolver.outputs.restart_evidence == 'unknown' || steps.resolver.outputs.restart_evidence == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver final_state running
+        if: always() && (steps.resolver.outputs.final_state == 'running')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver final_state not_running
+        if: always() && (steps.resolver.outputs.final_state == 'not_running')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver final_state unknown
+        if: always() && (steps.resolver.outputs.final_state == 'unknown' || steps.resolver.outputs.final_state == '')
         timeout-minutes: 1
         run: "true"
 
