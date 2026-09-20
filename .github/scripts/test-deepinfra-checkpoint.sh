@@ -72,10 +72,80 @@ assert snapshot["comment_index_oldest_first"][-1]["control_command"] is True
 assert snapshot["comment_index_oldest_first"][-2]["control_command"] is True
 assert snapshot["comment_index_oldest_first"][-3]["first_line"] == "Run #102 confirmed result"
 
+# Bootstrap serialization stays bounded while preserving latest evidence.
+large_snapshot = dict(snapshot)
+large_snapshot["latest_comments_newest_first"] = [{
+    "id": 999,
+    "user": "user",
+    "author_association": "OWNER",
+    "created_at": "2026-09-20T01:00:00Z",
+    "html_url": "https://example.invalid/comments/999",
+    "body": "LATEST-EVIDENCE-MARKER",
+}]
+large_snapshot["comment_index_oldest_first"] = [
+    {
+        "id": i,
+        "user": "user",
+        "created_at": "2026-09-20T00:00:00Z",
+        "control_command": False,
+        "first_line": "x" * 1000,
+    }
+    for i in range(500)
+]
+bounded = m.snapshot_prompt_json(large_snapshot)
+assert len(bounded) <= m.MAX_BOOTSTRAP_CHARS
+assert "LATEST-EVIDENCE-MARKER" in bounded
+assert "comment_index_first_lines_compacted" in bounded
+
+# Model-controlled trace identifiers are single-line, typed and bounded.
+bad_trace = m.safe_trace_entry(
+    2,
+    "read_file",
+    {"path": "path/to/file\nmarkdown-break", "start_line": "bad", "end_line": 5},
+)
+assert "\n" not in bad_trace["path"]
+assert len(bad_trace["path"]) <= 500
+assert bad_trace["start_line"] is None
+assert bad_trace["end_line"] == 5
+unknown_trace = m.safe_trace_entry(3, "z" * 100 + "\nextra", {})
+assert len(unknown_trace["tool"]) <= 80
+assert "\n" not in unknown_trace["tool"]
+
 comment = m.execute("get_issue_comment", {"comment_id": 7}, "owner/repo", "a" * 40)
 assert comment["id"] == 7
 assert comment["body"] == "Run #102 confirmed result"
 assert any(t["function"]["name"] == "get_issue_comment" for t in m.tool_defs())
+
+# If the comment count changes between metadata and list reads, retry and keep
+# the newest comment instead of truncating it from an oldest-first list.
+drift_comments = [
+    {
+        "id": i,
+        "user": {"login": "user"},
+        "author_association": "OWNER",
+        "created_at": f"2026-09-20T02:00:0{i}Z",
+        "html_url": f"https://example.invalid/comments/{i}",
+        "body": f"checkpoint {i}",
+    }
+    for i in range(1, 9)
+]
+issue_reads = {"count": 0}
+
+def drift_gh_json(repo, endpoint, timeout=25):
+    if endpoint == "issues/328":
+        issue_reads["count"] += 1
+        total = 7 if issue_reads["count"] == 1 else 8
+        return {**issue_payload, "comments": total}
+    if endpoint == "issues/328/comments?per_page=100&page=1":
+        return drift_comments
+    raise AssertionError(f"unexpected drift endpoint: {endpoint}")
+
+m.gh_json = drift_gh_json
+drift_snapshot = m.issue_snapshot("owner/repo", 328)
+assert drift_snapshot["comments_total"] == 8
+assert drift_snapshot["latest_comments_newest_first"][0]["id"] == 8
+assert issue_reads["count"] == 4
+m.gh_json = fake_gh_json
 
 good = {
     "summary": "current state includes Run #102",
@@ -91,6 +161,26 @@ good = {
     "next_probe": None,
     "escalation": {"recommended": False, "target": "none", "reason": "not needed"},
 }
+
+# The bootstrap itself counts against the context budget before any model call.
+original_max_tool_chars = m.MAX_TOOL_CHARS
+m.MAX_TOOL_CHARS = len(m.snapshot_prompt_json(snapshot)) - 1
+m.call_chat = lambda *args, **kwargs: (_ for _ in ()).throw(
+    AssertionError("model call occurred after bootstrap exceeded context budget")
+)
+try:
+    m.investigate(
+        "owner/repo",
+        328,
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "a" * 40,
+        snapshot,
+    )
+    raise AssertionError("oversized bootstrap was accepted")
+except m.InvestigatorError:
+    pass
+finally:
+    m.MAX_TOOL_CHARS = original_max_tool_chars
 
 responses = [
     {
