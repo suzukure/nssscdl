@@ -718,6 +718,27 @@ jobs:
                 --no-pager \
                 --output=cat \
                 --lines=200 || true
+
+              if [ "$rc" -eq 0 ]; then
+                expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
+                set +e
+                preflight_marker="$(
+                  /usr/bin/journalctl \
+                    --unit="$unit" \
+                    --no-pager \
+                    --output=cat \
+                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\.$" \
+                    --lines=1
+                )"
+                marker_rc=$?
+                set -e
+                if [ "$marker_rc" -ne 0 ] || [ "$preflight_marker" != "$expected_preflight_marker" ]; then
+                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  exit 51
+                fi
+                printf "%s\n" "$preflight_marker"
+              fi
+
               exit "$rc"
             ' codex-developer \
             "$runner_user" \
