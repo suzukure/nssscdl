@@ -201,6 +201,16 @@ jobs:
               return {}
 
           def build_call(tools):
+              for tool in tools:
+                  if isinstance(tool, dict) and tool.get("type") == "local_shell":
+                      return "local_shell", {
+                          "command": ["/usr/bin/cat", str(fixture)],
+                          "timeout_ms": None,
+                          "working_directory": str(workspace),
+                          "env": None,
+                          "user": None,
+                      }
+
               known = {}
               for tool in tools:
                   name = tool_name(tool)
@@ -289,7 +299,16 @@ jobs:
 
                   if index == 0:
                       names = [name for name in (tool_name(t) for t in tools) if name]
+                      descriptors = []
+                      for tool in tools:
+                          if not isinstance(tool, dict):
+                              continue
+                          descriptors.append({
+                              "type": tool.get("type"),
+                              "name": tool_name(tool),
+                          })
                       write_marker("-tool-names.json", json.dumps(names, sort_keys=True))
+                      write_marker("-tool-descriptors.json", json.dumps(descriptors, sort_keys=True))
                       try:
                           name, arguments = build_call(tools)
                       except RuntimeError as exc:
@@ -312,6 +331,23 @@ jobs:
                       else:
                           write_marker("-selected-tool", name)
                           write_marker("-selected-arguments.json", json.dumps(arguments, sort_keys=True))
+                          if name == "local_shell":
+                              call_item = {
+                                  "type": "local_shell_call",
+                                  "call_id": call_id,
+                                  "status": "completed",
+                                  "action": {
+                                      "type": "exec",
+                                      **arguments,
+                                  },
+                              }
+                          else:
+                              call_item = {
+                                  "type": "function_call",
+                                  "call_id": call_id,
+                                  "name": name,
+                                  "arguments": json.dumps(arguments, separators=(",", ":")),
+                              }
                           events = [
                               {
                                   "type": "response.created",
@@ -319,12 +355,7 @@ jobs:
                               },
                               {
                                   "type": "response.output_item.done",
-                                  "item": {
-                                      "type": "function_call",
-                                      "call_id": call_id,
-                                      "name": name,
-                                      "arguments": json.dumps(arguments, separators=(",", ":")),
-                                  },
+                                  "item": call_item,
                               },
                               completed("resp-probe-1"),
                           ]
@@ -638,6 +669,9 @@ jobs:
           cat "${marker}-server.stderr" >&2 || true
           if [ -s "${marker}-tool-names.json" ]; then
             printf 'PROBE_DATA tool_names=%s\n' "$(cat "${marker}-tool-names.json")"
+          fi
+          if [ -s "${marker}-tool-descriptors.json" ]; then
+            printf 'PROBE_DATA tool_descriptors=%s\n' "$(cat "${marker}-tool-descriptors.json")"
           fi
           if [ -s "${marker}-adapter-error" ]; then
             printf 'PROBE_DATA adapter_error=%q\n' "$(cat "${marker}-adapter-error")"
