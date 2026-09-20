@@ -159,6 +159,16 @@ body = """## Scope-out impact and follow-up
 """
 assert m.extract_follow_up_issues(body) == [10, 11]
 assert m.extract_follow_up_issues("## Scope-out impact and follow-up\n\n- Follow-up Issue: none\n") == []
+assert m.combined_follow_up_issues(
+    "## Scope-out impact and follow-up\n- Follow-up Issue: #12\n",
+    "## Scope-out impact and follow-up\n- Follow-up Issue: #11\n- Follow-up Issue: #12\n",
+    99,
+) == [11, 12]
+assert m.combined_follow_up_issues(
+    "## Scope-out impact and follow-up\n- Follow-up Issue: #99\n",
+    "",
+    99,
+) == []
 
 pr_body = """Closes #313
 
@@ -219,13 +229,13 @@ def fake_issue(repo, number):
         }
     if number in m.EVALUATION_ISSUE_DENYLIST:
         raise AssertionError("evaluation tracker was fetched into model context")
-    assert number == 999
+    assert number in {307, 999}
     return {
-        "number": 999,
-        "title": "follow-up",
+        "number": number,
+        "title": f"follow-up {number}",
         "state": "open",
         "updated_at": "2026-09-20T00:00:01Z",
-        "body": "follow-up contract only",
+        "body": f"follow-up contract #{number}",
     }
 
 def fake_pr(repo, number):
@@ -258,7 +268,7 @@ m.current_text = lambda path: (
 context, meta = m.build_context("owner/repo", case_id)
 assert meta["base_sha"] == case["base"]
 assert meta["selected_head_sha"] == case["head"]
-assert meta["follow_up_issues"] == [999]
+assert meta["follow_up_issues"] == [307, 999]
 assert meta["excluded_follow_up_issues"] == [342]
 assert set(meta["excluded_pr_body_sections"]) == {"Review readiness", "Review response"}
 assert "PULL REQUEST METADATA" in context
@@ -270,8 +280,12 @@ assert "Claude initial review secret expected finding" not in context
 assert "TRACKER_SECRET_EXPECTATION" not in context
 assert "selected historical change" in context
 assert "selected historical file" in context
-assert "follow-up contract only" in context
+assert "follow-up contract #307" in context  # PR-body-only extraction path
+assert "follow-up contract #999" in context  # closing-Issue extraction path
 assert "complete benchmark substitute for .ai-context/review.md" in context
+assert "benchmark_excluded_follow_up_issues" in context
+assert "#342, #343, #359 are intentionally outside model-visible evidence" in context
+assert "MUST NOT be treated as unavailable required evidence or as a blocking reason" in context
 assert all("HEAD" not in arg and "main" not in arg for call in git_calls for arg in call)
 
 old_limit = m.MAX_CONTEXT_CHARS
