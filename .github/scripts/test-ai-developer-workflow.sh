@@ -328,7 +328,7 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
 journalctl_count="$(grep -Fc '/usr/bin/journalctl' "$developer_step" || true)"
-test "$journalctl_count" = 1
+test "$journalctl_count" = 2
 grep -Fq '/usr/bin/journalctl \' "$developer_step"
 grep -Fq -- '--unit="$unit" \' "$developer_step"
 grep -Fq -- '--no-pager \' "$developer_step"
