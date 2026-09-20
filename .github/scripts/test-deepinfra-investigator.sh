@@ -40,7 +40,7 @@ if grep -Fq 'shell=True' "$script"; then
   echo 'Investigator must not execute model-controlled shell strings.' >&2
   exit 1
 fi
-if grep -Eq '["'\'' ](push|commit|workflow run|issue comment|pr create)["'\'' ]' "$script"; then
+if grep -Eq '\["git",[[:space:]]*"(commit|push)"|\["gh",[[:space:]]*"pr",[[:space:]]*"(create|merge)"|\["gh",[[:space:]]*"workflow",[[:space:]]*"run"|\["gh",[[:space:]]*"issue",[[:space:]]*"comment"' "$script"; then
   echo 'Investigator script contains a prohibited repository/action write command.' >&2
   exit 1
 fi
@@ -70,11 +70,12 @@ assert "secret-deepinfra" not in redacted
 assert "github_pat_secret" not in redacted
 assert "Bearer abc" not in redacted
 
-try:
-    m.repo_path("../secret")
-    raise AssertionError("path traversal was accepted")
-except m.InvestigatorError:
-    pass
+for bad in ("../secret", "/etc/passwd", ".git/config", "a/../../b", "a b"):
+    try:
+        m.repo_path(bad)
+        raise AssertionError(f"unsafe path accepted: {bad}")
+    except m.InvestigatorError:
+        pass
 
 good = {
     "summary": "summary",
