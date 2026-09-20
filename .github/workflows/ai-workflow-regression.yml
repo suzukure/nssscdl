@@ -72,3 +72,931 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  codex-host-hardening-idle-control:
+    name: Notify + D-Bus socket isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        hardening: [control, notify_only, notify_dbus]
+    env:
+      CONTROL_HARDENING: ${{ matrix.hardening }}
+      PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Install pinned Codex Action runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          codex-home: ${{ runner.temp }}/codex-probe-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted native Codex and Action helper
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(jq -r .name "$package_root/package.json")" = '@openai/codex'
+          test "$(jq -r .version "$package_root/package.json")" = '0.153.4'
+
+          case "$(uname -m)" in
+            x86_64)
+              platform_package='@openai/codex-linux-x64'
+              target_triple='x86_64-unknown-linux-musl'
+              ;;
+            aarch64|arm64)
+              platform_package='@openai/codex-linux-arm64'
+              target_triple='aarch64-unknown-linux-musl'
+              ;;
+            *)
+              echo "Unsupported Codex platform: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          platform_json="$(
+            node -e '
+              const { createRequire } = require("node:module");
+              const req = createRequire(process.argv[1]);
+              process.stdout.write(req.resolve(process.argv[2] + "/package.json"));
+            ' "$entry" "$platform_package"
+          )"
+          native_path="$(realpath "$(dirname "$platform_json")/vendor/$target_triple/bin/codex")"
+          test -x "$native_path"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          test "$native_version" = 'codex-cli 0.153.4'
+
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA runtime version=%q target=%q action_blob=%s uid=%s gid=%s\n' \
+            "$native_version" "$target_triple" "$actual_blob" "$uid" "$gid"
+
+      - name: Prepare idle control evidence
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/idle-control-evidence"
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          data = {
+              "schema_version": 1,
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "head_sha": os.environ["PROBE_HEAD"],
+              "hardening": os.environ["CONTROL_HARDENING"],
+              "image_os": os.environ.get("ImageOS"),
+              "image_version": os.environ.get("ImageVersion"),
+              "start_utc_ns": time.time_ns(),
+              "start_boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+          }
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/control.json"
+          path.write_text(json.dumps(data, sort_keys=True) + "\n")
+          PY
+
+      - name: Prepare bounded connection diagnostics
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/idle-connection-probe.py" <<'PY'
+          import json, os, pathlib, socket, stat, subprocess, sys, time, urllib.parse
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence"
+          out.mkdir(exist_ok=True)
+          mode, phase = sys.argv[1:3]
+          if mode == "inventory":
+              rows, errors = [], []
+              def walk_error(error):
+                  errors.append({"path": error.filename, "errno": error.errno})
+              for root, dirs, files in os.walk("/run", followlinks=False, onerror=walk_error):
+                  for name in files:
+                      p = os.path.join(root, name)
+                      try:
+                          s = os.lstat(p)
+                          if stat.S_ISSOCK(s.st_mode):
+                              rows.append({"path": p, "uid": s.st_uid, "gid": s.st_gid,
+                                           "mode": oct(stat.S_IMODE(s.st_mode)), "dev": s.st_dev, "inode": s.st_ino})
+                      except OSError as e:
+                          errors.append({"path": p, "errno": e.errno})
+              data = {"phase": phase, "utc_ns": time.time_ns(), "sockets": rows, "errors": errors}
+              p = out / ("sockets-" + phase + ".json")
+              p.write_text(json.dumps(data, sort_keys=True) + "\n")
+              p.chmod(0o644)
+              sys.exit(0)
+          if mode != "network":
+              raise SystemExit(2)
+          results_url = urllib.parse.urlsplit(os.environ.get("ACTIONS_RESULTS_URL", ""))
+          results_host = results_url.hostname or ""
+          if results_url.scheme != "https" or not results_host.endswith(".actions.githubusercontent.com"):
+              results_host = ""
+          targets = {"github": "github.com", "api": "api.github.com", "results": results_host}
+          records = {}
+          for key, host in targets.items():
+              r = {"host": host, "dns": "unavailable", "https": "unavailable", "classification": "unknown"}
+              if host:
+                  try:
+                      p = subprocess.run([sys.executable, "-c",
+                          "import socket,sys\ntry: socket.getaddrinfo(sys.argv[1],443)\nexcept socket.gaierror as e: print(e.errno); sys.exit(1)", host],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=4)
+                      r["dns"] = "ok" if p.returncode == 0 else "error"
+                      value = p.stdout.strip()
+                      if value.lstrip("-").isdigit():
+                          r["gai_errno"] = int(value)
+                  except subprocess.TimeoutExpired:
+                      r["dns"] = "timeout"
+                  try:
+                      p = subprocess.run(["curl", "--disable", "--silent", "--output", "/dev/null",
+                          "--write-out", "%{http_code}", "--connect-timeout", "3", "--max-time", "5",
+                          "--proto", "=https", "https://" + host + "/"],
+                          capture_output=True, text=True, timeout=6)
+                      r["curl_exit"] = p.returncode
+                      r["http_status"] = p.stdout if p.stdout.isdigit() and len(p.stdout) == 3 else ""
+                      r["https"] = ("reachable" if p.returncode == 0 and r["http_status"] != "000"
+                                    and r["http_status"] else
+                                    {5: "proxy_dns", 6: "dns", 7: "connect", 28: "timeout",
+                                     35: "tls", 60: "tls_verify"}.get(p.returncode, "other"))
+                  except subprocess.TimeoutExpired:
+                      r["https"] = "timeout"
+                  r["classification"] = ("dns_error" if r["dns"] != "ok" else
+                                         "ok" if r["https"] == "reachable" else "https_error")
+              records[key] = r
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(key + "=" + r["classification"] + "\n")
+          data = {"phase": phase, "utc_ns": time.time_ns(),
+                  "boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME), "targets": records}
+          (out / ("network-" + phase + ".json")).write_text(json.dumps(data, sort_keys=True) + "\n")
+          print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+          PY
+
+      - name: Diagnose connections before
+        id: net_before
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/idle-connection-probe.py" network before
+
+      - name: Evidence before github ok
+        if: always() && (steps.net_before.outputs.github == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before github dns_error
+        if: always() && (steps.net_before.outputs.github == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before github https_error
+        if: always() && (steps.net_before.outputs.github == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before github unknown
+        if: always() && (steps.net_before.outputs.github != 'ok' && steps.net_before.outputs.github != 'dns_error' && steps.net_before.outputs.github != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api ok
+        if: always() && (steps.net_before.outputs.api == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api dns_error
+        if: always() && (steps.net_before.outputs.api == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api https_error
+        if: always() && (steps.net_before.outputs.api == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before api unknown
+        if: always() && (steps.net_before.outputs.api != 'ok' && steps.net_before.outputs.api != 'dns_error' && steps.net_before.outputs.api != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results ok
+        if: always() && (steps.net_before.outputs.results == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results dns_error
+        if: always() && (steps.net_before.outputs.results == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results https_error
+        if: always() && (steps.net_before.outputs.results == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence before results unknown
+        if: always() && (steps.net_before.outputs.results != 'ok' && steps.net_before.outputs.results != 'dns_error' && steps.net_before.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Prepare bounded resolver observer
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/resolver-observer.py" <<'PY'
+          import json, os, pathlib, subprocess, sys, time
+          ROOT = pathlib.Path(os.environ["RUNNER_TEMP"])
+          OUT = ROOT / "idle-control-evidence"
+          STATE = OUT / "resolver-observer.json"
+          STOP = ROOT / "resolver-observer-stop"
+          PROPS = ["Type", "User", "WatchdogUSec", "NotifyAccess", "Restart", "MainPID",
+                   "ActiveState", "SubState", "Result", "NRestarts", "ExecMainCode",
+                   "ExecMainStatus", "WatchdogTimestampMonotonic", "ExecMainStartTimestampMonotonic"]
+          def command(args, seconds=3):
+              try:
+                  p = subprocess.run(args, capture_output=True, text=True, timeout=seconds,
+                                     env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+                  return p.returncode, p.stdout
+              except subprocess.TimeoutExpired:
+                  return 124, ""
+          def save(data):
+              p = STATE.with_suffix(".tmp")
+              p.write_text(json.dumps(data, sort_keys=True) + "\n")
+              p.chmod(0o644)
+              p.replace(STATE)
+          def sample():
+              code, value = command(["/usr/bin/systemctl", "show", "systemd-resolved.service",
+                                     "--no-pager", "--property=" + ",".join(PROPS)])
+              fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+              fields = {k: v for k, v in fields.items() if k in PROPS}
+              result = {"utc_ns": time.time_ns(), "boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                        "query_exit": code, "properties": fields}
+              pid = fields.get("MainPID", "")
+              if pid.isdigit() and int(pid) > 0:
+                  try:
+                      text = pathlib.Path("/proc", pid, "stat").read_text()
+                      tail = text[text.rfind(")") + 2:].split()
+                      result["pid_start_ticks"] = tail[19]
+                      result["pid_state"] = tail[0]
+                  except OSError:
+                      result["pid_read"] = "unavailable"
+              return result
+          def classify(data):
+              samples = data.get("samples", [])
+              valid = [s for s in samples if s.get("query_exit") == 0 and
+                       s.get("properties", {}).get("ActiveState")]
+              if not data.get("done") or len(valid) != len(samples) or len(valid) < 2:
+                  return "unknown"
+              if data.get("watchdog_events", 0) or any(s["properties"].get("Result") == "watchdog" for s in valid):
+                  return "watchdog"
+              first, last = valid[0]["properties"], valid[-1]["properties"]
+              counts = [s["properties"].get("NRestarts", "") for s in valid]
+              if all(x.isdigit() for x in counts) and max(map(int, counts)) > int(counts[0]):
+                  return "restarted"
+              identities = {(s["properties"].get("MainPID"), s.get("pid_start_ticks")) for s in valid
+                            if s["properties"].get("MainPID") not in ["", "0"] and s.get("pid_start_ticks")}
+              if len(identities) > 1:
+                  return "restarted"
+              if last.get("ActiveState") != "active" or last.get("SubState") != "running":
+                  return "not_running"
+              if (data.get("stop_reason") == "requested" and all(x.isdigit() for x in counts)
+                      and len(identities) == 1 and
+                      all(s["properties"].get("ActiveState") == "active" and
+                          s["properties"].get("SubState") == "running" and s.get("pid_start_ticks")
+                          for s in valid)):
+                  return "stable"
+              return "unknown"
+          def evidence_facets(data):
+              samples = data.get("samples", [])
+              valid = [s for s in samples if s.get("query_exit") == 0 and
+                       s.get("properties", {}).get("ActiveState")]
+              complete = bool(data.get("done")) and len(valid) == len(samples) and len(valid) >= 2
+              watchdog = "unknown"
+              restart = "unknown"
+              final = "unknown"
+              if valid:
+                  if data.get("watchdog_events", 0) or any(s["properties"].get("Result") == "watchdog" for s in valid):
+                      watchdog = "present"
+                  elif complete and data.get("journal_exit") == 0:
+                      watchdog = "not_observed"
+                  counts = [s["properties"].get("NRestarts", "") for s in valid]
+                  ids = {(s["properties"].get("MainPID"), s.get("pid_start_ticks")) for s in valid
+                         if s["properties"].get("MainPID") not in ("", "0") and s.get("pid_start_ticks")}
+                  if len(ids) > 1 or (all(x.isdigit() for x in counts) and max(map(int, counts)) > int(counts[0])):
+                      restart = "present"
+                  elif complete and all(x.isdigit() for x in counts):
+                      restart = "not_observed"
+                  if data.get("done") and data.get("stop_reason") == "requested" and samples[-1] == valid[-1]:
+                      p = valid[-1]["properties"]
+                      final = "running" if p.get("ActiveState") == "active" and p.get("SubState") == "running" else "not_running"
+              return {"watchdog_evidence": watchdog, "restart_evidence": restart, "final_state": final}
+          def main():
+              mode = sys.argv[1]
+              if mode == "start":
+                  STOP.unlink(missing_ok=True)
+                  version_code, version = command(["/usr/bin/systemctl", "--version"])
+                  conf = {}
+                  for file, prefix in [("/etc/nsswitch.conf", "hosts:"), ("/etc/resolv.conf", "nameserver")]:
+                      try:
+                          conf[file] = [l.strip() for l in pathlib.Path(file).read_text().splitlines()
+                                        if l.strip().startswith(prefix)]
+                      except OSError:
+                          conf[file] = ["unavailable"]
+                  conf["resolv_link"] = os.path.realpath("/etc/resolv.conf")
+                  data = {"started_utc_ns": time.time_ns(), "started_boottime_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                          "version_exit": version_code, "systemd_version": version.splitlines()[:1],
+                          "resolver_config": conf, "samples": [sample()], "done": False}
+                  save(data)
+                  p = subprocess.Popen(["/usr/bin/timeout", "--signal=TERM", "--kill-after=5s", "910s",
+                                        "/usr/bin/python3", __file__, "observe"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, start_new_session=True,
+                                       env={"RUNNER_TEMP": str(ROOT), "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"})
+                  (ROOT / "resolver-observer-launched").write_text(str(p.pid) + "\n")
+                  return
+              if mode == "observe":
+                  data = json.loads(STATE.read_text())
+                  data["observer_pid"] = os.getpid()
+                  text = pathlib.Path("/proc/self/stat").read_text()
+                  data["observer_start_ticks"] = text[text.rfind(")") + 2:].split()[19]
+                  deadline = time.monotonic() + 900
+                  next_sample = time.monotonic()
+                  while not STOP.exists() and time.monotonic() < deadline:
+                      if time.monotonic() >= next_sample:
+                          data["samples"].append(sample())
+                          save(data)
+                          next_sample = time.monotonic() + 15
+                      time.sleep(0.5)
+                  data["samples"].append(sample())
+                  code, value = command(["/usr/bin/journalctl", "-u", "systemd-resolved.service",
+                                         "--since=@" + str(data["started_utc_ns"] // 1000000000),
+                                         "--output=json", "--no-pager", "-n", "100"], 4)
+                  events = 0
+                  for line in value.splitlines():
+                      try:
+                          msg = json.loads(line).get("MESSAGE", "").lower()
+                          if "watchdog timeout" in msg or "failed with result 'watchdog'" in msg:
+                              events += 1
+                      except (ValueError, AttributeError):
+                          pass
+                  data.update(done=True, stop_reason="requested" if STOP.exists() else "deadline",
+                              journal_exit=code, watchdog_events=events,
+                              ended_utc_ns=time.time_ns())
+                  save(data)
+                  return
+              if mode == "finish":
+                  STOP.touch()
+                  deadline = time.monotonic() + 15
+                  data = {}
+                  while time.monotonic() < deadline:
+                      try:
+                          data = json.loads(STATE.read_text())
+                          if data.get("done"):
+                              break
+                      except (OSError, ValueError):
+                          pass
+                      time.sleep(0.5)
+                  exited = False
+                  exit_deadline = time.monotonic() + 2
+                  while data.get("done") and time.monotonic() < exit_deadline:
+                      try:
+                          text = pathlib.Path("/proc", str(data["observer_pid"]), "stat").read_text()
+                          tail = text[text.rfind(")") + 2:].split()
+                          exited = tail[0] == "Z" or tail[19] != data["observer_start_ticks"]
+                      except FileNotFoundError:
+                          exited = True
+                      except (OSError, KeyError, IndexError):
+                          break
+                      if exited:
+                          break
+                      time.sleep(0.1)
+                  data["process_exit_observed"] = exited
+                  status = classify(data)
+                  facets = evidence_facets(data)
+                  (OUT / "resolver-summary.json").write_text(json.dumps({"classification": status, **facets, "observer_done": bool(data.get("done")), "process_exit_observed": exited}, sort_keys=True) + "\n")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write("state=" + status + "\n")
+                      for key, value in facets.items():
+                          f.write(key + "=" + value + "\n")
+                      f.write("observer_done=" + ("yes" if data.get("done") and exited else "no") + "\n")
+                  print("PROBE_DATA resolver_state=" + status)
+                  print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+                  if not data.get("done") or not exited:
+                      raise SystemExit(1)
+                  return
+              raise SystemExit(2)
+          if __name__ == "__main__":
+              main()
+          PY
+
+      - name: Prepare socket comparison condition
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/socket-condition.py" <<'PY'
+          import json, os, pathlib, stat, sys, time
+
+          SPECS = (
+              {
+                  "path": "/run/systemd/notify",
+                  "before_mode": 0o777,
+                  "restricted_mode": 0o700,
+                  "restrict_in": {"notify_only", "notify_dbus"},
+              },
+              {
+                  "path": "/run/dbus/system_bus_socket",
+                  "before_mode": 0o666,
+                  "restricted_mode": 0o600,
+                  "restrict_in": {"notify_dbus"},
+              },
+          )
+
+          def apply_one(mode, spec):
+              path = spec["path"]
+              before = os.lstat(path)
+              if not stat.S_ISSOCK(before.st_mode):
+                  raise ValueError(f"Expected socket: {path}")
+              if before.st_uid != 0:
+                  raise ValueError(f"Expected root-owned socket: {path}")
+              if stat.S_IMODE(before.st_mode) != spec["before_mode"]:
+                  raise ValueError(
+                      f"Unexpected original mode for {path}: "
+                      f"{oct(stat.S_IMODE(before.st_mode))}"
+                  )
+
+              fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+              try:
+                  current = os.fstat(fd)
+                  identity = (
+                      current.st_dev,
+                      current.st_ino,
+                      current.st_uid,
+                      current.st_gid,
+                      stat.S_IMODE(current.st_mode),
+                  )
+                  expected_identity = (
+                      before.st_dev,
+                      before.st_ino,
+                      before.st_uid,
+                      before.st_gid,
+                      spec["before_mode"],
+                  )
+                  if not stat.S_ISSOCK(current.st_mode) or identity != expected_identity:
+                      raise ValueError(f"Socket identity changed before mutation: {path}")
+
+                  restricted = mode in spec["restrict_in"]
+                  if restricted:
+                      os.chmod("/proc/self/fd/" + str(fd), spec["restricted_mode"])
+
+                  after = os.fstat(fd)
+                  named = os.lstat(path)
+                  expected_mode = spec["restricted_mode"] if restricted else spec["before_mode"]
+                  if (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino):
+                      raise ValueError(f"Socket path replaced: {path}")
+                  if not stat.S_ISSOCK(named.st_mode):
+                      raise ValueError(f"Socket path changed type: {path}")
+                  if (after.st_uid, after.st_gid) != (before.st_uid, before.st_gid):
+                      raise ValueError(f"Socket ownership changed: {path}")
+                  if stat.S_IMODE(after.st_mode) != expected_mode:
+                      raise ValueError(f"Unexpected result mode for {path}")
+                  if stat.S_IMODE(named.st_mode) != expected_mode:
+                      raise ValueError(f"Named socket mode differs from held descriptor: {path}")
+
+                  return {
+                      "path": path,
+                      "restricted": restricted,
+                      "dev": after.st_dev,
+                      "inode": after.st_ino,
+                      "uid": after.st_uid,
+                      "gid": after.st_gid,
+                      "before_mode": oct(spec["before_mode"]),
+                      "after_mode": oct(expected_mode),
+                  }
+              finally:
+                  os.close(fd)
+
+          def apply(mode):
+              if mode not in ("control", "notify_only", "notify_dbus"):
+                  raise ValueError("Unknown condition")
+              return {
+                  "condition": mode,
+                  "sockets": [apply_one(mode, spec) for spec in SPECS],
+                  "utc_ns": time.time_ns(),
+              }
+
+          if __name__ == "__main__":
+              data = apply(sys.argv[1])
+              p = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/socket-condition.json"
+              p.write_text(json.dumps(data, sort_keys=True) + "\n")
+              p.chmod(0o644)
+          PY
+
+      - name: Apply socket comparison condition
+        id: condition
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          case "$CONTROL_HARDENING" in
+            control|notify_only|notify_dbus) ;;
+            *) exit 1 ;;
+          esac
+          sudo -n -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 40s \
+            /bin/bash -c '
+              set -euo pipefail
+              export RUNNER_TEMP="$1"
+              /usr/bin/python3 "$1/resolver-observer.py" start
+              test -s "$1/resolver-observer-launched"
+              test -s "$1/idle-control-evidence/resolver-observer.json"
+              /usr/bin/python3 "$1/idle-connection-probe.py" inventory before
+              /usr/bin/python3 "$1/socket-condition.py" "$2"
+              /usr/bin/python3 "$1/idle-connection-probe.py" inventory after
+            ' socket-isolation "$RUNNER_TEMP" "$CONTROL_HARDENING"
+          sudo -n true
+
+      - name: Diagnose connections immediate
+        id: net_immediate
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/idle-connection-probe.py" network immediate
+
+      - name: Evidence immediate github ok
+        if: always() && (steps.net_immediate.outputs.github == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate github dns_error
+        if: always() && (steps.net_immediate.outputs.github == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate github https_error
+        if: always() && (steps.net_immediate.outputs.github == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate github unknown
+        if: always() && (steps.net_immediate.outputs.github != 'ok' && steps.net_immediate.outputs.github != 'dns_error' && steps.net_immediate.outputs.github != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api ok
+        if: always() && (steps.net_immediate.outputs.api == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api dns_error
+        if: always() && (steps.net_immediate.outputs.api == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api https_error
+        if: always() && (steps.net_immediate.outputs.api == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate api unknown
+        if: always() && (steps.net_immediate.outputs.api != 'ok' && steps.net_immediate.outputs.api != 'dns_error' && steps.net_immediate.outputs.api != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results ok
+        if: always() && (steps.net_immediate.outputs.results == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results dns_error
+        if: always() && (steps.net_immediate.outputs.results == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results https_error
+        if: always() && (steps.net_immediate.outputs.results == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence immediate results unknown
+        if: always() && (steps.net_immediate.outputs.results != 'ok' && steps.net_immediate.outputs.results != 'dns_error' && steps.net_immediate.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Upload early connection evidence
+        id: early_upload
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: early-connections-${{ matrix.hardening }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/idle-control-evidence/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Evidence early upload success
+        if: always() && steps.early_upload.outcome == 'success'
+        timeout-minutes: 1
+        env:
+          ARTIFACT_ID: ${{ steps.early_upload.outputs.artifact-id }}
+        run: |
+          case "$ARTIFACT_ID" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+
+      - name: Evidence early upload failure
+        if: always() && steps.early_upload.outcome == 'failure'
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence early upload unknown
+        if: always() && steps.early_upload.outcome != 'success' && steps.early_upload.outcome != 'failure'
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Wait slice 1 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 2 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 3 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 4 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 5 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 6 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 7 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 8 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 9 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 10 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 11 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 60
+      - name: Wait slice 12 of 12
+        timeout-minutes: 2
+        run: /bin/sleep 50
+
+      - name: Diagnose connections late
+        id: net_late
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/idle-connection-probe.py" network late
+
+      - name: Evidence late github ok
+        if: always() && (steps.net_late.outputs.github == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late github dns_error
+        if: always() && (steps.net_late.outputs.github == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late github https_error
+        if: always() && (steps.net_late.outputs.github == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late github unknown
+        if: always() && (steps.net_late.outputs.github != 'ok' && steps.net_late.outputs.github != 'dns_error' && steps.net_late.outputs.github != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api ok
+        if: always() && (steps.net_late.outputs.api == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api dns_error
+        if: always() && (steps.net_late.outputs.api == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api https_error
+        if: always() && (steps.net_late.outputs.api == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late api unknown
+        if: always() && (steps.net_late.outputs.api != 'ok' && steps.net_late.outputs.api != 'dns_error' && steps.net_late.outputs.api != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results ok
+        if: always() && (steps.net_late.outputs.results == 'ok')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results dns_error
+        if: always() && (steps.net_late.outputs.results == 'dns_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results https_error
+        if: always() && (steps.net_late.outputs.results == 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence late results unknown
+        if: always() && (steps.net_late.outputs.results != 'ok' && steps.net_late.outputs.results != 'dns_error' && steps.net_late.outputs.results != 'https_error')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Finish resolver observer
+        id: resolver
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: bash
+        run: python3 "$RUNNER_TEMP/resolver-observer.py" finish
+
+      - name: Evidence resolver watchdog
+        if: always() && (steps.resolver.outputs.state == 'watchdog')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restarted
+        if: always() && (steps.resolver.outputs.state == 'restarted')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver not_running
+        if: always() && (steps.resolver.outputs.state == 'not_running')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver stable
+        if: always() && (steps.resolver.outputs.state == 'stable')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver unknown
+        if: always() && (steps.resolver.outputs.state == 'unknown' || steps.resolver.outputs.state == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver watchdog_evidence present
+        if: always() && (steps.resolver.outputs.watchdog_evidence == 'present')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver watchdog_evidence not_observed
+        if: always() && (steps.resolver.outputs.watchdog_evidence == 'not_observed')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver watchdog_evidence unknown
+        if: always() && (steps.resolver.outputs.watchdog_evidence == 'unknown' || steps.resolver.outputs.watchdog_evidence == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restart_evidence present
+        if: always() && (steps.resolver.outputs.restart_evidence == 'present')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restart_evidence not_observed
+        if: always() && (steps.resolver.outputs.restart_evidence == 'not_observed')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver restart_evidence unknown
+        if: always() && (steps.resolver.outputs.restart_evidence == 'unknown' || steps.resolver.outputs.restart_evidence == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver final_state running
+        if: always() && (steps.resolver.outputs.final_state == 'running')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver final_state not_running
+        if: always() && (steps.resolver.outputs.final_state == 'not_running')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver final_state unknown
+        if: always() && (steps.resolver.outputs.final_state == 'unknown' || steps.resolver.outputs.final_state == '')
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver observer completed
+        if: always() && steps.resolver.outputs.observer_done == 'yes'
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Evidence resolver observer incomplete
+        if: always() && steps.resolver.outputs.observer_done != 'yes'
+        timeout-minutes: 1
+        run: "true"
+
+      - name: Finalize idle control evidence
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CONDITION_OUTCOME: ${{ steps.condition.outcome }}
+          PRIOR_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "idle-control-evidence/control.json"
+          data = json.loads(path.read_text())
+          data["end_utc_ns"] = time.time_ns()
+          data["end_boottime_ns"] = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+          data["elapsed_seconds"] = (data["end_boottime_ns"] - data["start_boottime_ns"]) / 1e9
+          data["condition_outcome"] = os.environ["CONDITION_OUTCOME"]
+          data["prior_job_status"] = os.environ["PRIOR_JOB_STATUS"]
+          path.write_text(json.dumps(data, sort_keys=True) + "\n")
+          print("PROBE_DATA " + json.dumps(data, sort_keys=True))
+          PY
+
+      - name: Upload idle control evidence
+        id: upload
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: idle-control-${{ matrix.hardening }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/idle-control-evidence/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Evidence artifact upload succeeded with artifact ID
+        if: always() && steps.upload.outcome == 'success'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_ID" in
+            ''|*[!0-9]*) exit 1 ;;
+          esac
+          printf 'PROBE_DATA artifact_id=%s\n' "$ARTIFACT_ID"
+
+      - name: Evidence artifact upload failed
+        if: always() && steps.upload.outcome == 'failure'
+        timeout-minutes: 1
+        run: echo 'PROBE_DATA upload_outcome=failure'
+
+      - name: Evidence artifact upload outcome unavailable
+        if: always() && steps.upload.outcome != 'success' && steps.upload.outcome != 'failure'
+        timeout-minutes: 1
+        run: echo 'PROBE_DATA upload_outcome=unavailable'
