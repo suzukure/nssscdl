@@ -551,13 +551,27 @@ def parsed_tool_call(call: Any) -> tuple[str, dict[str, Any], str]:
 
 
 def investigate(
-    repo: str, issue: int, model: str, base_sha: str
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    repo: str,
+    issue: int,
+    model: str,
+    base_sha: str,
+    snapshot: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if model not in ALLOWED_MODELS:
         raise InvestigatorError("model outside allowlist")
     sha(base_sha, "base_sha")
 
-    snapshot = issue_snapshot(repo, issue)
+    if snapshot is None:
+        snapshot = {
+            "number": issue,
+            "title": None,
+            "state": None,
+            "labels": [],
+            "body": "",
+            "comments_total": None,
+            "latest_comments_newest_first": [],
+            "comment_index_oldest_first": [],
+        }
     latest_ids = [
         x.get("id") for x in snapshot.get("latest_comments_newest_first", [])
         if isinstance(x, dict)
@@ -633,7 +647,8 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
             entry = safe_trace_entry(round_no, "submit_analysis", submits[0][1])
             entry["ok"] = True
             tool_trace.append(entry)
-            return validate_analysis(submits[0][1]), usage, tool_trace
+            usage["_tool_trace"] = tool_trace
+            return validate_analysis(submits[0][1]), usage
 
         messages.append(assistant)
         for name, args, call_id in parsed:
@@ -721,7 +736,9 @@ def main() -> int:
         if args.model not in ALLOWED_MODELS:
             raise InvestigatorError("requested model outside allowlist")
         run(["git","cat-file","-e",f"{sha(args.base_sha,'base_sha')}^{{commit}}"], timeout=10)
-        analysis, usage, tool_trace = investigate(args.repo, args.issue, args.model, args.base_sha)
+        snapshot = issue_snapshot(args.repo, args.issue)
+        analysis, usage = investigate(args.repo, args.issue, args.model, args.base_sha, snapshot)
+        tool_trace = usage.pop("_tool_trace", [])
         write_outputs(analysis, usage, tool_trace, args)
         return 0
     except InvestigatorError as exc:
