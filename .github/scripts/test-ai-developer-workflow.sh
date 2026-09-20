@@ -358,6 +358,17 @@ grep -Fq 'Service-local hardening root preflight protected UNIX socket baseline 
 grep -Fq 'could not stat owner for $path.' "$developer_step"
 grep -Fq 'could not stat dev:inode for $path.' "$developer_step"
 grep -Fq 'exit 50' "$developer_step"
+grep -Fq 'chmod 700 "$RUNNER_TEMP/run-native-codex.sh"' "$developer_step"
+unexpected_permission_mutations="$(
+  grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$developer_step" |
+    grep -Fv 'chmod 700 "$RUNNER_TEMP/run-native-codex.sh"' ||
+    true
+)"
+if [ -n "$unexpected_permission_mutations" ]; then
+  echo 'Production developer path must not mutate host permissions or ACLs.' >&2
+  printf '%s\n' "$unexpected_permission_mutations" >&2
+  exit 1
+fi
 if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$developer_step"; then
   echo 'Production developer path must not mutate sudoers or group membership.' >&2
   exit 1
