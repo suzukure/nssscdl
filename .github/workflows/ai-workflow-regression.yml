@@ -420,7 +420,7 @@ jobs:
                 --property=KillMode=control-group
                 --property=SendSIGKILL=yes
                 --property=NoNewPrivileges=yes
-                --property=RestrictAddressFamilies=~AF_UNIX
+                --property="RestrictAddressFamilies=~AF_UNIX"
                 --property=SystemCallArchitectures=native
                 --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register"
               )
