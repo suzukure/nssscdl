@@ -282,8 +282,8 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 
 * 通常 `/codex develop` はinner `RuntimeMaxSec=700s`、developer step 12分、job 15分とする。
 * 人間が明示的に `/codex develop extended` を選んだ場合だけ、inner `RuntimeMaxSec=1780s`、developer step 30分、job 35分へ固定延長する。任意timeout入力、automatic fallback、automatic retryは設けない。
-* transient serviceは `Type=exec`、`KillMode=control-group`、`SendSIGKILL=yes`、`TimeoutStopSec=5s` を固定する。inner timeoutをCodex process treeのprimary bound、GitHub step timeoutをsystemd/root-shell異常時のbackstop、job timeoutをrunner-lossを含む最終外側boundとして扱う。
-* `respond-to-claude` は本変更の対象外だが、pinned v1.12の `safety-strategy` defaultが `drop-sudo` であるため、#357で確定したhost-global mutation riskが残る。専用follow-up #367で除去するまで、Claude changes-request後の自動Codex follow-upを安全とみなさず、必要ならhuman pauseを維持して無条件再実行しない。
+* transient serviceの**timeout収束に関わるproperty**として `Type=exec`、`KillMode=control-group`、`SendSIGKILL=yes`、`TimeoutStopSec=5s` を固定する。service property全体の正本は後述「Issue起点developerのCodex実行境界」とし、inner timeoutをCodex process treeのprimary bound、GitHub step timeoutをsystemd/root-shell異常時のbackstop、job timeoutをrunner-lossを含む最終外側boundとして扱う。
+* `respond-to-claude` は本変更の対象外だが、pinned v1.12の `safety-strategy` defaultが `drop-sudo` であるため、#357で確定したhost-global mutation riskが残る。現行workflowではClaudeの `changes_requested` に対する**初回の自動Codex follow-up自体は抑止されず**、そのrunがfailureした場合は既存のhuman pause / fail-closed境界でrepository writeを止める。専用follow-up #367で除去するまでこのexposureを既知残存riskとして扱い、失敗後の無条件再実行は行わない。#365では暫定gate追加によるscope拡大を避け、#367でfollow-up経路自体を修復する。
 * timeout / failure後に同jobでrepository writeへ進む例外は設けない。developer stepがsuccessしない限り、requirement gate、diff guard、commit、push、PR作成へ進まない。
 
 #### Issue起点developerのCodex実行境界
@@ -318,7 +318,7 @@ developer stepはtrusted Action helperのblob SHAを再確認したうえで、`
 * `--inh-caps=-all`
 * `--ambient-caps=-all`
 
-native Codex exec前には同じservice / `setpriv` contextで、UID/GID、supplementary groups empty、`NoNewPrivs=1`、全capability zero、`sudo -n true` の失敗、AF_UNIX socket作成拒否、AF_INET socket作成成功をfail-closedに確認する。これによりprivileged UNIX service socketへの迂回路をhost socketのchmodではなくworkload単体で閉じる。将来Codex workloadがAF_UNIXを必要とする場合はhost-global mutationへ戻さず、必要なlocal IPCだけを別Issueで明示設計する。
+native Codex exec前には同じservice / `setpriv` contextで、UID/GID、supplementary groups empty、`NoNewPrivs=1`、全capability zero、`sudo -n true` の失敗、AF_UNIX socket作成拒否、AF_INET socket作成成功をfail-closedに確認する。失敗時はdiagnosticをunit journalへ残し、exit codeを `39=sudo検査不能 / 40=sudo保持 / 41=UID不一致 / 42=GID不一致 / 43=supplementary groups残存 / 44=NoNewPrivs不成立 / 45=capability非zero / 46=AF_UNIX許可 / 47=AF_INET拒否` として区別する。これによりprivileged UNIX service socketへの迂回路をhost socketのchmodではなくworkload単体で閉じる。将来Codex workloadがAF_UNIXを必要とする場合はhost-global mutationへ戻さず、必要なlocal IPCだけを別Issueで明示設計する。
 
 Codexはこのhardening後かつservice cgroup内でvalidated native binaryを直接実行する。service commandは `/usr/bin/env -i` から開始し、`HOME` / `USER` / `LOGNAME` / `PATH` / `RUNNER_TEMP` / `GITHUB_WORKSPACE` / `CODEX_HOME` / `CODEX_FINAL` / `CODEX_PROMPT_FILE` / `CODEX_MODEL` / `CODEX_NATIVE` / `CODEX_PACKAGE_ROOT` / `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` だけを明示allowlistとして渡す。API key、GitHub App token、setup stepのその他environmentは継承しない。npm launcher parityとして `CODEX_MANAGED_PACKAGE_ROOT=<validated package root>`、`CODEX_MANAGED_BY_NPM=1` をchild launcher内で付与し、Bun / pnpm / Vite+ markerはunsetする。pin済みAction sourceではResponses API endpointは追加environmentではなく `CODEX_HOME/config.toml` のlocalhost providerで渡されるため、serviceはこのallowlistだけでproxyを利用する。actual Codex + localhost request pathは#363 / Run #137でservice-local hardening下でも成立済みである。
 
