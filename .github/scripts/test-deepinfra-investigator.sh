@@ -22,6 +22,11 @@ grep -Fq 'secrets.DEEPINFRA_API_KEY' "$workflow"
 grep -Fq 'github.token' "$workflow"
 grep -Fq 'deepseek-ai/DeepSeek-V4-Flash-0731' "$workflow"
 grep -Fq 'deepseek-ai/DeepSeek-V4.1-Flash' "$workflow"
+grep -Fq '"tool_choice": "required"' "$script"
+if grep -Fq '"tool_choice": "auto"' "$script"; then
+  echo 'Investigator protocol requires structured tool calls; tool_choice=auto is not allowed.' >&2
+  exit 1
+fi
 grep -Fq 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803' "$workflow"
 grep -Fq 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' "$workflow"
 
