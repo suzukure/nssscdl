@@ -48,7 +48,7 @@ m.MAX_ROUNDS = 4
 
 responses = [
     {
-        "usage": {},
+        "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
         "choices": [{"message": {"content": None, "tool_calls": [
             {
                 "id": f"read-{i}",
@@ -61,24 +61,30 @@ responses = [
             for i in range(1, 5)
         ]}}],
     },
-    {
-        "usage": {},
-        "choices": [{"message": {"content": None, "tool_calls": [{
-            "id": "submit-final",
-            "type": "function",
-            "function": {
-                "name": "submit_analysis",
-                "arguments": json.dumps(good),
-            },
-        }]}}],
-    },
 ]
 tool_sets = []
+structured_calls = []
 
 def fake_chat(model, messages, tools):
     names = [x["function"]["name"] for x in tools]
     tool_sets.append(names)
     return responses.pop(0)
+
+def fake_structured_final(model, messages, schema):
+    structured_calls.append((model, messages, schema))
+    assert schema == next(
+        t["function"]["parameters"]
+        for t in m.tool_defs()
+        if t["function"]["name"] == "submit_analysis"
+    )
+    assert any(
+        message.get("role") == "tool" and "bounded evidence" in message.get("content", "")
+        for message in messages
+    )
+    return {
+        "usage": {"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27},
+        "choices": [{"message": {"content": json.dumps(good)}}],
+    }
 
 executed = []
 
@@ -87,6 +93,7 @@ def fake_execute(name, args, repo, base_sha):
     return {"id": args["comment_id"], "body": "bounded evidence"}
 
 m.call_chat = fake_chat
+m.call_structured_final = fake_structured_final
 m.execute = fake_execute
 analysis, usage = m.investigate(
     "owner/repo",
@@ -100,16 +107,50 @@ trace = usage.pop("_tool_trace")
 assert analysis["summary"] == "finalized from gathered evidence"
 assert len(executed) == 3
 assert all(name == "get_issue_comment" for name, _ in executed)
-assert len(tool_sets) == 2
+assert len(tool_sets) == 1
 assert "get_issue_comment" in tool_sets[0]
-assert tool_sets[1] == ["submit_analysis"]
+assert len(structured_calls) == 1
+assert usage["total_tokens"] == 40
 
 rejected = [x for x in trace if x.get("budget_exhausted")]
 assert len(rejected) == 1
 assert rejected[0]["tool"] == "get_issue_comment"
 assert rejected[0]["ok"] is False
 assert trace[-1]["tool"] == "submit_analysis"
+assert trace[-1]["mode"] == "json_schema"
 assert trace[-1]["ok"] is True
+
+# Invalid structured final output must still fail closed.
+bad_responses = [{
+    "usage": {},
+    "choices": [{"message": {"content": None, "tool_calls": [
+        {
+            "id": f"bad-read-{i}",
+            "type": "function",
+            "function": {
+                "name": "get_issue_comment",
+                "arguments": json.dumps({"comment_id": i}),
+            },
+        }
+        for i in range(1, 5)
+    ]}}],
+}]
+m.call_chat = lambda model, messages, tools: bad_responses.pop(0)
+m.call_structured_final = lambda model, messages, schema: {
+    "usage": {},
+    "choices": [{"message": {"content": "{not-json"}}],
+}
+try:
+    m.investigate(
+        "owner/repo",
+        328,
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "a" * 40,
+        snapshot,
+    )
+    raise AssertionError("malformed structured final was accepted")
+except m.InvestigatorError:
+    pass
 
 m.MAX_TOOL_CALLS = original_tool_calls
 m.MAX_ROUNDS = original_rounds
