@@ -166,7 +166,9 @@ prepare_step="$test_dir/Prepare-Codex-developer-runtime.yml"
 setup_step="$test_dir/Setup-Codex-developer-runtime.yml"
 resolver_step="$test_dir/Resolve-trusted-Codex-developer-runtime.yml"
 prompt_step="$test_dir/Prepare-fixed-Codex-developer-prompt.yml"
+host_before_step="$test_dir/Capture-AI-Developer-host-integrity-baseline.yml"
 developer_step="$test_dir/Run-Codex-developer.yml"
+host_after_step="$test_dir/Verify-AI-Developer-host-integrity.yml"
 followup_step="$test_dir/Run-Codex-follow-up.yml"
 
 for pair in \
@@ -174,7 +176,9 @@ for pair in \
   "Setup Codex developer runtime|$setup_step" \
   "Resolve trusted Codex developer runtime|$resolver_step" \
   "Prepare fixed Codex developer prompt|$prompt_step" \
+  "Capture AI Developer host integrity baseline|$host_before_step" \
   "Run Codex developer|$developer_step" \
+  "Verify AI Developer host integrity|$host_after_step" \
   "Run Codex follow-up|$followup_step"; do
   step_name="${pair%%|*}"
   step_path="${pair#*|}"
@@ -243,6 +247,56 @@ grep -Fq 'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-conte
 grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
 if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$prompt_step"; then
   echo 'Fixed developer prompt preparation must not receive repository secrets.' >&2
+  exit 1
+fi
+
+# Host-integrity evidence must bracket the Codex workload and remain read-only.
+before_line="$(grep -nF '      - name: Capture AI Developer host integrity baseline' "$workflow" | cut -d: -f1)"
+developer_line="$(grep -nF '      - name: Run Codex developer' "$workflow" | cut -d: -f1)"
+after_line="$(grep -nF '      - name: Verify AI Developer host integrity' "$workflow" | cut -d: -f1)"
+gate_line="$(grep -nF '      - name: Gate requirement changes' "$workflow" | cut -d: -f1)"
+for line in "$before_line" "$developer_line" "$after_line" "$gate_line"; do
+  [[ "$line" =~ ^[0-9]+$ ]]
+done
+test "$before_line" -lt "$developer_line"
+test "$developer_line" -lt "$after_line"
+test "$after_line" -lt "$gate_line"
+
+grep -Fqx '        id: host_integrity_before' "$host_before_step"
+grep -Fqx '        timeout-minutes: 1' "$host_before_step"
+grep -Fq "notify_before=\"\$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)\"" "$host_before_step"
+grep -Fq "dbus_before=\"\$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)\"" "$host_before_step"
+grep -Fq 'systemctl show systemd-resolved.service --no-pager \' "$host_before_step"
+grep -Fq -- '--property=ActiveState --property=SubState --property=MainPID --property=NRestarts |' "$host_before_step"
+grep -Fq "grep -Fxq 'ActiveState=active'" "$host_before_step"
+grep -Fq "grep -Fxq 'SubState=running'" "$host_before_step"
+grep -Fq "printf 'notify=%s\\n' \"\$notify_before\" >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
+grep -Fq "printf 'dbus=%s\\n' \"\$dbus_before\" >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
+grep -Fq "printf 'resolved=%s\\n' \"\$resolved_before\" >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
+grep -Fq 'getent ahosts github.com >/dev/null' "$host_before_step"
+grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_before_step"
+grep -Fq 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok' "$host_before_step"
+
+grep -Fqx '        if: always()' "$host_after_step"
+grep -Fqx '        timeout-minutes: 1' "$host_after_step"
+grep -Fqx '          HOST_NOTIFY_BEFORE: ${{ steps.host_integrity_before.outputs.notify }}' "$host_after_step"
+grep -Fqx '          HOST_DBUS_BEFORE: ${{ steps.host_integrity_before.outputs.dbus }}' "$host_after_step"
+grep -Fqx '          HOST_RESOLVED_BEFORE: ${{ steps.host_integrity_before.outputs.resolved }}' "$host_after_step"
+grep -Fq "notify_after=\"\$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)\"" "$host_after_step"
+grep -Fq "dbus_after=\"\$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)\"" "$host_after_step"
+grep -Fq 'systemctl show systemd-resolved.service --no-pager \' "$host_after_step"
+grep -Fq -- '--property=ActiveState --property=SubState --property=MainPID --property=NRestarts |' "$host_after_step"
+grep -Fq 'test "$notify_after" = "$HOST_NOTIFY_BEFORE"' "$host_after_step"
+grep -Fq 'test "$dbus_after" = "$HOST_DBUS_BEFORE"' "$host_after_step"
+grep -Fq 'test "$resolved_after" = "$HOST_RESOLVED_BEFORE"' "$host_after_step"
+grep -Fq "grep -Fxq 'ActiveState=active'" "$host_after_step"
+grep -Fq "grep -Fxq 'SubState=running'" "$host_after_step"
+grep -Fq 'getent ahosts github.com >/dev/null' "$host_after_step"
+grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_after_step"
+grep -Fq 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok' "$host_after_step"
+
+if grep -Eq '(chmod|chown|chgrp|setfacl|sudoers|deluser|usermod|gpasswd|adduser|systemctl[[:space:]]+(restart|stop|start|kill|reset-failed))' "$host_before_step" "$host_after_step"; then
+  echo 'Host integrity observer must remain read-only.' >&2
   exit 1
 fi
 

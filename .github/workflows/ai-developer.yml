@@ -284,6 +284,31 @@ jobs:
           Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
           CODEX_PROMPT
 
+      - name: Capture AI Developer host integrity baseline
+        id: host_integrity_before
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notify_before="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus_before="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          resolved_before="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState --property=SubState --property=MainPID --property=NRestarts |
+              LC_ALL=C sort |
+              tr '\n' ';'
+          )"
+          printf '%s\n' "$resolved_before" | tr ';' '\n' | grep -Fxq 'ActiveState=active'
+          printf '%s\n' "$resolved_before" | tr ';' '\n' | grep -Fxq 'SubState=running'
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          printf 'notify=%s\n' "$notify_before" >> "$GITHUB_OUTPUT"
+          printf 'dbus=%s\n' "$dbus_before" >> "$GITHUB_OUTPUT"
+          printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
+          printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+
       - name: Run Codex developer
         id: codex
         timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
@@ -568,6 +593,39 @@ jobs:
             "$CODEX_NATIVE" \
             "$CODEX_PACKAGE_ROOT" \
             "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+
+      - name: Verify AI Developer host integrity
+        if: always()
+        timeout-minutes: 1
+        env:
+          HOST_NOTIFY_BEFORE: ${{ steps.host_integrity_before.outputs.notify }}
+          HOST_DBUS_BEFORE: ${{ steps.host_integrity_before.outputs.dbus }}
+          HOST_RESOLVED_BEFORE: ${{ steps.host_integrity_before.outputs.resolved }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "$HOST_NOTIFY_BEFORE"
+          test -n "$HOST_DBUS_BEFORE"
+          test -n "$HOST_RESOLVED_BEFORE"
+
+          notify_after="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus_after="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          test "$notify_after" = "$HOST_NOTIFY_BEFORE"
+          test "$dbus_after" = "$HOST_DBUS_BEFORE"
+
+          resolved_after="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState --property=SubState --property=MainPID --property=NRestarts |
+              LC_ALL=C sort |
+              tr '\n' ';'
+          )"
+          test "$resolved_after" = "$HOST_RESOLVED_BEFORE"
+          printf '%s\n' "$resolved_after" | tr ';' '\n' | grep -Fxq 'ActiveState=active'
+          printf '%s\n' "$resolved_after" | tr ';' '\n' | grep -Fxq 'SubState=running'
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+          printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
 
       - name: Gate requirement changes
         id: development-gate
