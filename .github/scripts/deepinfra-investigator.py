@@ -204,11 +204,12 @@ def issue_snapshot(repo: str, num: int) -> dict[str, Any]:
 
 
 def snapshot_prompt_json(snapshot: dict[str, Any]) -> str:
-    raw = sanitize(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")))
+    serialized = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    raw = sanitize(serialized)
     if len(raw) <= MAX_BOOTSTRAP_CHARS:
         return raw
 
-    compact = json.loads(raw)
+    compact = json.loads(serialized)
     for item in compact.get("comment_index_oldest_first", []):
         if isinstance(item, dict):
             item["first_line"] = ""
