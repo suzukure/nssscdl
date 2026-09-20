@@ -26,6 +26,35 @@ snapshot = {
     "latest_comments_newest_first": [],
     "comment_index_oldest_first": [],
 }
+# Verify the actual strict structured-output request payload, not only the
+# investigate() call boundary.
+captured_payloads = []
+original_request = m.deepinfra_request
+m.deepinfra_request = lambda payload: (
+    captured_payloads.append(payload),
+    {"usage": {}, "choices": [{"message": {"content": json.dumps({"ok": True})}}]},
+)[1]
+schema_for_payload = next(
+    t["function"]["parameters"]
+    for t in m.tool_defs()
+    if t["function"]["name"] == "submit_analysis"
+)
+m.call_structured_final(
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
+    [{"role": "user", "content": "evidence"}],
+    schema_for_payload,
+)
+payload = captured_payloads[0]
+assert "tools" not in payload
+assert payload["response_format"]["type"] == "json_schema"
+assert payload["response_format"]["json_schema"]["name"] == "investigator_analysis"
+assert payload["response_format"]["json_schema"]["strict"] is True
+assert payload["response_format"]["json_schema"]["schema"] == schema_for_payload
+assert payload["messages"][-1]["role"] == "user"
+assert "read-tool budget is exhausted" in payload["messages"][-1]["content"]
+assert payload["max_tokens"] == 4096
+m.deepinfra_request = original_request
+
 good = {
     "summary": "finalized from gathered evidence",
     "hypotheses": [{
@@ -149,6 +178,45 @@ try:
         snapshot,
     )
     raise AssertionError("malformed structured final was accepted")
+except m.InvestigatorError:
+    pass
+
+# Length truncation and malformed choice shapes must produce InvestigatorError.
+length_responses = [{
+    "usage": {},
+    "choices": [{"finish_reason": "length", "message": {"content": json.dumps(good)}}],
+}]
+m.call_chat = lambda model, messages, tools: bad_responses.pop(0) if bad_responses else (_ for _ in ()).throw(AssertionError("unexpected tool call"))
+m.call_structured_final = lambda model, messages, schema: length_responses.pop(0)
+bad_responses = [{
+    "usage": {},
+    "choices": [{"message": {"content": None, "tool_calls": [
+        {
+            "id": f"length-read-{i}",
+            "type": "function",
+            "function": {
+                "name": "get_issue_comment",
+                "arguments": json.dumps({"comment_id": i}),
+            },
+        }
+        for i in range(1, 5)
+    ]}}],
+}]
+try:
+    m.investigate(
+        "owner/repo",
+        328,
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "a" * 40,
+        snapshot,
+    )
+    raise AssertionError("truncated structured final was accepted")
+except m.InvestigatorError as exc:
+    assert "truncated" in str(exc)
+
+try:
+    m.first_message({"choices": [None]}, "fixture")
+    raise AssertionError("non-object choice was accepted")
 except m.InvestigatorError:
     pass
 
