@@ -273,16 +273,20 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
   exit 1
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
-if grep -Fq '/usr/bin/journalctl' "$developer_step"; then
-  echo 'Privileged developer shell must not perform post-workload journal reads.' >&2
-  exit 1
-fi
+journalctl_count="$(grep -Fc '/usr/bin/journalctl' "$developer_step" || true)"
+test "$journalctl_count" = 1
+grep -Fq '/usr/bin/journalctl \' "$developer_step"
+grep -Fq -- '--unit="$unit" \' "$developer_step"
+grep -Fq -- '--no-pager \' "$developer_step"
+grep -Fq -- '--output=cat \' "$developer_step"
+grep -Fq -- '--lines=200 || true' "$developer_step"
 if grep -Fq 'drop-sudo ' "$developer_step" || grep -Fq -- '--root-phase ' "$developer_step"; then
   echo 'Production developer path must not invoke host-global drop-sudo root phase.' >&2
   exit 1
 fi
-if grep -Eq '(/run/[^[:space:]]+.*chmod|chmod.*(/run/)|sudoers|deluser|gpasswd[[:space:]]+-d)' "$developer_step"; then
-  echo 'Production developer path must not mutate host service sockets, sudoers, or group membership.' >&2
+developer_step_flat="$(sed ':a;N;$!ba;s/\\\n/ /g' "$developer_step")"
+if grep -Eq '((chmod|chown|setfacl)[^;]{0,240}/run/|/run/[^;]{0,240}(chmod|chown|setfacl)|sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' <<<"$developer_step_flat"; then
+  echo 'Production developer path must not mutate host service sockets, sudoers, ACLs, or group membership.' >&2
   exit 1
 fi
 grep -Fq '/usr/bin/systemd-run ' "$developer_step"
@@ -314,6 +318,7 @@ grep -Fq "/^Groups:/" "$developer_step"
 grep -Fq "/^NoNewPrivs:/" "$developer_step"
 grep -Fq '/proc/self/status' "$developer_step"
 grep -Fq 'for field in CapInh CapPrm CapEff CapBnd CapAmb; do' "$developer_step"
+grep -Fq 'test -x /usr/bin/sudo' "$developer_step"
 grep -Fq "/usr/bin/sudo -n true" "$developer_step"
 grep -Fq 'socket.AF_UNIX' "$developer_step"
 grep -Fq 'socket.AF_INET' "$developer_step"
