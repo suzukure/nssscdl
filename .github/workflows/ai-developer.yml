@@ -572,7 +572,7 @@ jobs:
                   for name in files:
                       path = os.path.join(root, name)
                       try:
-                          st = os.stat(path)
+                          st = os.stat(path, follow_symlinks=False)
                       except (FileNotFoundError, PermissionError):
                           continue
                       if (
