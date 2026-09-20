@@ -501,10 +501,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          case "$PROBE_BOUNDARY" in
-            current|af-unix-control) ;;
-            *) exit 1 ;;
-          esac
+          test "$PROBE_BOUNDARY" = official-userns-service-control
 
           marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
           launcher="$RUNNER_TEMP/run-codex-exec-tool-$PROBE_BOUNDARY.sh"
