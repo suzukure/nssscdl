@@ -662,6 +662,7 @@ CURRENT-STATE RULES:
 BUDGET:
 - You have at most {MAX_TOOL_CALLS} read-tool calls.
 - Minimize calls and call submit_analysis as soon as the evidence is sufficient.
+- When the read-tool budget is exhausted, the wrapper will expose only submit_analysis; finalize from the evidence already gathered.
 
 TASK:
 Investigate Issue #{issue} in {repo} from trusted base commit {base_sha}. Reconstruct the CURRENT state, test hypotheses against repository and Actions evidence, identify unresolved causality, and propose the smallest safe next discriminating probe.
@@ -670,14 +671,22 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
 {snapshot_json}"""
     messages: list[dict[str, Any]] = [{"role":"user","content":user}]
     tools = tool_defs()
+    submit_tools = [
+        tool for tool in tools
+        if tool.get("function", {}).get("name") == "submit_analysis"
+    ]
+    if len(submit_tools) != 1:
+        raise InvestigatorError("submit_analysis tool definition missing")
     calls = 0
     chars = len(snapshot_json)
     if chars > MAX_TOOL_CHARS:
         raise InvestigatorError("issue bootstrap exceeds tool-result context budget")
     usage = {"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"estimated_cost_usd":0.0}
+    force_submit = False
 
     for round_no in range(1, MAX_ROUNDS + 1):
-        response = call_chat(model, messages, tools)
+        active_tools = submit_tools if force_submit else tools
+        response = call_chat(model, messages, active_tools)
         u = response.get("usage") or {}
         for k in ("prompt_tokens","completion_tokens","total_tokens"):
             if isinstance(u.get(k), int) and u[k] >= 0:
@@ -704,24 +713,38 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
             tool_trace.append(entry)
             usage["_tool_trace"] = tool_trace
             return validate_analysis(submits[0][1]), usage
+        if force_submit:
+            raise InvestigatorError("terminal round did not submit analysis")
 
         messages.append(assistant)
-        for name, args, call_id in parsed:
-            calls += 1
-            if calls > MAX_TOOL_CALLS:
-                raise InvestigatorError("tool-call budget exceeded")
+        remaining = MAX_TOOL_CALLS - calls
+        budget_exhausted = False
+        for index, (name, args, call_id) in enumerate(parsed):
             entry = safe_trace_entry(round_no, name, args)
-            try:
-                payload = {"ok":True,"result":execute(name,args,repo,base_sha)}
-            except InvestigatorError as exc:
-                payload = {"ok":False,"error":str(exc)}
-            add_trace_result(entry, payload)
+            if index >= remaining:
+                budget_exhausted = True
+                payload = {
+                    "ok": False,
+                    "error": "read-tool budget exhausted; call submit_analysis now",
+                }
+                entry["ok"] = False
+                entry["budget_exhausted"] = True
+            else:
+                calls += 1
+                try:
+                    payload = {"ok":True,"result":execute(name,args,repo,base_sha)}
+                except InvestigatorError as exc:
+                    payload = {"ok":False,"error":str(exc)}
+                add_trace_result(entry, payload)
             tool_trace.append(entry)
             content = clipped(json.dumps(payload, ensure_ascii=False, separators=(",",":"), sort_keys=True))
             chars += len(content)
             if chars > MAX_TOOL_CHARS:
                 raise InvestigatorError("tool-result context budget exceeded")
             messages.append({"role":"tool","tool_call_id":call_id,"content":content})
+
+        if calls >= MAX_TOOL_CALLS or budget_exhausted:
+            force_submit = True
     raise InvestigatorError("round budget exceeded")
 
 
