@@ -1491,14 +1491,13 @@ jobs:
 
   handle-claude-followup-failure:
     name: Handle Claude follow-up failure
-    needs: respond-to-claude
+    needs: [draft-after-claude-changes, respond-to-claude]
     if: >-
       always() &&
-      needs.respond-to-claude.result == 'failure' &&
+      (needs.draft-after-claude-changes.result == 'failure' || needs.respond-to-claude.result == 'failure') &&
       github.event_name == 'pull_request_review' &&
       github.event.review.state == 'changes_requested' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'ai/issue-')
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read

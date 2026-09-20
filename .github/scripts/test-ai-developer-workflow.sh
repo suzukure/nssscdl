@@ -131,10 +131,14 @@ awk '
   in_job { print }
 ' "$workflow" > "$followup_failure_handler"
 [ -s "$followup_failure_handler" ]
-grep -Fqx '    needs: respond-to-claude' "$followup_failure_handler"
-grep -Fqx "      needs.respond-to-claude.result == 'failure' &&" "$followup_failure_handler"
+grep -Fqx '    needs: [draft-after-claude-changes, respond-to-claude]' "$followup_failure_handler"
+grep -Fqx "      (needs.draft-after-claude-changes.result == 'failure' || needs.respond-to-claude.result == 'failure') &&" "$followup_failure_handler"
 grep -Fq 'apply-human-pause.sh' "$followup_failure_handler"
 grep -Fq 'Codex follow-up ended abnormally' "$followup_failure_handler"
+if grep -Fq "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" "$followup_failure_handler"; then
+  echo 'Draft-conversion failures must pause every same-repository pull request.' >&2
+  exit 1
+fi
 grep -Fq -- '--body "$reason"' "$workflow"
 grep -Fq 'apply-human-pause.sh' "$workflow"
 draft_after_changes_workflow="$test_dir/draft-after-claude-changes.yml"
