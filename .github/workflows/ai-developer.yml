@@ -454,26 +454,23 @@ jobs:
             env -u ENV -u BASH_ENV -u SHELLOPTS \
             /bin/sh -c '
               set -eu
-              action_main="$1"
-              runner_user="$2"
-              uid="$3"
-              nobody_gid="$4"
-              runner_home="$5"
-              runner_path="$6"
-              runner_temp="$7"
-              node="$8"
-              credentials="$9"
-              runtime_max_sec="${10}"
-              unit="${11}"
-              launcher="${12}"
-              code_workspace="${13}"
-              codex_home="${14}"
-              codex_final="${15}"
-              codex_prompt_file="${16}"
-              codex_model="${17}"
-              codex_native="${18}"
-              codex_package_root="${19}"
-              originator="${20}"
+              runner_user="$1"
+              uid="$2"
+              nobody_gid="$3"
+              runner_home="$4"
+              runner_path="$5"
+              runner_temp="$6"
+              runtime_max_sec="$7"
+              unit="$8"
+              launcher="$9"
+              code_workspace="${10}"
+              codex_home="${11}"
+              codex_final="${12}"
+              codex_prompt_file="${13}"
+              codex_model="${14}"
+              codex_native="${15}"
+              codex_package_root="${16}"
+              originator="${17}"
 
               set +e
               /usr/bin/systemd-run \
@@ -516,22 +513,14 @@ jobs:
               rc=$?
               set -e
 
-              /usr/bin/journalctl \
-                --unit="$unit" \
-                --no-pager \
-                --output=cat \
-                --lines=200 || true
               exit "$rc"
             ' codex-developer \
-            "$ACTION_MAIN" \
             "$runner_user" \
             "$uid" \
             "$nobody_gid" \
             "$runner_home" \
             "$runner_path" \
             "$RUNNER_TEMP" \
-            "$(command -v node)" \
-            "$RUNNER_CREDENTIALS" \
             "$CODEX_RUNTIME_MAX_SEC" \
             "$unit" \
             "$RUNNER_TEMP/run-native-codex.sh" \
