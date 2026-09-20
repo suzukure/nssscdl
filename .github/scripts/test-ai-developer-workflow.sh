@@ -273,8 +273,14 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
   exit 1
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
-grep -Fq 'drop-sudo ' "$developer_step"
-grep -Fq -- '--root-phase ' "$developer_step"
+if grep -Fq 'drop-sudo ' "$developer_step" || grep -Fq -- '--root-phase ' "$developer_step"; then
+  echo 'Production developer path must not invoke host-global drop-sudo root phase.' >&2
+  exit 1
+fi
+if grep -Eq '(/run/[^[:space:]]+.*chmod|chmod.*(/run/)|sudoers|deluser|gpasswd[[:space:]]+-d)' "$developer_step"; then
+  echo 'Production developer path must not mutate host service sockets, sudoers, or group membership.' >&2
+  exit 1
+fi
 grep -Fq '/usr/bin/systemd-run ' "$developer_step"
 grep -Fq -- '--wait ' "$developer_step"
 grep -Fq -- '--collect ' "$developer_step"
@@ -283,6 +289,10 @@ grep -Fq -- '--property="RuntimeMaxSec=${runtime_max_sec}s" ' "$developer_step"
 grep -Fq -- '--property=TimeoutStopSec=5s ' "$developer_step"
 grep -Fq -- '--property=KillMode=control-group ' "$developer_step"
 grep -Fq -- '--property=SendSIGKILL=yes ' "$developer_step"
+grep -Fq -- '--property=NoNewPrivileges=yes ' "$developer_step"
+grep -Fq -- '--property="RestrictAddressFamilies=~AF_UNIX" ' "$developer_step"
+grep -Fq -- '--property=SystemCallArchitectures=native ' "$developer_step"
+grep -Fq -- '--property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" ' "$developer_step"
 grep -Fq '/usr/bin/setpriv ' "$developer_step"
 grep -Fq -- '-- /usr/bin/env -i ' "$developer_step"
 grep -Fq -- '--reuid="$uid" ' "$developer_step"
@@ -292,6 +302,17 @@ grep -Fq -- '--no-new-privs ' "$developer_step"
 grep -Fq -- '--bounding-set=-all ' "$developer_step"
 grep -Fq -- '--inh-caps=-all ' "$developer_step"
 grep -Fq -- '--ambient-caps=-all ' "$developer_step"
+grep -Fq 'expected_uid="${1:?expected uid is required}"' "$developer_step"
+grep -Fq 'expected_gid="${2:?expected gid is required}"' "$developer_step"
+grep -Fq 'test "$(/usr/bin/id -u)" = "$expected_uid"' "$developer_step"
+grep -Fq 'test "$(/usr/bin/id -g)" = "$expected_gid"' "$developer_step"
+grep -Fq "/^Groups:/" "$developer_step"
+grep -Fq "/^NoNewPrivs:/" "$developer_step"
+grep -Fq 'for field in CapInh CapPrm CapEff CapBnd CapAmb; do' "$developer_step"
+grep -Fq "/usr/bin/sudo -n true" "$developer_step"
+grep -Fq 'socket.AF_UNIX' "$developer_step"
+grep -Fq 'socket.AF_INET' "$developer_step"
+grep -Fq '/bin/sh "$launcher" "$uid" "$nobody_gid"' "$developer_step"
 grep -Fq '"HOME=$runner_home"' "$developer_step"
 grep -Fq '"USER=$runner_user"' "$developer_step"
 grep -Fq '"LOGNAME=$runner_user"' "$developer_step"
