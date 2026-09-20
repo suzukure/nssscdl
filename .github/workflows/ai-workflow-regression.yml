@@ -72,3 +72,268 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  codex-local-service-hardening-probe:
+    name: Codex local service hardening probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Install pinned Codex Action runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          codex-home: ${{ runner.temp }}/codex-local-hardening-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted native Codex
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="$(command -v codex)"
+          entry="$(realpath "$launcher")"
+          root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test "$(jq -r .name "$root/package.json")" = '@openai/codex'
+          test "$(jq -r .version "$root/package.json")" = '0.153.4'
+          case "$(uname -m)" in
+            x86_64) pkg='@openai/codex-linux-x64'; triple='x86_64-unknown-linux-musl' ;;
+            aarch64|arm64) pkg='@openai/codex-linux-arm64'; triple='aarch64-unknown-linux-musl' ;;
+            *) exit 1 ;;
+          esac
+          platform_json="$(node -e '
+            const {createRequire}=require("node:module");
+            const r=createRequire(process.argv[1]);
+            process.stdout.write(r.resolve(process.argv[2]+"/package.json"));
+          ' "$entry" "$pkg")"
+          native="$(realpath "$(dirname "$platform_json")/vendor/$triple/bin/codex")"
+          test -x "$native"
+          version="$(env -u CODEX_MANAGED_BY_BUN -u CODEX_MANAGED_BY_PNPM             -u CODEX_MANAGED_BY_VITE_PLUS CODEX_MANAGED_PACKAGE_ROOT="$root"             CODEX_MANAGED_BY_NPM=1 "$native" --version)"
+          test "$version" = 'codex-cli 0.153.4'
+          action_main="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e/dist/main.js"
+          test "$(git hash-object "$action_main")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+          printf 'native=%s\nroot=%s\n' "$native" "$root" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA runtime=%q action_blob=%s\n' "$version" "$(git hash-object "$action_main")"
+
+      - name: Capture host state before
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/local-hardening-evidence"
+          mkdir -p "$evidence"
+          sockets=(
+            /run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock
+            /run/docker.sock /run/snapd-snap.socket /run/snapd.socket
+            /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log
+            /run/systemd/journal/socket /run/systemd/journal/stdout
+            /run/systemd/journal/syslog /run/systemd/notify
+            /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request
+          )
+          for path in "${sockets[@]}"; do
+            if [ -S "$path" ]; then
+              stat -Lc '%n|%a|%u|%g|%d|%i' "$path"
+            else
+              printf '%s|missing\n' "$path"
+            fi
+          done | sort > "$evidence/sockets-before.txt"
+          systemctl show systemd-resolved.service --no-pager             --property=Type,User,WatchdogUSec,NotifyAccess,Restart,MainPID,ActiveState,SubState,Result,NRestarts             > "$evidence/resolved-before.txt"
+          id -G > "$evidence/groups-before.txt"
+          sudo -n true
+          test "$(stat -Lc %a /run/systemd/notify)" = 777
+          test "$(stat -Lc %a /run/dbus/system_bus_socket)" = 666
+
+      - name: Run secretless actual Codex with service-local hardening
+        id: probe
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-local-hardening-home
+          CODEX_NATIVE: ${{ steps.runtime.outputs.native }}
+          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.root }}
+        run: |
+          set -euo pipefail
+          p="$RUNNER_TEMP/codex-local-hardening"
+          unit="codex-local-hardening-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s\n' "$unit" > "$p-unit"
+          printf '%s\n' "$(date +%s%N)" > "$p-start"
+
+          cat > "$RUNNER_TEMP/local-responses.py" <<'PY'
+          import http.server, os, pathlib, time
+          p=pathlib.Path(os.environ["RUNNER_TEMP"])/"codex-local-hardening"
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path != "/health": self.send_error(404); return
+                  self.send_response(204); self.end_headers()
+              def do_POST(self):
+                  n=int(self.headers["Content-Length"]); body=self.rfile.read(n)
+                  if len(body) != n or n <= 0: raise RuntimeError("invalid body")
+                  p.with_name(p.name+"-request").write_text(f"path={self.path}\ncontent_length={n}\n")
+                  time.sleep(90)
+              def log_message(self,*args): pass
+          s=http.server.ThreadingHTTPServer(("127.0.0.1",0),H)
+          p.with_name(p.name+"-port").write_text(str(s.server_address[1])+"\n")
+          p.with_name(p.name+"-server-pid").write_text(str(os.getpid())+"\n")
+          s.serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/local-responses.py" >"$p-server.out" 2>"$p-server.err" &
+          server_pid=$!
+          for _ in $(seq 1 100); do
+            [ -s "$p-port" ] && break
+            kill -0 "$server_pid" 2>/dev/null || { cat "$p-server.err" >&2; exit 1; }
+            sleep 0.1
+          done
+          port="$(cat "$p-port")"
+          case "$port" in ''|*[!0-9]*) exit 1 ;; esac
+
+          mkdir -p "$CODEX_HOME"
+          cat > "$CODEX_HOME/config.toml" <<EOF
+          model_provider = "local-hang"
+          [model_providers.local-hang]
+          name = "Local hanging Responses probe"
+          base_url = "http://127.0.0.1:${port}/v1"
+          wire_api = "responses"
+          requires_openai_auth = false
+          request_max_retries = 0
+          stream_max_retries = 0
+          stream_idle_timeout_ms = 120000
+          EOF
+          printf '%s\n' 'Reply with OK only. Do not inspect or modify files.' > "$RUNNER_TEMP/local-prompt.txt"
+
+          cat > "$RUNNER_TEMP/run-local-codex.sh" <<'SH'
+          #!/bin/sh
+          set -eu
+          p="$RUNNER_TEMP/codex-local-hardening"
+          printf '%s %s\n' "$$" "$(awk '{print $22}' /proc/$$/stat)" > "$p-codex-id"
+          cat /proc/$$/cgroup > "$p-cgroup"
+          awk '/^(Uid|Gid|Groups|NoNewPrivs|Seccomp|CapInh|CapPrm|CapEff|CapBnd|CapAmb):/{
+            k=$1; sub(/:$/,"",k); $1=""; sub(/^[[:space:]]+/,""); print k"="$0
+          }' /proc/$$/status > "$p-security"
+          if sudo -n id -u >/dev/null 2>&1; then echo false > "$p-sudo-blocked"; else echo true > "$p-sudo-blocked"; fi
+          python3 - <<'PY'
+          import os,pathlib,socket
+          p=pathlib.Path(os.environ["RUNNER_TEMP"])/"codex-local-hardening"
+          try: s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+          except OSError as e: p.with_name(p.name+"-unix").write_text(f"blocked=true\nerrno={e.errno}\n")
+          else: s.close(); p.with_name(p.name+"-unix").write_text("blocked=false\nerrno=0\n")
+          try: a,b=socket.socketpair()
+          except OSError as e: p.with_name(p.name+"-socketpair").write_text(f"ok=false\nerrno={e.errno}\n")
+          else: a.close(); b.close(); p.with_name(p.name+"-socketpair").write_text("ok=true\nerrno=0\n")
+          PY
+          curl --disable --silent --show-error --fail --connect-timeout 2 --max-time 3 "$PROBE_URL/health"
+          echo true > "$p-inet"
+          exec env -u CODEX_MANAGED_BY_BUN -u CODEX_MANAGED_BY_PNPM -u CODEX_MANAGED_BY_VITE_PLUS             CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" CODEX_MANAGED_BY_NPM=1             CODEX_HOME="$CODEX_HOME" CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_github_action             "$CODEX_NATIVE" exec --skip-git-repo-check --cd "$RUNNER_TEMP"             --model gpt-5.6-terra --config 'default_permissions=":workspace"' < "$CODEX_PROMPT"
+          SH
+          chmod 700 "$RUNNER_TEMP/run-local-codex.sh"
+
+          uid="$(id -u)"; gid="$(id -g nobody)"
+          test "$uid" -ne 0
+          case "$gid" in ''|*[!0-9]*|0) exit 1 ;; esac
+          set +e
+          sudo -n -- env -u ENV -u BASH_ENV -u SHELLOPTS /usr/bin/systemd-run             --quiet --wait --collect --unit="$unit"             --property=Type=exec --property=RuntimeMaxSec=20s --property=TimeoutStopSec=5s             --property=KillMode=control-group --property=SendSIGKILL=yes             --property=NoNewPrivileges=yes "--property=RestrictAddressFamilies=~AF_UNIX"             --property=SystemCallArchitectures=native "--property=SystemCallFilter=~io_uring_setup"             /usr/bin/setpriv --reuid="$uid" --regid="$gid" --clear-groups --no-new-privs             --bounding-set=-all --inh-caps=-all --ambient-caps=-all --             /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH="$PATH"             RUNNER_TEMP="$RUNNER_TEMP" CODEX_HOME="$CODEX_HOME" CODEX_NATIVE="$CODEX_NATIVE"             CODEX_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" CODEX_PROMPT="$RUNNER_TEMP/local-prompt.txt"             PROBE_URL="http://127.0.0.1:${port}" /bin/sh "$RUNNER_TEMP/run-local-codex.sh"
+          rc=$?
+          set -e
+          echo "$rc" > "$p-systemd-rc"
+          date +%s%N > "$p-return"
+
+      - name: Verify local hardening and host state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          p="$RUNNER_TEMP/codex-local-hardening"
+          evidence="$RUNNER_TEMP/local-hardening-evidence"
+          for f in request codex-id cgroup security sudo-blocked unix socketpair inet systemd-rc return; do test -s "$p-$f"; done
+          test "$(sed -n 's/^path=//p' "$p-request")" = /v1/responses
+          read -r pid start < "$p-codex-id"
+          if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start" ]; then exit 1; fi
+          get(){ sed -n "s/^$1=//p" "$p-security"; }
+          uid="$(id -u)"; gid="$(id -g nobody)"
+          test "$(get Uid)" = "$uid $uid $uid $uid"
+          test "$(get Gid)" = "$gid $gid $gid $gid"
+          test -z "$(get Groups)"
+          test "$(get NoNewPrivs)" = 1
+          test "$(get Seccomp)" = 2
+          for c in CapInh CapPrm CapEff CapBnd CapAmb; do test "$(get "$c")" = 0000000000000000; done
+          test "$(cat "$p-sudo-blocked")" = true
+          test "$(sed -n 's/^blocked=//p' "$p-unix")" = true
+          test "$(sed -n 's/^ok=//p' "$p-socketpair")" = true
+          test "$(cat "$p-inet")" = true
+          elapsed=$(( ($(cat "$p-return") - $(cat "$p-start")) / 1000000 ))
+          test "$elapsed" -ge 18000
+          test "$elapsed" -lt 55000
+          unit="$(cat "$p-unit")"
+          grep -Fq "/system.slice/${unit}.service" "$p-cgroup"
+
+          sockets=(
+            /run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock
+            /run/docker.sock /run/snapd-snap.socket /run/snapd.socket
+            /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log
+            /run/systemd/journal/socket /run/systemd/journal/stdout
+            /run/systemd/journal/syslog /run/systemd/notify
+            /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request
+          )
+          for path in "${sockets[@]}"; do
+            if [ -S "$path" ]; then stat -Lc '%n|%a|%u|%g|%d|%i' "$path"; else printf '%s|missing\n' "$path"; fi
+          done | sort > "$evidence/sockets-after.txt"
+          cmp "$evidence/sockets-before.txt" "$evidence/sockets-after.txt"
+          test "$(stat -Lc %a /run/systemd/notify)" = 777
+          test "$(stat -Lc %a /run/dbus/system_bus_socket)" = 666
+
+          systemctl show systemd-resolved.service --no-pager             --property=Type,User,WatchdogUSec,NotifyAccess,Restart,MainPID,ActiveState,SubState,Result,NRestarts             > "$evidence/resolved-after.txt"
+          grep -Fxq 'ActiveState=active' "$evidence/resolved-after.txt"
+          grep -Fxq 'SubState=running' "$evidence/resolved-after.txt"
+          before_restarts="$(sed -n 's/^NRestarts=//p' "$evidence/resolved-before.txt")"
+          after_restarts="$(sed -n 's/^NRestarts=//p' "$evidence/resolved-after.txt")"
+          test "$before_restarts" = "$after_restarts"
+          id -G > "$evidence/groups-after.txt"
+          cmp "$evidence/groups-before.txt" "$evidence/groups-after.txt"
+          sudo -n true
+          python3 - <<'PY'
+          import socket
+          for h in ("github.com","api.github.com"): socket.getaddrinfo(h,443)
+          PY
+          printf 'PROBE_DATA elapsed_ms=%s host_metadata=unchanged resolved_restarts=%s dns=ok\n' "$elapsed" "$after_restarts"
+
+      - name: Upload local hardening evidence
+        id: upload
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: local-hardening-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/local-hardening-evidence/*
+            ${{ runner.temp }}/codex-local-hardening-request
+            ${{ runner.temp }}/codex-local-hardening-security
+            ${{ runner.temp }}/codex-local-hardening-sudo-blocked
+            ${{ runner.temp }}/codex-local-hardening-unix
+            ${{ runner.temp }}/codex-local-hardening-socketpair
+            ${{ runner.temp }}/codex-local-hardening-inet
+            ${{ runner.temp }}/codex-local-hardening-systemd-rc
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Require artifact upload success
+        if: always()
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.upload.outcome }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = success
+          case "$ARTIFACT_ID" in ''|*[!0-9]*) exit 1 ;; esac
+          printf 'PROBE_DATA artifact_id=%s\n' "$ARTIFACT_ID"
+
+      - name: Cleanup localhost probe server
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/codex-local-hardening-server-pid"
+          if [ -s "$f" ]; then
+            pid="$(cat "$f")"
+            case "$pid" in ''|*[!0-9]*) ;; *) kill "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL "$pid" 2>/dev/null || true ;; esac
+          fi
