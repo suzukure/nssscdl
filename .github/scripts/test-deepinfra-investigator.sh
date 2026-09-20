@@ -143,6 +143,36 @@ try:
 except m.InvestigatorError:
     pass
 
+original_gh_json = m.gh_json
+original_run = m.run
+log_calls = []
+m.gh_json = lambda repo, endpoint, timeout=25: {"run_id": 123} if endpoint == "actions/jobs/456" else {}
+m.run = lambda args, **kwargs: log_calls.append(args) or "line before\nneedle\nline after\n"
+excerpt = m.execute(
+    "get_job_log_excerpt",
+    {"run_id": 123, "job_id": 456, "pattern": "needle", "context_lines": 1},
+    "owner/repo",
+    head,
+)
+assert excerpt["matched"] is True
+assert excerpt["run_id"] == 123 and excerpt["job_id"] == 456
+assert any("456" in args for args in log_calls)
+
+m.gh_json = lambda repo, endpoint, timeout=25: {"run_id": 999}
+m.run = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("log read ran before identity rejection"))
+try:
+    m.execute(
+        "get_job_log_excerpt",
+        {"run_id": 123, "job_id": 456, "pattern": "needle", "context_lines": 1},
+        "owner/repo",
+        head,
+    )
+    raise AssertionError("mismatched run_id/job_id was accepted")
+except m.InvestigatorError:
+    pass
+m.gh_json = original_gh_json
+m.run = original_run
+
 responses = [
     {
         "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "estimated_cost": 0.001},
