@@ -603,6 +603,8 @@ jobs:
           PY
 
           exec env \
+            -u PROTECTED_UNIX_SOCKET_PATHS \
+            -u PROTECTED_UNIX_SOCKET_HOST_IDS \
             -u CODEX_MANAGED_BY_BUN \
             -u CODEX_MANAGED_BY_PNPM \
             -u CODEX_MANAGED_BY_VITE_PLUS \
