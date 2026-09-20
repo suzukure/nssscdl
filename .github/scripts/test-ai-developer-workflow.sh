@@ -273,6 +273,10 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
   exit 1
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
+if grep -Fq '/usr/bin/journalctl' "$developer_step"; then
+  echo 'Privileged developer shell must not perform post-workload journal reads.' >&2
+  exit 1
+fi
 if grep -Fq 'drop-sudo ' "$developer_step" || grep -Fq -- '--root-phase ' "$developer_step"; then
   echo 'Production developer path must not invoke host-global drop-sudo root phase.' >&2
   exit 1
