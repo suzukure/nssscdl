@@ -561,15 +561,19 @@ def validate_analysis(v: Any) -> dict[str, Any]:
     return v
 
 
-def call_chat(
-    model: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    tool_choice: Any = "required",
-) -> dict[str, Any]:
+def call_chat(model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
     key = os.environ.get("DEEPINFRA_API_KEY", "")
     if not key:
         raise InvestigatorError("DEEPINFRA_API_KEY is not configured")
+    tool_names = [
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    ]
+    tool_choice: Any = (
+        {"type": "function", "function": {"name": "submit_analysis"}}
+        if tool_names == ["submit_analysis"] else "required"
+    )
     body = json.dumps({
         "model": model, "messages": messages, "tools": tools, "tool_choice": tool_choice,
         "temperature": 0.1, "max_tokens": 4096
@@ -691,11 +695,7 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
 
     for round_no in range(1, MAX_ROUNDS + 1):
         active_tools = submit_tools if force_submit else tools
-        tool_choice: Any = (
-            {"type": "function", "function": {"name": "submit_analysis"}}
-            if force_submit else "required"
-        )
-        response = call_chat(model, messages, active_tools, tool_choice)
+        response = call_chat(model, messages, active_tools)
         u = response.get("usage") or {}
         for k in ("prompt_tokens","completion_tokens","total_tokens"):
             if isinstance(u.get(k), int) and u[k] >= 0:
