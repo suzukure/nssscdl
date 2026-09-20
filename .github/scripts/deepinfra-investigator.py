@@ -632,6 +632,16 @@ def accumulate_usage(usage: dict[str, Any], response: dict[str, Any]) -> None:
         usage["estimated_cost_usd"] += float(estimated)
 
 
+def first_message(response: dict[str, Any], context: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        raise InvestigatorError(f"invalid DeepInfra {context} choice")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise InvestigatorError(f"invalid DeepInfra {context} message")
+    return choices[0], message
+
+
 def parsed_tool_call(call: Any) -> tuple[str, dict[str, Any], str]:
     if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not isinstance(call.get("function"), dict):
         raise InvestigatorError("invalid tool call")
@@ -735,14 +745,10 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
         if force_submit:
             response = call_structured_final(model, messages, analysis_schema)
             accumulate_usage(usage, response)
-            choices = response.get("choices")
-            if (
-                not isinstance(choices, list)
-                or len(choices) != 1
-                or not isinstance(choices[0].get("message"), dict)
-            ):
-                raise InvestigatorError("invalid DeepInfra structured final choice")
-            content = choices[0]["message"].get("content")
+            choice, final_message = first_message(response, "structured final")
+            if choice.get("finish_reason") == "length":
+                raise InvestigatorError("structured final was truncated by max_tokens")
+            content = final_message.get("content")
             if not isinstance(content, str):
                 raise InvestigatorError("structured final content is not text")
             try:
@@ -764,10 +770,7 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
 
         response = call_chat(model, messages, tools)
         accumulate_usage(usage, response)
-        choices = response.get("choices")
-        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0].get("message"), dict):
-            raise InvestigatorError("invalid DeepInfra choice")
-        raw_msg = choices[0]["message"]
+        _, raw_msg = first_message(response, "tool")
         assistant = {"role":"assistant","content":raw_msg.get("content")}
         if "tool_calls" in raw_msg:
             assistant["tool_calls"] = raw_msg["tool_calls"]
@@ -780,6 +783,7 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
             if len(parsed) != 1:
                 raise InvestigatorError("submit_analysis must be the sole tool call")
             entry = safe_trace_entry(round_no, "submit_analysis", submits[0][1])
+            entry["mode"] = "tool_call"
             entry["ok"] = True
             tool_trace.append(entry)
             usage["_tool_trace"] = tool_trace
