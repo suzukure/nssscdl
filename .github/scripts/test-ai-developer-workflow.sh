@@ -437,6 +437,13 @@ grep -Fq 'os.access(path, os.X_OK)' "$developer_step"
 grep -Fq 'SystemExit(48)' "$developer_step"
 grep -Fq 'os.walk(' "$developer_step"
 grep -Fq '"/run",' "$developer_step"
+grep -Fq 'followlinks=False,' "$developer_step"
+grep -Fq 'os.stat(path, follow_symlinks=False)' "$developer_step"
+grep -Fq 'exc.errno in (errno.EACCES, errno.EPERM, errno.ENOENT)' "$developer_step"
+if grep -Fq 'errno.ELOOP' "$developer_step"; then
+  echo "Residual /run scan must not weaken fail-closed handling by skipping ELOOP." >&2
+  exit 1
+fi
 grep -Fq 'st.st_uid == 0' "$developer_step"
 grep -Fq 'Service-local hardening preflight found writable root-owned UNIX socket(s):' "$developer_step"
 grep -Fq 'SystemExit(49)' "$developer_step"
