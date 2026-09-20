@@ -399,7 +399,7 @@ Claude review follow-upでは、通常の `Gate automated follow-up` は停止�
 
 異常終了後にCodex follow-upを自動retryしない。現行workflowには、停止状態を維持したまま同じClaude指摘に対するCodex follow-upだけを安全に再実行する専用入口はない。
 
-人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除する。PRはDraftのままなので、その後に人間または明示的なtrusted経路がReady for reviewへ戻して再レビューを要求する。
+人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。`Run Codex follow-up` 側の異常終了ではPRはDraftのままなので、修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除し、人間または明示的なtrusted経路がReady for reviewへ戻して再レビューを要求する。Draft復帰job自体が異常終了した場合はPRが非Draftのまま停止しているため、PR側のラベルを解除する前に人間がPRをDraftへ戻し、準備完了後にReady化する。非DraftのままPR側のラベルを先に解除すると、現在headへのClaude Reviewが即時に起動する。
 
 非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
 

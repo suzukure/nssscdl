@@ -179,6 +179,10 @@ if ! grep -Fq 'Automated Codex follow-up passed the entry gate' "$repo_root/.git
   exit 1
 fi
 
+operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
+grep -Fq '`Run Codex follow-up` 側の異常終了ではPRはDraftのまま' "$operations_doc"
+grep -Fq 'Draft復帰job自体が異常終了した場合はPRが非Draftのまま停止しているため、PR側のラベルを解除する前に人間がPRをDraftへ戻し' "$operations_doc"
+
 # Both Codex jobs must have a server-side wall-clock bound in addition to
 # the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
 # development uses a fixed 35-minute exception only for the explicit extended
