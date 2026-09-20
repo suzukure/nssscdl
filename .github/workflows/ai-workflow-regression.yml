@@ -309,65 +309,47 @@ jobs:
                           })
                       write_marker("-tool-names.json", json.dumps(names, sort_keys=True))
                       write_marker("-tool-descriptors.json", json.dumps(descriptors, sort_keys=True))
-                      try:
-                          name, arguments = build_call(tools)
-                      except RuntimeError as exc:
-                          write_marker("-adapter-error", str(exc))
-                          write_marker("-request-count", str(index + 1))
-                          events = [
-                              {
-                                  "type": "response.output_item.done",
-                                  "item": {
-                                      "type": "message",
-                                      "role": "assistant",
-                                      "id": "msg-probe-discovery",
-                                      "content": [
-                                          {"type": "output_text", "text": "probe-discovery-complete"}
-                                      ],
-                                  },
-                              },
-                              completed("resp-probe-discovery"),
-                          ]
-                      else:
-                          write_marker("-selected-tool", name)
-                          write_marker("-selected-arguments.json", json.dumps(arguments, sort_keys=True))
-                          if name == "local_shell":
-                              call_item = {
-                                  "type": "local_shell_call",
+
+                      nested_args = {
+                          "cmd": f"/usr/bin/cat {shlex.quote(str(fixture))}",
+                          "workdir": str(workspace),
+                          "yield_time_ms": 10000,
+                          "max_output_tokens": 1000,
+                      }
+                      code = (
+                          "const result = await tools.exec_command("
+                          + json.dumps(nested_args, separators=(",", ":"))
+                          + "); text(result.output);"
+                      )
+                      write_marker("-selected-tool", "exec")
+                      write_marker("-selected-arguments.json", json.dumps(nested_args, sort_keys=True))
+                      write_marker("-selected-code", code)
+                      events = [
+                          {
+                              "type": "response.created",
+                              "response": {"id": "resp-probe-1"},
+                          },
+                          {
+                              "type": "response.output_item.done",
+                              "item": {
+                                  "type": "custom_tool_call",
                                   "call_id": call_id,
-                                  "status": "completed",
-                                  "action": {
-                                      "type": "exec",
-                                      **arguments,
-                                  },
-                              }
-                          else:
-                              call_item = {
-                                  "type": "function_call",
-                                  "call_id": call_id,
-                                  "name": name,
-                                  "arguments": json.dumps(arguments, separators=(",", ":")),
-                              }
-                          events = [
-                              {
-                                  "type": "response.created",
-                                  "response": {"id": "resp-probe-1"},
+                                  "name": "exec",
+                                  "input": code,
                               },
-                              {
-                                  "type": "response.output_item.done",
-                                  "item": call_item,
-                              },
-                              completed("resp-probe-1"),
-                          ]
+                          },
+                          completed("resp-probe-1"),
+                      ]
                   else:
                       outputs = [
                           item for item in inputs
                           if isinstance(item, dict)
-                          and item.get("type") == "function_call_output"
+                          and item.get("type") in {"custom_tool_call_output", "function_call_output"}
                           and item.get("call_id") == call_id
                       ]
                       if len(outputs) != 1:
-                          raise RuntimeError("expected exactly one function_call_output")
+                          raise RuntimeError("expected exactly one tool call output")
+                      write_marker("-tool-output-type", str(outputs[0].get("type")))
                       output = outputs[0].get("output")
                       if isinstance(output, str):
                           output_text = output
@@ -673,21 +655,19 @@ jobs:
           if [ -s "${marker}-tool-descriptors.json" ]; then
             printf 'PROBE_DATA tool_descriptors=%s\n' "$(cat "${marker}-tool-descriptors.json")"
           fi
-          if [ -s "${marker}-adapter-error" ]; then
-            printf 'PROBE_DATA adapter_error=%q\n' "$(cat "${marker}-adapter-error")"
-            echo 'Probe adapter needs the actual Codex 0.153.4 command-tool contract.' >&2
-            exit 1
-          fi
-
           test -s "${marker}-selected-tool"
           test -s "${marker}-selected-arguments.json"
+          test -s "${marker}-selected-code"
+          test -s "${marker}-tool-output-type"
           test -s "${marker}-tool-output"
           test -s "${marker}-request-count"
           test "$(cat "${marker}-request-count")" -ge 2
 
           tool_output="$(cat "${marker}-tool-output")"
-          printf 'PROBE_DATA tool=%s tool_output=%q\n' \
-            "$(cat "${marker}-selected-tool")" "$tool_output"
+          printf 'PROBE_DATA tool=%s output_type=%s tool_output=%q\n' \
+            "$(cat "${marker}-selected-tool")" \
+            "$(cat "${marker}-tool-output-type")" \
+            "$tool_output"
 
           case "$PROBE_BOUNDARY" in
             current)
