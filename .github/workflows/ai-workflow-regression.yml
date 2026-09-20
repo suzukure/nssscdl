@@ -72,3 +72,367 @@ jobs:
 
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+
+  codex-bwrap-local-tool-probe:
+    name: Codex bwrap local-tool probe (${{ matrix.boundary }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    strategy:
+      fail-fast: false
+      matrix:
+        boundary: [current, af-unix-control]
+    steps:
+      - name: Install pinned Codex Action runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.153.4
+          codex-home: ${{ runner.temp }}/codex-bwrap-probe-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted native Codex and bundled bwrap
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(jq -r .name "$package_root/package.json")" = '@openai/codex'
+          test "$(jq -r .version "$package_root/package.json")" = '0.153.4'
+
+          case "$(uname -m)" in
+            x86_64)
+              platform_package='@openai/codex-linux-x64'
+              target_triple='x86_64-unknown-linux-musl'
+              ;;
+            aarch64|arm64)
+              platform_package='@openai/codex-linux-arm64'
+              target_triple='aarch64-unknown-linux-musl'
+              ;;
+            *)
+              echo "Unsupported Codex platform: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          platform_json="$(
+            node -e '
+              const { createRequire } = require("node:module");
+              const req = createRequire(process.argv[1]);
+              process.stdout.write(req.resolve(process.argv[2] + "/package.json"));
+            ' "$entry" "$platform_package"
+          )"
+          platform_root="$(realpath "$(dirname "$platform_json")")"
+          native_path="$(realpath "$platform_root/vendor/$target_triple/bin/codex")"
+          test -x "$native_path"
+
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$native_version" = 'codex-cli 0.153.4'
+
+          if command -v bwrap >/dev/null 2>&1; then
+            echo "System bwrap unexpectedly exists on PATH: $(command -v bwrap)" >&2
+            exit 1
+          fi
+
+          bundled_bwrap="$(find "$platform_root" -type f -path '*/codex-resources/bwrap' -print -quit)"
+          test -n "$bundled_bwrap"
+          test -x "$bundled_bwrap"
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'bundled_bwrap=%s\n' "$bundled_bwrap" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA runtime version=%q target=%q bundled_bwrap=%q\n' \
+            "$native_version" "$target_triple" "$bundled_bwrap"
+          file "$bundled_bwrap"
+
+      - name: Verify Codex sandbox CLI on runner
+        shell: bash
+        env:
+          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
+        run: |
+          set -euo pipefail
+
+          fixture="$RUNNER_TEMP/codex-bwrap-runner-control.txt"
+          printf 'codex-bwrap-probe-ok\n' > "$fixture"
+
+          env \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            "$CODEX_NATIVE" sandbox linux \
+              --permissions-profile :workspace \
+              -C "$RUNNER_TEMP" \
+              /usr/bin/cat "$fixture" \
+            > "$RUNNER_TEMP/codex-bwrap-runner-control.stdout" \
+            2> "$RUNNER_TEMP/codex-bwrap-runner-control.stderr"
+
+          grep -Fxq 'codex-bwrap-probe-ok' "$RUNNER_TEMP/codex-bwrap-runner-control.stdout"
+
+      - name: Capture host integrity baseline
+        id: host_before
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notify="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          resolved="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState \
+              --property=SubState \
+              --property=MainPID \
+              --property=NRestarts
+          )"
+
+          grep -Fxq 'ActiveState=active' <<< "$resolved"
+          grep -Fxq 'SubState=running' <<< "$resolved"
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          {
+            printf 'notify=%s\n' "$notify"
+            printf 'dbus=%s\n' "$dbus"
+            printf 'resolved_b64=%s\n' "$(printf '%s' "$resolved" | base64 -w0)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex sandbox under service-local boundary
+        id: probe
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          PROBE_BOUNDARY: ${{ matrix.boundary }}
+          CODEX_NATIVE: ${{ steps.runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.runtime.outputs.package_root }}
+        run: |
+          set -euo pipefail
+
+          case "$PROBE_BOUNDARY" in
+            current|af-unix-control) ;;
+            *)
+              echo "Unexpected probe boundary: $PROBE_BOUNDARY" >&2
+              exit 1
+              ;;
+          esac
+
+          marker="$RUNNER_TEMP/codex-bwrap-$PROBE_BOUNDARY"
+          fixture="$RUNNER_TEMP/codex-bwrap-fixture-$PROBE_BOUNDARY.txt"
+          launcher="$RUNNER_TEMP/run-codex-bwrap-$PROBE_BOUNDARY.sh"
+          unit="codex-bwrap-${PROBE_BOUNDARY}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          printf 'codex-bwrap-probe-ok\n' > "$fixture"
+          chmod 644 "$fixture"
+
+          cat > "$launcher" <<'PROBE'
+          #!/bin/sh
+          set -eu
+
+          marker="${PROBE_MARKER:?}"
+          fixture="${PROBE_FIXTURE:?}"
+
+          awk '
+            /^(Uid|Gid|Groups|NoNewPrivs|CapInh|CapPrm|CapEff|CapBnd|CapAmb):/ {
+              key=$1
+              sub(/:$/, "", key)
+              $1=""
+              sub(/^[[:space:]]+/, "")
+              print key "=" $0
+            }
+          ' /proc/$$/status > "${marker}-security-status"
+
+          if /usr/bin/sudo -n true >/dev/null 2>&1; then
+            printf 'true\n' > "${marker}-sudo-available"
+          else
+            printf 'false\n' > "${marker}-sudo-available"
+          fi
+
+          /usr/bin/python3 - "${marker}-sockets.json" <<'PY'
+          import json
+          import pathlib
+          import socket
+          import sys
+
+          result = {}
+          for name, family in (("af_unix", socket.AF_UNIX), ("af_inet", socket.AF_INET)):
+              try:
+                  sock = socket.socket(family, socket.SOCK_STREAM)
+              except OSError as exc:
+                  result[name] = "denied"
+                  result[name + "_errno"] = exc.errno
+              else:
+                  sock.close()
+                  result[name] = "available"
+
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(result, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          cd "$RUNNER_TEMP"
+          set +e
+          env \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            "$CODEX_NATIVE" sandbox linux \
+              --permissions-profile :workspace \
+              -C "$RUNNER_TEMP" \
+              /usr/bin/cat "$fixture" \
+            > "${marker}-sandbox.stdout" \
+            2> "${marker}-sandbox.stderr"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > "${marker}-sandbox.rc"
+
+          # Keep the transient service successful; the following diagnostic
+          # step asserts the expected result for each boundary.
+          exit 0
+          PROBE
+          chmod 700 "$launcher"
+
+          uid="$(id -u)"
+          test "$uid" -ne 0
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+
+          properties=(
+            --property=Type=exec
+            --property=RuntimeMaxSec=45s
+            --property=TimeoutStopSec=5s
+            --property=KillMode=control-group
+            --property=SendSIGKILL=yes
+            --property=NoNewPrivileges=yes
+            --property=SystemCallArchitectures=native
+            '--property=SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register'
+          )
+          if [ "$PROBE_BOUNDARY" = current ]; then
+            properties+=( '--property=RestrictAddressFamilies=~AF_UNIX' )
+          fi
+
+          sudo -n -- \
+            /usr/bin/systemd-run \
+              --quiet \
+              --wait \
+              --collect \
+              --unit="$unit" \
+              "${properties[@]}" \
+              /usr/bin/setpriv \
+                --reuid="$uid" \
+                --regid="$nobody_gid" \
+                --clear-groups \
+                --no-new-privs \
+                --bounding-set=-all \
+                --inh-caps=-all \
+                --ambient-caps=-all \
+                -- \
+                /usr/bin/env -i \
+                  "HOME=$runner_home" \
+                  "USER=$runner_user" \
+                  "LOGNAME=$runner_user" \
+                  "PATH=$runner_path" \
+                  "RUNNER_TEMP=$RUNNER_TEMP" \
+                  "PROBE_BOUNDARY=$PROBE_BOUNDARY" \
+                  "PROBE_MARKER=$marker" \
+                  "PROBE_FIXTURE=$fixture" \
+                  "CODEX_NATIVE=$CODEX_NATIVE" \
+                  "CODEX_PACKAGE_ROOT=$CODEX_PACKAGE_ROOT" \
+                  /bin/sh "$launcher"
+
+      - name: Diagnose Codex bwrap compatibility
+        if: always()
+        shell: bash
+        env:
+          PROBE_BOUNDARY: ${{ matrix.boundary }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          BEFORE_NOTIFY: ${{ steps.host_before.outputs.notify }}
+          BEFORE_DBUS: ${{ steps.host_before.outputs.dbus }}
+          BEFORE_RESOLVED_B64: ${{ steps.host_before.outputs.resolved_b64 }}
+        run: |
+          set -euo pipefail
+
+          marker="$RUNNER_TEMP/codex-bwrap-$PROBE_BOUNDARY"
+          test -s "${marker}-security-status"
+          test -s "${marker}-sudo-available"
+          test -s "${marker}-sockets.json"
+          test -s "${marker}-sandbox.rc"
+          test -f "${marker}-sandbox.stdout"
+          test -f "${marker}-sandbox.stderr"
+
+          test "$(cat "${marker}-sudo-available")" = false
+          grep -Fxq 'NoNewPrivs=1' "${marker}-security-status"
+          grep -Fxq 'Groups=' "${marker}-security-status"
+          for field in CapInh CapPrm CapEff CapBnd CapAmb; do
+            grep -Fxq "$field=0000000000000000" "${marker}-security-status"
+          done
+          jq -e '.af_inet == "available"' "${marker}-sockets.json" >/dev/null
+
+          sandbox_rc="$(cat "${marker}-sandbox.rc")"
+          case "$PROBE_BOUNDARY" in
+            current)
+              jq -e '.af_unix == "denied"' "${marker}-sockets.json" >/dev/null
+              test "$sandbox_rc" -ne 0
+              grep -Fq 'bwrap: loopback: Failed to look up lo: Address family not supported by protocol' \
+                "${marker}-sandbox.stderr"
+              ;;
+            af-unix-control)
+              jq -e '.af_unix == "available"' "${marker}-sockets.json" >/dev/null
+              test "$sandbox_rc" -eq 0
+              grep -Fxq 'codex-bwrap-probe-ok' "${marker}-sandbox.stdout"
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+          after_notify="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          after_dbus="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          after_resolved="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState \
+              --property=SubState \
+              --property=MainPID \
+              --property=NRestarts
+          )"
+
+          test "$after_notify" = "$BEFORE_NOTIFY"
+          test "$after_dbus" = "$BEFORE_DBUS"
+          test "$(printf '%s' "$after_resolved" | base64 -w0)" = "$BEFORE_RESOLVED_B64"
+          grep -Fxq 'ActiveState=active' <<< "$after_resolved"
+          grep -Fxq 'SubState=running' <<< "$after_resolved"
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          printf 'PROBE_DATA bwrap boundary=%s probe_outcome=%s sandbox_rc=%s af_unix=%s af_inet=%s host_integrity=unchanged\n' \
+            "$PROBE_BOUNDARY" \
+            "$PROBE_OUTCOME" \
+            "$sandbox_rc" \
+            "$(jq -r .af_unix "${marker}-sockets.json")" \
+            "$(jq -r .af_inet "${marker}-sockets.json")"
