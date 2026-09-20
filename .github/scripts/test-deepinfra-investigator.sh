@@ -113,6 +113,9 @@ seen = []
 
 def fake_chat(model, messages, tools):
     assert model == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert messages[0]["role"] == "user"
+    assert all(message.get("role") != "system" for message in messages)
+    assert "UNTRUSTED DATA" in messages[0]["content"]
     assert any(t["function"]["name"] == "submit_analysis" for t in tools)
     return responses.pop(0)
 
