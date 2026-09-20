@@ -169,6 +169,7 @@ jobs:
           fixture="$RUNNER_TEMP/codex-bwrap-runner-control.txt"
           printf 'codex-bwrap-probe-ok\n' > "$fixture"
 
+          set +e
           env \
             -u CODEX_MANAGED_BY_BUN \
             -u CODEX_MANAGED_BY_PNPM \
@@ -181,7 +182,13 @@ jobs:
               /usr/bin/cat "$fixture" \
             > "$RUNNER_TEMP/codex-bwrap-runner-control.stdout" \
             2> "$RUNNER_TEMP/codex-bwrap-runner-control.stderr"
+          rc=$?
+          set -e
 
+          printf 'PROBE_DATA runner-control rc=%s\n' "$rc"
+          cat "$RUNNER_TEMP/codex-bwrap-runner-control.stdout" || true
+          cat "$RUNNER_TEMP/codex-bwrap-runner-control.stderr" >&2 || true
+          test "$rc" -eq 0
           grep -Fxq 'codex-bwrap-probe-ok' "$RUNNER_TEMP/codex-bwrap-runner-control.stdout"
 
       - name: Capture host integrity baseline
@@ -395,6 +402,9 @@ jobs:
           jq -e '.af_inet == "available"' "${marker}-sockets.json" >/dev/null
 
           sandbox_rc="$(cat "${marker}-sandbox.rc")"
+          printf 'PROBE_DATA service-sandbox boundary=%s rc=%s\n' "$PROBE_BOUNDARY" "$sandbox_rc"
+          cat "${marker}-sandbox.stdout" || true
+          cat "${marker}-sandbox.stderr" >&2 || true
           case "$PROBE_BOUNDARY" in
             current)
               jq -e '.af_unix == "denied"' "${marker}-sockets.json" >/dev/null
