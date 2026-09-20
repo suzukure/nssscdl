@@ -389,6 +389,79 @@ jobs:
           cat > "$RUNNER_TEMP/run-native-codex.sh" <<'CODEX_RUN'
           #!/bin/sh
           set -eu
+
+          expected_uid="${1:?expected uid is required}"
+          expected_gid="${2:?expected gid is required}"
+
+          actual_uid="$(/usr/bin/id -u)"
+          if [ "$actual_uid" != "$expected_uid" ]; then
+            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            exit 41
+          fi
+
+          actual_gid="$(/usr/bin/id -g)"
+          if [ "$actual_gid" != "$expected_gid" ]; then
+            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            exit 42
+          fi
+
+          groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
+          if [ -n "$groups_status" ]; then
+            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            exit 43
+          fi
+
+          no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
+          if [ "$no_new_privs" != 1 ]; then
+            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            exit 44
+          fi
+
+          for field in CapInh CapPrm CapEff CapBnd CapAmb; do
+            value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
+            if [ "$value" != 0000000000000000 ]; then
+              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              exit 45
+            fi
+          done
+
+          if [ ! -x /usr/bin/sudo ]; then
+            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            exit 39
+          fi
+          if /usr/bin/sudo -n true >/dev/null 2>&1; then
+            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            exit 40
+          fi
+
+          /usr/bin/python3 - <<'PY'
+          import socket
+          import sys
+
+          try:
+              sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          except OSError:
+              pass
+          else:
+              sock.close()
+              print(
+                  "Service-local hardening preflight unexpectedly allows AF_UNIX.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(46)
+
+          try:
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(47)
+          else:
+              sock.close()
+          PY
+
           exec env \
             -u CODEX_MANAGED_BY_BUN \
             -u CODEX_MANAGED_BY_PNPM \
@@ -412,33 +485,23 @@ jobs:
             env -u ENV -u BASH_ENV -u SHELLOPTS \
             /bin/sh -c '
               set -eu
-              action_main="$1"
-              runner_user="$2"
-              uid="$3"
-              nobody_gid="$4"
-              runner_home="$5"
-              runner_path="$6"
-              runner_temp="$7"
-              node="$8"
-              credentials="$9"
-              runtime_max_sec="${10}"
-              unit="${11}"
-              launcher="${12}"
-              code_workspace="${13}"
-              codex_home="${14}"
-              codex_final="${15}"
-              codex_prompt_file="${16}"
-              codex_model="${17}"
-              codex_native="${18}"
-              codex_package_root="${19}"
-              originator="${20}"
-
-              /usr/bin/env -u NODE_OPTIONS "$node" "$action_main" \
-                drop-sudo \
-                --root-phase \
-                --user "$runner_user" \
-                --group sudo \
-                --runner-credentials "$credentials"
+              runner_user="$1"
+              uid="$2"
+              nobody_gid="$3"
+              runner_home="$4"
+              runner_path="$5"
+              runner_temp="$6"
+              runtime_max_sec="$7"
+              unit="$8"
+              launcher="$9"
+              code_workspace="${10}"
+              codex_home="${11}"
+              codex_final="${12}"
+              codex_prompt_file="${13}"
+              codex_model="${14}"
+              codex_native="${15}"
+              codex_package_root="${16}"
+              originator="${17}"
 
               set +e
               /usr/bin/systemd-run \
@@ -451,6 +514,10 @@ jobs:
                 --property=TimeoutStopSec=5s \
                 --property=KillMode=control-group \
                 --property=SendSIGKILL=yes \
+                --property=NoNewPrivileges=yes \
+                --property="RestrictAddressFamilies=~AF_UNIX" \
+                --property=SystemCallArchitectures=native \
+                --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" \
                 /usr/bin/setpriv \
                   --reuid="$uid" \
                   --regid="$nobody_gid" \
@@ -473,7 +540,7 @@ jobs:
                   "CODEX_NATIVE=$codex_native" \
                   "CODEX_PACKAGE_ROOT=$codex_package_root" \
                   "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
-                  /bin/sh "$launcher"
+                  /bin/sh "$launcher" "$uid" "$nobody_gid"
               rc=$?
               set -e
 
@@ -484,15 +551,12 @@ jobs:
                 --lines=200 || true
               exit "$rc"
             ' codex-developer \
-            "$ACTION_MAIN" \
             "$runner_user" \
             "$uid" \
             "$nobody_gid" \
             "$runner_home" \
             "$runner_path" \
             "$RUNNER_TEMP" \
-            "$(command -v node)" \
-            "$RUNNER_CREDENTIALS" \
             "$CODEX_RUNTIME_MAX_SEC" \
             "$unit" \
             "$RUNNER_TEMP/run-native-codex.sh" \
