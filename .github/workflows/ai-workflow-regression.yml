@@ -188,8 +188,13 @@ jobs:
           printf 'PROBE_DATA runner-control rc=%s\n' "$rc"
           cat "$RUNNER_TEMP/codex-bwrap-runner-control.stdout" || true
           cat "$RUNNER_TEMP/codex-bwrap-runner-control.stderr" >&2 || true
-          test "$rc" -eq 0
-          grep -Fxq 'codex-bwrap-probe-ok' "$RUNNER_TEMP/codex-bwrap-runner-control.stdout"
+
+          # Direct standalone sandboxing on this GitHub-hosted runner is not a
+          # success control: it gets past loopback lookup and then lacks the
+          # privilege needed for RTM_NEWADDR. Record that fixed baseline, then
+          # continue to the service-local comparison below.
+          test "$rc" -ne 0
+          grep -Fq 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'             "$RUNNER_TEMP/codex-bwrap-runner-control.stderr"
 
       - name: Capture host integrity baseline
         id: host_before
@@ -414,8 +419,15 @@ jobs:
               ;;
             af-unix-control)
               jq -e '.af_unix == "available"' "${marker}-sockets.json" >/dev/null
-              test "$sandbox_rc" -eq 0
-              grep -Fxq 'codex-bwrap-probe-ok' "${marker}-sandbox.stdout"
+              test "$sandbox_rc" -ne 0
+              # With only RestrictAddressFamilies=~AF_UNIX removed, bwrap
+              # must progress beyond if_nametoindex("lo") and reach the same
+              # RTM_NEWADDR limitation observed in the runner baseline.
+              if grep -Fq 'bwrap: loopback: Failed to look up lo: Address family not supported by protocol'                 "${marker}-sandbox.stderr"; then
+                echo 'AF_UNIX control still failed at loopback lookup.' >&2
+                exit 1
+              fi
+              grep -Fq 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'                 "${marker}-sandbox.stderr"
               ;;
             *)
               exit 1
