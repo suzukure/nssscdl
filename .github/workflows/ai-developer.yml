@@ -407,6 +407,10 @@ jobs:
             test "$value" = 0000000000000000
           done
 
+          if [ ! -x /usr/bin/sudo ]; then
+            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            exit 39
+          fi
           if /usr/bin/sudo -n true >/dev/null 2>&1; then
             echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
             exit 40
@@ -513,6 +517,11 @@ jobs:
               rc=$?
               set -e
 
+              /usr/bin/journalctl \
+                --unit="$unit" \
+                --no-pager \
+                --output=cat \
+                --lines=200 || true
               exit "$rc"
             ' codex-developer \
             "$runner_user" \
