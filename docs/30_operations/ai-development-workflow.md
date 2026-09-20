@@ -96,6 +96,7 @@ Repository secrets:
 - `DEV_APP_PRIVATE_KEY`
 - `REVIEW_APP_PRIVATE_KEY`
 - `OPENAI_API_KEY`
+- `DEEPINFRA_API_KEY`（DeepInfra Investigator専用。read-only調査workflowのDeepInfra API call stepだけで使用し、Issue・PR・ログ・artifactへ値を出力しない）
 - `NOTIFICATION_WEBHOOK_URL`（人間通知用のDiscord Webhook URL。未設定でもGitHub上の停止・ラベル付与は行う）
 
 Repository variables:
@@ -113,6 +114,14 @@ Repository variables:
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
 AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は追加の判定を必要としないためinlineのままとする。
+
+例外として、DeepInfra Investigatorは任意モデルIDをIssue入力やRepository variableから実行させないことをsecurity boundaryとするため、許可するDeepSeekモデルを `.github/scripts/deepinfra-investigator.py` の `ALLOWED_MODELS` で固定する。workflow側のcommand→model対応とpreflight allowlistはentry boundaryでの多層防御として同じ許可集合を意図的に重複保持し、`test-deepinfra-investigator.sh` で一致を回帰検証する。DeepInfra Investigatorのモデル変更は通常のモデル切替ではなくsecurity allowlist変更として扱い、Issueで範囲を確定しCode Owner review対象の差分として反映する。
+
+### DeepInfra Investigator
+
+DeepInfra Investigatorは、信頼済みIssue上のコメント `/deepseek analyze` または `/deepseek analyze v4.1` で起動する。コメント投稿者とIssue作成者はいずれも `OWNER` / `MEMBER` / `COLLABORATOR` のいずれかでなければならない。通常コマンドは `DeepSeek-V4-Flash-0731`、`v4.1` 付きコマンドはallowlist済みの `DeepSeek-V4.1-Flash` を選ぶ。
+
+調査workflowは `actions: read` / `contents: read` / `issues: read` のread-only権限だけを持ち、repository write、Issue/PR write、workflow dispatch、任意shell実行をモデルへ提供しない。結果はActions Step Summaryと7日保持artifactへ出力する。API失敗、schema不正、context取得失敗等はfail-closedとし、自動probe実行やproduction AI Developerの変更へ進めない。詳細な実行契約とtool allowlistの正本は `.github/workflows/deepinfra-investigator.yml` と `.github/scripts/deepinfra-investigator.py` とする。
 
 ## GitHub Apps
 
