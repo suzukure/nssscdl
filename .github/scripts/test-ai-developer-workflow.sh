@@ -358,17 +358,543 @@ grep -Fq 'Service-local hardening root preflight protected UNIX socket baseline 
 grep -Fq 'could not stat owner for $path.' "$developer_step"
 grep -Fq 'could not stat dev:inode for $path.' "$developer_step"
 grep -Fq 'exit 50' "$developer_step"
-grep -Fq 'chmod 700 "$RUNNER_TEMP/run-native-codex.sh"' "$developer_step"
-unexpected_permission_mutations="$(
-  grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$developer_step" |
-    grep -Fv 'chmod 700 "$RUNNER_TEMP/run-native-codex.sh"' ||
+permission_mutation_lines="$(
+  grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$developer_step" ||
     true
 )"
-if [ -n "$unexpected_permission_mutations" ]; then
-  echo 'Production developer path must not mutate host permissions or ACLs.' >&2
-  printf '%s\n' "$unexpected_permission_mutations" >&2
+test "$(printf '%s\n' "$permission_mutation_lines" | grep -c .)" -eq 1
+printf '%s\n' "$permission_mutation_lines" |
+  grep -Eq '^[[:space:]]*chmod 700 "\$RUNNER_TEMP/run-native-codex\.sh"[[:space:]]*if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$developer_step"; then
+  echo 'Production developer path must not mutate sudoers or group membership.' >&2
   exit 1
 fi
+grep -Fq '/usr/bin/systemd-run ' "$developer_step"
+grep -Fq -- '--wait ' "$developer_step"
+grep -Fq -- '--collect ' "$developer_step"
+grep -Fq -- '--property=Type=exec ' "$developer_step"
+grep -Fq -- '--property="RuntimeMaxSec=${runtime_max_sec}s" ' "$developer_step"
+grep -Fq -- '--property=TimeoutStopSec=5s ' "$developer_step"
+grep -Fq -- '--property=KillMode=control-group ' "$developer_step"
+grep -Fq -- '--property=SendSIGKILL=yes ' "$developer_step"
+grep -Fq -- '--property=NoNewPrivileges=yes ' "$developer_step"
+if grep -Fq 'RestrictAddressFamilies=~AF_UNIX' "$developer_step"; then
+  echo 'Production developer path must keep AF_UNIX available for the Codex sandbox.' >&2
+  exit 1
+fi
+grep -Fq -- '--property="InaccessiblePaths=$inaccessible_paths" ' "$developer_step"
+grep -Fq -- '--property=SystemCallArchitectures=native ' "$developer_step"
+grep -Fq -- '--property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" ' "$developer_step"
+grep -Fq '/usr/bin/setpriv ' "$developer_step"
+grep -Fq -- '-- /usr/bin/env -i ' "$developer_step"
+grep -Fq -- '--reuid="$uid" ' "$developer_step"
+grep -Fq -- '--regid="$nobody_gid" ' "$developer_step"
+grep -Fq -- '--clear-groups ' "$developer_step"
+grep -Fq -- '--no-new-privs ' "$developer_step"
+grep -Fq -- '--bounding-set=-all ' "$developer_step"
+grep -Fq -- '--inh-caps=-all ' "$developer_step"
+grep -Fq -- '--ambient-caps=-all ' "$developer_step"
+grep -Fq 'expected_uid="${1:?expected uid is required}"' "$developer_step"
+grep -Fq 'expected_gid="${2:?expected gid is required}"' "$developer_step"
+grep -Fq 'actual_uid="$(/usr/bin/id -u)"' "$developer_step"
+grep -Fq 'Service-local hardening preflight UID mismatch:' "$developer_step"
+grep -Fq 'exit 41' "$developer_step"
+grep -Fq 'actual_gid="$(/usr/bin/id -g)"' "$developer_step"
+grep -Fq 'Service-local hardening preflight GID mismatch:' "$developer_step"
+grep -Fq 'exit 42' "$developer_step"
+grep -Fq "/^Groups:/" "$developer_step"
+grep -Fq 'Service-local hardening preflight retained supplementary groups:' "$developer_step"
+grep -Fq 'exit 43' "$developer_step"
+grep -Fq "/^NoNewPrivs:/" "$developer_step"
+grep -Fq 'Service-local hardening preflight NoNewPrivs mismatch:' "$developer_step"
+grep -Fq 'exit 44' "$developer_step"
+grep -Fq '/proc/self/status' "$developer_step"
+grep -Fq 'for field in CapInh CapPrm CapEff CapBnd CapAmb; do' "$developer_step"
+grep -Fq 'Service-local hardening preflight capability is nonzero:' "$developer_step"
+grep -Fq 'exit 45' "$developer_step"
+grep -Fq 'if [ ! -x /usr/bin/sudo ]; then' "$developer_step"
+grep -Fq 'exit 39' "$developer_step"
+grep -Fq "/usr/bin/sudo -n true" "$developer_step"
+grep -Fq 'exit 40' "$developer_step"
+grep -Fq 'socket.AF_UNIX' "$developer_step"
+grep -Fq 'Service-local hardening preflight blocks AF_UNIX required by Codex sandbox:' "$developer_step"
+grep -Fq 'SystemExit(46)' "$developer_step"
+grep -Fq 'socket.AF_INET' "$developer_step"
+grep -Fq 'SystemExit(47)' "$developer_step"
+grep -Fq 'PROTECTED_UNIX_SOCKET_PATHS' "$developer_step"
+grep -Fq 'PROTECTED_UNIX_SOCKET_HOST_IDS' "$developer_step"
+grep -Fq 'raw_host_ids = os.environ.get("PROTECTED_UNIX_SOCKET_HOST_IDS", "")' "$developer_step"
+grep -Fq 'host_ids[path] = (dev, ino)' "$developer_step"
+grep -Fq '(st.st_dev, st.st_ino) == host_ids[path]' "$developer_step"
+grep -Fq 'protected socket appeared after host baseline:' "$developer_step"
+grep -Fq 'len(protected_paths) != 13' "$developer_step"
+grep -Fq 'len(set(protected_paths)) != 13' "$developer_step"
+grep -Fq 'not path.startswith("/run/")' "$developer_step"
+grep -Fq 'stat.S_IMODE(st.st_mode) != 0' "$developer_step"
+grep -Fq 'os.access(path, os.R_OK)' "$developer_step"
+grep -Fq 'os.access(path, os.W_OK)' "$developer_step"
+grep -Fq 'os.access(path, os.X_OK)' "$developer_step"
+grep -Fq 'SystemExit(48)' "$developer_step"
+grep -Fq 'os.walk(' "$developer_step"
+grep -Fq '"/run",' "$developer_step"
+grep -Fq 'st.st_uid == 0' "$developer_step"
+grep -Fq 'Service-local hardening preflight found writable root-owned UNIX socket(s):' "$developer_step"
+grep -Fq 'SystemExit(49)' "$developer_step"
+grep -Fq 'Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.' "$developer_step"
+grep -Fq '/bin/sh "$launcher" "$uid" "$nobody_gid"' "$developer_step"
+grep -Fq '"HOME=$runner_home"' "$developer_step"
+grep -Fq '"USER=$runner_user"' "$developer_step"
+grep -Fq '"LOGNAME=$runner_user"' "$developer_step"
+grep -Fq '"PATH=$runner_path"' "$developer_step"
+grep -Fq '"RUNNER_TEMP=$runner_temp"' "$developer_step"
+grep -Fq '"GITHUB_WORKSPACE=$code_workspace"' "$developer_step"
+grep -Fq '"CODEX_HOME=$codex_home"' "$developer_step"
+grep -Fq '"CODEX_FINAL=$codex_final"' "$developer_step"
+grep -Fq '"CODEX_PROMPT_FILE=$codex_prompt_file"' "$developer_step"
+grep -Fq '"CODEX_MODEL=$codex_model"' "$developer_step"
+grep -Fq '"CODEX_NATIVE=$codex_native"' "$developer_step"
+grep -Fq '"CODEX_PACKAGE_ROOT=$codex_package_root"' "$developer_step"
+grep -Fq '"CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator"' "$developer_step"
+grep -Fq '"PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths"' "$developer_step"
+grep -Fq '"PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids"' "$developer_step"
+grep -Fq -- '-u PROTECTED_UNIX_SOCKET_PATHS \' "$developer_step"
+grep -Fq -- '-u PROTECTED_UNIX_SOCKET_HOST_IDS \' "$developer_step"
+grep -Fq 'CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" ' "$developer_step"
+grep -Fq 'CODEX_MANAGED_BY_NPM=1 ' "$developer_step"
+grep -Fq '"$CODEX_NATIVE" exec ' "$developer_step"
+grep -Fq -- '--skip-git-repo-check ' "$developer_step"
+grep -Fq -- '--cd "$GITHUB_WORKSPACE" ' "$developer_step"
+grep -Fq -- '--output-last-message "$CODEX_FINAL" ' "$developer_step"
+grep -Fq -- '--model "$CODEX_MODEL" ' "$developer_step"
+grep -Fq -- "--config 'model_reasoning_effort=\"medium\"' \\" "$developer_step"
+grep -Fq -- "--config 'default_permissions=\":workspace\"' \\" "$developer_step"
+grep -Fq '< "$CODEX_PROMPT_FILE"' "$developer_step"
+if grep -Fq 'exec codex exec' "$developer_step"; then
+  echo 'Hardened developer step must bypass the npm Node launcher.' >&2
+  exit 1
+fi
+if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key|DEV_APP_PRIVATE_KEY|NOTIFICATION_WEBHOOK_URL' "$developer_step"; then
+  echo 'Hardened Codex developer service must not receive repository secrets.' >&2
+  exit 1
+fi
+developer_run="$test_dir/Run-Codex-developer-run.sh"
+awk '
+  found { print }
+  $0 == "        run: |" { found = 1 }
+' "$developer_step" > "$developer_run"
+test -s "$developer_run"
+if grep -Fq '${{' "$developer_run"; then
+  echo 'Hardened Codex run body must not interpolate GitHub expressions.' >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$developer_step"; then
+  echo 'Hardened Codex developer step must fail closed.' >&2
+  exit 1
+fi
+
+grep -Fqx '        timeout-minutes: 30' "$followup_step"
+grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_step"
+grep -Fqx '          codex-version: 0.153.4' "$followup_step"
+
+prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
+setup_line="$(grep -nF '      - name: Setup Codex developer runtime' "$workflow" | cut -d: -f1)"
+resolver_line="$(grep -nF '      - name: Resolve trusted Codex developer runtime' "$workflow" | cut -d: -f1)"
+prompt_line="$(grep -nF '      - name: Prepare fixed Codex developer prompt' "$workflow" | cut -d: -f1)"
+developer_line="$(grep -nF '      - name: Run Codex developer' "$workflow" | cut -d: -f1)"
+gate_line="$(grep -nF '      - name: Gate requirement changes' "$workflow" | cut -d: -f1)"
+if [ -z "$prepare_line" ] || [ -z "$setup_line" ] || [ -z "$resolver_line" ] || [ -z "$prompt_line" ] ||
+   [ -z "$developer_line" ] || [ -z "$gate_line" ] ||
+   [ "$prepare_line" -ge "$setup_line" ] || [ "$setup_line" -ge "$resolver_line" ] ||
+   [ "$resolver_line" -ge "$prompt_line" ] || [ "$prompt_line" -ge "$developer_line" ] ||
+   [ "$developer_line" -ge "$gate_line" ]; then
+  echo 'Codex setup, trusted resolution, fixed prompt, hardened execution, and requirement gate order is invalid.' >&2
+  exit 1
+fi
+
+marker_response="$test_dir/marker-response.md"
+printf '%s\n' '[REQUIREMENTS_CHANGE_REQUIRED]' > "$marker_response"
+bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"
+
+printf '%s\r\n' '[REQUIREMENTS_CHANGE_REQUIRED]' > "$marker_response"
+bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"
+
+assert_marker_is_not_detected() {
+  local fixture_name="${1:?fixture name is required}"
+  local response="${2:?response is required}"
+
+  printf '%s\n' "$response" > "$marker_response"
+  if bash "$repo_root/.github/scripts/has-requirements-change-marker.sh" "$marker_response"; then
+    echo "Expected $fixture_name not to trigger a requirements-change pause." >&2
+    exit 1
+  fi
+}
+
+assert_marker_is_not_detected backtick '`[REQUIREMENTS_CHANGE_REQUIRED]`'
+assert_marker_is_not_detected indented '  [REQUIREMENTS_CHANGE_REQUIRED]'
+assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIRED]'
+assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
+assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
+
+extract_workflow_step() {
+  local step_name="${1:?step name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v step_name="$step_name" '
+    $0 == "      - name: " step_name { in_step = 1 }
+    in_step && /^      - name: / && $0 != "      - name: " step_name { exit }
+    in_step && /^  [[:alnum:]_-]+:$/ { exit }
+    in_step { print }
+  ' "$workflow" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract the $step_name step." >&2
+    exit 1
+  fi
+}
+
+extract_workflow_step_run() {
+  local step_path="${1:?step path is required}"
+  local output_path="${2:?output path is required}"
+
+  awk '
+    /^        run: \|$/ { in_run = 1; next }
+    in_run { line = $0; sub(/^          /, "", line); print line }
+  ' "$step_path" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract the run body from $step_path." >&2
+    exit 1
+  fi
+}
+
+# The follow-up notification runs after the PR checkout, so it must use the
+# trusted-base helper copied during context bootstrap rather than PR-head code.
+followup_workflow="$test_dir/respond-to-claude.yml"
+sed -n '/^  respond-to-claude:/,$p' "$workflow" > "$followup_workflow"
+bootstrap_notify_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | cut -d: -f1)"
+notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
+if [ -z "$bootstrap_notify_line" ] || [ -z "$notify_step_line" ] || [ "$bootstrap_notify_line" -ge "$notify_step_line" ]; then
+  echo 'Follow-up requirement escalation notification is not bootstrapped from the trusted base.' >&2
+  exit 1
+fi
+
+# Both Codex requirement-change gates must fail closed for helper and final
+# response failures, and only their successful gates may reach repository write.
+grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$workflow"
+grep -Fq 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.' "$workflow"
+if [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 2 ]; then
+  echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
+  exit 1
+fi
+if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$workflow")" -ne 2 ]; then
+  echo 'Both Codex requirement-change gates must fail closed when the final response is missing or empty.' >&2
+  exit 1
+fi
+grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$workflow"
+grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$workflow"
+grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$workflow"
+grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
+
+gh() {
+  case "$1 $2" in
+    'pr view')
+      if [ "${MOCK_PR_VIEW_FAIL:-false}" = true ] \
+          || { [ "${MOCK_PR_CLOSING_FETCH_FAIL:-false}" = true ] && [[ "$*" == *'--json closingIssuesReferences'* ]]; }; then
+        return 1
+      fi
+      author='dev[bot]'
+      reviews='[]'
+      labels='[]'
+      case "${MOCK_CASE:-valid}" in
+        human-author) author='owner' ;;
+        app-author)
+          author='app/dev'
+          reviews='[{"author":{"login":"app/review"},"state":"CHANGES_REQUESTED"}]'
+          ;;
+        app-three-reviews)
+          author='app/dev'
+          reviews='[{"author":{"login":"app/review"},"state":"CHANGES_REQUESTED"},{"author":{"login":"app/review"},"state":"CHANGES_REQUESTED"},{"author":{"login":"app/review"},"state":"CHANGES_REQUESTED"}]'
+          ;;
+        three-reviews)
+          reviews='[{"author":{"login":"review[bot]"},"state":"CHANGES_REQUESTED"},{"author":{"login":"review[bot]"},"state":"CHANGES_REQUESTED"},{"author":{"login":"review[bot]"},"state":"CHANGES_REQUESTED"}]'
+          ;;
+        human-label) labels='[{"name":"human-review-required"}]' ;;
+      esac
+      jq -cn --arg author "$author" --argjson reviews "$reviews" --argjson labels "$labels" \
+        '{author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
+      ;;
+    'api repos/owner/repo/issues/36')
+      [ "${MOCK_API_FAIL:-false}" != true ] || return 1
+      if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
+        printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
+      else
+        printf '%s\n' '{"labels":[]}'
+      fi
+      ;;
+    'label create'|'issue edit'|'pr comment')
+      printf '%s\n' "$*" >> "${MOCK_GH_LOG:-/dev/null}"
+      ;;
+    'issue view')
+      [ "${MOCK_ENTRY_FETCH_FAIL:-false}" != true ] || return 1
+      if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
+        printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
+      else
+        printf '%s\n' '{"labels":[]}'
+      fi
+      ;;
+    'pr list')
+      [ "${MOCK_ENTRY_FETCH_FAIL:-false}" != true ] || return 1
+      if [ "${MOCK_PR_PAUSED:-false}" = true ]; then
+        printf '%s\n' '[{"number":37,"labels":[{"name":"human-review-required"}]}]'
+      else
+        printf '%s\n' '[{"number":37,"labels":[]}]'
+      fi
+      ;;
+    *)
+      echo "Unexpected gh invocation: $*" >&2
+      return 2
+      ;;
+  esac
+}
+export -f gh
+
+review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+
+# The trusted-base follow-up gate must resolve closing Issues through the pause
+# helper, synchronize both labels, and record exactly one reason on the PR.
+followup_gate_step="$test_dir/gate-automated-follow-up.yml"
+followup_gate_script="$test_dir/gate-automated-follow-up.sh"
+extract_workflow_step 'Gate automated follow-up' "$followup_gate_step"
+if grep -Eq 'HEAD_REF|head\.ref|ai/issue-' "$followup_gate_step"; then
+  echo 'Automated follow-up gate must not derive a closing Issue from the PR branch.' >&2
+  exit 1
+fi
+extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
+
+# The fixture verifies that, even when its checkout root differs from this
+# repository root, the gate resolves helpers only beneath that checkout's
+# .github directory. Existing bootstrap assertions cover the base-derived
+# trust boundary. Invoke the extracted script from outside that checkout root.
+followup_gate_workdir="$test_dir/gate-automated-follow-up-workdir"
+mkdir "$followup_gate_workdir"
+ln -s "$repo_root/.github" "$followup_gate_workdir/.github"
+
+assert_followup_gate_pause() {
+  local fixture_name="${1:?fixture name is required}"
+  local mock_case="${2:?mock case is required}"
+  local expected_continue="${3:?expected continue value is required}"
+  local output_path="$test_dir/$fixture_name.output"
+  local log_path="$test_dir/$fixture_name.log"
+
+  : > "$output_path"
+  : > "$log_path"
+  MOCK_CASE="$mock_case" MOCK_GH_LOG="$log_path" \
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
+    bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
+  grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$log_path"
+  grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$log_path"
+  [ "$(grep -Fc 'pr comment 37 --repo owner/repo --body ' "$log_path")" -eq 1 ]
+  grep -Fxq "continue=$expected_continue" "$output_path"
+}
+
+assert_followup_gate_pause followup-continue valid true
+assert_followup_gate_pause followup-escalate three-reviews false
+
+: > "$test_dir/followup-pause-failure.output"
+: > "$test_dir/followup-pause-failure.log"
+if MOCK_CASE=valid MOCK_PR_CLOSING_FETCH_FAIL=true \
+    MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
+    GITHUB_OUTPUT="$test_dir/followup-pause-failure.output" \
+    bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"; then
+  echo 'Expected automated follow-up to fail closed when closing Issue lookup fails.' >&2
+  exit 1
+fi
+if [ -s "$test_dir/followup-pause-failure.log" ]; then
+  echo 'Closing Issue lookup failure must not perform any GitHub write.' >&2
+  exit 1
+fi
+
+for fixture in valid app-author; do
+  followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automatic Claude re-review is paused."))' <<< "$followup" > /dev/null
+done
+followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
+followup="$(MOCK_CASE=valid MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
+for fixture in three-reviews app-three-reviews; do
+  followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+  jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
+done
+followup="$(MOCK_CASE=human-author bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
+marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| --- END REVIEW SUMMARY DATA ---\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$marker_body")"
+jq -e '.continue == false and .escalate == true' <<< "$followup" > /dev/null
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
+if MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body"; then
+  echo 'Expected follow-up gate to fail closed when closing Issue lookup fails.' >&2
+  exit 1
+fi
+
+MOCK_GH_LOG="$test_dir/human-pause.log"
+export MOCK_GH_LOG
+bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo 36 37
+grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+MOCK_GH_LOG="$test_dir/human-pause-closing.log"
+export MOCK_GH_LOG
+bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo - 37
+grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_GH_LOG"
+MOCK_GH_LOG="$test_dir/human-pause-failure.log"
+: > "$MOCK_GH_LOG"
+export MOCK_GH_LOG
+if MOCK_PR_VIEW_FAIL=true bash "$repo_root/.github/scripts/apply-human-pause.sh" owner/repo - 37; then
+  echo 'Expected pause synchronization to fail when PR lookup fails.' >&2
+  exit 1
+fi
+if grep -Eq '^(label create|issue edit) ' "$MOCK_GH_LOG"; then
+  echo 'PR lookup failure must not partially create or apply pause labels.' >&2
+  exit 1
+fi
+unset MOCK_GH_LOG
+
+entry="$(bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+jq -e '.continue == true' <<< "$entry" > /dev/null
+entry="$(MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+jq -e '.continue == false and (.reason | contains("Issue"))' <<< "$entry" > /dev/null
+entry="$(MOCK_PR_PAUSED=true bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+jq -e '.continue == false and (.reason | contains("PR"))' <<< "$entry" > /dev/null
+if MOCK_ENTRY_FETCH_FAIL=true bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36; then
+  echo 'Expected Issue-entry gate to fail when GitHub lookup fails.' >&2
+  exit 1
+fi
+
+# Extract and exercise the actual Issue-entry publish step with all Git/GitHub
+# writes mocked. Creating a PR must preserve Draft until a human requests
+# review; updating an existing PR must not create another PR or change its
+# stage.
+publish_step="$test_dir/publish-issue-pr.sh"
+publish_step_source="$test_dir/publish-issue-pr.yml"
+extract_workflow_step 'Commit, push, and open or update PR' "$publish_step_source"
+extract_workflow_step_run "$publish_step_source" "$publish_step"
+for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure commit-a-regression commit-am-regression; do
+  (
+    case_dir="$test_dir/publish-$publish_case"
+    mkdir "$case_dir"
+    cd "$case_dir"
+    printf '%s\n' 'Related references and validation checked.' > final.md
+    export PUBLISH_CASE="$publish_case" PUBLISH_LOG="$case_dir/calls.log"
+    export PUBLISH_BODY="$case_dir/body.md"
+    export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
+    export ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
+    publish_script="$publish_step"
+    case "$PUBLISH_CASE" in
+      commit-a-regression)
+        publish_script="$case_dir/publish-with-commit-a.sh"
+        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -a -m "Implement #${ISSUE_NUMBER} with Codex"/' \
+          "$publish_step" > "$publish_script"
+        ;;
+      commit-am-regression)
+        publish_script="$case_dir/publish-with-commit-am.sh"
+        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -am "Implement #${ISSUE_NUMBER} with Codex"/' \
+          "$publish_step" > "$publish_script"
+        ;;
+    esac
+    git() {
+      printf 'git %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1" in
+        config) return 0 ;;
+        commit)
+          if [ "$#" -ne 3 ] || [ "$2" != '-m' ] || [ "$3" != 'Implement #36 with Codex' ]; then
+            echo 'Publish must not commit unguarded worktree changes.' >&2
+            return 2
+          fi
+          return 0
+          ;;
+        add)
+          echo 'Publish must not stage post-guard worktree changes.' >&2
+          return 2
+          ;;
+        diff) [ "$PUBLISH_CASE" = no-diff ] ;;
+        push) [ "$PUBLISH_CASE" != push-failure ] ;;
+        *) echo "Unexpected git call: $*" >&2; return 2 ;;
+      esac
+    }
+    gh() {
+      printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
+      case "$1 $2" in
+        'api /users/dev[bot]') echo 123 ;;
+        'pr list')
+          [ "$PUBLISH_CASE" != list-failure ] || return 1
+          case "$PUBLISH_CASE" in existing-*) echo 37 ;; esac
+          ;;
+        'pr create')
+          local saw_draft=false
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --draft) saw_draft=true ;;
+              --body-file) shift; cp "$1" "$PUBLISH_BODY" ;;
+            esac
+            shift
+          done
+          [ "$saw_draft" = true ] || return 2
+          [ "$PUBLISH_CASE" != create-failure ] || return 1
+          echo 'https://github.com/owner/repo/pull/37'
+          ;;
+        'pr comment'|'issue comment') return 0 ;;
+        *) echo "Unexpected gh call (including automatic stage change): $*" >&2; return 2 ;;
+      esac
+    }
+    export -f git gh
+    outcome=success
+    bash "$publish_script" > stdout 2> stderr || outcome=failure
+    assert_no_publish_call() {
+      if grep -Eq "$1" "$PUBLISH_LOG"; then
+        echo "Unexpected publish side effect in $PUBLISH_CASE: $1" >&2
+        exit 1
+      fi
+    }
+    case "$PUBLISH_CASE" in
+      *-failure|*-regression) [ "$outcome" = failure ] ;;
+      *) [ "$outcome" = success ] ;;
+    esac
+    case "$PUBLISH_CASE" in
+      new)
+        grep -Fq 'gh pr create ' "$PUBLISH_LOG"
+        grep -Fq -- '--draft' "$PUBLISH_LOG"
+        grep -Fq 'Closes #36' "$PUBLISH_BODY"
+        grep -Fq '## Review readiness' "$PUBLISH_BODY"
+        grep -Fq 'Ready for review' "$PUBLISH_BODY"
+        grep -Fq 'as Draft.' "$PUBLISH_LOG"
+        ;;
+      existing-*)
+        grep -Fq 'git push ' "$PUBLISH_LOG"
+        grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
+        assert_no_publish_call 'gh pr create '
+        ;;
+      no-diff)
+        grep -Fq 'produced no repository changes' "$PUBLISH_LOG"
+        assert_no_publish_call 'git (commit|push)|gh pr create'
+        ;;
+      push-failure|list-failure)
+        assert_no_publish_call 'gh pr create '
+        ;;
+      create-failure)
+        assert_no_publish_call 'Codex opened'
+        ;;
+      *-regression)
+        assert_no_publish_call 'git push|gh pr (create|comment)|gh issue comment'
+        ;;
+    esac
+    assert_no_publish_call 'gh pr (ready|edit)'
+  )
+done
+
+printf '%s\n' 'AI Developer workflow fixture tests passed'
+
 if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$developer_step"; then
   echo 'Production developer path must not mutate sudoers or group membership.' >&2
   exit 1
