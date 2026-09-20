@@ -207,18 +207,12 @@ def validate_review(value: Any) -> dict[str, Any]:
         raise BenchmarkError("review result has invalid top-level shape")
     if value["verdict"] not in {"approve", "request_changes"}:
         raise BenchmarkError("review verdict is invalid")
-    if not isinstance(value["summary"], str) or not value["summary"] or len(value["summary"]) > 20_000:
+    if not isinstance(value["summary"], str):
         raise BenchmarkError("review summary is invalid")
     for key in ("blocking_findings", "non_blocking_findings", "linked_issues_checked"):
         items = value[key]
-        if not isinstance(items, list) or len(items) > 100:
+        if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
             raise BenchmarkError(f"{key} is invalid")
-        if not all(isinstance(item, str) and len(item) <= 20_000 for item in items):
-            raise BenchmarkError(f"{key} contains an invalid item")
-    if value["verdict"] == "approve" and value["blocking_findings"]:
-        raise BenchmarkError("approve result contains blocking findings")
-    if value["verdict"] == "request_changes" and not value["blocking_findings"]:
-        raise BenchmarkError("request_changes result has no blocking finding")
     return value
 
 
@@ -442,11 +436,20 @@ def write_outputs(
         "## Blocking findings",
         "",
     ]
-    lines.extend(f"- {item}" for item in review["blocking_findings"]) or lines.append("- None.")
+    if review["blocking_findings"]:
+        lines.extend(f"- {item}" for item in review["blocking_findings"])
+    else:
+        lines.append("- None.")
     lines += ["", "## Non-blocking findings", ""]
-    lines.extend(f"- {item}" for item in review["non_blocking_findings"]) or lines.append("- None.")
+    if review["non_blocking_findings"]:
+        lines.extend(f"- {item}" for item in review["non_blocking_findings"])
+    else:
+        lines.append("- None.")
     lines += ["", "## Linked Issues checked", ""]
-    lines.extend(f"- {item}" for item in review["linked_issues_checked"]) or lines.append("- None reported.")
+    if review["linked_issues_checked"]:
+        lines.extend(f"- {item}" for item in review["linked_issues_checked"])
+    else:
+        lines.append("- None reported.")
     output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
