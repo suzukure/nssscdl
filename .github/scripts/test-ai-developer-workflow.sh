@@ -338,10 +338,33 @@ if grep -Fq 'drop-sudo ' "$developer_step" || grep -Fq -- '--root-phase ' "$deve
   echo 'Production developer path must not invoke host-global drop-sudo root phase.' >&2
   exit 1
 fi
-if grep -Fq '/run/' "$developer_step"; then
-  echo 'Production developer path must not reference host /run state; add an explicit reviewed allowlist before introducing any exception.' >&2
+expected_protected_unix_socket_paths='/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request'
+grep -Fq "protected_unix_socket_paths=\"$expected_protected_unix_socket_paths\"" "$developer_step"
+actual_run_paths="$(grep -oE '/run/[A-Za-z0-9._/-]+' "$developer_step" | LC_ALL=C sort -u)"
+expected_run_paths="$(printf '%s\n' $expected_protected_unix_socket_paths | LC_ALL=C sort)"
+if [ "$actual_run_paths" != "$expected_run_paths" ]; then
+  echo 'Production developer path references an unreviewed /run path.' >&2
+  printf 'Expected:\n%s\nActual:\n%s\n' "$expected_run_paths" "$actual_run_paths" >&2
   exit 1
 fi
+grep -Fq 'inaccessible_paths=""' "$developer_step"
+grep -Fq 'protected_unix_socket_host_ids=""' "$developer_step"
+grep -Fq 'for path in $protected_unix_socket_paths; do' "$developer_step"
+grep -Fq 'inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"' "$developer_step"
+grep -Fq '[ ! -S "$path" ]' "$developer_step"
+grep -Fq 'if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then' "$developer_step"
+grep -Fq 'if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then' "$developer_step"
+grep -Fq 'Service-local hardening root preflight protected UNIX socket baseline failed:' "$developer_step"
+grep -Fq 'could not stat owner for $path.' "$developer_step"
+grep -Fq 'could not stat dev:inode for $path.' "$developer_step"
+grep -Fq 'exit 50' "$developer_step"
+permission_mutation_lines="$(
+  grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$developer_step" ||
+    true
+)"
+test "$(printf '%s\n' "$permission_mutation_lines" | grep -c .)" -eq 1
+printf '%s\n' "$permission_mutation_lines" |
+  grep -Fqx '          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"'
 if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$developer_step"; then
   echo 'Production developer path must not mutate sudoers or group membership.' >&2
   exit 1
@@ -355,7 +378,11 @@ grep -Fq -- '--property=TimeoutStopSec=5s ' "$developer_step"
 grep -Fq -- '--property=KillMode=control-group ' "$developer_step"
 grep -Fq -- '--property=SendSIGKILL=yes ' "$developer_step"
 grep -Fq -- '--property=NoNewPrivileges=yes ' "$developer_step"
-grep -Fq -- '--property="RestrictAddressFamilies=~AF_UNIX" ' "$developer_step"
+if grep -Fq 'RestrictAddressFamilies=~AF_UNIX' "$developer_step"; then
+  echo 'Production developer path must keep AF_UNIX available for the Codex sandbox.' >&2
+  exit 1
+fi
+grep -Fq -- '--property="InaccessiblePaths=$inaccessible_paths" ' "$developer_step"
 grep -Fq -- '--property=SystemCallArchitectures=native ' "$developer_step"
 grep -Fq -- '--property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" ' "$developer_step"
 grep -Fq '/usr/bin/setpriv ' "$developer_step"
@@ -390,9 +417,30 @@ grep -Fq 'exit 39' "$developer_step"
 grep -Fq "/usr/bin/sudo -n true" "$developer_step"
 grep -Fq 'exit 40' "$developer_step"
 grep -Fq 'socket.AF_UNIX' "$developer_step"
+grep -Fq 'Service-local hardening preflight blocks AF_UNIX required by Codex sandbox:' "$developer_step"
 grep -Fq 'SystemExit(46)' "$developer_step"
 grep -Fq 'socket.AF_INET' "$developer_step"
 grep -Fq 'SystemExit(47)' "$developer_step"
+grep -Fq 'PROTECTED_UNIX_SOCKET_PATHS' "$developer_step"
+grep -Fq 'PROTECTED_UNIX_SOCKET_HOST_IDS' "$developer_step"
+grep -Fq 'raw_host_ids = os.environ.get("PROTECTED_UNIX_SOCKET_HOST_IDS", "")' "$developer_step"
+grep -Fq 'host_ids[path] = (dev, ino)' "$developer_step"
+grep -Fq '(st.st_dev, st.st_ino) == host_ids[path]' "$developer_step"
+grep -Fq 'protected socket appeared after host baseline:' "$developer_step"
+grep -Fq 'len(protected_paths) != 13' "$developer_step"
+grep -Fq 'len(set(protected_paths)) != 13' "$developer_step"
+grep -Fq 'not path.startswith("/run/")' "$developer_step"
+grep -Fq 'stat.S_IMODE(st.st_mode) != 0' "$developer_step"
+grep -Fq 'os.access(path, os.R_OK)' "$developer_step"
+grep -Fq 'os.access(path, os.W_OK)' "$developer_step"
+grep -Fq 'os.access(path, os.X_OK)' "$developer_step"
+grep -Fq 'SystemExit(48)' "$developer_step"
+grep -Fq 'os.walk(' "$developer_step"
+grep -Fq '"/run",' "$developer_step"
+grep -Fq 'st.st_uid == 0' "$developer_step"
+grep -Fq 'Service-local hardening preflight found writable root-owned UNIX socket(s):' "$developer_step"
+grep -Fq 'SystemExit(49)' "$developer_step"
+grep -Fq 'Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.' "$developer_step"
 grep -Fq '/bin/sh "$launcher" "$uid" "$nobody_gid"' "$developer_step"
 grep -Fq '"HOME=$runner_home"' "$developer_step"
 grep -Fq '"USER=$runner_user"' "$developer_step"
@@ -407,6 +455,10 @@ grep -Fq '"CODEX_MODEL=$codex_model"' "$developer_step"
 grep -Fq '"CODEX_NATIVE=$codex_native"' "$developer_step"
 grep -Fq '"CODEX_PACKAGE_ROOT=$codex_package_root"' "$developer_step"
 grep -Fq '"CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator"' "$developer_step"
+grep -Fq '"PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths"' "$developer_step"
+grep -Fq '"PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids"' "$developer_step"
+grep -Fq -- '-u PROTECTED_UNIX_SOCKET_PATHS \' "$developer_step"
+grep -Fq -- '-u PROTECTED_UNIX_SOCKET_HOST_IDS \' "$developer_step"
 grep -Fq 'CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" ' "$developer_step"
 grep -Fq 'CODEX_MANAGED_BY_NPM=1 ' "$developer_step"
 grep -Fq '"$CODEX_NATIVE" exec ' "$developer_step"
