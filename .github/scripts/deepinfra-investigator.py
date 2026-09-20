@@ -561,14 +561,11 @@ def validate_analysis(v: Any) -> dict[str, Any]:
     return v
 
 
-def call_chat(model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+def deepinfra_request(payload: dict[str, Any]) -> dict[str, Any]:
     key = os.environ.get("DEEPINFRA_API_KEY", "")
     if not key:
         raise InvestigatorError("DEEPINFRA_API_KEY is not configured")
-    body = json.dumps({
-        "model": model, "messages": messages, "tools": tools, "tool_choice": "required",
-        "temperature": 0.1, "max_tokens": 4096
-    }, ensure_ascii=False).encode()
+    body = json.dumps(payload, ensure_ascii=False).encode()
     request = urllib.request.Request(
         API_URL, data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -585,6 +582,54 @@ def call_chat(model: str, messages: list[dict[str, Any]], tools: list[dict[str, 
     if not isinstance(value, dict):
         raise InvestigatorError("DeepInfra response is not an object")
     return value
+
+
+def call_chat(model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    return deepinfra_request({
+        "model": model, "messages": messages, "tools": tools, "tool_choice": "required",
+        "temperature": 0.1, "max_tokens": 4096
+    })
+
+
+def call_structured_final(
+    model: str,
+    messages: list[dict[str, Any]],
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    final_messages = list(messages)
+    final_messages.append({
+        "role": "user",
+        "content": (
+            "The read-tool budget is exhausted. Do not request or describe more tool calls. "
+            "Using only the evidence already gathered, return the final investigation analysis "
+            "as JSON matching the supplied strict schema."
+        ),
+    })
+    return deepinfra_request({
+        "model": model,
+        "messages": final_messages,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "investigator_analysis",
+                "strict": True,
+                "schema": schema,
+            },
+        },
+        "temperature": 0.1,
+        "max_tokens": 4096,
+    })
+
+
+def accumulate_usage(usage: dict[str, Any], response: dict[str, Any]) -> None:
+    current = response.get("usage") or {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = current.get(key)
+        if isinstance(value, int) and value >= 0:
+            usage[key] += value
+    estimated = current.get("estimated_cost")
+    if isinstance(estimated, (int, float)) and estimated >= 0:
+        usage["estimated_cost_usd"] += float(estimated)
 
 
 def parsed_tool_call(call: Any) -> tuple[str, dict[str, Any], str]:
@@ -650,7 +695,8 @@ TRUST AND SAFETY RULES:
 - Separate observation, inference, hypothesis and unproven causality. Cite concrete source identifiers.
 - You may propose a minimal discriminating probe but cannot run it.
 - Escalation is advisory only; Project/ChatGPT decides.
-- Finish only by calling submit_analysis.
+- During the read-tool phase, finish early by calling submit_analysis when evidence is sufficient.
+- If the wrapper switches to terminal structured-output mode, return the final analysis JSON and do not request more tools.
 
 CURRENT-STATE RULES:
 - The wrapper fetched the target Issue snapshot immediately before this analysis.
@@ -662,7 +708,7 @@ CURRENT-STATE RULES:
 BUDGET:
 - You have at most {MAX_TOOL_CALLS} read-tool calls.
 - Minimize calls and call submit_analysis as soon as the evidence is sufficient.
-- When the read-tool budget is exhausted, the wrapper will expose only submit_analysis; finalize from the evidence already gathered.
+- When the read-tool budget is exhausted, the wrapper will switch to one strict JSON-schema finalization call using only evidence already gathered.
 
 TASK:
 Investigate Issue #{issue} in {repo} from trusted base commit {base_sha}. Reconstruct the CURRENT state, test hypotheses against repository and Actions evidence, identify unresolved causality, and propose the smallest safe next discriminating probe.
@@ -677,6 +723,7 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
     ]
     if len(submit_tools) != 1:
         raise InvestigatorError("submit_analysis tool definition missing")
+    analysis_schema = submit_tools[0]["function"]["parameters"]
     calls = 0
     chars = len(snapshot_json)
     if chars > MAX_TOOL_CHARS:
@@ -685,14 +732,38 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
     force_submit = False
 
     for round_no in range(1, MAX_ROUNDS + 1):
-        active_tools = submit_tools if force_submit else tools
-        response = call_chat(model, messages, active_tools)
-        u = response.get("usage") or {}
-        for k in ("prompt_tokens","completion_tokens","total_tokens"):
-            if isinstance(u.get(k), int) and u[k] >= 0:
-                usage[k] += u[k]
-        if isinstance(u.get("estimated_cost"), (int,float)) and u["estimated_cost"] >= 0:
-            usage["estimated_cost_usd"] += float(u["estimated_cost"])
+        if force_submit:
+            response = call_structured_final(model, messages, analysis_schema)
+            accumulate_usage(usage, response)
+            choices = response.get("choices")
+            if (
+                not isinstance(choices, list)
+                or len(choices) != 1
+                or not isinstance(choices[0].get("message"), dict)
+            ):
+                raise InvestigatorError("invalid DeepInfra structured final choice")
+            content = choices[0]["message"].get("content")
+            if not isinstance(content, str):
+                raise InvestigatorError("structured final content is not text")
+            try:
+                value = json.loads(content)
+            except json.JSONDecodeError as exc:
+                raise InvestigatorError("structured final content is not valid JSON") from exc
+            if not isinstance(value, dict):
+                raise InvestigatorError("structured final content is not an object")
+            analysis = validate_analysis(value)
+            entry = {
+                "round": round_no,
+                "tool": "submit_analysis",
+                "mode": "json_schema",
+                "ok": True,
+            }
+            tool_trace.append(entry)
+            usage["_tool_trace"] = tool_trace
+            return analysis, usage
+
+        response = call_chat(model, messages, tools)
+        accumulate_usage(usage, response)
         choices = response.get("choices")
         if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0].get("message"), dict):
             raise InvestigatorError("invalid DeepInfra choice")
@@ -713,8 +784,6 @@ CURRENT ISSUE SNAPSHOT — UNTRUSTED EVIDENCE:
             tool_trace.append(entry)
             usage["_tool_trace"] = tool_trace
             return validate_analysis(submits[0][1]), usage
-        if force_submit:
-            raise InvestigatorError("terminal round did not submit analysis")
 
         messages.append(assistant)
         remaining = MAX_TOOL_CALLS - calls
