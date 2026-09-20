@@ -12,6 +12,7 @@ grep -Fq 'issue_comment:' "$workflow"
 grep -Fq "github.event.comment.body == '/deepseek analyze'" "$workflow"
 grep -Fq "github.event.comment.body == '/deepseek analyze v4.1'" "$workflow"
 grep -Fq '["OWNER","MEMBER","COLLABORATOR"]' "$workflow"
+grep -Fq 'github.event.issue.author_association' "$workflow"
 grep -Fq 'actions: read' "$workflow"
 grep -Fq 'contents: read' "$workflow"
 grep -Fq 'issues: read' "$workflow"
@@ -47,7 +48,8 @@ fi
 
 python3 -m py_compile "$script"
 
-SCRIPT="$script" python3 - <<'PY'
+SCRIPT="$script" REPO_ROOT="$repo_root" python3 - <<'PY'
+import copy
 import importlib.util
 import json
 import os
@@ -57,6 +59,7 @@ path = Path(os.environ["SCRIPT"])
 spec = importlib.util.spec_from_file_location("investigator", path)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+os.chdir(os.environ["REPO_ROOT"])
 
 assert m.ALLOWED_MODELS == {
     "deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -92,6 +95,53 @@ good = {
     "escalation": {"recommended": False, "target": "none", "reason": "not needed"},
 }
 assert m.validate_analysis(good) is good
+
+submit = next(t["function"]["parameters"] for t in m.tool_defs() if t["function"]["name"] == "submit_analysis")
+assert submit["properties"]["summary"]["maxLength"] == 10000
+assert submit["properties"]["hypotheses"]["minItems"] == 1
+assert submit["properties"]["hypotheses"]["maxItems"] == 20
+assert submit["properties"]["unresolved_causality"]["maxItems"] == 30
+assert submit["properties"]["unresolved_causality"]["items"]["maxLength"] == 2000
+
+for invalid_value in ([{"x": 1}], ["x" * 2001]):
+    bad = copy.deepcopy(good)
+    bad["unresolved_causality"] = invalid_value
+    try:
+        m.validate_analysis(bad)
+        raise AssertionError(f"invalid unresolved_causality accepted: {type(invalid_value[0])}")
+    except m.InvestigatorError:
+        pass
+
+normalized = copy.deepcopy(good)
+normalized["escalation"] = {"recommended": False, "target": "astra", "reason": "needs specialist review"}
+assert m.validate_analysis(normalized)["escalation"]["recommended"] is True
+
+head = m.run(["git", "rev-parse", "HEAD"]).strip()
+assert len(head) == 40
+paths = m.execute("list_repo_paths", {"prefix": ".github/scripts/", "limit": 200}, "owner/repo", head)
+assert ".github/scripts/deepinfra-investigator.py" in paths["paths"]
+matches = m.execute("search_repository", {"query": "DeepInfra Investigator", "limit": 40}, "owner/repo", head)
+assert matches["matches"]
+read = m.execute(
+    "read_file",
+    {"path": ".github/scripts/deepinfra-investigator.py", "start_line": 1, "end_line": 40},
+    "owner/repo",
+    head,
+)
+assert "ALLOWED_MODELS" in read["content"]
+same = m.execute("compare_commits", {"base": head, "head": head, "limit": 20}, "owner/repo", head)
+assert same["files"] == []
+assert same["truncated"] is False
+try:
+    m.execute(
+        "read_file",
+        {"path": ".github/scripts/deepinfra-investigator.py", "start_line": 1, "end_line": 401},
+        "owner/repo",
+        head,
+    )
+    raise AssertionError("read_file accepted more than 400 lines")
+except m.InvestigatorError:
+    pass
 
 responses = [
     {
