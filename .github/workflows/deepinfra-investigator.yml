@@ -14,6 +14,7 @@ jobs:
       github.event.issue.pull_request == null &&
       github.event.issue.state == 'open' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
       (
         github.event.comment.body == '/deepseek analyze' ||
         github.event.comment.body == '/deepseek analyze v4.1'
@@ -25,6 +26,9 @@ jobs:
     outputs:
       model: ${{ steps.select.outputs.model }}
     steps:
+      # The script ALLOWED_MODELS set is the execution-time canonical allowlist.
+      # These workflow cases intentionally duplicate it as an entry-boundary defense;
+      # test-deepinfra-investigator.sh verifies the two layers stay aligned.
       - name: Select allowlisted model
         id: select
         env:
