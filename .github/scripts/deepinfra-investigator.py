@@ -570,14 +570,16 @@ def call_chat(model: str, messages: list[dict[str, Any]], tools: list[dict[str, 
         for tool in tools
         if isinstance(tool, dict)
     ]
-    tool_choice: Any = (
-        {"type": "function", "function": {"name": "submit_analysis"}}
-        if tool_names == ["submit_analysis"] else "required"
-    )
-    body = json.dumps({
-        "model": model, "messages": messages, "tools": tools, "tool_choice": tool_choice,
+    request_body: dict[str, Any] = {
+        "model": model, "messages": messages, "tools": tools, "tool_choice": "required",
         "temperature": 0.1, "max_tokens": 4096
-    }, ensure_ascii=False).encode()
+    }
+    if tool_names == ["submit_analysis"]:
+        request_body["tool_choice"] = {
+            "type": "function",
+            "function": {"name": "submit_analysis"},
+        }
+    body = json.dumps(request_body, ensure_ascii=False).encode()
     request = urllib.request.Request(
         API_URL, data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
