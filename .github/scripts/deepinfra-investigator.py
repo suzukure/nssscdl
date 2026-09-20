@@ -380,7 +380,7 @@ def call_chat(model: str, messages: list[dict[str, Any]], tools: list[dict[str, 
     if not key:
         raise InvestigatorError("DEEPINFRA_API_KEY is not configured")
     body = json.dumps({
-        "model": model, "messages": messages, "tools": tools, "tool_choice": "auto",
+        "model": model, "messages": messages, "tools": tools, "tool_choice": "required",
         "temperature": 0.1, "max_tokens": 4096
     }, ensure_ascii=False).encode()
     request = urllib.request.Request(
