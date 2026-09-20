@@ -649,10 +649,9 @@ jobs:
                 inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
                 if [ -e "$path" ]; then
                   host_owner="$(/usr/bin/stat -Lc "%u" "$path")"
-                  host_type="$(/usr/bin/stat -Lc "%F" "$path")"
                   host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"
-                  if [ "$host_owner" != 0 ] || [ "$host_type" != socket ]; then
-                    echo "Protected UNIX socket baseline is unexpected: $path owner=$host_owner type=$host_type." >&2
+                  if [ "$host_owner" != 0 ] || [ ! -S "$path" ]; then
+                    echo "Protected UNIX socket baseline is unexpected: $path owner=$host_owner." >&2
                     exit 50
                   fi
                   protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
