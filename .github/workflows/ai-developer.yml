@@ -393,18 +393,36 @@ jobs:
           expected_uid="${1:?expected uid is required}"
           expected_gid="${2:?expected gid is required}"
 
-          test "$(/usr/bin/id -u)" = "$expected_uid"
-          test "$(/usr/bin/id -g)" = "$expected_gid"
+          actual_uid="$(/usr/bin/id -u)"
+          if [ "$actual_uid" != "$expected_uid" ]; then
+            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            exit 41
+          fi
+
+          actual_gid="$(/usr/bin/id -g)"
+          if [ "$actual_gid" != "$expected_gid" ]; then
+            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            exit 42
+          fi
 
           groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
-          test -z "$groups_status"
+          if [ -n "$groups_status" ]; then
+            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            exit 43
+          fi
 
           no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
-          test "$no_new_privs" = 1
+          if [ "$no_new_privs" != 1 ]; then
+            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            exit 44
+          fi
 
           for field in CapInh CapPrm CapEff CapBnd CapAmb; do
             value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
-            test "$value" = 0000000000000000
+            if [ "$value" != 0000000000000000 ]; then
+              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              exit 45
+            fi
           done
 
           if [ ! -x /usr/bin/sudo ]; then
@@ -418,6 +436,7 @@ jobs:
 
           /usr/bin/python3 - <<'PY'
           import socket
+          import sys
 
           try:
               sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -425,12 +444,20 @@ jobs:
               pass
           else:
               sock.close()
-              raise SystemExit("service-local hardening preflight unexpectedly allows AF_UNIX")
+              print(
+                  "Service-local hardening preflight unexpectedly allows AF_UNIX.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(46)
 
           try:
               sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
           except OSError as exc:
-              raise SystemExit(f"service-local hardening preflight blocks AF_INET: {exc}")
+              print(
+                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(47)
           else:
               sock.close()
           PY
