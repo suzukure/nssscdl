@@ -73,14 +73,29 @@ jobs:
           echo >> "$GITHUB_STEP_SUMMARY"
           echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
 
-  codex-official-userns-control-probe:
-    name: Codex official userns service control
+  codex-inaccessible-sockets-probe:
+    name: Codex inaccessible socket service boundary
     runs-on: ubuntu-latest
     timeout-minutes: 4
+    env:
+      CANDIDATE_SOCKET_PATHS: >-
+        /run/dbus/system_bus_socket
+        /run/dhcpcd/eth0-4.unpriv.sock
+        /run/docker.sock
+        /run/snapd-snap.socket
+        /run/snapd.socket
+        /run/systemd/io.systemd.ManagedOOM
+        /run/systemd/journal/dev-log
+        /run/systemd/journal/socket
+        /run/systemd/journal/stdout
+        /run/systemd/journal/syslog
+        /run/systemd/notify
+        /run/systemd/userdb/io.systemd.DynamicUser
+        /run/uuidd/request
     strategy:
       fail-fast: false
       matrix:
-        boundary: [official-userns-service-control]
+        boundary: [inaccessible-sockets-service]
     steps:
       - name: Install pinned Codex Action runtime without model execution
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
@@ -461,6 +476,51 @@ jobs:
           printf 'PROBE_DATA server boundary=%s port=%s pid=%s\n' \
             "$PROBE_BOUNDARY" "$port" "$server_pid"
 
+      - name: Capture candidate socket inventory
+        id: socket_before
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          inventory="$RUNNER_TEMP/candidate-sockets-before.json"
+          python3 - "$inventory" <<'PY'
+          import json
+          import os
+          import pathlib
+          import stat
+          import sys
+
+          paths = os.environ["CANDIDATE_SOCKET_PATHS"].split()
+          if len(paths) != 13 or len(set(paths)) != 13:
+              raise SystemExit("candidate allowlist must contain 13 unique paths")
+
+          result = {}
+          for path in paths:
+              try:
+                  st = os.stat(path)
+              except FileNotFoundError:
+                  result[path] = {"present": False}
+                  continue
+              if not stat.S_ISSOCK(st.st_mode):
+                  raise SystemExit(f"candidate path is not a socket: {path}")
+              result[path] = {
+                  "present": True,
+                  "dev": st.st_dev,
+                  "ino": st.st_ino,
+                  "uid": st.st_uid,
+                  "gid": st.st_gid,
+                  "mode": stat.S_IMODE(st.st_mode),
+              }
+
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          printf 'candidate_b64=%s\n' "$(base64 -w0 "$inventory")" >> "$GITHUB_OUTPUT"
+          printf 'PROBE_DATA candidate_host_before=%s\n' "$(cat "$inventory")"
+
       - name: Capture host integrity baseline
         id: host_before
         shell: bash
@@ -501,7 +561,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          test "$PROBE_BOUNDARY" = official-userns-service-control
+          test "$PROBE_BOUNDARY" = inaccessible-sockets-service
 
           marker="$RUNNER_TEMP/codex-exec-tool-$PROBE_BOUNDARY"
           launcher="$RUNNER_TEMP/run-codex-exec-tool-$PROBE_BOUNDARY.sh"
@@ -546,6 +606,27 @@ jobs:
                   result[name] = "available"
           pathlib.Path(sys.argv[1]).write_text(
               json.dumps(result, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          /usr/bin/python3 - "${marker}-candidate-paths.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          result = {}
+          for path in os.environ["CANDIDATE_SOCKET_PATHS"].split():
+              try:
+                  os.stat(path)
+              except OSError as exc:
+                  result[path] = {"visible": False, "errno": exc.errno}
+              else:
+                  result[path] = {"visible": True, "errno": None}
+
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
               encoding="utf-8",
           )
           PY
@@ -595,6 +676,11 @@ jobs:
             --property=SystemCallArchitectures=native
             '--property=SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register'
           )
+          inaccessible_paths=""
+          for path in $CANDIDATE_SOCKET_PATHS; do
+            inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
+          done
+          properties+=( "--property=InaccessiblePaths=$inaccessible_paths" )
           set +e
           sudo -n -- \
             /usr/bin/systemd-run \
@@ -619,6 +705,7 @@ jobs:
                   "RUNNER_TEMP=$RUNNER_TEMP" \
                   "GITHUB_WORKSPACE=$GITHUB_WORKSPACE" \
                   "PROBE_BOUNDARY=$PROBE_BOUNDARY" \
+                  "CANDIDATE_SOCKET_PATHS=$CANDIDATE_SOCKET_PATHS" \
                   "CODEX_NATIVE=$CODEX_NATIVE" \
                   "CODEX_PACKAGE_ROOT=$CODEX_PACKAGE_ROOT" \
                   "CODEX_HOME=$CODEX_HOME" \
@@ -646,6 +733,7 @@ jobs:
           BEFORE_NOTIFY: ${{ steps.host_before.outputs.notify }}
           BEFORE_DBUS: ${{ steps.host_before.outputs.dbus }}
           BEFORE_RESOLVED_B64: ${{ steps.host_before.outputs.resolved_b64 }}
+          BEFORE_CANDIDATE_B64: ${{ steps.socket_before.outputs.candidate_b64 }}
         run: |
           set -euo pipefail
 
@@ -658,6 +746,7 @@ jobs:
           test -s "${marker}-security-status"
           test -s "${marker}-sudo-available"
           test -s "${marker}-sockets.json"
+          test -s "${marker}-candidate-paths.json"
           test -s "${marker}-codex.rc"
           test -f "${marker}-codex.stdout"
           test -f "${marker}-codex.stderr"
@@ -696,15 +785,70 @@ jobs:
             "$(cat "${marker}-tool-output-type")" \
             "$tool_output"
 
-          test "$PROBE_BOUNDARY" = official-userns-service-control
+          test "$PROBE_BOUNDARY" = inaccessible-sockets-service
           jq -e '.af_unix == "available" and .af_inet == "available"' "${marker}-sockets.json" >/dev/null
           test "$codex_rc" -eq 0
           grep -Fq 'codex-exec-tool-probe-ok' "${marker}-tool-output"
           if grep -Fq 'bwrap: loopback:' "${marker}-tool-output"; then
-            echo 'Official userns service control still hit a bubblewrap loopback failure.' >&2
+            echo 'InaccessiblePaths candidate still hit a bubblewrap loopback failure.' >&2
             exit 1
           fi
-          printf 'PROBE_DATA official_userns_service_control=success\n'
+
+          before_candidate_json="$(printf '%s' "$BEFORE_CANDIDATE_B64" | base64 -d)"
+          service_candidate_json="$(cat "${marker}-candidate-paths.json")"
+          python3 - "$before_candidate_json" "$service_candidate_json" <<'PY'
+          import json
+          import sys
+
+          before = json.loads(sys.argv[1])
+          service = json.loads(sys.argv[2])
+          if set(before) != set(service) or len(before) != 13:
+              raise SystemExit("candidate path result set mismatch")
+
+          for path, host in before.items():
+              observed = service[path]
+              if host.get("present") and observed.get("visible") is not False:
+                  raise SystemExit(f"host-present candidate remained visible: {path}")
+              if host.get("present"):
+                  print(
+                      "PROBE_DATA candidate_masked "
+                      f"path={path} errno={observed.get('errno')}"
+                  )
+          PY
+          printf 'PROBE_DATA inaccessible_sockets_service=success\n'
+
+          after_candidate="$RUNNER_TEMP/candidate-sockets-after.json"
+          python3 - "$after_candidate" <<'PY'
+          import json
+          import os
+          import pathlib
+          import stat
+          import sys
+
+          result = {}
+          for path in os.environ["CANDIDATE_SOCKET_PATHS"].split():
+              try:
+                  st = os.stat(path)
+              except FileNotFoundError:
+                  result[path] = {"present": False}
+                  continue
+              if not stat.S_ISSOCK(st.st_mode):
+                  raise SystemExit(f"candidate path is not a socket after probe: {path}")
+              result[path] = {
+                  "present": True,
+                  "dev": st.st_dev,
+                  "ino": st.st_ino,
+                  "uid": st.st_uid,
+                  "gid": st.st_gid,
+                  "mode": stat.S_IMODE(st.st_mode),
+              }
+
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          test "$(base64 -w0 "$after_candidate")" = "$BEFORE_CANDIDATE_B64"
 
           after_notify="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
           after_dbus="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
