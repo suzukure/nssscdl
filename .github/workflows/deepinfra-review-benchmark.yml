@@ -64,18 +64,20 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$DEEPINFRA_API_KEY"
+          rc=0
           python3 .github/scripts/deepinfra-review-benchmark.py \
             --repo "$GITHUB_REPOSITORY" \
             --case "$CASE_ID" \
             --model "$MODEL_ID" \
             --output-json "$RESULT_JSON" \
-            --output-md "$RESULT_MD"
+            --output-md "$RESULT_MD" || rc=$?
           test -s "$RESULT_JSON"
           test -s "$RESULT_MD"
           cat "$RESULT_MD" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
 
       - name: Upload benchmark result
-        if: steps.benchmark.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: deepinfra-review-benchmark-${{ inputs.case_id }}-${{ github.run_id }}
