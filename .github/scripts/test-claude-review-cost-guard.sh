@@ -14,7 +14,10 @@ write_runs() {
 }
 
 run_guard() {
-  bash "$guard" "$1" "$2" owner/repo
+  local activity="${3:-$(jq -r --argjson id "$2" '.workflow_runs | map(select(.id == $id)) | max_by(.run_attempt).status' "$1")}"
+  local attempt
+  attempt="$(jq -r --argjson id "$2" '.workflow_runs | map(select(.id == $id)) | max_by(.run_attempt).run_attempt' "$1")"
+  bash "$guard" "$1" "$2" owner/repo "$activity" "$attempt"
 }
 
 normal='[
@@ -35,6 +38,16 @@ burst='[
 write_runs "$test_dir/burst.json" "$burst"
 run_guard "$test_dir/burst.json" 4 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
 run_guard "$test_dir/burst.json" 5 | jq -e '.result == "no_notify" and .run_count == 5' > /dev/null
+
+completed_burst='[
+  {"id":51,"head_branch":"ops/issue-completed-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:00:00Z"},
+  {"id":52,"head_branch":"ops/issue-completed-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:03:00Z"},
+  {"id":53,"head_branch":"ops/issue-completed-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:06:00Z"},
+  {"id":54,"head_branch":"ops/issue-completed-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:09:00Z"}
+]'
+write_runs "$test_dir/completed-burst.json" "$completed_burst"
+run_guard "$test_dir/completed-burst.json" 54 in_progress | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
+run_guard "$test_dir/completed-burst.json" 54 completed | jq -e '.result == "no_notify" and .run_count == 4' > /dev/null
 
 rerun='[
   {"id":6,"run_attempt":1,"head_branch":"ops/issue-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T09:59:00Z"},

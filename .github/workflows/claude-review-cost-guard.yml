@@ -96,9 +96,11 @@ jobs:
         id: guard
         env:
           CURRENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          CURRENT_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_RUN_ACTIVITY: ${{ github.event.action }}
         run: |
           set -euo pipefail
-          evaluation="$(bash .github/scripts/evaluate-claude-review-cost-guard.sh "$RUNNER_TEMP/claude-review-attempts.json" "$CURRENT_RUN_ID" "$GITHUB_REPOSITORY")"
+          evaluation="$(bash .github/scripts/evaluate-claude-review-cost-guard.sh "$RUNNER_TEMP/claude-review-attempts.json" "$CURRENT_RUN_ID" "$GITHUB_REPOSITORY" "$WORKFLOW_RUN_ACTIVITY" "$CURRENT_RUN_ATTEMPT")"
           printf '%s\n' "$evaluation" | jq -e '.result == "notify" or .result == "no_notify" or .result == "ignored" or .result == "diagnostic"' > /dev/null
           printf 'evaluation=%s\n' "$evaluation" >> "$GITHUB_OUTPUT"
           {

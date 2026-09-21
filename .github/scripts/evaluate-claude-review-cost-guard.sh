@@ -4,17 +4,19 @@ set -euo pipefail
 runs_file="${1:?workflow runs JSON file is required}"
 current_run_id="${2:?current workflow run ID is required}"
 repository="${3:?repository is required}"
+activity="${4:?workflow run activity is required}"
+current_run_attempt="${5:?current workflow run attempt is required}"
 
 emit_diagnostic() {
   jq -cn --arg reason "$1" '{result:"diagnostic", reason:$reason}'
 }
 
-if ! [[ "$current_run_id" =~ ^[0-9]+$ ]] || [[ ! "$repository" =~ ^[^/]+/[^/]+$ ]]; then
+if ! [[ "$current_run_id" =~ ^[0-9]+$ ]] || ! [[ "$current_run_attempt" =~ ^[1-9][0-9]*$ ]] || [[ ! "$repository" =~ ^[^/]+/[^/]+$ ]] || [[ "$activity" != "in_progress" && "$activity" != "completed" ]]; then
   emit_diagnostic 'current_run_id_invalid'
   exit 0
 fi
 
-if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --arg repository "$repository" '
+if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --argjson current_run_attempt "$current_run_attempt" --arg repository "$repository" --arg activity "$activity" '
   def valid_run:
     type == "object" and
     (.id | type == "number") and
@@ -35,7 +37,7 @@ if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --arg repos
     (.workflow_runs
      | unique_by([.id, .run_attempt])
      | map(. + {started_epoch: (.run_started_at | fromdateiso8601)})) as $runs
-    | ($runs | map(select(.id == $current_run_id)) | max_by(.run_attempt)) as $current
+    | ($runs | map(select(.id == $current_run_id and .run_attempt == $current_run_attempt)) | first) as $current
     | if $current == null then
         {result:"diagnostic", reason:"current_run_not_found"}
       elif $current.head_repository.full_name != $repository then
@@ -57,9 +59,9 @@ if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --arg repos
             cancelled_count: ($cancelled | length),
             trigger: null
           }
-        | if ($current.status == "in_progress" and ($paid_capable | length) == 4) then
+        | if ($activity == "in_progress" and ($paid_capable | length) == 4) then
             .result = "notify" | .trigger = "review_burst"
-          elif ($current.status == "completed" and $current.conclusion == "cancelled" and ($cancelled | length) == 3) then
+          elif ($activity == "completed" and $current.conclusion == "cancelled" and ($cancelled | length) == 3) then
             .result = "notify" | .trigger = "cancel_storm"
           else . end
       end
