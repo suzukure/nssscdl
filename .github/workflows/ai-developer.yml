@@ -1066,6 +1066,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_review' &&
       github.event.review.state == 'changes_requested' &&
+      github.event.review.commit_id == github.event.pull_request.head.sha &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:

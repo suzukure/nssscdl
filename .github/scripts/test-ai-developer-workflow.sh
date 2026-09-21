@@ -151,6 +151,7 @@ awk '
 grep -Fqx '    name: Draft after Claude changes requested' "$draft_after_changes_workflow"
 grep -Fqx '      pull-requests: write' "$draft_after_changes_workflow"
 grep -Fq "github.event.review.state == 'changes_requested'" "$draft_after_changes_workflow"
+grep -Fq 'github.event.review.commit_id == github.event.pull_request.head.sha' "$draft_after_changes_workflow"
 grep -Fq 'Create reviewer App token for identity verification' "$draft_after_changes_workflow"
 grep -Fq 'Ignoring change request from untrusted reviewer:' "$draft_after_changes_workflow"
 grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow"

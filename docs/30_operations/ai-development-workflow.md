@@ -65,7 +65,7 @@ Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpus
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
 
-`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とし、verdict投稿時にも現在headとの一致を要求する。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。Ready後にheadが変わった場合はstaleなverdictを投稿せず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
+`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とする。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。verdict投稿時にcurrent PR headとの追加一致gateは設けず、merge時の`--match-head-commit`と混同しない。Ready後にheadが変わったreviewの`REQUEST_CHANGES`はfollow-up対象にせず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
 Claudeの`REQUEST_CHANGES`後はreviewer Appを確認したtrusted workflowがPRをDraftへ戻す。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
 
