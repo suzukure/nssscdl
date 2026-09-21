@@ -47,6 +47,22 @@ write_runs "$test_dir/burst.json" "$burst"
 run_guard "$test_dir/burst.json" 4 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
 run_guard "$test_dir/burst.json" 5 | jq -e '.result == "no_notify" and .run_count == 5' > /dev/null
 
+rolling_burst='[
+  {"id":101,"head_branch":"ops/issue-rolling-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:00:00Z"},
+  {"id":102,"head_branch":"ops/issue-rolling-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:04:30Z"},
+  {"id":103,"head_branch":"ops/issue-rolling-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:09:00Z"},
+  {"id":104,"head_branch":"ops/issue-rolling-burst","status":"in_progress","conclusion":null,"created_at":"2026-09-20T10:13:30Z"},
+  {"id":105,"head_branch":"ops/issue-rolling-burst","status":"in_progress","conclusion":null,"created_at":"2026-09-20T10:18:00Z"},
+  {"id":106,"head_branch":"ops/issue-rolling-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:40:00Z"},
+  {"id":107,"head_branch":"ops/issue-rolling-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:44:30Z"},
+  {"id":108,"head_branch":"ops/issue-rolling-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:49:00Z"},
+  {"id":109,"head_branch":"ops/issue-rolling-burst","status":"in_progress","conclusion":null,"created_at":"2026-09-20T10:53:30Z"}
+]'
+write_runs "$test_dir/rolling-burst.json" "$rolling_burst"
+run_guard "$test_dir/rolling-burst.json" 104 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
+run_guard "$test_dir/rolling-burst.json" 105 | jq -e '.result == "no_notify" and .run_count == 4' > /dev/null
+run_guard "$test_dir/rolling-burst.json" 109 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
+
 completed_burst='[
   {"id":51,"head_branch":"ops/issue-completed-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:00:00Z"},
   {"id":52,"head_branch":"ops/issue-completed-burst","status":"completed","conclusion":"success","created_at":"2026-09-20T10:03:00Z"},
@@ -93,6 +109,20 @@ cancel_storm='[
 write_runs "$test_dir/cancel-storm.json" "$cancel_storm"
 run_guard "$test_dir/cancel-storm.json" 13 | jq -e '.result == "notify" and .trigger == "cancel_storm" and .cancelled_count == 3' > /dev/null
 run_guard "$test_dir/cancel-storm.json" 14 | jq -e '.result == "no_notify" and .cancelled_count == 4' > /dev/null
+
+rolling_cancel_storm='[
+  {"id":121,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:00:00Z"},
+  {"id":122,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:06:00Z"},
+  {"id":123,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:12:00Z"},
+  {"id":124,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:18:00Z"},
+  {"id":125,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:40:00Z"},
+  {"id":126,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:46:00Z"},
+  {"id":127,"head_branch":"ops/issue-rolling-cancel","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T12:52:00Z"}
+]'
+write_runs "$test_dir/rolling-cancel-storm.json" "$rolling_cancel_storm"
+run_guard "$test_dir/rolling-cancel-storm.json" 123 | jq -e '.result == "notify" and .trigger == "cancel_storm" and .cancelled_count == 3' > /dev/null
+run_guard "$test_dir/rolling-cancel-storm.json" 124 | jq -e '.result == "no_notify" and .cancelled_count == 3' > /dev/null
+run_guard "$test_dir/rolling-cancel-storm.json" 127 | jq -e '.result == "notify" and .trigger == "cancel_storm" and .cancelled_count == 3' > /dev/null
 
 skipped='[
   {"id":21,"head_branch":"ai/issue-390","status":"completed","conclusion":"skipped","created_at":"2026-09-20T12:00:00Z"},

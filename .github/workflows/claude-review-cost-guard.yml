@@ -61,7 +61,7 @@ jobs:
               | select(
                   .head_repository.full_name == $repository and
                   .head_branch == $branch and
-                  (.run_started_at | fromdateiso8601) >= ($current_started_epoch - 900) and
+                  (.run_started_at | fromdateiso8601) >= ($current_started_epoch - 1800) and
                   (.run_started_at | fromdateiso8601) <= $current_started_epoch
                 )
               | [.id, .run_attempt] | @tsv
