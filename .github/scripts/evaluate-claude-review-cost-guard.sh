@@ -49,11 +49,17 @@ if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --argjson c
              .head_branch == $current.head_branch
            ))
          | sort_by([.started_epoch, .id, .run_attempt])) as $series
-        | ($series | map([.id, .run_attempt]) | index([$current_run_id, $current_run_attempt])) as $current_index
+        | ($series
+           | to_entries
+           | map(select(
+               .value.id == $current_run_id and
+               .value.run_attempt == $current_run_attempt
+             ) | .key)
+           | .[0]) as $current_index
         | if $current_index == null then
             {result:"diagnostic", reason:"current_run_not_in_monitoring_series"}
           else
-            ($series[$current_index - 1] // null) as $previous
+            (if $current_index == 0 then null else $series[$current_index - 1] end) as $previous
         | ($series
            | map(select(
                .started_epoch >= ($current.started_epoch - 900) and
