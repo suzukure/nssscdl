@@ -14,9 +14,17 @@ write_runs() {
 }
 
 run_guard() {
-  local activity="${3:-$(jq -r --argjson id "$2" '.workflow_runs | map(select(.id == $id)) | max_by(.run_attempt).status' "$1")}"
-  local attempt
-  attempt="$(jq -r --argjson id "$2" '.workflow_runs | map(select(.id == $id)) | max_by(.run_attempt).run_attempt' "$1")"
+  local activity attempt
+  if [ "$#" -ge 3 ]; then
+    activity="$3"
+  elif ! activity="$(jq -er --argjson id "$2" '.workflow_runs | map(select(.id == $id)) | max_by(.run_attempt).status | select(type == "string")' "$1")"; then
+    echo "Unable to derive workflow activity for fixture $1." >&2
+    return 1
+  fi
+  if ! attempt="$(jq -er --argjson id "$2" '.workflow_runs | map(select(.id == $id)) | max_by(.run_attempt).run_attempt | select(type == "number")' "$1")"; then
+    echo "Unable to derive workflow attempt for fixture $1." >&2
+    return 1
+  fi
   bash "$guard" "$1" "$2" owner/repo "$activity" "$attempt"
 }
 
@@ -108,10 +116,10 @@ foreign='[{"id":35,"run_attempt":1,"head_branch":"feature/fork","status":"in_pro
 jq -cn --argjson runs "$foreign" '{workflow_runs: $runs}' > "$test_dir/foreign.json"
 run_guard "$test_dir/foreign.json" 35 | jq -e '.result == "ignored" and .reason == "current_run_head_repository_not_current_repository"' > /dev/null
 
-printf '%s\n' '{"workflow_runs":[{"id":41,"status":"in_progress"}]}' > "$test_dir/malformed.json"
+printf '%s\n' '{"workflow_runs":[{"id":41,"run_attempt":1,"status":"in_progress"}]}' > "$test_dir/malformed.json"
 run_guard "$test_dir/malformed.json" 41 | jq -e '.result == "diagnostic" and .reason == "workflow_run_metadata_incomplete"' > /dev/null
 
 printf '%s\n' '{"diagnostic_reason":"attempt_retrieval_limit_exceeded"}' > "$test_dir/retrieval-limit.json"
-run_guard "$test_dir/retrieval-limit.json" 41 | jq -e '.result == "diagnostic" and .reason == "attempt_retrieval_limit_exceeded"' > /dev/null
+bash "$guard" "$test_dir/retrieval-limit.json" 41 owner/repo in_progress 1 | jq -e '.result == "diagnostic" and .reason == "attempt_retrieval_limit_exceeded"' > /dev/null
 
 echo 'Claude Review Cost Guard fixture tests passed.'
