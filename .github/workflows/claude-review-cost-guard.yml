@@ -1,0 +1,63 @@
+name: Claude Review Cost Guard
+
+on:
+  workflow_run:
+    workflows: [Claude Review]
+    types: [in_progress, completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  evaluate:
+    name: Evaluate metadata burst
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted Cost Guard helper
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Fetch recent Claude Review metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?per_page=100" > "$RUNNER_TEMP/claude-review-runs.json"
+
+      - name: Evaluate Cost Guard
+        id: guard
+        env:
+          CURRENT_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          evaluation="$(bash .github/scripts/evaluate-claude-review-cost-guard.sh "$RUNNER_TEMP/claude-review-runs.json" "$CURRENT_RUN_ID" "$GITHUB_REPOSITORY")"
+          printf '%s\n' "$evaluation" | jq -e '.result == "notify" or .result == "no_notify" or .result == "ignored" or .result == "diagnostic"' > /dev/null
+          printf 'evaluation=%s\n' "$evaluation" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Claude Review Cost Guard'
+            echo
+            echo '```json'
+            printf '%s\n' "$evaluation"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify abnormal Claude Review activity
+        if: fromJSON(steps.guard.outputs.evaluation).result == 'notify'
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+          EVALUATION: ${{ steps.guard.outputs.evaluation }}
+          CURRENT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          message="$(jq -r --arg url "$CURRENT_RUN_URL" '
+            "Claude Review Cost Guard alert: " + .trigger + "\n" +
+            "15-minute window: runs=" + (.run_count | tostring) + ", cancelled=" + (.cancelled_count | tostring) + "\n" +
+            "Head branch: " + .head_branch + "\n" +
+            "Current run: " + $url + "\n" +
+            "Phase 1 notification only; no workflow or review was stopped."
+          ' <<< "$EVALUATION")"
+          bash .github/scripts/notify-human.sh "$message"

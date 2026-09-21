@@ -198,6 +198,16 @@ HTTP status、特にHTTP 429、Action logの文言、または利用量だけか
 
 同じheadを再実行する前に、人間はIssue番号、closing Issue、PR番号、対象PR head SHA、失敗run ID、および失敗runのhead SHAを照合する。Job Summaryの`Claude review result`でreason codeを先に確認し、必要な場合だけ該当stepの最小限の非機密情報を確認する。PR差分を変えずに再実行する場合は、GitHub Actions UIで当該runのreviewを再実行し、完了後に新しいrun IDとhead SHAが対象PRの現在head SHAに一致することを確認する。`human-review-required`による停止中は、人間が再開可能と判断してclosing Issue側を先に、PR側を最後に外す。そのPRラベル解除eventが同じheadに対する明示的なClaude再review要求となる。head SHAが変わった場合は同じ実行の再試行として扱わず、新しい差分に対するreviewとして必要な確認をやり直す。
 
+### Claude Review Cost Guard
+
+Issue #390 のPhase 1は、`Claude Review` を `workflow_run` の `in_progress` と `completed` で監視する独立したread-only Cost Guardである。PR headをcheckout・実行せず、default branchから取得したhelperとActions metadataだけを使い、LLM、raw job log、usage telemetryの常時取得を使わない。`requested` はre-runで発生しないため、監視の根拠にしない。
+
+監視keyはsame-repository head branchであり、current runの作成時刻から15分のrolling windowを集計する。`completed` かつ `skipped` はpaid burstに数えず、`in_progress` はpaid-capable候補として数える。4件目のnon-skipped / paid-capable runでreview burst、3件目の`cancelled` runでcancel stormを1回通知する。閾値超過後のrunは通知しないため、永続stateを持たずに重複通知を抑止する。2026-09-18〜21の実測では#378が15分8件・cancelled 6件、#339が7件・5件、#365/#343が各4件・3件だった一方、#387のreview-ready self-testは最大3件・cancelled 0件だったことが根拠である。
+
+通知は既存`notify-human.sh`によるDiscordのみで、trigger、15分窓のrun数/cancelled数、head branch、current run URL、および自動停止していない事実だけを含める。PR番号が安全に取得できないことは監視を無効化しない。metadataが不完全・不正なら0費用や正常とは推測せず診断を残し、通知判定を行わない。`NOTIFICATION_WEBHOOK_URL`未設定時は既存helperどおりwarning相当で正常終了する。
+
+Cost Guardはreview verdict、merge、pause、`human-review-required`、budget、workflow有効化、自動retryを変更しない。単一runのhard ceilingは既存standard `$1.70` / high-risk `$2.10` run budget（#160）が担い、wall-clock異常は#146の責務である。usage欠損を0 USDとして扱わない。compact usageを低コストかつ安全に渡す恒久方式が必要になれば、このmetadata burst detectorを拡張せず#390のscopeを再確認するか後継Issueで扱う。main反映後は、計測目的のpaid reviewを実行せず、自然なrun/re-runで`workflow_run` event挙動を確認する。
+
 ### merge-base/stale判定による承認dismiss時の手動復旧
 
 GitHub内部のmetadataまたは判定実装を原因として断定しない。次のすべてを人間が確認できる異常時だけ、PR headを変更せず同じbase branchへ再設定してPR基準情報のrefreshを試みてよい。
