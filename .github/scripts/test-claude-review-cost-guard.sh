@@ -54,6 +54,15 @@ rerun_timestamp='[
 write_runs "$test_dir/rerun-timestamp.json" "$rerun_timestamp"
 run_guard "$test_dir/rerun-timestamp.json" 7 | jq -e '.result == "no_notify" and .run_count == 3' > /dev/null
 
+prior_rerun='[
+  {"id":8,"run_attempt":1,"head_branch":"ops/issue-prior-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:00:00Z"},
+  {"id":8,"run_attempt":2,"head_branch":"ops/issue-prior-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:05:00Z"},
+  {"id":9,"head_branch":"ops/issue-prior-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T10:10:00Z"},
+  {"id":10,"head_branch":"ops/issue-prior-rerun","status":"in_progress","conclusion":null,"created_at":"2026-09-20T10:12:00Z"}
+]'
+write_runs "$test_dir/prior-rerun.json" "$prior_rerun"
+run_guard "$test_dir/prior-rerun.json" 10 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
+
 cancel_storm='[
   {"id":11,"head_branch":"ops/issue-365-service-local-production-hardening","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T11:00:00Z"},
   {"id":12,"head_branch":"ops/issue-365-service-local-production-hardening","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T11:04:00Z"},
@@ -88,5 +97,8 @@ run_guard "$test_dir/foreign.json" 35 | jq -e '.result == "ignored" and .reason 
 
 printf '%s\n' '{"workflow_runs":[{"id":41,"status":"in_progress"}]}' > "$test_dir/malformed.json"
 run_guard "$test_dir/malformed.json" 41 | jq -e '.result == "diagnostic" and .reason == "workflow_run_metadata_incomplete"' > /dev/null
+
+printf '%s\n' '{"diagnostic_reason":"attempt_retrieval_limit_exceeded"}' > "$test_dir/retrieval-limit.json"
+run_guard "$test_dir/retrieval-limit.json" 41 | jq -e '.result == "diagnostic" and .reason == "attempt_retrieval_limit_exceeded"' > /dev/null
 
 echo 'Claude Review Cost Guard fixture tests passed.'

@@ -25,7 +25,9 @@ if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --arg repos
     (.run_attempt | type == "number" and . >= 1 and floor == .) and
     (.run_started_at | type == "string") and
     (.run_started_at | fromdateiso8601? != null);
-  if type != "object" or (.workflow_runs | type) != "array" then
+  if type == "object" and (.diagnostic_reason | type == "string" and length > 0) then
+    {result:"diagnostic", reason:.diagnostic_reason}
+  elif type != "object" or (.workflow_runs | type) != "array" then
     {result:"diagnostic", reason:"workflow_runs_invalid"}
   elif any(.workflow_runs[]; valid_run | not) then
     {result:"diagnostic", reason:"workflow_run_metadata_incomplete"}
