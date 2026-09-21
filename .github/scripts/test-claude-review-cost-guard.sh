@@ -100,6 +100,16 @@ prior_rerun='[
 write_runs "$test_dir/prior-rerun.json" "$prior_rerun"
 run_guard "$test_dir/prior-rerun.json" 10 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
 
+rerun_after_current='[
+  {"id":81,"run_attempt":1,"head_branch":"ops/issue-rerun-after-current","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:00:00Z"},
+  {"id":81,"run_attempt":2,"head_branch":"ops/issue-rerun-after-current","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:05:00Z"},
+  {"id":82,"head_branch":"ops/issue-rerun-after-current","status":"completed","conclusion":"success","created_at":"2026-09-20T10:10:00Z"},
+  {"id":83,"head_branch":"ops/issue-rerun-after-current","status":"in_progress","conclusion":null,"created_at":"2026-09-20T10:12:00Z"},
+  {"id":81,"run_attempt":3,"head_branch":"ops/issue-rerun-after-current","status":"in_progress","conclusion":null,"created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:15:00Z"}
+]'
+write_runs "$test_dir/rerun-after-current.json" "$rerun_after_current"
+run_guard "$test_dir/rerun-after-current.json" 83 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
+
 cancel_storm='[
   {"id":11,"head_branch":"ops/issue-365-service-local-production-hardening","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T11:00:00Z"},
   {"id":12,"head_branch":"ops/issue-365-service-local-production-hardening","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T11:04:00Z"},
@@ -151,5 +161,11 @@ run_guard "$test_dir/malformed.json" 41 | jq -e '.result == "diagnostic" and .re
 
 printf '%s\n' '{"diagnostic_reason":"attempt_retrieval_limit_exceeded"}' > "$test_dir/retrieval-limit.json"
 bash "$guard" "$test_dir/retrieval-limit.json" 41 owner/repo in_progress 1 | jq -e '.result == "diagnostic" and .reason == "attempt_retrieval_limit_exceeded"' > /dev/null
+
+printf '%s\n' '{"diagnostic_reason":"candidate_selection_failed"}' > "$test_dir/candidate-selection-failed.json"
+bash "$guard" "$test_dir/candidate-selection-failed.json" 41 owner/repo in_progress 1 | jq -e '.result == "diagnostic" and .reason == "candidate_selection_failed"' > /dev/null
+
+printf '%s\n' '{"diagnostic_reason":"attempt_fetch_failed"}' > "$test_dir/attempt-fetch-failed.json"
+bash "$guard" "$test_dir/attempt-fetch-failed.json" 41 owner/repo in_progress 1 | jq -e '.result == "diagnostic" and .reason == "attempt_fetch_failed"' > /dev/null
 
 echo 'Claude Review Cost Guard fixture tests passed.'
