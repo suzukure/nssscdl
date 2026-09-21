@@ -24,9 +24,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          CURRENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          CURRENT_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -euo pipefail
+          if ! [[ "$CURRENT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || [ "$CURRENT_RUN_ATTEMPT" -gt 20 ]; then
+            echo "Current run attempt is invalid or exceeds the Cost Guard's bounded retrieval limit." >&2
+            exit 1
+          fi
+
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?per_page=100" > "$RUNNER_TEMP/claude-review-runs.json"
+          attempt_files=()
+          for attempt in $(seq 1 "$CURRENT_RUN_ATTEMPT"); do
+            attempt_file="$RUNNER_TEMP/claude-review-run-${CURRENT_RUN_ID}-attempt-${attempt}.json"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CURRENT_RUN_ID}/attempts/${attempt}" > "$attempt_file"
+            attempt_files+=("$attempt_file")
+          done
+          jq -s '{workflow_runs: (.[0].workflow_runs + .[1:])}' \
+            "$RUNNER_TEMP/claude-review-runs.json" "${attempt_files[@]}" \
+            > "$RUNNER_TEMP/claude-review-attempts.json"
 
       - name: Evaluate Cost Guard
         id: guard
@@ -34,7 +50,7 @@ jobs:
           CURRENT_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-          evaluation="$(bash .github/scripts/evaluate-claude-review-cost-guard.sh "$RUNNER_TEMP/claude-review-runs.json" "$CURRENT_RUN_ID" "$GITHUB_REPOSITORY")"
+          evaluation="$(bash .github/scripts/evaluate-claude-review-cost-guard.sh "$RUNNER_TEMP/claude-review-attempts.json" "$CURRENT_RUN_ID" "$GITHUB_REPOSITORY")"
           printf '%s\n' "$evaluation" | jq -e '.result == "notify" or .result == "no_notify" or .result == "ignored" or .result == "diagnostic"' > /dev/null
           printf 'evaluation=%s\n' "$evaluation" >> "$GITHUB_OUTPUT"
           {

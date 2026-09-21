@@ -10,7 +10,7 @@ write_runs() {
   local path="$1"
   shift
   jq -cn --argjson runs "$1" --arg repo 'owner/repo' \
-    '{workflow_runs: ($runs | map(. + {head_repository: {full_name: $repo}}))}' > "$path"
+    '{workflow_runs: ($runs | map(. + {head_repository: {full_name: $repo}, run_attempt: (.run_attempt // 1), run_started_at: (.run_started_at // .created_at)}))}' > "$path"
 }
 
 run_guard() {
@@ -35,6 +35,24 @@ burst='[
 write_runs "$test_dir/burst.json" "$burst"
 run_guard "$test_dir/burst.json" 4 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
 run_guard "$test_dir/burst.json" 5 | jq -e '.result == "no_notify" and .run_count == 5' > /dev/null
+
+rerun='[
+  {"id":6,"run_attempt":1,"head_branch":"ops/issue-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T09:59:00Z"},
+  {"id":6,"run_attempt":2,"head_branch":"ops/issue-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:00:00Z"},
+  {"id":6,"run_attempt":3,"head_branch":"ops/issue-rerun","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:04:00Z"},
+  {"id":6,"run_attempt":4,"head_branch":"ops/issue-rerun","status":"in_progress","conclusion":null,"created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:08:00Z"}
+]'
+write_runs "$test_dir/rerun.json" "$rerun"
+run_guard "$test_dir/rerun.json" 6 | jq -e '.result == "notify" and .trigger == "review_burst" and .run_count == 4' > /dev/null
+
+rerun_timestamp='[
+  {"id":7,"run_attempt":1,"head_branch":"ops/issue-rerun-timestamp","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T09:00:00Z"},
+  {"id":7,"run_attempt":2,"head_branch":"ops/issue-rerun-timestamp","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:00:00Z"},
+  {"id":7,"run_attempt":3,"head_branch":"ops/issue-rerun-timestamp","status":"completed","conclusion":"success","created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:04:00Z"},
+  {"id":7,"run_attempt":4,"head_branch":"ops/issue-rerun-timestamp","status":"in_progress","conclusion":null,"created_at":"2026-09-20T09:00:00Z","run_started_at":"2026-09-20T10:08:00Z"}
+]'
+write_runs "$test_dir/rerun-timestamp.json" "$rerun_timestamp"
+run_guard "$test_dir/rerun-timestamp.json" 7 | jq -e '.result == "no_notify" and .run_count == 3' > /dev/null
 
 cancel_storm='[
   {"id":11,"head_branch":"ops/issue-365-service-local-production-hardening","status":"completed","conclusion":"cancelled","created_at":"2026-09-20T11:00:00Z"},
@@ -64,7 +82,7 @@ different_branch='[
 write_runs "$test_dir/different-branch.json" "$different_branch"
 run_guard "$test_dir/different-branch.json" 34 | jq -e '.result == "no_notify" and .run_count == 1' > /dev/null
 
-foreign='[{"id":35,"head_branch":"feature/fork","status":"in_progress","conclusion":null,"created_at":"2026-09-20T13:07:00Z","head_repository":{"full_name":"fork/repo"}}]'
+foreign='[{"id":35,"run_attempt":1,"head_branch":"feature/fork","status":"in_progress","conclusion":null,"created_at":"2026-09-20T13:07:00Z","run_started_at":"2026-09-20T13:07:00Z","head_repository":{"full_name":"fork/repo"}}]'
 jq -cn --argjson runs "$foreign" '{workflow_runs: $runs}' > "$test_dir/foreign.json"
 run_guard "$test_dir/foreign.json" 35 | jq -e '.result == "ignored" and .reason == "current_run_head_repository_not_current_repository"' > /dev/null
 

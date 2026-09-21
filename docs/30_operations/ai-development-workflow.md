@@ -202,11 +202,11 @@ HTTP status、特にHTTP 429、Action logの文言、または利用量だけか
 
 Issue #390 のPhase 1は、`Claude Review` を `workflow_run` の `in_progress` と `completed` で監視する独立したread-only Cost Guardである。PR headをcheckout・実行せず、default branchから取得したhelperとActions metadataだけを使い、LLM、raw job log、usage telemetryの常時取得を使わない。`requested` はre-runで発生しないため、監視の根拠にしない。
 
-監視keyはsame-repository head branchであり、current runの作成時刻から15分のrolling windowを集計する。`completed` かつ `skipped` はpaid burstに数えず、`in_progress` はpaid-capable候補として数える。4件目のnon-skipped / paid-capable runでreview burst、3件目の`cancelled` runでcancel stormを1回通知する。閾値超過後のrunは通知しないため、永続stateを持たずに重複通知を抑止する。2026-09-18〜21の実測では#378が15分8件・cancelled 6件、#339が7件・5件、#365/#343が各4件・3件だった一方、#387のreview-ready self-testは最大3件・cancelled 0件だったことが根拠である。
+監視keyはsame-repository head branchであり、workflow run IDではなくpaid execution attemptを単位にする。15分rolling windowは各attemptの`run_started_at`で集計し、同一run IDのRe-runも`run_attempt`ごとに別executionとして数える。初回runの`created_at`をRe-run時刻の代用にしない。`completed` かつ `skipped` はpaid burstに数えず、`in_progress` はpaid-capable候補として数える。4件目のnon-skipped / paid-capable attemptでreview burst、3件目の`cancelled` attemptでcancel stormを1回通知する。閾値超過後のattemptは通知しないため、永続stateを持たずに重複通知を抑止する。attempt履歴の取得はcurrent runについて最大20回にboundedし、取得不能・不正なmetadataでは通知判定を行わず診断に留める。2026-09-18〜21の実測では#378が15分8件・cancelled 6件、#339が7件・5件、#365/#343が各4件・3件だった一方、#387のreview-ready self-testは最大3件・cancelled 0件だったことが根拠である。
 
 通知は既存`notify-human.sh`によるDiscordのみで、trigger、15分窓のrun数/cancelled数、head branch、current run URL、および自動停止していない事実だけを含める。PR番号が安全に取得できないことは監視を無効化しない。metadataが不完全・不正なら0費用や正常とは推測せず診断を残し、通知判定を行わない。`NOTIFICATION_WEBHOOK_URL`未設定時は既存helperどおりwarning相当で正常終了する。
 
-Cost Guardはreview verdict、merge、pause、`human-review-required`、budget、workflow有効化、自動retryを変更しない。単一runのhard ceilingは既存standard `$1.70` / high-risk `$2.10` run budget（#160）が担い、wall-clock異常は#146の責務である。usage欠損を0 USDとして扱わない。compact usageを低コストかつ安全に渡す恒久方式が必要になれば、このmetadata burst detectorを拡張せず#390のscopeを再確認するか後継Issueで扱う。main反映後は、計測目的のpaid reviewを実行せず、自然なrun/re-runで`workflow_run` event挙動を確認する。
+Cost Guardはreview verdict、merge、pause、`human-review-required`、budget、workflow有効化、自動retryを変更しない。standard `$1.70` / high-risk `$2.10` run budget値の確定は#173、budget/account spend limit到達時のpause・Discord通知配線は#160、wall-clock異常は#146の責務である。usage欠損を0 USDとして扱わない。compact usageを低コストかつ安全に渡す恒久方式が必要になれば、このmetadata burst detectorを拡張せず#390のscopeを再確認するか後継Issueで扱う。main反映後は、計測目的のpaid reviewを実行せず、自然なrun/re-runで`workflow_run` event挙動を確認する。
 
 ### merge-base/stale判定による承認dismiss時の手動復旧
 

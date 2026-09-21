@@ -22,28 +22,30 @@ if ! evaluation="$(jq -ce --argjson current_run_id "$current_run_id" --arg repos
     (.head_repository | type == "object" and (.full_name | type == "string" and length > 0)) and
     (.status | type == "string") and
     ((.conclusion == null) or (.conclusion | type == "string")) and
-    (.created_at | type == "string") and
-    (.created_at | fromdateiso8601? != null);
+    (.run_attempt | type == "number" and . >= 1 and floor == .) and
+    (.run_started_at | type == "string") and
+    (.run_started_at | fromdateiso8601? != null);
   if type != "object" or (.workflow_runs | type) != "array" then
     {result:"diagnostic", reason:"workflow_runs_invalid"}
   elif any(.workflow_runs[]; valid_run | not) then
     {result:"diagnostic", reason:"workflow_run_metadata_incomplete"}
   else
-    (.workflow_runs | map(. + {created_epoch: (.created_at | fromdateiso8601)})) as $runs
-    | ($runs | map(select(.id == $current_run_id))) as $current_runs
-    | if ($current_runs | length) != 1 then
+    (.workflow_runs
+     | unique_by([.id, .run_attempt])
+     | map(. + {started_epoch: (.run_started_at | fromdateiso8601)})) as $runs
+    | ($runs | map(select(.id == $current_run_id)) | max_by(.run_attempt)) as $current
+    | if $current == null then
         {result:"diagnostic", reason:"current_run_not_found"}
-      elif $current_runs[0].head_repository.full_name != $repository then
+      elif $current.head_repository.full_name != $repository then
         {result:"ignored", reason:"current_run_head_repository_not_current_repository"}
       else
-        $current_runs[0] as $current
-        | ($runs
-           | map(select(
-               .head_repository.full_name == $repository and
-               .head_branch == $current.head_branch and
-               .created_epoch >= ($current.created_epoch - 900) and
-               .created_epoch <= $current.created_epoch
-             ))) as $window
+        ($runs
+         | map(select(
+             .head_repository.full_name == $repository and
+             .head_branch == $current.head_branch and
+             .started_epoch >= ($current.started_epoch - 900) and
+             .started_epoch <= $current.started_epoch
+           ))) as $window
         | ($window | map(select(.status != "completed" or .conclusion != "skipped"))) as $paid_capable
         | ($window | map(select(.conclusion == "cancelled"))) as $cancelled
         | {
