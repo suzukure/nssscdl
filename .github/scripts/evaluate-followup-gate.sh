@@ -19,8 +19,8 @@ emit_result() {
     '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason}'
 }
 
-followup_re_review_pause_reason() {
-  printf '%s\n' 'Automatic Claude re-review is paused. After checking the Codex follow-up, follow the label-removal order in docs/30_operations/ai-development-workflow.md#人間エスカレーション to request one new Claude review.'
+normal_followup_reason() {
+  printf '%s\n' 'Automated Codex follow-up passed the entry gate; successful trusted completion will request re-review by marking the PR ready for review.'
 }
 
 human_decision_pause_reason() {
@@ -77,5 +77,5 @@ if grep -Eq '\[(REQUIREMENTS_CHANGE_REQUIRED|HUMAN_ESCALATION_RECOMMENDED)\]' <<
 elif [ "$review_count" -ge 3 ]; then
   emit_result false true true "Automated review reached ${review_count} change-request rounds. $(human_decision_pause_reason)"
 else
-  emit_result true false false "$(followup_re_review_pause_reason)"
+  emit_result true false false "$(normal_followup_reason)"
 fi

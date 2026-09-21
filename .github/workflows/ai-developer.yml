@@ -1061,9 +1061,58 @@ jobs:
           bash .github/scripts/notify-human.sh
           "AI Developer job ended with result '${JOB_RESULT}', pause sync outcome '${PAUSE_SYNC_OUTCOME}', and requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
+  draft-after-claude-changes:
+    name: Draft after Claude changes requested
+    if: >-
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.review.commit_id == github.event.pull_request.head.sha &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Create reviewer App token for identity verification
+        id: review-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Verify review author
+        id: verify-reviewer
+        env:
+          EXPECTED_LOGIN: ${{ steps.review-token.outputs.app-slug }}[bot]
+          ACTUAL_LOGIN: ${{ github.event.review.user.login }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_slug="${EXPECTED_LOGIN%\[bot\]}"
+          if [ "$ACTUAL_LOGIN" = "$EXPECTED_LOGIN" ] || [ "$ACTUAL_LOGIN" = "$expected_slug" ]; then
+            echo 'trusted=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN"
+            echo 'trusted=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Convert pull request to Draft
+        if: steps.verify-reviewer.outputs.trusted == 'true'
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ]; then
+            gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo
+          fi
+
   respond-to-claude:
     name: Respond to Claude
+    needs: draft-after-claude-changes
     if: >-
+      needs.draft-after-claude-changes.result == 'success' &&
       github.event_name == 'pull_request_review' &&
       github.event.review.state == 'changes_requested' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -1131,7 +1180,7 @@ jobs:
           notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
 
-          if [ "$escalate" = 'true' ] || [ "$continue" = 'true' ]; then
+          if [ "$escalate" = 'true' ]; then
             # The pause helper resolves and labels the PR's closing Issues.
             bash .github/scripts/apply-human-pause.sh \
               "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
@@ -1415,6 +1464,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1434,8 +1484,65 @@ jobs:
 
           git commit -m "Address Claude review for PR #${PR_NUMBER}"
           git push origin "HEAD:${HEAD_REF}"
+          expected_head="$(git rev-parse HEAD)"
+          for attempt in 1 2 3 4 5; do
+            current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+            if [ "$current_head" = "$expected_head" ]; then
+              gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+              break
+            fi
+            if [ "$current_head" != "$EVENT_HEAD" ]; then
+              echo "PR #${PR_NUMBER} head changed unexpectedly: expected ${expected_head}, observed ${current_head}." >&2
+              exit 1
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "PR #${PR_NUMBER} head did not reach pushed commit ${expected_head}." >&2
+              exit 1
+            fi
+            sleep 2
+          done
           if [ -s "$CODEX_FINAL" ]; then
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
           else
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
           fi
+
+  handle-claude-followup-failure:
+    name: Handle Claude follow-up failure
+    needs: [draft-after-claude-changes, respond-to-claude]
+    if: >-
+      always() &&
+      (needs.draft-after-claude-changes.result == 'failure' || needs.respond-to-claude.result == 'failure') &&
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Create developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+
+      - name: Check out trusted automation
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Pause failed follow-up
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/apply-human-pause.sh \
+            "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body 'Codex follow-up ended abnormally; automated follow-up is paused pending a human decision.'

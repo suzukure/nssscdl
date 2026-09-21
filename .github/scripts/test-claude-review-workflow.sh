@@ -1096,7 +1096,11 @@ if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
   exit 1
 fi
-grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, unlabeled]' "$workflow"
+grep -Fq 'types: [opened, reopened, ready_for_review, unlabeled]' "$workflow"
+if grep -Fq 'synchronize' "$workflow"; then
+  echo 'Claude Review must not start a paid review from a head synchronization.' >&2
+  exit 1
+fi
 grep -Fq "github.event.label.name == 'human-review-required'" "$workflow"
 grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$workflow"
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"

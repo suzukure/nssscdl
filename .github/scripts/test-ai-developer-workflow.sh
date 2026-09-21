@@ -125,12 +125,64 @@ if grep -Eqi '(rerun|retry|workflow_dispatch)' "$handler"; then
   echo 'Issue developer failure handler must not retry automation.' >&2
   exit 1
 fi
-grep -Fq -- '--body "$reason"' "$workflow"
-grep -Fq 'apply-human-pause.sh' "$workflow"
-if grep -Fq 'Automatic Claude re-review is paused.' "$workflow"; then
-  echo 'Expected follow-up re-review guidance to come from the follow-up gate.' >&2
+followup_failure_handler="$test_dir/handle-claude-followup-failure.yml"
+awk '
+  $0 == "  handle-claude-followup-failure:" { in_job = 1 }
+  in_job { print }
+' "$workflow" > "$followup_failure_handler"
+[ -s "$followup_failure_handler" ]
+grep -Fqx '    needs: [draft-after-claude-changes, respond-to-claude]' "$followup_failure_handler"
+grep -Fqx "      (needs.draft-after-claude-changes.result == 'failure' || needs.respond-to-claude.result == 'failure') &&" "$followup_failure_handler"
+grep -Fq 'apply-human-pause.sh' "$followup_failure_handler"
+grep -Fq 'Codex follow-up ended abnormally' "$followup_failure_handler"
+if grep -Fq "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" "$followup_failure_handler"; then
+  echo 'Draft-conversion failures must pause every same-repository pull request.' >&2
   exit 1
 fi
+grep -Fq -- '--body "$reason"' "$workflow"
+grep -Fq 'apply-human-pause.sh' "$workflow"
+draft_after_changes_workflow="$test_dir/draft-after-claude-changes.yml"
+awk '
+  $0 == "  draft-after-claude-changes:" { in_job = 1 }
+  in_job && /^  [[:alnum:]_-]+:$/ && $0 != "  draft-after-claude-changes:" { exit }
+  in_job { print }
+' "$workflow" > "$draft_after_changes_workflow"
+[ -s "$draft_after_changes_workflow" ]
+grep -Fqx '    name: Draft after Claude changes requested' "$draft_after_changes_workflow"
+grep -Fqx '      pull-requests: write' "$draft_after_changes_workflow"
+grep -Fq "github.event.review.state == 'changes_requested'" "$draft_after_changes_workflow"
+grep -Fq 'github.event.review.commit_id == github.event.pull_request.head.sha' "$draft_after_changes_workflow"
+grep -Fq 'Create reviewer App token for identity verification' "$draft_after_changes_workflow"
+grep -Fq 'Ignoring change request from untrusted reviewer:' "$draft_after_changes_workflow"
+grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow"
+grep -Fqx '    needs: draft-after-claude-changes' "$workflow"
+grep -Fq "needs.draft-after-claude-changes.result == 'success'" "$workflow"
+followup_commit_step="$test_dir/commit-and-answer-review.yml"
+awk '
+  $0 == "      - name: Commit and answer review" { in_step = 1 }
+  in_step && /^      - name: / && $0 != "      - name: Commit and answer review" { exit }
+  in_step { print }
+' "$workflow" > "$followup_commit_step"
+[ -s "$followup_commit_step" ]
+grep -Fq 'git push origin "HEAD:${HEAD_REF}"' "$followup_commit_step"
+grep -Fq 'expected_head="$(git rev-parse HEAD)"' "$followup_commit_step"
+grep -Fq 'gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid' "$followup_commit_step"
+grep -Fq 'if [ "$current_head" = "$expected_head" ]; then' "$followup_commit_step"
+grep -Fq 'EVENT_HEAD: ${{ github.event.pull_request.head.sha }}' "$followup_commit_step"
+grep -Fq 'if [ "$current_head" != "$EVENT_HEAD" ]; then' "$followup_commit_step"
+grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$followup_commit_step"
+if grep -Fq -- '--undo' "$followup_commit_step"; then
+  echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
+  exit 1
+fi
+if ! grep -Fq 'Automated Codex follow-up passed the entry gate' "$repo_root/.github/scripts/evaluate-followup-gate.sh"; then
+  echo 'Expected the follow-up gate to describe the successful re-review path.' >&2
+  exit 1
+fi
+
+operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
+grep -Fq '`Run Codex follow-up` 側の異常終了ではPRはDraftのまま' "$operations_doc"
+grep -Fq 'Draft復帰job自体が異常終了した場合はPRが非Draftのまま停止しているため、PR側のラベルを解除する前に人間がPRをDraftへ戻し' "$operations_doc"
 
 # Both Codex jobs must have a server-side wall-clock bound in addition to
 # the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
@@ -703,12 +755,26 @@ assert_followup_gate_pause() {
   grep -Fxq "continue=$expected_continue" "$output_path"
 }
 
-assert_followup_gate_pause followup-continue valid true
+assert_followup_gate_continue() {
+  local output_path="$test_dir/followup-continue.output"
+  local log_path="$test_dir/followup-continue.log"
+
+  : > "$output_path"
+  : > "$log_path"
+  MOCK_CASE=valid MOCK_GH_LOG="$log_path" \
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
+    bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
+  [ ! -s "$log_path" ]
+  grep -Fxq 'continue=true' "$output_path"
+}
+
+assert_followup_gate_continue
 assert_followup_gate_pause followup-escalate three-reviews false
 
 : > "$test_dir/followup-pause-failure.output"
 : > "$test_dir/followup-pause-failure.log"
-if MOCK_CASE=valid MOCK_PR_CLOSING_FETCH_FAIL=true \
+if MOCK_CASE=three-reviews MOCK_PR_CLOSING_FETCH_FAIL=true \
     MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
     DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
@@ -724,7 +790,7 @@ fi
 
 for fixture in valid app-author; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automatic Claude re-review is paused."))' <<< "$followup" > /dev/null
+  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automated Codex follow-up passed the entry gate"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null

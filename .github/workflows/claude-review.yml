@@ -3,7 +3,7 @@ name: Claude Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, unlabeled]
+    types: [opened, reopened, ready_for_review, unlabeled]
 
 permissions:
   contents: read

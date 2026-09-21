@@ -96,7 +96,7 @@ gh() {
 }
 export -f gh
 
-grep -Fq 'followup_re_review_pause_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
+grep -Fq 'normal_followup_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
 regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
 test -f "$regression_workflow"
