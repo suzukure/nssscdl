@@ -49,8 +49,10 @@ grep -Fq 'persist-credentials: false' "$diagnostic_workflow"
 grep -Fq -- '--case A04-defect' "$diagnostic_workflow"
 grep -Fq -- '--model deepseek-ai/DeepSeek-V4-Flash-0731' "$diagnostic_workflow"
 grep -Fq -- '--diagnostic-a' "$diagnostic_workflow"
-if grep -Eq '(^|[[:space:]])(issues|pull-requests|actions|checks|workflows): (read|write)' "$diagnostic_workflow"; then
-  echo 'Diagnostic A must not receive GitHub Issue, PR, or workflow permissions.' >&2
+grep -Fq 'issues: read' "$diagnostic_workflow"
+grep -Fq 'GH_TOKEN: ${{ github.token }}' "$diagnostic_workflow"
+if grep -Eq '(^|[[:space:]])(contents|issues|pull-requests|actions|checks|workflows): write' "$diagnostic_workflow"; then
+  echo 'Diagnostic A must not receive write permissions.' >&2
   exit 1
 fi
 
@@ -97,7 +99,7 @@ diagnostic_workflow_text = diagnostic_workflow_path.read_text(encoding="utf-8")
 production_workflow_text = production_workflow_path.read_text(encoding="utf-8")
 assert "workflow_dispatch:" in diagnostic_workflow_text
 assert "--diagnostic-a" in diagnostic_workflow_text
-assert "issues: read" not in diagnostic_workflow_text
+assert "issues: read" in diagnostic_workflow_text
 assert "anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10" in production_workflow_text
 for rule in (
     "Review only; do not edit files, push, merge, or post GitHub comments yourself.",
@@ -107,7 +109,8 @@ for rule in (
     "If you cannot form a valid normal review, return a schema-compliant request_changes JSON object; never return free text.",
     "Every finding must cite concrete repository evidence.",
 ):
-    assert rule in m.production_reviewer_prompt()
+    assert rule in m.diagnostic_a_reviewer_norms()
+assert "Read .ai-context/CLAUDE.base.md" not in m.diagnostic_a_reviewer_norms()
 
 def choice_options(name, next_name=None):
     block = workflow_text.split(f"      {name}:\n", 1)[1]
@@ -320,9 +323,9 @@ assert "#342, #343, #359 are intentionally outside model-visible evidence" in co
 assert "MUST NOT be treated as unavailable required evidence or as a blocking reason" in context
 assert all("HEAD" not in arg and "main" not in arg for call in git_calls for arg in call)
 
-# Diagnostic A must use exactly the fixed A04 historical evidence while omitting
-# all current PR-body and Issue snapshots.  It may not reconstruct historical
-# PR text from any source.
+# Diagnostic A must use exactly the fixed A04 historical evidence, preserve the
+# normal Stage A Issue-evidence set, and omit current PR body content. It may
+# not reconstruct historical PR text from any source.
 diagnostic_case = m.CASES[m.DIAGNOSTIC_A_CASE]
 diagnostic_git_calls = []
 def diagnostic_git(args, timeout=25):
@@ -338,8 +341,33 @@ def diagnostic_git(args, timeout=25):
     raise AssertionError(f"unexpected Diagnostic A git call: {args}")
 
 m.git_output = diagnostic_git
-m.fetch_pull_request = lambda *args: (_ for _ in ()).throw(AssertionError("Diagnostic A fetched current PR"))
-m.fetch_issue = lambda *args: (_ for _ in ()).throw(AssertionError("Diagnostic A fetched current Issue"))
+diagnostic_pr_body = """## Validation
+later fixed state must not be visible
+
+## Scope-out impact and follow-up
+- Follow-up Issue: #777
+"""
+m.fetch_pull_request = lambda repo, number: {
+    "number": number,
+    "title": "mutable current PR title",
+    "body": diagnostic_pr_body,
+}
+m.fetch_issue = lambda repo, number: (
+    {
+        "number": diagnostic_case["issue"],
+        "title": "closing issue evidence",
+        "state": "closed",
+        "updated_at": "2026-09-22T00:00:00Z",
+        "body": "closing Issue evidence\n\n## Scope-out impact and follow-up\n- Follow-up Issue: #778\n",
+    }
+    if number == diagnostic_case["issue"] else {
+        "number": number,
+        "title": f"follow-up Issue #{number}",
+        "state": "open",
+        "updated_at": "2026-09-22T00:00:01Z",
+        "body": f"follow-up Issue evidence #{number}",
+    }
+)
 m.historical_file_content = lambda head, path: (
     "selected Diagnostic A file" if (head, path) == (diagnostic_case["head"], "docs/diagnostic.md")
     else (_ for _ in ()).throw(AssertionError("Diagnostic A used wrong historical file"))
@@ -354,13 +382,19 @@ context, meta = m.build_context("owner/repo", m.DIAGNOSTIC_A_CASE, diagnostic_a=
 assert meta["diagnostic_a"] is True
 assert meta["base_sha"] == "52d16de6a07e336f87dbdbc2ab5a2a8be86aa410"
 assert meta["selected_head_sha"] == "8cfa0572d3640527265aa33c412c92e80779562a"
-assert meta["follow_up_issues"] == []
+assert meta["follow_up_issues"] == [777, 778]
 assert "PULL REQUEST BODY" not in context
-assert "Validation" not in context
+assert "later fixed state must not be visible" not in context
+assert "mutable current PR title" not in context
+assert "CLOSING ISSUE" in context
+assert "closing Issue evidence" in context
+assert "follow-up Issue evidence #777" in context
+assert "follow-up Issue evidence #778" in context
 assert "selected Diagnostic A change" in context
 assert "selected Diagnostic A file" in context
 assert "current PR" not in context
 assert "Review only; do not edit files, push, merge, or post GitHub comments yourself." in context
+assert "Read .ai-context/CLAUDE.base.md" not in context
 assert all("HEAD" not in arg and "main" not in arg for call in diagnostic_git_calls for arg in call)
 for invalid_case, invalid_model in (("A01-defect", m.DIAGNOSTIC_A_MODEL), (m.DIAGNOSTIC_A_CASE, "zai-org/GLM-5.3-Flash")):
     try:
