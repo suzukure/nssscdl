@@ -711,6 +711,8 @@ Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で
 
 旧連絡先へのSecurity Noticeは、変更直前の旧メールSnapshotを宛先とし、通常予約系の実送信時の有効連絡先への再評価を適用しない。Snapshotは送信・許容Retryに必要な期間だけ保持し、最終失敗後の手動再送のためだけに保持延長しない。具体的な保存・最小化方式は詳細設計で定める。
 
+新メール所有確認は、現在有効なPending Contact Email Changeの新メール自体を宛先とし、通常予約系の実送信時の有効連絡先への再評価を適用しない。
+
 ### 13.5 一括予約における予約確認と区分変更の責任分担
 
 一括予約Confirmが正常Commitした場合、`REQ-101` の予約確認NotificationIntentは当該一括予約1操作につき1件とし、選択集合中で新規作成した全Reservationだけを通知対象とする。このIntentによる予約確認メールには、`BR-112` および `AC-101-001〜002` に従い、各新規Reservationの日時と確定時点の標準／追加区分を含める。
