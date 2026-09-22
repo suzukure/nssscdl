@@ -610,7 +610,7 @@ grep -Fq 'socket.AF_UNIX' "$followup_step"
 grep -Fq 'socket.AF_INET' "$followup_step"
 grep -Fq 'getent ahosts github.com >/dev/null' "$followup_workflow"
 grep -Fq 'getent ahosts api.github.com >/dev/null' "$followup_workflow"
-if grep -Eq 'drop-sudo |--root-phase |OPENAI_API_KEY|secrets\\.|openai-api-key' "$followup_step"; then
+if grep -Eq 'drop-sudo |--root-phase |OPENAI_API_KEY|secrets\.|openai-api-key|DEV_APP_PRIVATE_KEY|NOTIFICATION_WEBHOOK_URL' "$followup_step"; then
   echo 'Codex follow-up native workload must not invoke host-global setup or receive secrets.' >&2
   exit 1
 fi
@@ -618,6 +618,73 @@ if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$followup_workflow
   echo 'Codex follow-up setup must not enter the Action execution path.' >&2
   exit 1
 fi
+
+# Keep the privileged launcher contract identical for issue development and
+# review follow-up. A drift in either path must fail the same assertions.
+assert_hardened_codex_runtime() {
+  local runtime_name="${1:?runtime name is required}"
+  local runtime_step="${2:?runtime step is required}"
+  local runtime_run="$test_dir/${runtime_name// /-}-run.sh"
+  local mutation_lines actual_paths
+
+  if grep -Fq 'sudo -n -E' "$runtime_step"; then
+    echo "$runtime_name root phase must not preserve the whole step environment." >&2
+    exit 1
+  fi
+  grep -Fq 'exec sudo -n -- ' "$runtime_step"
+  test "$(grep -Fc '/usr/bin/journalctl' "$runtime_step" || true)" = 1
+  grep -Fq '/usr/bin/journalctl \\' "$runtime_step"
+  grep -Fq -- '--unit="$unit" \\' "$runtime_step"
+  grep -Fq -- '--no-pager \\' "$runtime_step"
+  grep -Fq -- '--output=cat \\' "$runtime_step"
+  grep -Fq -- '--lines=200 || true' "$runtime_step"
+  if grep -Fq 'drop-sudo ' "$runtime_step" || grep -Fq -- '--root-phase ' "$runtime_step"; then
+    echo "$runtime_name must not invoke host-global drop-sudo root phase." >&2
+    exit 1
+  fi
+  grep -Fq "protected_unix_socket_paths=\"$expected_protected_unix_socket_paths\"" "$runtime_step"
+  actual_paths="$(grep -oE '/run/[A-Za-z0-9._/-]+' "$runtime_step" | LC_ALL=C sort -u)"
+  if [ "$actual_paths" != "$expected_run_paths" ]; then
+    echo "$runtime_name references an unreviewed /run path." >&2
+    printf 'Expected:\n%s\nActual:\n%s\n' "$expected_run_paths" "$actual_paths" >&2
+    exit 1
+  fi
+  mutation_lines="$(
+    grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$runtime_step" ||
+      true
+  )"
+  test "$(printf '%s\n' "$mutation_lines" | grep -c .)" -eq 1
+  printf '%s\n' "$mutation_lines" |
+    grep -Fqx '          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"'
+  if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$runtime_step"; then
+    echo "$runtime_name must not mutate sudoers or group membership." >&2
+    exit 1
+  fi
+  if grep -Fq 'RestrictAddressFamilies=~AF_UNIX' "$runtime_step"; then
+    echo "$runtime_name must keep AF_UNIX available for the Codex sandbox." >&2
+    exit 1
+  fi
+  if grep -Fq 'errno.ELOOP' "$runtime_step"; then
+    echo "$runtime_name residual /run scan must not skip ELOOP." >&2
+    exit 1
+  fi
+  if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key|DEV_APP_PRIVATE_KEY|NOTIFICATION_WEBHOOK_URL' "$runtime_step"; then
+    echo "$runtime_name native workload must not receive repository secrets." >&2
+    exit 1
+  fi
+  awk '
+    found { print }
+    $0 == "        run: |" { found = 1 }
+  ' "$runtime_step" > "$runtime_run"
+  test -s "$runtime_run"
+  if grep -Fq '${{' "$runtime_run"; then
+    echo "$runtime_name run body must not interpolate GitHub expressions." >&2
+    exit 1
+  fi
+}
+
+assert_hardened_codex_runtime 'Codex developer' "$developer_step"
+assert_hardened_codex_runtime 'Codex follow-up' "$followup_step"
 
 prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
 setup_line="$(grep -nF '      - name: Setup Codex developer runtime' "$workflow" | cut -d: -f1)"
