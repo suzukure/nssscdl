@@ -27,6 +27,7 @@ assert 'HEAD_SHA' in source and 'BASE_SHA' in source
 assert 'MAX_TOOL_CALLS' in source and 'MAX_ROUNDS' in source and 'MAX_TOOL_RESULT_CHARS' in source
 assert 'json_schema' in source and 'benchmark.validate_review' in source
 assert 'benchmark.build_context(args.repo, CASE_ID, diagnostic_a=True)' in source
+assert 'guarded_request' in source and 'REQUEST_OVERHEAD_TOKENS' in source
 
 calls = []
 def fake_run(args, **kwargs):
@@ -48,6 +49,40 @@ try:
     m.execute_tool('read_selected_head_file', {'path': '../bad'})
     raise AssertionError('path escape accepted')
 except (m.DiagnosticBError, m.shared.InvestigatorError): pass
+
+# The shared accumulator's native estimated_cost_usd key must aggregate two
+# live-shaped responses and preserve both local and provider cost in output.
+responses = iter([
+    {'usage': {'prompt_tokens': 10, 'completion_tokens': 4, 'total_tokens': 14, 'estimated_cost': 0.001}, 'choices': [{'message': {'content': 'ready'}}]},
+    {'usage': {'prompt_tokens': 20, 'completion_tokens': 8, 'total_tokens': 28, 'estimated_cost': 0.002}, 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({'verdict': 'approve', 'summary': 'ok', 'blocking_findings': [], 'non_blocking_findings': [], 'linked_issues_checked': []})}}]},
+])
+m.shared.deepinfra_request = lambda payload: next(responses)
+review, accumulated, validation, trace = m.run_review('context', m.benchmark.production_review_schema())
+assert review and validation['status'] == 'valid' and not trace
+assert (accumulated['prompt_tokens'], accumulated['completion_tokens'], accumulated['total_tokens']) == (30, 12, 42)
+assert abs(accumulated['provider_estimated_cost_usd'] - 0.003) < 1e-12
+assert abs(accumulated['local_estimated_cost_usd'] - m.benchmark.estimate_cost_usd(m.MODEL, 30, 12)) < 1e-12
+
+# The guard runs before the request; it rejects an unsafe request without a
+# paid call and permits the same request when the trusted ceiling allows it.
+payload = {'model': m.MODEL, 'messages': [{'role': 'user', 'content': 'x'}], 'max_tokens': 1}
+usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'estimated_cost_usd': 0.0}
+request_count = 0
+def fake_request(value):
+    global request_count
+    request_count += 1
+    return {'choices': []}
+m.shared.deepinfra_request = fake_request
+old_ceiling = m.TOTAL_COST_CEILING_USD
+m.TOTAL_COST_CEILING_USD = m.PREVIOUS_COST_USD
+try:
+    m.guarded_request(payload, usage)
+    raise AssertionError('unsafe request was accepted')
+except m.DiagnosticBError: pass
+assert request_count == 0
+m.TOTAL_COST_CEILING_USD = old_ceiling
+m.guarded_request(payload, usage)
+assert request_count == 1
 
 usage = {'local_estimated_cost_usd': 0.05}
 with tempfile.TemporaryDirectory() as tmp:

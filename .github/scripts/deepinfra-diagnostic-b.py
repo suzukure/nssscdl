@@ -31,6 +31,8 @@ MAX_LIST_RESULTS = 160
 MAX_SEARCH_RESULTS = 40
 PREVIOUS_COST_USD = 0.00666528
 TOTAL_COST_CEILING_USD = 0.05
+# Covers trusted request framing not represented in the serialized payload.
+REQUEST_OVERHEAD_TOKENS = 2_048
 
 
 class DiagnosticBError(RuntimeError):
@@ -106,28 +108,57 @@ def tool_call(value: Any) -> tuple[str, dict[str, Any], str]:
     return function["name"], args, value["id"]
 
 
+def cumulative_usage_output(usage: dict[str, Any], elapsed: float) -> dict[str, Any]:
+    """Convert the shared accumulator to the benchmark artifact representation."""
+    return benchmark.usage_from_response(
+        MODEL,
+        {"usage": {**usage, "estimated_cost": usage["estimated_cost_usd"]}},
+        elapsed,
+    )
+
+
+def request_cost_upper_bound(payload: dict[str, Any]) -> float:
+    """Return a conservative local upper bound for one trusted request."""
+    serialized_bytes = len(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    )
+    max_tokens = _int(payload.get("max_tokens"), "max_tokens", 1, benchmark.MAX_OUTPUT_TOKENS)
+    input_rate, output_rate = benchmark.MODEL_PRICES_PER_MILLION[MODEL]
+    return ((serialized_bytes + REQUEST_OVERHEAD_TOKENS) * input_rate + max_tokens * output_rate) / 1_000_000
+
+
+def guarded_request(payload: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+    """Reject a request before payment when its worst case exceeds #368's cap."""
+    spent = benchmark.estimate_cost_usd(
+        MODEL, usage["prompt_tokens"], usage["completion_tokens"]
+    )
+    if PREVIOUS_COST_USD + spent + request_cost_upper_bound(payload) > TOTAL_COST_CEILING_USD:
+        raise DiagnosticBError("Diagnostic B cumulative cost guard would be exceeded")
+    return shared.deepinfra_request(payload)
+
+
 def run_review(context: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     prompt = context + "\n\n# DIAGNOSTIC B NAVIGATION\nYou may use only the supplied read-only tools. They are fixed to the selected historical head and base/head pair. When enough evidence is gathered, respond without tool calls; the wrapper will then require the production review JSON schema."
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated_cost": 0.0}
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated_cost_usd": 0.0}
     trace: list[dict[str, Any]] = []
     result_chars = 0
     calls = 0
     started = time.monotonic()
     try:
         for round_no in range(1, MAX_ROUNDS + 1):
-            response = shared.deepinfra_request({"model": MODEL, "messages": messages, "tools": tool_definitions(), "tool_choice": "auto", "temperature": 0.1, "max_tokens": 4096})
+            response = guarded_request({"model": MODEL, "messages": messages, "tools": tool_definitions(), "tool_choice": "auto", "temperature": 0.1, "max_tokens": 4096}, usage)
             shared.accumulate_usage(usage, response)
             _, message = shared.first_message(response, "Diagnostic B tool round")
             raw_calls = message.get("tool_calls")
             if raw_calls is None:
-                final = shared.deepinfra_request({"model": MODEL, "messages": messages + [{"role": "assistant", "content": message.get("content")}], "response_format": {"type": "json_schema", "json_schema": {"name": "nssscdl_diagnostic_b_review", "strict": True, "schema": schema}}, "temperature": 0.1, "max_tokens": benchmark.MAX_OUTPUT_TOKENS})
+                final = guarded_request({"model": MODEL, "messages": messages + [{"role": "assistant", "content": message.get("content")}], "response_format": {"type": "json_schema", "json_schema": {"name": "nssscdl_diagnostic_b_review", "strict": True, "schema": schema}}, "temperature": 0.1, "max_tokens": benchmark.MAX_OUTPUT_TOKENS}, usage)
                 shared.accumulate_usage(usage, final)
                 choice, final_message = shared.first_message(final, "Diagnostic B final")
                 if choice.get("finish_reason") == "length" or not isinstance(final_message.get("content"), str):
                     raise DiagnosticBError("final review was truncated or not text")
                 review = benchmark.validate_review(json.loads(final_message["content"]))
-                return review, benchmark.usage_from_response(MODEL, {"usage": usage}, time.monotonic() - started), {"status": "valid", "structured_output_valid": True, "reason": None}, trace
+                return review, cumulative_usage_output(usage, time.monotonic() - started), {"status": "valid", "structured_output_valid": True, "reason": None}, trace
             if not isinstance(raw_calls, list) or not raw_calls or len(raw_calls) > 4 or calls + len(raw_calls) > MAX_TOOL_CALLS:
                 raise DiagnosticBError("tool call budget or shape exceeded")
             assistant = {"role": "assistant", "content": message.get("content"), "tool_calls": raw_calls}
@@ -147,7 +178,7 @@ def run_review(context: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | N
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
         raise DiagnosticBError("round budget exceeded")
     except (DiagnosticBError, shared.InvestigatorError, json.JSONDecodeError, benchmark.BenchmarkError) as exc:
-        return None, benchmark.usage_from_response(MODEL, {"usage": usage}, time.monotonic() - started), benchmark.failed_validation(str(exc)), trace
+        return None, cumulative_usage_output(usage, time.monotonic() - started), benchmark.failed_validation(str(exc)), trace
 
 
 def write_outputs(meta: dict[str, Any], review: dict[str, Any] | None, usage: dict[str, Any], validation: dict[str, Any], trace: list[dict[str, Any]], output_json: pathlib.Path, output_md: pathlib.Path) -> None:
