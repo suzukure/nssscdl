@@ -633,10 +633,10 @@ assert_hardened_codex_runtime() {
   fi
   grep -Fq 'exec sudo -n -- ' "$runtime_step"
   test "$(grep -Fc '/usr/bin/journalctl' "$runtime_step" || true)" = 1
-  grep -Fq '/usr/bin/journalctl \\' "$runtime_step"
-  grep -Fq -- '--unit="$unit" \\' "$runtime_step"
-  grep -Fq -- '--no-pager \\' "$runtime_step"
-  grep -Fq -- '--output=cat \\' "$runtime_step"
+  grep -Fq '/usr/bin/journalctl \' "$runtime_step"
+  grep -Fq -- '--unit="$unit" \' "$runtime_step"
+  grep -Fq -- '--no-pager \' "$runtime_step"
+  grep -Fq -- '--output=cat \' "$runtime_step"
   grep -Fq -- '--lines=200 || true' "$runtime_step"
   if grep -Fq 'drop-sudo ' "$runtime_step" || grep -Fq -- '--root-phase ' "$runtime_step"; then
     echo "$runtime_name must not invoke host-global drop-sudo root phase." >&2
