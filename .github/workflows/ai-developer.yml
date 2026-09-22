@@ -967,12 +967,26 @@ jobs:
 
           if git diff --cached --quiet; then
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body 'Codex completed the request but produced no repository changes. Human confirmation is required.'
+              --body 'No repository change was produced by this AI Developer run. No commit or push was performed. Human confirmation is required.'
             exit 0
           fi
 
           git commit -m "Implement #${ISSUE_NUMBER} with Codex"
+          pushed_commit="$(git rev-parse HEAD)"
           git push --set-upstream origin "$AI_BRANCH"
+
+          report_file="$(mktemp)"
+          {
+            echo '### Validation provenance'
+            echo
+            echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
+            echo "- Pushed commit: ${pushed_commit}"
+            echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+            echo
+            echo '### Codex report'
+            echo
+            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
+          } > "$report_file"
 
           pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$AI_BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -z "$pr_number" ]; then
@@ -982,12 +996,12 @@ jobs:
               echo
               echo '## AI development result'
               echo
-              if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
+              cat "$report_file"
               echo
               echo '## Review readiness'
               echo
               echo '- [ ] Related references, terminology, traceability, and diagrams for this decision are updated together within the Issue scope.'
-              echo '- [ ] Validation results cover the current head; remaining impacts and follow-up decisions are recorded in the closing Issue.'
+              echo '- [ ] Codex-reported validation has been reviewed as self-reported evidence, and applicable GitHub Actions/checks for the current head have been reviewed separately; failures, unrun validation, and remaining uncertainty are recorded.'
               echo '- [ ] A human has checked the complete change and confirmed it is ready for Claude review.'
               echo
               echo 'This PR starts as Draft. Keep related corrections here, then have a human mark it Ready for review. Draft updates do not run Claude review. Follow docs/30_operations/ai-development-workflow.md for readiness checks and paused-review recovery.'
@@ -996,12 +1010,9 @@ jobs:
             rm -f "$body_file"
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codex opened ${pr_url} as Draft. Check related corrections and validation, then mark it Ready for review to request Claude review."
           else
-            if [ -s "$CODEX_FINAL" ]; then
-              gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
-            else
-              gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
-            fi
+            gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
           fi
+          rm -f "$report_file"
 
   handle-issue-developer-failure:
     name: Handle Issue developer failure
@@ -1474,11 +1485,20 @@ jobs:
           git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"
 
           if git diff --cached --quiet; then
-            if [ -s "$CODEX_FINAL" ]; then
-              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
-            else
-              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex found no repository change and produced no final summary.'
-            fi
+            report_file="$(mktemp)"
+            {
+              echo '### Validation provenance'
+              echo
+              echo '- No repository change was produced by this AI Developer run.'
+              echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
+              echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+              echo
+              echo '### Codex report'
+              echo
+              if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex found no repository change and produced no final summary.'; fi
+            } > "$report_file"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
+            rm -f "$report_file"
             exit 0
           fi
 
@@ -1501,11 +1521,20 @@ jobs:
             fi
             sleep 2
           done
-          if [ -s "$CODEX_FINAL" ]; then
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
-          else
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
-          fi
+          report_file="$(mktemp)"
+          {
+            echo '### Validation provenance'
+            echo
+            echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
+            echo "- Pushed commit: ${expected_head}"
+            echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+            echo
+            echo '### Codex report'
+            echo
+            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex updated the branch without a final summary.'; fi
+          } > "$report_file"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
+          rm -f "$report_file"
 
   handle-claude-followup-failure:
     name: Handle Claude follow-up failure
