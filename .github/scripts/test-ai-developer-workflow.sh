@@ -223,10 +223,9 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   fi
 done
 
-# Issue-origin development uses the pinned OpenAI action for setup-only
-# runtime preparation, resolves trusted native/action-helper paths, then runs
-# the hardened native Codex process tree inside a bounded systemd service
-# cgroup. Claude follow-up remains on the pinned action.
+# Both paths use the pinned OpenAI action only for setup, resolve trusted
+# native/action-helper paths, then run the hardened native Codex process tree
+# inside a bounded systemd service cgroup.
 prepare_step="$test_dir/Prepare-Codex-developer-runtime.yml"
 setup_step="$test_dir/Setup-Codex-developer-runtime.yml"
 resolver_step="$test_dir/Resolve-trusted-Codex-developer-runtime.yml"
@@ -564,9 +563,128 @@ if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$d
   exit 1
 fi
 
-grep -Fqx '        timeout-minutes: 30' "$followup_step"
-grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_step"
-grep -Fqx '          codex-version: 0.153.4' "$followup_step"
+followup_workflow="$test_dir/respond-to-claude.yml"
+sed -n '/^  respond-to-claude:/,$p' "$workflow" > "$followup_workflow"
+
+# The follow-up must use the same setup-only Action and hardened native
+# workload boundary as issue-origin development.  In particular, it must not
+# directly invoke the Action's default drop-sudo execution path.
+grep -Fq '      - name: Prepare Codex follow-up runtime' "$followup_workflow"
+grep -Fq '      - name: Setup Codex follow-up runtime' "$followup_workflow"
+grep -Fq '      - name: Resolve trusted Codex follow-up runtime' "$followup_workflow"
+grep -Fq '      - name: Prepare fixed Codex follow-up prompt' "$followup_workflow"
+grep -Fq '      - name: Capture Codex follow-up host integrity baseline' "$followup_workflow"
+grep -Fq '      - name: Verify Codex follow-up host integrity' "$followup_workflow"
+if [ "$(grep -Fc "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$followup_workflow")" -lt 6 ]; then
+  echo 'Every follow-up runtime step must remain behind the trusted follow-up gate.' >&2
+  exit 1
+fi
+grep -Fq "if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$followup_workflow"
+grep -Fqx '        timeout-minutes: 12' "$followup_step"
+grep -Fqx '          CODEX_RUNTIME_MAX_SEC: 700' "$followup_step"
+grep -Fq '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_workflow"
+grep -Fq '          safety-strategy: unsafe' "$followup_workflow"
+grep -Fq '          codex-version: 0.153.4' "$followup_workflow"
+grep -Fq '          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}' "$followup_workflow"
+grep -Fq '          CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}' "$followup_step"
+grep -Fq '          CODEX_PACKAGE_ROOT: ${{ steps.followup_codex_runtime.outputs.package_root }}' "$followup_step"
+grep -Fq '          ACTION_MAIN: ${{ steps.followup_codex_runtime.outputs.action_main }}' "$followup_step"
+grep -Fq '          RUNNER_CREDENTIALS: ${{ steps.followup_codex_runtime.outputs.runner_credentials }}' "$followup_step"
+grep -Fq 'test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$followup_step"
+grep -Fq 'provider_name != "codex-action-responses-proxy"' "$followup_step"
+grep -Fq 'parsed.hostname != "127.0.0.1"' "$followup_step"
+grep -Fq 'exec sudo -n -- ' "$followup_step"
+grep -Fq -- '--property=NoNewPrivileges=yes ' "$followup_step"
+grep -Fq -- '--property="InaccessiblePaths=$inaccessible_paths" ' "$followup_step"
+grep -Fq -- '--property=SystemCallArchitectures=native ' "$followup_step"
+grep -Fq -- '--property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" ' "$followup_step"
+grep -Fq -- '--clear-groups ' "$followup_step"
+grep -Fq -- '--no-new-privs ' "$followup_step"
+grep -Fq -- '--bounding-set=-all ' "$followup_step"
+grep -Fq -- '--inh-caps=-all ' "$followup_step"
+grep -Fq -- '--ambient-caps=-all ' "$followup_step"
+grep -Fq 'PROTECTED_UNIX_SOCKET_PATHS' "$followup_step"
+grep -Fq 'PROTECTED_UNIX_SOCKET_HOST_IDS' "$followup_step"
+grep -Fq 'os.walk(' "$followup_step"
+grep -Fq 'socket.AF_UNIX' "$followup_step"
+grep -Fq 'socket.AF_INET' "$followup_step"
+grep -Fq 'getent ahosts github.com >/dev/null' "$followup_workflow"
+grep -Fq 'getent ahosts api.github.com >/dev/null' "$followup_workflow"
+if grep -Eq 'drop-sudo |--root-phase |OPENAI_API_KEY|secrets\.|openai-api-key|DEV_APP_PRIVATE_KEY|NOTIFICATION_WEBHOOK_URL' "$followup_step"; then
+  echo 'Codex follow-up native workload must not invoke host-global setup or receive secrets.' >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$followup_workflow"; then
+  echo 'Codex follow-up setup must not enter the Action execution path.' >&2
+  exit 1
+fi
+
+# Keep the privileged launcher contract identical for issue development and
+# review follow-up. A drift in either path must fail the same assertions.
+assert_hardened_codex_runtime() {
+  local runtime_name="${1:?runtime name is required}"
+  local runtime_step="${2:?runtime step is required}"
+  local runtime_run="$test_dir/${runtime_name// /-}-run.sh"
+  local mutation_lines actual_paths
+
+  if grep -Fq 'sudo -n -E' "$runtime_step"; then
+    echo "$runtime_name root phase must not preserve the whole step environment." >&2
+    exit 1
+  fi
+  grep -Fq 'exec sudo -n -- ' "$runtime_step"
+  test "$(grep -Fc '/usr/bin/journalctl' "$runtime_step" || true)" = 1
+  grep -Fq '/usr/bin/journalctl \' "$runtime_step"
+  grep -Fq -- '--unit="$unit" \' "$runtime_step"
+  grep -Fq -- '--no-pager \' "$runtime_step"
+  grep -Fq -- '--output=cat \' "$runtime_step"
+  grep -Fq -- '--lines=200 || true' "$runtime_step"
+  if grep -Fq 'drop-sudo ' "$runtime_step" || grep -Fq -- '--root-phase ' "$runtime_step"; then
+    echo "$runtime_name must not invoke host-global drop-sudo root phase." >&2
+    exit 1
+  fi
+  grep -Fq "protected_unix_socket_paths=\"$expected_protected_unix_socket_paths\"" "$runtime_step"
+  actual_paths="$(grep -oE '/run/[A-Za-z0-9._/-]+' "$runtime_step" | LC_ALL=C sort -u)"
+  if [ "$actual_paths" != "$expected_run_paths" ]; then
+    echo "$runtime_name references an unreviewed /run path." >&2
+    printf 'Expected:\n%s\nActual:\n%s\n' "$expected_run_paths" "$actual_paths" >&2
+    exit 1
+  fi
+  mutation_lines="$(
+    grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$runtime_step" ||
+      true
+  )"
+  test "$(printf '%s\n' "$mutation_lines" | grep -c .)" -eq 1
+  printf '%s\n' "$mutation_lines" |
+    grep -Fqx '          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"'
+  if grep -Eq '(sudoers|deluser|usermod[[:space:]].*-a?G|gpasswd[[:space:]]+-(a|d)|adduser)' "$runtime_step"; then
+    echo "$runtime_name must not mutate sudoers or group membership." >&2
+    exit 1
+  fi
+  if grep -Fq 'RestrictAddressFamilies=~AF_UNIX' "$runtime_step"; then
+    echo "$runtime_name must keep AF_UNIX available for the Codex sandbox." >&2
+    exit 1
+  fi
+  if grep -Fq 'errno.ELOOP' "$runtime_step"; then
+    echo "$runtime_name residual /run scan must not skip ELOOP." >&2
+    exit 1
+  fi
+  if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key|DEV_APP_PRIVATE_KEY|NOTIFICATION_WEBHOOK_URL' "$runtime_step"; then
+    echo "$runtime_name native workload must not receive repository secrets." >&2
+    exit 1
+  fi
+  awk '
+    found { print }
+    $0 == "        run: |" { found = 1 }
+  ' "$runtime_step" > "$runtime_run"
+  test -s "$runtime_run"
+  if grep -Fq '${{' "$runtime_run"; then
+    echo "$runtime_name run body must not interpolate GitHub expressions." >&2
+    exit 1
+  fi
+}
+
+assert_hardened_codex_runtime 'Codex developer' "$developer_step"
+assert_hardened_codex_runtime 'Codex follow-up' "$followup_step"
 
 prepare_line="$(grep -nF '      - name: Prepare Codex developer runtime' "$workflow" | cut -d: -f1)"
 setup_line="$(grep -nF '      - name: Setup Codex developer runtime' "$workflow" | cut -d: -f1)"
