@@ -412,6 +412,7 @@ assert "follow-up Issue evidence #778" in context
 assert "selected Diagnostic A change" in context
 assert "selected Diagnostic A file" in context
 assert "current PR" not in context
+assert "The benchmark intentionally excludes historical Claude review text and benchmark expected answers." in context
 assert "Review only; do not edit files, push, merge, or post GitHub comments yourself." in context
 assert "complete benchmark substitute for .ai-context/review.md" in context
 assert "#342, #343, #359 are intentionally outside model-visible evidence" in context

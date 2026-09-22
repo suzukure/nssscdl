@@ -455,6 +455,7 @@ The DATA blocks below are the complete benchmark substitute for .ai-context/revi
 Benchmark-management Issues {excluded_issue_text} are intentionally outside model-visible evidence. If one is explicitly recorded as a follow-up in a DATA block, its snapshot is deliberately omitted by the benchmark and MUST NOT be treated as unavailable required evidence or as a blocking reason.
 This is a review-only, context-only replay: do not request tools, do not modify anything, and do not infer later commits.
 Review exactly the selected base -> selected head state.
+The benchmark intentionally excludes historical Claude review text and benchmark expected answers.
 
 # PRODUCTION REVIEWER NORMS APPLICABLE TO DIAGNOSTIC A
 
