@@ -36,6 +36,7 @@ EVALUATION_ISSUE_DENYLIST = {342, 343, 359}
 PR_BODY_EXCLUDED_H2 = {"review readiness", "review response", "claude review"}
 DIAGNOSTIC_A_CASE = "A04-defect"
 DIAGNOSTIC_A_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
+DIAGNOSTIC_A_BOOTSTRAP_SECTIONS = {"review sources"}
 
 MODEL_PRICES_PER_MILLION: dict[str, tuple[float, float]] = {
     "deepseek-ai/DeepSeek-V4.1-Flash": (0.14, 0.42),
@@ -309,6 +310,42 @@ def diagnostic_a_reviewer_norms() -> str:
     return "\n".join(required_rules)
 
 
+def diagnostic_a_reviewer_contract() -> str:
+    """Keep the production decision contract but remove tool/bootstrap rules."""
+    production_contract = current_text("CLAUDE.md")
+    kept: list[str] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+    excluded: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_heading, current_lines
+        if current_heading is None:
+            kept.extend(current_lines)
+        elif current_heading.strip().lower() in DIAGNOSTIC_A_BOOTSTRAP_SECTIONS:
+            excluded.append(current_heading.strip())
+        else:
+            kept.extend(current_lines)
+        current_lines = []
+
+    for line in production_contract.splitlines():
+        match = re.fullmatch(r"##\s+(.+?)\s*", line)
+        if match:
+            flush()
+            current_heading = match.group(1)
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+    flush()
+    if excluded != ["Review sources"]:
+        raise BenchmarkError("production reviewer bootstrap section is missing or changed")
+    contract = "\n".join(kept).strip()
+    required_sections = ("## Required checks", "## Verdict")
+    if any(section not in contract for section in required_sections):
+        raise BenchmarkError("production reviewer decision contract required by Diagnostic A is missing")
+    return contract
+
+
 def validate_review(value: Any) -> dict[str, Any]:
     expected = {
         "verdict",
@@ -388,6 +425,7 @@ def build_context(
 
     if diagnostic_a:
         operator_norms = diagnostic_a_reviewer_norms()
+        reviewer_contract = diagnostic_a_reviewer_contract()
         # The current PR body is used only to retain the normal Stage A
         # follow-up-Issue selection. It is never emitted as review evidence.
         _pr_metadata, current_pr_body, _excluded_pr_sections = pull_request_snapshot(
@@ -420,7 +458,11 @@ Review exactly the selected base -> selected head state.
 
 # PRODUCTION REVIEWER NORMS APPLICABLE TO DIAGNOSTIC A
 
-{operator_norms}"""
+{operator_norms}
+
+# TRUSTED PRODUCTION REVIEWER DECISION CONTRACT
+
+{reviewer_contract}"""
         pr_metadata = {"number": case["pr"]}
         excluded_pr_sections: list[str] = []
     else:

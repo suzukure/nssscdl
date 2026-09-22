@@ -114,6 +114,11 @@ for rule in (
 ):
     assert rule in m.diagnostic_a_reviewer_norms()
 assert "Read .ai-context/CLAUDE.base.md" not in m.diagnostic_a_reviewer_norms()
+diagnostic_contract = m.diagnostic_a_reviewer_contract()
+assert "## Required checks" in diagnostic_contract
+assert "## Verdict" in diagnostic_contract
+assert "Read `.ai-context/review.md`, the complete diff" not in diagnostic_contract
+assert "AGENTS.base.md" not in diagnostic_contract
 
 def choice_options(name, next_name=None):
     block = workflow_text.split(f"      {name}:\n", 1)[1]
@@ -388,6 +393,7 @@ m.historical_file_content = lambda head, path: (
 )
 m.current_text = lambda path: (
     production_workflow_text if path == ".github/workflows/claude-review.yml"
+    else current_claude_text if path == "CLAUDE.md"
     else (_ for _ in ()).throw(AssertionError(f"unexpected Diagnostic A current file {path}"))
 )
 context, meta = m.build_context("owner/repo", m.DIAGNOSTIC_A_CASE, diagnostic_a=True)
@@ -412,9 +418,13 @@ assert "#342, #343, #359 are intentionally outside model-visible evidence" in co
 assert "MUST NOT be treated as unavailable required evidence or as a blocking reason" in context
 assert "TRUSTED CURRENT CLAUDE.md" not in context
 assert "TRUSTED CURRENT AGENTS.md" not in context
+assert "TRUSTED PRODUCTION REVIEWER DECISION CONTRACT" in context
+assert "## Required checks" in context
+assert "## Verdict" in context
 assert "Read `.ai-context/review.md`, the complete diff" in current_claude_text
 assert "Act as the developer for the GitHub Issue supplied in `.ai-context/request.md`." in current_agents_text
 assert "Read `.ai-context/review.md`, the complete diff" not in context
+assert "AGENTS.base.md" not in context
 assert "Act as the developer for the GitHub Issue supplied in `.ai-context/request.md`." not in context
 assert "Read .ai-context/CLAUDE.base.md and .ai-context/review.md completely." not in context
 assert "Read .ai-context/CLAUDE.base.md" not in context
