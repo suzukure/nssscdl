@@ -57,11 +57,17 @@ Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時�
 
 Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpushで更新しても自動Ready化はしない。必要な追加開発だけを同じIssueへ依頼し、変更が揃うまで同じPRへ集約する。生成PR本文と通常PRテンプレートの`Review readiness`欄は人間の確認記録であり、チェックボックス自体を機械的な認可・検証ゲートとは扱わない。
 
+### Validation provenance
+
+AI Developerが掲載するCodex report内のvalidation記述はCodexの自己申告であり、formal GitHub Actions evidenceではない。repository changeをpushした投稿ではworkflowが取得した`Pushed commit` SHAを、そのrunが行ったrepository writeの識別子として表示する。このSHAはCodexが同一内容をvalidation済みであることを意味しない。formal current-head validationはGitHub Actions/checks側の別証拠を正本とし、AI Developerはそのstatus/resultを取得・判定しない。repository changeのないfollow-up投稿ではpush SHAを表示しない。
+
+AI Developerの投稿またはjob successだけでは、別のmachine-generated evidenceが明示的に証明しない限り、少なくともCodex reportに記載されたcommand・条件での実行、そのreportが最後の変更後かつ表示SHAと同一内容に対する実行、各validationのexit statusまたは出力の独立確認、GitHub Actions/checksの開始・完了・status/result、job successがreport内の各validation成功を意味することを保証しない。
+
 人間は次を確認してからPR画面の **Ready for review** を実行する。
 
 - 同じ判断に伴う関連修正がIssueの許可範囲内で揃っている。
 - 影響するPOL / BR / REQ / AC / TC / CON / OOS、関連文書・図との整合を確認している。
-- 現在headに対する必要な検証結果がPR本文または最新の開発結果コメントにあり、失敗や未実施を隠していない。古いheadのチェック欄を完了証跡として使わない。
+- Codex-reported validationを自己申告の証拠として確認し、current headに適用されるGitHub Actions/checksをformal evidenceとして別に確認している。failure、未実施、未確認事項を隠さず、PR本文または最新コメントに`passed`とあることだけをformal evidenceとして扱わない。
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
 

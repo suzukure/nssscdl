@@ -166,6 +166,19 @@ awk '
 [ -s "$followup_commit_step" ]
 grep -Fq 'git push origin "HEAD:${HEAD_REF}"' "$followup_commit_step"
 grep -Fq 'expected_head="$(git rev-parse HEAD)"' "$followup_commit_step"
+grep -Fq 'echo "- Pushed commit: ${expected_head}"' "$followup_commit_step"
+grep -Fq 'No repository change was produced by this AI Developer run.' "$followup_commit_step"
+followup_no_diff_block="$test_dir/followup-no-diff.sh"
+awk '
+  /if git diff --cached --quiet; then/ { capture = 1 }
+  capture && /git commit -m "Address Claude review/ { exit }
+  capture { print }
+' "$followup_commit_step" > "$followup_no_diff_block"
+grep -Fq 'No repository change was produced by this AI Developer run.' "$followup_no_diff_block"
+if grep -Fq 'Pushed commit:' "$followup_no_diff_block"; then
+  echo 'No-diff follow-up provenance must not invent a pushed commit.' >&2
+  exit 1
+fi
 grep -Fq 'gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid' "$followup_commit_step"
 grep -Fq 'if [ "$current_head" = "$expected_head" ]; then' "$followup_commit_step"
 grep -Fq 'EVENT_HEAD: ${{ github.event.pull_request.head.sha }}' "$followup_commit_step"
@@ -854,6 +867,13 @@ publish_step="$test_dir/publish-issue-pr.sh"
 publish_step_source="$test_dir/publish-issue-pr.yml"
 extract_workflow_step 'Commit, push, and open or update PR' "$publish_step_source"
 extract_workflow_step_run "$publish_step_source" "$publish_step"
+grep -Fq 'pushed_commit="$(git rev-parse HEAD)"' "$publish_step"
+grep -Fq 'echo "- Pushed commit: ${pushed_commit}"' "$publish_step"
+grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$publish_step"
+if grep -Eqi '(gh (run|pr checks)|/check-runs|/actions/runs|CODEX_FINAL.*(grep|jq)|((grep|jq).*CODEX_FINAL))' "$publish_step" "$followup_commit_step"; then
+  echo 'AI Developer provenance must not query formal CI or parse Codex-reported validation.' >&2
+  exit 1
+fi
 for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure commit-a-regression commit-am-regression; do
   (
     case_dir="$test_dir/publish-$publish_case"
@@ -861,7 +881,7 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
     cd "$case_dir"
     printf '%s\n' 'Related references and validation checked.' > final.md
     export PUBLISH_CASE="$publish_case" PUBLISH_LOG="$case_dir/calls.log"
-    export PUBLISH_BODY="$case_dir/body.md"
+    export PUBLISH_BODY="$case_dir/body.md" PUBLISH_COMMENT="$case_dir/comment.md"
     export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
     export ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
     publish_script="$publish_step"
@@ -894,6 +914,7 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
           ;;
         diff) [ "$PUBLISH_CASE" = no-diff ] ;;
         push) [ "$PUBLISH_CASE" != push-failure ] ;;
+        rev-parse) printf '%040d\n' 392 ;;
         *) echo "Unexpected git call: $*" >&2; return 2 ;;
       esac
     }
@@ -918,7 +939,14 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
           [ "$PUBLISH_CASE" != create-failure ] || return 1
           echo 'https://github.com/owner/repo/pull/37'
           ;;
-        'pr comment'|'issue comment') return 0 ;;
+        'pr comment')
+          while [ "$#" -gt 0 ]; do
+            case "$1" in --body-file) shift; cp "$1" "$PUBLISH_COMMENT" ;; esac
+            shift
+          done
+          return 0
+          ;;
+        'issue comment') return 0 ;;
         *) echo "Unexpected gh call (including automatic stage change): $*" >&2; return 2 ;;
       esac
     }
@@ -940,17 +968,24 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         grep -Fq 'gh pr create ' "$PUBLISH_LOG"
         grep -Fq -- '--draft' "$PUBLISH_LOG"
         grep -Fq 'Closes #36' "$PUBLISH_BODY"
+        grep -Fq '### Validation provenance' "$PUBLISH_BODY"
+        grep -Fq '### Codex report' "$PUBLISH_BODY"
+        grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_BODY"
         grep -Fq '## Review readiness' "$PUBLISH_BODY"
+        grep -Fq 'Remaining impacts and follow-up decisions are recorded in the closing Issue.' "$PUBLISH_BODY"
         grep -Fq 'Ready for review' "$PUBLISH_BODY"
         grep -Fq 'as Draft.' "$PUBLISH_LOG"
         ;;
       existing-*)
         grep -Fq 'git push ' "$PUBLISH_LOG"
         grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
+        grep -Fq '### Validation provenance' "$PUBLISH_COMMENT"
+        grep -Fq '### Codex report' "$PUBLISH_COMMENT"
+        grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_COMMENT"
         assert_no_publish_call 'gh pr create '
         ;;
       no-diff)
-        grep -Fq 'produced no repository changes' "$PUBLISH_LOG"
+        grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$PUBLISH_LOG"
         assert_no_publish_call 'git (commit|push)|gh pr create'
         ;;
       push-failure|list-failure)
