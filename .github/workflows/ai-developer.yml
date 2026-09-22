@@ -1280,6 +1280,7 @@ jobs:
           codex-version: 0.153.4
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
+          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
 
       - name: Resolve trusted Codex follow-up runtime
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
