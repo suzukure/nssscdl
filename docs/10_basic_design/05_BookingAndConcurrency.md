@@ -709,7 +709,7 @@ Provider受理、失敗、試行時刻、Provider Message ID等はDelivery側で
 
 実送信時に有効な連絡先を解決し、実際に送った宛先をDelivery側へ必要最小限記録する。
 
-旧連絡先へのSecurity Notice等、特定メールアドレス自体に業務意味がある通知は、認証・通知設計で宛先Snapshot等を別途定義する。
+旧連絡先へのSecurity Noticeは、変更直前の旧メールSnapshotを宛先とし、通常予約系の実送信時の有効連絡先への再評価を適用しない。Snapshotは送信・許容Retryに必要な期間だけ保持し、最終失敗後の手動再送のためだけに保持延長しない。具体的な保存・最小化方式は詳細設計で定める。
 
 ### 13.5 一括予約における予約確認と区分変更の責任分担
 
@@ -757,7 +757,17 @@ Reminderは、Lesson開始前かつ対象ReservationがReminder対象として�
 
 Dashboard警告件数と通常の通知失敗一覧は、現在管理者対応を要する未解決Intentを対象とする。失効済みIntentは未配信でも警告件数・通常再送対象から除外するが、配信成功として扱わない。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、その配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。初期リリースでは失効済み通知専用の恒常的な閲覧UIを追加しない。通知義務が存在したこと、未配信であったこと、失効理由・時刻等は既存Retention方針の範囲で必要最小限保持するが、生徒削除では通知履歴・Deliveryを理由に氏名・連絡先メール等の個人情報を保持しない。
 
-配信結果と通知義務有効性を分離する物理状態、失効理由、永続化・導出の具体方式、DB Schemaは詳細設計へ送る。認証・所有確認メールおよび旧メールSecurity Noticeへの適用境界は別途確定し、自動Retry上限到達後の最終処理・任意の管理者「対応済み」も本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合は、未検証のProvider能力を保証せず、後続の通知設計・詳細設計で具体化する。
+配信結果と通知義務有効性を分離する物理状態、失効理由、永続化・導出の具体方式、DB Schemaは詳細設計へ送る。自動Retry上限到達後の最終処理・任意の管理者「対応済み」も本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合は、未検証のProvider能力を保証せず、後続の通知設計・詳細設計で具体化する。
+
+### 13.10 認証・所有確認・Security Noticeの回復境界
+
+`REQ-105 / AC-105-005` および `REQ-314 / AC-314-003` に従い、13.8の同一`NotificationIntent`へのDelivery Attempt追加による管理者手動再送は通常予約系だけに適用する。Magic Link、Invitation、新メール所有確認および旧メールSecurity Noticeは、Dashboard警告件数、通常失敗一覧、`notification-failures/{notificationId}/retry` の対象にしない。
+
+Magic Linkは公開要求Flowの再実行、Invitationは管理者による再発行、新メール所有確認は現在有効なPending変更の新メール宛の再要求／再発行を回復操作とする。いずれも新しいTokenを発行し、期限切れ・使用済み・無効化済みのTokenを再活性化しない。Magic Link再要求には`REQ-210`のTurnstile、Rate LimitおよびAccount Enumeration防止を再適用する。Pendingが置換・無効化・終了した場合は、新たな所有確認メールを送信しない。
+
+Security Noticeは変更直前の旧メールSnapshotへCommit後に送信し、送信失敗で確定済みのメール変更をRollbackしない。一時的障害のRetryおよびProvider受理後の配送Retryは`REQ-912`およびProvider固有Ruleに従いうるが、最終失敗後に現在の新メールへ再送する操作は提供しない。必要最小限の技術的観測は可能とするが、通常の通知失敗管理と同一視しない。
+
+Token生成・保存・supersede、Pending確認期限・再発行Endpoint、Security Notice Snapshotの物理保存・削除／不可逆最小化、Flow固有の状態表示および診断情報は詳細設計で定める。
 
 ## 14. 未来Slotの現在状態Invariant
 
