@@ -972,6 +972,7 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         grep -Fq '### Codex report' "$PUBLISH_BODY"
         grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_BODY"
         grep -Fq '## Review readiness' "$PUBLISH_BODY"
+        grep -Fq 'Remaining impacts and follow-up decisions are recorded in the closing Issue.' "$PUBLISH_BODY"
         grep -Fq 'Ready for review' "$PUBLISH_BODY"
         grep -Fq 'as Draft.' "$PUBLISH_LOG"
         ;;
