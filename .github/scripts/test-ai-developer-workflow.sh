@@ -216,7 +216,8 @@ fi
 
 operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
 grep -Fq '`Run Codex follow-up` 側の異常終了ではPRはDraftのまま' "$operations_doc"
-grep -Fq 'Draft復帰job自体が異常終了した場合はPRが非Draftのまま停止しているため、PR側のラベルを解除する前に人間がPRをDraftへ戻し' "$operations_doc"
+grep -Fq 'Draft復帰job自体が異常終了してopen PRが非Draftのまま停止している場合は、PR側の停止ラベルを解除する前に人間がPRをDraftへ戻し' "$operations_doc"
+grep -Fq '停止ラベルの解除順序、open PRでの再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。' "$operations_doc"
 
 # Both Codex jobs must have a server-side wall-clock bound in addition to
 # the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
