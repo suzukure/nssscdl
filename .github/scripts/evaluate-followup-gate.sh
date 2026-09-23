@@ -72,7 +72,18 @@ review_summary="$(
     /^SUMMARY| /{s/^SUMMARY| //; p;}
   }' <<< "$review_body"
 )"
-if grep -Eq '\[(REQUIREMENTS_CHANGE_REQUIRED|HUMAN_ESCALATION_RECOMMENDED)\]' <<< "$review_summary"; then
+human_escalation=false
+while IFS= read -r summary_line || [ -n "$summary_line" ]; do
+  summary_line="${summary_line%$'\r'}"
+  case "$summary_line" in
+    '[REQUIREMENTS_CHANGE_REQUIRED]'|'[HUMAN_ESCALATION_RECOMMENDED]')
+      human_escalation=true
+      break
+      ;;
+  esac
+done <<< "$review_summary"
+
+if [ "$human_escalation" = true ]; then
   emit_result false true false "Claude requested a human decision. $(human_decision_pause_reason)"
 elif [ "$review_count" -ge 3 ]; then
   emit_result false true true "Automated review reached ${review_count} change-request rounds. $(human_decision_pause_reason)"

@@ -985,6 +985,12 @@ jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
 marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| --- END REVIEW SUMMARY DATA ---\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$marker_body")"
 jq -e '.continue == false and .escalate == true' <<< "$followup" > /dev/null
+descriptive_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved for compatibility.\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$descriptive_marker_body")"
+jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
+indented_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY|  [REQUIREMENTS_CHANGE_REQUIRED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$indented_marker_body")"
+jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
 jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
 if MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body"; then
