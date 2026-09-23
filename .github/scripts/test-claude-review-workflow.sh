@@ -169,6 +169,39 @@ unset MOCK_DIFF_FAIL
 validator="$repo_root/.github/scripts/validate-claude-review-output.sh"
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
 
+human_escalation_step="$test_dir/classify-human-escalation.sh"
+extract_step_run 'Classify human escalation' "$human_escalation_step"
+human_escalation_runner_temp="$test_dir/human-escalation-runner"
+mkdir "$human_escalation_runner_temp"
+
+assert_human_escalation() {
+  local expected="${1:?expected classification is required}"
+  local fixture_name="${2:?fixture name is required}"
+  local summary="${3-}"
+  local output_path="$test_dir/human-escalation-$fixture_name.outputs"
+
+  jq -cn --arg summary "$summary" '
+    {verdict:"approve",summary:$summary,blocking_findings:[],non_blocking_findings:[],linked_issues_checked:["#59"]}
+  ' > "$human_escalation_runner_temp/claude-review.json"
+  : > "$output_path"
+  GITHUB_OUTPUT="$output_path" RUNNER_TEMP="$human_escalation_runner_temp" bash "$human_escalation_step"
+  grep -Fqx "required=$expected" "$output_path"
+}
+
+assert_human_escalation false descriptive-requirements 'Reviewed. exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.'
+assert_human_escalation false descriptive-human 'Reviewed. exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.'
+assert_human_escalation true requirements-standalone $'Reviewed.\n[REQUIREMENTS_CHANGE_REQUIRED]\nHuman decision required.'
+assert_human_escalation true human-standalone $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED]\nHuman decision recommended.'
+assert_human_escalation true requirements-crlf $'Reviewed.\r\n[REQUIREMENTS_CHANGE_REQUIRED]\r\nHuman decision required.'
+assert_human_escalation false indented-marker $'Reviewed.\n [REQUIREMENTS_CHANGE_REQUIRED]\nNot an exact signal.'
+assert_human_escalation false suffixed-marker $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED] because this text continues.'
+
+printf '%s\n' '{"summary":[]}' > "$human_escalation_runner_temp/claude-review.json"
+if GITHUB_OUTPUT="$test_dir/human-escalation-invalid.outputs" RUNNER_TEMP="$human_escalation_runner_temp"     bash "$human_escalation_step" > /dev/null 2>&1; then
+  echo 'Human escalation classification must fail closed for an invalid structured review.' >&2
+  exit 1
+fi
+
 # The event payload can retain a stale base SHA after main advances. The
 # workflow must resolve the current base ref and use that tip for every
 # bootstrap read, particularly the trusted execution classifier.
@@ -1103,6 +1136,14 @@ if grep -Fq 'synchronize' "$workflow"; then
 fi
 grep -Fq "github.event.label.name == 'human-review-required'" "$workflow"
 grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$workflow"
+if grep -Fq "contains(fromJSON(steps.structured-review.outputs.json).summary" "$workflow"; then
+  echo 'Claude human escalation must not use substring matching on the review summary.' >&2
+  exit 1
+fi
+if [ "$(grep -Fc "steps.human-escalation.outputs.required == 'true'" "$workflow")" -ne 2 ]; then
+  echo 'Both human pause and notification must consume the exact-line escalation classification.' >&2
+  exit 1
+fi
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"
 grep -Fq 'Record Claude review usage' "$workflow"
 grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$workflow"
