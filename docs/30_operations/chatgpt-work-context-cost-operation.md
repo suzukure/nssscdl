@@ -181,7 +181,7 @@ Actions障害は次の順序で調査する。
 
 Secret、token、Webhook URL、private key、未公開のVariable値をログから抽出・再掲しない。
 
-Claude reviewの固定reason codeと復旧手順は[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#claude-review失敗の分類と再実行)を正本とする。HTTP 429、Action logの文言、またはusageだけから`ACCOUNT_SPEND_LIMIT_REACHED`と判断しない。上限到達または分類不能な失敗では自動再試行せず、再実行前にIssue番号、closing Issue、PR番号、現在PR head SHA、失敗run ID、失敗runのhead SHAを照合する。PR差分を変えない場合は人間がGitHub Actions UIで当該reviewを再実行し、完了後のrun IDとhead SHAを照合する。停止ラベルがある場合は、人間が再開可能と判断した後、closing Issue、PRの順に外し、PRのラベル解除eventで同じheadの再reviewを要求する。
+Claude reviewの固定reason codeと復旧手順は[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#claude-review失敗の分類と再実行)を正本とする。HTTP 429、Action logの文言、またはusageだけから`ACCOUNT_SPEND_LIMIT_REACHED`と判断しない。上限到達または分類不能な失敗では自動再試行せず、再実行前にIssue番号、closing Issue、PR番号、現在PR head SHA、失敗run ID、失敗runのhead SHAを照合する。PR差分を変えない場合は人間がGitHub Actions UIで当該reviewを再実行し、完了後のrun IDとhead SHAを照合する。停止ラベルの解除順序とラベル解除による再review起動条件、merged/closed PRのcleanupは[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#人間エスカレーション)を正本とする。
 
 ## 既存証跡の再利用
 
