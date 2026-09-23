@@ -202,7 +202,7 @@ def run_review(context: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | N
             accumulate_response_usage(usage, response)
             _, message = shared.first_message(response, "Diagnostic B tool round")
             raw_calls = message.get("tool_calls")
-            if raw_calls is None:
+            if raw_calls is None or (isinstance(raw_calls, list) and not raw_calls):
                 final_messages = messages + [
                     {"role": "assistant", "content": message.get("content")},
                     {"role": "user", "content": "Using only the evidence already obtained, make no additional tool calls and return the production review JSON now."},

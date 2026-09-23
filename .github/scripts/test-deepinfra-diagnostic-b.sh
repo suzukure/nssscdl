@@ -82,7 +82,7 @@ except (m.DiagnosticBError, m.shared.InvestigatorError): pass
 # The shared accumulator's native estimated_cost_usd key must aggregate two
 # live-shaped responses and preserve both local and provider cost in output.
 responses = iter([
-    {'usage': {'prompt_tokens': 10, 'completion_tokens': 4, 'total_tokens': 14, 'estimated_cost': 0.001}, 'choices': [{'message': {'content': 'ready'}}]},
+    {'usage': {'prompt_tokens': 10, 'completion_tokens': 4, 'total_tokens': 14, 'estimated_cost': 0.001}, 'choices': [{'message': {'content': 'ready', 'tool_calls': []}}]},
     {'usage': {'prompt_tokens': 20, 'completion_tokens': 8, 'total_tokens': 28, 'estimated_cost': 0.002}, 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({'verdict': 'approve', 'summary': 'ok', 'blocking_findings': [], 'non_blocking_findings': [], 'linked_issues_checked': []})}}]},
 ])
 m.shared.deepinfra_request = lambda payload: next(responses)
