@@ -146,7 +146,7 @@ jobs:
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.153.4
+          codex-version: 0.156.1
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
 
@@ -183,7 +183,7 @@ jobs:
           if (mainPackage.name !== "@openai/codex") {
             throw new Error(`unexpected package name: ${mainPackage.name}`);
           }
-          if (mainPackage.version !== "0.153.4") {
+          if (mainPackage.version !== "0.156.1") {
             throw new Error(`unexpected package version: ${mainPackage.version}`);
           }
 
@@ -245,7 +245,7 @@ jobs:
               "$native_path" --version
           )"
           test "$launcher_version" = "$native_version"
-          test "$native_version" = 'codex-cli 0.153.4'
+          test "$native_version" = 'codex-cli 0.156.1'
 
           action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
           action_main="$action_root/dist/main.js"
@@ -266,7 +266,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf 'Resolved trusted Codex 0.153.4 runtime for %s (Action blob %s).\n' \
+          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex developer prompt
@@ -1277,7 +1277,7 @@ jobs:
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.153.4
+          codex-version: 0.156.1
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
@@ -1316,7 +1316,7 @@ jobs:
           if (mainPackage.name !== "@openai/codex") {
             throw new Error(`unexpected package name: ${mainPackage.name}`);
           }
-          if (mainPackage.version !== "0.153.4") {
+          if (mainPackage.version !== "0.156.1") {
             throw new Error(`unexpected package version: ${mainPackage.version}`);
           }
 
@@ -1378,7 +1378,7 @@ jobs:
               "$native_path" --version
           )"
           test "$launcher_version" = "$native_version"
-          test "$native_version" = 'codex-cli 0.153.4'
+          test "$native_version" = 'codex-cli 0.156.1'
 
           action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
           action_main="$action_root/dist/main.js"
@@ -1399,7 +1399,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf 'Resolved trusted Codex 0.153.4 runtime for %s (Action blob %s).\n' \
+          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex follow-up prompt
