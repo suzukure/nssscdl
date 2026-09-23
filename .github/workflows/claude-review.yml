@@ -338,11 +338,13 @@ jobs:
             echo "model=$HIGH_RISK_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=high' >> "$GITHUB_OUTPUT"
             echo 'budget_arg=--max-budget-usd 2.10' >> "$GITHUB_OUTPUT"
+            echo 'effort_arg=--effort high' >> "$GITHUB_OUTPUT"
             echo 'Selected the high-risk review model.'
           elif [ "$risk" = 'standard' ]; then
             echo "model=$STANDARD_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=standard' >> "$GITHUB_OUTPUT"
             echo 'budget_arg=--max-budget-usd 1.70' >> "$GITHUB_OUTPUT"
+            echo 'effort_arg=' >> "$GITHUB_OUTPUT"
             echo 'Selected the standard review model.'
           else
             echo "Unsupported Claude review risk classification: ${risk}" >&2
@@ -371,7 +373,7 @@ jobs:
         id: claude-attempt-1
         if: steps.review-entry.outputs.continue == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
+        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280
         with:
           github_token: ${{ steps.review-token.outputs.token }}
           allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot]
@@ -391,6 +393,7 @@ jobs:
           claude_args: >-
             --model "${{ steps.review-model.outputs.model }}"
             ${{ steps.review-model.outputs.budget_arg }}
+            ${{ steps.review-model.outputs.effort_arg }}
             --json-schema '${{ steps.review-schema.outputs.schema }}'
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
 

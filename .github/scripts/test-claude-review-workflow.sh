@@ -795,6 +795,7 @@ assert_model_selection() {
   local risk="${1:?risk is required}"
   local expected_model="${2:?expected model is required}"
   local expected_budget="${3:?expected budget is required}"
+  local expected_effort="${4-}"
   local output_path="$test_dir/model-$risk.outputs"
 
   TEST_RISK="$risk" \
@@ -808,10 +809,11 @@ assert_model_selection() {
   grep -Fqx "model=$expected_model" "$output_path"
   grep -Fqx "risk=$risk" "$output_path"
   grep -Fqx "budget_arg=$expected_budget" "$output_path"
+  grep -Fqx "effort_arg=$expected_effort" "$output_path"
 }
 
-assert_model_selection high high-risk-model '--max-budget-usd 2.10'
-assert_model_selection standard standard-model '--max-budget-usd 1.70'
+assert_model_selection high high-risk-model '--max-budget-usd 2.10' '--effort high'
+assert_model_selection standard standard-model '--max-budget-usd 1.70' ''
 
 if TEST_RISK=unsupported \
   RUNNER_TEMP="$runner_temp" \
@@ -1083,8 +1085,13 @@ awk '
 ' "$workflow" > "$run_step"
 grep -Fq 'model "${{ steps.review-model.outputs.model }}"' "$run_step"
 grep -Fq '${{ steps.review-model.outputs.budget_arg }}' "$run_step"
+grep -Fq '${{ steps.review-model.outputs.effort_arg }}' "$run_step"
 if grep -Eq -- '--max-budget-usd (1\.70|2\.10)' "$run_step"; then
   echo 'Run Claude review must receive its budget through the selected output.' >&2
+  exit 1
+fi
+if grep -Fq -- '--effort high' "$run_step"; then
+  echo 'Run Claude review must receive its effort through the selected output.' >&2
   exit 1
 fi
 
@@ -1092,6 +1099,7 @@ if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$workflow")" -ne 1 ]; t
   echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
+grep -Fqx '        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280' "$run_step"
 if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
   exit 1
