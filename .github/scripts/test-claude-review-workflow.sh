@@ -59,10 +59,19 @@ gh() {
   if [ "$1 $2" = 'pr view' ]; then
     case "${MOCK_CASE:-valid}" in
       no-links)
-        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        printf '%s\n' '{"state":"OPEN","labels":[],"closingIssuesReferences":[]}'
         ;;
       pr-paused)
-        printf '%s\n' '{"labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        printf '%s\n' '{"state":"OPEN","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      closed)
+        printf '%s\n' '{"state":"CLOSED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      merged)
+        printf '%s\n' '{"state":"MERGED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      state-missing)
+        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
         printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
@@ -122,6 +131,20 @@ jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 MOCK_CASE=no-links
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
+
+for closed_case in closed merged; do
+  MOCK_CASE="$closed_case"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+  jq -e '.continue == false and (.reason | contains("pull request state"))' <<< "$review_entry" > /dev/null
+done
+
+MOCK_CASE=state-missing
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+  > /dev/null 2> "$test_dir/entry-gate-state-missing.err"; then
+  echo 'Expected Claude review entry to fail closed when PR state is missing.' >&2
+  exit 1
+fi
+grep -Fq 'Could not determine pull request state; refusing Claude review.' "$test_dir/entry-gate-state-missing.err"
 
 MOCK_CASE=pr-paused
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
@@ -1130,6 +1153,7 @@ if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   exit 1
 fi
 grep -Fq 'types: [opened, reopened, ready_for_review, unlabeled]' "$workflow"
+grep -Fq "github.event.pull_request.state == 'open'" "$workflow"
 if grep -Fq 'synchronize' "$workflow"; then
   echo 'Claude Review must not start a paid review from a head synchronization.' >&2
   exit 1
