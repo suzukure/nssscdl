@@ -70,7 +70,7 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 - `RUN_BUDGET_LIMIT_REACHED`、`ACCOUNT_SPEND_LIMIT_REACHED`、`TRANSIENT_RATE_LIMIT`、`CLAUDE_EXECUTION_FAILED`、review出力検証失敗、または`CLASSIFIER_INTERNAL_ERROR`では、`ai-development-workflow.md`の固定reason code表と復旧手順に従う。上限到達・分類不能失敗では自動再試行しない。
 - 再実行前にIssue番号、closing Issue、PR番号、現在のPR head SHA、失敗run ID、失敗runのhead SHAを照合する。Job Summaryを優先し、必要な非機密情報だけを追加確認する。
 - PR差分を変えない再実行はGitHub Actions UIで当該reviewを人が再実行し、完了後のrun IDとhead SHAを記録・照合する。head SHAが変われば新しいreviewとして扱う。
-- `human-review-required`による停止中は、明示許可と再開判断の後にclosing Issue、PRの順でラベルを外す。このPRラベル解除eventが同じheadのClaude再review要求となる。
+- `human-review-required` の停止解除順序、open PRでの再review起動条件、merged/closed PRのstale label cleanupは [AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#人間エスカレーション) を正本とする。本書では独自の解除・起動条件を定義しない。
 
 ### 既存証跡の再利用
 
