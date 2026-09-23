@@ -76,4 +76,4 @@ Return `request_changes` for any blocking defect, missing linked Issue, undocume
 
 Keep findings specific and actionable. Cite file paths, requirement IDs, or Issue numbers. A preference without correctness or requirement impact is non-blocking.
 
-If a requirements change is necessary, include the exact marker `[REQUIREMENTS_CHANGE_REQUIRED]` in the summary. If the same disagreement has already repeated without new evidence, include `[HUMAN_ESCALATION_RECOMMENDED]`.
+If a requirements change is necessary, include the exact marker `[REQUIREMENTS_CHANGE_REQUIRED]` as a plain-text line by itself in the summary, with no backticks, indentation, or leading/trailing whitespace; CRLF line endings are allowed. If the same disagreement has already repeated without new evidence, include `[HUMAN_ESCALATION_RECOMMENDED]` under the same standalone-line rule. Descriptive references to either marker inside ordinary prose are not escalation signals.
