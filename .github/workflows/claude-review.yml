@@ -601,11 +601,39 @@ jobs:
         shell: bash
         run: echo "verdict=$(jq -r .verdict "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
 
-      - name: Mark human escalation
+      - name: Classify human escalation
+        id: human-escalation
         if: >-
           steps.review-entry.outputs.continue == 'true' &&
-          (contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
+          steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
+        shell: bash
+        run: |
+          set -euo pipefail
+          escalation="$(
+            jq -r '
+              if type != "object" or (.summary | type) != "string" then
+                error("invalid structured review")
+              else
+                .summary
+                | split("\n")
+                | any(.[];
+                    (sub("\r$"; "") == "[REQUIREMENTS_CHANGE_REQUIRED]") or
+                    (sub("\r$"; "") == "[HUMAN_ESCALATION_RECOMMENDED]")
+                  )
+              end
+            ' "$RUNNER_TEMP/claude-review.json"
+          )"
+          case "$escalation" in
+            true|false) ;;
+            *)
+              echo "Unexpected human escalation classification: $escalation" >&2
+              exit 1
+              ;;
+          esac
+          echo "required=$escalation" >> "$GITHUB_OUTPUT"
+
+      - name: Mark human escalation
+        if: steps.human-escalation.outputs.required == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -623,10 +651,7 @@ jobs:
           bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
 
       - name: Notify human of Claude escalation
-        if: >-
-          steps.review-entry.outputs.continue == 'true' &&
-          (contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
+        if: steps.human-escalation.outputs.required == 'true'
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
