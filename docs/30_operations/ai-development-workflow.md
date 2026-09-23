@@ -417,7 +417,9 @@ Claude review follow-upでは、通常の `Gate automated follow-up` は停止�
 
 人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。`Run Codex follow-up` 側の異常終了ではPRはDraftのままなので、修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除し、人間または明示的なtrusted経路がReady for reviewへ戻して再レビューを要求する。Draft復帰job自体が異常終了した場合はPRが非Draftのまま停止しているため、PR側のラベルを解除する前に人間がPRをDraftへ戻し、準備完了後にReady化する。非DraftのままPR側のラベルを先に解除すると、現在headへのClaude Reviewが即時に起動する。
 
-非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
+openかつ非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
+
+mergedまたはclosed PRでは、`human-review-required` の解除をClaude再レビュー要求として扱わない。workflow event条件とtrusted entry gateの双方でopen PRだけをreview対象にし、PR stateを安全に確認できない場合はmodel call前にfail-closedで停止する。protected path等を人間がmanual mergeした後にstale pause labelが残った場合は、通常の停止解除順序と同じくclosing Issue側を先に、merged/closed PR側を最後にcleanupする。このcleanupでpaid Claude Reviewを起動してはならない。
 
 Codex follow-up専用retry入口が将来必要になった場合は、この復旧手順へ例外を追加せず、別Issueで設計・実装する。
 
