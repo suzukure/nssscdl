@@ -11,7 +11,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むDraft PRを作成する。同じIssueの追加修正は既存PRへ集約し、自動Ready化しない。人間が下記の準備確認を終えてReady for reviewへ変更すると、Claude reviewが起動する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
 5. ClaudeがPR、信頼済み会話、closing Issue、明示された後継Issueのsnapshot、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用する。Actionへ現行5-key JSON Schemaを渡し、`structured_output` をreview内容の第一入力として、current base由来の `validate-claude-review-output.sh` を通過した結果だけを投稿する。`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。native出力は厳密に1個のJSON値として読み、欠落・不正JSON・schema不一致は非機密な固定reason codeでfail-closed停止する。自由テキスト `result` やMarkdown fenceへfallbackせず、verdictを推測しない。
-6. `REQUEST_CHANGES` の場合、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。Draft復帰jobの異常終了、gate停止、Codex異常終了、またはpush失敗ではReadyへ戻さず、`human-review-required` により停止する。`ai/issue-*` の通常follow-upは停止ラベルを付けずにCodexを1回だけ実行し、Codex正常完了、requirements gate、trusted diff guard、commit/pushの全成功後だけtrusted workflowがPRをReady for reviewへ戻す。そのReady eventが現在headへの再レビューを1回要求する。Codex対象外PRは人間または既存の明示操作でReadyへ戻す。停止ラベルを人間が解除する場合はclosing Issue側を先に、PR側を最後に外す。非Draft PRでのPR `unlabeled` eventは明示的な再レビュー要求として維持する。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
+6. `REQUEST_CHANGES` の場合、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。Draft復帰jobの異常終了、gate停止、Codex異常終了、またはpush失敗ではReadyへ戻さず、`human-review-required` により停止する。`ai/issue-*` の通常follow-upは停止ラベルを付けずにCodexを1回だけ実行し、Codex正常完了、requirements gate、trusted diff guard、commit/pushの全成功後だけtrusted workflowがPRをReady for reviewへ戻す。そのReady eventが現在headへの再レビューを1回要求する。Codex対象外PRは人間または既存の明示操作でReadyへ戻す。停止ラベルを人間が解除する場合の順序・再レビュー起動条件・merged/closed PRのcleanupは「人間エスカレーション」節を正本とする。openかつ非Draft PRのPR `unlabeled` eventは明示的な再レビュー要求として維持する。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
@@ -253,7 +253,11 @@ default branchに次を適用する。
 - Claudeのvalidated structured review `summary` に、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` または `[HUMAN_ESCALATION_RECOMMENDED]` がある。backtick・code block・字下げ・前後空白付きの行や説明文中の言及は停止シグナルにせず、CRLFは通常のplain-text行末として扱う。判定step自体が失敗した場合はreview jobを失敗させ、mergeへ進ませない。Claude review follow-upと過去reviewのmarker短縮記録も同じ単独行規約を使う。
 - Claudeのchange requestが3回に到達した。
 
-停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。通常のClaude change request follow-upは停止ラベルを付けずに実行し、成功時だけReady eventで再レビューへ進む。Draft復帰jobの異常終了、3回目のchange request、要求変更、diff guard stop、Codex異常、または人間エスカレーションでは停止ラベルを付ける。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。job条件はevent payload時点でPRの停止ラベルを検出して早期にjobを止め、entry gateはClaude API呼び出し直前にPRとclosing Issueのラベルを再確認する二層構成である。人間が判断を記録し、再開可能と確認した後、closing Issue側を先に、PR側を最後に外す。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。非Draft PRではPR側の `human-review-required` が外れたeventが明示的なClaude再レビュー要求となり、Draft PRではラベル解除では起動せずReady for reviewが再レビュー要求となる。このラベル解除順序の正本は本運用文書であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
+停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。通常のClaude change request follow-upは停止ラベルを付けずに実行し、成功時だけReady eventで再レビューへ進む。Draft復帰jobの異常終了、3回目のchange request、要求変更、diff guard stop、Codex異常、または人間エスカレーションでは停止ラベルを付ける。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。Claude Reviewの入口は二層で保護する。workflow job条件はevent payload時点でPRがopenであり停止ラベルを持たないことを確認して早期にjobを止め、trusted base由来のentry gateはClaude API呼び出し直前にGitHubからPR stateとPR / closing Issueの停止ラベルを再取得する。entry gateはopen PRだけをreview対象とし、merged / closed PRはmodel call前に正常skipする。PR stateを安全に判定できない、または未知stateである場合はfail-closedで停止する。
+
+人間が判断を記録し再開可能と確認した後、open PRの停止ラベルはclosing Issue側を先に、PR側を最後に外す。誤ってopen PR側を先に外した場合は、PRへラベルを再付与してからclosing Issue側、PR側の順に外し直す。openかつ非Draft PRではPR側の `human-review-required` が外れたeventが明示的なClaude再レビュー要求となり、Draft PRではラベル解除では起動せずReady for reviewが再レビュー要求となる。
+
+manual protected-path merge等によりmerge後もstale `human-review-required` が残った場合も、cleanup順序はclosing Issue側を先に、merged/closed PR側を最後とする。ただしmerged/closed PR側のラベル解除はClaude再レビュー要求として扱わず、paid Claude Reviewを起動しない。この停止解除・cleanup順序とreview起動条件の正本は本節であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
@@ -417,9 +421,7 @@ Claude review follow-upでは、通常の `Gate automated follow-up` は停止�
 
 人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。`Run Codex follow-up` 側の異常終了ではPRはDraftのままなので、修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除し、人間または明示的なtrusted経路がReady for reviewへ戻して再レビューを要求する。Draft復帰job自体が異常終了した場合はPRが非Draftのまま停止しているため、PR側のラベルを解除する前に人間がPRをDraftへ戻し、準備完了後にReady化する。非DraftのままPR側のラベルを先に解除すると、現在headへのClaude Reviewが即時に起動する。
 
-openかつ非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
-
-mergedまたはclosed PRでは、`human-review-required` の解除をClaude再レビュー要求として扱わない。workflow event条件とtrusted entry gateの双方でopen PRだけをreview対象にし、PR stateを安全に確認できない場合はmodel call前にfail-closedで停止する。protected path等を人間がmanual mergeした後にstale pause labelが残った場合は、通常の停止解除順序と同じくclosing Issue側を先に、merged/closed PR側を最後にcleanupする。このcleanupでpaid Claude Reviewを起動してはならない。
+停止ラベルの解除順序、open PRでの再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。follow-up復旧では、その契約に従って停止解除後のDraft/Ready状態を整える。
 
 Codex follow-up専用retry入口が将来必要になった場合は、この復旧手順へ例外を追加せず、別Issueで設計・実装する。
 
