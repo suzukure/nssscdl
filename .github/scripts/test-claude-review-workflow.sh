@@ -1193,6 +1193,21 @@ if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   exit 1
 fi
 grep -Fq 'types: [opened, reopened, ready_for_review, unlabeled]' "$workflow"
+review_job="$test_dir/review-job.yml"
+awk '
+  /^  review:$/ { job = 1 }
+  job && /^  [[:alnum:]_-]+:$/ && $0 != "  review:" { exit }
+  job { print }
+' "$workflow" > "$review_job"
+if [ "$(grep -Fxc '    timeout-minutes: 15' "$review_job")" -ne 1 ]; then
+  echo 'Claude Review job must have exactly a 15-minute timeout.' >&2
+  exit 1
+fi
+merge_job="$test_dir/merge-job.yml"
+sed -n '/^  merge:$/,$p' "$workflow" > "$merge_job"
+grep -Fqx '    needs: review' "$merge_job"
+grep -Fqx '      needs.review.result == '\''success'\'' &&' "$merge_job"
+grep -Fqx '      needs.review.outputs.verdict == '\''approve'\'' &&' "$merge_job"
 review_job_if="$test_dir/review-job-if.txt"
 extract_job_if review "$review_job_if"
 grep -Fq "github.event.pull_request.state == 'open'" "$review_job_if"

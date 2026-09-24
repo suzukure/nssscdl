@@ -185,6 +185,8 @@ Message Batches APIは非同期処理であり、即時のreview verdictを必�
 
 ### Claude review失敗の分類と再実行
 
+Claude Reviewの`review` jobは異常stallに対するwall-clock hard boundaryとして15分でtimeoutさせる。15分はreview品質の目標時間ではない。job timeoutまたはsuccess以外の終了では構造化verdictが成立したと扱わず、`needs.review.result == 'success'`を満たさないためmerge jobへ進まない。timeout後の自動retryは行わず、人間が失敗runを調査して再実行を判断する。
+
 `execution_file` は実行成否・budget/spend/rate limit分類・usage計測に維持し、review内容はActionの `structured_output` を使用する。既存classifierの自由テキスト検証結果だけではnative出力を承認・棄却しない。Action successかつ最後のresultがsuccess/is_error=falseの場合だけnative検証へ進み、Action失敗や実行情報不正はvalidなnative出力があっても承認しない。native出力をenvへ渡す前に、固定版Actionと同じJSON直列化でexecution fileのnativeフィールドをマスクする。追加recovery pass・全reviewの自動retryは行わない。
 
 生成用Schemaは `claude-review.yml` の `review-json-schema` データ行をcurrent baseから取得する。導入前base `9bf6ffcf5caa1dc8f98629851f0557653de542f7` にデータ行がない場合だけ固定生成制約をbootstrapし、既存base validatorを必須とする。他のbaseでの欠落、取得失敗、破損は停止する。workflow自体の改変は既存のCode Owner境界で保護し、PR側workflowが検証処理を削除した場合まで実行時に阻止する保証は追加しない。
