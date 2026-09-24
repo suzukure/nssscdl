@@ -72,6 +72,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare branch and Issue context
+        id: issue_context
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -79,6 +80,17 @@ jobs:
         run: |
           set -euo pipefail
           base_sha="$(git rev-parse HEAD)"
+          notify_human_blob="$(git rev-parse "${base_sha}:.github/scripts/notify-human.sh")"
+          apply_human_pause_blob="$(git rev-parse "${base_sha}:.github/scripts/apply-human-pause.sh")"
+          requirements_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-requirements-change-marker.sh")"
+          diff_guard_blob="$(git rev-parse "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh")"
+          {
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'notify_human_blob=%s\n' "$notify_human_blob"
+            printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
+            printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
+            printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
+          } >> "$GITHUB_OUTPUT"
           branch="ai/issue-${ISSUE_NUMBER}"
           if git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" 2>/dev/null; then
             git checkout -B "$branch" "origin/$branch"
@@ -90,6 +102,10 @@ jobs:
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
             type == "object" and
@@ -119,6 +135,16 @@ jobs:
                 "## Trusted conversation\n\n" +
                 ([.comments[]? | select(trusted_author) | "### " + .author.login + "\n\n--- BEGIN COMMENT DATA ---\n" + (.body | data_lines) + "\n--- END COMMENT DATA ---"] | join("\n\n"))'
           } > .ai-context/request.md
+
+          # These pre-Codex copies are disposable bootstrap inputs. The Codex
+          # workload receives RUNNER_TEMP, so no helper retained there across
+          # model execution is trusted for a post-Codex decision.
+          rm -f -- \
+            "$RUNNER_TEMP/notify-human.sh" \
+            "$RUNNER_TEMP/apply-human-pause.sh" \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
+            "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
       - name: Validate Codex model configuration
         env:
@@ -718,6 +744,25 @@ jobs:
                 --no-pager \
                 --output=cat \
                 --lines=200 || true
+
+              if [ "$rc" -eq 0 ]; then
+                expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
+                set +e
+                preflight_journal="$(
+                  /usr/bin/journalctl \
+                    --unit="$unit" \
+                    --no-pager \
+                    --output=cat \
+                    --quiet
+                )"
+                journal_rc=$?
+                set -e
+                if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
+                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  exit 51
+                fi
+                printf "%s\n" "$expected_preflight_marker"
+              fi
               exit "$rc"
             ' codex-developer \
             "$runner_user" \
@@ -770,6 +815,54 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+
+      - name: Restore trusted post-Codex helpers
+        env:
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
+          NOTIFY_HUMAN_BLOB: ${{ steps.issue_context.outputs.notify_human_blob }}
+          APPLY_HUMAN_PAUSE_BLOB: ${{ steps.issue_context.outputs.apply_human_pause_blob }}
+          REQUIREMENTS_MARKER_BLOB: ${{ steps.issue_context.outputs.requirements_marker_blob }}
+          DIFF_GUARD_BLOB: ${{ steps.issue_context.outputs.diff_guard_blob }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          restore_base_blob() {
+            local source_path="${1:?source path is required}"
+            local destination="${2:?destination is required}"
+            local expected_blob="${3:?expected blob is required}"
+            if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Invalid trusted helper blob identity for $source_path." >&2
+              exit 1
+            fi
+            rm -f -- "$destination"
+            git show "${BASE_SHA}:${source_path}" > "$destination"
+            actual_blob="$(git hash-object --no-filters "$destination")"
+            if [ "$actual_blob" != "$expected_blob" ]; then
+              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              exit 1
+            fi
+          }
+
+          restore_base_blob '.github/scripts/notify-human.sh' \
+            "$RUNNER_TEMP/notify-human.sh" "$NOTIFY_HUMAN_BLOB"
+          restore_base_blob '.github/scripts/apply-human-pause.sh' \
+            "$RUNNER_TEMP/apply-human-pause.sh" "$APPLY_HUMAN_PAUSE_BLOB"
+          restore_base_blob '.github/scripts/has-requirements-change-marker.sh' \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" "$REQUIREMENTS_MARKER_BLOB"
+          restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
+
+          rm -f -- "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
+          echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
 
       - name: Gate requirement changes
         id: development-gate
@@ -1221,6 +1314,7 @@ jobs:
           fetch-depth: 0
 
       - name: Build review context
+        id: followup_context
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
@@ -1230,6 +1324,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          notify_human_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/notify-human.sh")"
+          apply_human_pause_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/apply-human-pause.sh")"
+          requirements_marker_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh")"
+          diff_guard_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh")"
+          {
+            printf 'notify_human_blob=%s\n' "$notify_human_blob"
+            printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
+            printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
+            printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
+          } >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
@@ -1237,6 +1341,10 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
             type == "object" and
@@ -1247,6 +1355,15 @@ jobs:
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
           cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
+
+          # Do not carry trusted post-Codex helpers across model execution.
+          rm -f -- \
+            "$RUNNER_TEMP/build-review-context.sh" \
+            "$RUNNER_TEMP/notify-human.sh" \
+            "$RUNNER_TEMP/apply-human-pause.sh" \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
+            "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
       - name: Validate Codex model configuration
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
@@ -1413,6 +1530,8 @@ jobs:
           cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
           Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
           Address every blocking Claude finding in this working tree.
+          Before editing, inspect every blocking finding against repository and supplied Issue evidence. If any finding requires a human requirement or upstream-phase decision, leave the entire working tree unchanged, do not mix in fixes for other findings, and follow the exact standalone [REQUIREMENTS_CHANGE_REQUIRED] marker contract in AGENTS.base.md.
+          Otherwise, correct every valid in-scope finding and all directly affected authoritative artifacts; validate the result. Explain any finding not implemented with concrete repository or Issue evidence. Do not silently change requirements to satisfy a finding.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
           Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
           Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
@@ -1854,6 +1973,25 @@ jobs:
                 --no-pager \
                 --output=cat \
                 --lines=200 || true
+
+              if [ "$rc" -eq 0 ]; then
+                expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
+                set +e
+                preflight_journal="$(
+                  /usr/bin/journalctl \
+                    --unit="$unit" \
+                    --no-pager \
+                    --output=cat \
+                    --quiet
+                )"
+                journal_rc=$?
+                set -e
+                if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
+                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  exit 51
+                fi
+                printf "%s\n" "$expected_preflight_marker"
+              fi
               exit "$rc"
             ' codex-followup \
             "$runner_user" \
@@ -1906,6 +2044,55 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+
+      - name: Restore trusted post-Codex helpers
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          NOTIFY_HUMAN_BLOB: ${{ steps.followup_context.outputs.notify_human_blob }}
+          APPLY_HUMAN_PAUSE_BLOB: ${{ steps.followup_context.outputs.apply_human_pause_blob }}
+          REQUIREMENTS_MARKER_BLOB: ${{ steps.followup_context.outputs.requirements_marker_blob }}
+          DIFF_GUARD_BLOB: ${{ steps.followup_context.outputs.diff_guard_blob }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          restore_base_blob() {
+            local source_path="${1:?source path is required}"
+            local destination="${2:?destination is required}"
+            local expected_blob="${3:?expected blob is required}"
+            if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Invalid trusted helper blob identity for $source_path." >&2
+              exit 1
+            fi
+            rm -f -- "$destination"
+            git show "${BASE_SHA}:${source_path}" > "$destination"
+            actual_blob="$(git hash-object --no-filters "$destination")"
+            if [ "$actual_blob" != "$expected_blob" ]; then
+              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              exit 1
+            fi
+          }
+
+          restore_base_blob '.github/scripts/notify-human.sh' \
+            "$RUNNER_TEMP/notify-human.sh" "$NOTIFY_HUMAN_BLOB"
+          restore_base_blob '.github/scripts/apply-human-pause.sh' \
+            "$RUNNER_TEMP/apply-human-pause.sh" "$APPLY_HUMAN_PAUSE_BLOB"
+          restore_base_blob '.github/scripts/has-requirements-change-marker.sh' \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" "$REQUIREMENTS_MARKER_BLOB"
+          restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
+
+          rm -f -- "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
+          echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
 
       - name: Gate Codex follow-up requirement changes
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
