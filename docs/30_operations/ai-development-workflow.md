@@ -7,18 +7,18 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 ## 通常フロー
 
 1. 人間が実装対象Issueを作成し、対象、受入条件、上流・下流影響を記録する。
-2. Open Issueに `/codex develop` だけを単独コメントとして投稿する。前後の説明文、引用、Markdown code block、字下げ、前後空白を付けたコメントは実行要求として扱わず、Closed Issueへのコメントでも起動しない。入口条件はGitHub Actions式の `github.event.comment.body == '/codex develop'` であり、GitHub公式仕様どおり文字列の等値比較は大文字小文字を区別しないため、運用上の正規形は小文字の `/codex develop` とする。形式やIssue stateが一致しない場合は入口job自体が起動せず自動ガイダンスも返らないため、反応がない場合はIssueがOpenか、コメントがコマンド単独になっているかを確認する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
+2. 通常のIssue起点開発では、Open Issueに `/codex develop` だけを単独コメントとして投稿する。前後の説明文、引用、Markdown code block、字下げ、前後空白を付けたコメントは実行要求として扱わず、Closed Issueへのコメントでも起動しない。timeout後の例外として `/codex develop extended` も正規commandとするが、利用条件と固定35分上限は「human-approved extended-run」を正本とする。入口はこれら2つのcommandとの等値比較だけを使用し、GitHub公式仕様どおり文字列の等値比較は大文字小文字を区別しないため、運用上の正規形は小文字とする。形式やIssue stateが一致しない場合は入口job自体が起動せず自動ガイダンスも返らないため、反応がない場合はIssueがOpenか、コメントがcommand単独になっているかを確認する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むDraft PRを作成する。同じIssueの追加修正は既存PRへ集約し、自動Ready化しない。人間が下記の準備確認を終えてReady for reviewへ変更すると、Claude reviewが起動する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
 5. ClaudeがPR、信頼済み会話、closing Issue、明示された後継Issueのsnapshot、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用する。Actionへ現行5-key JSON Schemaを渡し、`structured_output` をreview内容の第一入力として、current base由来の `validate-claude-review-output.sh` を通過した結果だけを投稿する。`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。native出力は厳密に1個のJSON値として読み、欠落・不正JSON・schema不一致は非機密な固定reason codeでfail-closed停止する。自由テキスト `result` やMarkdown fenceへfallbackせず、verdictを推測しない。
-6. `REQUEST_CHANGES` の場合は、Codexを起動する前にclosing IssueとPRへ `human-review-required` を付けて自動Claude再レビューを停止し、その状態でCodexが1回だけ修正する。人間が修正結果を確認した後、closing Issue側のラベルを先に、PR側のラベルを最後に外す。PRの `unlabeled` eventを明示的な再レビュー要求として扱い、同じheadをClaudeが1回レビューする。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
+6. `REQUEST_CHANGES` の場合、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。Draft復帰jobの異常終了、gate停止、Codex異常終了、またはpush失敗ではReadyへ戻さず、`human-review-required` により停止する。`ai/issue-*` の通常follow-upは停止ラベルを付けずにCodexを1回だけ実行し、Codex正常完了、requirements gate、trusted diff guard、commit/pushの全成功後だけtrusted workflowがPRをReady for reviewへ戻す。そのReady eventが現在headへの再レビューを1回要求する。Codex対象外PRは人間または既存の明示操作でReadyへ戻す。停止ラベルを人間が解除する場合の順序・再レビュー起動条件・merged/closed PRのcleanupは「人間エスカレーション」節を正本とする。openかつ非Draft PRのPR `unlabeled` eventは明示的な再レビュー要求として維持する。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
 
 ## Claude Reviewへ渡すtrusted conversationの選択
 
-Claude Reviewのreview contextでは、reviewer Appによる最新のformal review（`APPROVED` または `CHANGES_REQUESTED`）を会話履歴の境界とする。境界より古いreviewer App reviewは本文を含めず、author、state、submittedAt、`[REQUIREMENTS_CHANGE_REQUIRED]` と `[HUMAN_ESCALATION_RECOMMENDED]` の有無だけを保持する。境界より古いtrusted comment本文は含めない。一方、trusted humanまたはdeveloper Appによるreview本文と、最新formal review以後に必要なtrusted conversationは保持する。
+Claude Reviewのreview contextでは、reviewer Appによる最新のformal review（`APPROVED` または `CHANGES_REQUESTED`）を会話履歴の境界とする。境界より古いreviewer App reviewは本文を含めず、author、state、submittedAt、structured review summaryで単独行完全一致した `[REQUIREMENTS_CHANGE_REQUIRED]` と `[HUMAN_ESCALATION_RECOMMENDED]` の有無だけを保持する。境界より古いtrusted comment本文は含めない。一方、trusted humanまたはdeveloper Appによるreview本文と、最新formal review以後に必要なtrusted conversationは保持する。
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
 
@@ -47,21 +47,35 @@ Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすた�
 
 Issueを確定する際は、対象ファイル・節・IDに加え、同じ判断に伴う参照、用語、追跡表、図、検証範囲を洗い出して本文へ記録する。既存の別Issueを無断で取り込まず、範囲を広げる場合は人間の決定を先にIssue本文へ反映する。
 
+### Issue本文におけるcurrent implementation contract
+
+Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時点で有効な実装契約、すなわちscope、責務境界、入出力interface、完了条件および検証範囲を表していることを確認する。trusted conversationでこれらの実装判断が更新され、本文の記述が古くなった場合は、実行前にcurrent contractをIssue本文へ同期する。
+
+本文と矛盾する過去のtrusted commentの技術契約は履歴として残してよいが、削除ではなく、Issue本文からcurrent contractが一意に判断でき、過去契約が置き換えられたことが分かる状態にする。本文と矛盾しない補足説明や進捗コメントまで機械的に複製する必要はない。
+
+この実行前規約は、`develop-from-issue` がIssue本文とtrusted commentをDevelopment requestへ連結するIssue起点経路へ直接適用する。Claude review follow-upは既存のPR、review、closing Issueに基づくfollow-up gateと再開契約を維持し、本規約による本文同期手順またはcontext選択方式を追加しない。
+
 Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpushで更新しても自動Ready化はしない。必要な追加開発だけを同じIssueへ依頼し、変更が揃うまで同じPRへ集約する。生成PR本文と通常PRテンプレートの`Review readiness`欄は人間の確認記録であり、チェックボックス自体を機械的な認可・検証ゲートとは扱わない。
+
+### Validation provenance
+
+AI Developerが掲載するCodex report内のvalidation記述はCodexの自己申告であり、formal GitHub Actions evidenceではない。repository changeをpushした投稿ではworkflowが取得した`Pushed commit` SHAを、そのrunが行ったrepository writeの識別子として表示する。このSHAはCodexが同一内容をvalidation済みであることを意味しない。formal current-head validationはGitHub Actions/checks側の別証拠を正本とし、AI Developerはそのstatus/resultを取得・判定しない。repository changeのないfollow-up投稿ではpush SHAを表示しない。
+
+AI Developerの投稿またはjob successだけでは、別のmachine-generated evidenceが明示的に証明しない限り、少なくともCodex reportに記載されたcommand・条件での実行、そのreportが最後の変更後かつ表示SHAと同一内容に対する実行、各validationのexit statusまたは出力の独立確認、GitHub Actions/checksの開始・完了・status/result、job successがreport内の各validation成功を意味することを保証しない。
 
 人間は次を確認してからPR画面の **Ready for review** を実行する。
 
 - 同じ判断に伴う関連修正がIssueの許可範囲内で揃っている。
 - 影響するPOL / BR / REQ / AC / TC / CON / OOS、関連文書・図との整合を確認している。
-- 現在headに対する必要な検証結果がPR本文または最新の開発結果コメントにあり、失敗や未実施を隠していない。古いheadのチェック欄を完了証跡として使わない。
+- Codex-reported validationを自己申告の証拠として確認し、current headに適用されるGitHub Actions/checksをformal evidenceとして別に確認している。failure、未実施、未確認事項を隠さず、PR本文または最新コメントに`passed`とあることだけをformal evidenceとして扱わない。
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
 
-`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
+`ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とする。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。verdict投稿時にcurrent PR headとの追加一致gateは設けず、merge時の`--match-head-commit`と混同しない。Ready後にheadが変わったreviewの`REQUEST_CHANGES`はfollow-up対象にせず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
-既存の非Draft PRはこの変更で自動Draft化しない。通常の追加作業をレビュー前にまとめ直す場合、人間が追加pushより前にDraftへ戻し、既に進行中のClaude runがあれば別途確認・停止する。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。非Draftのままpushすると従来どおり`synchronize`でレビュー対象となる。
+Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
 
-`human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中の非Draft PRは従来どおり人間の確認後にclosing Issue、PRの順でラベルを外す。停止中のDraft PRは、準備・再開判断後に同じ順でラベルを外し、最後にReady化する。Draft中のラベル解除ではClaudeは起動しないため、Ready化がその後のレビュー要求になる。
+`human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中のopen PRに対する解除順序と再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。Draft PRではラベル解除だけでClaudeは起動せず、準備完了後のReady化がレビュー要求になる。
 
 ### 承認後の非Blocking改善
 
@@ -71,7 +85,7 @@ Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpus
 
 ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位でチャットを分け、Actionsログを失敗stepから段階的に取得し、作業内容に応じてモデルを選択する。同一head SHA・run IDのPR本文、review、Actions Job Summaryを再利用し、状態が変わっていない証跡を繰り返し調査しない。
 
-Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、完了時handoffの正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定事項の正本は引き続きGitHubのIssue本文、PR本文、review、リポジトリであり、チャットやhandoffだけに決定を残さない。
+Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、チャット終了時と再開の正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定仕様はGitHub main上の正本文書、未決事項・検討状態はIssueを正本とし、チャットだけに決定を残さない。
 
 ## スコープ外影響と後継Issue
 
@@ -88,6 +102,7 @@ Repository secrets:
 - `DEV_APP_PRIVATE_KEY`
 - `REVIEW_APP_PRIVATE_KEY`
 - `OPENAI_API_KEY`
+- `DEEPINFRA_API_KEY`（DeepInfra Investigator専用。read-only調査workflowのDeepInfra API call stepだけで使用し、Issue・PR・ログ・artifactへ値を出力しない）
 - `NOTIFICATION_WEBHOOK_URL`（人間通知用のDiscord Webhook URL。未設定でもGitHub上の停止・ラベル付与は行う）
 
 Repository variables:
@@ -105,6 +120,24 @@ Repository variables:
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
 AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は追加の判定を必要としないためinlineのままとする。
+
+例外として、DeepInfra Investigatorは任意モデルIDをIssue入力やRepository variableから実行させないことをsecurity boundaryとするため、許可するDeepSeekモデルを `.github/scripts/deepinfra-investigator.py` の `ALLOWED_MODELS` で固定する。workflow側のcommand→model対応とpreflight allowlistはentry boundaryでの多層防御として同じ許可集合を意図的に重複保持し、`test-deepinfra-investigator.sh` で一致を回帰検証する。DeepInfra Investigatorのモデル変更は通常のモデル切替ではなくsecurity allowlist変更として扱い、Issueで範囲を確定しCode Owner review対象の差分として反映する。
+
+### DeepInfra Investigator
+
+DeepInfra Investigatorは、信頼済みIssue上のコメント `/deepseek analyze` または `/deepseek analyze v4.1` で起動する。コメント投稿者とIssue作成者はいずれも `OWNER` / `MEMBER` / `COLLABORATOR` のいずれかでなければならない。通常コマンドは `DeepSeek-V4-Flash-0731`、`v4.1` 付きコマンドはallowlist済みの `DeepSeek-V4.1-Flash` を選ぶ。
+
+調査workflowは `actions: read` / `contents: read` / `issues: read` のread-only権限だけを持ち、repository write、Issue/PR write、workflow dispatch、任意shell実行をモデルへ提供しない。結果はActions Step Summaryと7日保持artifactへ出力する。API失敗、schema不正、context取得失敗等はfail-closedとし、自動probe実行やproduction AI Developerの変更へ進めない。詳細な実行契約とtool allowlistの正本は `.github/workflows/deepinfra-investigator.yml` と `.github/scripts/deepinfra-investigator.py` とする。
+
+### DeepInfra Review Benchmark
+
+Claude Reviewのprovider移行評価は、production review経路と分離した手動のDeepInfra Review Benchmarkで行う。評価の検討状態と凍結済みexpected resultの正本はIssue #342とし、benchmark runnerへexpected verdictやexpected findingを渡してはならない。
+
+Stage A runnerはdefault branch上の `workflow_dispatch` から、workflowに固定されたcase IDとmodel IDを1組だけ選んで起動する。任意PR番号、任意SHA、任意prompt、任意model IDは受理せず、自動matrix・自動retry・automatic fallbackを行わない。モデルvisible contextはcurrent mainの `CLAUDE.md` / `AGENTS.md` と、固定caseのbase→selected head差分・selected head時点の変更ファイル・current PR metadata/body snapshot・current closing/follow-up Issue snapshotから決定論的に構成する。follow-up候補はproduction reviewと同様にPR本文とclosing Issue本文の `Scope-out impact and follow-up` 節の和集合から重複排除して取得し、closing Issue自身を除外する。PR bodyは `Closes #N`、Summary、Validation、Scope-out等のcurrent evidenceを保持する一方、historical model verdictを後付けで漏らさないため `Review readiness` / `Review response` / `Claude review` H2節を除外する。Issue #342 / #343 / #359 は評価・runner・paid実行の管理情報であり、follow-upとして記録されていてもsnapshotをmodel contextへ取り込まない。この除外はモデルvisibleなbenchmark instructionとcase metadataへ明示し、missing follow-up evidenceやblocking理由として扱わせない。historical Claude review本文、Issue #342のexpected result、selected headより後のPR commitはcontextへ含めない。Stage Aはcurrent-contract synthetic replayであり、mutableなIssue/PR情報を使用するためexact historical replayとは表現しない。
+
+workflow権限はcontents/issues read-onlyとし、モデルへtoolやrepository write経路を公開しない。DeepInfra API callは既存 `DEEPINFRA_API_KEY` と `.github/scripts/deepinfra-investigator.py` のshared transport / secret redaction境界を再利用する。結果はproduction Claude Reviewへ投稿せず、Actions Step Summaryと7日保持artifactだけへ出力する。structured result schemaはcurrent `.github/workflows/claude-review.yml` のreview JSON schemaを読み、schema mismatch・free-form result・truncationはfail-closedとする。DeepInfra API応答受領後にschema不正・truncation・cost guard超過等でfail-closedする場合も、取得できたtoken usage、local/provider estimated cost、duration、validation status/reasonを先にJSON/Markdownへ保存し、workflowは失敗時もSummaryとartifactを回収する。API到達前またはprovider failureでusageが得られない項目は成功値を捏造せず `unavailable` と記録する。
+
+Stage Aで許可するcase/model集合、固定SHA、context上限、単一run cost guardの正本は `.github/scripts/deepinfra-review-benchmark.py` とする。価格表は評価時点のDeepInfra公表価格をtrusted configurationとして固定し、paid run開始前に現行価格を再確認する。Issue #342で承認されたDeepInfra評価費用は全体で$10をhard ceiling、Stage Aは$2を目標上限とし、runnerは累積費用を自動で増やすfan-outを持たない。各runのprompt/completion token、provider/local estimated cost、duration、context hashを成果物へ記録する。Stage A paid execution、Stage B/C、shadow運用、production Claude Review provider変更はrunner実装Issueとは別Issueで扱う。
 
 ## GitHub Apps
 
@@ -169,7 +202,17 @@ Action successかつ最後のresultがsuccess/is_error=falseの場合、自由�
 
 HTTP status、特にHTTP 429、Action logの文言、または利用量だけから`ACCOUNT_SPEND_LIMIT_REACHED`と推定してはならない。構造化metadataがこのcodeを示さない失敗は、分類不能または別のreason codeとして扱う。上限到達と分類不能な失敗（少なくとも`CLASSIFIER_INTERNAL_ERROR`、不明なreason code、またはJob Summaryを取得できない場合）では自動再試行を行わず、人間が調査・判断する。
 
-同じheadを再実行する前に、人間はIssue番号、closing Issue、PR番号、対象PR head SHA、失敗run ID、および失敗runのhead SHAを照合する。Job Summaryの`Claude review result`でreason codeを先に確認し、必要な場合だけ該当stepの最小限の非機密情報を確認する。PR差分を変えずに再実行する場合は、GitHub Actions UIで当該runのreviewを再実行し、完了後に新しいrun IDとhead SHAが対象PRの現在head SHAに一致することを確認する。`human-review-required`による停止中は、人間が再開可能と判断してclosing Issue側を先に、PR側を最後に外す。そのPRラベル解除eventが同じheadに対する明示的なClaude再review要求となる。head SHAが変わった場合は同じ実行の再試行として扱わず、新しい差分に対するreviewとして必要な確認をやり直す。
+同じheadを再実行する前に、人間はIssue番号、closing Issue、PR番号、対象PR head SHA、失敗run ID、および失敗runのhead SHAを照合する。Job Summaryの`Claude review result`でreason codeを先に確認し、必要な場合だけ該当stepの最小限の非機密情報を確認する。PR差分を変えずに再実行する場合は、GitHub Actions UIで当該runのreviewを再実行し、完了後に新しいrun IDとhead SHAが対象PRの現在head SHAに一致することを確認する。`human-review-required` による停止中の解除順序と、ラベル解除が同じheadへの再review要求になる条件は「人間エスカレーション」節を正本とする。head SHAが変わった場合は同じ実行の再試行として扱わず、新しい差分に対するreviewとして必要な確認をやり直す。
+
+### Claude Review Cost Guard
+
+Issue #390 のPhase 1は、`Claude Review` を `workflow_run` の `in_progress` と `completed` で監視する独立したread-only Cost Guardである。PR headをcheckout・実行せず、default branchから取得したhelperとActions metadataだけを使い、LLM、raw job log、usage telemetryの常時取得を使わない。`requested` はre-runで発生しないため、監視の根拠にしない。
+
+監視keyはsame-repository head branchであり、workflow run IDではなくpaid execution attemptを単位にする。15分rolling windowは各attemptの`run_started_at`で集計し、同一run IDのRe-runも`run_attempt`ごとに別executionとして数える。初回runの`created_at`をRe-run時刻の代用にしない。最新attemptがcurrentから30分以内にあるsame-branchの全run IDについて、過去attemptを復元する。これはcurrentとその直前attemptの各15分窓を比較するためであり、最新attemptがその候補範囲より古いrunの復元は不要である。`completed` かつ `skipped` はpaid burstに数えず、`in_progress` はpaid-capable候補として数える。current attemptの窓が閾値以上で、直前のsame-key attemptの窓が閾値未満の場合だけ、その連続episodeの先頭として通知する。したがって4件目のnon-skipped / paid-capable attemptの`in_progress` activityでreview burst、3件目の`cancelled` attemptの`completed` activityでcancel stormを各1回通知し、rolling windowの前進で件数が閾値へ戻っても重複通知しない。APIから再取得した可変statusではなくevent activityを使うため、開始event後にattemptが完了しても起動回数の検知は失われない。review burstは`in_progress` activityだけを通知対象とし、同attemptの`completed` activityでは通知しない。永続stateは持たない。attempt取得はrunあたり最大20回、全候補で最大100回にboundedし、上限超過、取得不能、不正なmetadataでは通知判定を行わず診断に留める。2026-09-18〜21の実測では#378が15分8件・cancelled 6件、#339が7件・5件、#365/#343が各4件・3件だった一方、#387のreview-ready self-testは最大3件・cancelled 0件だったことが根拠である。
+
+通知は既存`notify-human.sh`によるDiscordのみで、trigger、15分窓のrun数/cancelled数、head branch、取得可能ならPR番号、current run URL、および自動停止していない事実だけを含める。PR番号が安全に取得できないことは監視を無効化しない。metadataが不完全・不正なら0費用や正常とは推測せず診断を残し、通知判定を行わない。`NOTIFICATION_WEBHOOK_URL`未設定時は既存helperどおりwarning相当で正常終了する。
+
+Cost Guardはreview verdict、merge、pause、`human-review-required`、budget、workflow有効化、自動retryを変更しない。standard `$1.70` / high-risk `$2.10` run budget値の確定は#173、budget/account spend limit到達時のpause・Discord通知配線は#160、wall-clock異常は#146の責務である。usage欠損を0 USDとして扱わない。compact usageを低コストかつ安全に渡す恒久方式が必要になれば、このmetadata burst detectorを拡張せず#390のscopeを再確認するか後継Issueで扱う。main反映後は、計測目的のpaid reviewを実行せず、自然なrun/re-runで`workflow_run` event挙動を確認する。
 
 ### merge-base/stale判定による承認dismiss時の手動復旧
 
@@ -206,12 +249,15 @@ default branchに次を適用する。
 
 次のいずれかで `human-review-required` を付け、自動修正と自動マージを停止する。
 
-- Codexが、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。backtick・code block・字下げ・前後空白は付けず、CRLFは通常のplain-text行末として扱う。説明文中の言及は停止シグナルにしない。Codex最終応答が欠落または空の場合、または検出helperかtrusted bootstrapが失敗した場合も「マーカーなし」と扱わず、Issue起点とClaude review follow-upの両方で安全側に停止する。Claudeのマーカーはstructured review summaryからreviewer側が解釈するため、Codex最終応答の検出規則と意図的に異なる。
-- Claudeが `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。
-- Claudeが `[HUMAN_ESCALATION_RECOMMENDED]` を返した。
+- Codexが、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。backtick・code block・字下げ・前後空白は付けず、CRLFは通常のplain-text行末として扱う。説明文中の言及は停止シグナルにしない。Codex最終応答が欠落または空の場合、または検出helperかtrusted bootstrapが失敗した場合も「マーカーなし」と扱わず、Issue起点とClaude review follow-upの両方で安全側に停止する。
+- Claudeのvalidated structured review `summary` に、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` または `[HUMAN_ESCALATION_RECOMMENDED]` がある。backtick・code block・字下げ・前後空白付きの行や説明文中の言及は停止シグナルにせず、CRLFは通常のplain-text行末として扱う。判定step自体が失敗した場合はreview jobを失敗させ、mergeへ進ませない。Claude review follow-upと過去reviewのmarker短縮記録も同じ単独行規約を使う。
 - Claudeのchange requestが3回に到達した。
 
-停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。許可済みのClaude change request follow-upでは、follow-up gate通過後にラベルを付けてからCodexを1回実行するため、その実行だけは継続するが、修正pushによる `synchronize` reviewは起動しない。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。job条件はevent payload時点でPRの停止ラベルを検出して早期にjobを止め、entry gateはClaude API呼び出し直前にPRとclosing Issueのラベルを再確認する二層構成である。人間が判断を記録し、再開可能と確認した後、closing Issue側を先に、PR側を最後に外す。誤ってPR側を先に外した場合は、PRへラベルを再付与してから、closing Issue側、PR側の順に外し直す。PR側の `human-review-required` が外れたeventだけが明示的なClaude再レビュー要求となる。このラベル解除順序の正本は本運用文書であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
+停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。通常のClaude change request follow-upは停止ラベルを付けずに実行し、成功時だけReady eventで再レビューへ進む。Draft復帰jobの異常終了、3回目のchange request、要求変更、diff guard stop、Codex異常、または人間エスカレーションでは停止ラベルを付ける。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。Claude Reviewの入口は二層で保護する。workflow job条件はevent payload時点でPRがopenであり停止ラベルを持たないことを確認して早期にjobを止め、trusted base由来のentry gateはClaude API呼び出し直前にGitHubからPR stateとPR / closing Issueの停止ラベルを再取得する。entry gateはopen PRだけをreview対象とし、merged / closed PRはmodel call前に正常skipする。PR stateを安全に判定できない、または未知stateである場合はfail-closedで停止する。 workflow job条件はpull_request event payloadの小文字 `open` を判定し、trusted entry gateは `gh pr view` の `OPEN` / `CLOSED` / `MERGED` を判定するため値の語彙は異なるが、いずれもopen PRだけをpaid reviewへ進める。
+
+人間が判断を記録し再開可能と確認した後、open PRの停止ラベルはclosing Issue側を先に、PR側を最後に外す。誤ってopen PR側を先に外した場合は、PRへラベルを再付与してからclosing Issue側、PR側の順に外し直す。openかつ非Draft PRではPR側の `human-review-required` が外れたeventが明示的なClaude再レビュー要求となり、Draft PRではラベル解除では起動せずReady for reviewが再レビュー要求となる。
+
+manual protected-path merge等によりmerge後もstale `human-review-required` が残った場合も、cleanup順序はclosing Issue側を先に、merged/closed PR側を最後とする。ただしmerged/closed PR側のラベル解除はClaude再レビュー要求として扱わず、paid Claude Reviewを起動しない。この停止解除・cleanup順序とreview起動条件の正本は本節であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `{"content":"..."}` 形式を使用し、Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
@@ -227,7 +273,21 @@ default branchに次を適用する。
 
 `.github/scripts/list-human-pause-records.sh` はこのprimitiveを用いてtrusted Conversation recordを列挙する。trusted GitHub App IDを入力として受け、REST Issue comments APIの `performed_via_github_app.id` と一致するcommentだけを候補にする。PRがあればPR番号、なければIssue番号のConversationだけを探索し、双方を混在させない。stdoutは単一のJSON object `{target, records:[{pause_id, record}]}` とし、trustedかつschema-validで探索対象と`target`が一致するrecordが0件でも成功して `records: []` を返す。REST comment `id` を`pause_id`として返す。untrusted、schema不正、または`target`不一致のcommentはskipし、Conversation取得失敗またはAPI応答shape不正はfail-closedとする。このhelperはrecord数からactive / consumed / supersededを判定しない。
 
-`.github/scripts/validate-human-pause-record-graph.sh` はlisting helperのstdoutをstdinで受け、構造的にvalidな場合だけ同じJSONをstdoutへ返す。`pause_id` の重複、存在しない`source_pause_id`、self reference、cycle、および一つのpredecessorへの複数successorをfail-closedで拒否する。forkを禁止するため、各chainは構造上linearであり、一つのpredecessorが持てるsuccessorは高々一つである。recordの列挙順、root数、record数は意味論に使用せず、複数の独立rootまたは過去chainを許容する。このhelperはtrusted性・schema・targetを再検証せず、lifecycle status、effective reason、active pauseも導出しない。
+`.github/scripts/validate-human-pause-record-graph.sh` はlisting helperのstdoutをstdinで受け、構造的にvalidな場合だけ同じJSONをstdoutへ返す。`pause_id` の重複、存在しない`source_pause_id`、self reference、cycle、および一つのpredecessorへの複数successorをfail-closedで拒否する。forkを禁止するため、各chainは構造上linearであり、一つのpredecessorが持てるsuccessorは高々一つである。recordの列挙順、root数、record数は意味論に使用せず、複数の独立rootまたは過去chainを許容する。このhelperはtrusted性・schema・targetを再検証せず、`pause_id` / `source_pause_id` の厳密形式も再検証しない。これはtrusted recordのschema形式を `human-pause-record.sh` に委ね、このhelperが辺解決・重複・欠損source・cycle・forkというgraph責務だけを担う意図的な分界である。lifecycle status、effective reason、active pauseも導出しない。
+
+`.github/scripts/decompose-human-pause-record-graph.sh` はvalidated graphのstdoutをstdinで受け、同じ`target`と`{records:[...]}`からなる`chains`を返す。各chainは`source_pause_id`を持たないrootからterminalまで因果順に並べ、全recordをちょうど1回だけ含める。複数chainはroot `pause_id`を正の10進整数として精度に依存せず比較した昇順で返すため、入力列挙順に依存しない。空の`records`は空の`chains`となる。このhelperはgraph validatorの信頼性・schema・構造検証を重複せず、機械的に読めないenvelopeまたは一意に完全分解できない入力だけをfail-closedで拒否する。lifecycle status、effective reason、active pauseは導出しない。
+
+`.github/scripts/derive-human-pause-pre-resume-state.sh` はchain decompositionのstdoutをstdinで受け、`target`、各chain、各`records`を保持したまま各chainへ`pre_resume`を付加する。正常な`pre_resume.status`は `active` である。root `pause`を初期stateとし、replacement `pause`または`pause-normalization`は直前のeffective pauseをsupersedeして、そのrecord自身の外側`pause_id`と`reason`を新しいstateとする。最初の`ai-resume-accepted`より前だけを解釈し、acceptance自身とsuffixの意味論は扱わない。chainは独立に処理し、normalizationの前reasonはsource chainからのみ導出して自由文fieldに依存しない。pre-acceptance prefixが意味論上解釈不能な場合はfail-closedとし、Conversation全体のactive集約、acceptanceのconsumed判定、production workflow wiringは扱わない。
+
+`.github/scripts/reconcile-human-pause-resume-acceptance.sh` はpre-resume derivationのstdoutをstdinで受け、`target`、各chain、各`records`、各`pre_resume`を保持したまま各chainへ`effective`を付加する。`ai-resume-accepted` がないchainは`pre_resume`のpause identityとreasonを持つ`active`となる。acceptanceが1件だけありchain terminalで、その`source_pause_id`と`reason`が`pre_resume`と一致するときだけ、同じpause identityとreasonを持つ`consumed`となり、acceptance自身の外側`pause_id`は`accepted_record_id`として保持する。複数acceptance、terminalでないacceptance、sourceまたはreasonの不一致、有効でない`pre_resume`、empty `records` chain、または`pre_resume.pause_id`が当該chainの`records[].pause_id`に属さない人工入力はfail-closedとする。このhelperはreplacement / normalizationからのpre-resume state再導出、Conversation全体の集約、production workflow wiringを扱わない。
+
+`.github/scripts/reconcile-human-pause-active-pause.sh` はresume acceptance reconciliationのstdoutをstdinで受け、各chainの`effective`をConversation単位で集約する。`effective`のstatus、pause identity、reasonが有効な`active` / `consumed`であることだけを検証し、record graph、replacement / normalization、またはacceptance semanticsを再解釈しない。`chains` の列挙順には依存せず、active chainの件数と内容だけで結果を決定する。activeが0件なら`{target, result: "no_active_pause"}`、1件ならその`effective.pause_id`と`effective.reason`を持つ`{target, result: "active", active_pause}`、2件以上なら`{target, result: "state_inconsistent"}`を返す。未知statusまたは集約に必要なshapeが不正な入力はfail-closedとし、production workflow wiringは扱わない。
+
+`.github/scripts/parse-ai-resume-command.sh` はstdinからちょうど1個のJSON objectを受け、`body`、`actor`、`author_association` がすべてstringでなければfail-closedで拒否する。複数JSON value、object以外、必須field欠落、型不正もfail-closedとする。`OWNER`、`MEMBER`、`COLLABORATOR` 以外のassociation、または`/ai resume` commandでないcommentは`{"result":"ignore"}`を返す。trusted actorのresume系commentでは、1行全体に厳密一致する小文字の`/ai resume develop`、`validate`、`review`、`fix`、`follow-up #N`、`no-action`だけを受理し、`follow-up`の`N`は先頭0なしの1以上の10進整数とする。通常actionは`{result:"accepted", actor, action}`、follow-upは正のJSON numberの`follow_up_issue`を加えたaccepted objectを返し、その他は`{result:"reject", code:"invalid_command"}`を返す。このhelperはactive pause解決、GitHub target、allowlist、dispatch、production workflow wiringを扱わない。
+
+`parse-ai-resume-command.sh` を変更した場合は `bash .github/scripts/test-parse-ai-resume-command.sh` を実行する。
+
+schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
 
@@ -241,18 +301,72 @@ Issue起点とfollow-upのbootstrapは、base commitから取得したhelperのc
 
 評価対象はstaged diffである。changed files、additionsとdeletionsの合計である total changed lines、new filesの各値がcontractの対応する閾値ちょうどなら `pass`、いずれか一つでも超過すれば `stop` とする。binary変更、staged `.gitattributes` の `-diff` などでnumstatを数値化できない場合は、変更を省略したり0として扱わず `error` で停止する。bypassは設けない。正当な大規模作業または数値化不能な変更は、安全性・正確性・要求整合性を保てるIssueへ分割するか、人間実装へ切り替える。
 
-`stop` またはerror系の停止では、developer経路はclosing Issueと存在するopen PRを、follow-up経路は対象PRと解決できるclosing Issueを `human-review-required` により停止する。続いてdeveloperはIssueへ、follow-upはPRへ、非機密な停止reasonを診断commentとして記録し、Step Summaryへresult、閾値、利用可能なmetricsまたは「Metrics: unavailable」、およびrepository writeをblockedした決定を記録する。停止通知はその後の専用stepで試行する。再開は「人間エスカレーション」の規約どおり、人間が判断を記録・確認した後にclosing Issue、PRの順でラベルを解除する。
+`stop` またはerror系の停止では、developer経路はclosing Issueと存在するopen PRを、follow-up経路は対象PRと解決できるclosing Issueを `human-review-required` により停止する。続いてdeveloperはIssueへ、follow-upはPRへ、非機密な停止reasonを診断commentとして記録し、Step Summaryへresult、閾値、利用可能なmetricsまたは「Metrics: unavailable」、およびrepository writeをblockedした決定を記録する。停止通知はその後の専用stepで試行する。再開時の停止ラベル解除は「人間エスカレーション」節の停止解除・cleanup契約に従う。
 
-`evaluate-codex-diff-gate.sh` を変更した場合は `bash .github/scripts/test-evaluate-codex-diff-gate.sh` を実行する。`human-pause-record.sh` を変更した場合は `bash .github/scripts/test-human-pause-record.sh` を実行する。`list-human-pause-records.sh` を変更した場合は `bash .github/scripts/test-list-human-pause-records.sh` を実行する。`validate-human-pause-record-graph.sh` を変更した場合は `bash .github/scripts/test-validate-human-pause-record-graph.sh` を実行する。AI Developer workflowの静的契約を変更した場合は `bash .github/scripts/test-ai-developer-workflow.sh` を、diff guardを変更した場合は `bash .github/scripts/test-ai-developer-diff-guard.sh` を実行する。`build-review-context.sh` のscript挙動（trusted/untrusted conversation境界、follow-up Issue抽出・重複排除・上限・取得失敗のfail-closed、linked Issue取得失敗、diff上限）を変更した場合は `bash .github/scripts/test-build-review-context.sh` を実行する。Claude Review専用fixtureの責務（review context workflow step契約・trusted bootstrap、entry gate、risk classifier、model/budget配線、native schema準備、native output masking、native output validator、execution classifier、usage計測、structured review保存、workflow静的契約）を変更した場合は `bash .github/scripts/test-claude-review-workflow.sh` を実行する。`bash .github/scripts/test-ai-workflow.sh` は専用fixtureを置き換えない横断回帰であり、これらに加えて引き続き実行する。
+`evaluate-codex-diff-gate.sh` を変更した場合は `bash .github/scripts/test-evaluate-codex-diff-gate.sh` を実行する。`human-pause-record.sh` を変更した場合は `bash .github/scripts/test-human-pause-record.sh` を実行する。`list-human-pause-records.sh` を変更した場合は `bash .github/scripts/test-list-human-pause-records.sh` を実行する。`validate-human-pause-record-graph.sh` を変更した場合は `bash .github/scripts/test-validate-human-pause-record-graph.sh` を実行する。`decompose-human-pause-record-graph.sh` を変更した場合は `bash .github/scripts/test-decompose-human-pause-record-graph.sh` を実行する。`derive-human-pause-pre-resume-state.sh` を変更した場合は `bash .github/scripts/test-derive-human-pause-pre-resume-state.sh` を実行する。`reconcile-human-pause-resume-acceptance.sh` を変更した場合は `bash .github/scripts/test-reconcile-human-pause-resume-acceptance.sh` を実行する。`reconcile-human-pause-active-pause.sh` を変更した場合は `bash .github/scripts/test-reconcile-human-pause-active-pause.sh` を実行する。`reconcile-human-pause-resume-acceptance.sh` または `reconcile-human-pause-active-pause.sh` を変更した場合は、#278 → #273 の実出力直結合成性を維持する `bash .github/scripts/test-reconcile-human-pause-resume-acceptance-active-pause.sh` も実行する。AI Developer workflowの静的契約を変更した場合は `bash .github/scripts/test-ai-developer-workflow.sh` を、diff guardを変更した場合は `bash .github/scripts/test-ai-developer-diff-guard.sh` を実行する。`build-review-context.sh` のscript挙動（trusted/untrusted conversation境界、follow-up Issue抽出・重複排除・上限・取得失敗のfail-closed、linked Issue取得失敗、diff上限）を変更した場合は `bash .github/scripts/test-build-review-context.sh` を実行する。Claude Review専用fixtureの責務（review context workflow step契約・trusted bootstrap、entry gate、risk classifier、model/budget配線、native schema準備、native output masking、native output validator、execution classifier、usage計測、structured review保存、workflow静的契約）を変更した場合は `bash .github/scripts/test-claude-review-workflow.sh` を実行する。`bash .github/scripts/test-ai-workflow.sh` は専用fixtureを置き換えない横断回帰であり、これらに加えて引き続き実行する。
 
 ### Codex timeout・runner異常終了時の診断と再開
 
-AI DeveloperのCodex実行には、jobとstepの2段階のtimeoutを設定する。
+AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner timeout、GitHub step timeout、job-level timeout** の3段階で有限時間へ収束させる。
 
-* `develop-from-issue` と `respond-to-claude` のjob-level timeoutは15分とし、AI Developer全体の外側の停止境界として扱う。
-* `Run Codex developer` と `Run Codex follow-up` のstep-level timeoutは30分とし、Codex processに対する内側の防御として扱う。
-* step-level timeoutはrunner worker上で執行されるため、runner-lossやrunnerとの通信喪失時に30分をwall-clock上の絶対上限とは扱わない。
-* job-level timeoutも15分到達時にcancellationへ移行する境界であり、runner無応答時を含め「15分ちょうどで完全終了する」とは扱わない。
+* 通常 `/codex develop` はinner `RuntimeMaxSec=700s`、developer step 12分、job 15分とする。
+* 人間が明示的に `/codex develop extended` を選んだ場合だけ、inner `RuntimeMaxSec=1780s`、developer step 30分、job 35分へ固定延長する。任意timeout入力、automatic fallback、automatic retryは設けない。
+* transient serviceの**timeout収束に関わるproperty**として `Type=exec`、`KillMode=control-group`、`SendSIGKILL=yes`、`TimeoutStopSec=5s` を固定する。service property全体の正本は後述「Issue起点developerのCodex実行境界」とし、inner timeoutをCodex process treeのprimary bound、GitHub step timeoutをsystemd/root-shell異常時のbackstop、job timeoutをrunner-lossを含む最終外側boundとして扱う。
+* `respond-to-claude` はpin済みv1.12 Actionを `safety-strategy: unsafe` のsetup専用に限定し、prompt / prompt-file / output-fileを渡さない。actual follow-up Codexはtrusted native binaryをservice-local boundary内で実行するため、Action default `drop-sudo` に依存せず、host-global socket permission、sudoers、group membershipを変更しない。
+* follow-upはinner `RuntimeMaxSec=700s`、step 12分、job 15分で有限時間に収束させる。Issue起点developerと同じtrusted Action blob / localhost Responses proxy検証、runner UID + nobody GID + clear groups + no-new-privs + capabilities zero、generic AF_UNIX許可と13 fixed socketのservice-local mask、residual `/run` writable root-owned UNIX socket fail-closed scanを使う。workloadの前後ではread-only socket / systemd-resolved / DNS integrity observerがrepository write前に不変を確認する。OpenAI API keyはsetup Actionだけに渡し、native serviceの`env -i` allowlistには渡さない。failure時のrequirement gate、trusted diff guard、repository-write fail-closed順序とautomatic retryなしの契約は維持する。
+* timeout / failure後に同jobでrepository writeへ進む例外は設けない。developer stepがsuccessしない限り、requirement gate、diff guard、commit、push、PR作成へ進まない。
+
+#### Issue起点developerのCodex実行境界
+
+2026-09-18の #309 調査では、Issue起点AI Developerの長時間停止を段階的に切り分けた。
+
+* #312ではGitHub Actionsのbackground/cancel後もcomposite内部processがjob cleanupまで残り得ることを実証し、background/cancelをprocess停止境界として不採用とした。
+* #313 / Run #838ではpin済みActionをsetup-only化してnpm `codex exec` を通常 `run:` stepへ分離してもjob cancellationまで収束しなかった。
+* #316 / Run #57ではliteral / expressionのstep timeout自体は正常に発火しdirect parent PIDを停止できる一方、descendant processが残り得ることを実証した。direct parentが先にexitしてdescendantだけがstdioを保持するケースではstepは約5秒で収束した。
+* `@openai/codex@0.156.1` のnpm entrypointはNode launcherで、platform native Codexをspawnしsignalをforwardしてchild終了を待つ。#407で `rust-v0.156.1/codex-cli/bin/codex.js` とmanaged-install環境を確認した。`0.153.4` / #318の確認はhistorical evidenceに限定する。
+* #318 / Run #58ではtrusted npm packageからnative Codexをfail-closedに解決し、npm launcher/native双方が `codex-cli 0.153.4` を返すことを実証した。
+* #322 / Run #60ではpin済みActionのofficial root-phaseとupstream相当`setpriv` hardeningを再現し、runner UID、nobody GID、supplementary groups empty、`NoNewPrivs=1`、全capability zero、sudo disabledを確認したが、step timeout後もhardened childが生存した。
+* #324 / Run #61では同じroot-phase + `setpriv` hardening済みprocess treeをsystemd transient service cgroupへ収容し、別sessionへ逃げたsignal-resistant childを含め `RuntimeMaxSec` + `TimeoutStopSec` + `KillMode=control-group` + `SendSIGKILL=yes` で有限時間に停止できることを実証した。
+* #357 / Run #103 `35496283169` では、v1.12 root-phaseのhost-global service-socket制限を分離し、`/run/systemd/notify` 制限がsystemd-resolvedのwatchdog/restart loopを起こし、さらに `/run/dbus/system_bus_socket` をroot-only化するとlate DNS failure、artifact failure、job cancellationまで再現することを確認した。systemd v255 sourceでも、restart後の非root resolvedはDNS stub開始前にsystem bus接続へ失敗し得る。
+* #363 / PR #364 / Run #137 `35500874486` ではroot-phaseを呼ばず、systemd service-localのAF_UNIX deny、native ABI固定、io_uring syscall denyと既存 `setpriv` hardeningだけでactual Codex 0.153.4のlocalhost Responses request、20秒cgroup timeout、sudo不可、AF_UNIX不可、AF_INET可を同時に実証した。host側のnotify/D-Bus socket、systemd-resolved PID/NRestarts、DNSは前後不変だった。ただしこの時点ではCodex local-tool / bubblewrap pathを未検証だった。
+* #368 / Run `35505392927` ではproduction service-local境界からactual Codex model callまでは成功したが、最初のlocal commandでbubblewrapが `Failed to look up lo: Address family not supported by protocol` となり、#363 positive proofにlocal-tool互換性の穴があることを確定した。
+* #371ではこのproduction local-tool blockerをsecretlessに再実証する調査単位として切り出し、#372 / #374 / #376 / #377の順に原因、一変数比較、production同型userns条件、代替service-local boundaryを実証した。positive proof完了後にCloseし、production実装を#378へ分離した。
+* #372 / Run `35506216726` では一変数比較により `RestrictAddressFamilies=~AF_UNIX` が上記loopback lookup failureの直接原因であることを確定した。
+* #374 / Run `35507303861` ではactual Terra Code Modeの `exec -> tools.exec_command` pathでもcurrent境界は同じlookup failure、AF_UNIX controlは次段のRTM_NEWADDRまで進むことを確認した。
+* #376 / Run `35507942245` ではproduction同型official userns prerequisite下でgeneric AF_UNIXを許可し、既存setpriv / NoNewPrivs / capability / cgroup境界を維持したactual Terra local toolが `codex-exec-tool-probe-ok` まで成功した。
+* #377 / Run `35508896886` では、旧root-phaseが実際にmode縮小していた13 root-owned socketを `InaccessiblePaths=` でservice-localにmaskし、AF_UNIX / AF_INET可、actual Terra local tool成功、13 socketのhost inode非露出、host socket metadata / systemd-resolved / DNS前後不変を同時に実証した。
+
+productionのIssue起点developerは#324のcgroup positive proofを維持し、#357で判明したhost-global mutationを廃止する。#363で採用したblanket AF_UNIX denyは#368/#372/#374でlocal-tool blockerと確定したため撤回し、#376/#377でpositive proofしたgeneric AF_UNIX許可 + historical 13 socketの `InaccessiblePaths` maskを採用する。runner-image driftは同service identityから `/run` のroot-owned writable UNIX socketをread-only走査し、未知socketが残ればmodel call前にfail-closedする。
+
+`Setup Codex developer runtime` はpin済み `openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e` v1.12を維持し、Codexは0.153.4から0.156.1へ更新する。OpenAI API keyを受け取る唯一のstepとする。prompt / prompt-file / output-fileは渡さずmodel executionへ入らない。setup-only invocationでは `safety-strategy: unsafe` を明示するが、これは**Actionのhost-global `drop-sudo` を起動せずCLI / localhost Responses proxyを準備するsetup専用指定**であり、Codex workloadをunsafeで実行する意味ではない。pin済みv1.12の `writeProxyConfig()` は `unsafe` 時にもpermission / sandbox / approval設定を書かず、`model_provider = "codex-action-responses-proxy"` とlocalhost `base_url` / `wire_api = "responses"` だけを追加する。
+
+setup前にはrunner temp `CODEX_HOME/config.toml` を削除し、前runや別設定の残存を許可しない。setup後のtrusted resolverはrunner PATH上のnpm entrypointを起点に `@openai/codex@0.156.1`、Linux x64 / arm64 platform package、native `vendor/<target>/bin/codex` をfail-closedに検証する。さらにrunner action cache内のpin済みAction `dist/main.js` を解決し、`git hash-object` がGit blob SHA `ce4e94e119abb91b980d23bfb4210688241f3a0a` と一致することを必須とする。workspace、Issue本文、comment由来のpathやpackage名は使用しない。runner UID / primary GID / supplementary GIDsはupstream `LinuxRunnerCredentials` shapeのcompact JSONとして取得し、developer step開始時に再照合する。resolverとfixed prompt stepは各3分timeoutでfail-closedに束縛する。
+
+固定developer promptは `$RUNNER_TEMP` の専用fileへ書き、Issue本文とtrusted conversationは従来どおり `.ai-context/request.md` のdataとして読み込ませる。workflow shellへIssue本文を展開しない。
+
+developer stepはtrusted Action helperのblob SHAを再確認したうえで、`sudo -n` を**transient service作成だけ**に使用する。step environment全体をrootへ継承する `sudo -E` は使用せず、pin済みActionの `drop-sudo --root-phase` は呼ばない。runner userのgroup membership、sudoers、root-owned `/run` service socketなどhost-global stateを変更しない。root shellから `systemd-run --wait --collect` で一意なtransient serviceを作成し、既存のcgroup propertiesに加えて `NoNewPrivileges=yes`、`SystemCallArchitectures=native`、`SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register` を固定する。Codex/bubblewrapがlocal tool sandbox初期化にAF_UNIXを必要とするためblanket `RestrictAddressFamilies=~AF_UNIX` は使用しない。代わりに、#377 / Run `35508896886` でpositive proofした旧root-phase対象13 socketを `InaccessiblePaths=` でtransient serviceのmount namespaceだけにmaskする。対象pathは `/run/dbus/system_bus_socket`、`/run/dhcpcd/eth0-4.unpriv.sock`、`/run/docker.sock`、`/run/snapd-snap.socket`、`/run/snapd.socket`、`/run/systemd/io.systemd.ManagedOOM`、`/run/systemd/journal/dev-log`、`/run/systemd/journal/socket`、`/run/systemd/journal/stdout`、`/run/systemd/journal/syslog`、`/run/systemd/notify`、`/run/systemd/userdb/io.systemd.DynamicUser`、`/run/uuidd/request` の13件である。runner imageでpathが存在しない場合だけ `-` prefixで無視し、host側permissionは変更しない。service内では `setpriv` を用いて次を固定する。
+
+* `--reuid=<runner uid>`
+* `--regid=<validated nobody gid>`
+* `--clear-groups`
+* `--no-new-privs`
+* `--bounding-set=-all`
+* `--inh-caps=-all`
+* `--ambient-caps=-all`
+
+native Codex exec前には同じservice / `setpriv` contextで、UID/GID、supplementary groups empty、`NoNewPrivs=1`、全capability zero、`sudo -n true` の失敗、AF_UNIX socket作成成功、AF_INET socket作成成功をfail-closedに確認する。さらにroot shellはservice起動直前に固定13 pathのうち存在するsocketについてowner/dev:inodeだけをread-only取得し、socket種別はshellの`-S`で確認してroot-owned socketであることを固定する。service側は同baselineを受け、固定pathが存在する場合はservice viewがsocket / mode 0000 / runner identityからR/W/X不可かつhost側dev:inodeとは異なることを確認する。host baseline取得後に新たに固定pathが出現した場合もraceを信用せずfail-closedする。その後 `/run` をread-only走査し、mask後もrunner identityからwrite可能なroot-owned UNIX socketが1件でも残れば、未知のrunner-image driftとしてnative Codex/model call前にfail-closedする。permission上traverse不能なpathとscan中に消滅したpathはworkloadから到達不能または通常のruntime raceとしてskipするが、それ以外のscan errorはfail-closedとする。directory symlinkは `os.walk(..., followlinks=False)` で辿らず、files entryのmetadata取得も `os.stat(..., follow_symlinks=False)` としてsymlink targetを解決しない。これはsymlink loopと `/run` 外へのscope escapeを避けるための意図的な境界であり、`ELOOP` をgeneric skip errorへ追加してfail-closed条件を弱めない。socketへconnectは行わず、host側permissionも変更しない。このguardの対象は、旧root-phaseが実際に制限していたsecurity intentに合わせたfilesystem path上のroot-owned service socket under `/run` である。abstract namespace socket、`/run` 外のfilesystem socket、非root所有socketは本guardの対象外であり、blanket AF_UNIX denyと同等の全AF_UNIX遮断を主張しない。現在のrunner/Codex evidenceではこれらを追加遮断する根拠はなく、別のprivileged IPC classがrunner imageまたはCodex threat modelで確認された場合は#328で再評価し、推測でscopeを拡張しない。なお固定13 pathの `InaccessiblePaths` maskはservice全期間で継続する一方、residual writable root-owned socket scanはnative Codex起動直前のpoint-in-time検査であり、preflight通過後に新規生成された別pathのsocketを継続監視しない。この時間的残存面も受容済みとし、runtime revalidationやrunner-image変化で新規privileged socket classが観測された場合は#328で再評価する。このpreflightはtransient serviceのExecStart内で実行されるため `RuntimeMaxSec` の内側に含まれる。service内preflightの失敗はunit journalへ `Service-local hardening preflight ...` diagnosticを残し、exit codeを `39=sudo検査不能 / 40=sudo保持 / 41=UID不一致 / 42=GID不一致 / 43=supplementary groups残存 / 44=NoNewPrivs不成立 / 45=capability非zero / 46=AF_UNIX拒否 / 47=AF_INET拒否 / 48=固定socket maskまたはhost baseline不成立 / 49=残存writable root-owned UNIX socketまたはscan異常` として付与する。root shellでservice起動前の固定path baseline取得・socket種別・owner確認が失敗した場合はexit 50とし、transient unit作成前なのでunit journalではなくdeveloper step logへ `Service-local hardening root preflight protected UNIX socket baseline failed: ...` を残す。この場合はunit限定journal回収へ到達しない。これらのcodeはnative Codex自身のexit codeと衝突し得るため、code単独で原因を確定せず、39–49はunit journal、50はdeveloper step logの対応diagnosticと併読して判定する。
+
+Codexはこのhardening後かつservice cgroup内でvalidated native binaryを直接実行する。service commandは `/usr/bin/env -i` から開始し、`HOME` / `USER` / `LOGNAME` / `PATH` / `RUNNER_TEMP` / `GITHUB_WORKSPACE` / `CODEX_HOME` / `CODEX_FINAL` / `CODEX_PROMPT_FILE` / `CODEX_MODEL` / `CODEX_NATIVE` / `CODEX_PACKAGE_ROOT` / `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` / `PROTECTED_UNIX_SOCKET_PATHS` / `PROTECTED_UNIX_SOCKET_HOST_IDS` だけを明示allowlistとして渡す。後二者は上記13件の非機密な固定path listと、service起動直前にroot shellがread-only取得した存在pathのdev:inode baselineであり、同一service preflightが `InaccessiblePaths` の実効性とhost inode非露出を検証するためだけに使用する。preflight完了後のnative Codex `exec env` では両変数を明示unsetし、Codex process / local toolへhost baselineを継承しない。API key、GitHub App token、setup stepのその他environmentも継承しない。npm launcher parityとして `CODEX_MANAGED_PACKAGE_ROOT=<validated package root>`、`CODEX_MANAGED_BY_NPM=1` をchild launcher内で付与し、Bun / pnpm / Vite+ markerはunsetする。pin済みAction sourceではResponses API endpointは追加environmentではなく `CODEX_HOME/config.toml` のlocalhost providerで渡されるため、serviceはこのallowlistだけでproxyを利用する。actual Codex + localhost request pathは#363 / Run #137でservice-local hardening下でも成立済みである。
+
+developer stepのpreflightでは `CODEX_HOME/config.toml` をTOML parseし、top-levelが `model_provider` / `model_providers` だけであること、selected providerが `codex-action-responses-proxy` であること、`base_url` が `http://127.0.0.1:<valid-port>/v1`、`wire_api` が `responses` であることを必須とする。unexpected keyやpermission / sandbox / approval設定が混入した場合はfail-closedに停止する。CLI optionはworkflow側の固定値だけとし、`--skip-git-repo-check`、workspace、final output path、trusted `CODEX_MODEL`、`model_reasoning_effort="medium"`、`default_permissions=":workspace"` を固定する。Codex 0.156.1 sourceでは `default_permissions` がpermission profile選択キーで、`:` 始まりの名前はbuilt-in profile、`:workspace` はbuilt-in workspace profileとして解決される。0.153.4 source確認は本書のcurrent根拠として扱わない。0.156.1でのproduction実効write境界は#410のmain反映後runtime再検証で取得し、runtime / hardening実証の継続管理は#328とする。確認できない場合は実効sandboxを推測しない。service終了codeはdeveloper stepへ伝播させ、timeout / Codex failure / launcher failureはnon-zeroとしてfail-closedに扱う。transient serviceのstdout/stderrは既定どおりjournalへ送られるため、service終了後に対象unitだけを `journalctl --unit="$unit" --no-pager --output=cat --lines=200` でboundedに回収し、preflight / native Codex / timeout failureの非機密診断をephemeral runner終了前に残す。host-wide journalや他unitをdumpしない。
+
+#369以降、`Run Codex developer` の直前と直後にはread-only host integrity observerを置く。beforeでは `/run/systemd/notify` と `/run/dbus/system_bus_socket` のdev / inode / uid / gid / mode、`systemd-resolved.service` のActiveState / SubState / MainPID / NRestartsを取得し、github.com / api.github.com DNS成功を確認する。capture stepは値を `$GITHUB_OUTPUT` へ書き、runnerがstep終了時にstep outputとして回収した値だけをafter observerへ渡す。`$GITHUB_OUTPUT` のbacking fileが実装上 `$RUNNER_TEMP` 配下に置かれること自体を安全根拠にはせず、Codex workloadへbaseline outputをenvironmentとして渡さないことと、capture step終了後にworkflow context経由で参照することを境界とする。afterは `if: always()` で実行し、developer stepがrunnerへ制御を返した場合に、socket identity / modeとresolved 4 propertyがbeforeと完全一致、resolvedがactive/running、両DNSが引き続き成功することをfail-closedに確認する。host状態の取得には `stat` / `systemctl show` / `getent ahosts` のread-only commandだけを使用し、値の整形・比較は `printf` / `tr` / `sort` / `test` / `grep` のshell text処理に限定する。`/run` write、permission変更、service lifecycle変更、secret出力は行わない。before observerが失敗またはそれ以前の失敗でskipされた場合、after observerはbaseline不在を検出してhost比較前にfail-closedとなり `HOST_INTEGRITY after` を残さない。この場合もhost mutationの証拠とは扱わず、観測不能としてautomatic retryせず#328へ戻る。既知のRun #846 / #853のようにdeveloper stepが `in_progress` のままjob-level cancellationまで制御を返さない場合も、後続の`if: always()`は開始できず `HOST_INTEGRITY after` は残らない。この欠落もhost mutationの証拠とは扱わず、観測不能としてautomatic retryせず#328へ戻る。
+
+developer stepがsuccessし、host integrity after observerもsuccessし、`codex-final.md` がnon-emptyの場合だけ既存のrequirement change gate、trusted diff guard、commit、push、Draft PRへ進む。resolver / service-local hardening preflight / systemd / setpriv / native Codex / inner timeout / host integrity observerのいずれかが失敗した場合は通常後続stepをskipし、別job failure handlerで `human-review-required` へ停止する。
+
+Codex 0.156.1固有のmain反映後production runtime再検証は#410で、現行 `CODEX_MODEL` のまま通常 `/codex develop` を1回だけ実行して行う。継続的なruntime / hardening再検証と失敗時の調査は親Issue #328を正本とする。#370でread-only host integrity observerはmainへ反映済みであり、#378のAF_UNIX/socket-mask production fixもmainへ反映されるまでは#307を再開しない。両方がmainへ入った後、#307本文は対象Issue固有の停止状態・branch / PR / unexpected repository write不存在とcurrent implementation contractを同期する。通常 `/codex develop` は#328で人間判断した対象1件へ1回だけ投入し、allowlist環境下のlocalhost Responses proxy経由model call、actual local-tool path、`:workspace` の実効permission境界、service-local preflight / setpriv / systemd cgroup収束、およびhost service socket / resolver / DNS非破壊を非機密証跡で確認する。いずれかを確認できない場合はautomatic retry / extended fallbackを行わず#328へ戻る。
+
+upstream `openai/codex-action` で公式のprocess-tree lifecycle修正が反映された場合も、security hardeningとprocess-tree boundが本方式以上に維持されることをruntimeで確認するまで、安易にcgroup方式を撤去しない。
 
 #### Issue起点AI Developerの異常終了
 
@@ -280,24 +394,34 @@ Issue起点のAI Developerを再実行する前に、少なくとも次を確認
 * 同じIssueに紐づくopen PRの有無とPR head。
 * timeoutまたは異常終了後に、予期しないcommit、push、PR作成・更新が発生していないこと。
 * 取得可能な範囲で、通常の長時間実行、runner-loss、設定不備、一時的な外部障害等のどのカテゴリが最有力か。
+* 「Issue本文におけるcurrent implementation contract」に従い、Issue本文が現在有効なscope、interface、完了条件を表し、trusted commentに新旧の競合する技術契約がある場合も本文からcurrent contractを一意に判断できること。
+* 契約が未決または相互に矛盾する状態なら、同一の `/codex develop` を単純retryせず、実装判断を確定してIssue本文へ同期してから再実行すること。
 
-再実行可能と人間が判断した後、停止ラベルがある場合は既存の停止解除規約どおり、closing Issue側を先に、PR側を最後に解除する。
+再実行可能と人間が判断した後、停止ラベルがある場合は「人間エスカレーション」節の停止解除契約に従う。
 
-既存PRへ追加開発を継続する場合は、PRがDraftであることと、既に開始済みのClaude Reviewがないことを確認する。非Draft PRで `human-review-required` を解除するとClaude Reviewの再実行条件になり得るため、追加開発中に意図しないレビューを起動しない。
+既存PRへ追加開発を継続する場合は、PRがDraftであることと、既に開始済みのClaude Reviewがないことを確認する。openかつ非Draft PRで `human-review-required` を解除するとClaude Reviewの再実行条件になり得るため、追加開発中に意図しないレビューを起動しない。pushの`synchronize`だけではClaude Reviewを起動しない。merged/closed PRのcleanupは「人間エスカレーション」節を正本とする。
 
-その後、再実行が必要な場合だけ、Open Issueへ `/codex develop` を単独コメントとして投稿する。
+その後、再実行が必要な場合は原則としてOpen Issueへ `/codex develop` を単独コメントとして投稿する。十分に閉じたcurrent contractでも15分timeoutが再現し、通常runの単純retryではなく人間がextended-runを明示承認した場合だけ、次節の条件で `/codex develop extended` を使用する。
+
+#### human-approved extended-run
+
+`/codex develop extended` は通常runの代替ではなく、十分に閉じたcurrent implementation contractでも15分job timeoutが再現した場合の人間承認付き例外とする。timeout実測がない段階から最初の実行でextendedを選ぶことは運用違反とし、automation側は過去failure reasonを推測して機械判定しない。
+
+使用前に、Issue起点の異常終了で定めるRun / branch / PR / unexpected write / current contractの確認を完了し、再開可能と人間が判断する。Issueまたは関連PRに `human-review-required` が残っている間はextended commandも起動しないため、人間が再開可能と判断した後に「人間エスカレーション」節の停止解除契約へ従ってからcommandを投稿する。
+
+extended-runのjob-level timeoutは35分固定とし、developer stepは30分、inner cgroup `RuntimeMaxSec` は1780秒とする。通常commandはjob-level 15分 / developer step 12分 / inner cgroup 700秒とする。job 15分とdeveloper step 12分の差3分はsetup / native resolution / prompt準備、developer step前後のhost integrity observer（各stepのtimeout上限は1分）、post-gate / repository writeを含む外側余白である。observerの通常実行は短時間だが、このstep timeout上限を追加実行時間の保証値とはみなさない。inner 700秒とstep 720秒の公称差20秒は、developer step側のconfig.toml検証・runner credentials再照合、`systemd-run` unit作成、service終了後のunit限定journal回収、およびsystemd TERM→KILL収束（`TimeoutStopSec=5s`）を含む。上記「Issue起点developerのCodex実行境界」に定義するservice-local hardening preflight一式（identity / privilege、AF_UNIX/AF_INET、固定13 socket mask、`/run` residual writable root-owned socket scan）はExecStart内で実行されるため `RuntimeMaxSec` の内側である。extended側も1780秒と1800秒の公称差20秒を同じ内側収束余白として扱う。この余白の実効性は#328のruntime再検証で確認し、15分job cap内でafter observerまたは後処理へ到達できない場合はautomatic retryせず#328へ戻り、observer timeoutを含む外側budgetとinner / step timeout値を再評価する。任意timeout入力、通常15分runからのautomatic fallback、automatic retry、fail-open、停止ラベルのbypassは設けない。extended-runではCodex完了後のrepository write途中でjob cancellationへ到達し、push済みの `ai/issue-<Issue番号>` branchに対応するopen PRが存在しない状態が残る可能性もある。この場合は再実行前にbranch head、open PR、closing Issueの対応を照合し、予期しないcommit / push / PR writeがないことを確認してから復旧判断する。
+
+extended-runでもtimeoutまたは異常終了した場合は、同じcommandを自動または単純retryしない。failure handlerによる停止を維持し、正常長時間処理、runner-loss、model/provider差、別実行経路の必要性を再調査する。extended-runの実地検証は #307 / Run #833 `35316054357` で1回実施済みで、Codex Action wrapperが完了せず収束しなかった。#365反映後は#328の再検証手順を正本として通常 `/codex develop` を人間判断した対象1件へ1回だけ投入し、service-local preflight + setpriv + systemd cgroup + native Codex経路とhost socket / resolver / DNS非破壊を再検証する。収束しなければautomatic retryせず #328 の調査へ戻る。`/codex develop extended` を投稿してもIssueへ診断commentが付かず、`human-review-required` も付かず、developer jobの記録も見当たらない場合は、job-level timeout式を含むworkflowの評価・起動前失敗の可能性を考慮し、Actions run一覧で当該eventのworkflow状態を確認する。
 
 #### Claude review follow-upの異常終了
 
-Claude review follow-upでは、`Run Codex follow-up` の実行前に `Gate automated follow-up` がclosing IssueとPRへ `human-review-required` を付与している。
-
-このためCodex follow-upがtimeout、runner-loss、action failure等で異常終了しても、IssueとPRは人間確認が必要な停止状態を維持する。
+Claude review follow-upでは、通常の `Gate automated follow-up` は停止ラベルを付けない。trusted Draft復帰jobまたは `Run Codex follow-up` がtimeout、runner-loss、action failure等で異常終了した場合は、専用failure handlerがclosing IssueとPRへ `human-review-required` を付与する。
 
 異常終了後にCodex follow-upを自動retryしない。現行workflowには、停止状態を維持したまま同じClaude指摘に対するCodex follow-upだけを安全に再実行する専用入口はない。
 
-人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。修正と確認が完了した後、既存の再開規約に従いclosing Issue側を先に、PR側を最後に `human-review-required` を解除する。
+人間はActions結果とPR差分を確認し、必要な修正が残る場合は手動で修正する。`Run Codex follow-up` 側の異常終了ではPRはDraftのままなので、修正と確認が完了した後、「人間エスカレーション」節の停止解除契約に従い、人間または明示的なtrusted経路がReady for reviewへ戻して再レビューを要求する。Draft復帰job自体が異常終了してopen PRが非Draftのまま停止している場合は、PR側の停止ラベルを解除する前に人間がPRをDraftへ戻し、準備完了後にReady化する。
 
-非Draft PRでは、PR側の `human-review-required` 解除eventを、現在headに対する明示的なClaude再レビュー要求として扱う。Draft PRではラベル解除だけではClaude Reviewを開始せず、準備完了後のReady for reviewをレビュー要求とする。
+停止ラベルの解除順序、open PRでの再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。follow-up復旧では、その契約に従って停止解除後のDraft/Ready状態を整える。
 
 Codex follow-up専用retry入口が将来必要になった場合は、この復旧手順へ例外を追加せず、別Issueで設計・実装する。
 
@@ -307,7 +431,7 @@ timeoutや異常終了が発生したという事実だけで、作業量が大�
 
 runner-lossやGitHub Actions基盤側の異常は、小さい変更でも発生し得るため、失敗原因がrunner-lossまたはinfrastructure failureと判断できる場合は、それだけを理由にIssueを分割しない。
 
-一方、runnerとログが正常に動作したままCodex実行が15分近く継続してjob-level timeoutした場合、または同じscopeで長時間化を繰り返した場合は、再実行前に作業量を見直す。
+一方、runnerとログが正常に動作したままCodex実行が当該runのjob-level timeout値近くまで継続してtimeoutした場合、または同じscopeで長時間化を繰り返した場合は、再実行前に作業量を見直す。
 
 分割する場合は、各IssueまたはPRが独立して実装、検証、レビューでき、安全性・正確性・要求整合性を単独で確認できる単位にする。
 

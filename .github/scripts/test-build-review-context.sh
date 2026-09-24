@@ -161,7 +161,7 @@ conversation_metadata="$(jq -cn '
      {author:{login:"dev"},authorAssociation:"NONE",body:"developer response",createdAt:"2026-01-04T00:00:00Z"},
      {author:{login:"attacker"},authorAssociation:"NONE",body:"untrusted",createdAt:"2026-01-05T00:00:00Z"}],
    reviews:[
-     {author:{login:"review[bot]"},authorAssociation:"NONE",state:"CHANGES_REQUESTED",body:"old review [REQUIREMENTS_CHANGE_REQUIRED] [HUMAN_ESCALATION_RECOMMENDED]",submittedAt:"2026-01-02T00:00:00Z"},
+     {author:{login:"review[bot]"},authorAssociation:"NONE",state:"CHANGES_REQUESTED",body:"## Claude review\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| old review\nSUMMARY| [REQUIREMENTS_CHANGE_REQUIRED]\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---",submittedAt:"2026-01-02T00:00:00Z"},
      {author:{login:"owner"},authorAssociation:"OWNER",state:"APPROVED",body:"human decision",submittedAt:"2026-01-02T12:00:00Z"},
      {author:{login:"app/dev"},authorAssociation:"NONE",state:"APPROVED",body:"developer decision",submittedAt:"2026-01-02T18:00:00Z"},
      {author:{login:"app/review"},authorAssociation:"NONE",state:"APPROVED",body:"latest formal review",submittedAt:"2026-01-03T00:00:00Z"},
@@ -176,7 +176,7 @@ grep -Fq 'human decision' "$test_dir/selected.md"
 grep -Fq 'developer decision' "$test_dir/selected.md"
 grep -Fq '[REQUIREMENTS_CHANGE_REQUIRED]: present' "$test_dir/selected.md"
 grep -Fq '[HUMAN_ESCALATION_RECOMMENDED]: present' "$test_dir/selected.md"
-if grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/selected.md" \
+if grep -Fq 'DATA| SUMMARY| old review' "$test_dir/selected.md" \
   || grep -Fq 'old human comment' "$test_dir/selected.md" \
   || grep -Fq 'untrusted review' "$test_dir/selected.md"; then
   echo 'Selected conversation retained excluded text.' >&2
@@ -188,6 +188,20 @@ if [ "$(grep -E '^### (Prior reviewer App review|Trusted review metadata):' "$te
   echo 'Selected review output was not ordered by submittedAt.' >&2
   exit 1
 fi
+
+descriptive_marker_metadata="$(jq -c '
+  .reviews[0].body = "## Claude review\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.\nSUMMARY| exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.\n--- END REVIEW SUMMARY DATA ---"
+' <<< "$conversation_metadata")"
+build_conversation "$descriptive_marker_metadata" "$test_dir/descriptive-markers.md"
+grep -Fq '[REQUIREMENTS_CHANGE_REQUIRED]: absent' "$test_dir/descriptive-markers.md"
+grep -Fq '[HUMAN_ESCALATION_RECOMMENDED]: absent' "$test_dir/descriptive-markers.md"
+
+crlf_marker_metadata="$(jq -c '
+  .reviews[0].body = "## Claude review\r\n--- BEGIN REVIEW SUMMARY DATA ---\r\nSUMMARY| [REQUIREMENTS_CHANGE_REQUIRED]\r\n--- END REVIEW SUMMARY DATA ---"
+' <<< "$conversation_metadata")"
+build_conversation "$crlf_marker_metadata" "$test_dir/crlf-marker.md"
+grep -Fq '[REQUIREMENTS_CHANGE_REQUIRED]: present' "$test_dir/crlf-marker.md"
+grep -Fq '[HUMAN_ESCALATION_RECOMMENDED]: absent' "$test_dir/crlf-marker.md"
 
 # Selection must not depend on API array order, and a first review without a
 # formal verdict retains the existing complete trusted conversation. Review
@@ -228,7 +242,7 @@ build_conversation "$changes_requested_metadata" "$test_dir/changes-requested.md
 grep -Fq 'Trusted review metadata: app/review — CHANGES_REQUESTED' "$test_dir/changes-requested.md"
 grep -Fq 'latest formal review' "$test_dir/changes-requested.md"
 grep -Fq 'developer response' "$test_dir/changes-requested.md"
-if grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/changes-requested.md"; then
+if grep -Fq 'DATA| SUMMARY| old review' "$test_dir/changes-requested.md"; then
   echo 'CHANGES_REQUESTED boundary retained an earlier reviewer-App body.' >&2
   exit 1
 fi
@@ -252,7 +266,7 @@ for invalid_metadata in \
   "$(jq -c '.comments = {}' <<< "$conversation_metadata")"; do
   build_conversation "$invalid_metadata" "$test_dir/fallback.md"
   grep -Fq 'Conversation selection fallback:' "$test_dir/fallback.md"
-  grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/fallback.md"
+  grep -Fq 'DATA| SUMMARY| old review' "$test_dir/fallback.md"
 done
 malformed_body_metadata="$(jq -c '.comments[1].body = ["malformed trusted comment body"]' <<< "$conversation_metadata")"
 build_conversation "$malformed_body_metadata" "$test_dir/malformed-body.md"
@@ -267,7 +281,7 @@ MOCK_METADATA="$conversation_metadata"
 export MOCK_CASE MOCK_METADATA
 bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/empty-reviewer.md" 'dev,dev[bot],app/dev,review,review[bot],app/review' ''
 grep -Fq 'Conversation selection fallback: reviewer App login candidates are missing or ambiguous.' "$test_dir/empty-reviewer.md"
-grep -Fq 'old review [REQUIREMENTS_CHANGE_REQUIRED]' "$test_dir/empty-reviewer.md"
+grep -Fq 'DATA| SUMMARY| old review' "$test_dir/empty-reviewer.md"
 bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/duplicate-reviewer.md" 'dev,dev[bot],app/dev,review,review[bot],app/review' 'review,review'
 grep -Fq 'Conversation selection fallback: reviewer App login candidates are missing or ambiguous.' "$test_dir/duplicate-reviewer.md"
 

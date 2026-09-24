@@ -19,7 +19,10 @@ jobs:
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
       !contains(github.event.issue.labels.*.name, 'human-review-required') &&
-      github.event.comment.body == '/codex develop'
+      (
+        github.event.comment.body == '/codex develop' ||
+        github.event.comment.body == '/codex develop extended'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,7 +53,7 @@ jobs:
     needs: gate-issue-entry
     if: needs.gate-issue-entry.outputs.continue == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}
     concurrency:
       group: codex-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -128,23 +131,645 @@ jobs:
             exit 1
           fi
 
-      - name: Run Codex developer
-        id: codex
-        timeout-minutes: 30
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+      - name: Prepare Codex developer runtime
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          rm -f "$CODEX_HOME/config.toml"
+          rm -f "$CODEX_FINAL"
+
+      - name: Setup Codex developer runtime
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.153.4
-          permission-profile: :workspace
-          model: ${{ vars.CODEX_MODEL }}
-          effort: medium
-          prompt: |
-            Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
-            Implement the Issue in this working tree.
-            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
-            Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
-            Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
-          output-file: ${{ runner.temp }}/codex-final.md
+          codex-version: 0.156.1
+          codex-home: ${{ runner.temp }}/codex-home
+          safety-strategy: unsafe
+
+      - name: Resolve trusted Codex developer runtime
+        id: codex_runtime
+        timeout-minutes: 3
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(realpath "$package_root/bin/codex.js")" = "$entry"
+
+          export CODEX_ENTRY="$entry"
+          export CODEX_PACKAGE_ROOT="$package_root"
+          resolver_output="$(
+            node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createRequire } from "node:module";
+
+          const entry = process.env.CODEX_ENTRY;
+          const packageRoot = process.env.CODEX_PACKAGE_ROOT;
+          const mainPackage = JSON.parse(
+            fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+          );
+          if (mainPackage.name !== "@openai/codex") {
+            throw new Error(`unexpected package name: ${mainPackage.name}`);
+          }
+          if (mainPackage.version !== "0.156.1") {
+            throw new Error(`unexpected package version: ${mainPackage.version}`);
+          }
+
+          let platformPackage;
+          let targetTriple;
+          if (process.platform === "linux" && process.arch === "x64") {
+            platformPackage = "@openai/codex-linux-x64";
+            targetTriple = "x86_64-unknown-linux-musl";
+          } else if (process.platform === "linux" && process.arch === "arm64") {
+            platformPackage = "@openai/codex-linux-arm64";
+            targetTriple = "aarch64-unknown-linux-musl";
+          } else {
+            throw new Error(
+              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+            );
+          }
+
+          const require = createRequire(entry);
+          const platformPackageJson = require.resolve(
+            `${platformPackage}/package.json`,
+          );
+          const nativePath = path.join(
+            path.dirname(platformPackageJson),
+            "vendor",
+            targetTriple,
+            "bin",
+            "codex",
+          );
+          const nativeStat = fs.statSync(nativePath);
+          if (!nativeStat.isFile()) {
+            throw new Error("native codex is not a regular file");
+          }
+          fs.accessSync(nativePath, fs.constants.X_OK);
+
+          process.stdout.write(
+            JSON.stringify({
+              nativePath: fs.realpathSync(nativePath),
+              packageRoot,
+              targetTriple,
+            }),
+          );
+          NODE
+          )"
+
+          native_path="$(jq -r '.nativePath' <<<"$resolver_output")"
+          resolved_root="$(jq -r '.packageRoot' <<<"$resolver_output")"
+          target_triple="$(jq -r '.targetTriple' <<<"$resolver_output")"
+          test "$resolved_root" = "$package_root"
+          test -x "$native_path"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          test "$native_version" = 'codex-cli 0.156.1'
+
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
+            "$target_triple" "$actual_blob"
+
+      - name: Prepare fixed Codex developer prompt
+        timeout-minutes: 3
+        env:
+          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
+          Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
+          Implement the Issue in this working tree.
+          The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
+          Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
+          Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
+          CODEX_PROMPT
+
+      - name: Capture AI Developer host integrity baseline
+        id: host_integrity_before
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notify_before="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus_before="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          resolved_before="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState --property=SubState --property=MainPID --property=NRestarts |
+              LC_ALL=C sort |
+              tr '\n' ';'
+          )"
+          printf '%s\n' "$resolved_before" | tr ';' '\n' | grep -Fxq 'ActiveState=active'
+          printf '%s\n' "$resolved_before" | tr ';' '\n' | grep -Fxq 'SubState=running'
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          printf 'notify=%s\n' "$notify_before" >> "$GITHUB_OUTPUT"
+          printf 'dbus=%s\n' "$dbus_before" >> "$GITHUB_OUTPUT"
+          printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
+          printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+
+      - name: Run Codex developer
+        id: codex
+        timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
+          CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}
+          ACTION_MAIN: ${{ steps.codex_runtime.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.codex_runtime.outputs.runner_credentials }}
+          CODEX_RUNTIME_MAX_SEC: ${{ github.event.comment.body == '/codex develop extended' && 1780 || 700 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x "$CODEX_NATIVE"
+          test -f "$ACTION_MAIN"
+          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+          test -s "$CODEX_HOME/config.toml"
+          test -s "$CODEX_PROMPT_FILE"
+
+          python3 - "$CODEX_HOME/config.toml" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+          import urllib.parse
+
+          config_path = pathlib.Path(sys.argv[1])
+          with config_path.open("rb") as fh:
+              config = tomllib.load(fh)
+
+          allowed_top_level = {"model_provider", "model_providers"}
+          unexpected = sorted(set(config) - allowed_top_level)
+          if unexpected:
+              raise SystemExit(
+                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+              )
+
+          provider_name = config.get("model_provider")
+          if provider_name != "codex-action-responses-proxy":
+              raise SystemExit("unexpected Codex model_provider")
+
+          providers = config.get("model_providers")
+          if not isinstance(providers, dict) or set(providers) != {provider_name}:
+              raise SystemExit("unexpected Codex model_providers shape")
+          provider = providers[provider_name]
+          if not isinstance(provider, dict):
+              raise SystemExit("unexpected Codex provider config")
+          if provider.get("wire_api") != "responses":
+              raise SystemExit("Codex proxy provider must use responses wire API")
+
+          parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
+          if (
+              parsed.scheme != "http"
+              or parsed.hostname != "127.0.0.1"
+              or parsed.port is None
+              or not (1 <= parsed.port <= 65535)
+              or parsed.path != "/v1"
+              or parsed.params
+              or parsed.query
+              or parsed.fragment
+              or parsed.username is not None
+              or parsed.password is not None
+          ):
+              raise SystemExit("Codex proxy provider must be loopback http /v1")
+          PY
+
+          case "$CODEX_RUNTIME_MAX_SEC" in
+            700|1780) ;;
+            *)
+              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              exit 1
+              ;;
+          esac
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          current_credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+          test "$current_credentials" = "$RUNNER_CREDENTIALS"
+          test "$uid" -ne 0
+
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          unit="codex-developer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cat > "$RUNNER_TEMP/run-native-codex.sh" <<'CODEX_RUN'
+          #!/bin/sh
+          set -eu
+
+          expected_uid="${1:?expected uid is required}"
+          expected_gid="${2:?expected gid is required}"
+
+          actual_uid="$(/usr/bin/id -u)"
+          if [ "$actual_uid" != "$expected_uid" ]; then
+            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            exit 41
+          fi
+
+          actual_gid="$(/usr/bin/id -g)"
+          if [ "$actual_gid" != "$expected_gid" ]; then
+            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            exit 42
+          fi
+
+          groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
+          if [ -n "$groups_status" ]; then
+            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            exit 43
+          fi
+
+          no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
+          if [ "$no_new_privs" != 1 ]; then
+            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            exit 44
+          fi
+
+          for field in CapInh CapPrm CapEff CapBnd CapAmb; do
+            value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
+            if [ "$value" != 0000000000000000 ]; then
+              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              exit 45
+            fi
+          done
+
+          if [ ! -x /usr/bin/sudo ]; then
+            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            exit 39
+          fi
+          if /usr/bin/sudo -n true >/dev/null 2>&1; then
+            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            exit 40
+          fi
+
+          /usr/bin/python3 - <<'PY'
+          import errno
+          import os
+          import socket
+          import stat
+          import sys
+
+          protected_paths = os.environ.get("PROTECTED_UNIX_SOCKET_PATHS", "").split()
+          if (
+              len(protected_paths) != 13
+              or len(set(protected_paths)) != 13
+              or any(not path.startswith("/run/") for path in protected_paths)
+          ):
+              print(
+                  "Service-local hardening preflight protected socket allowlist is malformed.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(48)
+
+          try:
+              sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight blocks AF_UNIX required by Codex sandbox: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(46)
+          else:
+              sock.close()
+
+          try:
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(47)
+          else:
+              sock.close()
+
+          host_ids = {}
+          raw_host_ids = os.environ.get("PROTECTED_UNIX_SOCKET_HOST_IDS", "")
+          if raw_host_ids:
+              try:
+                  for item in raw_host_ids.split(";"):
+                      path, devino = item.split("=", 1)
+                      dev, ino = (int(part) for part in devino.split(":", 1))
+                      if path in host_ids:
+                          raise ValueError("duplicate protected socket host id")
+                      host_ids[path] = (dev, ino)
+              except (TypeError, ValueError):
+                  print(
+                      "Service-local hardening preflight protected socket host baseline is malformed.",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+          if any(path not in protected_paths for path in host_ids):
+              print(
+                  "Service-local hardening preflight protected socket host baseline has an unexpected path.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(48)
+
+          for path in protected_paths:
+              try:
+                  st = os.stat(path)
+              except FileNotFoundError:
+                  continue
+              except OSError as exc:
+                  print(
+                      f"Service-local hardening preflight cannot inspect protected socket {path}: {exc}",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+
+              if path not in host_ids:
+                  print(
+                      f"Service-local hardening preflight protected socket appeared after host baseline: {path}.",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+
+              if (
+                  not stat.S_ISSOCK(st.st_mode)
+                  or stat.S_IMODE(st.st_mode) != 0
+                  or os.access(path, os.R_OK)
+                  or os.access(path, os.W_OK)
+                  or os.access(path, os.X_OK)
+                  or (st.st_dev, st.st_ino) == host_ids[path]
+              ):
+                  print(
+                      f"Service-local hardening preflight protected socket mask is ineffective: {path}.",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+
+          def handle_walk_error(exc):
+              if exc.errno in (errno.EACCES, errno.EPERM, errno.ENOENT):
+                  return
+              raise exc
+
+          residual = []
+          try:
+              for root, _dirs, files in os.walk(
+                  "/run",
+                  topdown=True,
+                  onerror=handle_walk_error,
+                  followlinks=False,
+              ):
+                  for name in files:
+                      path = os.path.join(root, name)
+                      try:
+                          st = os.stat(path, follow_symlinks=False)
+                      except (FileNotFoundError, PermissionError):
+                          continue
+                      if (
+                          stat.S_ISSOCK(st.st_mode)
+                          and st.st_uid == 0
+                          and os.access(path, os.W_OK)
+                      ):
+                          residual.append(path)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight failed while scanning /run: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(49)
+
+          if residual:
+              rendered = ", ".join(sorted(set(residual))[:20])
+              print(
+                  "Service-local hardening preflight found writable root-owned UNIX socket(s): "
+                  + rendered,
+                  file=sys.stderr,
+              )
+              raise SystemExit(49)
+
+          print(
+              "Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
+          )
+          PY
+
+          exec env \
+            -u PROTECTED_UNIX_SOCKET_PATHS \
+            -u PROTECTED_UNIX_SOCKET_HOST_IDS \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            CODEX_HOME="$CODEX_HOME" \
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$CODEX_NATIVE" exec \
+              --skip-git-repo-check \
+              --cd "$GITHUB_WORKSPACE" \
+              --output-last-message "$CODEX_FINAL" \
+              --model "$CODEX_MODEL" \
+              --config 'model_reasoning_effort="medium"' \
+              --config 'default_permissions=":workspace"' \
+              < "$CODEX_PROMPT_FILE"
+          CODEX_RUN
+          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"
+
+          exec sudo -n -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /bin/sh -c '
+              set -eu
+              runner_user="$1"
+              uid="$2"
+              nobody_gid="$3"
+              runner_home="$4"
+              runner_path="$5"
+              runner_temp="$6"
+              runtime_max_sec="$7"
+              unit="$8"
+              launcher="$9"
+              code_workspace="${10}"
+              codex_home="${11}"
+              codex_final="${12}"
+              codex_prompt_file="${13}"
+              codex_model="${14}"
+              codex_native="${15}"
+              codex_package_root="${16}"
+              originator="${17}"
+              protected_unix_socket_paths="/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request"
+              inaccessible_paths=""
+              protected_unix_socket_host_ids=""
+              for path in $protected_unix_socket_paths; do
+                inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
+                if [ -e "$path" ]; then
+                  if [ ! -S "$path" ]; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path is not a socket." >&2
+                    exit 50
+                  fi
+                  if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat owner for $path." >&2
+                    exit 50
+                  fi
+                  if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat dev:inode for $path." >&2
+                    exit 50
+                  fi
+                  if [ "$host_owner" != 0 ]; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path owner=$host_owner." >&2
+                    exit 50
+                  fi
+                  protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
+                fi
+              done
+
+              set +e
+              /usr/bin/systemd-run \
+                --quiet \
+                --wait \
+                --collect \
+                --unit="$unit" \
+                --property=Type=exec \
+                --property="RuntimeMaxSec=${runtime_max_sec}s" \
+                --property=TimeoutStopSec=5s \
+                --property=KillMode=control-group \
+                --property=SendSIGKILL=yes \
+                --property=NoNewPrivileges=yes \
+                --property="InaccessiblePaths=$inaccessible_paths" \
+                --property=SystemCallArchitectures=native \
+                --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" \
+                /usr/bin/setpriv \
+                  --reuid="$uid" \
+                  --regid="$nobody_gid" \
+                  --clear-groups \
+                  --no-new-privs \
+                  --bounding-set=-all \
+                  --inh-caps=-all \
+                  --ambient-caps=-all \
+                  -- /usr/bin/env -i \
+                  "HOME=$runner_home" \
+                  "USER=$runner_user" \
+                  "LOGNAME=$runner_user" \
+                  "PATH=$runner_path" \
+                  "RUNNER_TEMP=$runner_temp" \
+                  "GITHUB_WORKSPACE=$code_workspace" \
+                  "CODEX_HOME=$codex_home" \
+                  "CODEX_FINAL=$codex_final" \
+                  "CODEX_PROMPT_FILE=$codex_prompt_file" \
+                  "CODEX_MODEL=$codex_model" \
+                  "CODEX_NATIVE=$codex_native" \
+                  "CODEX_PACKAGE_ROOT=$codex_package_root" \
+                  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
+                  "PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths" \
+                  "PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids" \
+                  /bin/sh "$launcher" "$uid" "$nobody_gid"
+              rc=$?
+              set -e
+
+              /usr/bin/journalctl \
+                --unit="$unit" \
+                --no-pager \
+                --output=cat \
+                --lines=200 || true
+              exit "$rc"
+            ' codex-developer \
+            "$runner_user" \
+            "$uid" \
+            "$nobody_gid" \
+            "$runner_home" \
+            "$runner_path" \
+            "$RUNNER_TEMP" \
+            "$CODEX_RUNTIME_MAX_SEC" \
+            "$unit" \
+            "$RUNNER_TEMP/run-native-codex.sh" \
+            "$GITHUB_WORKSPACE" \
+            "$CODEX_HOME" \
+            "$CODEX_FINAL" \
+            "$CODEX_PROMPT_FILE" \
+            "$CODEX_MODEL" \
+            "$CODEX_NATIVE" \
+            "$CODEX_PACKAGE_ROOT" \
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+
+      - name: Verify AI Developer host integrity
+        if: always()
+        timeout-minutes: 1
+        env:
+          HOST_NOTIFY_BEFORE: ${{ steps.host_integrity_before.outputs.notify }}
+          HOST_DBUS_BEFORE: ${{ steps.host_integrity_before.outputs.dbus }}
+          HOST_RESOLVED_BEFORE: ${{ steps.host_integrity_before.outputs.resolved }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "$HOST_NOTIFY_BEFORE"
+          test -n "$HOST_DBUS_BEFORE"
+          test -n "$HOST_RESOLVED_BEFORE"
+
+          notify_after="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus_after="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          test "$notify_after" = "$HOST_NOTIFY_BEFORE"
+          test "$dbus_after" = "$HOST_DBUS_BEFORE"
+
+          resolved_after="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState --property=SubState --property=MainPID --property=NRestarts |
+              LC_ALL=C sort |
+              tr '\n' ';'
+          )"
+          test "$resolved_after" = "$HOST_RESOLVED_BEFORE"
+          printf '%s\n' "$resolved_after" | tr ';' '\n' | grep -Fxq 'ActiveState=active'
+          printf '%s\n' "$resolved_after" | tr ';' '\n' | grep -Fxq 'SubState=running'
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+          printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
 
       - name: Gate requirement changes
         id: development-gate
@@ -342,12 +967,26 @@ jobs:
 
           if git diff --cached --quiet; then
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body 'Codex completed the request but produced no repository changes. Human confirmation is required.'
+              --body 'No repository change was produced by this AI Developer run. No commit or push was performed. Human confirmation is required.'
             exit 0
           fi
 
           git commit -m "Implement #${ISSUE_NUMBER} with Codex"
+          pushed_commit="$(git rev-parse HEAD)"
           git push --set-upstream origin "$AI_BRANCH"
+
+          report_file="$(mktemp)"
+          {
+            echo '### Validation provenance'
+            echo
+            echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
+            echo "- Pushed commit: ${pushed_commit}"
+            echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+            echo
+            echo '### Codex report'
+            echo
+            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
+          } > "$report_file"
 
           pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$AI_BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -z "$pr_number" ]; then
@@ -357,12 +996,13 @@ jobs:
               echo
               echo '## AI development result'
               echo
-              if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
+              cat "$report_file"
               echo
               echo '## Review readiness'
               echo
               echo '- [ ] Related references, terminology, traceability, and diagrams for this decision are updated together within the Issue scope.'
-              echo '- [ ] Validation results cover the current head; remaining impacts and follow-up decisions are recorded in the closing Issue.'
+              echo '- [ ] Codex-reported validation has been reviewed as self-reported evidence, and applicable GitHub Actions/checks for the current head have been reviewed separately; failures, unrun validation, and remaining uncertainty are recorded.'
+              echo '- [ ] Remaining impacts and follow-up decisions are recorded in the closing Issue.'
               echo '- [ ] A human has checked the complete change and confirmed it is ready for Claude review.'
               echo
               echo 'This PR starts as Draft. Keep related corrections here, then have a human mark it Ready for review. Draft updates do not run Claude review. Follow docs/30_operations/ai-development-workflow.md for readiness checks and paused-review recovery.'
@@ -371,12 +1011,9 @@ jobs:
             rm -f "$body_file"
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codex opened ${pr_url} as Draft. Check related corrections and validation, then mark it Ready for review to request Claude review."
           else
-            if [ -s "$CODEX_FINAL" ]; then
-              gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
-            else
-              gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
-            fi
+            gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
           fi
+          rm -f "$report_file"
 
   handle-issue-developer-failure:
     name: Handle Issue developer failure
@@ -436,9 +1073,58 @@ jobs:
           bash .github/scripts/notify-human.sh
           "AI Developer job ended with result '${JOB_RESULT}', pause sync outcome '${PAUSE_SYNC_OUTCOME}', and requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
+  draft-after-claude-changes:
+    name: Draft after Claude changes requested
+    if: >-
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.review.commit_id == github.event.pull_request.head.sha &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Create reviewer App token for identity verification
+        id: review-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Verify review author
+        id: verify-reviewer
+        env:
+          EXPECTED_LOGIN: ${{ steps.review-token.outputs.app-slug }}[bot]
+          ACTUAL_LOGIN: ${{ github.event.review.user.login }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_slug="${EXPECTED_LOGIN%\[bot\]}"
+          if [ "$ACTUAL_LOGIN" = "$EXPECTED_LOGIN" ] || [ "$ACTUAL_LOGIN" = "$expected_slug" ]; then
+            echo 'trusted=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN"
+            echo 'trusted=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Convert pull request to Draft
+        if: steps.verify-reviewer.outputs.trusted == 'true'
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ]; then
+            gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo
+          fi
+
   respond-to-claude:
     name: Respond to Claude
+    needs: draft-after-claude-changes
     if: >-
+      needs.draft-after-claude-changes.result == 'success' &&
       github.event_name == 'pull_request_review' &&
       github.event.review.state == 'changes_requested' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -506,7 +1192,7 @@ jobs:
           notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
 
-          if [ "$escalate" = 'true' ] || [ "$continue" = 'true' ]; then
+          if [ "$escalate" = 'true' ]; then
             # The pause helper resolves and labels the PR's closing Issues.
             bash .github/scripts/apply-human-pause.sh \
               "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
@@ -574,25 +1260,654 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare Codex follow-up runtime
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          rm -f "$CODEX_HOME/config.toml"
+          rm -f "$CODEX_FINAL"
+
+      - name: Setup Codex follow-up runtime
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: 0.156.1
+          codex-home: ${{ runner.temp }}/codex-home
+          safety-strategy: unsafe
+          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
+
+      - name: Resolve trusted Codex follow-up runtime
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        id: followup_codex_runtime
+        timeout-minutes: 3
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          launcher="$(command -v codex)"
+          test -n "$launcher"
+          entry="$(realpath "$launcher")"
+          test "$(basename "$entry")" = codex.js
+          package_root="$(realpath "$(dirname "$(dirname "$entry")")")"
+          test -s "$package_root/package.json"
+          test "$(realpath "$package_root/bin/codex.js")" = "$entry"
+
+          export CODEX_ENTRY="$entry"
+          export CODEX_PACKAGE_ROOT="$package_root"
+          resolver_output="$(
+            node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createRequire } from "node:module";
+
+          const entry = process.env.CODEX_ENTRY;
+          const packageRoot = process.env.CODEX_PACKAGE_ROOT;
+          const mainPackage = JSON.parse(
+            fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+          );
+          if (mainPackage.name !== "@openai/codex") {
+            throw new Error(`unexpected package name: ${mainPackage.name}`);
+          }
+          if (mainPackage.version !== "0.156.1") {
+            throw new Error(`unexpected package version: ${mainPackage.version}`);
+          }
+
+          let platformPackage;
+          let targetTriple;
+          if (process.platform === "linux" && process.arch === "x64") {
+            platformPackage = "@openai/codex-linux-x64";
+            targetTriple = "x86_64-unknown-linux-musl";
+          } else if (process.platform === "linux" && process.arch === "arm64") {
+            platformPackage = "@openai/codex-linux-arm64";
+            targetTriple = "aarch64-unknown-linux-musl";
+          } else {
+            throw new Error(
+              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+            );
+          }
+
+          const require = createRequire(entry);
+          const platformPackageJson = require.resolve(
+            `${platformPackage}/package.json`,
+          );
+          const nativePath = path.join(
+            path.dirname(platformPackageJson),
+            "vendor",
+            targetTriple,
+            "bin",
+            "codex",
+          );
+          const nativeStat = fs.statSync(nativePath);
+          if (!nativeStat.isFile()) {
+            throw new Error("native codex is not a regular file");
+          }
+          fs.accessSync(nativePath, fs.constants.X_OK);
+
+          process.stdout.write(
+            JSON.stringify({
+              nativePath: fs.realpathSync(nativePath),
+              packageRoot,
+              targetTriple,
+            }),
+          );
+          NODE
+          )"
+
+          native_path="$(jq -r '.nativePath' <<<"$resolver_output")"
+          resolved_root="$(jq -r '.packageRoot' <<<"$resolver_output")"
+          target_triple="$(jq -r '.targetTriple' <<<"$resolver_output")"
+          test "$resolved_root" = "$package_root"
+          test -x "$native_path"
+
+          launcher_version="$(codex --version)"
+          native_version="$(
+            env \
+              -u CODEX_MANAGED_BY_BUN \
+              -u CODEX_MANAGED_BY_PNPM \
+              -u CODEX_MANAGED_BY_VITE_PLUS \
+              CODEX_MANAGED_PACKAGE_ROOT="$package_root" \
+              CODEX_MANAGED_BY_NPM=1 \
+              "$native_path" --version
+          )"
+          test "$launcher_version" = "$native_version"
+          test "$native_version" = 'codex-cli 0.156.1'
+
+          action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
+          action_main="$action_root/dist/main.js"
+          test -f "$action_main"
+          actual_blob="$(git hash-object "$action_main")"
+          test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+
+          printf 'native_path=%s\n' "$native_path" >> "$GITHUB_OUTPUT"
+          printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
+          printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
+          printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
+          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
+            "$target_triple" "$actual_blob"
+
+      - name: Prepare fixed Codex follow-up prompt
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        timeout-minutes: 3
+        env:
+          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
+          Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
+          Address every blocking Claude finding in this working tree.
+          Before editing, inspect every blocking finding against repository and supplied Issue evidence. If any finding requires a human requirement or upstream-phase decision, leave the entire working tree unchanged, do not mix in fixes for other findings, and follow the exact standalone [REQUIREMENTS_CHANGE_REQUIRED] marker contract in AGENTS.base.md.
+          Otherwise, correct every valid in-scope finding and all directly affected authoritative artifacts; validate the result. Explain any finding not implemented with concrete repository or Issue evidence. Do not silently change requirements to satisfy a finding.
+          The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
+          Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
+          Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
+          CODEX_PROMPT
+
+      - name: Capture Codex follow-up host integrity baseline
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        id: followup_host_integrity_before
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notify_before="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus_before="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          resolved_before="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState --property=SubState --property=MainPID --property=NRestarts |
+              LC_ALL=C sort |
+              tr '\n' ';'
+          )"
+          printf '%s\n' "$resolved_before" | tr ';' '\n' | grep -Fxq 'ActiveState=active'
+          printf '%s\n' "$resolved_before" | tr ';' '\n' | grep -Fxq 'SubState=running'
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+
+          printf 'notify=%s\n' "$notify_before" >> "$GITHUB_OUTPUT"
+          printf 'dbus=%s\n' "$dbus_before" >> "$GITHUB_OUTPUT"
+          printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
+          printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+
       - name: Run Codex follow-up
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         id: codex
-        timeout-minutes: 30
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.153.4
-          permission-profile: :workspace
-          model: ${{ vars.CODEX_MODEL }}
-          effort: medium
-          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
-          prompt: |
-            Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
-            Address every blocking Claude finding in this working tree.
-            The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
-            Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the work cannot fit within those bounds, keep the change small and explain the required split in the final response.
-            Do not commit, push, comment, merge, or contact external services; the workflow handles GitHub writes after you finish.
-          output-file: ${{ runner.temp }}/codex-final.md
+        timeout-minutes: 12
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
+          CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}
+          CODEX_PACKAGE_ROOT: ${{ steps.followup_codex_runtime.outputs.package_root }}
+          ACTION_MAIN: ${{ steps.followup_codex_runtime.outputs.action_main }}
+          RUNNER_CREDENTIALS: ${{ steps.followup_codex_runtime.outputs.runner_credentials }}
+          CODEX_RUNTIME_MAX_SEC: 700
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x "$CODEX_NATIVE"
+          test -f "$ACTION_MAIN"
+          test "$(git hash-object "$ACTION_MAIN")" = ce4e94e119abb91b980d23bfb4210688241f3a0a
+          test -s "$CODEX_HOME/config.toml"
+          test -s "$CODEX_PROMPT_FILE"
+
+          python3 - "$CODEX_HOME/config.toml" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+          import urllib.parse
+
+          config_path = pathlib.Path(sys.argv[1])
+          with config_path.open("rb") as fh:
+              config = tomllib.load(fh)
+
+          allowed_top_level = {"model_provider", "model_providers"}
+          unexpected = sorted(set(config) - allowed_top_level)
+          if unexpected:
+              raise SystemExit(
+                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+              )
+
+          provider_name = config.get("model_provider")
+          if provider_name != "codex-action-responses-proxy":
+              raise SystemExit("unexpected Codex model_provider")
+
+          providers = config.get("model_providers")
+          if not isinstance(providers, dict) or set(providers) != {provider_name}:
+              raise SystemExit("unexpected Codex model_providers shape")
+          provider = providers[provider_name]
+          if not isinstance(provider, dict):
+              raise SystemExit("unexpected Codex provider config")
+          if provider.get("wire_api") != "responses":
+              raise SystemExit("Codex proxy provider must use responses wire API")
+
+          parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
+          if (
+              parsed.scheme != "http"
+              or parsed.hostname != "127.0.0.1"
+              or parsed.port is None
+              or not (1 <= parsed.port <= 65535)
+              or parsed.path != "/v1"
+              or parsed.params
+              or parsed.query
+              or parsed.fragment
+              or parsed.username is not None
+              or parsed.password is not None
+          ):
+              raise SystemExit("Codex proxy provider must be loopback http /v1")
+          PY
+
+          case "$CODEX_RUNTIME_MAX_SEC" in
+            700) ;;
+            *)
+              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              exit 1
+              ;;
+          esac
+
+          uid="$(id -u)"
+          gid="$(id -g)"
+          groups_json="$(id -G | tr ' ' '\n' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          current_credentials="$(jq -cn \
+            --argjson uid "$uid" \
+            --argjson gid "$gid" \
+            --argjson groups "$groups_json" \
+            '{userId:$uid,primaryGroupId:$gid,supplementaryGroupIds:$groups}')"
+          test "$current_credentials" = "$RUNNER_CREDENTIALS"
+          test "$uid" -ne 0
+
+          nobody_gid="$(id -g nobody)"
+          case "$nobody_gid" in
+            ''|*[!0-9]*|0)
+              echo 'Could not resolve a safe nobody gid.' >&2
+              exit 1
+              ;;
+          esac
+
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          unit="codex-followup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cat > "$RUNNER_TEMP/run-native-codex.sh" <<'CODEX_RUN'
+          #!/bin/sh
+          set -eu
+
+          expected_uid="${1:?expected uid is required}"
+          expected_gid="${2:?expected gid is required}"
+
+          actual_uid="$(/usr/bin/id -u)"
+          if [ "$actual_uid" != "$expected_uid" ]; then
+            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            exit 41
+          fi
+
+          actual_gid="$(/usr/bin/id -g)"
+          if [ "$actual_gid" != "$expected_gid" ]; then
+            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            exit 42
+          fi
+
+          groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
+          if [ -n "$groups_status" ]; then
+            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            exit 43
+          fi
+
+          no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
+          if [ "$no_new_privs" != 1 ]; then
+            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            exit 44
+          fi
+
+          for field in CapInh CapPrm CapEff CapBnd CapAmb; do
+            value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
+            if [ "$value" != 0000000000000000 ]; then
+              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              exit 45
+            fi
+          done
+
+          if [ ! -x /usr/bin/sudo ]; then
+            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            exit 39
+          fi
+          if /usr/bin/sudo -n true >/dev/null 2>&1; then
+            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            exit 40
+          fi
+
+          /usr/bin/python3 - <<'PY'
+          import errno
+          import os
+          import socket
+          import stat
+          import sys
+
+          protected_paths = os.environ.get("PROTECTED_UNIX_SOCKET_PATHS", "").split()
+          if (
+              len(protected_paths) != 13
+              or len(set(protected_paths)) != 13
+              or any(not path.startswith("/run/") for path in protected_paths)
+          ):
+              print(
+                  "Service-local hardening preflight protected socket allowlist is malformed.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(48)
+
+          try:
+              sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight blocks AF_UNIX required by Codex sandbox: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(46)
+          else:
+              sock.close()
+
+          try:
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(47)
+          else:
+              sock.close()
+
+          host_ids = {}
+          raw_host_ids = os.environ.get("PROTECTED_UNIX_SOCKET_HOST_IDS", "")
+          if raw_host_ids:
+              try:
+                  for item in raw_host_ids.split(";"):
+                      path, devino = item.split("=", 1)
+                      dev, ino = (int(part) for part in devino.split(":", 1))
+                      if path in host_ids:
+                          raise ValueError("duplicate protected socket host id")
+                      host_ids[path] = (dev, ino)
+              except (TypeError, ValueError):
+                  print(
+                      "Service-local hardening preflight protected socket host baseline is malformed.",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+          if any(path not in protected_paths for path in host_ids):
+              print(
+                  "Service-local hardening preflight protected socket host baseline has an unexpected path.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(48)
+
+          for path in protected_paths:
+              try:
+                  st = os.stat(path)
+              except FileNotFoundError:
+                  continue
+              except OSError as exc:
+                  print(
+                      f"Service-local hardening preflight cannot inspect protected socket {path}: {exc}",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+
+              if path not in host_ids:
+                  print(
+                      f"Service-local hardening preflight protected socket appeared after host baseline: {path}.",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+
+              if (
+                  not stat.S_ISSOCK(st.st_mode)
+                  or stat.S_IMODE(st.st_mode) != 0
+                  or os.access(path, os.R_OK)
+                  or os.access(path, os.W_OK)
+                  or os.access(path, os.X_OK)
+                  or (st.st_dev, st.st_ino) == host_ids[path]
+              ):
+                  print(
+                      f"Service-local hardening preflight protected socket mask is ineffective: {path}.",
+                      file=sys.stderr,
+                  )
+                  raise SystemExit(48)
+
+          def handle_walk_error(exc):
+              if exc.errno in (errno.EACCES, errno.EPERM, errno.ENOENT):
+                  return
+              raise exc
+
+          residual = []
+          try:
+              for root, _dirs, files in os.walk(
+                  "/run",
+                  topdown=True,
+                  onerror=handle_walk_error,
+                  followlinks=False,
+              ):
+                  for name in files:
+                      path = os.path.join(root, name)
+                      try:
+                          st = os.stat(path, follow_symlinks=False)
+                      except (FileNotFoundError, PermissionError):
+                          continue
+                      if (
+                          stat.S_ISSOCK(st.st_mode)
+                          and st.st_uid == 0
+                          and os.access(path, os.W_OK)
+                      ):
+                          residual.append(path)
+          except OSError as exc:
+              print(
+                  f"Service-local hardening preflight failed while scanning /run: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(49)
+
+          if residual:
+              rendered = ", ".join(sorted(set(residual))[:20])
+              print(
+                  "Service-local hardening preflight found writable root-owned UNIX socket(s): "
+                  + rendered,
+                  file=sys.stderr,
+              )
+              raise SystemExit(49)
+
+          print(
+              "Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
+          )
+          PY
+
+          exec env \
+            -u PROTECTED_UNIX_SOCKET_PATHS \
+            -u PROTECTED_UNIX_SOCKET_HOST_IDS \
+            -u CODEX_MANAGED_BY_BUN \
+            -u CODEX_MANAGED_BY_PNPM \
+            -u CODEX_MANAGED_BY_VITE_PLUS \
+            CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" \
+            CODEX_MANAGED_BY_NPM=1 \
+            CODEX_HOME="$CODEX_HOME" \
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$CODEX_NATIVE" exec \
+              --skip-git-repo-check \
+              --cd "$GITHUB_WORKSPACE" \
+              --output-last-message "$CODEX_FINAL" \
+              --model "$CODEX_MODEL" \
+              --config 'model_reasoning_effort="medium"' \
+              --config 'default_permissions=":workspace"' \
+              < "$CODEX_PROMPT_FILE"
+          CODEX_RUN
+          chmod 700 "$RUNNER_TEMP/run-native-codex.sh"
+
+          exec sudo -n -- \
+            env -u ENV -u BASH_ENV -u SHELLOPTS \
+            /bin/sh -c '
+              set -eu
+              runner_user="$1"
+              uid="$2"
+              nobody_gid="$3"
+              runner_home="$4"
+              runner_path="$5"
+              runner_temp="$6"
+              runtime_max_sec="$7"
+              unit="$8"
+              launcher="$9"
+              code_workspace="${10}"
+              codex_home="${11}"
+              codex_final="${12}"
+              codex_prompt_file="${13}"
+              codex_model="${14}"
+              codex_native="${15}"
+              codex_package_root="${16}"
+              originator="${17}"
+              protected_unix_socket_paths="/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request"
+              inaccessible_paths=""
+              protected_unix_socket_host_ids=""
+              for path in $protected_unix_socket_paths; do
+                inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
+                if [ -e "$path" ]; then
+                  if [ ! -S "$path" ]; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path is not a socket." >&2
+                    exit 50
+                  fi
+                  if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat owner for $path." >&2
+                    exit 50
+                  fi
+                  if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat dev:inode for $path." >&2
+                    exit 50
+                  fi
+                  if [ "$host_owner" != 0 ]; then
+                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path owner=$host_owner." >&2
+                    exit 50
+                  fi
+                  protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
+                fi
+              done
+
+              set +e
+              /usr/bin/systemd-run \
+                --quiet \
+                --wait \
+                --collect \
+                --unit="$unit" \
+                --property=Type=exec \
+                --property="RuntimeMaxSec=${runtime_max_sec}s" \
+                --property=TimeoutStopSec=5s \
+                --property=KillMode=control-group \
+                --property=SendSIGKILL=yes \
+                --property=NoNewPrivileges=yes \
+                --property="InaccessiblePaths=$inaccessible_paths" \
+                --property=SystemCallArchitectures=native \
+                --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" \
+                /usr/bin/setpriv \
+                  --reuid="$uid" \
+                  --regid="$nobody_gid" \
+                  --clear-groups \
+                  --no-new-privs \
+                  --bounding-set=-all \
+                  --inh-caps=-all \
+                  --ambient-caps=-all \
+                  -- /usr/bin/env -i \
+                  "HOME=$runner_home" \
+                  "USER=$runner_user" \
+                  "LOGNAME=$runner_user" \
+                  "PATH=$runner_path" \
+                  "RUNNER_TEMP=$runner_temp" \
+                  "GITHUB_WORKSPACE=$code_workspace" \
+                  "CODEX_HOME=$codex_home" \
+                  "CODEX_FINAL=$codex_final" \
+                  "CODEX_PROMPT_FILE=$codex_prompt_file" \
+                  "CODEX_MODEL=$codex_model" \
+                  "CODEX_NATIVE=$codex_native" \
+                  "CODEX_PACKAGE_ROOT=$codex_package_root" \
+                  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
+                  "PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths" \
+                  "PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids" \
+                  /bin/sh "$launcher" "$uid" "$nobody_gid"
+              rc=$?
+              set -e
+
+              /usr/bin/journalctl \
+                --unit="$unit" \
+                --no-pager \
+                --output=cat \
+                --lines=200 || true
+              exit "$rc"
+            ' codex-followup \
+            "$runner_user" \
+            "$uid" \
+            "$nobody_gid" \
+            "$runner_home" \
+            "$runner_path" \
+            "$RUNNER_TEMP" \
+            "$CODEX_RUNTIME_MAX_SEC" \
+            "$unit" \
+            "$RUNNER_TEMP/run-native-codex.sh" \
+            "$GITHUB_WORKSPACE" \
+            "$CODEX_HOME" \
+            "$CODEX_FINAL" \
+            "$CODEX_PROMPT_FILE" \
+            "$CODEX_MODEL" \
+            "$CODEX_NATIVE" \
+            "$CODEX_PACKAGE_ROOT" \
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+
+      - name: Verify Codex follow-up host integrity
+        if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        timeout-minutes: 1
+        env:
+          HOST_NOTIFY_BEFORE: ${{ steps.followup_host_integrity_before.outputs.notify }}
+          HOST_DBUS_BEFORE: ${{ steps.followup_host_integrity_before.outputs.dbus }}
+          HOST_RESOLVED_BEFORE: ${{ steps.followup_host_integrity_before.outputs.resolved }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "$HOST_NOTIFY_BEFORE"
+          test -n "$HOST_DBUS_BEFORE"
+          test -n "$HOST_RESOLVED_BEFORE"
+
+          notify_after="$(stat -Lc '%d %i %u %g %a' /run/systemd/notify)"
+          dbus_after="$(stat -Lc '%d %i %u %g %a' /run/dbus/system_bus_socket)"
+          test "$notify_after" = "$HOST_NOTIFY_BEFORE"
+          test "$dbus_after" = "$HOST_DBUS_BEFORE"
+
+          resolved_after="$(
+            systemctl show systemd-resolved.service --no-pager \
+              --property=ActiveState --property=SubState --property=MainPID --property=NRestarts |
+              LC_ALL=C sort |
+              tr '\n' ';'
+          )"
+          test "$resolved_after" = "$HOST_RESOLVED_BEFORE"
+          printf '%s\n' "$resolved_after" | tr ';' '\n' | grep -Fxq 'ActiveState=active'
+          printf '%s\n' "$resolved_after" | tr ';' '\n' | grep -Fxq 'SubState=running'
+          getent ahosts github.com >/dev/null
+          getent ahosts api.github.com >/dev/null
+          printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
 
       - name: Gate Codex follow-up requirement changes
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
@@ -790,6 +2105,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -799,18 +2115,93 @@ jobs:
           git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"
 
           if git diff --cached --quiet; then
-            if [ -s "$CODEX_FINAL" ]; then
-              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
-            else
-              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex found no repository change and produced no final summary.'
-            fi
+            report_file="$(mktemp)"
+            {
+              echo '### Validation provenance'
+              echo
+              echo '- No repository change was produced by this AI Developer run.'
+              echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
+              echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+              echo
+              echo '### Codex report'
+              echo
+              if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex found no repository change and produced no final summary.'; fi
+            } > "$report_file"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
+            rm -f "$report_file"
             exit 0
           fi
 
           git commit -m "Address Claude review for PR #${PR_NUMBER}"
           git push origin "HEAD:${HEAD_REF}"
-          if [ -s "$CODEX_FINAL" ]; then
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$CODEX_FINAL"
-          else
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body 'Codex updated the branch without a final summary.'
-          fi
+          expected_head="$(git rev-parse HEAD)"
+          for attempt in 1 2 3 4 5; do
+            current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+            if [ "$current_head" = "$expected_head" ]; then
+              gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+              break
+            fi
+            if [ "$current_head" != "$EVENT_HEAD" ]; then
+              echo "PR #${PR_NUMBER} head changed unexpectedly: expected ${expected_head}, observed ${current_head}." >&2
+              exit 1
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "PR #${PR_NUMBER} head did not reach pushed commit ${expected_head}." >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          report_file="$(mktemp)"
+          {
+            echo '### Validation provenance'
+            echo
+            echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
+            echo "- Pushed commit: ${expected_head}"
+            echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+            echo
+            echo '### Codex report'
+            echo
+            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex updated the branch without a final summary.'; fi
+          } > "$report_file"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
+          rm -f "$report_file"
+
+  handle-claude-followup-failure:
+    name: Handle Claude follow-up failure
+    needs: [draft-after-claude-changes, respond-to-claude]
+    if: >-
+      always() &&
+      (needs.draft-after-claude-changes.result == 'failure' || needs.respond-to-claude.result == 'failure') &&
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Create developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+
+      - name: Check out trusted automation
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Pause failed follow-up
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/apply-human-pause.sh \
+            "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body 'Codex follow-up ended abnormally; automated follow-up is paused pending a human decision.'

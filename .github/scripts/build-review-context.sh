@@ -120,10 +120,14 @@ done
       "### Trusted comment metadata: \(.author.login)\n\n--- BEGIN COMMENT DATA ---\n" + (body_text | data_lines) + "\n--- END COMMENT DATA ---\n";
     def full_review:
       "### Trusted review metadata: \(.author.login) — \(.state)\n\n--- BEGIN REVIEW DATA ---\n" + (body_text | data_lines) + "\n--- END REVIEW DATA ---\n";
+    def exact_serialized_summary_marker($marker):
+      body_text
+      | split("\n")
+      | any(.[]; (sub("\r$"; "") == ("SUMMARY| " + $marker)));
     def abbreviated_review:
       "### Prior reviewer App review: \(.author.login) — \(.state) — \(.submittedAt)\n\n"
-      + "- [REQUIREMENTS_CHANGE_REQUIRED]: " + (if (.body | contains("[REQUIREMENTS_CHANGE_REQUIRED]")) then "present" else "absent" end) + "\n"
-      + "- [HUMAN_ESCALATION_RECOMMENDED]: " + (if (.body | contains("[HUMAN_ESCALATION_RECOMMENDED]")) then "present" else "absent" end) + "\n";
+      + "- [REQUIREMENTS_CHANGE_REQUIRED]: " + (if exact_serialized_summary_marker("[REQUIREMENTS_CHANGE_REQUIRED]") then "present" else "absent" end) + "\n"
+      + "- [HUMAN_ESCALATION_RECOMMENDED]: " + (if exact_serialized_summary_marker("[HUMAN_ESCALATION_RECOMMENDED]") then "present" else "absent" end) + "\n";
     def conversation:
       . as $metadata
       | if (($metadata.comments | type) != "array") or (($metadata.reviews | type) != "array")
