@@ -5,6 +5,9 @@ repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 repo_root="$(cd "$repo_root" && pwd)"
 workflow="$repo_root/.github/workflows/ai-developer.yml"
 agents="$repo_root/AGENTS.md"
+requirements_intro="$repo_root/docs/00_requirements/01_Introduction.md"
+diagrams_readme="$repo_root/docs/diagrams/README.md"
+operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
 
 [ -f "$workflow" ]
 [ -f "$agents" ]
@@ -27,6 +30,21 @@ for shared_rule in \
   grep -Fq "$shared_rule" "$agents"
 done
 grep -Fq 'if its impact cannot be determined safely' "$agents"
+
+# Keep AGENTS repository-document references valid without duplicating GitHub's
+# heading-anchor normalization algorithm. Fixed document paths must exist, and
+# the linked operations section must retain its canonical heading text. If that
+# heading changes, update the AGENTS.md anchor and this assertion together.
+for referenced_doc in "$requirements_intro" "$diagrams_readme" "$operations_doc"; do
+  if [ ! -f "$referenced_doc" ]; then
+    echo "AGENTS.md references a missing repository document: $referenced_doc" >&2
+    exit 1
+  fi
+done
+if ! grep -Fxq '## スコープ外影響と後継Issue' "$operations_doc"; then
+  echo 'AGENTS.md links a missing operations section: ## スコープ外影響と後継Issue' >&2
+  exit 1
+fi
 
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
@@ -214,7 +232,6 @@ if ! grep -Fq 'Automated Codex follow-up passed the entry gate' "$repo_root/.git
   exit 1
 fi
 
-operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
 grep -Fq '`Run Codex follow-up` 側の異常終了ではPRはDraftのまま' "$operations_doc"
 grep -Fq 'Draft復帰job自体が異常終了してopen PRが非Draftのまま停止している場合は、PR側の停止ラベルを解除する前に人間がPRをDraftへ戻し' "$operations_doc"
 grep -Fq '停止ラベルの解除順序、open PRでの再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。' "$operations_doc"

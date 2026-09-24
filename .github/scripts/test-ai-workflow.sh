@@ -111,6 +111,8 @@ grep -Fq -- "- '**/CLAUDE.local.md'" "$regression_workflow"
 grep -Fq -- "- '**/.claude/**'" "$regression_workflow"
 grep -Fq -- "- '**/.codex/**'" "$regression_workflow"
 grep -Fq -- "- '**/.mcp.json'" "$regression_workflow"
+grep -Fq -- "- 'docs/00_requirements/01_Introduction.md'" "$regression_workflow"
+grep -Fq -- "- 'docs/diagrams/README.md'" "$regression_workflow"
 grep -Fq -- "- 'docs/30_operations/ai-development-workflow.md'" "$regression_workflow"
 grep -A1 '^permissions:$' "$regression_workflow" | grep -Fxq '  contents: read'
 grep -Fq 'group: ai-workflow-regression-${{ github.event.pull_request.number }}' "$regression_workflow"

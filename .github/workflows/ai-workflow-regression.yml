@@ -13,6 +13,8 @@ on:
       - '**/.claude/**'
       - '**/.codex/**'
       - '**/.mcp.json'
+      - 'docs/00_requirements/01_Introduction.md'
+      - 'docs/diagrams/README.md'
       - 'docs/30_operations/ai-development-workflow.md'
 
 permissions:
