@@ -47,6 +47,27 @@ extract_step_run() {
   fi
 }
 
+extract_job_if() {
+  local job_name="${1:?job name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v job_name="$job_name" '
+    $0 == "  " job_name ":" { job = 1; next }
+    job && /^  [[:alnum:]_-]+:$/ { exit }
+    job && /^    if: >-$/ { condition = 1; next }
+    condition && /^    [[:alnum:]_-]+:/ { exit }
+    condition {
+      line = $0
+      sub(/^      /, "", line)
+      print line
+    }
+  ' "$workflow" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract $job_name job if condition." >&2
+    exit 1
+  fi
+}
+
 assert_bootstrap_matches VALIDATOR "$repo_root/.github/scripts/validate-claude-review-output.sh"
 assert_bootstrap_matches SUMMARIZER "$repo_root/.github/scripts/summarize-claude-usage.sh"
 assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
@@ -59,10 +80,22 @@ gh() {
   if [ "$1 $2" = 'pr view' ]; then
     case "${MOCK_CASE:-valid}" in
       no-links)
-        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        printf '%s\n' '{"state":"OPEN","labels":[],"closingIssuesReferences":[]}'
         ;;
       pr-paused)
-        printf '%s\n' '{"labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        printf '%s\n' '{"state":"OPEN","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      closed)
+        printf '%s\n' '{"state":"CLOSED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      merged)
+        printf '%s\n' '{"state":"MERGED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      state-missing)
+        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        ;;
+      unknown-state)
+        printf '%s\n' '{"state":"DRAFT","labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
         printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
@@ -122,6 +155,28 @@ jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 MOCK_CASE=no-links
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
+
+for closed_case in closed merged; do
+  MOCK_CASE="$closed_case"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+  jq -e '.continue == false and (.reason | contains("pull request state"))' <<< "$review_entry" > /dev/null
+done
+
+MOCK_CASE=state-missing
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+  > /dev/null 2> "$test_dir/entry-gate-state-missing.err"; then
+  echo 'Expected Claude review entry to fail closed when PR state is missing.' >&2
+  exit 1
+fi
+grep -Fq 'Could not determine pull request state; refusing Claude review.' "$test_dir/entry-gate-state-missing.err"
+
+MOCK_CASE=unknown-state
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+  > /dev/null 2> "$test_dir/entry-gate-state-unknown.err"; then
+  echo 'Expected Claude review entry to fail closed for an unsupported PR state.' >&2
+  exit 1
+fi
+grep -Fq 'Unsupported pull request state DRAFT; refusing Claude review.' "$test_dir/entry-gate-state-unknown.err"
 
 MOCK_CASE=pr-paused
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
@@ -1130,6 +1185,10 @@ if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   exit 1
 fi
 grep -Fq 'types: [opened, reopened, ready_for_review, unlabeled]' "$workflow"
+review_job_if="$test_dir/review-job-if.txt"
+extract_job_if review "$review_job_if"
+grep -Fq "github.event.pull_request.state == 'open'" "$review_job_if"
+grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$review_job_if"
 if grep -Fq 'synchronize' "$workflow"; then
   echo 'Claude Review must not start a paid review from a head synchronization.' >&2
   exit 1
