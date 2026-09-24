@@ -722,21 +722,20 @@ jobs:
               if [ "$rc" -eq 0 ]; then
                 expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
                 set +e
-                preflight_marker="$(
+                preflight_journal="$(
                   /usr/bin/journalctl \
                     --unit="$unit" \
                     --no-pager \
                     --output=cat \
-                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\.$" \
-                    --lines=1
+                    --quiet
                 )"
-                marker_rc=$?
+                journal_rc=$?
                 set -e
-                if [ "$marker_rc" -ne 0 ] || [ "$preflight_marker" != "$expected_preflight_marker" ]; then
+                if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
                   echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
                   exit 51
                 fi
-                printf "%s\n" "$preflight_marker"
+                printf "%s\n" "$expected_preflight_marker"
               fi
               exit "$rc"
             ' codex-developer \
@@ -1880,21 +1879,20 @@ jobs:
               if [ "$rc" -eq 0 ]; then
                 expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
                 set +e
-                preflight_marker="$(
+                preflight_journal="$(
                   /usr/bin/journalctl \
                     --unit="$unit" \
                     --no-pager \
                     --output=cat \
-                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\.$" \
-                    --lines=1
+                    --quiet
                 )"
-                marker_rc=$?
+                journal_rc=$?
                 set -e
-                if [ "$marker_rc" -ne 0 ] || [ "$preflight_marker" != "$expected_preflight_marker" ]; then
+                if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
                   echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
                   exit 51
                 fi
-                printf "%s\n" "$preflight_marker"
+                printf "%s\n" "$expected_preflight_marker"
               fi
               exit "$rc"
             ' codex-followup \
