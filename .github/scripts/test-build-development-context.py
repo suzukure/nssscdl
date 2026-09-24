@@ -43,6 +43,12 @@ full_reversed = {**base, "comments": [
 ]}
 rendered, _ = check(full_reversed, "full", ("earlier full decision", "later full decision"))
 assert rendered.index("earlier full decision") < rendered.index("later full decision")
+same_timestamp_full = {**base, "comments": [
+    comment("z same-time", "2026-01-01T00:00:00Z"),
+    comment("a same-time", "2026-01-01T00:00:00Z"),
+]}
+rendered, _ = check(same_timestamp_full, "full", ("a same-time", "z same-time"))
+assert rendered.index("a same-time") < rendered.index("z same-time")
 rendered, telemetry = check(base, "checkpoint", ("current decision", "new decision"),
                             ("old decision", "/codex context-checkpoint", "untrusted secret"))
 assert telemetry["excluded_historical"]["chars"] > 0
