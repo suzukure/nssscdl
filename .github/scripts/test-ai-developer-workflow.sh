@@ -33,14 +33,18 @@ grep -Fq 'if its impact cannot be determined safely' "$agents"
 
 # Keep AGENTS repository-document references valid without duplicating GitHub's
 # heading-anchor normalization algorithm. Fixed document paths must exist, and
-# the linked operations section must retain its canonical heading text.
+# the linked operations section must retain its canonical heading text. If that
+# heading changes, update the AGENTS.md anchor and this assertion together.
 for referenced_doc in "$requirements_intro" "$diagrams_readme" "$operations_doc"; do
   if [ ! -f "$referenced_doc" ]; then
     echo "AGENTS.md references a missing repository document: $referenced_doc" >&2
     exit 1
   fi
 done
-grep -Fxq '## スコープ外影響と後継Issue' "$operations_doc"
+if ! grep -Fxq '## スコープ外影響と後継Issue' "$operations_doc"; then
+  echo 'AGENTS.md links a missing operations section: ## スコープ外影響と後継Issue' >&2
+  exit 1
+fi
 
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
