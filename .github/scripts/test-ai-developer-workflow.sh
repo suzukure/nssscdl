@@ -169,7 +169,7 @@ for disposable_helper in \
   grep -Fq "$disposable_helper" "$issue_disposable_block"
 done
 
-# Issue-origin developer failures must be handled# Issue-origin developer failures must be handled by a separate runner without
+# Issue-origin developer failures must be handled by a separate runner without
 # retrying Codex or depending on the failed job's workspace.
 handler="$test_dir/handle-issue-developer-failure.yml"
 awk '
@@ -975,7 +975,7 @@ if [ -z "$restore_notify_line" ] || [ -z "$notify_step_line" ] || [ "$restore_no
   exit 1
 fi
 
-# Both Codex requirement-change gates# Both Codex requirement-change gates must fail closed for helper and final
+# Both Codex requirement-change gates must fail closed for helper and final
 # response failures, and only their successful gates may reach repository write.
 grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$workflow"
 grep -Fq 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.' "$workflow"
