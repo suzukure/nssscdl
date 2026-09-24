@@ -816,6 +816,54 @@ jobs:
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
 
+      - name: Restore trusted post-Codex helpers
+        env:
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
+          NOTIFY_HUMAN_BLOB: ${{ steps.issue_context.outputs.notify_human_blob }}
+          APPLY_HUMAN_PAUSE_BLOB: ${{ steps.issue_context.outputs.apply_human_pause_blob }}
+          REQUIREMENTS_MARKER_BLOB: ${{ steps.issue_context.outputs.requirements_marker_blob }}
+          DIFF_GUARD_BLOB: ${{ steps.issue_context.outputs.diff_guard_blob }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          restore_base_blob() {
+            local source_path="${1:?source path is required}"
+            local destination="${2:?destination is required}"
+            local expected_blob="${3:?expected blob is required}"
+            if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Invalid trusted helper blob identity for $source_path." >&2
+              exit 1
+            fi
+            rm -f -- "$destination"
+            git show "${BASE_SHA}:${source_path}" > "$destination"
+            actual_blob="$(git hash-object "$destination")"
+            if [ "$actual_blob" != "$expected_blob" ]; then
+              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              exit 1
+            fi
+          }
+
+          restore_base_blob '.github/scripts/notify-human.sh' \
+            "$RUNNER_TEMP/notify-human.sh" "$NOTIFY_HUMAN_BLOB"
+          restore_base_blob '.github/scripts/apply-human-pause.sh' \
+            "$RUNNER_TEMP/apply-human-pause.sh" "$APPLY_HUMAN_PAUSE_BLOB"
+          restore_base_blob '.github/scripts/has-requirements-change-marker.sh' \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" "$REQUIREMENTS_MARKER_BLOB"
+          restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
+
+          rm -f -- "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
+          echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
+
       - name: Gate requirement changes
         id: development-gate
         env:
@@ -1996,6 +2044,55 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+
+      - name: Restore trusted post-Codex helpers
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          NOTIFY_HUMAN_BLOB: ${{ steps.followup_context.outputs.notify_human_blob }}
+          APPLY_HUMAN_PAUSE_BLOB: ${{ steps.followup_context.outputs.apply_human_pause_blob }}
+          REQUIREMENTS_MARKER_BLOB: ${{ steps.followup_context.outputs.requirements_marker_blob }}
+          DIFF_GUARD_BLOB: ${{ steps.followup_context.outputs.diff_guard_blob }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          restore_base_blob() {
+            local source_path="${1:?source path is required}"
+            local destination="${2:?destination is required}"
+            local expected_blob="${3:?expected blob is required}"
+            if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Invalid trusted helper blob identity for $source_path." >&2
+              exit 1
+            fi
+            rm -f -- "$destination"
+            git show "${BASE_SHA}:${source_path}" > "$destination"
+            actual_blob="$(git hash-object "$destination")"
+            if [ "$actual_blob" != "$expected_blob" ]; then
+              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              exit 1
+            fi
+          }
+
+          restore_base_blob '.github/scripts/notify-human.sh' \
+            "$RUNNER_TEMP/notify-human.sh" "$NOTIFY_HUMAN_BLOB"
+          restore_base_blob '.github/scripts/apply-human-pause.sh' \
+            "$RUNNER_TEMP/apply-human-pause.sh" "$APPLY_HUMAN_PAUSE_BLOB"
+          restore_base_blob '.github/scripts/has-requirements-change-marker.sh' \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" "$REQUIREMENTS_MARKER_BLOB"
+          restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
+
+          rm -f -- "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
+          jq -e '
+            type == "object" and
+            (keys | sort == ["max_changed_files", "max_changed_lines", "max_new_files"]) and
+            (.max_changed_files | type == "number" and . > 0 and floor == .) and
+            (.max_changed_lines | type == "number" and . > 0 and floor == .) and
+            (.max_new_files | type == "number" and . > 0 and floor == .)
+          ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
+          echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
 
       - name: Gate Codex follow-up requirement changes
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
