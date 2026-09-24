@@ -438,7 +438,7 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
 journalctl_count="$(grep -Fc '/usr/bin/journalctl' "$developer_step" || true)"
-test "$journalctl_count" = 1
+test "$journalctl_count" = 2
 grep -Fq '/usr/bin/journalctl \' "$developer_step"
 grep -Fq -- '--unit="$unit" \' "$developer_step"
 grep -Fq -- '--no-pager \' "$developer_step"
@@ -692,6 +692,7 @@ assert_hardened_codex_runtime() {
   local runtime_name="${1:?runtime name is required}"
   local runtime_step="${2:?runtime step is required}"
   local runtime_run="$test_dir/${runtime_name// /-}-run.sh"
+  local marker_block="$test_dir/${runtime_name// /-}-preflight-marker.sh"
   local mutation_lines actual_paths
 
   if grep -Fq 'sudo -n -E' "$runtime_step"; then
@@ -699,12 +700,46 @@ assert_hardened_codex_runtime() {
     exit 1
   fi
   grep -Fq 'exec sudo -n -- ' "$runtime_step"
-  test "$(grep -Fc '/usr/bin/journalctl' "$runtime_step" || true)" = 1
+  test "$(grep -Fc '/usr/bin/journalctl' "$runtime_step" || true)" = 2
   grep -Fq '/usr/bin/journalctl \' "$runtime_step"
   grep -Fq -- '--unit="$unit" \' "$runtime_step"
   grep -Fq -- '--no-pager \' "$runtime_step"
   grep -Fq -- '--output=cat \' "$runtime_step"
   grep -Fq -- '--lines=200 || true' "$runtime_step"
+
+  awk '
+    $0 == "              if [ \"$rc\" -eq 0 ]; then" { in_marker = 1 }
+    in_marker { print }
+    in_marker && $0 == "              fi" { exit }
+  ' "$runtime_step" > "$marker_block"
+  test -s "$marker_block"
+  grep -Fqx '              if [ "$rc" -eq 0 ]; then' "$marker_block"
+  test "$(grep -Fc '/usr/bin/journalctl' "$marker_block" || true)" = 1
+  grep -Fqx '                  /usr/bin/journalctl \' "$marker_block"
+  grep -Fqx '                    --unit="$unit" \' "$marker_block"
+  grep -Fqx '                    --no-pager \' "$marker_block"
+  grep -Fqx '                    --output=cat \' "$marker_block"
+  grep -Fqx '                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\\\.\$" \' "$marker_block"
+  grep -Fqx '                    --lines=1' "$marker_block"
+  grep -Fq 'expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."' "$marker_block"
+  grep -Fq 'marker_rc=$?' "$marker_block"
+  grep -Fq 'if [ "$marker_rc" -ne 0 ] || [ "$preflight_marker" != "$expected_preflight_marker" ]; then' "$marker_block"
+  grep -Fq 'Service-local hardening preflight success marker unavailable from unit journal.' "$marker_block"
+  grep -Fq 'exit 51' "$marker_block"
+  grep -Fq 'printf "%s\n" "$preflight_marker"' "$marker_block"
+  if grep -Fq '|| true' "$marker_block"; then
+    echo "$runtime_name marker recovery must fail closed instead of swallowing journal errors." >&2
+    exit 1
+  fi
+  if ! awk '
+    $0 == "              if [ \"$rc\" -eq 0 ]; then" { marker_open = NR }
+    marker_open && $0 == "              fi" { marker_close = NR }
+    $0 == "              exit \"$rc\"" { service_return = NR }
+    END { exit !(marker_open && marker_close && service_return && marker_open < marker_close && marker_close < service_return) }
+  ' "$runtime_step"; then
+    echo "$runtime_name must verify the success marker only for rc=0 before returning the service rc." >&2
+    exit 1
+  fi
   if grep -Fq 'drop-sudo ' "$runtime_step" || grep -Fq -- '--root-phase ' "$runtime_step"; then
     echo "$runtime_name must not invoke host-global drop-sudo root phase." >&2
     exit 1
