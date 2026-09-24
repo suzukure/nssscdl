@@ -12,6 +12,10 @@ operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
 [ -f "$workflow" ]
 [ -f "$agents" ]
 
+# Exercise the Issue-entry conversation selector in the repository-wide
+# AI Workflow Regression, which enumerates test-*.sh fixtures.
+python3 "$repo_root/.github/scripts/test-build-development-context.py"
+
 # The shared instructions retain the trust boundary and lazy product impact
 # rule, while mode-specific review duties belong to the trusted prompt.
 for old_section in '## Requirements and traceability' '## Phase discipline' '## Claude review follow-up'; do
