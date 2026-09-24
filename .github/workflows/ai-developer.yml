@@ -102,10 +102,10 @@ jobs:
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
-          test "$(git hash-object "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
-          test "$(git hash-object "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
-          test "$(git hash-object "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
-          test "$(git hash-object "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
             type == "object" and
@@ -837,7 +837,7 @@ jobs:
             fi
             rm -f -- "$destination"
             git show "${BASE_SHA}:${source_path}" > "$destination"
-            actual_blob="$(git hash-object "$destination")"
+            actual_blob="$(git hash-object --no-filters "$destination")"
             if [ "$actual_blob" != "$expected_blob" ]; then
               echo "Trusted helper blob changed across Codex execution: $source_path" >&2
               exit 1
@@ -1341,10 +1341,10 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
-          test "$(git hash-object "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
-          test "$(git hash-object "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
-          test "$(git hash-object "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
-          test "$(git hash-object "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
             type == "object" and
@@ -2067,7 +2067,7 @@ jobs:
             fi
             rm -f -- "$destination"
             git show "${BASE_SHA}:${source_path}" > "$destination"
-            actual_blob="$(git hash-object "$destination")"
+            actual_blob="$(git hash-object --no-filters "$destination")"
             if [ "$actual_blob" != "$expected_blob" ]; then
               echo "Trusted helper blob changed across Codex execution: $source_path" >&2
               exit 1

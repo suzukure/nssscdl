@@ -146,23 +146,30 @@ for trusted_bootstrap_rule in \
   "printf 'apply_human_pause_blob=%s\\n' \"\$apply_human_pause_blob\"" \
   "printf 'requirements_marker_blob=%s\\n' \"\$requirements_marker_blob\"" \
   "printf 'diff_guard_blob=%s\\n' \"\$diff_guard_blob\"" \
-  'test "$(git hash-object "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
-  'test "$(git hash-object "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
-  'test "$(git hash-object "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
-  'test "$(git hash-object "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"'; do
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"'; do
   grep -Fq "$trusted_bootstrap_rule" "$issue_context_step"
 done
-grep -Fq 'rm -f -- \' "$issue_context_step"
+issue_disposable_block="$test_dir/issue-disposable-helpers.txt"
+awk '
+  /rm -f -- \\$/ { in_block = 1 }
+  in_block { print }
+  in_block && $0 !~ /\\$/ { exit }
+' "$issue_context_step" > "$issue_disposable_block"
+[ -s "$issue_disposable_block" ]
+grep -Fq 'rm -f -- \' "$issue_disposable_block"
 for disposable_helper in \
   '"$RUNNER_TEMP/notify-human.sh"' \
   '"$RUNNER_TEMP/apply-human-pause.sh"' \
   '"$RUNNER_TEMP/has-requirements-change-marker.sh"' \
   '"$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' \
   '"$RUNNER_TEMP/codex-diff-guard-contract.json"'; do
-  grep -Fq "$disposable_helper" "$issue_context_step"
+  grep -Fq "$disposable_helper" "$issue_disposable_block"
 done
 
-# Issue-origin developer failures must be handled by a separate runner without
+# Issue-origin developer failures must be handled# Issue-origin developer failures must be handled by a separate runner without
 # retrying Codex or depending on the failed job's workspace.
 handler="$test_dir/handle-issue-developer-failure.yml"
 awk '
@@ -666,6 +673,38 @@ grep -Fq 'notify_human_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/notify
 grep -Fq 'apply_human_pause_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/apply-human-pause.sh")"' "$followup_workflow"
 grep -Fq 'requirements_marker_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh")"' "$followup_workflow"
 grep -Fq 'diff_guard_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh")"' "$followup_workflow"
+
+followup_context_step="$test_dir/followup-context-step.yml"
+awk '
+  $0 == "      - name: Build review context" { in_step = 1 }
+  in_step && /^      - name: / && $0 != "      - name: Build review context" { exit }
+  in_step { print }
+' "$workflow" > "$followup_context_step"
+[ -s "$followup_context_step" ]
+for followup_bootstrap_rule in \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"'; do
+  grep -Fq "$followup_bootstrap_rule" "$followup_context_step"
+done
+followup_disposable_block="$test_dir/followup-disposable-helpers.txt"
+awk '
+  /rm -f -- \\$/ { in_block = 1 }
+  in_block { print }
+  in_block && $0 !~ /\\$/ { exit }
+' "$followup_context_step" > "$followup_disposable_block"
+[ -s "$followup_disposable_block" ]
+grep -Fq 'rm -f -- \' "$followup_disposable_block"
+for disposable_helper in \
+  '"$RUNNER_TEMP/build-review-context.sh"' \
+  '"$RUNNER_TEMP/notify-human.sh"' \
+  '"$RUNNER_TEMP/apply-human-pause.sh"' \
+  '"$RUNNER_TEMP/has-requirements-change-marker.sh"' \
+  '"$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' \
+  '"$RUNNER_TEMP/codex-diff-guard-contract.json"'; do
+  grep -Fq "$disposable_helper" "$followup_disposable_block"
+done
 if [ "$(grep -Fc "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$followup_workflow")" -lt 6 ]; then
   echo 'Every follow-up runtime step must remain behind the trusted follow-up gate.' >&2
   exit 1
@@ -689,7 +728,7 @@ fi
 for restore_rule in \
   'rm -f -- "$destination"' \
   'git show "${BASE_SHA}:${source_path}" > "$destination"' \
-  'actual_blob="$(git hash-object "$destination")"' \
+  'actual_blob="$(git hash-object --no-filters "$destination")"' \
   'Trusted helper blob changed across Codex execution:' \
   "restore_base_blob '.github/scripts/notify-human.sh'" \
   "restore_base_blob '.github/scripts/apply-human-pause.sh'" \
@@ -924,18 +963,19 @@ extract_workflow_step_run() {
   fi
 }
 
-# The follow-up notification runs after the PR checkout, so it must use the
-# trusted-base helper copied during context bootstrap rather than PR-head code.
+# The follow-up notification runs after Codex, so it must use the helper
+# rematerialized from the trusted base by the post-Codex restore step rather
+# than the disposable bootstrap copy or PR-head code.
 followup_workflow="$test_dir/respond-to-claude.yml"
 sed -n '/^  respond-to-claude:/,$p' "$workflow" > "$followup_workflow"
-bootstrap_notify_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | cut -d: -f1)"
+restore_notify_line="$(grep -n -F "restore_base_blob '.github/scripts/notify-human.sh'" "$followup_workflow" | tail -n 1 | cut -d: -f1)"
 notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
-if [ -z "$bootstrap_notify_line" ] || [ -z "$notify_step_line" ] || [ "$bootstrap_notify_line" -ge "$notify_step_line" ]; then
-  echo 'Follow-up requirement escalation notification is not bootstrapped from the trusted base.' >&2
+if [ -z "$restore_notify_line" ] || [ -z "$notify_step_line" ] || [ "$restore_notify_line" -ge "$notify_step_line" ]; then
+  echo 'Follow-up requirement escalation notification is not using the restored trusted-base helper.' >&2
   exit 1
 fi
 
-# Both Codex requirement-change gates must fail closed for helper and final
+# Both Codex requirement-change gates# Both Codex requirement-change gates must fail closed for helper and final
 # response failures, and only their successful gates may reach repository write.
 grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$workflow"
 grep -Fq 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.' "$workflow"
