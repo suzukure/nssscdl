@@ -53,7 +53,7 @@ def select(metadata):
                      key=lambda pair: pair[0])
     checkpoints = [(when, c) for when, c in ordered if c["body"] == MARKER]
     if not checkpoints:
-        return "full", trusted, None
+        return "full", [c for _, c in ordered], None
     latest = checkpoints[-1][0]
     if sum(when == latest for when, _ in checkpoints) != 1:
         raise SelectionError("ambiguous_checkpoint")
@@ -69,12 +69,22 @@ def select(metadata):
 def fallback_comments(metadata):
     comments = metadata.get("comments")
     if not isinstance(comments, list):
-        return []
-    # Keep every comment whose association is known to be trusted; unresolved
-    # identity cannot safely grant an unknown author access to this context.
-    return [c for c in comments if isinstance(c, dict)
-            and isinstance(c.get("authorAssociation"), str)
-            and c["authorAssociation"] in TRUSTED]
+        raise SelectionError("unsafe_full_fallback")
+    trusted = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise SelectionError("unsafe_full_fallback")
+        association = comment.get("authorAssociation")
+        if not isinstance(association, str):
+            raise SelectionError("unsafe_full_fallback")
+        if association in TRUSTED:
+            author = comment.get("author")
+            if (not isinstance(author, dict)
+                    or not isinstance(author.get("login"), str)
+                    or not isinstance(comment.get("body"), str)):
+                raise SelectionError("unsafe_full_fallback")
+            trusted.append(comment)
+    return trusted
 
 
 def data_lines(value):
@@ -98,9 +108,11 @@ def build(metadata):
     try:
         mode, selected, boundary = select(metadata)
     except SelectionError as exc:
-        mode, selected, boundary, reason = "fallback", fallback_comments(metadata), None, exc.code
+        selected = fallback_comments(metadata)
+        mode, boundary, reason = "fallback", None, exc.code
     except Exception:
-        mode, selected, boundary, reason = "fallback", fallback_comments(metadata), None, "selector_failure"
+        selected = fallback_comments(metadata)
+        mode, boundary, reason = "fallback", None, "selector_failure"
 
     full = fallback_comments(metadata)
     body = text_value(metadata.get("body"), "(empty)")
