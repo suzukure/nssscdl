@@ -141,11 +141,11 @@ for trusted_bootstrap_rule in \
   'apply_human_pause_blob="$(git rev-parse "${base_sha}:.github/scripts/apply-human-pause.sh")"' \
   'requirements_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-requirements-change-marker.sh")"' \
   'diff_guard_blob="$(git rev-parse "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh")"' \
-  "printf 'base_sha=%s\\n' \"$base_sha\"" \
-  "printf 'notify_human_blob=%s\\n' \"$notify_human_blob\"" \
-  "printf 'apply_human_pause_blob=%s\\n' \"$apply_human_pause_blob\"" \
-  "printf 'requirements_marker_blob=%s\\n' \"$requirements_marker_blob\"" \
-  "printf 'diff_guard_blob=%s\\n' \"$diff_guard_blob\"" \
+  "printf 'base_sha=%s\\n' \"\$base_sha\"" \
+  "printf 'notify_human_blob=%s\\n' \"\$notify_human_blob\"" \
+  "printf 'apply_human_pause_blob=%s\\n' \"\$apply_human_pause_blob\"" \
+  "printf 'requirements_marker_blob=%s\\n' \"\$requirements_marker_blob\"" \
+  "printf 'diff_guard_blob=%s\\n' \"\$diff_guard_blob\"" \
   'test "$(git hash-object "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
   'test "$(git hash-object "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
   'test "$(git hash-object "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
