@@ -72,6 +72,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare branch and Issue context
+        id: issue_context
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -79,6 +80,17 @@ jobs:
         run: |
           set -euo pipefail
           base_sha="$(git rev-parse HEAD)"
+          notify_human_blob="$(git rev-parse "${base_sha}:.github/scripts/notify-human.sh")"
+          apply_human_pause_blob="$(git rev-parse "${base_sha}:.github/scripts/apply-human-pause.sh")"
+          requirements_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-requirements-change-marker.sh")"
+          diff_guard_blob="$(git rev-parse "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh")"
+          {
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'notify_human_blob=%s\n' "$notify_human_blob"
+            printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
+            printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
+            printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
+          } >> "$GITHUB_OUTPUT"
           branch="ai/issue-${ISSUE_NUMBER}"
           if git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" 2>/dev/null; then
             git checkout -B "$branch" "origin/$branch"
@@ -90,6 +102,10 @@ jobs:
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
+          test "$(git hash-object "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
+          test "$(git hash-object "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
+          test "$(git hash-object "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
             type == "object" and
@@ -119,6 +135,16 @@ jobs:
                 "## Trusted conversation\n\n" +
                 ([.comments[]? | select(trusted_author) | "### " + .author.login + "\n\n--- BEGIN COMMENT DATA ---\n" + (.body | data_lines) + "\n--- END COMMENT DATA ---"] | join("\n\n"))'
           } > .ai-context/request.md
+
+          # These pre-Codex copies are disposable bootstrap inputs. The Codex
+          # workload receives RUNNER_TEMP, so no helper retained there across
+          # model execution is trusted for a post-Codex decision.
+          rm -f -- \
+            "$RUNNER_TEMP/notify-human.sh" \
+            "$RUNNER_TEMP/apply-human-pause.sh" \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
+            "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
       - name: Validate Codex model configuration
         env:
@@ -1240,6 +1266,7 @@ jobs:
           fetch-depth: 0
 
       - name: Build review context
+        id: followup_context
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
@@ -1249,6 +1276,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          notify_human_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/notify-human.sh")"
+          apply_human_pause_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/apply-human-pause.sh")"
+          requirements_marker_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh")"
+          diff_guard_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh")"
+          {
+            printf 'notify_human_blob=%s\n' "$notify_human_blob"
+            printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
+            printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
+            printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
+          } >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
@@ -1256,6 +1293,10 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
           git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
+          test "$(git hash-object "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
+          test "$(git hash-object "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
+          test "$(git hash-object "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
             type == "object" and
@@ -1266,6 +1307,15 @@ jobs:
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
           cp "$RUNNER_TEMP/codex-diff-guard-contract.json" .ai-context/diff-guard-contract.json
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/request.md "$TRUSTED_LOGINS"
+
+          # Do not carry trusted post-Codex helpers across model execution.
+          rm -f -- \
+            "$RUNNER_TEMP/build-review-context.sh" \
+            "$RUNNER_TEMP/notify-human.sh" \
+            "$RUNNER_TEMP/apply-human-pause.sh" \
+            "$RUNNER_TEMP/has-requirements-change-marker.sh" \
+            "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
+            "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
       - name: Validate Codex model configuration
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
