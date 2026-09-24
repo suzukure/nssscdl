@@ -585,7 +585,6 @@ fi
 grep -Fq 'st.st_uid == 0' "$developer_step"
 grep -Fq 'Service-local hardening preflight found writable root-owned UNIX socket(s):' "$developer_step"
 grep -Fq 'SystemExit(49)' "$developer_step"
-grep -Fq 'Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.' "$developer_step"
 grep -Fq '/bin/sh "$launcher" "$uid" "$nobody_gid"' "$developer_step"
 grep -Fq '"HOME=$runner_home"' "$developer_step"
 grep -Fq '"USER=$runner_user"' "$developer_step"
@@ -790,10 +789,12 @@ fi
 
 # Keep the privileged launcher contract identical for issue development and
 # review follow-up. A drift in either path must fail the same assertions.
+preflight_marker='Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.'
 assert_hardened_codex_runtime() {
   local runtime_name="${1:?runtime name is required}"
   local runtime_step="${2:?runtime step is required}"
   local runtime_run="$test_dir/${runtime_name// /-}-run.sh"
+  local producer_block="$test_dir/${runtime_name// /-}-preflight-producer.py"
   local marker_block="$test_dir/${runtime_name// /-}-preflight-marker.sh"
   local mutation_lines actual_paths
 
@@ -810,6 +811,23 @@ assert_hardened_codex_runtime() {
   grep -Fq -- '--lines=200 || true' "$runtime_step"
 
   awk '
+    $0 == "          /usr/bin/python3 - <<\047PY\047" { in_producer = 1; next }
+    in_producer && $0 == "          PY" { exit }
+    in_producer { print }
+  ' "$runtime_step" > "$producer_block"
+  test -s "$producer_block"
+  if ! awk -v marker="$preflight_marker" '
+    $0 == "          print(" {
+      if (getline > 0 && $0 == "              \"" marker "\"" &&
+          getline > 0 && $0 == "          )") found++
+    }
+    END { exit !(found == 1) }
+  ' "$producer_block"; then
+    echo "$runtime_name preflight producer must print the shared success marker." >&2
+    exit 1
+  fi
+
+  awk '
     $0 == "              if [ \"$rc\" -eq 0 ]; then" { in_marker = 1 }
     in_marker { print }
     in_marker && $0 == "              fi" { exit }
@@ -822,7 +840,7 @@ assert_hardened_codex_runtime() {
   grep -Fqx '                    --no-pager \' "$marker_block"
   grep -Fqx '                    --output=cat \' "$marker_block"
   grep -Fqx '                    --quiet' "$marker_block"
-  grep -Fq 'expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."' "$marker_block"
+  grep -Fqx "                expected_preflight_marker=\"$preflight_marker\"" "$marker_block"
   grep -Fq 'preflight_journal="$(' "$marker_block"
   grep -Fq 'journal_rc=$?' "$marker_block"
   grep -Fq 'if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then' "$marker_block"
