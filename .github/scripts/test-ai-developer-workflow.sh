@@ -135,6 +135,39 @@ if grep -Fq -- '--comments' "$issue_context_step"; then
   echo 'Issue context retrieval must not combine --comments with --json.' >&2
   exit 1
 fi
+grep -Fqx '        id: issue_context' "$issue_context_step"
+for trusted_bootstrap_rule in \
+  'notify_human_blob="$(git rev-parse "${base_sha}:.github/scripts/notify-human.sh")"' \
+  'apply_human_pause_blob="$(git rev-parse "${base_sha}:.github/scripts/apply-human-pause.sh")"' \
+  'requirements_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-requirements-change-marker.sh")"' \
+  'diff_guard_blob="$(git rev-parse "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh")"' \
+  "printf 'base_sha=%s\\n' \"\$base_sha\"" \
+  "printf 'notify_human_blob=%s\\n' \"\$notify_human_blob\"" \
+  "printf 'apply_human_pause_blob=%s\\n' \"\$apply_human_pause_blob\"" \
+  "printf 'requirements_marker_blob=%s\\n' \"\$requirements_marker_blob\"" \
+  "printf 'diff_guard_blob=%s\\n' \"\$diff_guard_blob\"" \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"'; do
+  grep -Fq "$trusted_bootstrap_rule" "$issue_context_step"
+done
+issue_disposable_block="$test_dir/issue-disposable-helpers.txt"
+awk '
+  /rm -f -- \\$/ { in_block = 1 }
+  in_block { print }
+  in_block && $0 !~ /\\$/ { exit }
+' "$issue_context_step" > "$issue_disposable_block"
+[ -s "$issue_disposable_block" ]
+grep -Fq 'rm -f -- \' "$issue_disposable_block"
+for disposable_helper in \
+  '"$RUNNER_TEMP/notify-human.sh"' \
+  '"$RUNNER_TEMP/apply-human-pause.sh"' \
+  '"$RUNNER_TEMP/has-requirements-change-marker.sh"' \
+  '"$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' \
+  '"$RUNNER_TEMP/codex-diff-guard-contract.json"'; do
+  grep -Fq "$disposable_helper" "$issue_disposable_block"
+done
 
 # Issue-origin developer failures must be handled by a separate runner without
 # retrying Codex or depending on the failed job's workspace.
@@ -364,13 +397,15 @@ fi
 before_line="$(grep -nF '      - name: Capture AI Developer host integrity baseline' "$workflow" | cut -d: -f1)"
 developer_line="$(grep -nF '      - name: Run Codex developer' "$workflow" | cut -d: -f1)"
 after_line="$(grep -nF '      - name: Verify AI Developer host integrity' "$workflow" | cut -d: -f1)"
+restore_line="$(grep -nF '      - name: Restore trusted post-Codex helpers' "$workflow" | head -n 1 | cut -d: -f1)"
 gate_line="$(grep -nF '      - name: Gate requirement changes' "$workflow" | cut -d: -f1)"
-for line in "$before_line" "$developer_line" "$after_line" "$gate_line"; do
+for line in "$before_line" "$developer_line" "$after_line" "$restore_line" "$gate_line"; do
   [[ "$line" =~ ^[0-9]+$ ]]
 done
 test "$before_line" -lt "$developer_line"
 test "$developer_line" -lt "$after_line"
-test "$after_line" -lt "$gate_line"
+test "$after_line" -lt "$restore_line"
+test "$restore_line" -lt "$gate_line"
 
 grep -Fqx '        id: host_integrity_before' "$host_before_step"
 grep -Fqx '        timeout-minutes: 1' "$host_before_step"
@@ -632,6 +667,44 @@ grep -Fq '      - name: Resolve trusted Codex follow-up runtime' "$followup_work
 grep -Fq '      - name: Prepare fixed Codex follow-up prompt' "$followup_workflow"
 grep -Fq '      - name: Capture Codex follow-up host integrity baseline' "$followup_workflow"
 grep -Fq '      - name: Verify Codex follow-up host integrity' "$followup_workflow"
+grep -Fq '      - name: Restore trusted post-Codex helpers' "$followup_workflow"
+grep -Fq '        id: followup_context' "$followup_workflow"
+grep -Fq 'notify_human_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/notify-human.sh")"' "$followup_workflow"
+grep -Fq 'apply_human_pause_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/apply-human-pause.sh")"' "$followup_workflow"
+grep -Fq 'requirements_marker_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh")"' "$followup_workflow"
+grep -Fq 'diff_guard_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh")"' "$followup_workflow"
+
+followup_context_step="$test_dir/followup-context-step.yml"
+awk '
+  $0 == "      - name: Build review context" { in_step = 1 }
+  in_step && /^      - name: / && $0 != "      - name: Build review context" { exit }
+  in_step { print }
+' "$workflow" > "$followup_context_step"
+[ -s "$followup_context_step" ]
+for followup_bootstrap_rule in \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"'; do
+  grep -Fq "$followup_bootstrap_rule" "$followup_context_step"
+done
+followup_disposable_block="$test_dir/followup-disposable-helpers.txt"
+awk '
+  /rm -f -- \\$/ { in_block = 1 }
+  in_block { print }
+  in_block && $0 !~ /\\$/ { exit }
+' "$followup_context_step" > "$followup_disposable_block"
+[ -s "$followup_disposable_block" ]
+grep -Fq 'rm -f -- \' "$followup_disposable_block"
+for disposable_helper in \
+  '"$RUNNER_TEMP/build-review-context.sh"' \
+  '"$RUNNER_TEMP/notify-human.sh"' \
+  '"$RUNNER_TEMP/apply-human-pause.sh"' \
+  '"$RUNNER_TEMP/has-requirements-change-marker.sh"' \
+  '"$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' \
+  '"$RUNNER_TEMP/codex-diff-guard-contract.json"'; do
+  grep -Fq "$disposable_helper" "$followup_disposable_block"
+done
 if [ "$(grep -Fc "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$followup_workflow")" -lt 6 ]; then
   echo 'Every follow-up runtime step must remain behind the trusted follow-up gate.' >&2
   exit 1
@@ -647,6 +720,42 @@ grep -Fq "test \"\$native_version\" = 'codex-cli 0.156.1'" "$followup_workflow"
 grep -Fq 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).' "$followup_workflow"
 grep -Fq '          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}' "$followup_workflow"
 grep -Fq '          CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}' "$followup_step"
+
+if [ "$(grep -Fc '      - name: Restore trusted post-Codex helpers' "$workflow")" -ne 2 ]; then
+  echo 'Issue developer and Claude follow-up must each restore trusted post-Codex helpers.' >&2
+  exit 1
+fi
+for restore_rule in \
+  'rm -f -- "$destination"' \
+  'git show "${BASE_SHA}:${source_path}" > "$destination"' \
+  'actual_blob="$(git hash-object --no-filters "$destination")"' \
+  'Trusted helper blob changed across Codex execution:' \
+  "restore_base_blob '.github/scripts/notify-human.sh'" \
+  "restore_base_blob '.github/scripts/apply-human-pause.sh'" \
+  "restore_base_blob '.github/scripts/has-requirements-change-marker.sh'" \
+  "restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh'" \
+  'bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"' \
+  'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'; do
+  if [ "$(grep -Fc "$restore_rule" "$workflow")" -lt 2 ]; then
+    echo "Trusted post-Codex restore contract is not symmetric: $restore_rule" >&2
+    exit 1
+  fi
+done
+grep -Fqx '          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}' "$workflow"
+grep -Fqx '          NOTIFY_HUMAN_BLOB: ${{ steps.issue_context.outputs.notify_human_blob }}' "$workflow"
+grep -Fqx '          BASE_SHA: ${{ github.event.pull_request.base.sha }}' "$followup_workflow"
+grep -Fqx '          NOTIFY_HUMAN_BLOB: ${{ steps.followup_context.outputs.notify_human_blob }}' "$followup_workflow"
+
+followup_run_line="$(grep -nF '      - name: Run Codex follow-up' "$workflow" | cut -d: -f1)"
+followup_after_line="$(grep -nF '      - name: Verify Codex follow-up host integrity' "$workflow" | cut -d: -f1)"
+followup_restore_line="$(grep -nF '      - name: Restore trusted post-Codex helpers' "$workflow" | tail -n 1 | cut -d: -f1)"
+followup_gate_line="$(grep -nF '      - name: Gate Codex follow-up requirement changes' "$workflow" | cut -d: -f1)"
+for line in "$followup_run_line" "$followup_after_line" "$followup_restore_line" "$followup_gate_line"; do
+  [[ "$line" =~ ^[0-9]+$ ]]
+done
+test "$followup_run_line" -lt "$followup_after_line"
+test "$followup_after_line" -lt "$followup_restore_line"
+test "$followup_restore_line" -lt "$followup_gate_line"
 grep -Fq '          CODEX_PACKAGE_ROOT: ${{ steps.followup_codex_runtime.outputs.package_root }}' "$followup_step"
 grep -Fq '          ACTION_MAIN: ${{ steps.followup_codex_runtime.outputs.action_main }}' "$followup_step"
 grep -Fq '          RUNNER_CREDENTIALS: ${{ steps.followup_codex_runtime.outputs.runner_credentials }}' "$followup_step"
@@ -854,14 +963,15 @@ extract_workflow_step_run() {
   fi
 }
 
-# The follow-up notification runs after the PR checkout, so it must use the
-# trusted-base helper copied during context bootstrap rather than PR-head code.
+# The follow-up notification runs after Codex, so it must use the helper
+# rematerialized from the trusted base by the post-Codex restore step rather
+# than the disposable bootstrap copy or PR-head code.
 followup_workflow="$test_dir/respond-to-claude.yml"
 sed -n '/^  respond-to-claude:/,$p' "$workflow" > "$followup_workflow"
-bootstrap_notify_line="$(grep -n -F 'git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | cut -d: -f1)"
+restore_notify_line="$(grep -n -F "restore_base_blob '.github/scripts/notify-human.sh'" "$followup_workflow" | tail -n 1 | cut -d: -f1)"
 notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
-if [ -z "$bootstrap_notify_line" ] || [ -z "$notify_step_line" ] || [ "$bootstrap_notify_line" -ge "$notify_step_line" ]; then
-  echo 'Follow-up requirement escalation notification is not bootstrapped from the trusted base.' >&2
+if [ -z "$restore_notify_line" ] || [ -z "$notify_step_line" ] || [ "$restore_notify_line" -ge "$notify_step_line" ]; then
+  echo 'Follow-up requirement escalation notification is not using the restored trusted-base helper.' >&2
   exit 1
 fi
 
