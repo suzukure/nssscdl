@@ -51,6 +51,7 @@ rendered, _ = check(same_timestamp_full, "full", ("a same-time", "z same-time"))
 assert rendered.index("a same-time") < rendered.index("z same-time")
 rendered, telemetry = check(base, "checkpoint", ("current decision", "new decision"),
                             ("old decision", "/codex context-checkpoint", "untrusted secret"))
+assert "Trusted conversation before the human context checkpoint at " in rendered
 assert telemetry["excluded_historical"]["chars"] > 0
 assert "untrusted secret" not in rendered
 later = comment("/codex context-checkpoint", "2026-01-04T00:00:00Z")
@@ -77,8 +78,9 @@ for bad in [
             *base["comments"][1:],
         ]},
 ]:
-    check(bad, "fallback", ("old decision", "new decision"), ("untrusted secret",),
-          "invalid_timestamp")
+    rendered, _ = check(bad, "fallback", ("old decision", "new decision"), ("untrusted secret",),
+                        "invalid_timestamp")
+    assert "fallback order is deterministic but not chronological" in rendered
 
 unsafe_identity = {
     **base,
@@ -97,8 +99,9 @@ try:
 except module.SelectionError as exc:
     assert exc.code == "unsafe_full_fallback"
 same_time = {**base, "comments": base["comments"] + [comment("simultaneous", "2026-01-03T00:00:00Z")]}
-check(same_time, "fallback", ("old decision", "new decision", "simultaneous"),
-      ("untrusted secret",), "ambiguous_order")
+rendered, _ = check(same_time, "checkpoint", ("new decision", "simultaneous"),
+                    ("old decision", "untrusted secret"))
+assert rendered.index("new decision") < rendered.index("simultaneous")
 with mock.patch.object(module, "select", side_effect=RuntimeError("internal failure")):
     check(base, "fallback", ("old decision", "new decision"), ("untrusted secret",), "selector_failure")
 with tempfile.TemporaryDirectory() as directory:
