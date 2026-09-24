@@ -20,7 +20,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 
 trusted human（`OWNER` / `MEMBER` / `COLLABORATOR`）が `/codex context-checkpoint` と完全一致する単独Issue commentを投稿した場合、その時点までのAI Developerに必要な確定判断・要求・再開条件・未解決事項がcurrent Issue本文へ集約済みであることを人間が保証する。未反映の判断、未解決の上流決定、本文にないpause解除条件や過去の安全判断が残る場合は投稿しない。checkpointはpause解除や要求承認を意味せず、既存のIssue-entry、`human-review-required`、requirements、diff guardの各gateを変更しない。
 
-有効なcheckpointがなければ従来どおりIssue本文とtrusted comment全文を渡す。有効なcheckpointがあれば最新の一意なtimestampを境界とし、current Issue本文全文と、その後のtrusted comment本文をtimestamp順に渡す。checkpoint comment自体とそれ以前のcomment本文は省略する。untrusted comment本文は含めない。metadata、identity、timestampまたは選択の異常では全文へfallbackし、その理由をcontextに示す。選択規則と非機密な文字数・byte数telemetryは `.github/scripts/build-development-context.py` を正本とする。Claude Review側の選択は次節を正本とする。
+有効なcheckpointがなければ従来どおりIssue本文とtrusted comment全文をtimestamp順に渡す。有効なcheckpointがあれば最新の一意なtimestampを境界とし、current Issue本文全文と、その後のtrusted comment本文をtimestamp順に渡す。checkpoint comment自体とそれ以前のcomment本文は省略する。untrusted comment本文は含めない。timestampやboundary選択の異常でもtrusted comment集合を安全に確定できる場合は全文へfallbackし、その理由をcontextに示す。metadata / identity破損により完全なtrusted comment集合自体を安全に確定できない場合は、partial historyをfull fallbackと偽らずmodel call前にfail-closed停止する。選択規則と非機密な文字数・byte数telemetryは `.github/scripts/build-development-context.py` を正本とする。Claude Review側の選択は次節を正本とする。
 
 ## Claude Reviewへ渡すtrusted conversationの選択
 
