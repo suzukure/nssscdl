@@ -6,6 +6,13 @@ on:
     paths:
       - '.github/scripts/**'
       - '.github/workflows/**'
+      - '**/AGENTS.md'
+      - '**/AGENTS.override.md'
+      - '**/CLAUDE.md'
+      - '**/CLAUDE.local.md'
+      - '**/.claude/**'
+      - '**/.codex/**'
+      - '**/.mcp.json'
 
 permissions:
   contents: read
