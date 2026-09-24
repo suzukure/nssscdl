@@ -70,8 +70,6 @@ def select(metadata):
     if any(when == latest and c["body"] != MARKER for when, c in ordered):
         raise SelectionError("ambiguous_boundary")
     following = [(when, c) for when, c in ordered if when > latest]
-    if len({when for when, _ in following}) != len(following):
-        raise SelectionError("ambiguous_order")
     return "checkpoint", [c for _, c in following], latest
 
 
@@ -138,8 +136,20 @@ def build(metadata):
         "", "## Body", "", "--- BEGIN ISSUE DATA ---", data_lines(body),
         "--- END ISSUE DATA ---", "", "## Trusted conversation", "",
     ]
+    if mode == "checkpoint" and boundary is not None:
+        blocks += [
+            "Trusted conversation before the human context checkpoint at "
+            + boundary.isoformat()
+            + " is omitted; the current Issue body is the consolidated contract.",
+            "",
+        ]
     if reason:
         blocks += [f"Conversation selection fallback: {reason}. Full trusted conversation is included.", ""]
+        if reason == "invalid_timestamp":
+            blocks += [
+                "One or more trusted comment timestamps are invalid; fallback order is deterministic but not chronological.",
+                "",
+            ]
     comment_blocks = []
     for comment in selected:
         author = comment.get("author")
