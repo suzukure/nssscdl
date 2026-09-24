@@ -104,7 +104,147 @@ grep -Fxq 'name: AI Workflow Regression' "$regression_workflow"
 grep -Fq 'types: [opened, synchronize, reopened]' "$regression_workflow"
 grep -Fq -- "- '.github/scripts/**'" "$regression_workflow"
 grep -Fq -- "- '.github/workflows/**'" "$regression_workflow"
-grep -A1 '^permissions:$' "$regression_workflow" | grep -Fxq '  contents: read'
+grep -Fq -- "- '**/AGENTS.md'" "$regression_workflow"
+grep -Fq -- "- '**/AGENTS.override.md'" "$regression_workflow"
+grep -Fq -- "- '**/CLAUDE.md'" "$regression_workflow"
+grep -Fq -- "- '**/CLAUDE.local.md'" "$regression_workflow"
+grep -Fq -- "- '**/.claude/**'" "$regression_workflow"
+grep -Fq -- "- '**/.codex/**'" "$regression_workflow"
+grep -Fq -- "- '**/.mcp.json'" "$regression_workflow"
+grep -A1 '^permissions:
+grep -Fq 'group: ai-workflow-regression-${{ github.event.pull_request.number }}' "$regression_workflow"
+grep -Fq 'cancel-in-progress: true' "$regression_workflow"
+grep -Fq 'name: Fixtures' "$regression_workflow"
+grep -Fq 'runs-on: ubuntu-latest' "$regression_workflow"
+grep -Fq 'timeout-minutes: 10' "$regression_workflow"
+grep -Fq 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803' "$regression_workflow"
+grep -Fq 'ref: ${{ github.event.pull_request.head.sha }}' "$regression_workflow"
+grep -Fq 'persist-credentials: false' "$regression_workflow"
+grep -Fq 'export LC_ALL=C' "$regression_workflow"
+grep -Fq 'fixtures=(.github/scripts/test-*.sh)' "$regression_workflow"
+grep -Fq 'if [ "${#fixtures[@]}" -eq 0 ]; then' "$regression_workflow"
+grep -Fq 'for fixture in "${fixtures[@]}"; do' "$regression_workflow"
+grep -Fq 'if bash "$fixture"; then' "$regression_workflow"
+if grep -Eq '^[[:space:]]+[A-Za-z-]+: write$' "$regression_workflow"; then
+  echo 'AI Workflow Regression grants a write permission.' >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]*permissions:[[:space:]]*write-all([[:space:]]*(#.*)?)?$' "$regression_workflow"; then
+  echo 'AI Workflow Regression grants write-all permission.' >&2
+  exit 1
+fi
+if grep -Fq 'secrets.' "$regression_workflow"; then
+  echo 'AI Workflow Regression passes a repository secret.' >&2
+  exit 1
+fi
+if grep -Eq 'github\.token|^[[:space:]]+GH_TOKEN:' "$regression_workflow"; then
+  echo 'AI Workflow Regression passes a repository credential.' >&2
+  exit 1
+fi
+
+grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'git/ref/heads/${BASE_REF}' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq '^[0-9a-f]{40}$' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'steps.build-review-context.outputs.base_sha' "$repo_root/.github/workflows/claude-review.yml"
+if grep -Fq 'github.event.pull_request.base.sha' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Workflow still uses the stale event base SHA.' >&2
+  exit 1
+fi
+if grep -Eq 'attempt (2|3) of 3' "$repo_root/.github/workflows/claude-review.yml"; then
+  echo 'Expected duplicate full-review retries to be removed.' >&2
+  exit 1
+fi
+
+MOCK_CASE=valid
+export MOCK_CASE
+bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 traceability
+bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev
+
+MOCK_CASE=no-links
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 traceability; then
+  echo 'Expected traceability failure without a closing Issue.' >&2
+  exit 1
+fi
+
+MOCK_CASE=invalid-branch
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a non-AI branch.' >&2
+  exit 1
+fi
+
+MOCK_CASE=human-author
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a human-authored AI-named branch.' >&2
+  exit 1
+fi
+
+MOCK_CASE=app-author
+export MOCK_CASE
+bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev
+
+MOCK_CASE=wrong-base
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a PR not targeting main.' >&2
+  exit 1
+fi
+
+MOCK_CASE=draft
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a draft PR.' >&2
+  exit 1
+fi
+
+MOCK_CASE=human-label
+export MOCK_CASE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure while human-review-required is present.' >&2
+  exit 1
+fi
+
+MOCK_CASE=valid
+MOCK_CHANGED_PATH=src/CLAUDE.md
+export MOCK_CASE MOCK_CHANGED_PATH
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure for a nested AI instruction file.' >&2
+  exit 1
+fi
+unset MOCK_CHANGED_PATH
+
+MOCK_CASE=valid
+MOCK_DIFF_FAIL=true
+export MOCK_CASE MOCK_DIFF_FAIL
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure when protected-path lookup fails.' >&2
+  exit 1
+fi
+unset MOCK_DIFF_FAIL
+
+MOCK_CASE=valid
+MOCK_ISSUE_PAUSED=true
+export MOCK_CASE MOCK_ISSUE_PAUSED
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 merge dev; then
+  echo 'Expected merge failure while a closing Issue is paused.' >&2
+  exit 1
+fi
+unset MOCK_ISSUE_PAUSED
+
+MOCK_CASE=valid
+MOCK_ISSUE_STATE=closed
+export MOCK_CASE MOCK_ISSUE_STATE
+if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 traceability; then
+  echo 'Expected traceability failure for a closed Issue.' >&2
+  exit 1
+fi
+unset MOCK_ISSUE_STATE
+
+echo 'AI workflow fixture tests passed.'
+ "$regression_workflow" | grep -Fxq '  contents: read'
 grep -Fq 'group: ai-workflow-regression-${{ github.event.pull_request.number }}' "$regression_workflow"
 grep -Fq 'cancel-in-progress: true' "$regression_workflow"
 grep -Fq 'name: Fixtures' "$regression_workflow"
