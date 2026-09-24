@@ -37,6 +37,12 @@ base = {"number": 418, "title": "fixture", "url": "https://example.test/418",
             comment("untrusted secret", "2026-01-04T00:00:00Z", "NONE", "outsider"),
         ]}
 check({**base, "comments": base["comments"][:1]}, "full", ("old decision",))
+full_reversed = {**base, "comments": [
+    comment("later full decision", "2026-01-02T00:00:00Z"),
+    comment("earlier full decision", "2026-01-01T00:00:00Z"),
+]}
+rendered, _ = check(full_reversed, "full", ("earlier full decision", "later full decision"))
+assert rendered.index("earlier full decision") < rendered.index("later full decision")
 rendered, telemetry = check(base, "checkpoint", ("current decision", "new decision"),
                             ("old decision", "/codex context-checkpoint", "untrusted secret"))
 assert telemetry["excluded_historical"]["chars"] > 0
@@ -58,16 +64,32 @@ ordered = {**base, "comments": [comment("second", "2026-01-04T00:00:00Z"),
                                 comment("first", "2026-01-03T00:00:00Z"), base["comments"][1]]}
 rendered, _ = check(ordered, "checkpoint", ("first", "second"))
 assert rendered.index("first") < rendered.index("second")
-for bad in [{**base, "comments": [{**base["comments"][0], "createdAt": "bad"}, *base["comments"][1:]]},
-            {**base, "comments": [{key: value for key, value in base["comments"][0].items() if key != "createdAt"}, *base["comments"][1:]]},
-            {**base, "comments": [{**base["comments"][0], "authorAssociation": []}, *base["comments"][1:]]}]:
-    check(bad, "fallback", ("new decision",), ("untrusted secret",),
-          "invalid_timestamp" if isinstance(bad["comments"], list) and isinstance(bad["comments"][0].get("authorAssociation"), str) else
-          "invalid_identity_or_metadata")
+for bad in [
+        {**base, "comments": [{**base["comments"][0], "createdAt": "bad"}, *base["comments"][1:]]},
+        {**base, "comments": [
+            {key: value for key, value in base["comments"][0].items() if key != "createdAt"},
+            *base["comments"][1:],
+        ]},
+]:
+    check(bad, "fallback", ("old decision", "new decision"), ("untrusted secret",),
+          "invalid_timestamp")
+
+unsafe_identity = {
+    **base,
+    "comments": [{**base["comments"][0], "authorAssociation": []}, *base["comments"][1:]],
+}
+try:
+    module.build(unsafe_identity)
+    raise AssertionError("Unsafe identity metadata must stop before model context construction.")
+except module.SelectionError as exc:
+    assert exc.code == "unsafe_full_fallback"
 tied = {**base, "comments": base["comments"] + [comment("/codex context-checkpoint", "2026-01-02T00:00:00Z")]}
 check(tied, "fallback", ("old decision", "new decision"), ("untrusted secret",), "ambiguous_checkpoint")
-rendered, info = check({**base, "comments": {}}, "fallback", (), (), "invalid_metadata")
-assert "Full trusted conversation is included." in rendered
+try:
+    module.build({**base, "comments": {}})
+    raise AssertionError("Invalid comments metadata must stop before a partial fallback.")
+except module.SelectionError as exc:
+    assert exc.code == "unsafe_full_fallback"
 same_time = {**base, "comments": base["comments"] + [comment("simultaneous", "2026-01-03T00:00:00Z")]}
 check(same_time, "fallback", ("old decision", "new decision", "simultaneous"),
       ("untrusted secret",), "ambiguous_order")
