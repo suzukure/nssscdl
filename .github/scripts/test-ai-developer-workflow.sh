@@ -719,7 +719,7 @@ assert_hardened_codex_runtime() {
   grep -Fqx '                    --unit="$unit" \' "$marker_block"
   grep -Fqx '                    --no-pager \' "$marker_block"
   grep -Fqx '                    --output=cat \' "$marker_block"
-  grep -Fqx '                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\\\.\$" \' "$marker_block"
+  grep -Fqx '                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\.$" \' "$marker_block"
   grep -Fqx '                    --lines=1' "$marker_block"
   grep -Fq 'expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."' "$marker_block"
   grep -Fq 'marker_rc=$?' "$marker_block"
