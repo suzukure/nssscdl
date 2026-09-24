@@ -129,13 +129,16 @@ if [ ! -s "$issue_context_step" ]; then
   echo 'Could not extract the Prepare branch and Issue context step.' >&2
   exit 1
 fi
-grep -Fqx "            gh issue view \"\$ISSUE_NUMBER\" --repo \"\$GITHUB_REPOSITORY\" \\" "$issue_context_step"
-grep -Fqx "              --json number,title,body,url,labels,comments \\" "$issue_context_step"
+grep -Fqx "          gh issue view \"\$ISSUE_NUMBER\" --repo \"\$GITHUB_REPOSITORY\" \\" "$issue_context_step"
+grep -Fqx "            --json number,title,body,url,labels,comments \\" "$issue_context_step"
 if grep -Fq -- '--comments' "$issue_context_step"; then
   echo 'Issue context retrieval must not combine --comments with --json.' >&2
   exit 1
 fi
 grep -Fqx '        id: issue_context' "$issue_context_step"
+grep -Fq 'git show "${base_sha}:.github/scripts/build-development-context.py" > "$RUNNER_TEMP/build-development-context.py"' "$issue_context_step"
+grep -Fq 'python3 "$RUNNER_TEMP/build-development-context.py"' "$issue_context_step"
+grep -Fq '"$RUNNER_TEMP/development-issue.json" .ai-context/request.md "$GITHUB_STEP_SUMMARY"' "$issue_context_step"
 for trusted_bootstrap_rule in \
   'notify_human_blob="$(git rev-parse "${base_sha}:.github/scripts/notify-human.sh")"' \
   'apply_human_pause_blob="$(git rev-parse "${base_sha}:.github/scripts/apply-human-pause.sh")"' \
@@ -149,7 +152,8 @@ for trusted_bootstrap_rule in \
   'test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"' \
   'test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"' \
   'test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"' \
-  'test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"'; do
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"' \
+  'test "$(git hash-object --no-filters "$RUNNER_TEMP/build-development-context.py")" = "$development_context_blob"'; do
   grep -Fq "$trusted_bootstrap_rule" "$issue_context_step"
 done
 issue_disposable_block="$test_dir/issue-disposable-helpers.txt"
@@ -165,7 +169,9 @@ for disposable_helper in \
   '"$RUNNER_TEMP/apply-human-pause.sh"' \
   '"$RUNNER_TEMP/has-requirements-change-marker.sh"' \
   '"$RUNNER_TEMP/evaluate-codex-diff-gate.sh"' \
-  '"$RUNNER_TEMP/codex-diff-guard-contract.json"'; do
+  '"$RUNNER_TEMP/codex-diff-guard-contract.json"' \
+  '"$RUNNER_TEMP/build-development-context.py"' \
+  '"$RUNNER_TEMP/development-issue.json"'; do
   grep -Fq "$disposable_helper" "$issue_disposable_block"
 done
 
