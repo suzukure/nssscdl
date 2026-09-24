@@ -437,13 +437,6 @@ if grep -Fq 'sudo -n -E' "$developer_step"; then
   exit 1
 fi
 grep -Fq 'exec sudo -n -- ' "$developer_step"
-journalctl_count="$(grep -Fc '/usr/bin/journalctl' "$developer_step" || true)"
-test "$journalctl_count" = 2
-grep -Fq '/usr/bin/journalctl \' "$developer_step"
-grep -Fq -- '--unit="$unit" \' "$developer_step"
-grep -Fq -- '--no-pager \' "$developer_step"
-grep -Fq -- '--output=cat \' "$developer_step"
-grep -Fq -- '--lines=200 || true' "$developer_step"
 if grep -Fq 'drop-sudo ' "$developer_step" || grep -Fq -- '--root-phase ' "$developer_step"; then
   echo 'Production developer path must not invoke host-global drop-sudo root phase.' >&2
   exit 1
@@ -719,21 +712,25 @@ assert_hardened_codex_runtime() {
   grep -Fqx '                    --unit="$unit" \' "$marker_block"
   grep -Fqx '                    --no-pager \' "$marker_block"
   grep -Fqx '                    --output=cat \' "$marker_block"
-  grep -Fqx '                    --grep="^Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary\\.$" \' "$marker_block"
-  grep -Fqx '                    --lines=1' "$marker_block"
+  grep -Fqx '                    --quiet' "$marker_block"
   grep -Fq 'expected_preflight_marker="Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."' "$marker_block"
-  grep -Fq 'marker_rc=$?' "$marker_block"
-  grep -Fq 'if [ "$marker_rc" -ne 0 ] || [ "$preflight_marker" != "$expected_preflight_marker" ]; then' "$marker_block"
+  grep -Fq 'preflight_journal="$(' "$marker_block"
+  grep -Fq 'journal_rc=$?' "$marker_block"
+  grep -Fq 'if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then' "$marker_block"
   grep -Fq 'Service-local hardening preflight success marker unavailable from unit journal.' "$marker_block"
   grep -Fq 'exit 51' "$marker_block"
-  grep -Fq 'printf "%s\n" "$preflight_marker"' "$marker_block"
+  grep -Fq 'printf "%s\n" "$expected_preflight_marker"' "$marker_block"
+  if grep -Fq -- '--grep=' "$marker_block" || grep -Fq -- '--lines=1' "$marker_block"; then
+    echo "$runtime_name marker recovery must not depend on journalctl grep/tail semantics." >&2
+    exit 1
+  fi
   if grep -Fq '|| true' "$marker_block"; then
     echo "$runtime_name marker recovery must fail closed instead of swallowing journal errors." >&2
     exit 1
   fi
   if ! awk '
     $0 == "              if [ \"$rc\" -eq 0 ]; then" { marker_open = NR }
-    marker_open && $0 == "              fi" { marker_close = NR }
+    marker_open && !marker_close && $0 == "              fi" { marker_close = NR }
     $0 == "              exit \"$rc\"" { service_return = NR }
     END { exit !(marker_open && marker_close && service_return && marker_open < marker_close && marker_close < service_return) }
   ' "$runtime_step"; then
