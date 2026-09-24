@@ -46,11 +46,20 @@ def trusted_comments(metadata):
     return trusted
 
 
+def canonical(comment):
+    return json.dumps(comment, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def order_by_timestamp(comments):
+    return sorted(((timestamp(c.get("createdAt")), c) for c in comments),
+                  key=lambda pair: (pair[0], canonical(pair[1])))
+
+
 def select(metadata):
     trusted = trusted_comments(metadata)
     # Validate every trusted timestamp, even when there is no checkpoint.
-    ordered = sorted(((timestamp(c.get("createdAt")), c) for c in trusted),
-                     key=lambda pair: pair[0])
+    # Canonical JSON is a deterministic tie-breaker for equal timestamps.
+    ordered = order_by_timestamp(trusted)
     checkpoints = [(when, c) for when, c in ordered if c["body"] == MARKER]
     if not checkpoints:
         return "full", [c for _, c in ordered], None
@@ -84,7 +93,12 @@ def fallback_comments(metadata):
                     or not isinstance(comment.get("body"), str)):
                 raise SelectionError("unsafe_full_fallback")
             trusted.append(comment)
-    return trusted
+    try:
+        return [c for _, c in order_by_timestamp(trusted)]
+    except SelectionError:
+        # Invalid timestamp is itself a fallback reason. Preserve every safely
+        # resolved trusted comment without depending on API array order.
+        return sorted(trusted, key=canonical)
 
 
 def data_lines(value):
