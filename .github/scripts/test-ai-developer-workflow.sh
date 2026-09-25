@@ -393,8 +393,12 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
       esac
     }
     bash() {
-      [ "$1" = .github/scripts/create-human-pause.sh ] && [ "$2" = create ] &&
-        [ "$3" = owner/repo ] && [ "$4" = - ] && [ "$5" = 37 ] && [ "$6" = 123 ]
+      [ "${1-}" = .github/scripts/create-human-pause.sh ] || { echo "Unexpected helper argument 1: ${1-}" >&2; return 1; }
+      [ "${2-}" = create ] || { echo "Unexpected helper argument 2: ${2-}" >&2; return 1; }
+      [ "${3-}" = owner/repo ] || { echo "Unexpected helper argument 3: ${3-}" >&2; return 1; }
+      [ "${4-}" = - ] || { echo "Unexpected helper argument 4: ${4-}" >&2; return 1; }
+      [ "${5-}" = 37 ] || { echo "Unexpected helper argument 5: ${5-}" >&2; return 1; }
+      [ "${6-}" = 123 ] || { echo "Unexpected helper argument 6: ${6-}" >&2; return 1; }
       printf "%s %s\n" "$7" "${*:9}"
     }
     source "$1"
