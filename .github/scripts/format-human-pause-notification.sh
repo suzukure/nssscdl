@@ -29,5 +29,7 @@ esac
 [[ "$target" =~ ^(issue|pr):[1-9][0-9]*$ ]] || exit 1
 [[ "$pause_id" =~ ^[1-9][0-9]*$ ]] || exit 1
 [[ "$url" =~ ^https://github\.com/[^/]+/[^/]+/(issues|pull)/[1-9][0-9]*$ ]] || exit 1
+# Keep the machine record's full detail; only the Discord rendering is shortened.
+detail="$(jq -nr --arg detail "$detail" '$detail | explode | if length > 250 then .[:250] | implode + "…" else implode end')"
 printf '人間の確認が必要です。\n対象: %s\n停止理由: %s (%s)\n判断が必要な内容: %s\n次の対応: %s\nGitHub: %s\npause_id: %s\n' \
   "$target" "$reason_text" "$reason" "$detail" "$action" "$url" "$pause_id"

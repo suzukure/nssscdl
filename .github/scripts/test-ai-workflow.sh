@@ -23,11 +23,16 @@ NOTIFICATION_WEBHOOK_URL='https://discord.invalid/api/webhooks/secret-value'
 MOCK_CURL_ARGS="$test_dir/curl.args"
 MOCK_CURL_BODY="$test_dir/curl.body"
 export NOTIFICATION_WEBHOOK_URL MOCK_CURL_ARGS MOCK_CURL_BODY
-bash "$repo_root/.github/scripts/notify-human.sh" 'test escalation' \
+bash "$repo_root/.github/scripts/notify-human.sh" 'test @everyone escalation' \
   > "$test_dir/notification.out" 2> "$test_dir/notification.err"
-jq -e '. == {"content":"test escalation"}' "$MOCK_CURL_BODY" > /dev/null
+jq -e '. == {"content":"test @everyone escalation","allowed_mentions":{"parse":[]}}' "$MOCK_CURL_BODY" > /dev/null
 grep -Fq -- '--header Content-Type: application/json' "$MOCK_CURL_ARGS"
 grep -Fq -- '--data-binary @-' "$MOCK_CURL_ARGS"
+oversized="$(printf 'x%.0s' {1..1801})"
+if bash "$repo_root/.github/scripts/notify-human.sh" "$oversized" > /dev/null 2>&1; then
+  echo 'Expected oversized Discord content to be rejected.' >&2
+  exit 1
+fi
 if grep -Fq "$NOTIFICATION_WEBHOOK_URL" "$test_dir/notification.out" "$test_dir/notification.err"; then
   echo 'Webhook URL was written to notification output.' >&2
   exit 1

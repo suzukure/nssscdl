@@ -30,12 +30,14 @@ set -euo pipefail
 #   create <record-json>  validate and emit one record block
 #   parse <file>          extract exactly one block, validate it, emit JSON
 #   validate <record-json> validate one JSON record without emitting it
+#   reasons                emit the schema reason allowlist as JSON
 
 readonly block_start='<!-- ai-human-pause-record:start -->'
 readonly block_end='<!-- ai-human-pause-record:end -->'
+readonly known_reasons='["requirements_change","scope_decision","diff_guard_exceeded","diff_guard_error","non_blocking_decision","round_limit","validation_failed","validation_timeout","claude_execution_failed","developer_execution_failed","explicit_human_escalation","review_disagreement_decision","resume_transition_failed","state_inconsistent"]'
 
 usage() {
-  echo "Usage: $0 {create|parse|validate} argument" >&2
+  echo "Usage: $0 {create|parse|validate} argument | $0 reasons" >&2
   exit 64
 }
 
@@ -51,24 +53,9 @@ validate_record() {
   # unknown top-level field into workflow state.  A pause receives its ID from
   # the trusted comment boundary later; records that refer to a pause require
   # that ID here.
-  jq -e -s '
+  jq -e -s --argjson known_reasons "$known_reasons" '
     def known_reason:
-      IN(
-        "requirements_change",
-        "scope_decision",
-        "diff_guard_exceeded",
-        "diff_guard_error",
-        "non_blocking_decision",
-        "round_limit",
-        "validation_failed",
-        "validation_timeout",
-        "claude_execution_failed",
-        "developer_execution_failed",
-        "explicit_human_escalation",
-        "review_disagreement_decision",
-        "resume_transition_failed",
-        "state_inconsistent"
-      );
+      . as $reason | ($known_reasons | index($reason)) != null;
     def valid_target:
       type == "string" and test("\\A(issue|pr):[1-9][0-9]*\\z");
     def valid_pause_id:
@@ -140,6 +127,10 @@ parse_record() {
     <<< "$extracted"
 }
 
+if [ "$#" -eq 1 ] && [ "$1" = reasons ]; then
+  printf '%s\n' "$known_reasons"
+  exit 0
+fi
 [ "$#" -eq 2 ] || usage
 case "$1" in
   create)

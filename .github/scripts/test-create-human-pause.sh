@@ -25,6 +25,12 @@ gh() {
         '. + [{id:$id, body:$body, performed_via_github_app:{id:99}}]' \
         "$TEST_DIR/comments.json" > "$TEST_DIR/next.json"
       mv "$TEST_DIR/next.json" "$TEST_DIR/comments.json"
+      if [ "${MOCK_CONCURRENT_PAUSE:-false}" = true ]; then
+        jq --arg body "$body" --argjson id "$((id + 1))" \
+          '. + [{id:$id, body:$body, performed_via_github_app:{id:99}}]' \
+          "$TEST_DIR/comments.json" > "$TEST_DIR/next.json"
+        mv "$TEST_DIR/next.json" "$TEST_DIR/comments.json"
+      fi
       printf 'record %s\n' "$id" >> "$TEST_DIR/events"
       jq -cn --argjson id "$id" '{id:$id}'
       ;;
@@ -60,6 +66,7 @@ first="$(create requirements_change 'REQ-123 の変更を判断する')"
 jq -e '.result == "created" and .pause_id == "101"' <<< "$first" > /dev/null
 jq -e '.content | contains("対象: pr:37") and contains("要求の変更が必要") and contains("REQ-123 の変更を判断する") and contains("https://github.com/owner/repo/pull/37") and contains("pause_id: 101")' \
   "$test_dir/notification.json" > /dev/null
+jq -e '.allowed_mentions == {parse: []}' "$test_dir/notification.json" > /dev/null
 [ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 [ "$(grep -nE '^record |^label |^notify$' "$test_dir/events" | cut -d: -f2- | head -1)" = 'record 101' ]
 [ "$(grep -nE '^record |^label |^notify$' "$test_dir/events" | cut -d: -f2- | tail -1)" = notify ]
@@ -111,15 +118,42 @@ if bash "$script_dir/format-human-pause-notification.sh" unknown pr:37 detail \
   echo 'Expected unknown notification reason to be rejected.' >&2
   exit 1
 fi
-for reason in requirements_change scope_decision diff_guard_exceeded diff_guard_error \
-  non_blocking_decision round_limit validation_failed validation_timeout \
-  claude_execution_failed developer_execution_failed explicit_human_escalation \
-  review_disagreement_decision resume_transition_failed state_inconsistent; do
+reasons="$(bash "$script_dir/human-pause-record.sh" reasons)"
+jq -e 'type == "array" and length > 0 and (unique | length) == length' \
+  <<< "$reasons" > /dev/null
+while IFS= read -r reason; do
   message="$(bash "$script_dir/format-human-pause-notification.sh" "$reason" \
     pr:37 '判断内容' https://github.com/owner/repo/pull/37 104)"
   [[ "$message" == *'判断内容'* && "$message" == *"($reason)"* \
     && "$message" == *'次の対応:'* ]] || exit 1
-done
+done < <(jq -r '.[]' <<< "$reasons")
+
+# The full free text stays in the GitHub record while Discord is bounded.
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+long_detail="$(printf 'あ%.0s' {1..300})@everyone"
+create validation_failed "$long_detail" > /dev/null
+jq -e --arg detail "$long_detail" '.[0].body | contains($detail)' \
+  "$test_dir/comments.json" > /dev/null
+jq -e '.allowed_mentions == {parse: []} and (.content | contains("…") and (contains("@everyone") | not))' \
+  "$test_dir/notification.json" > /dev/null
+[ "$(wc -c < "$test_dir/notification.json")" -lt 1800 ]
+
+# Competing roots remain paused and report inconsistency without choosing one.
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+MOCK_CONCURRENT_PAUSE=true
+export MOCK_CONCURRENT_PAUSE
+if create validation_failed '競合' > /dev/null 2>&1; then
+  echo 'Expected concurrent roots to fail closed.' >&2
+  exit 1
+fi
+unset MOCK_CONCURRENT_PAUSE
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 2 ]
+grep -q '^label 36$' "$test_dir/events"
+grep -q '^label 37$' "$test_dir/events"
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
+jq -e '.content | contains("state_inconsistent")' "$test_dir/notification.json" > /dev/null
 
 # Failed label synchronization cannot send Discord; retry repairs labels only.
 printf '[]\n' > "$test_dir/comments.json"

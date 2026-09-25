@@ -105,6 +105,15 @@ jq -e --arg id "$pause_id" --argjson record "$record" \
   <<< "$confirmed" > /dev/null || fail_closed 'new pause record is not trusted or visible'
 confirmed_active="$(bash "$script_dir/reconcile-human-pause-active-pause.sh" \
   <<< "$confirmed")" || fail_closed 'could not verify active pause'
+if [ "$(jq -r '.result' <<< "$confirmed_active")" = state_inconsistent ]; then
+  message="$(bash "$script_dir/format-human-pause-notification.sh" \
+    state_inconsistent "$target" '同時に複数の停止記録が作成されました。Issue・PRの記録を確認してください。' "$url" "$pause_id")" \
+    || fail_closed 'could not format inconsistent-state notification'
+  if ! bash "$script_dir/notify-human.sh" "$message"; then
+    echo 'create-human-pause: Discord notification failed; GitHub pause remains active.' >&2
+  fi
+  fail_closed 'multiple active pauses after creation'
+fi
 jq -e --arg id "$pause_id" --arg reason "$reason" \
   '.result == "active" and .active_pause.pause_id == $id and .active_pause.reason == $reason' \
   <<< "$confirmed_active" > /dev/null || fail_closed 'new pause is not the sole active pause'

@@ -54,15 +54,14 @@ assert_round_trip resume "$resume_record"
 assert_round_trip normalization "$normalization_record"
 assert_round_trip pr-target "$pr_target_record"
 
-# The complete first-stage pause-reason vocabulary remains accepted.
-for reason in \
-  requirements_change scope_decision diff_guard_exceeded diff_guard_error \
-  non_blocking_decision round_limit validation_failed validation_timeout \
-  claude_execution_failed developer_execution_failed explicit_human_escalation \
-  review_disagreement_decision resume_transition_failed state_inconsistent; do
+# Read the vocabulary from the schema contract, rather than maintaining a test list.
+reasons="$(bash "$helper" reasons)"
+jq -e 'type == "array" and length > 0 and (unique | length) == length' \
+  <<< "$reasons" > /dev/null
+while IFS= read -r reason; do
   bash "$helper" validate \
     "{\"version\":1,\"kind\":\"pause\",\"reason\":\"$reason\",\"target\":\"issue:220\"}"
-done
+done < <(jq -r '.[]' <<< "$reasons")
 
 # Required fields, optional fields, enums, and types all fail closed.
 assert_rejected_record malformed-json '{'
