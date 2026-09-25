@@ -85,12 +85,22 @@ jobs:
           requirements_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-requirements-change-marker.sh")"
           diff_guard_blob="$(git rev-parse "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh")"
           development_context_blob="$(git rev-parse "${base_sha}:.github/scripts/build-development-context.py")"
+          pause_helpers=(create-human-pause human-pause-record list-human-pause-records
+            validate-human-pause-record-graph decompose-human-pause-record-graph
+            derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance
+            reconcile-human-pause-active-pause apply-human-pause
+            format-human-pause-notification notify-human)
+          pause_helper_blobs=()
+          for helper in "${pause_helpers[@]}"; do
+            pause_helper_blobs+=("$(git rev-parse "${base_sha}:.github/scripts/${helper}.sh")")
+          done
           {
             printf 'base_sha=%s\n' "$base_sha"
             printf 'notify_human_blob=%s\n' "$notify_human_blob"
             printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
             printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
             printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
+            printf 'pause_helper_blobs=%s\n' "${pause_helper_blobs[*]}"
           } >> "$GITHUB_OUTPUT"
           branch="ai/issue-${ISSUE_NUMBER}"
           if git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" 2>/dev/null; then
@@ -816,6 +826,7 @@ jobs:
           APPLY_HUMAN_PAUSE_BLOB: ${{ steps.issue_context.outputs.apply_human_pause_blob }}
           REQUIREMENTS_MARKER_BLOB: ${{ steps.issue_context.outputs.requirements_marker_blob }}
           DIFF_GUARD_BLOB: ${{ steps.issue_context.outputs.diff_guard_blob }}
+          PAUSE_HELPER_BLOBS: ${{ steps.issue_context.outputs.pause_helper_blobs }}
         shell: bash
         run: |
           set -euo pipefail
@@ -846,6 +857,22 @@ jobs:
           restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
             "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
 
+          pause_helpers=(create-human-pause human-pause-record list-human-pause-records
+            validate-human-pause-record-graph decompose-human-pause-record-graph
+            derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance
+            reconcile-human-pause-active-pause apply-human-pause
+            format-human-pause-notification notify-human)
+          read -r -a expected_blobs <<< "$PAUSE_HELPER_BLOBS"
+          [ "${#expected_blobs[@]}" -eq "${#pause_helpers[@]}" ] || exit 1
+          trusted_pause_dir="$RUNNER_TEMP/trusted-human-pause"
+          rm -rf -- "$trusted_pause_dir"
+          mkdir -p "$trusted_pause_dir"
+          for index in "${!pause_helpers[@]}"; do
+            helper="${pause_helpers[$index]}"
+            restore_base_blob ".github/scripts/${helper}.sh" \
+              "$trusted_pause_dir/${helper}.sh" "${expected_blobs[$index]}"
+          done
+
           rm -f -- "$RUNNER_TEMP/codex-diff-guard-contract.json"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
@@ -863,19 +890,38 @@ jobs:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
           pause_for_human() {
-            local reason="${1:?pause reason is required}"
+            local pause_reason="${1:?pause reason is required}"
+            local detail="${2:?pause detail is required}"
+            local app_id fingerprint
             pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
               --state open --json number --jq '.[0].number // empty')"
-            bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$reason"
+            app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+            [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+            local options=(--failed-action develop)
+            if [ "$pause_reason" = requirements_change ]; then
+              fingerprint="$(gh api "/repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" | python3 -c '
+          import hashlib, json, sys
+          body = json.load(sys.stdin)["body"]
+          if not isinstance(body, str):
+              raise ValueError("Issue body is not a string")
+          print("sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest())
+          ')"
+              options=(--issue-body-fingerprint "$fingerprint")
+            fi
+            bash "$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create \
+              "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "${pr_number:--}" "$app_id" \
+              "$pause_reason" "$detail" "${options[@]}"
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$detail"
             echo 'continue=false' >> "$GITHUB_OUTPUT"
           }
           if [ ! -s "$CODEX_FINAL" ]; then
-            pause_for_human 'Codex final response is missing; automated development is paused pending a human decision.'
+            pause_for_human developer_execution_failed 'Codex final response is missing; automated development is paused pending a human decision.'
             exit 0
           fi
           set +e
@@ -883,21 +929,13 @@ jobs:
           marker_status=$?
           set -e
           if [ "$marker_status" -gt 1 ]; then
-            pause_for_human 'Requirements-change marker helper failed; automated development is paused pending a human decision.'
+            pause_for_human developer_execution_failed 'Requirements-change marker helper failed; automated development is paused pending a human decision.'
             exit 0
           elif [ "$marker_status" -eq 0 ]; then
-            pause_for_human 'Codex detected that a requirements change is required. Automated development is paused for a human decision.'
+            pause_for_human requirements_change 'Codex detected that a requirements change is required. Automated development is paused for a human decision.'
           else
             echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Notify human of requirement escalation
-        if: steps.development-gate.outputs.continue != 'true'
-        env:
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-        run: >-
-          bash "$RUNNER_TEMP/notify-human.sh"
-          "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}"
 
       - name: Evaluate trusted diff guard
         if: steps.development-gate.outputs.continue == 'true'
@@ -905,6 +943,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -978,7 +1018,24 @@ jobs:
 
           pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
             --state open --json number --jq '.[0].number // empty')"
-          bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
+          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          pause_reason=diff_guard_error
+          options=()
+          if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]; then
+            pause_reason=diff_guard_exceeded
+            fingerprint="$(gh api "/repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" | python3 -c '
+          import hashlib, json, sys
+          body = json.load(sys.stdin)["body"]
+          if not isinstance(body, str):
+              raise ValueError("Issue body is not a string")
+          print("sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest())
+          ')"
+            options=(--issue-body-fingerprint "$fingerprint")
+          fi
+          bash "$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create \
+            "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "${pr_number:--}" "$app_id" \
+            "$pause_reason" "$reason" "${options[@]}"
 
           diagnostics="$reason"
           if [ "$parsed" = true ]; then
@@ -1025,14 +1082,6 @@ jobs:
             echo '- Decision: repository write blocked'
           } >> "$GITHUB_STEP_SUMMARY"
           echo 'continue=false' >> "$GITHUB_OUTPUT"
-
-      - name: Notify human of diff guard stop
-        if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue != 'true'
-        env:
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-        run: >-
-          bash "$RUNNER_TEMP/notify-human.sh"
-          "AI Developer diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}"
 
       - name: Commit, push, and open or update PR
         if: steps.development-gate.outputs.continue == 'true' && steps.diff-guard.outputs.continue == 'true'
