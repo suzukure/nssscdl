@@ -8,6 +8,18 @@ developer_app_slug="${4:?developer App slug is required}"
 review_body="${5:-}"
 
 metadata="$(gh pr view "$pr_number" --repo "$repo" --json author,reviews,labels,closingIssuesReferences)"
+if ! jq -es 'length == 1 and (.[0] | type == "object" and
+    (.author.login | type == "string") and
+    (.reviews | type == "array") and
+    (.labels | type == "array") and
+    all(.labels[]; type == "object" and (.name | type == "string")) and
+    (.closingIssuesReferences | type == "array") and
+    all(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string")))' <<< "$metadata" > /dev/null; then
+  echo 'Invalid pull request metadata; refusing automated follow-up.' >&2
+  exit 1
+fi
 author_login="$(jq -r '.author.login' <<< "$metadata")"
 
 emit_result() {
@@ -34,27 +46,38 @@ if [ "$author_login" != "$developer_app_slug" ] \
   exit 0
 fi
 
-if jq -e '.labels | any(.name == "human-review-required")' <<< "$metadata" > /dev/null; then
+pr_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$metadata")"
+if [ "$pr_paused" = true ]; then
   emit_result false false false 'Codex follow-up remains paused by the human-review-required label.'
   exit 0
 fi
 
 issue_prefix="https://github.com/${repo}/issues/"
-mapfile -t closing_issues < <(
-  jq -r --arg prefix "$issue_prefix" \
-    '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' \
-    <<< "$metadata"
-)
-for issue_number in "${closing_issues[@]}"; do
+if ! closing_issues="$(jq -r --arg prefix "$issue_prefix" \
+    '.closingIssuesReferences[] | select(.url | startswith($prefix)) | .number' \
+    <<< "$metadata")"; then
+  echo 'Could not extract closing Issues; refusing automated follow-up.' >&2
+  exit 1
+fi
+while IFS= read -r issue_number; do
+  [ -n "$issue_number" ] || continue
   if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
     echo "Could not fetch closing Issue #${issue_number}; refusing automated follow-up." >&2
     exit 1
   fi
-  if jq -e '(.labels // []) | any(.name == "human-review-required")' <<< "$issue_json" > /dev/null; then
+  if ! jq -es 'length == 1 and (.[0] | type == "object" and
+      (.labels | type == "array") and
+      all(.labels[]; type == "object" and (.name | type == "string")))' \
+      <<< "$issue_json" > /dev/null; then
+    echo "Invalid closing Issue #${issue_number} label metadata; refusing automated follow-up." >&2
+    exit 1
+  fi
+  issue_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$issue_json")"
+  if [ "$issue_paused" = true ]; then
     emit_result false false false "Codex follow-up remains paused by the human-review-required label on Issue #${issue_number}."
     exit 0
   fi
-done
+done <<< "$closing_issues"
 
 review_count="$(
   jq --arg slug "$reviewer_app_slug" \
