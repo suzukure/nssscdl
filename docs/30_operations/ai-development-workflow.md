@@ -317,6 +317,10 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `build-ai-resume-github-context.sh` を変更した場合は `bash .github/scripts/test-build-ai-resume-github-context.sh` を実行する。
 
+`.github/scripts/build-ai-resume-prepare-context.sh <repo> <issue|pr> <number> <trusted-app-id>` はstdinの#299 accepted command objectをちょうど1個受け、最初に `build-ai-resume-github-context.sh` からcurrent GitHub factsを取得する。canonical closing Issue番号とPR番号（Issue targetでは `-`）を `list-human-pause-records.sh` へ渡し、listing、graph validation、chain decomposition、pre-resume derivation、resume acceptance reconciliation、active pause reconciliationを既存helperの順に直列合成する。各段の失敗、複数JSON value、target不整合、出力shape不正はfail-closedとする。`result:active` の場合だけ、元のtrusted listingから `active_pause.pause_id` と外側 `pause_id` が一致する唯一のentryを解決し、record本文をそのまま `pause:{result:"active",pause_id,reason,record}` に保持する。一致が0件または複数件なら停止する。active以外は既存の意味どおり `pause:{result:"no_active_pause"}` または `pause:{result:"state_inconsistent"}` とする。出力は#306の `command`、`target`、`closing_issue`、`pull_request`、`follow_up_issue` を保持して `pause` を追加した固定shapeである。GitHub facts、record schema、graph、chain、lifecycle、acceptanceの意味論はそれぞれ前段helperが正本とし、このhelperはresume可否policy、dispatch、production workflow wiringを扱わない。
+
+`build-ai-resume-prepare-context.sh` を変更した場合は `bash .github/scripts/test-build-ai-resume-prepare-context.sh` を実行する。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
