@@ -56,7 +56,7 @@ curl() {
 export -f gh curl
 
 create() {
-  bash "$script_dir/create-human-pause.sh" create owner/repo 36 37 99 "$1" "$2"
+  bash "$script_dir/create-human-pause.sh" create owner/repo 36 37 99 "$@"
 }
 inspect() {
   bash "$script_dir/create-human-pause.sh" inspect owner/repo 36 37 99 "$1"
@@ -227,5 +227,72 @@ fi
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
 
+
+assert_rejected() {
+  local count
+  count="$(jq 'length' "$test_dir/comments.json")"
+  if "$@" > /dev/null 2>&1; then
+    echo "Expected create input to be rejected: $*" >&2; exit 1
+  fi
+  [ "$(jq 'length' "$test_dir/comments.json")" -eq "$count" ]
+}
+
+# Named inputs produce only the reason-specific machine fields. Invalid input
+# stops before any record is posted; legacy omission remains accepted above.
+fingerprint="sha256:$(printf 'a%.0s' {1..64})"
+for pause_reason in requirements_change scope_decision diff_guard_exceeded; do
+  printf '[]\n' > "$test_dir/comments.json"
+  jq -e '.result == "created"' <<< "$(create "$pause_reason" '判断内容' \
+    --issue-body-fingerprint "$fingerprint")" > /dev/null
+  jq -e --arg reason "$pause_reason" --arg fingerprint "$fingerprint" \
+    '.[0].body | split("\n")[1] | fromjson |
+      .reason == $reason and .payload == {detail:"判断内容", issue_body_fingerprint:$fingerprint}' \
+    "$test_dir/comments.json" > /dev/null
+done
+assert_rejected create validation_failed detail --issue-body-fingerprint "$fingerprint"
+assert_rejected create requirements_change detail --issue-body-fingerprint sha256:abcdef
+assert_rejected create requirements_change detail --issue-body-fingerprint "sha256:$(printf 'A%.0s' {1..64})"
+assert_rejected create requirements_change detail --issue-body-fingerprint "$fingerprint" \
+  --issue-body-fingerprint "$fingerprint"
+assert_rejected create requirements_change detail --issue-body-fingerprint
+
+for action in develop fix; do
+  printf '[]\n' > "$test_dir/comments.json"
+  jq -e '.result == "created"' <<< "$(create developer_execution_failed '実行失敗' \
+    --failed-action "$action")" > /dev/null
+  jq -e --arg action "$action" \
+    '.[0].body | split("\n")[1] | fromjson |
+      .payload == {detail:"実行失敗", failed_action:$action}' \
+    "$test_dir/comments.json" > /dev/null
+done
+assert_rejected create validation_failed detail --failed-action fix
+assert_rejected create developer_execution_failed detail --failed-action retry
+assert_rejected create developer_execution_failed detail --failed-action
+assert_rejected create developer_execution_failed detail --failed-action fix --failed-action develop
+assert_rejected create developer_execution_failed detail --failed-action ''
+assert_rejected create validation_failed detail --payload '{"failed_action":"fix"}'
+assert_rejected create validation_failed detail --unknown-machine-field value
+assert_rejected create validation_failed detail '{"failed_action":"fix"}'
+printf '[]\n' > "$test_dir/comments.json"
+create developer_execution_failed '{"failed_action":"fix"}' > /dev/null
+jq -e '.[0].body | split("\n")[1] | fromjson |
+  .payload == {detail:"{\"failed_action\":\"fix\"}"}' \
+  "$test_dir/comments.json" > /dev/null
+
+printf '[]\n' > "$test_dir/comments.json"
+jq -e '.result == "created"' <<< "$(create claude_execution_failed 'review failed' \
+  --paused-head "$head_sha")" > /dev/null
+jq -e --arg head "$head_sha" \
+  '.[0].body | split("\n")[1] | fromjson | .paused_head == $head' \
+  "$test_dir/comments.json" > /dev/null
+jq -e '.result == "already_active"' <<< "$(create claude_execution_failed \
+  'review failed' --paused-head "$head_sha")" > /dev/null
+assert_rejected create claude_execution_failed detail --paused-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+assert_rejected create claude_execution_failed detail --paused-head AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+assert_rejected create claude_execution_failed detail --paused-head "$head_sha" --paused-head "$head_sha"
+assert_rejected create claude_execution_failed detail "$head_sha" --paused-head "$head_sha"
+assert_rejected create claude_execution_failed detail --paused-head
+assert_rejected bash "$script_dir/create-human-pause.sh" create owner/repo 36 - 99 \
+  claude_execution_failed detail --paused-head "$head_sha"
 
 echo 'create-human-pause tests passed.'
