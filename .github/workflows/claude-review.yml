@@ -534,6 +534,18 @@ jobs:
             esac
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Signal RUN_BUDGET_LIMIT_REACHED
+        if: always() && steps.validate-attempt-1.outputs.reason == 'RUN_BUDGET_LIMIT_REACHED'
+        run: ':'
+
+      - name: Signal ACCOUNT_SPEND_LIMIT_REACHED
+        if: always() && steps.validate-attempt-1.outputs.reason == 'ACCOUNT_SPEND_LIMIT_REACHED'
+        run: ':'
+
+      - name: Signal Claude classification complete
+        if: always() && steps.validate-attempt-1.outcome == 'success'
+        run: ':'
+
       - name: Record Claude review usage
         if: always() && steps.review-entry.outputs.continue == 'true'
         continue-on-error: true

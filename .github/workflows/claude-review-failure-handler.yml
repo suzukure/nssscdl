@@ -1,0 +1,48 @@
+name: Claude Review Failure Handler
+
+on:
+  workflow_run:
+    workflows: [Claude Review]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: claude-review-failure-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  handle:
+    name: Handle failed Review job
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Create reviewer App token
+        id: review-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Reconcile failed Review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_APP_TOKEN: ${{ steps.review-token.outputs.token }}
+          REVIEW_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/handle-claude-review-failure.sh \
+            "$GITHUB_REPOSITORY" "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" "$REVIEW_APP_SLUG"

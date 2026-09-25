@@ -205,4 +205,27 @@ grep -q '^label 37$' "$test_dir/events"
 jq -e '.[0].body | contains("\"target\":\"pr:37\"")' \
   "$test_dir/comments.json" > /dev/null
 
+# The optional review producer input is a strict PR HEAD and remains part of
+# the schema-owned record; legacy callers still omit it.
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+head_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+jq -e '.result == "created"' <<< "$(bash "$script_dir/create-human-pause.sh" create \
+  owner/repo 36 37 99 claude_execution_failed 'review failed' "$head_sha")" > /dev/null
+jq -e --arg head "$head_sha" '.[0].body | contains("\"paused_head\":\"" + $head + "\"")' \
+  "$test_dir/comments.json" > /dev/null
+jq -e '.result == "already_active"' <<< "$(bash "$script_dir/create-human-pause.sh" create \
+  owner/repo 36 37 99 claude_execution_failed 'review failed' "$head_sha")" > /dev/null
+if bash "$script_dir/create-human-pause.sh" create owner/repo 36 37 99 \
+  claude_execution_failed 'review failed' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > /dev/null 2>&1; then
+  echo 'Expected a mismatched active HEAD to fail closed.' >&2; exit 1
+fi
+if bash "$script_dir/create-human-pause.sh" create owner/repo 36 37 99 \
+  claude_execution_failed 'review failed' AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > /dev/null 2>&1; then
+  echo 'Expected an uppercase HEAD to be rejected.' >&2; exit 1
+fi
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+
+
 echo 'create-human-pause tests passed.'
