@@ -382,7 +382,7 @@ run_publisher_case() {
       printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
       case "$1 $2" in
         'api /users/dev[bot]') echo 123 ;;
-        'pr list') return 0 ;;
+        'pr list') printf '[]\n' ;;
         'pr create') echo 'https://github.com/owner/repo/pull/37' ;;
         'pr view')
           printf '%s\n' "$PUBLISH_REMOTE_HEAD"

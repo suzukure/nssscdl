@@ -1346,6 +1346,11 @@ publish_step="$test_dir/publish-issue-pr.sh"
 publish_step_source="$test_dir/publish-issue-pr.yml"
 extract_workflow_step 'Commit, push, and open or update PR' "$publish_step_source"
 extract_workflow_step_run "$publish_step_source" "$publish_step"
+grep -Fq -- '--head "$AI_BRANCH" --state open --json number,headRefName,isCrossRepository --limit 100' "$publish_step"
+if grep -Fq '.[0]' "$publish_step"; then
+  echo 'Issue-origin publish must not select the first PR.' >&2
+  exit 1
+fi
 grep -Fq 'pushed_commit="$(git rev-parse HEAD)"' "$publish_step"
 grep -Fq 'echo "- Pushed commit: ${pushed_commit}"' "$publish_step"
 grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$publish_step"
@@ -1353,7 +1358,7 @@ if grep -Eqi '(gh (run|pr checks)|/check-runs|/actions/runs|CODEX_FINAL.*(grep|j
   echo 'AI Developer provenance must not query formal CI or parse Codex-reported validation.' >&2
   exit 1
 fi
-for publish_case in new existing-draft existing-ready no-diff push-failure list-failure create-failure commit-a-regression commit-am-regression; do
+for publish_case in new existing-draft existing-ready cross-only cross-and-existing ambiguous malformed-number wrong-branch malformed-object malformed-list malformed-json full-page no-diff push-failure list-failure create-failure commit-a-regression commit-am-regression; do
   (
     case_dir="$test_dir/publish-$publish_case"
     mkdir "$case_dir"
@@ -1403,7 +1408,19 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         'api /users/dev[bot]') echo 123 ;;
         'pr list')
           [ "$PUBLISH_CASE" != list-failure ] || return 1
-          case "$PUBLISH_CASE" in existing-*) echo 37 ;; esac
+          case "$PUBLISH_CASE" in
+            existing-*) echo '[{"number":37,"headRefName":"ai/issue-36","isCrossRepository":false}]' ;;
+            cross-only) echo '[{"number":38,"headRefName":"ai/issue-36","isCrossRepository":true}]' ;;
+            cross-and-existing) echo '[{"number":38,"headRefName":"ai/issue-36","isCrossRepository":true},{"number":37,"headRefName":"ai/issue-36","isCrossRepository":false}]' ;;
+            ambiguous) echo '[{"number":37,"headRefName":"ai/issue-36","isCrossRepository":false},{"number":38,"headRefName":"ai/issue-36","isCrossRepository":false}]' ;;
+            malformed-number) echo '[{"number":"37","headRefName":"ai/issue-36","isCrossRepository":false}]' ;;
+            wrong-branch) echo '[{"number":37,"headRefName":"other","isCrossRepository":false}]' ;;
+            malformed-object) echo '[{"number":37}]' ;;
+            malformed-list) echo '{"number":37}' ;;
+            malformed-json) echo 'not-json' ;;
+            full-page) jq -cn '[range(1;101) | {number:.,headRefName:"ai/issue-36",isCrossRepository:false}]' ;;
+            *) echo '[]' ;;
+          esac
           ;;
         'pr create')
           local saw_draft=false
@@ -1439,11 +1456,11 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
       fi
     }
     case "$PUBLISH_CASE" in
-      *-failure|*-regression) [ "$outcome" = failure ] ;;
+      *-failure|*-regression|ambiguous|malformed-*|wrong-branch|full-page) [ "$outcome" = failure ] ;;
       *) [ "$outcome" = success ] ;;
     esac
     case "$PUBLISH_CASE" in
-      new)
+      new|cross-only)
         grep -Fq 'gh pr create ' "$PUBLISH_LOG"
         grep -Fq -- '--draft' "$PUBLISH_LOG"
         grep -Fq 'Closes #36' "$PUBLISH_BODY"
@@ -1455,7 +1472,7 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         grep -Fq 'Ready for review' "$PUBLISH_BODY"
         grep -Fq 'as Draft.' "$PUBLISH_LOG"
         ;;
-      existing-*)
+      existing-*|cross-and-existing)
         grep -Fq 'git push ' "$PUBLISH_LOG"
         grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
         grep -Fq '### Validation provenance' "$PUBLISH_COMMENT"
@@ -1468,7 +1485,11 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         assert_no_publish_call 'git (commit|push)|gh pr create'
         ;;
       push-failure|list-failure)
-        assert_no_publish_call 'gh pr create '
+        assert_no_publish_call 'gh pr (create|comment)|gh issue comment'
+        ;;
+      ambiguous|malformed-*|wrong-branch|full-page)
+        grep -Fq 'git push ' "$PUBLISH_LOG"
+        assert_no_publish_call 'gh pr (create|comment)|gh issue comment'
         ;;
       create-failure)
         assert_no_publish_call 'Codex opened'
@@ -1477,6 +1498,9 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
         assert_no_publish_call 'git push|gh pr (create|comment)|gh issue comment'
         ;;
     esac
+    if [ "$PUBLISH_CASE" = push-failure ]; then
+      assert_no_publish_call 'gh pr (list|create|comment)|gh issue comment'
+    fi
     assert_no_publish_call 'gh pr (ready|edit)'
   )
 done
