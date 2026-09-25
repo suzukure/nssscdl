@@ -57,6 +57,8 @@ jobs:
     concurrency:
       group: codex-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
+    outputs:
+      pre_write_remote_head: ${{ steps.remote-head.outputs.head }}
     steps:
       - name: Create developer App token
         id: dev-token
@@ -70,6 +72,54 @@ jobs:
         with:
           token: ${{ steps.dev-token.outputs.token }}
           fetch-depth: 0
+
+      - name: Capture pre-write remote branch HEAD
+        id: remote-head
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          branch="ai/issue-${ISSUE_NUMBER}"
+          head="$(python3 - "$GITHUB_REPOSITORY" "$branch" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          repo, branch = sys.argv[1:]
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                     "Accept": "application/vnd.github+json"}
+
+          def get(path):
+              request = urllib.request.Request("https://api.github.com" + path, headers=headers)
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+          repository = get("/repos/" + repo)
+          if repository.get("full_name") != repo:
+              raise ValueError("repository identity mismatch")
+          try:
+              result = get("/repos/" + repo + "/git/ref/heads/" + branch)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              print("absent")
+              sys.exit(0)
+          head = result.get("object", {}).get("sha")
+          if (result.get("ref") != "refs/heads/" + branch
+                  or result.get("object", {}).get("type") != "commit"
+                  or not isinstance(head, str)
+                  or not re.fullmatch(r"[0-9a-f]{40}", head)):
+              raise ValueError("malformed remote branch response")
+          print(head)
+          PY
+          )"
+          printf 'head=%s\n' "$head" >> "$GITHUB_OUTPUT"
 
       - name: Prepare branch and Issue context
         id: issue_context
@@ -1172,41 +1222,97 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Synchronize human pause
-        id: pause-sync
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
-            --state open --json number --jq '.[0].number // empty')"
-          bash .github/scripts/apply-human-pause.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"
+      - name: Create developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
 
-      - name: Record developer failure
-        if: always()
+      - name: Create common human pause
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           JOB_RESULT: ${{ needs.develop-from-issue.result }}
-          PAUSE_SYNC_OUTCOME: ${{ steps.pause-sync.outcome }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
-            "AI Developer job ended with result '${JOB_RESULT}'. Automated development is paused pending a human decision. Pause sync outcome: ${PAUSE_SYNC_OUTCOME}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Notify human of developer failure
-        if: always()
-        env:
+          PRE_HEAD: ${{ needs.develop-from-issue.outputs.pre_write_remote_head }}
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-          JOB_RESULT: ${{ needs.develop-from-issue.result }}
-          PAUSE_SYNC_OUTCOME: ${{ steps.pause-sync.outcome }}
-        run: >-
-          bash .github/scripts/notify-human.sh
-          "AI Developer job ended with result '${JOB_RESULT}', pause sync outcome '${PAUSE_SYNC_OUTCOME}', and requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          branch="ai/issue-${ISSUE_NUMBER}"
+          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          pr_list="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number,headRefName,isCrossRepository --limit 100)"
+          pr_number="$(jq -er --arg branch "$branch" '
+            if type != "array" or length >= 100 or
+               (all(.[];
+                 type == "object" and
+                 (.number | type == "number" and . > 0 and floor == .) and
+                 .headRefName == $branch and
+                 (.isCrossRepository | type == "boolean")) | not)
+            then error("malformed or incomplete PR list")
+            else
+              map(select(.isCrossRepository == false)) |
+              if length > 1 then error("ambiguous PR target")
+              elif length == 0 then "-"
+              else .[0].number | tostring end
+            end
+          ' <<< "$pr_list")"
+
+          current_head=unknown
+          if current="$(python3 - "$GITHUB_REPOSITORY" "$branch" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          repo, branch = sys.argv[1:]
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                     "Accept": "application/vnd.github+json"}
+
+          def get(path):
+              request = urllib.request.Request("https://api.github.com" + path, headers=headers)
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+          repository = get("/repos/" + repo)
+          if repository.get("full_name") != repo:
+              raise ValueError("repository identity mismatch")
+          try:
+              result = get("/repos/" + repo + "/git/ref/heads/" + branch)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              print("absent")
+              sys.exit(0)
+          head = result.get("object", {}).get("sha")
+          if (result.get("ref") != "refs/heads/" + branch
+                  or result.get("object", {}).get("type") != "commit"
+                  or not isinstance(head, str)
+                  or not re.fullmatch(r"[0-9a-f]{40}", head)):
+              raise ValueError("malformed remote branch response")
+          print(head)
+          PY
+          )"; then
+            current_head="$current"
+          fi
+          valid_head() { [[ "$1" == absent || "$1" =~ ^[0-9a-f]{40}$ ]]; }
+          reason=state_inconsistent
+          options=()
+          if [[ "$JOB_RESULT" == failure || "$JOB_RESULT" == cancelled ]] &&
+             valid_head "$PRE_HEAD" && valid_head "$current_head" &&
+             [[ "$PRE_HEAD" == "$current_head" ]]; then
+            reason=developer_execution_failed
+            options=(--failed-action develop)
+          fi
+          detail="Issue developer job result: ${JOB_RESULT}; pre-write remote HEAD: ${PRE_HEAD:-missing}; current remote HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          bash .github/scripts/create-human-pause.sh create \
+            "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number" "$app_id" \
+            "$reason" "$detail" "${options[@]}"
 
   draft-after-claude-changes:
     name: Draft after Claude changes requested

@@ -194,15 +194,96 @@ grep -Fqx "      needs.gate-issue-entry.outputs.continue == 'true' &&" "$handler
 grep -Fqx "      needs.develop-from-issue.result != 'success'" "$handler"
 grep -Fqx '    runs-on: ubuntu-latest' "$handler"
 grep -Fqx '      pull-requests: write' "$handler"
-grep -Fq 'gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}"' "$handler"
-grep -Fq 'apply-human-pause.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number"' "$handler"
-grep -Fq 'notify-human.sh' "$handler"
-grep -Fqx '        continue-on-error: true' "$handler"
-[ "$(grep -Fxc '        if: always()' "$handler")" -ge 2 ]
-grep -Fq 'PAUSE_SYNC_OUTCOME:' "$handler"
 grep -Fqx "      github.event_name == 'issue_comment' &&" "$handler"
 grep -Fqx '      github.event.issue.pull_request == null &&' "$handler"
 grep -Fqx "      needs.gate-issue-entry.result == 'success' &&" "$handler"
+grep -Fq 'ref: ${{ github.sha }}' "$handler"
+grep -Fq 'client-id: ${{ vars.DEV_APP_CLIENT_ID }}' "$handler"
+grep -Fq 'private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}' "$handler"
+grep -Fq 'GH_TOKEN: ${{ steps.dev-token.outputs.token }}' "$handler"
+grep -Fq 'APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}' "$handler"
+grep -Fq 'PRE_HEAD: ${{ needs.develop-from-issue.outputs.pre_write_remote_head }}' "$handler"
+grep -Fq 'gh api "/apps/$APP_SLUG" --jq' "$handler"
+grep -Fq -- '--head "$branch" --state open --json number,headRefName,isCrossRepository --limit 100' "$handler"
+grep -Fq 'bash .github/scripts/create-human-pause.sh create' "$handler"
+grep -Fq 'options=(--failed-action develop)' "$handler"
+grep -Fq 'reason=state_inconsistent' "$handler"
+if grep -Eq 'continue-on-error: true|GH_TOKEN: \$\{\{ github.token \}\}|apply-human-pause.sh|notify-human.sh|gh issue comment|\x27\.\[0\]' "$handler"; then
+  echo 'Issue developer failure handler bypasses the common pause contract.' >&2
+  exit 1
+fi
+grep -Fq 'pre_write_remote_head: ${{ steps.remote-head.outputs.head }}' "$workflow"
+prewrite="$test_dir/prewrite-remote-head.yml"
+awk '
+  /      - name: Capture pre-write remote branch HEAD/ { in_step = 1 }
+  in_step && /      - name: Prepare branch and Issue context/ { exit }
+  in_step { print }
+' "$workflow" > "$prewrite"
+grep -Fq 'id: remote-head' "$prewrite"
+grep -Fq 'GH_TOKEN: ${{ steps.dev-token.outputs.token }}' "$prewrite"
+grep -Fq 'printf '\''head=%s\n'\'' "$head" >> "$GITHUB_OUTPUT"' "$prewrite"
+for read_state in "$prewrite" "$handler"; do
+  grep -Fq 'repository.get("full_name") != repo' "$read_state"
+  grep -Fq 'if error.code != 404:' "$read_state"
+  grep -Fq 'result.get("ref") != "refs/heads/" + branch' "$read_state"
+  grep -Fq 're.fullmatch(r"[0-9a-f]{40}", head)' "$read_state"
+done
+
+pr_filter="$test_dir/issue-developer-failure-pr-filter.jq"
+awk '
+  /          pr_number="\$\(jq -er / { in_filter = 1; next }
+  in_filter && /          '\'' <<< "\$pr_list"\)"/ { exit }
+  in_filter { sub(/^            /, ""); print }
+' "$handler" > "$pr_filter"
+[ -s "$pr_filter" ]
+[ "$(jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< '[]')" = - ]
+[ "$(jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false}]')" = 37 ]
+[ "$(jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< '[{"number":38,"headRefName":"ai/issue-123","isCrossRepository":true}]')" = - ]
+for bad_pr_list in \
+  '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false},{"number":38,"headRefName":"ai/issue-123","isCrossRepository":false}]' \
+  '[{"number":"37","headRefName":"ai/issue-123","isCrossRepository":false}]' \
+  '[{"number":37,"headRefName":"other","isCrossRepository":false}]' \
+  '[{"number":37}]' '{"number":37}' 'null'; do
+  if jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< "$bad_pr_list" > /dev/null 2>&1; then
+    echo "Malformed or ambiguous Issue developer PR target was accepted: $bad_pr_list" >&2
+    exit 1
+  fi
+done
+
+classifier="$test_dir/issue-developer-failure-classifier.sh"
+awk '
+  /          current_head=unknown/ { in_classifier = 1 }
+  in_classifier && /          detail=/ { exit }
+  in_classifier { sub(/^          /, ""); print }
+' "$handler" > "$classifier"
+cat >> "$classifier" <<'EOF'
+printf '%s %s\n' "$reason" "${options[*]}"
+EOF
+for case in absent-unchanged sha-unchanged cancelled-unchanged absent-to-sha sha-to-sha sha-to-absent missing malformed lookup-error skipped unknown; do
+  sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sha_b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  case "$case" in
+    absent-unchanged) pre=absent; current=absent; result=failure; expected='developer_execution_failed --failed-action develop' ;;
+    sha-unchanged) pre=$sha_a; current=$sha_a; result=failure; expected='developer_execution_failed --failed-action develop' ;;
+    cancelled-unchanged) pre=$sha_a; current=$sha_a; result=cancelled; expected='developer_execution_failed --failed-action develop' ;;
+    absent-to-sha) pre=absent; current=$sha_a; result=failure; expected='state_inconsistent ' ;;
+    sha-to-sha) pre=$sha_a; current=$sha_b; result=failure; expected='state_inconsistent ' ;;
+    sha-to-absent) pre=$sha_a; current=absent; result=failure; expected='state_inconsistent ' ;;
+    missing) pre=''; current=absent; result=failure; expected='state_inconsistent ' ;;
+    malformed) pre=bad; current=absent; result=failure; expected='state_inconsistent ' ;;
+    lookup-error) pre=absent; current=error; result=failure; expected='state_inconsistent ' ;;
+    skipped) pre=absent; current=absent; result=skipped; expected='state_inconsistent ' ;;
+    unknown) pre=absent; current=absent; result=unexpected; expected='state_inconsistent ' ;;
+  esac
+  actual="$(PRE_HEAD="$pre" MOCK_CURRENT="$current" JOB_RESULT="$result" bash -c '
+    set -euo pipefail
+    GITHUB_REPOSITORY=owner/repo
+    branch=ai/issue-123
+    python3() { [ "$MOCK_CURRENT" != error ] && printf "%s\n" "$MOCK_CURRENT"; }
+    source "$1"
+  ' bash "$classifier")"
+  [ "$actual" = "$expected" ] || { echo "Incorrect failure classification: $case: $actual" >&2; exit 1; }
+done
 if grep -Eqi '(rerun|retry|workflow_dispatch)' "$handler"; then
   echo 'Issue developer failure handler must not retry automation.' >&2
   exit 1

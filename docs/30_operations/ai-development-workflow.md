@@ -392,26 +392,16 @@ upstream `openai/codex-action` で公式のprocess-tree lifecycle修正が反映
 
 #### Issue起点AI Developerの異常終了
 
-`develop-from-issue` がsuccess以外で終了した場合は、対象Codex jobとは別runnerで `handle-issue-developer-failure` を実行し、安全側へ停止する。
+`develop-from-issue` がsuccess以外で終了した場合は、対象Codex jobとは別runnerで `handle-issue-developer-failure` を実行し、安全側へ停止する。developer jobはrepository write前にcanonical `ai/issue-<Issue番号>` remote HEADを固定する。handlerはdeveloper App tokenで同branchのcurrent remote HEADを取得し、job resultが `failure` / `cancelled`、両HEADが有効かつ完全一致する場合だけ `developer_execution_failed`（`failed_action=develop`）とする。その他の結果、HEADの欠落・取得不能・差異は `state_inconsistent` とし、直接resumeしない。差異だけから、このrunが書いたとは断定しない。
 
-failure handlerは次を行う。
-
-* closing Issueへ `human-review-required` を付与する。
-* 同じIssueに紐づくopen PRが存在する場合は、そのPRにも `human-review-required` を同期する。
-* PRが存在しない場合はIssueだけを停止状態とする。
-* 停止ラベル同期に失敗しても、その後の診断記録と通知を継続する。
-* Issueコメントへjob result、pause sync outcome、Actions Run URLを記録する。
-* `NOTIFICATION_WEBHOOK_URL` が設定されている場合はDiscord通知を試行する。
-* 自動retryは行わない。
-
-`pause sync outcome` がsuccessでない場合、人間は他の復旧作業より先に、Issueおよび存在するPRへ `human-review-required` が実際に付与されているか確認する。
+handlerはtrusted default-branch checkoutの `create-human-pause.sh` をdeveloper App IDとtokenで呼び、closing Issueと同branchのopen PR（存在する場合）を停止する。open PRが複数またはAPI結果が不正ならfail-closedにする。pause record成立後のラベル同期、重複抑止、Discord通知はcommon helperへ委ね、helper failureを正常扱いしない。自動retry、branch rollback、branch deleteは行わない。
 
 Issue起点のAI Developerを再実行する前に、少なくとも次を確認する。
 
 * 対象Issueが正しいこと。
 * 失敗したActions Run URLまたはrun ID。
 * `develop-from-issue` のjob result。
-* pause sync outcome。
+* pause recordとラベル同期の結果。
 * `ai/issue-<Issue番号>` remote branchの有無と現在のhead。
 * 同じIssueに紐づくopen PRの有無とPR head。
 * timeoutまたは異常終了後に、予期しないcommit、push、PR作成・更新が発生していないこと。
