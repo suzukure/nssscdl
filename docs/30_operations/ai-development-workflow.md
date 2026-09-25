@@ -187,7 +187,7 @@ Message Batches APIは非同期処理であり、即時のreview verdictを必�
 
 Claude Reviewの`review` jobは異常stallに対するwall-clock hard boundaryとして15分でtimeoutさせる。15分はreview品質の目標時間ではない。job timeoutまたはsuccess以外の終了では構造化verdictが成立したと扱わず、`needs.review.result == 'success'`を満たさないためmerge jobへ進まない。timeout後の自動retryは行わず、人間が失敗runを調査して再実行を判断する。
 
-`Claude Review Failure Handler` は別runnerの `workflow_run.completed` から同一attemptの `Review` jobを確認する。Review成功・skip、古いHEADやrun、明示budget/spend分類はgeneric pauseを作らない。対象PRがreview workflowを変更した場合や分類signalを信頼できない場合もgeneric reasonを推測せず停止する。候補だけをtrusted default branchのhelperで `claude_execution_failed` としてpauseし、現在PR HEADを `paused_head` に記録する。GitHub pause成立後のDiscord通知、重複抑止、競合時のfail-closed処理は `create-human-pause.sh` を正本とし、自動retryは行わない。
+`Claude Review Failure Handler` は別runnerの `workflow_run.completed` から同一attemptの `Review` jobを確認する。source runの同一repositoryのbranchとHEADからPRを解決し、`pull_requests` の関連付けが空でも処理できるようにする。関連付けが存在する場合は解決したPRと照合する。Review成功・skip、古いHEADやrun、明示budget/spend分類はgeneric pauseを作らない。対象PRがreview workflowを変更した場合や分類signalを信頼できない場合もgeneric reasonを推測せず停止する。候補だけをtrusted default branchのhelperで `claude_execution_failed` としてpauseし、現在PR HEADを `paused_head` に記録する。primary Issueはbranch名から推測せず、既存のclosing Issue関係に従ってラベルを同期する。GitHub pause成立後のDiscord通知、重複抑止、競合時のfail-closed処理は `create-human-pause.sh` を正本とし、自動retryは行わない。
 
 `execution_file` は実行成否・budget/spend/rate limit分類・usage計測に維持し、review内容はActionの `structured_output` を使用する。既存classifierの自由テキスト検証結果だけではnative出力を承認・棄却しない。Action successかつ最後のresultがsuccess/is_error=falseの場合だけnative検証へ進み、Action失敗や実行情報不正はvalidなnative出力があっても承認しない。native出力をenvへ渡す前に、固定版Actionと同じJSON直列化でexecution fileのnativeフィールドをマスクする。追加recovery pass・全reviewの自動retryは行わない。
 

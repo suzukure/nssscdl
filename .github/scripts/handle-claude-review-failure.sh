@@ -23,16 +23,35 @@ jq -e --arg repo "$repo" --argjson id "$run_id" --argjson attempt "$event_attemp
   and .head_repository.full_name == $repo and .status == "completed"
   and (.head_branch | type == "string" and length > 0)
   and .run_attempt == $attempt and (.workflow_id | type == "number")
-  and (.pull_requests | type == "array" and length == 1)
-  and (.pull_requests[0].number | type == "number" and . > 0)
-  and (.pull_requests[0].head.sha | type == "string" and test("^[0-9a-f]{40}$"))
+  and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+  and (.pull_requests == null or (.pull_requests | type == "array"))
 ' "$tmp/run.json" > /dev/null || fail 'source run identity is inconsistent or stale'
-pr_number="$(jq -r '.pull_requests[0].number' "$tmp/run.json")"
-source_head="$(jq -r '.pull_requests[0].head.sha' "$tmp/run.json")"
+source_head="$(jq -r '.head_sha' "$tmp/run.json")"
 source_branch="$(jq -r '.head_branch' "$tmp/run.json")"
 workflow_id="$(jq -r '.workflow_id' "$tmp/run.json")"
-run_head="$(jq -r '.head_sha' "$tmp/run.json")"
-[[ "$run_head" =~ ^[0-9a-f]{40}$ ]] || fail 'invalid source run commit'
+
+# workflow_run.pull_requests can be empty after merge. Resolve from the run's
+# same-repository branch and exact HEAD, then cross-check any run association.
+head_query="$(jq -rn --arg head "${repo%%/*}:$source_branch" '$head | @uri')"
+gh api --paginate --slurp "/repos/$repo/pulls?state=all&head=$head_query&per_page=100" \
+  > "$tmp/pulls.json" || fail 'source PR lookup unavailable'
+jq -e 'type == "array" and all(.[]; type == "array")' "$tmp/pulls.json" > /dev/null \
+  || fail 'source PR lookup malformed'
+jq -c --arg repo "$repo" --arg branch "$source_branch" --arg head "$source_head" '
+  [.[][] | select(.head.repo.full_name == $repo and .head.ref == $branch and .head.sha == $head)]
+' "$tmp/pulls.json" > "$tmp/matches.json" || fail 'source PR lookup malformed'
+case "$(jq 'length' "$tmp/matches.json")" in
+  0) echo '{"result":"stale_pr"}'; exit 0 ;;
+  1) ;;
+  *) fail 'multiple source PR matches' ;;
+esac
+pr_number="$(jq -r '.[0].number' "$tmp/matches.json")"
+positive "$pr_number" || fail 'invalid source PR number'
+jq -e --argjson pr "$pr_number" --arg head "$source_head" '
+  (.pull_requests // []) as $associations
+  | ($associations | length == 0)
+    or ($associations | length == 1 and .[0].number == $pr and .[0].head.sha == $head)
+' "$tmp/run.json" > /dev/null || fail 'source PR association disagrees'
 
 gh api "/repos/$repo/actions/runs/$run_id/attempts/$event_attempt" > "$tmp/attempt.json" \
   || fail 'source attempt unavailable'
@@ -68,7 +87,7 @@ jq -e 'type == "array" and all(.[]; type == "array")' "$tmp/files.json" > /dev/n
 if jq -e 'any(.[][]; .filename == ".github/workflows/claude-review.yml")' "$tmp/files.json" > /dev/null; then
   fail 'source PR changes the Review workflow; explicit classification is untrusted'
 fi
-gh api "/repos/$repo/contents/.github/workflows/claude-review.yml?ref=$run_head" \
+gh api "/repos/$repo/contents/.github/workflows/claude-review.yml?ref=$source_head" \
   > "$tmp/workflow-content.json" || fail 'source workflow unavailable'
 jq -er '.content | select(type == "string")' "$tmp/workflow-content.json" | base64 -d \
   > "$tmp/source-workflow.yml" || fail 'source workflow malformed'
@@ -154,8 +173,6 @@ jq -e --arg repo "$repo" --arg head "$source_head" '
 ' "$tmp/pr-now.json" > /dev/null || { echo '{"result":"stale_pr"}'; exit 0; }
 app_id="$(gh api "/apps/$app_slug" --jq '.id')" || fail 'reviewer App ID unavailable'
 positive "$app_id" || fail 'invalid reviewer App ID'
-head_ref="$(jq -r '.head.ref' "$tmp/pr-now.json")"
-if [[ "$head_ref" =~ ^ai/issue-([1-9][0-9]*)$ ]]; then issue="${BASH_REMATCH[1]}"; else issue='-'; fi
 GH_TOKEN="${REVIEW_APP_TOKEN:?reviewer App token required}" \
-  bash "$script_dir/create-human-pause.sh" create "$repo" "$issue" "$pr_number" "$app_id" \
+  bash "$script_dir/create-human-pause.sh" create "$repo" - "$pr_number" "$app_id" \
   claude_execution_failed 'Claude Review jobが正常完了しませんでした。実行結果を確認してください。' "$source_head"

@@ -19,6 +19,7 @@ export HEAD_SHA="$head_sha"
 base64 -w0 "$script_dir/../workflows/claude-review.yml" > "$test_dir/workflow.b64"
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
+: > "$test_dir/edits"
 
 gh() {
   local endpoint="${*: -1}" body='' arg id
@@ -34,6 +35,15 @@ gh() {
       jq -cn --argjson id "$id" '{id:$id}' ;;
     'api --paginate')
       case "$endpoint" in
+        */pulls\?*)
+          branch=ai/issue-36
+          [ "${MOCK_CASE:-}" = branch_issue_999 ] && branch=ai/issue-999
+          current_head="$HEAD_SHA"
+          [ "${MOCK_CASE:-}" = old_head ] && current_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          jq -cn --arg head "$current_head" --arg branch "$branch" --arg case "${MOCK_CASE:-}" '
+            {number:37,head:{repo:{full_name:"owner/repo"},ref:$branch,sha:$head}} as $pr
+            | [[ $pr ] + (if $case == "multiple_matches" then [$pr + {number:38}] else [] end)]
+          ' ;;
         */jobs\?*)
           if [[ "$endpoint" == *'/runs/11/'* ]]; then
             echo '[{"jobs":[{"name":"Review","conclusion":"success"}]}]'
@@ -76,17 +86,24 @@ gh() {
     'api /repos/owner/repo/actions/runs/10')
       attempt=1
       [ "${MOCK_CASE:-}" = older_attempt ] && attempt=2
+      branch=ai/issue-36
+      [ "${MOCK_CASE:-}" = branch_issue_999 ] && branch=ai/issue-999
       jq -cn --arg head "$HEAD_SHA" --argjson attempt "$attempt" \
-        '{id:10,name:"Claude Review",path:".github/workflows/claude-review.yml@refs/pull/37/merge",event:"pull_request",head_repository:{full_name:"owner/repo"},head_branch:"ai/issue-36",head_sha:$head,status:"completed",run_attempt:$attempt,workflow_id:5,pull_requests:[{number:37,head:{sha:$head}}]}' ;;
+        --arg branch "$branch" --arg case "${MOCK_CASE:-}" \
+        '{id:10,name:"Claude Review",path:".github/workflows/claude-review.yml@refs/pull/37/merge",event:"pull_request",head_repository:{full_name:"owner/repo"},head_branch:$branch,head_sha:$head,status:"completed",run_attempt:$attempt,workflow_id:5,pull_requests:[{number:37,head:{sha:$head}}]}
+         | if $case == "empty_association" or $case == "empty_association_closed" then .pull_requests = []
+           elif $case == "association_mismatch" then .pull_requests[0].number = 38 else . end' ;;
     'api /repos/owner/repo/actions/runs/10/attempts/1')
       echo '{"id":10,"run_attempt":1,"status":"completed"}' ;;
     'api /repos/owner/repo/pulls/37')
       state=open draft=false current_head="$HEAD_SHA"
-      [ "${MOCK_CASE:-}" = closed ] && state=closed
+      [[ "${MOCK_CASE:-}" == closed || "${MOCK_CASE:-}" == empty_association_closed ]] && state=closed
       [ "${MOCK_CASE:-}" = draft ] && draft=true
       [ "${MOCK_CASE:-}" = old_head ] && current_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      jq -cn --arg state "$state" --argjson draft "$draft" --arg head "$current_head" \
-        '{number:37,state:$state,draft:$draft,head:{repo:{full_name:"owner/repo"},sha:$head,ref:"ai/issue-36"}}' ;;
+      branch=ai/issue-36
+      [ "${MOCK_CASE:-}" = branch_issue_999 ] && branch=ai/issue-999
+      jq -cn --arg state "$state" --argjson draft "$draft" --arg head "$current_head" --arg branch "$branch" \
+        '{number:37,state:$state,draft:$draft,head:{repo:{full_name:"owner/repo"},sha:$head,ref:$branch}}' ;;
     'api /repos/owner/repo/contents/.github/workflows/claude-review.yml?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
       if [ "${MOCK_CASE:-}" = legacy ]; then
         echo '{"content":"bGVnYWN5"}'
@@ -94,7 +111,7 @@ gh() {
     'api /apps/reviewer') echo 99 ;;
     'pr view') echo '{"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}' ;;
     'label create') : ;;
-    'issue edit') : ;;
+    'issue edit') echo "$3" >> "$TEST_DIR/edits" ;;
     *) echo "Unexpected gh invocation: $*" >&2; return 2 ;;
   esac
 }
@@ -117,9 +134,12 @@ assert_result skipped ignored
 assert_result budget explicit_limit
 assert_result spend explicit_limit
 assert_result closed stale_pr
+assert_result empty_association_closed stale_pr
 assert_result draft stale_pr
 assert_result old_head stale_pr
 assert_result newer superseded
+if run_case association_mismatch > /dev/null 2>&1; then echo 'Conflicting PR association was trusted.' >&2; exit 1; fi
+if run_case multiple_matches > /dev/null 2>&1; then echo 'Ambiguous PR lookup was trusted.' >&2; exit 1; fi
 if run_case workflow_changed > /dev/null 2>&1; then echo 'Changed source workflow was trusted.' >&2; exit 1; fi
 if run_case legacy > /dev/null 2>&1; then echo 'Legacy source workflow was trusted.' >&2; exit 1; fi
 if run_case older_attempt > /dev/null 2>&1; then echo 'Old attempt was trusted.' >&2; exit 1; fi
@@ -138,4 +158,9 @@ for case_name in failure cancelled timed_out interrupted; do
   jq -e '.result == "already_active"' <<< "$(run_case "$case_name")" > /dev/null
   [ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 done
+printf '[]\n' > "$test_dir/comments.json"; : > "$test_dir/events"; : > "$test_dir/edits"
+jq -e '.result == "created"' <<< "$(run_case empty_association)" > /dev/null
+printf '[]\n' > "$test_dir/comments.json"; : > "$test_dir/events"; : > "$test_dir/edits"
+jq -e '.result == "created"' <<< "$(run_case branch_issue_999)" > /dev/null
+sort -nu "$test_dir/edits" | diff -u <(printf '36\n37\n') -
 echo 'Claude Review failure handler tests passed.'
