@@ -309,6 +309,10 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `inspect-ai-resume-target.sh` を変更した場合は `bash .github/scripts/test-inspect-ai-resume-target.sh` を実行する。
 
+`.github/scripts/resolve-ai-resume-target.sh <repo> <issue|pr> <number>` はstdinの#299 accepted command objectを#307 `inspect-ai-resume-target.sh`へ渡し、そのnormalized metadataからcanonical closing Issue relationだけをfail-closedで確定する。open non-PR Issue targetではtarget自身をclosing Issueとする。PR targetでは`head_ref`が`ai/issue-N`で`branch_issue_number`がN、かつNがsame-repository `closing_issue_numbers`に含まれることを要求し、REST APIでIssue Nがopen non-PR Issueであることを確認する。closing Issueが複数でもNをcanonicalとし、1件限定にはしない。出力は`{command,target,closing_issue:{number,state:"open"},pull_request}`の固定shapeで、Issue targetの`pull_request`はnull、PR targetではnumber、open state、base/head ref、head SHAだけを含む。`command`は#307のaccepted shapeを`follow_up_issue`も含めそのまま保持し、internal-onlyの`branch_issue_number`と`closing_issue_numbers`は出力しない。current metadata取得、closing Issue body / fingerprint / follow-up、dispatch、production workflow wiringは扱わない。
+
+`resolve-ai-resume-target.sh` を変更した場合は `bash .github/scripts/test-resolve-ai-resume-target.sh` を実行する。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
