@@ -12,17 +12,17 @@
 
 | 指標 | 値 |
 |---|---:|
-| 要求ベースライン | v1.20 |
+| 要求ベースライン | v1.21 |
 | 対象REQ | 64（機能44 + 非機能20） |
-| 対象AC | 221 |
-| 対応済AC | 208 |
+| 対象AC | 227 |
+| 対応済AC | 214 |
 | AC未対応 | 13 |
-| 機能TC | 115 |
+| 機能TC | 121 |
 | 非機能TC | 41 |
-| 合計TC | 156 |
-| AC Coverage | 94.1% |
+| 合計TC | 162 |
+| AC Coverage | 94.3% |
 
-Coverageは、`04_FunctionalRequirements.md` および `05_NonFunctionalRequirements.md` に定義された221件のACを母数とし、既存の `04_RequirementsTestTraceability.md` と `04a_RequirementsTestTraceability_v1.6_v1.7.md` で対応済みの198件に、本書で対応付ける `AC-008-001〜010` の10件を加えた208件を分子とする。したがって、`208 / 221 × 100 = 94.1%`（小数第1位丸め）である。v1.20は既存AC IDの意味明確化でありAC件数・対応済み件数・TC件数を変更しない。通知ライフサイクルの回帰内容は `02_FunctionalTestSpecification.md` の既存TCへ反映する。
+Coverageは、`04_FunctionalRequirements.md` および `05_NonFunctionalRequirements.md` に定義された227件のACを母数とし、既存の `04_RequirementsTestTraceability.md` と `04a_RequirementsTestTraceability_v1.6_v1.7.md` で対応済みの204件に、本書で対応付ける `AC-008-001〜010` の10件を加えた214件を分子とする。したがって、`214 / 227 × 100 = 94.3%`（小数第1位丸め）である。v1.21は6件のACと対応TCを追加し、通知ライフサイクルの回帰内容を `02_FunctionalTestSpecification.md` へ反映する。
 
 未対応の13件は、本書の対象外である既存の要求変更分である。
 

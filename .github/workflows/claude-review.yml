@@ -3,7 +3,7 @@ name: Claude Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, unlabeled]
+    types: [opened, reopened, ready_for_review, unlabeled]
 
 permissions:
   contents: read
@@ -12,8 +12,10 @@ permissions:
 jobs:
   review:
     name: Review
+    timeout-minutes: 15
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.state == 'open' &&
       github.event.pull_request.draft == false &&
       !contains(github.event.pull_request.labels.*.name, 'human-review-required') &&
       (github.event.action != 'unlabeled' || github.event.label.name == 'human-review-required')
@@ -218,12 +220,29 @@ jobs:
           repo="${1:?repository is required}"
           pr_number="${2:?pull request number is required}"
 
-          metadata="$(gh pr view "$pr_number" --repo "$repo" --json labels,closingIssuesReferences)"
+          metadata="$(gh pr view "$pr_number" --repo "$repo" --json state,labels,closingIssuesReferences)"
 
           emit_result() {
             jq -cn --argjson continue "$1" --arg reason "$2" \
               '{continue: $continue, reason: $reason}'
           }
+
+          if ! pr_state="$(jq -er '.state | select(type == "string")' <<< "$metadata")"; then
+            echo 'Could not determine pull request state; refusing Claude review.' >&2
+            exit 1
+          fi
+          case "$pr_state" in
+            OPEN)
+              ;;
+            CLOSED|MERGED)
+              emit_result false "Claude review is not run for pull request state ${pr_state}."
+              exit 0
+              ;;
+            *)
+              echo "Unsupported pull request state ${pr_state}; refusing Claude review." >&2
+              exit 1
+              ;;
+          esac
 
           if jq -e '.labels | any(.name == "human-review-required")' <<< "$metadata" > /dev/null; then
             emit_result false 'Claude review is paused by the human-review-required label on the PR.'
@@ -338,11 +357,13 @@ jobs:
             echo "model=$HIGH_RISK_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=high' >> "$GITHUB_OUTPUT"
             echo 'budget_arg=--max-budget-usd 2.10' >> "$GITHUB_OUTPUT"
+            echo 'effort_arg=--effort high' >> "$GITHUB_OUTPUT"
             echo 'Selected the high-risk review model.'
           elif [ "$risk" = 'standard' ]; then
             echo "model=$STANDARD_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=standard' >> "$GITHUB_OUTPUT"
             echo 'budget_arg=--max-budget-usd 1.70' >> "$GITHUB_OUTPUT"
+            echo 'effort_arg=' >> "$GITHUB_OUTPUT"
             echo 'Selected the standard review model.'
           else
             echo "Unsupported Claude review risk classification: ${risk}" >&2
@@ -371,7 +392,7 @@ jobs:
         id: claude-attempt-1
         if: steps.review-entry.outputs.continue == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
+        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280
         with:
           github_token: ${{ steps.review-token.outputs.token }}
           allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot]
@@ -391,6 +412,7 @@ jobs:
           claude_args: >-
             --model "${{ steps.review-model.outputs.model }}"
             ${{ steps.review-model.outputs.budget_arg }}
+            ${{ steps.review-model.outputs.effort_arg }}
             --json-schema '${{ steps.review-schema.outputs.schema }}'
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)"
 
@@ -512,6 +534,18 @@ jobs:
             esac
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Signal RUN_BUDGET_LIMIT_REACHED
+        if: always() && steps.validate-attempt-1.outputs.reason == 'RUN_BUDGET_LIMIT_REACHED'
+        run: ':'
+
+      - name: Signal ACCOUNT_SPEND_LIMIT_REACHED
+        if: always() && steps.validate-attempt-1.outputs.reason == 'ACCOUNT_SPEND_LIMIT_REACHED'
+        run: ':'
+
+      - name: Signal Claude classification complete
+        if: always() && steps.validate-attempt-1.outcome == 'success'
+        run: ':'
+
       - name: Record Claude review usage
         if: always() && steps.review-entry.outputs.continue == 'true'
         continue-on-error: true
@@ -601,11 +635,39 @@ jobs:
         shell: bash
         run: echo "verdict=$(jq -r .verdict "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
 
-      - name: Mark human escalation
+      - name: Classify human escalation
+        id: human-escalation
         if: >-
           steps.review-entry.outputs.continue == 'true' &&
-          (contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
+          steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
+        shell: bash
+        run: |
+          set -euo pipefail
+          escalation="$(
+            jq -r '
+              if type != "object" or (.summary | type) != "string" then
+                error("invalid structured review")
+              else
+                .summary
+                | split("\n")
+                | any(.[];
+                    (sub("\r$"; "") == "[REQUIREMENTS_CHANGE_REQUIRED]") or
+                    (sub("\r$"; "") == "[HUMAN_ESCALATION_RECOMMENDED]")
+                  )
+              end
+            ' "$RUNNER_TEMP/claude-review.json"
+          )"
+          case "$escalation" in
+            true|false) ;;
+            *)
+              echo "Unexpected human escalation classification: $escalation" >&2
+              exit 1
+              ;;
+          esac
+          echo "required=$escalation" >> "$GITHUB_OUTPUT"
+
+      - name: Mark human escalation
+        if: steps.human-escalation.outputs.required == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -623,10 +685,7 @@ jobs:
           bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
 
       - name: Notify human of Claude escalation
-        if: >-
-          steps.review-entry.outputs.continue == 'true' &&
-          (contains(fromJSON(steps.structured-review.outputs.json).summary, '[REQUIREMENTS_CHANGE_REQUIRED]') ||
-          contains(fromJSON(steps.structured-review.outputs.json).summary, '[HUMAN_ESCALATION_RECOMMENDED]'))
+        if: steps.human-escalation.outputs.required == 'true'
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}

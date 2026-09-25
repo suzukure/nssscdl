@@ -47,6 +47,27 @@ extract_step_run() {
   fi
 }
 
+extract_job_if() {
+  local job_name="${1:?job name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v job_name="$job_name" '
+    $0 == "  " job_name ":" { job = 1; next }
+    job && /^  [[:alnum:]_-]+:$/ { exit }
+    job && /^    if: >-$/ { condition = 1; next }
+    condition && /^    [[:alnum:]_-]+:/ { exit }
+    condition {
+      line = $0
+      sub(/^      /, "", line)
+      print line
+    }
+  ' "$workflow" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract $job_name job if condition." >&2
+    exit 1
+  fi
+}
+
 assert_bootstrap_matches VALIDATOR "$repo_root/.github/scripts/validate-claude-review-output.sh"
 assert_bootstrap_matches SUMMARIZER "$repo_root/.github/scripts/summarize-claude-usage.sh"
 assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
@@ -59,10 +80,22 @@ gh() {
   if [ "$1 $2" = 'pr view' ]; then
     case "${MOCK_CASE:-valid}" in
       no-links)
-        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        printf '%s\n' '{"state":"OPEN","labels":[],"closingIssuesReferences":[]}'
         ;;
       pr-paused)
-        printf '%s\n' '{"labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        printf '%s\n' '{"state":"OPEN","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      closed)
+        printf '%s\n' '{"state":"CLOSED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      merged)
+        printf '%s\n' '{"state":"MERGED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      state-missing)
+        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        ;;
+      unknown-state)
+        printf '%s\n' '{"state":"DRAFT","labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
         printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
@@ -123,6 +156,28 @@ MOCK_CASE=no-links
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 
+for closed_case in closed merged; do
+  MOCK_CASE="$closed_case"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+  jq -e '.continue == false and (.reason | contains("pull request state"))' <<< "$review_entry" > /dev/null
+done
+
+MOCK_CASE=state-missing
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+  > /dev/null 2> "$test_dir/entry-gate-state-missing.err"; then
+  echo 'Expected Claude review entry to fail closed when PR state is missing.' >&2
+  exit 1
+fi
+grep -Fq 'Could not determine pull request state; refusing Claude review.' "$test_dir/entry-gate-state-missing.err"
+
+MOCK_CASE=unknown-state
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+  > /dev/null 2> "$test_dir/entry-gate-state-unknown.err"; then
+  echo 'Expected Claude review entry to fail closed for an unsupported PR state.' >&2
+  exit 1
+fi
+grep -Fq 'Unsupported pull request state DRAFT; refusing Claude review.' "$test_dir/entry-gate-state-unknown.err"
+
 MOCK_CASE=pr-paused
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
 jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
@@ -168,6 +223,39 @@ unset MOCK_DIFF_FAIL
 
 validator="$repo_root/.github/scripts/validate-claude-review-output.sh"
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
+
+human_escalation_step="$test_dir/classify-human-escalation.sh"
+extract_step_run 'Classify human escalation' "$human_escalation_step"
+human_escalation_runner_temp="$test_dir/human-escalation-runner"
+mkdir "$human_escalation_runner_temp"
+
+assert_human_escalation() {
+  local expected="${1:?expected classification is required}"
+  local fixture_name="${2:?fixture name is required}"
+  local summary="${3-}"
+  local output_path="$test_dir/human-escalation-$fixture_name.outputs"
+
+  jq -cn --arg summary "$summary" '
+    {verdict:"approve",summary:$summary,blocking_findings:[],non_blocking_findings:[],linked_issues_checked:["#59"]}
+  ' > "$human_escalation_runner_temp/claude-review.json"
+  : > "$output_path"
+  GITHUB_OUTPUT="$output_path" RUNNER_TEMP="$human_escalation_runner_temp" bash "$human_escalation_step"
+  grep -Fqx "required=$expected" "$output_path"
+}
+
+assert_human_escalation false descriptive-requirements 'Reviewed. exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.'
+assert_human_escalation false descriptive-human 'Reviewed. exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.'
+assert_human_escalation true requirements-standalone $'Reviewed.\n[REQUIREMENTS_CHANGE_REQUIRED]\nHuman decision required.'
+assert_human_escalation true human-standalone $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED]\nHuman decision recommended.'
+assert_human_escalation true requirements-crlf $'Reviewed.\r\n[REQUIREMENTS_CHANGE_REQUIRED]\r\nHuman decision required.'
+assert_human_escalation false indented-marker $'Reviewed.\n [REQUIREMENTS_CHANGE_REQUIRED]\nNot an exact signal.'
+assert_human_escalation false suffixed-marker $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED] because this text continues.'
+
+printf '%s\n' '{"summary":[]}' > "$human_escalation_runner_temp/claude-review.json"
+if GITHUB_OUTPUT="$test_dir/human-escalation-invalid.outputs" RUNNER_TEMP="$human_escalation_runner_temp"     bash "$human_escalation_step" > /dev/null 2>&1; then
+  echo 'Human escalation classification must fail closed for an invalid structured review.' >&2
+  exit 1
+fi
 
 # The event payload can retain a stale base SHA after main advances. The
 # workflow must resolve the current base ref and use that tip for every
@@ -795,6 +883,7 @@ assert_model_selection() {
   local risk="${1:?risk is required}"
   local expected_model="${2:?expected model is required}"
   local expected_budget="${3:?expected budget is required}"
+  local expected_effort="${4-}"
   local output_path="$test_dir/model-$risk.outputs"
 
   TEST_RISK="$risk" \
@@ -808,10 +897,11 @@ assert_model_selection() {
   grep -Fqx "model=$expected_model" "$output_path"
   grep -Fqx "risk=$risk" "$output_path"
   grep -Fqx "budget_arg=$expected_budget" "$output_path"
+  grep -Fqx "effort_arg=$expected_effort" "$output_path"
 }
 
-assert_model_selection high high-risk-model '--max-budget-usd 2.10'
-assert_model_selection standard standard-model '--max-budget-usd 1.70'
+assert_model_selection high high-risk-model '--max-budget-usd 2.10' '--effort high'
+assert_model_selection standard standard-model '--max-budget-usd 1.70' ''
 
 if TEST_RISK=unsupported \
   RUNNER_TEMP="$runner_temp" \
@@ -1083,8 +1173,13 @@ awk '
 ' "$workflow" > "$run_step"
 grep -Fq 'model "${{ steps.review-model.outputs.model }}"' "$run_step"
 grep -Fq '${{ steps.review-model.outputs.budget_arg }}' "$run_step"
+grep -Fq '${{ steps.review-model.outputs.effort_arg }}' "$run_step"
 if grep -Eq -- '--max-budget-usd (1\.70|2\.10)' "$run_step"; then
   echo 'Run Claude review must receive its budget through the selected output.' >&2
+  exit 1
+fi
+if grep -Fq -- '--effort high' "$run_step"; then
+  echo 'Run Claude review must receive its effort through the selected output.' >&2
   exit 1
 fi
 
@@ -1092,13 +1187,45 @@ if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$workflow")" -ne 1 ]; t
   echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
+grep -Fqx '        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280' "$run_step"
 if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
   exit 1
 fi
-grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, unlabeled]' "$workflow"
+grep -Fq 'types: [opened, reopened, ready_for_review, unlabeled]' "$workflow"
+review_job="$test_dir/review-job.yml"
+awk '
+  /^  review:$/ { job = 1 }
+  job && /^  [[:alnum:]_-]+:$/ && $0 != "  review:" { exit }
+  job { print }
+' "$workflow" > "$review_job"
+if [ "$(grep -Fxc '    timeout-minutes: 15' "$review_job")" -ne 1 ]; then
+  echo 'Claude Review job must have exactly a 15-minute timeout.' >&2
+  exit 1
+fi
+merge_job="$test_dir/merge-job.yml"
+sed -n '/^  merge:$/,$p' "$workflow" > "$merge_job"
+grep -Fqx '    needs: review' "$merge_job"
+grep -Fqx '      needs.review.result == '\''success'\'' &&' "$merge_job"
+grep -Fqx '      needs.review.outputs.verdict == '\''approve'\'' &&' "$merge_job"
+review_job_if="$test_dir/review-job-if.txt"
+extract_job_if review "$review_job_if"
+grep -Fq "github.event.pull_request.state == 'open'" "$review_job_if"
+grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$review_job_if"
+if grep -Fq 'synchronize' "$workflow"; then
+  echo 'Claude Review must not start a paid review from a head synchronization.' >&2
+  exit 1
+fi
 grep -Fq "github.event.label.name == 'human-review-required'" "$workflow"
 grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$workflow"
+if grep -Fq "contains(fromJSON(steps.structured-review.outputs.json).summary" "$workflow"; then
+  echo 'Claude human escalation must not use substring matching on the review summary.' >&2
+  exit 1
+fi
+if [ "$(grep -Fc "steps.human-escalation.outputs.required == 'true'" "$workflow")" -ne 2 ]; then
+  echo 'Both human pause and notification must consume the exact-line escalation classification.' >&2
+  exit 1
+fi
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"
 grep -Fq 'Record Claude review usage' "$workflow"
 grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$workflow"

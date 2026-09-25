@@ -1300,7 +1300,7 @@ Google ID、認証Token、Session内部情報等をプロフィール支援の�
 
 ### 18.4 連絡先メール変更開始と新メール所有確認
 
-`REQ-206 / AC-206-001〜004` および `AC-317-002` に従い、管理者による連絡先メール変更でも新メール所有確認を省略しない。
+`REQ-206 / AC-206-001〜005` および `AC-317-002` に従い、管理者による連絡先メール変更でも新メール所有確認を省略しない。
 
 基本Flowは次とする。
 
@@ -1334,6 +1334,8 @@ Google ID、認証Token、Session内部情報等をプロフィール支援の�
 
 変更完了後の旧メールへのSecurity Noticeが配信不能であっても、`AC-206-004` に従い確定済みの連絡先メール変更をRollbackしない。
 
+Security Noticeは変更直前の旧メールSnapshotへ送る通知義務を、連絡先変更を確定する業務Transactionで失わない形で生成し、Commit後に送信する。通常予約系の現在有効な連絡先への再評価を適用しない。一時的障害のRetryおよびProvider受理後の配送Retry後に最終失敗となっても、通常の通知失敗Dashboard・手動retryの対象にせず、現在の新メールへ再送しない。旧メール平文Snapshotは送信・許容Retryに必要な期間だけ保持し、手動再送のためだけに保持延長しない。物理保存・最小化方式は詳細設計で定める。
+
 旧メールを利用できない変更依頼について、スクール管理者が依頼者本人をどのように確認するかは初期リリースのシステム機能・認証要件として固定せず、スクールの運用判断とする。システムはこの復旧経路のために旧メール確認や独自の本人確認質問等を追加の必須条件にしない。
 
 ### 18.6 Pending変更の排他・競合
@@ -1345,6 +1347,8 @@ Google ID、認証Token、Session内部情報等をプロフィール支援の�
 新メール所有確認完了時に、そのメールがActiveな別Studentの連絡先として既に使用されている場合は変更を成立させない。連絡先メール一意性は変更開始時だけに依存せず、変更確定時の最新状態で保証する。
 
 Pending Entity、Token、確認期限、再送、具体的な無効化方法、確認Endpoint、Application Error Code等は認証・アカウント設計／詳細設計で確定する。
+
+確認メールの配送失敗、期限切れまたは使用済みからの回復は、現在有効なPending変更の新メール宛に確認Flowとして再要求／再発行する。通常の通知失敗Dashboardまたは`notification-failures/{notificationId}/retry`で再送しない。置換・無効化・終了したPendingに対して新たな確認メールを送信せず、旧Tokenを再活性化しない。
 
 ### 18.7 Security Suspension・削除との関係
 
@@ -1364,7 +1368,7 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 ## 19. 管理者向け通知失敗Dashboard・個別再送API基本形
 
-本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく、現在も通知義務が有効で管理者対応を要する `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。
+本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜005` および `REQ-314 / AC-314-001〜003` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく、現在も通知義務が有効で管理者対応を要する `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeはこのDashboardおよび個別retry APIの対象外とし、各Flow固有の回復操作またはSecurity Noticeの再送なしを適用する。
 
 ### 19.1 主要Endpointと認可
 
@@ -1409,7 +1413,7 @@ Provider等の生Error、Message ID、内部技術情報を画面または公開
 
 生徒削除・Reservation取消等の明示的Commandで失効が確定する場合は、可能な限り原因となる業務Transactionで失効を整合させる。Lesson開始時刻到来だけのために専用失効Jobを正しさの前提とせず、Dashboard Queryと再送Commandでも現在時刻・最新業務状態から有効性を再評価する。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。失効済みIntent専用の恒常的な閲覧UIは初期リリースへ追加しない。
 
-Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。認証・所有確認メールおよび旧メールSecurity Noticeへの適用境界、自動Retry上限到達後の最終処理、任意の管理者「対応済み」は本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeのFlow固有Endpoint・Token・状態表示は詳細設計で定める。自動Retry上限到達後の最終処理、任意の管理者「対応済み」は本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
 
 ## 20. 詳細設計へ送る事項
 

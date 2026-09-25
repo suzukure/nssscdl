@@ -5,9 +5,9 @@
 | 項目 | 内容 |
 |---|---|
 | 対象システム | Net Shogi School レッスン予約システム |
-| 要求ベースライン | `docs/00_requirements/` v1.20 |
-| ベースライン確認日 | 2026-09-19 |
-| Git基準 | GitHub `main` 上の要求仕様v1.20。要求版は `docs/00_requirements/00_RevisionHistory.md` を正本とする。 |
+| 要求ベースライン | `docs/00_requirements/` v1.21 |
+| ベースライン確認日 | 2026-09-22 |
+| Git基準 | GitHub `main` 上の要求仕様v1.21。要求版は `docs/00_requirements/00_RevisionHistory.md` を正本とする。 |
 | 参照標準 | ISO/IEC/IEEE 29119-3:2021（Test documentation） |
 | テストレベル | System Test / Acceptance Test を中心とし、必要に応じIntegration / Operational Testを含む |
 | テスト方式 | Requirements-based, risk-based, black-box |

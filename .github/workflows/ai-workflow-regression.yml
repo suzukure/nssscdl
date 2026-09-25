@@ -6,6 +6,16 @@ on:
     paths:
       - '.github/scripts/**'
       - '.github/workflows/**'
+      - '**/AGENTS.md'
+      - '**/AGENTS.override.md'
+      - '**/CLAUDE.md'
+      - '**/CLAUDE.local.md'
+      - '**/.claude/**'
+      - '**/.codex/**'
+      - '**/.mcp.json'
+      - 'docs/00_requirements/01_Introduction.md'
+      - 'docs/diagrams/README.md'
+      - 'docs/30_operations/ai-development-workflow.md'
 
 permissions:
   contents: read
