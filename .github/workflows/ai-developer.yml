@@ -2574,14 +2574,37 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
-      - name: Pause failed follow-up
+      - name: Create common human pause
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          DRAFT_RESULT: ${{ needs.draft-after-claude-changes.result }}
+          FOLLOWUP_RESULT: ${{ needs.respond-to-claude.result }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
-          bash .github/scripts/apply-human-pause.sh \
-            "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --body 'Codex follow-up ended abnormally; automated follow-up is paused pending a human decision.'
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          current_head=unknown
+          if pr_json="$(gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"; then
+            if head="$(jq -er --arg repo "$GITHUB_REPOSITORY" --argjson pr "$PR_NUMBER" '
+              select(.number == $pr and .head.repo.full_name == $repo) |
+              .head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))
+            ' <<< "$pr_json")"; then
+              current_head="$head"
+            fi
+          fi
+          reason=state_inconsistent
+          options=()
+          if [[ "$EVENT_HEAD" =~ ^[0-9a-f]{40}$ ]] && [[ "$current_head" == "$EVENT_HEAD" ]]; then
+            reason=developer_execution_failed
+            options=(--paused-head "$current_head" --failed-action fix)
+          fi
+          detail="Claude follow-up failure; draft job: ${DRAFT_RESULT}; follow-up job: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; current PR HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          bash .github/scripts/create-human-pause.sh create \
+            "$GITHUB_REPOSITORY" '-' "$PR_NUMBER" "$app_id" \
+            "$reason" "$detail" "${options[@]}"

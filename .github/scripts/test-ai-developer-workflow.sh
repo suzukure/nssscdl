@@ -333,12 +333,74 @@ awk '
 [ -s "$followup_failure_handler" ]
 grep -Fqx '    needs: [draft-after-claude-changes, respond-to-claude]' "$followup_failure_handler"
 grep -Fqx "      (needs.draft-after-claude-changes.result == 'failure' || needs.respond-to-claude.result == 'failure') &&" "$followup_failure_handler"
-grep -Fq 'apply-human-pause.sh' "$followup_failure_handler"
-grep -Fq 'Codex follow-up ended abnormally' "$followup_failure_handler"
+grep -Fqx "      github.event_name == 'pull_request_review' &&" "$followup_failure_handler"
+grep -Fqx "      github.event.review.state == 'changes_requested' &&" "$followup_failure_handler"
+grep -Fqx '      github.event.pull_request.head.repo.full_name == github.repository' "$followup_failure_handler"
+grep -Fq 'ref: ${{ github.event.pull_request.base.sha }}' "$followup_failure_handler"
+grep -Fq 'client-id: ${{ vars.DEV_APP_CLIENT_ID }}' "$followup_failure_handler"
+grep -Fq 'private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}' "$followup_failure_handler"
+grep -Fq 'GH_TOKEN: ${{ steps.dev-token.outputs.token }}' "$followup_failure_handler"
+grep -Fq 'APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}' "$followup_failure_handler"
+grep -Fq 'EVENT_HEAD: ${{ github.event.pull_request.head.sha }}' "$followup_failure_handler"
+grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$followup_failure_handler"
+grep -Fq 'gh api "/apps/$APP_SLUG" --jq' "$followup_failure_handler"
+grep -Fq '[[ "$app_id" =~ ^[1-9][0-9]*$ ]]' "$followup_failure_handler"
+grep -Fq 'bash .github/scripts/create-human-pause.sh create' "$followup_failure_handler"
+if grep -Eq 'continue-on-error: true|GH_TOKEN: \$\{\{ github.token \}\}|apply-human-pause.sh|notify-human.sh|gh pr comment|gh issue comment|rerun|retry|rollback|branch delete|force-push' "$followup_failure_handler"; then
+  echo 'Claude follow-up failure handler bypasses the common pause contract.' >&2
+  exit 1
+fi
 if grep -Fq "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" "$followup_failure_handler"; then
   echo 'Draft-conversion failures must pause every same-repository pull request.' >&2
   exit 1
 fi
+followup_classifier="$test_dir/followup-failure-classifier.sh"
+awk '
+  /          current_head=unknown/ { in_classifier = 1 }
+  in_classifier { sub(/^          /, ""); print }
+' "$followup_failure_handler" > "$followup_classifier"
+for case in same changed missing malformed uppercase lookup-error malformed-json wrong-repo wrong-pr missing-event malformed-event uppercase-event; do
+  sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sha_b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  event=$sha_a current=$sha_a expected="developer_execution_failed --paused-head $sha_a --failed-action fix"
+  case "$case" in
+    same) ;;
+    changed) current=$sha_b; expected='state_inconsistent ' ;;
+    missing) current=missing; expected='state_inconsistent ' ;;
+    malformed) current=BAD; expected='state_inconsistent ' ;;
+    uppercase) current=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; expected='state_inconsistent ' ;;
+    lookup-error) current=error; expected='state_inconsistent ' ;;
+    malformed-json) current=malformed-json; expected='state_inconsistent ' ;;
+    wrong-repo) current=wrong-repo; expected='state_inconsistent ' ;;
+    wrong-pr) current=wrong-pr; expected='state_inconsistent ' ;;
+    missing-event) event=''; expected='state_inconsistent ' ;;
+    malformed-event) event=BAD; expected='state_inconsistent ' ;;
+    uppercase-event) event=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; expected='state_inconsistent ' ;;
+  esac
+  actual="$(EVENT_HEAD="$event" MOCK_CURRENT="$current" bash -c '
+    set -euo pipefail
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 app_id=123
+    DRAFT_RESULT=failure FOLLOWUP_RESULT=skipped
+    GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=42
+    gh() {
+      [ "$MOCK_CURRENT" != error ] || return 1
+      case "$MOCK_CURRENT" in
+        missing) printf '\''{"number":37,"head":{"repo":{"full_name":"owner/repo"}}}\n'\'' ;;
+        malformed-json) printf '\''not-json\n'\'' ;;
+        wrong-repo) printf '\''{"number":37,"head":{"repo":{"full_name":"other/repo"},"sha":"%s"}}\n'\'' "$EVENT_HEAD" ;;
+        wrong-pr) printf '\''{"number":38,"head":{"repo":{"full_name":"owner/repo"},"sha":"%s"}}\n'\'' "$EVENT_HEAD" ;;
+        *) printf '\''{"number":37,"head":{"repo":{"full_name":"owner/repo"},"sha":"%s"}}\n'\'' "$MOCK_CURRENT" ;;
+      esac
+    }
+    bash() {
+      [ "$1" = .github/scripts/create-human-pause.sh ] && [ "$2" = create ] &&
+        [ "$3" = owner/repo ] && [ "$4" = - ] && [ "$5" = 37 ] && [ "$6" = 123 ]
+      printf "%s %s\n" "$7" "${*:9}"
+    }
+    source "$1"
+  ' bash "$followup_classifier")"
+  [ "$actual" = "$expected" ] || { echo "Incorrect follow-up failure classification: $case: $actual" >&2; exit 1; }
+done
 grep -Fq -- '--body "$reason"' "$workflow"
 grep -Fq 'apply-human-pause.sh' "$workflow"
 draft_after_changes_workflow="$test_dir/draft-after-claude-changes.yml"
