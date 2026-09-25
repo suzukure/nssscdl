@@ -321,6 +321,12 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `build-ai-resume-prepare-context.sh` を変更した場合は `bash .github/scripts/test-build-ai-resume-prepare-context.sh` を実行する。
 
+`.github/scripts/prepare-ai-resume.sh` は#304のfinal PREPARE contextをstdinから1個だけ受け、GitHub APIを再取得せずにresume policyを判定する。schema不正はfail-closedで停止し、通常拒否は固定codeの `{result:"reject",code}` を返す。active source recordのidentity、kind、reason、target、open closing Issue、PRが必要なactionのopen / main / current HEADを確認する。`requirements_change` / `scope_decision` / `diff_guard_exceeded` の`develop`だけはpause時とcurrent Issue本文のfingerprint差分を必須とし、`fix` / `review` / `follow-up` / `no-action`だけはsource recordの`paused_head`とcurrent PR HEADの完全一致を必須とする。`validation_failed`は`validate` / `develop`を許可し、`validate` / `develop`に共通PREPAREのsame-HEAD条件を追加しない。`developer_execution_failed`、`review_disagreement_decision`、`resume_transition_failed`のactionはsource payloadの`failed_action`または`decided_action`からのみ判定し、`follow-up`は同一番号のopen Issueとclosing Issue本文の定型参照を要求する。詳細なallowlistと固定reject codeはhelperとfixtureを正本とする。
+
+成功時は`{result:"prepared",dispatch}`の固定shapeを返す。dispatchはsource pause ID / reason、command actor / action、canonical closing Issue、PR番号とpause / current HEAD、pause / current Issue本文fingerprint、follow-up Issue番号をnull付きで保持するPREPARE時点のsnapshotである。producerはこの結果でsource pauseをconsumedにせず、`ai-resume-accepted` record、ラベル解除、consumer起動、ACK polling、Discord再通知を行わない。consumerはcurrent target / HEADとaction固有条件をtrusted gateで再取得・再確認する。
+
+`prepare-ai-resume.sh` を変更した場合は `bash .github/scripts/test-prepare-ai-resume.sh` を実行する。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
