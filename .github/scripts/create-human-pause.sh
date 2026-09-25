@@ -91,6 +91,16 @@ if [ "$mode" = create ]; then
     [ "$reason" = developer_execution_failed ] || fail_closed 'failed action is not valid for this reason'
     [[ "$failed_action" = develop || "$failed_action" = fix ]] || fail_closed 'invalid failed action'
   fi
+  case "$reason" in
+    requirements_change|scope_decision|diff_guard_exceeded)
+      [ "$fingerprint_seen" = true ] || fail_closed 'issue body fingerprint is required' ;;
+    developer_execution_failed)
+      [ "$action_seen" = true ] || fail_closed 'failed action is required'
+      if [ "$failed_action" = fix ]; then
+        [ "$head_seen" = true ] || fail_closed 'paused HEAD is required for failed fix'
+      fi
+      ;;
+  esac
   record="$(jq -cn --arg reason "$reason" --arg target "$target" --arg detail "$detail" \
     --arg paused_head "$paused_head" --arg issue_body_fingerprint "$issue_body_fingerprint" \
     --arg failed_action "$failed_action" \
@@ -133,12 +143,17 @@ fi
 if [ "$result" = active ]; then
   [ "$(jq -r '.active_pause.reason' <<< "$active")" = "$reason" ] \
     || fail_closed 'an active pause has a different reason'
-  if [ -n "$paused_head" ]; then
-    jq -e --arg id "$(jq -r '.active_pause.pause_id' <<< "$active")" --arg head "$paused_head" \
-      'any(.chains[].records[]; .pause_id == $id and .record.paused_head == $head)' \
-      <<< "$history" > /dev/null || fail_closed 'an active pause has a different HEAD'
-  fi
   pause_id="$(jq -r '.active_pause.pause_id' <<< "$active")"
+  jq -e --arg id "$pause_id" --arg head "$paused_head" \
+    --arg fingerprint "$issue_body_fingerprint" --arg action "$failed_action" '
+    any(.chains[].records[];
+      .pause_id == $id and (.record | has("source_pause_id") | not)
+      and (if $head == "" then true else .record.paused_head == $head end)
+      and (if $fingerprint == "" then true else
+        .record.payload.issue_body_fingerprint == $fingerprint end)
+      and (if $action == "" then true else
+        .record.payload.failed_action == $action end))' \
+    <<< "$history" > /dev/null || fail_closed 'an active pause has different machine fields'
   bash "$script_dir/apply-human-pause.sh" "$repo" "$issue" "${pr/-/}" \
     || fail_closed 'could not synchronize pause labels'
   jq -cn --arg pause_id "$pause_id" '{result:"already_active", pause_id:$pause_id}'

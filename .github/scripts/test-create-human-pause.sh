@@ -62,7 +62,10 @@ inspect() {
   bash "$script_dir/create-human-pause.sh" inspect owner/repo 36 37 99 "$1"
 }
 
-first="$(create requirements_change 'REQ-123 の変更を判断する')"
+fingerprint="sha256:$(printf 'a%.0s' {1..64})"
+head_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+first="$(create requirements_change 'REQ-123 の変更を判断する' \
+  --issue-body-fingerprint "$fingerprint")"
 jq -e '.result == "created" and .pause_id == "101"' <<< "$first" > /dev/null
 jq -e '.content | contains("対象: pr:37") and contains("要求の変更が必要") and contains("REQ-123 の変更を判断する") and contains("https://github.com/owner/repo/pull/37") and contains("pause_id: 101")' \
   "$test_dir/notification.json" > /dev/null
@@ -74,12 +77,12 @@ grep -q '^label 36$' "$test_dir/events"
 grep -q '^label 37$' "$test_dir/events"
 
 jq -e '.result == "already_active" and .pause_id == "101"' \
-  <<< "$(create requirements_change 'REQ-123 の変更を判断する')" > /dev/null
+  <<< "$(create requirements_change '別の詳細' --issue-body-fingerprint "$fingerprint")" > /dev/null
 jq -e '.result == "already_active" and .pause_id == "101"' \
   <<< "$(inspect 101)" > /dev/null
 [ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 [ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
-if create scope_decision '別の判断' > /dev/null 2>&1; then
+if create scope_decision '別の判断' --issue-body-fingerprint "$fingerprint" > /dev/null 2>&1; then
   echo 'Expected a conflicting active reason to stop.' >&2
   exit 1
 fi
@@ -160,7 +163,7 @@ printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
 MOCK_LABEL_FAIL=true
 export MOCK_LABEL_FAIL
-if create scope_decision '対象範囲を判断する' > /dev/null 2>&1; then
+if create scope_decision '対象範囲を判断する' --issue-body-fingerprint "$fingerprint" > /dev/null 2>&1; then
   echo 'Expected label failure to stop before notification.' >&2
   exit 1
 fi
@@ -171,7 +174,7 @@ if grep -q '^notify$' "$test_dir/events"; then
 fi
 unset MOCK_LABEL_FAIL
 jq -e '.result == "already_active" and .pause_id == "101"' \
-  <<< "$(create scope_decision '対象範囲を判断する')" > /dev/null
+  <<< "$(create scope_decision '対象範囲を判断する' --issue-body-fingerprint "$fingerprint")" > /dev/null
 if grep -q '^notify$' "$test_dir/events"; then
   echo 'A retry duplicated the notification.' >&2
   exit 1
@@ -198,7 +201,7 @@ jq -e '.[0].body | contains("\"target\":\"issue:36\"")' \
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
 pr_result="$(bash "$script_dir/create-human-pause.sh" create owner/repo - 37 99 \
-  scope_decision 'PRの判断が必要')"
+  scope_decision 'PRの判断が必要' --issue-body-fingerprint "$fingerprint")"
 jq -e '.result == "created" and .pause_id == "101"' <<< "$pr_result" > /dev/null
 grep -q '^label 36$' "$test_dir/events"
 grep -q '^label 37$' "$test_dir/events"
@@ -209,7 +212,6 @@ jq -e '.[0].body | contains("\"target\":\"pr:37\"")' \
 # the schema-owned record; legacy callers still omit it.
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
-head_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 jq -e '.result == "created"' <<< "$(bash "$script_dir/create-human-pause.sh" create \
   owner/repo 36 37 99 claude_execution_failed 'review failed' "$head_sha")" > /dev/null
 jq -e --arg head "$head_sha" '.[0].body | contains("\"paused_head\":\"" + $head + "\"")' \
@@ -237,11 +239,21 @@ assert_rejected() {
   [ "$(jq 'length' "$test_dir/comments.json")" -eq "$count" ]
 }
 
+set_active_machine_field() {
+  jq --arg field "$1" --arg value "$2" '
+    .[0].body |= (split("\n") |
+      .[1] |= (fromjson |
+        if $value == "" then del(.payload[$field])
+        else .payload[$field] = $value end | tojson) |
+      join("\n"))' "$test_dir/comments.json" > "$test_dir/next.json"
+  mv "$test_dir/next.json" "$test_dir/comments.json"
+}
+
 # Named inputs produce only the reason-specific machine fields. Invalid input
-# stops before any record is posted; legacy omission remains accepted above.
-fingerprint="sha256:$(printf 'a%.0s' {1..64})"
+# stops before any record is posted.
 for pause_reason in requirements_change scope_decision diff_guard_exceeded; do
   printf '[]\n' > "$test_dir/comments.json"
+  assert_rejected create "$pause_reason" detail
   jq -e '.result == "created"' <<< "$(create "$pause_reason" '判断内容' \
     --issue-body-fingerprint "$fingerprint")" > /dev/null
   jq -e --arg reason "$pause_reason" --arg fingerprint "$fingerprint" \
@@ -256,15 +268,48 @@ assert_rejected create requirements_change detail --issue-body-fingerprint "$fin
   --issue-body-fingerprint "$fingerprint"
 assert_rejected create requirements_change detail --issue-body-fingerprint
 
+# Dedupe uses the active root's machine identity, not its free-text detail.
+export NOTIFICATION_WEBHOOK_URL='https://discord.invalid/webhook'
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+create requirements_change detail --issue-body-fingerprint "$fingerprint" > /dev/null
+jq -e '.result == "already_active"' <<< "$(create requirements_change \
+  'different detail' --issue-body-fingerprint "$fingerprint")" > /dev/null
+assert_rejected create requirements_change detail --issue-body-fingerprint \
+  "sha256:$(printf 'b%.0s' {1..64})"
+set_active_machine_field issue_body_fingerprint ''
+assert_rejected create requirements_change detail --issue-body-fingerprint "$fingerprint"
+set_active_machine_field issue_body_fingerprint malformed
+assert_rejected create requirements_change detail --issue-body-fingerprint "$fingerprint"
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
+
 for action in develop fix; do
   printf '[]\n' > "$test_dir/comments.json"
+  action_options=(--failed-action "$action")
+  if [ "$action" = fix ]; then action_options+=(--paused-head "$head_sha"); fi
   jq -e '.result == "created"' <<< "$(create developer_execution_failed '実行失敗' \
-    --failed-action "$action")" > /dev/null
+    "${action_options[@]}")" > /dev/null
   jq -e --arg action "$action" \
     '.[0].body | split("\n")[1] | fromjson |
       .payload == {detail:"実行失敗", failed_action:$action}' \
     "$test_dir/comments.json" > /dev/null
 done
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+create developer_execution_failed detail --failed-action fix --paused-head "$head_sha" > /dev/null
+jq -e '.result == "already_active"' <<< "$(create developer_execution_failed \
+  'different detail' --failed-action fix --paused-head "$head_sha")" > /dev/null
+assert_rejected create developer_execution_failed detail --failed-action develop
+set_active_machine_field failed_action ''
+assert_rejected create developer_execution_failed detail --failed-action fix --paused-head "$head_sha"
+set_active_machine_field failed_action invalid
+assert_rejected create developer_execution_failed detail --failed-action fix --paused-head "$head_sha"
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
+printf '[]\n' > "$test_dir/comments.json"
+assert_rejected create developer_execution_failed detail
+assert_rejected create developer_execution_failed detail --failed-action fix
 assert_rejected create validation_failed detail --failed-action fix
 assert_rejected create developer_execution_failed detail --failed-action retry
 assert_rejected create developer_execution_failed detail --failed-action
@@ -274,9 +319,10 @@ assert_rejected create validation_failed detail --payload '{"failed_action":"fix
 assert_rejected create validation_failed detail --unknown-machine-field value
 assert_rejected create validation_failed detail '{"failed_action":"fix"}'
 printf '[]\n' > "$test_dir/comments.json"
-create developer_execution_failed '{"failed_action":"fix"}' > /dev/null
+assert_rejected create developer_execution_failed '{"failed_action":"fix"}'
+create developer_execution_failed '{"failed_action":"fix"}' --failed-action develop > /dev/null
 jq -e '.[0].body | split("\n")[1] | fromjson |
-  .payload == {detail:"{\"failed_action\":\"fix\"}"}' \
+  .payload == {detail:"{\"failed_action\":\"fix\"}", failed_action:"develop"}' \
   "$test_dir/comments.json" > /dev/null
 
 printf '[]\n' > "$test_dir/comments.json"
