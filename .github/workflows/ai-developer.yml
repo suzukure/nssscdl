@@ -1205,8 +1205,23 @@ jobs:
             if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
           } > "$report_file"
 
-          pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$AI_BRANCH" --state open --json number --jq '.[0].number // empty')"
-          if [ -z "$pr_number" ]; then
+          pr_list="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$AI_BRANCH" --state open --json number,headRefName,isCrossRepository --limit 100)"
+          pr_number="$(jq -er --arg branch "$AI_BRANCH" '
+            if type != "array" or length >= 100 or
+               (all(.[];
+                 type == "object" and
+                 (.number | type == "number" and . > 0 and floor == .) and
+                 .headRefName == $branch and
+                 (.isCrossRepository | type == "boolean")) | not)
+            then error("malformed or incomplete PR list")
+            else
+              map(select(.isCrossRepository == false)) |
+              if length > 1 then error("ambiguous PR target")
+              elif length == 0 then "-"
+              else .[] | .number | tostring end
+            end
+          ' <<< "$pr_list")"
+          if [ "$pr_number" = - ]; then
             body_file="$(mktemp)"
             {
               echo "Closes #${ISSUE_NUMBER}"
