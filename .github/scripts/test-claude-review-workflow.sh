@@ -77,7 +77,9 @@ grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution
 # This mock is intentionally limited to Claude Review workflow fixtures.
 # Cross-workflow gates remain covered by test-ai-workflow.sh.
 gh() {
-  if [ "$1 $2" = 'pr view' ]; then
+  if [ "$1 $2" = 'api /apps/reviewer' ]; then
+    printf '%s\n' "${MOCK_REVIEWER_APP_ID:-99}"
+  elif [ "$1 $2" = 'pr view' ]; then
     case "${MOCK_CASE:-valid}" in
       no-links)
         printf '%s\n' '{"state":"OPEN","labels":[],"closingIssuesReferences":[]}'
@@ -228,6 +230,7 @@ human_escalation_step="$test_dir/classify-human-escalation.sh"
 extract_step_run 'Classify human escalation' "$human_escalation_step"
 human_escalation_runner_temp="$test_dir/human-escalation-runner"
 mkdir "$human_escalation_runner_temp"
+trusted_base_sha="$(git rev-parse HEAD)"
 
 assert_human_escalation() {
   local expected="${1:?expected classification is required}"
@@ -239,23 +242,145 @@ assert_human_escalation() {
     {verdict:"approve",summary:$summary,blocking_findings:[],non_blocking_findings:[],linked_issues_checked:["#59"]}
   ' > "$human_escalation_runner_temp/claude-review.json"
   : > "$output_path"
-  GITHUB_OUTPUT="$output_path" RUNNER_TEMP="$human_escalation_runner_temp" bash "$human_escalation_step"
-  grep -Fqx "required=$expected" "$output_path"
+  GITHUB_OUTPUT="$output_path" RUNNER_TEMP="$human_escalation_runner_temp" \
+    BASE_SHA="$trusted_base_sha" bash "$human_escalation_step"
+  grep -Fqx "result=${expected%%:*}" "$output_path"
+  grep -Fqx "reason=${expected#*:}" "$output_path"
 }
 
-assert_human_escalation false descriptive-requirements 'Reviewed. exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.'
-assert_human_escalation false descriptive-human 'Reviewed. exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.'
-assert_human_escalation true requirements-standalone $'Reviewed.\n[REQUIREMENTS_CHANGE_REQUIRED]\nHuman decision required.'
-assert_human_escalation true human-standalone $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED]\nHuman decision recommended.'
-assert_human_escalation true requirements-crlf $'Reviewed.\r\n[REQUIREMENTS_CHANGE_REQUIRED]\r\nHuman decision required.'
-assert_human_escalation false indented-marker $'Reviewed.\n [REQUIREMENTS_CHANGE_REQUIRED]\nNot an exact signal.'
-assert_human_escalation false suffixed-marker $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED] because this text continues.'
+assert_human_escalation none: no-marker 'Reviewed.'
+assert_human_escalation none: descriptive-requirements 'Reviewed. exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.'
+assert_human_escalation none: descriptive-human 'Reviewed. exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.'
+assert_human_escalation pause:requirements_change requirements-standalone $'Reviewed.\n[REQUIREMENTS_CHANGE_REQUIRED]\nHuman decision required.'
+assert_human_escalation pause:explicit_human_escalation human-standalone $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED]\nHuman decision recommended.'
+assert_human_escalation state_inconsistent: both-markers $'[REQUIREMENTS_CHANGE_REQUIRED]\n[HUMAN_ESCALATION_RECOMMENDED]'
+assert_human_escalation pause:requirements_change requirements-crlf $'Reviewed.\r\n[REQUIREMENTS_CHANGE_REQUIRED]\r\nHuman decision required.'
+assert_human_escalation none: indented-marker $'Reviewed.\n [REQUIREMENTS_CHANGE_REQUIRED]\nNot an exact signal.'
+assert_human_escalation none: suffixed-marker $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED] because this text continues.'
+jq -cn '{verdict:"approve",summary:"[HUMAN_ESCALATION_RECOMMENDED]\u0000",blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
+  > "$human_escalation_runner_temp/claude-review.json"
+GITHUB_OUTPUT="$test_dir/human-escalation-nul.outputs" RUNNER_TEMP="$human_escalation_runner_temp" \
+  BASE_SHA="$trusted_base_sha" bash "$human_escalation_step"
+grep -Fqx 'result=none' "$test_dir/human-escalation-nul.outputs"
 
 printf '%s\n' '{"summary":[]}' > "$human_escalation_runner_temp/claude-review.json"
-if GITHUB_OUTPUT="$test_dir/human-escalation-invalid.outputs" RUNNER_TEMP="$human_escalation_runner_temp"     bash "$human_escalation_step" > /dev/null 2>&1; then
+if GITHUB_OUTPUT="$test_dir/human-escalation-invalid.outputs" RUNNER_TEMP="$human_escalation_runner_temp" \
+    BASE_SHA="$trusted_base_sha" bash "$human_escalation_step" > /dev/null 2>&1; then
   echo 'Human escalation classification must fail closed for an invalid structured review.' >&2
   exit 1
 fi
+
+git() {
+  if [ "$1" = show ] && [[ "$2" == *:'.github/scripts/classify-claude-human-escalation.sh' ]]; then
+    case "$MOCK_CLASSIFIER" in
+      fail) printf '%s\n' 'exit 1' ;;
+      malformed) printf '%s\n' 'echo "{\"result\":\"pause\",\"reason\":\"unknown\"}"' ;;
+      *) command git "$@" ;;
+    esac
+  else
+    command git "$@"
+  fi
+}
+export -f git
+for bad_classifier in fail malformed; do
+  if GITHUB_OUTPUT="$test_dir/classifier-$bad_classifier.outputs" \
+      RUNNER_TEMP="$human_escalation_runner_temp" BASE_SHA="$trusted_base_sha" \
+      MOCK_CLASSIFIER="$bad_classifier" bash "$human_escalation_step" > /dev/null 2>&1; then
+    echo "Classifier $bad_classifier must fail closed." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/classifier-$bad_classifier.outputs" ]
+done
+unset -f git
+
+common_pause_step="$test_dir/create-claude-human-pause.sh"
+legacy_pause_step="$test_dir/mark-requirements-escalation.sh"
+legacy_notify_step="$test_dir/notify-requirements-escalation.sh"
+extract_step_run 'Create Claude human pause' "$common_pause_step"
+extract_step_run 'Mark requirements escalation' "$legacy_pause_step"
+extract_step_run 'Notify human of requirements escalation' "$legacy_notify_step"
+sed -i 's/${{ github.event.pull_request.number }}/37/' "$legacy_notify_step"
+git() {
+  if [ "$1" = show ]; then
+    printf '%s\n' "$2" >> "$MOCK_PAUSE_BOOTSTRAP_LOG"
+    if [ "${MOCK_BOOTSTRAP_FAIL:-false}" = true ] && [[ "$2" == *:'.github/scripts/human-pause-record.sh' ]]; then
+      return 1
+    fi
+    case "$2" in
+      *:'.github/scripts/create-human-pause.sh')
+        cat <<'STUB'
+#!/usr/bin/env bash
+printf 'record %s\n' "$*" >> "$MOCK_PAUSE_LOG"
+[ "${MOCK_PAUSE_FAIL:-false}" != true ] || exit 1
+printf 'notification\n' >> "$MOCK_PAUSE_LOG"
+STUB
+        ;;
+      *:'.github/scripts/apply-human-pause.sh')
+        printf '%s\n' '#!/usr/bin/env bash' 'printf "legacy-label %s\n" "$*" >> "$MOCK_PAUSE_LOG"'
+        ;;
+      *:'.github/scripts/notify-human.sh')
+        printf '%s\n' '#!/usr/bin/env bash' 'printf "legacy-notification\n" >> "$MOCK_PAUSE_LOG"'
+        ;;
+      *) command git "$@" ;;
+    esac
+  else
+    command git "$@"
+  fi
+}
+export -f git
+pause_runner="$test_dir/pause-runner"
+mkdir "$pause_runner"
+export MOCK_PAUSE_LOG="$test_dir/pause-events.log"
+export MOCK_PAUSE_BOOTSTRAP_LOG="$test_dir/pause-bootstrap.log"
+run_common_pause() {
+  RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+    PR_NUMBER=37 APP_SLUG=reviewer CLASSIFICATION_RESULT="$1" CLASSIFICATION_REASON="$2" \
+    bash "$common_pause_step" > /dev/null
+}
+run_common_pause pause explicit_human_escalation
+grep -Fq 'record create owner/repo - 37 99 explicit_human_escalation ' "$MOCK_PAUSE_LOG"
+[ "$(grep -Fc notification "$MOCK_PAUSE_LOG")" -eq 1 ]
+run_common_pause state_inconsistent ''
+grep -Fq 'record create owner/repo - 37 99 state_inconsistent ' "$MOCK_PAUSE_LOG"
+[ "$(grep -Fc notification "$MOCK_PAUSE_LOG")" -eq 2 ]
+if MOCK_REVIEWER_APP_ID=invalid run_common_pause pause explicit_human_escalation > /dev/null 2>&1; then
+  echo 'Invalid reviewer App ID must fail closed.' >&2
+  exit 1
+fi
+if MOCK_PAUSE_FAIL=true run_common_pause pause explicit_human_escalation > /dev/null 2>&1; then
+  echo 'Common pause helper failure must fail closed.' >&2
+  exit 1
+fi
+if MOCK_BOOTSTRAP_FAIL=true run_common_pause pause explicit_human_escalation > /dev/null 2>&1; then
+  echo 'Common pause bootstrap failure must fail closed.' >&2
+  exit 1
+fi
+if RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+    PR_NUMBER=invalid APP_SLUG=reviewer CLASSIFICATION_RESULT=pause \
+    CLASSIFICATION_REASON=explicit_human_escalation bash "$common_pause_step" > /dev/null 2>&1; then
+  echo 'Invalid PR number must fail closed.' >&2
+  exit 1
+fi
+if run_common_pause pause requirements_change > /dev/null 2>&1; then
+  echo 'Requirements escalation must not create a common record.' >&2
+  exit 1
+fi
+[ "$(grep -Fxc notification "$MOCK_PAUSE_LOG")" -eq 2 ]
+RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 HEAD_REF=ai/issue-36 bash "$legacy_pause_step"
+RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+  GITHUB_SERVER_URL=https://github.com bash "$legacy_notify_step"
+grep -Fqx 'legacy-label owner/repo 36 37' "$MOCK_PAUSE_LOG"
+grep -Fqx legacy-notification "$MOCK_PAUSE_LOG"
+if grep -Fq 'record create owner/repo - 37 99 requirements_change ' "$MOCK_PAUSE_LOG"; then
+  echo 'Requirements escalation created a common record.' >&2
+  exit 1
+fi
+if grep -v "^${trusted_base_sha}:" "$MOCK_PAUSE_BOOTSTRAP_LOG" > /dev/null; then
+  echo 'Pause bootstrap read a non-current base commit.' >&2
+  exit 1
+fi
+unset -f git
 
 # The event payload can retain a stale base SHA after main advances. The
 # workflow must resolve the current base ref and use that tip for every
@@ -1222,10 +1347,14 @@ if grep -Fq "contains(fromJSON(steps.structured-review.outputs.json).summary" "$
   echo 'Claude human escalation must not use substring matching on the review summary.' >&2
   exit 1
 fi
-if [ "$(grep -Fc "steps.human-escalation.outputs.required == 'true'" "$workflow")" -ne 2 ]; then
-  echo 'Both human pause and notification must consume the exact-line escalation classification.' >&2
+if [ "$(grep -Fc "steps.human-escalation.outputs.reason == 'requirements_change'" "$workflow")" -ne 2 ]; then
+  echo 'Legacy label and notification must be limited to requirements escalation.' >&2
   exit 1
 fi
+grep -Fq "steps.human-escalation.outputs.reason == 'explicit_human_escalation'" "$workflow"
+grep -Fq "steps.human-escalation.outputs.result == 'state_inconsistent'" "$workflow"
+grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-human-escalation.sh"' "$workflow"
+grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$workflow"
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"
 grep -Fq 'Record Claude review usage' "$workflow"
 grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$workflow"
