@@ -267,6 +267,10 @@ done
 
 full_page="$(jq -cn '[range(1;101) | {number:.,headRefName:"ai/issue-123",isCrossRepository:false}]')"
 for filter in "$pr_filter" "$test_dir/requirements-pr-filter.jq" "$test_dir/diff-guard-pr-filter.jq"; do
+  if grep -Fq '.[0]' "$filter"; then
+    echo "Issue developer PR target resolver must not use array-index first selection: $filter" >&2
+    exit 1
+  fi
   [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[]')" = - ]
   [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false}]')" = 37 ]
   [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[{"number":38,"headRefName":"ai/issue-123","isCrossRepository":true}]')" = - ]
