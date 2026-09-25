@@ -60,24 +60,24 @@ first="$(create requirements_change 'REQ-123 の変更を判断する')"
 jq -e '.result == "created" and .pause_id == "101"' <<< "$first" > /dev/null
 jq -e '.content | contains("対象: pr:37") and contains("要求の変更が必要") and contains("REQ-123 の変更を判断する") and contains("https://github.com/owner/repo/pull/37") and contains("pause_id: 101")' \
   "$test_dir/notification.json" > /dev/null
-[ "$(rg -c '^notify$' "$test_dir/events")" -eq 1 ]
-[ "$(rg -n '^record |^label |^notify$' "$test_dir/events" | cut -d: -f2- | head -1)" = 'record 101' ]
-[ "$(rg -n '^record |^label |^notify$' "$test_dir/events" | cut -d: -f2- | tail -1)" = notify ]
-rg -q '^label 36$' "$test_dir/events"
-rg -q '^label 37$' "$test_dir/events"
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
+[ "$(grep -nE '^record |^label |^notify$' "$test_dir/events" | cut -d: -f2- | head -1)" = 'record 101' ]
+[ "$(grep -nE '^record |^label |^notify$' "$test_dir/events" | cut -d: -f2- | tail -1)" = notify ]
+grep -q '^label 36$' "$test_dir/events"
+grep -q '^label 37$' "$test_dir/events"
 
 jq -e '.result == "already_active" and .pause_id == "101"' \
   <<< "$(create requirements_change 'REQ-123 の変更を判断する')" > /dev/null
 jq -e '.result == "already_active" and .pause_id == "101"' \
   <<< "$(inspect 101)" > /dev/null
-[ "$(rg -c '^notify$' "$test_dir/events")" -eq 1 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 [ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
 if create scope_decision '別の判断' > /dev/null 2>&1; then
   echo 'Expected a conflicting active reason to stop.' >&2
   exit 1
 fi
 [ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
-[ "$(rg -c '^notify$' "$test_dir/events")" -eq 1 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 
 # A consumed pause can be inspected but must never be notified again.
 consumed="$(bash "$script_dir/human-pause-record.sh" create \
@@ -88,17 +88,17 @@ jq --arg body "$consumed" \
 mv "$test_dir/next.json" "$test_dir/comments.json"
 jq -e '.result == "already_consumed" and .pause_id == "101"' \
   <<< "$(inspect 101)" > /dev/null
-[ "$(rg -c '^notify$' "$test_dir/events")" -eq 1 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 
 # A new independent pause receives a new ID and exactly one new notification.
 MOCK_DISCORD_FAIL=true
 export MOCK_DISCORD_FAIL
 jq -e '.result == "created" and .pause_id == "103"' \
   <<< "$(create validation_failed '検証ログの判断が必要')" > /dev/null
-[ "$(rg -c '^notify$' "$test_dir/events")" -eq 2 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 2 ]
 jq -e '.result == "already_active" and .pause_id == "103"' \
   <<< "$(create validation_failed '検証ログの判断が必要')" > /dev/null
-[ "$(rg -c '^notify$' "$test_dir/events")" -eq 2 ]
+[ "$(grep -c '^notify$' "$test_dir/events")" -eq 2 ]
 unset MOCK_DISCORD_FAIL
 
 # An unknown or machine-only reason cannot create a record or notification.
@@ -131,14 +131,14 @@ if create scope_decision '対象範囲を判断する' > /dev/null 2>&1; then
   exit 1
 fi
 [ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
-if rg -q '^notify$' "$test_dir/events"; then
+if grep -q '^notify$' "$test_dir/events"; then
   echo 'Notification preceded successful pause state.' >&2
   exit 1
 fi
 unset MOCK_LABEL_FAIL
 jq -e '.result == "already_active" and .pause_id == "101"' \
   <<< "$(create scope_decision '対象範囲を判断する')" > /dev/null
-if rg -q '^notify$' "$test_dir/events"; then
+if grep -q '^notify$' "$test_dir/events"; then
   echo 'A retry duplicated the notification.' >&2
   exit 1
 fi
@@ -151,8 +151,8 @@ unset NOTIFICATION_WEBHOOK_URL
 issue_result="$(bash "$script_dir/create-human-pause.sh" create owner/repo 36 - 99 \
   round_limit '修正回数を確認する')"
 jq -e '.result == "created" and .pause_id == "101"' <<< "$issue_result" > /dev/null
-rg -q '^label 36$' "$test_dir/events"
-if rg -q '^label 37$|^notify$' "$test_dir/events"; then
+grep -q '^label 36$' "$test_dir/events"
+if grep -qE '^label 37$|^notify$' "$test_dir/events"; then
   echo 'Issue-only pause touched the PR or sent an unconfigured notification.' >&2
   exit 1
 fi
@@ -166,8 +166,8 @@ printf '[]\n' > "$test_dir/comments.json"
 pr_result="$(bash "$script_dir/create-human-pause.sh" create owner/repo - 37 99 \
   scope_decision 'PRの判断が必要')"
 jq -e '.result == "created" and .pause_id == "101"' <<< "$pr_result" > /dev/null
-rg -q '^label 36$' "$test_dir/events"
-rg -q '^label 37$' "$test_dir/events"
+grep -q '^label 36$' "$test_dir/events"
+grep -q '^label 37$' "$test_dir/events"
 jq -e '.[0].body | contains("\"target\":\"pr:37\"")' \
   "$test_dir/comments.json" > /dev/null
 
