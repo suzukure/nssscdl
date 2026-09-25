@@ -186,6 +186,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "$1" = pr ] && [ "$2" = list ]; then
+  printf '[]\n'
   exit 0
 fi
 if [ "$1" = api ] && [ "$2" = /apps/dev ]; then
