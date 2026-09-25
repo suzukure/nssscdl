@@ -53,6 +53,13 @@ jq -e '
   type == "array" and all(.[]; type == "array" and all(.[]; type == "object"))
 ' "$comments_json" > /dev/null || fail_closed 'comment API response has an unexpected shape'
 
+# A trusted record must be immutable after creation. Timestamps are API
+# boundary data rather than optional record fields: their absence or a
+# non-string value prevents that boundary from being verified.
+jq -e '
+  all(.[]; .[] | (.created_at | type == "string") and (.updated_at | type == "string"))
+' "$comments_json" > /dev/null || fail_closed 'comment API response has an unexpected timestamp shape'
+
 # The REST fixture/API fields establish both required boundary facts: .id is
 # the REST comment identifier, and performed_via_github_app.id is provenance.
 # Names, bot flags, and comment prose never participate in the trust decision.
@@ -79,6 +86,7 @@ done < <(
         and (.performed_via_github_app | type == "object")
         and (.performed_via_github_app.id | type == "number" and . >= 1 and floor == .)
         and ((.performed_via_github_app.id | tostring) == $app_id)
+        and (.created_at == .updated_at)
       )
   ' "$comments_json"
 )
