@@ -313,6 +313,10 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `resolve-ai-resume-target.sh` を変更した場合は `bash .github/scripts/test-resolve-ai-resume-target.sh` を実行する。
 
+`.github/scripts/build-ai-resume-github-context.sh <repo> <issue|pr> <number>` はstdinの#299 accepted command objectを#308 `resolve-ai-resume-target.sh`へ渡し、そのrelation snapshotへcurrent canonical closing Issue本文由来のfactsを付加する。closing Issueの同一REST responseにある必須string `body`のUTF-8 bytesを末尾改行の追加・削除なしでSHA-256にかけ、`closing_issue.body_fingerprint`を`sha256:<64 lowercase hex>`とする。`follow-up` actionの場合だけ`command.follow_up_issue`のsame-repository current Issue API responseからnumber、Issue / PR種別、open / closed stateを取得し、同じclosing Issue bodyの`## Scope-out impact and follow-up`節に定型`- Follow-up Issue: #N`行があるかを`follow_up_issue.explicitly_recorded`へ記録する。抽出規則は`build-review-context.sh`と同じ見出し・行形式を使用し、自由形式proseや別見出しから推測しない。通常actionの`follow_up_issue`はnullとする。出力は`{command,target,closing_issue:{number,state,body_fingerprint},pull_request,follow_up_issue}`の固定shapeで、relation由来のcommand、target、closing Issue number/state、PR factsを保持する。API取得・body・response shapeが不正ならfail-closedとし、body内容の十分性、fingerprint差分、follow-upのresume可否、dispatch、production workflow wiringは判定しない。
+
+`build-ai-resume-github-context.sh` を変更した場合は `bash .github/scripts/test-build-ai-resume-github-context.sh` を実行する。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
