@@ -236,18 +236,51 @@ awk '
   in_filter { sub(/^            /, ""); print }
 ' "$handler" > "$pr_filter"
 [ -s "$pr_filter" ]
-[ "$(jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< '[]')" = - ]
-[ "$(jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false}]')" = 37 ]
-[ "$(jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< '[{"number":38,"headRefName":"ai/issue-123","isCrossRepository":true}]')" = - ]
-for bad_pr_list in \
-  '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false},{"number":38,"headRefName":"ai/issue-123","isCrossRepository":false}]' \
-  '[{"number":"37","headRefName":"ai/issue-123","isCrossRepository":false}]' \
-  '[{"number":37,"headRefName":"other","isCrossRepository":false}]' \
-  '[{"number":37}]' '{"number":37}' 'null'; do
-  if jq -er --arg branch ai/issue-123 -f "$pr_filter" <<< "$bad_pr_list" > /dev/null 2>&1; then
-    echo "Malformed or ambiguous Issue developer PR target was accepted: $bad_pr_list" >&2
+
+# All Issue-origin pause producers must use the failure handler's target rule.
+# Extract the executed jq expression from each workflow step and exercise it.
+for producer in 'Gate requirement changes' 'Evaluate trusted diff guard'; do
+  case "$producer" in
+    'Gate requirement changes') filter_name=requirements ;;
+    *) filter_name=diff-guard ;;
+  esac
+  producer_step="$test_dir/${filter_name}-target-step.yml"
+  producer_filter="$test_dir/${filter_name}-pr-filter.jq"
+  awk -v step_name="$producer" '
+    $0 == "      - name: " step_name { in_step = 1; next }
+    in_step && /^      - name: / { exit }
+    in_step { print }
+  ' "$workflow" > "$producer_step"
+  grep -Fq 'ISSUE_NUMBER: ${{ github.event.issue.number }}' "$producer_step"
+  grep -Fq -- '--head "$branch" --state open --json number,headRefName,isCrossRepository --limit 100' "$producer_step"
+  if grep -Fq -- "--jq '.[0].number // empty'" "$producer_step"; then
+    echo "$producer uses first-match PR selection." >&2
     exit 1
   fi
+  awk '
+    /pr_number="\$\(jq -er / { in_filter = 1; next }
+    in_filter && /<<< "\$pr_list"\)"/ { exit }
+    in_filter { sub(/^[[:space:]]*/, ""); print }
+  ' "$producer_step" > "$producer_filter"
+  [ -s "$producer_filter" ]
+done
+
+full_page="$(jq -cn '[range(1;101) | {number:.,headRefName:"ai/issue-123",isCrossRepository:false}]')"
+for filter in "$pr_filter" "$test_dir/requirements-pr-filter.jq" "$test_dir/diff-guard-pr-filter.jq"; do
+  [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[]')" = - ]
+  [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false}]')" = 37 ]
+  [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[{"number":38,"headRefName":"ai/issue-123","isCrossRepository":true}]')" = - ]
+  [ "$(jq -er --arg branch ai/issue-123 -f "$filter" <<< '[{"number":38,"headRefName":"ai/issue-123","isCrossRepository":true},{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false}]')" = 37 ]
+  for bad_pr_list in \
+    '[{"number":37,"headRefName":"ai/issue-123","isCrossRepository":false},{"number":38,"headRefName":"ai/issue-123","isCrossRepository":false}]' \
+    '[{"number":"37","headRefName":"ai/issue-123","isCrossRepository":false}]' \
+    '[{"number":37,"headRefName":"other","isCrossRepository":false}]' \
+    '[{"number":37}]' '{"number":37}' 'null' 'not-json' "$full_page"; do
+    if jq -er --arg branch ai/issue-123 -f "$filter" <<< "$bad_pr_list" > /dev/null 2>&1; then
+      echo "Malformed, ambiguous, or incomplete Issue developer PR target was accepted by $filter: $bad_pr_list" >&2
+      exit 1
+    fi
+  done
 done
 
 classifier="$test_dir/issue-developer-failure-classifier.sh"
@@ -1524,7 +1557,7 @@ cat > "$requirements_case/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
-  'pr list') exit 0 ;;
+  'pr list') printf '[]\n' ;;
   'api /apps/dev') printf '123\n' ;;
   'api /repos/owner/repo/issues/169') printf '{"body":"line\\n"}\n' ;;
   'issue comment') exit 0 ;;

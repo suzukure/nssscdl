@@ -948,9 +948,25 @@ jobs:
           pause_for_human() {
             local pause_reason="${1:?pause reason is required}"
             local detail="${2:?pause detail is required}"
-            local app_id fingerprint
-            pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
-              --state open --json number --jq '.[0].number // empty')"
+            local app_id fingerprint branch pr_list pr_number
+            [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            branch="ai/issue-${ISSUE_NUMBER}"
+            pr_list="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number,headRefName,isCrossRepository --limit 100)"
+            pr_number="$(jq -er --arg branch "$branch" '
+              if type != "array" or length >= 100 or
+                 (all(.[];
+                   type == "object" and
+                   (.number | type == "number" and . > 0 and floor == .) and
+                   .headRefName == $branch and
+                   (.isCrossRepository | type == "boolean")) | not)
+              then error("malformed or incomplete PR list")
+              else
+                map(select(.isCrossRepository == false)) |
+                if length > 1 then error("ambiguous PR target")
+                elif length == 0 then "-"
+                else .[0].number | tostring end
+              end
+            ' <<< "$pr_list")"
             app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
             [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
             local options=(--failed-action develop)
@@ -1066,8 +1082,24 @@ jobs:
             reason='Trusted diff guard output could not be parsed; automated development is paused.'
           fi
 
-          pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "ai/issue-${ISSUE_NUMBER}" \
-            --state open --json number --jq '.[0].number // empty')"
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          branch="ai/issue-${ISSUE_NUMBER}"
+          pr_list="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number,headRefName,isCrossRepository --limit 100)"
+          pr_number="$(jq -er --arg branch "$branch" '
+            if type != "array" or length >= 100 or
+               (all(.[];
+                 type == "object" and
+                 (.number | type == "number" and . > 0 and floor == .) and
+                 .headRefName == $branch and
+                 (.isCrossRepository | type == "boolean")) | not)
+            then error("malformed or incomplete PR list")
+            else
+              map(select(.isCrossRepository == false)) |
+              if length > 1 then error("ambiguous PR target")
+              elif length == 0 then "-"
+              else .[0].number | tostring end
+            end
+          ' <<< "$pr_list")"
           app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
           [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
           pause_reason=diff_guard_error
