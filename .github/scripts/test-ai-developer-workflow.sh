@@ -1363,4 +1363,155 @@ for publish_case in new existing-draft existing-ready no-diff push-failure list-
   )
 done
 
+# Issue-origin post-Codex pauses use only the restored common-helper closure.
+issue_restore="$test_dir/issue-pause-restore.yml"
+issue_requirements="$test_dir/issue-requirements-gate.yml"
+issue_diff_guard="$test_dir/issue-diff-guard.yml"
+for step_spec in \
+  'Restore trusted post-Codex helpers|issue-pause-restore.yml' \
+  'Gate requirement changes|issue-requirements-gate.yml' \
+  'Evaluate trusted diff guard|issue-diff-guard.yml'; do
+  step_name="${step_spec%%|*}"
+  step_file="$test_dir/${step_spec#*|}"
+  awk -v name="$step_name" '
+    $0 == "      - name: " name { in_step = 1 }
+    in_step && /^      - name: / && $0 != "      - name: " name { exit }
+    in_step { print }
+  ' "$workflow" > "$step_file"
+  [ -s "$step_file" ]
+done
+grep -Fq 'pause_helper_blobs+=("$(git rev-parse "${base_sha}:.github/scripts/${helper}.sh")")' "$issue_context_step"
+grep -Fq "printf 'pause_helper_blobs=%s\\n' \"\${pause_helper_blobs[*]}\"" "$issue_context_step"
+grep -Fqx '          PAUSE_HELPER_BLOBS: ${{ steps.issue_context.outputs.pause_helper_blobs }}' "$issue_restore"
+for helper in create-human-pause human-pause-record list-human-pause-records \
+  validate-human-pause-record-graph decompose-human-pause-record-graph \
+  derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance \
+  reconcile-human-pause-active-pause apply-human-pause \
+  format-human-pause-notification notify-human; do
+  [ -f "$repo_root/.github/scripts/$helper.sh" ]
+  grep -Fq "$helper" "$issue_context_step"
+  grep -Fq "$helper" "$issue_restore"
+done
+for trust_rule in \
+  'rm -rf -- "$trusted_pause_dir"' \
+  'git show "${BASE_SHA}:${source_path}" > "$destination"' \
+  'actual_blob="$(git hash-object --no-filters "$destination")"' \
+  '"$trusted_pause_dir/${helper}.sh" "${expected_blobs[$index]}"'; do
+  grep -Fq "$trust_rule" "$issue_restore"
+done
+for gate in "$issue_requirements" "$issue_diff_guard"; do
+  grep -Fq 'APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}' "$gate"
+  grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$gate"
+  grep -Fq 'app_id="$(gh api "/apps/$APP_SLUG" --jq '\''.id'\'')"' "$gate"
+  grep -Fq '"$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create' "$gate"
+  grep -Fq '"$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "${pr_number:--}" "$app_id"' "$gate"
+  grep -Fq 'gh api "/repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" | python3 -c' "$gate"
+  grep -Fq 'options=(--issue-body-fingerprint "$fingerprint")' "$gate"
+  if grep -Eq '\$RUNNER_TEMP/(apply-human-pause|notify-human)\.sh|^      - name: Notify human of (requirement escalation|diff guard stop)' "$gate"; then
+    echo 'Issue-origin pause gate bypasses the common helper.' >&2
+    exit 1
+  fi
+done
+grep -Fq "pause_for_human developer_execution_failed 'Codex final response is missing" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed 'Requirements-change marker helper failed" "$issue_requirements"
+grep -Fq "pause_for_human requirements_change 'Codex detected" "$issue_requirements"
+grep -Fq 'local options=(--failed-action develop)' "$issue_requirements"
+grep -Fq "[ \"\$marker_status\" -gt 1 ]" "$issue_requirements"
+grep -Fq "[ \"\$marker_status\" -eq 0 ]" "$issue_requirements"
+grep -Fq "echo 'continue=true' >> \"\$GITHUB_OUTPUT\"" "$issue_requirements"
+grep -Fq 'pause_reason=diff_guard_error' "$issue_diff_guard"
+grep -Fq 'pause_reason=diff_guard_exceeded' "$issue_diff_guard"
+grep -Fq '[ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]' "$issue_diff_guard"
+grep -Fq '[ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]' "$issue_diff_guard"
+if grep -Fq 'threshold override' "$issue_diff_guard"; then
+  exit 1
+fi
+if grep -Fq '      - name: Notify human of requirement escalation' "$workflow" ||
+  grep -Fq '      - name: Notify human of diff guard stop' "$workflow"; then
+  echo 'Old Issue-origin direct notification step remains.' >&2
+  exit 1
+fi
+
+requirements_run="$test_dir/issue-requirements-run.sh"
+awk '
+  $0 == "        run: |" { in_run = 1; next }
+  in_run { sub(/^          /, ""); print }
+' "$issue_requirements" > "$requirements_run"
+requirements_case="$test_dir/requirements-cases"
+mkdir -p "$requirements_case/bin" "$requirements_case/runner/trusted-human-pause"
+cat > "$requirements_case/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1 $2" in
+  'pr list') exit 0 ;;
+  'api /apps/dev') printf '123\n' ;;
+  'api /repos/owner/repo/issues/169') printf '{"body":"line\\n"}\n' ;;
+  'issue comment') exit 0 ;;
+  *) echo "Unexpected gh call: $*" >&2; exit 2 ;;
+esac
+EOF
+cat > "$requirements_case/runner/has-requirements-change-marker.sh" <<'EOF'
+#!/usr/bin/env bash
+exit "$MARKER_EXIT"
+EOF
+cat > "$requirements_case/runner/trusted-human-pause/create-human-pause.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PAUSE_CALLS"
+EOF
+chmod +x "$requirements_case/bin/gh"
+for scenario in missing marker helper_failure absent; do
+  : > "$requirements_case/output"
+  : > "$requirements_case/pause-calls"
+  case "$scenario" in
+    missing) : > "$requirements_case/final"; marker_exit=0 ;;
+    marker) printf 'marker\n' > "$requirements_case/final"; marker_exit=0 ;;
+    helper_failure) printf 'response\n' > "$requirements_case/final"; marker_exit=2 ;;
+    absent) printf 'response\n' > "$requirements_case/final"; marker_exit=1 ;;
+  esac
+  (
+    unset -f gh
+    PATH="$requirements_case/bin:$PATH" \
+      RUNNER_TEMP="$requirements_case/runner" \
+      CODEX_FINAL="$requirements_case/final" \
+      MARKER_EXIT="$marker_exit" \
+      PAUSE_CALLS="$requirements_case/pause-calls" \
+      GITHUB_OUTPUT="$requirements_case/output" \
+      GITHUB_REPOSITORY=owner/repo ISSUE_NUMBER=169 APP_SLUG=dev \
+      bash "$requirements_run"
+  )
+  if [ "$scenario" = absent ]; then
+    grep -Fxq 'continue=true' "$requirements_case/output"
+    [ ! -s "$requirements_case/pause-calls" ]
+  else
+    grep -Fxq 'continue=false' "$requirements_case/output"
+    case "$scenario" in
+      marker)
+        grep -Fq 'create owner/repo 169 - 123 requirements_change' "$requirements_case/pause-calls"
+        expected="sha256:$(printf 'line\n' | sha256sum | cut -d' ' -f1)"
+        grep -Fq -- "--issue-body-fingerprint $expected" "$requirements_case/pause-calls"
+        ;;
+      *)
+        grep -Fq 'create owner/repo 169 - 123 developer_execution_failed' "$requirements_case/pause-calls"
+        grep -Fq -- '--failed-action develop' "$requirements_case/pause-calls"
+        ;;
+    esac
+  fi
+done
+
+# Execute the workflow's hash snippet on a body with a terminal newline.
+fingerprint_code="$test_dir/issue-body-fingerprint.py"
+awk '
+  /fingerprint="\$\(gh api/ { in_code = 1; next }
+  in_code && /'\''\)"/ { exit }
+  in_code { sub(/^          /, ""); print }
+' "$issue_requirements" > "$fingerprint_code"
+[ -s "$fingerprint_code" ]
+expected_fingerprint="sha256:$(printf 'line\n' | sha256sum | cut -d' ' -f1)"
+actual_fingerprint="$(printf '{"body":"line\\n"}' | python3 "$fingerprint_code")"
+[ "$actual_fingerprint" = "$expected_fingerprint" ]
+if printf '{"body":null}' | python3 "$fingerprint_code" >/dev/null 2>&1; then
+  echo 'Malformed Issue body produced a fingerprint.' >&2
+  exit 1
+fi
+
 printf '%s\n' 'AI Developer workflow fixture tests passed'
