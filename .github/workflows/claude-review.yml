@@ -684,47 +684,8 @@ jobs:
           echo "result=$result" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
 
-      - name: Create Claude human pause
-        if: >-
-          steps.human-escalation.outputs.result == 'state_inconsistent' ||
-          (steps.human-escalation.outputs.result == 'pause' &&
-           steps.human-escalation.outputs.reason == 'explicit_human_escalation')
-        env:
-          GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
-          APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
-          CLASSIFICATION_RESULT: ${{ steps.human-escalation.outputs.result }}
-          CLASSIFICATION_REASON: ${{ steps.human-escalation.outputs.reason }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
-          case "$CLASSIFICATION_RESULT:$CLASSIFICATION_REASON" in
-            pause:explicit_human_escalation) reason=explicit_human_escalation ;;
-            state_inconsistent:) reason=state_inconsistent ;;
-            *) echo 'Invalid Claude human escalation classification.' >&2; exit 1 ;;
-          esac
-          [[ "$APP_SLUG" =~ ^[a-zA-Z0-9-]+$ ]] || exit 1
-          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
-          [[ "$app_id" =~ ^[1-9][0-9]*$ ]] || exit 1
-          pause_dir="$RUNNER_TEMP/claude-human-pause"
-          mkdir -p "$pause_dir"
-          for helper in create-human-pause human-pause-record list-human-pause-records \
-            validate-human-pause-record-graph decompose-human-pause-record-graph \
-            derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance \
-            reconcile-human-pause-active-pause apply-human-pause \
-            format-human-pause-notification notify-human; do
-            git show "${BASE_SHA}:.github/scripts/${helper}.sh" > "$pause_dir/${helper}.sh"
-          done
-          bash "$pause_dir/create-human-pause.sh" create \
-            "$GITHUB_REPOSITORY" - "$PR_NUMBER" "$app_id" "$reason" \
-            'Claude Reviewの停止理由を確認し、人間の判断を記録してください。'
-
-      - name: Mark requirements escalation
-        if: steps.human-escalation.outputs.result == 'pause' && steps.human-escalation.outputs.reason == 'requirements_change'
+      - name: Mark human escalation
+        if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -741,8 +702,8 @@ jobs:
           fi
           bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
 
-      - name: Notify human of requirements escalation
-        if: steps.human-escalation.outputs.result == 'pause' && steps.human-escalation.outputs.reason == 'requirements_change'
+      - name: Notify human of escalation
+        if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}

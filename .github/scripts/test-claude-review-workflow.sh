@@ -257,6 +257,17 @@ assert_human_escalation state_inconsistent: both-markers $'[REQUIREMENTS_CHANGE_
 assert_human_escalation pause:requirements_change requirements-crlf $'Reviewed.\r\n[REQUIREMENTS_CHANGE_REQUIRED]\r\nHuman decision required.'
 assert_human_escalation none: indented-marker $'Reviewed.\n [REQUIREMENTS_CHANGE_REQUIRED]\nNot an exact signal.'
 assert_human_escalation none: suffixed-marker $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED] because this text continues.'
+mkdir -p "$test_dir/untrusted-head/.github/scripts"
+printf '%s\n' 'exit 99' > "$test_dir/untrusted-head/.github/scripts/classify-claude-human-escalation.sh"
+jq -cn --arg summary '[HUMAN_ESCALATION_RECOMMENDED]' \
+  '{verdict:"approve",summary:$summary,blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
+  > "$human_escalation_runner_temp/claude-review.json"
+(cd "$test_dir/untrusted-head"; GIT_DIR="$repo_root/.git" \
+  GITHUB_OUTPUT="$test_dir/human-escalation-untrusted-head.outputs" \
+  RUNNER_TEMP="$human_escalation_runner_temp" BASE_SHA="$trusted_base_sha" \
+  bash "$human_escalation_step")
+grep -Fqx 'result=pause' "$test_dir/human-escalation-untrusted-head.outputs"
+grep -Fqx 'reason=explicit_human_escalation' "$test_dir/human-escalation-untrusted-head.outputs"
 jq -cn '{verdict:"approve",summary:"[HUMAN_ESCALATION_RECOMMENDED]\u0000",blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
   > "$human_escalation_runner_temp/claude-review.json"
 GITHUB_OUTPUT="$test_dir/human-escalation-nul.outputs" RUNNER_TEMP="$human_escalation_runner_temp" \
@@ -275,6 +286,7 @@ git() {
     case "$MOCK_CLASSIFIER" in
       fail) printf '%s\n' 'exit 1' ;;
       malformed) printf '%s\n' 'echo "{\"result\":\"pause\",\"reason\":\"unknown\"}"' ;;
+      bootstrap-fail) return 1 ;;
       *) command git "$@" ;;
     esac
   else
@@ -282,7 +294,7 @@ git() {
   fi
 }
 export -f git
-for bad_classifier in fail malformed; do
+for bad_classifier in fail malformed bootstrap-fail; do
   if GITHUB_OUTPUT="$test_dir/classifier-$bad_classifier.outputs" \
       RUNNER_TEMP="$human_escalation_runner_temp" BASE_SHA="$trusted_base_sha" \
       MOCK_CLASSIFIER="$bad_classifier" bash "$human_escalation_step" > /dev/null 2>&1; then
@@ -293,28 +305,15 @@ for bad_classifier in fail malformed; do
 done
 unset -f git
 
-common_pause_step="$test_dir/create-claude-human-pause.sh"
-legacy_pause_step="$test_dir/mark-requirements-escalation.sh"
-legacy_notify_step="$test_dir/notify-requirements-escalation.sh"
-extract_step_run 'Create Claude human pause' "$common_pause_step"
-extract_step_run 'Mark requirements escalation' "$legacy_pause_step"
-extract_step_run 'Notify human of requirements escalation' "$legacy_notify_step"
+legacy_pause_step="$test_dir/mark-human-escalation.sh"
+legacy_notify_step="$test_dir/notify-human-escalation.sh"
+extract_step_run 'Mark human escalation' "$legacy_pause_step"
+extract_step_run 'Notify human of escalation' "$legacy_notify_step"
 sed -i 's/${{ github.event.pull_request.number }}/37/' "$legacy_notify_step"
 git() {
   if [ "$1" = show ]; then
     printf '%s\n' "$2" >> "$MOCK_PAUSE_BOOTSTRAP_LOG"
-    if [ "${MOCK_BOOTSTRAP_FAIL:-false}" = true ] && [[ "$2" == *:'.github/scripts/human-pause-record.sh' ]]; then
-      return 1
-    fi
     case "$2" in
-      *:'.github/scripts/create-human-pause.sh')
-        cat <<'STUB'
-#!/usr/bin/env bash
-printf 'record %s\n' "$*" >> "$MOCK_PAUSE_LOG"
-[ "${MOCK_PAUSE_FAIL:-false}" != true ] || exit 1
-printf 'notification\n' >> "$MOCK_PAUSE_LOG"
-STUB
-        ;;
       *:'.github/scripts/apply-human-pause.sh')
         printf '%s\n' '#!/usr/bin/env bash' 'printf "legacy-label %s\n" "$*" >> "$MOCK_PAUSE_LOG"'
         ;;
@@ -332,48 +331,24 @@ pause_runner="$test_dir/pause-runner"
 mkdir "$pause_runner"
 export MOCK_PAUSE_LOG="$test_dir/pause-events.log"
 export MOCK_PAUSE_BOOTSTRAP_LOG="$test_dir/pause-bootstrap.log"
-run_common_pause() {
+for fixture_name in no-marker requirements-standalone human-standalone both-markers; do
+  result="$(sed -n 's/^result=//p' "$test_dir/human-escalation-$fixture_name.outputs")"
+  case "$result" in
+    none) continue ;;
+    pause|state_inconsistent) ;;
+    *) echo "Unexpected classification for $fixture_name: $result" >&2; exit 1 ;;
+  esac
+  : > "$MOCK_PAUSE_LOG"
   RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
-    PR_NUMBER=37 APP_SLUG=reviewer CLASSIFICATION_RESULT="$1" CLASSIFICATION_REASON="$2" \
-    bash "$common_pause_step" > /dev/null
-}
-run_common_pause pause explicit_human_escalation
-grep -Fq 'record create owner/repo - 37 99 explicit_human_escalation ' "$MOCK_PAUSE_LOG"
-[ "$(grep -Fc notification "$MOCK_PAUSE_LOG")" -eq 1 ]
-run_common_pause state_inconsistent ''
-grep -Fq 'record create owner/repo - 37 99 state_inconsistent ' "$MOCK_PAUSE_LOG"
-[ "$(grep -Fc notification "$MOCK_PAUSE_LOG")" -eq 2 ]
-if MOCK_REVIEWER_APP_ID=invalid run_common_pause pause explicit_human_escalation > /dev/null 2>&1; then
-  echo 'Invalid reviewer App ID must fail closed.' >&2
-  exit 1
-fi
-if MOCK_PAUSE_FAIL=true run_common_pause pause explicit_human_escalation > /dev/null 2>&1; then
-  echo 'Common pause helper failure must fail closed.' >&2
-  exit 1
-fi
-if MOCK_BOOTSTRAP_FAIL=true run_common_pause pause explicit_human_escalation > /dev/null 2>&1; then
-  echo 'Common pause bootstrap failure must fail closed.' >&2
-  exit 1
-fi
-if RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
-    PR_NUMBER=invalid APP_SLUG=reviewer CLASSIFICATION_RESULT=pause \
-    CLASSIFICATION_REASON=explicit_human_escalation bash "$common_pause_step" > /dev/null 2>&1; then
-  echo 'Invalid PR number must fail closed.' >&2
-  exit 1
-fi
-if run_common_pause pause requirements_change > /dev/null 2>&1; then
-  echo 'Requirements escalation must not create a common record.' >&2
-  exit 1
-fi
-[ "$(grep -Fxc notification "$MOCK_PAUSE_LOG")" -eq 2 ]
-RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
-  PR_NUMBER=37 HEAD_REF=ai/issue-36 bash "$legacy_pause_step"
-RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
-  GITHUB_SERVER_URL=https://github.com bash "$legacy_notify_step"
-grep -Fqx 'legacy-label owner/repo 36 37' "$MOCK_PAUSE_LOG"
-grep -Fqx legacy-notification "$MOCK_PAUSE_LOG"
-if grep -Fq 'record create owner/repo - 37 99 requirements_change ' "$MOCK_PAUSE_LOG"; then
-  echo 'Requirements escalation created a common record.' >&2
+    PR_NUMBER=37 HEAD_REF=ai/issue-36 bash "$legacy_pause_step"
+  RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+    GITHUB_SERVER_URL=https://github.com bash "$legacy_notify_step"
+  grep -Fqx 'legacy-label owner/repo 36 37' "$MOCK_PAUSE_LOG"
+  grep -Fqx legacy-notification "$MOCK_PAUSE_LOG"
+  [ "$(wc -l < "$MOCK_PAUSE_LOG")" -eq 2 ]
+done
+if grep -Fq 'create-human-pause.sh' "$MOCK_PAUSE_BOOTSTRAP_LOG"; then
+  echo 'Claude human escalation must not bootstrap the common pause helper.' >&2
   exit 1
 fi
 if grep -v "^${trusted_base_sha}:" "$MOCK_PAUSE_BOOTSTRAP_LOG" > /dev/null; then
@@ -1347,12 +1322,14 @@ if grep -Fq "contains(fromJSON(steps.structured-review.outputs.json).summary" "$
   echo 'Claude human escalation must not use substring matching on the review summary.' >&2
   exit 1
 fi
-if [ "$(grep -Fc "steps.human-escalation.outputs.reason == 'requirements_change'" "$workflow")" -ne 2 ]; then
-  echo 'Legacy label and notification must be limited to requirements escalation.' >&2
+if [ "$(grep -Fxc "        if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'" "$workflow")" -ne 2 ]; then
+  echo 'Every Claude human escalation must use the legacy label and notification path.' >&2
   exit 1
 fi
-grep -Fq "steps.human-escalation.outputs.reason == 'explicit_human_escalation'" "$workflow"
-grep -Fq "steps.human-escalation.outputs.result == 'state_inconsistent'" "$workflow"
+if grep -Fq 'create-human-pause.sh' "$review_job"; then
+  echo 'Claude Review human escalation must not create a common pause record.' >&2
+  exit 1
+fi
 grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-human-escalation.sh"' "$workflow"
 grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$workflow"
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"
