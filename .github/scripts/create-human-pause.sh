@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# create REPO ISSUE PR APP_ID REASON DETAIL: create a root pause if none is active.
+# create REPO ISSUE PR APP_ID REASON DETAIL [PAUSED_HEAD]: create a root pause if none is active.
 # inspect REPO ISSUE PR APP_ID PAUSE_ID: reconcile an existing pause without notifying.
 # ISSUE or PR may be '-', but at least one must be a positive decimal number.
 mode="${1:-}"
@@ -39,12 +39,18 @@ reconcile() {
 }
 
 if [ "$mode" = create ]; then
-  [ "$#" -eq 7 ] || fail_closed 'create requires reason and decision detail'
+  { [ "$#" -eq 7 ] || [ "$#" -eq 8 ]; } || fail_closed 'create requires reason and decision detail'
   reason="$6"
   detail="$7"
   [ -n "$detail" ] || fail_closed 'decision detail is empty'
-  record="$(jq -cn --arg reason "$reason" --arg target "$target" --arg detail "$detail" \
-    '{version:1, kind:"pause", reason:$reason, target:$target, payload:{detail:$detail}}')"
+  paused_head="${8:-}"
+  if [ "$#" -eq 8 ]; then
+    [ "$pr" != '-' ] || fail_closed 'paused HEAD requires a PR'
+    [[ "$paused_head" =~ ^[0-9a-f]{40}$ ]] || fail_closed 'invalid paused HEAD'
+  fi
+  record="$(jq -cn --arg reason "$reason" --arg target "$target" --arg detail "$detail" --arg paused_head "$paused_head" \
+    '{version:1, kind:"pause", reason:$reason, target:$target, payload:{detail:$detail}}
+     + (if $paused_head == "" then {} else {paused_head:$paused_head} end)')"
   body="$(bash "$script_dir/human-pause-record.sh" create "$record")" \
     || fail_closed 'invalid pause record'
 elif [ "$mode" = inspect ]; then
@@ -79,6 +85,11 @@ fi
 if [ "$result" = active ]; then
   [ "$(jq -r '.active_pause.reason' <<< "$active")" = "$reason" ] \
     || fail_closed 'an active pause has a different reason'
+  if [ -n "$paused_head" ]; then
+    jq -e --arg id "$(jq -r '.active_pause.pause_id' <<< "$active")" --arg head "$paused_head" \
+      'any(.chains[].records[]; .pause_id == $id and .record.paused_head == $head)' \
+      <<< "$history" > /dev/null || fail_closed 'an active pause has a different HEAD'
+  fi
   pause_id="$(jq -r '.active_pause.pause_id' <<< "$active")"
   bash "$script_dir/apply-human-pause.sh" "$repo" "$issue" "${pr/-/}" \
     || fail_closed 'could not synchronize pause labels'
