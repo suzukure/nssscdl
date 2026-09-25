@@ -964,7 +964,7 @@ jobs:
                 map(select(.isCrossRepository == false)) |
                 if length > 1 then error("ambiguous PR target")
                 elif length == 0 then "-"
-                else .[0].number | tostring end
+                else .[] | .number | tostring end
               end
             ' <<< "$pr_list")"
             app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
@@ -1097,7 +1097,7 @@ jobs:
               map(select(.isCrossRepository == false)) |
               if length > 1 then error("ambiguous PR target")
               elif length == 0 then "-"
-              else .[0].number | tostring end
+              else .[] | .number | tostring end
             end
           ' <<< "$pr_list")"
           app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
@@ -1289,7 +1289,7 @@ jobs:
               map(select(.isCrossRepository == false)) |
               if length > 1 then error("ambiguous PR target")
               elif length == 0 then "-"
-              else .[0].number | tostring end
+              else .[] | .number | tostring end
             end
           ' <<< "$pr_list")"
 
