@@ -71,7 +71,8 @@ done
 MOCK_CASE=issue
 command='{"result":"accepted","actor":"suzukure","action":"follow-up","follow_up_issue":123}'
 assert_result follow-up issue 36 \
-  '{"command":{"result":"accepted","actor":"suzukure","action":"follow-up"},"target":"issue:36","issue":{"number":36,"state":"open"},"pull_request":null}'
+  '{"command":{"result":"accepted","actor":"suzukure","action":"follow-up","follow_up_issue":123},"target":"issue:36","issue":{"number":36,"state":"open"},"pull_request":null}'
+assert_rejected invalid-follow-up-issue '{"result":"accepted","actor":"suzukure","action":"follow-up","follow_up_issue":0}' issue 36
 command='{"result":"accepted","actor":"suzukure","action":"develop"}'
 assert_rejected invalid-command '{"result":"ignore"}' issue 36
 assert_rejected invalid-action '{"result":"accepted","actor":"suzukure","action":"deploy"}' issue 36

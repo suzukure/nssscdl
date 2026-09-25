@@ -44,7 +44,12 @@ command="$(jq -cse '
           and ($action != "follow-up" or (.[0].follow_up_issue | positive_integer | not))) then
     error("input action is not an accepted command")
   else
-    .[0] | {result, actor, action}
+    .[0] as $accepted
+    | if $accepted.action == "follow-up" then
+        $accepted | {result, actor, action, follow_up_issue}
+      else
+        $accepted | {result, actor, action}
+      end
   end
 ' <<< "$input")" || fail_closed 'input could not be parsed safely'
 

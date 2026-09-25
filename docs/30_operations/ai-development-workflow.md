@@ -305,7 +305,7 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `parse-ai-resume-command.sh` を変更した場合は `bash .github/scripts/test-parse-ai-resume-command.sh` を実行する。
 
-`.github/scripts/inspect-ai-resume-target.sh <repo> <issue|pr> <number>` はstdinから#299のaccepted command objectをちょうど1個だけ受け、`owner/repo`と先頭0なしの正整数targetを検証してcurrent target metadataをfail-closedで正規化する。open non-PR Issueは`command`、`target:"issue:N"`、`issue:{number,state:"open"}`、`pull_request:null`を返す。open PRは`target:"pr:N"`、`issue:null`、およびnumber、open state、base/head ref、40桁のcurrent head SHA、branch名が`ai/issue-N`の場合だけの`branch_issue_number`、same-repository closing Issue URLだけをsort/uniqueした`closing_issue_numbers`を固定shapeで返す。PR branchとclosing Issueのrelation、branch Issueのopen判定、canonical closing Issue、dispatch、production workflow wiringは扱わない。GitHub response、stdin、target、またはstateのshape不正・closed targetはすべて停止する。
+`.github/scripts/inspect-ai-resume-target.sh <repo> <issue|pr> <number>` はstdinから#299のaccepted command objectをちょうど1個だけ受け、`owner/repo`と先頭0なしの正整数targetを検証してcurrent target metadataをfail-closedで正規化する。open non-PR Issueは`command`、`target:"issue:N"`、`issue:{number,state:"open"}`、`pull_request:null`を返す。open PRは`target:"pr:N"`、`issue:null`、およびnumber、open state、base/head ref、40桁のcurrent head SHA、branch名が`ai/issue-N`の場合だけの`branch_issue_number`、same-repository closing Issue URLだけをsort/uniqueした`closing_issue_numbers`を固定shapeで返す。入力`command`は#299 accepted shapeを維持し、`follow-up`では正の整数`follow_up_issue`も保持する。PR branchとclosing Issueのrelation、branch Issueのopen判定、canonical closing Issue、dispatch、production workflow wiringは扱わない。GitHub response、stdin、target、またはstateのshape不正・closed targetはすべて停止する。
 
 `inspect-ai-resume-target.sh` を変更した場合は `bash .github/scripts/test-inspect-ai-resume-target.sh` を実行する。
 
