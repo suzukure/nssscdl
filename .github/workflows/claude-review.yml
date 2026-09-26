@@ -662,34 +662,30 @@ jobs:
         if: >-
           steps.review-entry.outputs.continue == 'true' &&
           steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
+        env:
+          BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          escalation="$(
-            jq -r '
-              if type != "object" or (.summary | type) != "string" then
-                error("invalid structured review")
-              else
-                .summary
-                | split("\n")
-                | any(.[];
-                    (sub("\r$"; "") == "[REQUIREMENTS_CHANGE_REQUIRED]") or
-                    (sub("\r$"; "") == "[HUMAN_ESCALATION_RECOMMENDED]")
-                  )
-              end
-            ' "$RUNNER_TEMP/claude-review.json"
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          git show "${BASE_SHA}:.github/scripts/classify-claude-human-escalation.sh" > "$RUNNER_TEMP/classify-claude-human-escalation.sh"
+          classification="$(
+            jq -er 'if type == "object" and (.summary | type) == "string" then .summary else error("invalid structured review") end' \
+              "$RUNNER_TEMP/claude-review.json" |
+              bash "$RUNNER_TEMP/classify-claude-human-escalation.sh"
           )"
-          case "$escalation" in
-            true|false) ;;
-            *)
-              echo "Unexpected human escalation classification: $escalation" >&2
-              exit 1
-              ;;
-          esac
-          echo "required=$escalation" >> "$GITHUB_OUTPUT"
+          jq -es 'length == 1 and (.[0] | type == "object" and
+            ((keys == ["result"] and (.result == "none" or .result == "state_inconsistent")) or
+             (keys == ["reason", "result"] and .result == "pause" and
+              (.reason == "explicit_human_escalation" or .reason == "requirements_change"))))' \
+            <<< "$classification" > /dev/null
+          result="$(jq -r .result <<< "$classification")"
+          reason="$(jq -r '.reason // ""' <<< "$classification")"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
 
       - name: Mark human escalation
-        if: steps.human-escalation.outputs.required == 'true'
+        if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -706,8 +702,8 @@ jobs:
           fi
           bash "$RUNNER_TEMP/apply-human-pause.sh" "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
 
-      - name: Notify human of Claude escalation
-        if: steps.human-escalation.outputs.required == 'true'
+      - name: Notify human of escalation
+        if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
