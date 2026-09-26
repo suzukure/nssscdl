@@ -24,7 +24,8 @@ RELATION_JSON="$(jq -cn --arg head "$head_sha" '
 ')"
 ISSUE_JSON='{"number":36,"state":"open","labels":[]}'
 REVIEWS_JSON="$(jq -cn --arg sha "$old_sha" '
-  [{id:1,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha}]
+  [{id:1,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha,
+    submitted_at:"2026-01-01T00:00:00Z"}]
 ')"
 
 gh() {
@@ -102,16 +103,40 @@ PR_JSON="$(jq -c '.labels=[{name:"ai-followup-in-progress"}]' <<< "$PR_JSON")"
 assert_decision round-mismatch human_required round_mismatch \
   "$(jq -c '.round=2' <<< "$payload")" "${gate[@]}"
 REVIEWS_JSON="$(jq -cn --arg sha "$old_sha" '[range(1;4) |
-  {id:.,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha}]')"
+  {id:.,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha,
+   submitted_at:("2026-01-0" + (.|tostring) + "T00:00:00Z")}]')"
 assert_decision round-limit human_required round_limit \
   "$(jq -c '.round=3' <<< "$payload")" "${gate[@]}"
+REVIEWS_JSON="$(jq -c --arg sha "$head_sha" '
+  . + [{id:4,user:{login:"review[bot]"},state:"APPROVED",commit_id:$sha,
+         submitted_at:"2026-01-04T00:00:00Z"}]' <<< "$REVIEWS_JSON")"
+assert_decision round-limit-before-duplicate human_required round_limit \
+  "$(jq -c '.round=3' <<< "$payload")" "${gate[@]}"
 REVIEWS_JSON="$(jq -cn --arg sha "$old_sha" '
-  [{id:1,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha}]')"
+  [{id:1,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha,
+    submitted_at:"2026-01-01T00:00:00Z"}]')"
 PR_JSON="$(jq -c '.labels=[]' <<< "$PR_JSON")"
 assert_decision missing-label human_required missing_machine_state "$payload" "${gate[@]}"
 REVIEWS_JSON="$(jq -c --arg sha "$head_sha" \
-  '. + [{id:2,user:{login:"review[bot]"},state:"APPROVED",commit_id:$sha}]' <<< "$REVIEWS_JSON")"
-assert_decision duplicate ignore duplicate_review "$payload" "${gate[@]}"
+  '. + [{id:2,user:{login:"review[bot]"},state:"APPROVED",commit_id:$sha,
+         submitted_at:"2026-01-02T00:00:00Z"}]' <<< "$REVIEWS_JSON")"
+assert_decision duplicate-no-label ignore duplicate_review "$payload" "${gate[@]}"
+PR_JSON="$(jq -c '.labels=[{name:"ai-followup-in-progress"}]' <<< "$PR_JSON")"
+assert_decision duplicate-with-label ignore duplicate_review "$payload" "${gate[@]}"
+REVIEWS_JSON="$(jq -c --arg sha "$head_sha" '.[0].commit_id=$sha' <<< "$REVIEWS_JSON")"
+assert_decision no-diff-change-request-then-approved ignore duplicate_review \
+  "$payload" "${gate[@]}"
+REVIEWS_JSON="$(jq -c --arg sha "$head_sha" '
+  . + [{id:3,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha,
+         submitted_at:"2026-01-03T00:00:00Z"}]' <<< "$REVIEWS_JSON")"
+assert_decision newer-change-request proceed ready \
+  "$(jq -c '.round=2' <<< "$payload")" "${gate[@]}"
+REVIEWS_JSON="$(jq -c '.[2].submitted_at="2026-01-02T00:00:00Z"' <<< "$REVIEWS_JSON")"
+assert_decision ambiguous-verdict human_required invalid_reviews \
+  "$(jq -c '.round=2' <<< "$payload")" "${gate[@]}"
+REVIEWS_JSON="$(jq -c '.[2].submitted_at="invalid"' <<< "$REVIEWS_JSON")"
+assert_decision invalid-timestamp human_required invalid_reviews \
+  "$(jq -c '.round=2' <<< "$payload")" "${gate[@]}"
 REVIEWS_JSON='[{"id":1,"user":{},"state":"APPROVED","commit_id":"bad"}]'
 assert_decision malformed-reviews human_required invalid_reviews "$payload" "${gate[@]}"
 

@@ -143,9 +143,17 @@ review_facts="$(jq -cs --arg slug "$reviewer" --arg head "$current_head" '
   if all(.[]; valid) | not then error("reviews")
   else [ .[][] | select(.user.login == $slug or .user.login == ($slug + "[bot]")
                     or .user.login == ("app/" + $slug)) ] as $mine |
+    [$mine[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") |
+      . + {submitted_epoch: (.submitted_at | fromdateiso8601)}] as $formal |
+    (if ($formal | length) == 0 then null else ($formal | max_by(.submitted_epoch)) end) as $latest |
+    if $latest != null and
+       ([$formal[] | select(.submitted_epoch == $latest.submitted_epoch)] | length) != 1
+    then error("ambiguous review order")
+    else
     {round: ([$mine[] | select(.state == "CHANGES_REQUESTED")] | length),
-     approved_head: ([$mine[] | select(.commit_id == $head)] as $head_reviews |
-       ($head_reviews | length) == 1 and $head_reviews[0].state == "APPROVED")}
+     approved_head: ($latest != null and $latest.state == "APPROVED"
+                     and $latest.commit_id == $head)}
+    end
   end
 ' <<< "$reviews" 2>/dev/null)" || human invalid_reviews 'Review history is invalid.'
 actual_round="$(jq -r '.round' <<< "$review_facts")"
@@ -153,10 +161,10 @@ actual_round="$(jq -r '.round' <<< "$review_facts")"
   || human round_mismatch 'Dispatch round differs from current review history.'
 [ "$actual_round" -le 2 ] \
   || human round_limit 'Automated review round limit was reached.'
+if [ "$(jq -r '.approved_head' <<< "$review_facts")" = true ]; then
+  ignore duplicate_review 'Current HEAD already has the latest approving reviewer verdict.'
+fi
 if ! jq -e '.labels | index("ai-followup-in-progress") != null' <<< "$pr_facts" >/dev/null; then
-  if [ "$(jq -r '.approved_head' <<< "$review_facts")" = true ]; then
-    ignore duplicate_review 'Current HEAD already has an approving reviewer result.'
-  fi
   human missing_machine_state 'Current PR lacks the follow-up in-progress label.'
 fi
 
