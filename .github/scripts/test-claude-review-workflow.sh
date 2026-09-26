@@ -309,7 +309,7 @@ legacy_pause_step="$test_dir/mark-human-escalation.sh"
 legacy_notify_step="$test_dir/notify-human-escalation.sh"
 extract_step_run 'Mark human escalation' "$legacy_pause_step"
 extract_step_run 'Notify human of escalation' "$legacy_notify_step"
-sed -i 's/${{ github.event.pull_request.number }}/37/' "$legacy_notify_step"
+sed -i 's/${{ steps.review-source.outputs.pr_number }}/37/' "$legacy_notify_step"
 git() {
   if [ "$1" = show ]; then
     printf '%s\n' "$2" >> "$MOCK_PAUSE_BOOTSTRAP_LOG"
@@ -400,6 +400,7 @@ export repo_root
   MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
   GITHUB_OUTPUT="$test_dir/build-context.outputs" \
   GITHUB_REPOSITORY=owner/repo \
+  GITHUB_EVENT_NAME=pull_request \
   RUNNER_TEMP="$workflow_bootstrap_dir" \
   BASE_REF=main \
   EVENT_BASE_SHA="$stale_event_base_sha" \
@@ -424,6 +425,7 @@ if (
     MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
     GITHUB_OUTPUT="$test_dir/build-context-invalid.outputs" \
     GITHUB_REPOSITORY=owner/repo \
+    GITHUB_EVENT_NAME=pull_request \
     RUNNER_TEMP="$workflow_bootstrap_dir" \
     BASE_REF=main \
     PR_NUMBER=37 \

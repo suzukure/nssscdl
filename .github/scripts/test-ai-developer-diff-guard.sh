@@ -13,7 +13,6 @@ developer_job="$test_dir/develop-from-issue.yml"
 guard_script="$test_dir/diff-guard.sh"
 followup_job="$test_dir/respond-to-claude.yml"
 followup_guard_script="$test_dir/followup-diff-guard.sh"
-followup_notify_script="$test_dir/followup-diff-guard-notify.sh"
 publish_script="$test_dir/publish-issue-pr.sh"
 followup_commit_script="$test_dir/followup-commit.sh"
 
@@ -50,7 +49,6 @@ awk '
 ' "$workflow" > "$followup_job"
 [ -s "$followup_job" ]
 extract_step_run "$followup_job" 'Evaluate trusted follow-up diff guard' "$followup_guard_script"
-extract_step_run "$followup_job" 'Notify human of follow-up diff guard stop' "$followup_notify_script"
 extract_step_run "$followup_job" 'Commit and answer review' "$followup_commit_script"
 
 # Structural boundaries that are not practical to exercise in the extracted run body.
@@ -193,7 +191,7 @@ if [ "$1" = api ] && [ "$2" = /apps/dev ]; then
   printf '123\n'
   exit 0
 fi
-if [ "$1" = api ] && [ "$2" = /repos/owner/repo/issues/169 ]; then
+if [ "$1" = api ] && { [ "$2" = /repos/owner/repo/issues/169 ] || [ "$2" = repos/owner/repo/issues/170 ]; }; then
   printf '{"body":"fixture body\\n"}\n'
   exit 0
 fi
@@ -345,6 +343,7 @@ run_publisher_case() {
   local case_dir="$test_dir/publisher-$name"
   mkdir -p "$case_dir"
   : > "$case_dir/calls.log"
+  : > "$case_dir/github-output"
   printf '%s\n' 'result summary' > "$case_dir/final.md"
 
   if [ -n "$injection" ]; then
@@ -398,6 +397,7 @@ run_publisher_case() {
     PUBLISH_REMOTE_HEAD="$remote_head" \
     PUBLISH_EXPECTED_HEAD="$expected_head" \
     EVENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    GITHUB_OUTPUT="$case_dir/github-output" \
     GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36 PR_NUMBER=37 \
     ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 HEAD_REF=ai/issue-36 \
     CODEX_FINAL="$case_dir/final.md" \
@@ -548,27 +548,31 @@ assert_invalid_contract_fails_closed followup_contract_value_invalid '{"max_chan
 
 run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/followup_stop/github-output"
-[ -s "$test_dir/followup_stop/pause.log" ]
-grep -Fq 'oversized repository change' "$test_dir/followup_stop/gh.log"
-grep -Fq 'changed_files: 26' "$test_dir/followup_stop/gh.log"
+grep -Fq 'create owner/repo 170 172 123 diff_guard_exceeded' "$test_dir/followup_stop/pause.log"
+grep -Fq -- "--issue-body-fingerprint $stop_fingerprint" "$test_dir/followup_stop/pause.log"
+grep -Fq 'oversized repository change' "$test_dir/followup_stop/pause.log"
+grep -Fq 'changed_files: 26' "$test_dir/followup_stop/pause.log"
+[ ! -s "$test_dir/followup_stop/gh.log" ]
 grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/followup_stop/summary"
 
 run_case followup_error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable"}'\''; exit 1' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/followup_error/github-output"
-grep -Fq 'Metrics: unavailable' "$test_dir/followup_error/gh.log"
+grep -Fq 'create owner/repo 170 172 123 diff_guard_error' "$test_dir/followup_error/pause.log"
+grep -Fq 'Metrics: unavailable' "$test_dir/followup_error/pause.log"
+[ ! -s "$test_dir/followup_error/gh.log" ]
 grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/followup_error/summary"
-assert_no_metric_diagnostics "$test_dir/followup_error/gh.log"
+assert_no_metric_diagnostics "$test_dir/followup_error/pause.log"
 assert_no_metric_diagnostics "$test_dir/followup_error/summary"
 
 run_case followup_malformed 'printf '\''%s\n'\'' '\''not-json'\''' "$followup_guard_script"
 grep -Fxq 'continue=false' "$test_dir/followup_malformed/github-output"
-grep -Fq 'could not be parsed' "$test_dir/followup_malformed/gh.log"
-assert_no_metric_diagnostics "$test_dir/followup_malformed/gh.log"
+grep -Fq 'could not be parsed' "$test_dir/followup_malformed/pause.log"
+assert_no_metric_diagnostics "$test_dir/followup_malformed/pause.log"
 
 run_case followup_unexpected 'printf '\''%s\n'\'' '\''{"result":"later","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script"
 grep -Fxq 'continue=false' "$test_dir/followup_unexpected/github-output"
-grep -Fq "unexpected result 'later'" "$test_dir/followup_unexpected/gh.log"
-assert_no_metric_diagnostics "$test_dir/followup_unexpected/gh.log"
+grep -Fq "unexpected result 'later'" "$test_dir/followup_unexpected/pause.log"
+assert_no_metric_diagnostics "$test_dir/followup_unexpected/pause.log"
 
 # Exercise both extracted publishers. The normal case demonstrates that the
 # exact guarded index can still be committed and pushed; each mutation models
@@ -581,26 +585,39 @@ grep -Fq 'git push --set-upstream origin ai/issue-36' "$test_dir/publisher-issue
 run_publisher_case followup "$followup_commit_script" 'Address Claude review for PR #37'
 grep -Fq 'git commit -m Address Claude review for PR #37' "$test_dir/publisher-followup/calls.log"
 grep -Fq 'git push origin HEAD:ai/issue-36' "$test_dir/publisher-followup/calls.log"
-grep -Fq 'gh pr ready 37 --repo owner/repo' "$test_dir/publisher-followup/calls.log"
-if run_publisher_case followup-stale-head "$followup_commit_script" 'Address Claude review for PR #37' '' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
-  echo 'Follow-up publisher readied a PR before its pushed head was visible.' >&2
+grep -Fxq 'result=pushed' "$test_dir/publisher-followup/github-output"
+grep -Fxq 'sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/publisher-followup/github-output"
+if grep -Fq 'gh pr ready' "$test_dir/publisher-followup/calls.log"; then
+  echo 'Follow-up publisher readied the PR before the separate traceability step.' >&2
   exit 1
 fi
-if grep -Fq 'gh pr ready' "$test_dir/publisher-followup-stale-head/calls.log"; then
-  echo 'Follow-up publisher readied a PR with a stale remote head.' >&2
+if run_publisher_case followup-stale-head "$followup_commit_script" 'Address Claude review for PR #37' '' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
+  echo 'Follow-up publisher accepted a stale pushed HEAD.' >&2
+  exit 1
+fi
+if grep -Fxq 'result=pushed' "$test_dir/publisher-followup-stale-head/github-output"; then
+  echo 'Follow-up publisher reported a stale remote HEAD as pushed.' >&2
   exit 1
 fi
 assert_publisher_bypass_is_blocked issue-origin "$publish_script" 'Implement #36 with Codex'
 assert_publisher_bypass_is_blocked followup "$followup_commit_script" 'Address Claude review for PR #37'
 
-# Issue-origin notification is owned by the common helper; follow-up retains its separate step.
+# Both diff guard routes create a common human pause before its helper notifies.
 if grep -Fq '      - name: Notify human of diff guard stop' "$developer_job"; then
   echo 'Issue-origin diff guard still has a direct notification step.' >&2
   exit 1
 fi
 grep -Fq '"$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create' "$guard_script"
-grep -Fq '      - name: Notify human of follow-up diff guard stop' "$followup_job"
-grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'" "$followup_job"
-grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_notify_script"
+if grep -Fq '      - name: Notify human of follow-up diff guard stop' "$followup_job"; then
+  echo 'Follow-up diff guard still has a direct notification step.' >&2
+  exit 1
+fi
+grep -Fq '"$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create' "$followup_guard_script"
+if grep -Fq 'notify-human.sh' "$followup_guard_script"; then
+  echo 'Follow-up diff guard notified outside the common human-pause helper.' >&2
+  exit 1
+fi
+grep -Fq 'jq -e --arg id "$pause_id" --arg reason "$reason"' "$repo_root/.github/scripts/create-human-pause.sh"
+grep -Fq 'bash "$script_dir/notify-human.sh" "$message"' "$repo_root/.github/scripts/create-human-pause.sh"
 
 printf '%s\n' 'AI Developer diff guard fixture tests passed'

@@ -381,6 +381,7 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
     set -euo pipefail
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 app_id=123
     DRAFT_RESULT=failure FOLLOWUP_RESULT=skipped
+    WRITE_RESULT="" READY_DONE="" VALIDATION_CODE=""
     GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=42
     gh() {
       [ "$MOCK_CURRENT" != error ] || return 1
@@ -405,7 +406,7 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
   ' bash "$followup_classifier")"
   [ "$actual" = "$expected" ] || { echo "Incorrect follow-up failure classification: $case: $actual" >&2; exit 1; }
 done
-grep -Fq -- '--body "$reason"' "$workflow"
+grep -Fq '"$pause_code" "$reason"' "$workflow"
 grep -Fq 'apply-human-pause.sh' "$workflow"
 draft_after_changes_workflow="$test_dir/draft-after-claude-changes.yml"
 awk '
@@ -449,7 +450,8 @@ grep -Fq 'gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid 
 grep -Fq 'if [ "$current_head" = "$expected_head" ]; then' "$followup_commit_step"
 grep -Fq 'EVENT_HEAD: ${{ github.event.pull_request.head.sha }}' "$followup_commit_step"
 grep -Fq 'if [ "$current_head" != "$EVENT_HEAD" ]; then' "$followup_commit_step"
-grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$followup_commit_step"
+grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$workflow"
+grep -Fq '      - name: Validate current HEAD and dispatch re-review' "$workflow"
 if grep -Fq -- '--undo' "$followup_commit_step"; then
   echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
   exit 1
@@ -466,7 +468,8 @@ grep -Fq '停止ラベルの解除順序、open PRでの再レビュー起動条
 # Both Codex jobs must have a server-side wall-clock bound in addition to
 # the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
 # development uses a fixed 35-minute exception only for the explicit extended
-# command; normal development and Claude follow-up remain at 15 minutes.
+# command; normal development stays at 15 minutes, while follow-up includes
+# the separate 10-minute current-head validation window.
 for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   codex_job="$test_dir/${codex_job_name}.yml"
   awk -v job_name="$codex_job_name" '
@@ -481,7 +484,7 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   if [ "$codex_job_name" = 'develop-from-issue' ]; then
     grep -Fqx "    timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}" "$codex_job"
   else
-    grep -Fqx '    timeout-minutes: 15' "$codex_job"
+    grep -Fqx '    timeout-minutes: 30' "$codex_job"
   fi
   if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
     echo "$codex_job_name must fail closed." >&2
@@ -1175,15 +1178,13 @@ extract_workflow_step_run() {
   fi
 }
 
-# The follow-up notification runs after Codex, so it must use the helper
-# rematerialized from the trusted base by the post-Codex restore step rather
-# than the disposable bootstrap copy or PR-head code.
+# Follow-up pauses run the trusted-base common helper after Codex.
 followup_workflow="$test_dir/respond-to-claude.yml"
 sed -n '/^  respond-to-claude:/,$p' "$workflow" > "$followup_workflow"
-restore_notify_line="$(grep -n -F "restore_base_blob '.github/scripts/notify-human.sh'" "$followup_workflow" | tail -n 1 | cut -d: -f1)"
-notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
-if [ -z "$restore_notify_line" ] || [ -z "$notify_step_line" ] || [ "$restore_notify_line" -ge "$notify_step_line" ]; then
-  echo 'Follow-up requirement escalation notification is not using the restored trusted-base helper.' >&2
+restore_pause_line="$(grep -n -F 'trusted_pause_dir="$RUNNER_TEMP/trusted-human-pause"' "$followup_workflow" | head -n 1 | cut -d: -f1)"
+pause_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create' "$followup_workflow" | head -n 1 | cut -d: -f1)"
+if [ -z "$restore_pause_line" ] || [ -z "$pause_step_line" ] || [ "$restore_pause_line" -ge "$pause_step_line" ]; then
+  echo 'Follow-up pause is not using the restored trusted-base helper.' >&2
   exit 1
 fi
 
@@ -1240,6 +1241,9 @@ gh() {
         printf '%s\n' '{"labels":[]}'
       fi
       ;;
+    'api /apps/dev')
+      printf '%s\n' 99
+      ;;
     'label create'|'issue edit'|'pr comment')
       printf '%s\n' "$*" >> "${MOCK_GH_LOG:-/dev/null}"
       ;;
@@ -1269,16 +1273,29 @@ export -f gh
 
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 
-# The trusted-base follow-up gate must resolve closing Issues through the pause
-# helper, synchronize both labels, and record exactly one reason on the PR.
+# The trusted-base follow-up gate passes a fixed reason to the common helper.
 followup_gate_step="$test_dir/gate-automated-follow-up.yml"
 followup_gate_script="$test_dir/gate-automated-follow-up.sh"
 extract_workflow_step 'Gate automated follow-up' "$followup_gate_step"
+grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$followup_gate_step"
 if grep -Eq 'HEAD_REF|head\.ref|ai/issue-' "$followup_gate_step"; then
   echo 'Automated follow-up gate must not derive a closing Issue from the PR branch.' >&2
   exit 1
 fi
 extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
+if grep -Fq 'apply-human-pause.sh' "$followup_gate_step" \
+    || grep -Fq 'gh pr comment' "$followup_gate_step" \
+    || grep -Fq 'name: Notify human of review escalation' "$workflow"; then
+  echo 'Follow-up escalation must delegate pause and notification to the common helper.' >&2
+  exit 1
+fi
+grep -Fq 'bash "$script_dir/notify-human.sh" "$message"' \
+  "$repo_root/.github/scripts/create-human-pause.sh"
+for step in 'Mark automated follow-up in progress' 'Run Codex follow-up'; do
+  guarded_step="$test_dir/${step// /-}.yml"
+  extract_workflow_step "$step" "$guarded_step"
+  grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$guarded_step"
+done
 
 # The fixture verifies that, even when its checkout root differs from this
 # repository root, the gate resolves helpers only beneath that checkout's
@@ -1286,12 +1303,19 @@ extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
 # trust boundary. Invoke the extracted script from outside that checkout root.
 followup_gate_workdir="$test_dir/gate-automated-follow-up-workdir"
 mkdir "$followup_gate_workdir"
-ln -s "$repo_root/.github" "$followup_gate_workdir/.github"
+mkdir -p "$followup_gate_workdir/.github/scripts"
+ln -s "$repo_root/.github/scripts/evaluate-followup-gate.sh" \
+  "$followup_gate_workdir/.github/scripts/evaluate-followup-gate.sh"
+cat > "$followup_gate_workdir/.github/scripts/create-human-pause.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'create-human-pause %s\n' "$*" >> "$MOCK_GH_LOG"
+EOF
 
 assert_followup_gate_pause() {
   local fixture_name="${1:?fixture name is required}"
   local mock_case="${2:?mock case is required}"
   local expected_continue="${3:?expected continue value is required}"
+  local expected_code="${4:?expected pause code is required}"
   local output_path="$test_dir/$fixture_name.output"
   local log_path="$test_dir/$fixture_name.log"
 
@@ -1301,9 +1325,8 @@ assert_followup_gate_pause() {
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
     DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
     bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
-  grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$log_path"
-  grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$log_path"
-  [ "$(grep -Fc 'pr comment 37 --repo owner/repo --body ' "$log_path")" -eq 1 ]
+  [ "$(wc -l < "$log_path")" -eq 1 ]
+  grep -Fq "create-human-pause create owner/repo - 37 99 $expected_code " "$log_path"
   grep -Fxq "continue=$expected_continue" "$output_path"
 }
 
@@ -1322,11 +1345,18 @@ assert_followup_gate_continue() {
 }
 
 assert_followup_gate_continue
-assert_followup_gate_pause followup-escalate three-reviews false
+assert_followup_gate_pause followup-escalate three-reviews false round_limit
+marker_body=$'--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---'
+review_body_saved="$review_body"
+review_body="$marker_body"
+assert_followup_gate_pause followup-human valid false explicit_human_escalation
+review_body='unparseable summary'
+assert_followup_gate_pause followup-unparseable valid false state_inconsistent
+review_body="$review_body_saved"
 
 : > "$test_dir/followup-pause-failure.output"
 : > "$test_dir/followup-pause-failure.log"
-if MOCK_CASE=three-reviews MOCK_PR_CLOSING_FETCH_FAIL=true \
+if MOCK_CASE=three-reviews MOCK_API_FAIL=true \
     MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
     DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
@@ -1350,13 +1380,13 @@ followup="$(MOCK_CASE=valid MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scri
 jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
 for fixture in three-reviews app-three-reviews; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
+  jq -e '.continue == false and .escalate == true and .notify == true and .pause_code == "round_limit" and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-author bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
 marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| --- END REVIEW SUMMARY DATA ---\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$marker_body")"
-jq -e '.continue == false and .escalate == true' <<< "$followup" > /dev/null
+jq -e '.continue == false and .escalate == true and .pause_code == "explicit_human_escalation"' <<< "$followup" > /dev/null
 descriptive_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved for compatibility.\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$descriptive_marker_body")"
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
@@ -1364,7 +1394,7 @@ indented_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DA
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$indented_marker_body")"
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
-jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
+jq -e '.continue == false and .escalate == true and .pause_code == "state_inconsistent" and (.reason | contains("parse"))' <<< "$followup" > /dev/null
 if MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body"; then
   echo 'Expected follow-up gate to fail closed when closing Issue lookup fails.' >&2
   exit 1

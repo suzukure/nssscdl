@@ -9,10 +9,11 @@ old_sha="$(printf 'c%.0s' {1..40})"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 export GH_LOG="$work_dir/gh.log"
+export PR_COUNT="$work_dir/pr.count"
 
 export PR_JSON BASE_JSON RELATION_JSON ISSUE_JSON REVIEWS_JSON
 PR_JSON="$(jq -cn --arg head "$head_sha" '
-  {number:37,state:"open",draft:false,merged:false,
+  {number:37,state:"open",draft:false,merged:false,user:{login:"dev[bot]"},
    head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
    base:{ref:"main",repo:{full_name:"owner/repo"}},
    labels:[{name:"ai-followup-in-progress"}]}
@@ -31,7 +32,16 @@ REVIEWS_JSON="$(jq -cn --arg sha "$old_sha" '
 gh() {
   printf '%s\n' "$*" >> "$GH_LOG"
   case "$*" in
-    'api repos/owner/repo/pulls/37') [ "${GH_FAIL:-}" != pr ] || return 1; printf '%s\n' "$PR_JSON" ;;
+    'api repos/owner/repo/pulls/37')
+      [ "${GH_FAIL:-}" != pr ] || return 1
+      count="$(cat "$PR_COUNT")"
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$PR_COUNT"
+      if [ "$count" -gt 1 ] && [ -n "${FINAL_PR_JSON:-}" ]; then
+        printf '%s\n' "$FINAL_PR_JSON"
+      else
+        printf '%s\n' "$PR_JSON"
+      fi ;;
     'api repos/owner/repo/git/ref/heads/main') [ "${GH_FAIL:-}" != base ] || return 1; printf '%s\n' "$BASE_JSON" ;;
     'pr view 37 --repo owner/repo --json number,headRefOid,closingIssuesReferences')
       [ "${GH_FAIL:-}" != relation ] || return 1; printf '%s\n' "$RELATION_JSON" ;;
@@ -48,6 +58,7 @@ assert_decision() {
   local name="$1" action="$2" code="$3" input="$4" result
   shift 4
   : > "$GH_LOG"
+  echo 0 > "$PR_COUNT"
   result="$(printf '%s\n' "$input" | "$@")"
   if ! jq -e --arg action "$action" --arg code "$code" \
     'keys == ["action","code","reason"] and .action == $action and .code == $code
@@ -55,14 +66,22 @@ assert_decision() {
     printf 'Unexpected decision for %s: %s\n' "$name" "$result" >&2
     exit 1
   fi
-  if [ "$action" = ignore ] && [ "$code" = stale_head ] \
+  if [ "$name" != final-stale ] && [ "$action" = ignore ] && [ "$code" = stale_head ] \
       && grep -q 'pulls/37/reviews' "$GH_LOG"; then
     echo 'Stale dispatch consumed review state.' >&2
     exit 1
   fi
 }
-gate=(bash "$helper" owner/repo review "$base_sha")
+gate=(bash "$helper" owner/repo review dev "$base_sha")
 assert_decision ready proceed ready "$payload" "${gate[@]}"
+FINAL_PR_JSON="$(jq -c '.updated_at="2026-02-01T00:00:00Z" | .mergeable_state="clean"' <<< "$PR_JSON")"
+export FINAL_PR_JSON
+assert_decision irrelevant-metadata proceed ready "$payload" "${gate[@]}"
+FINAL_PR_JSON="$(jq -c '.draft=true' <<< "$PR_JSON")"
+assert_decision state-changed human_required state_changed "$payload" "${gate[@]}"
+FINAL_PR_JSON="$(jq -c --arg sha "$old_sha" '.head.sha=$sha' <<< "$PR_JSON")"
+assert_decision final-stale ignore stale_head "$payload" "${gate[@]}"
+unset FINAL_PR_JSON
 assert_decision malformed human_required invalid_payload '{}' "${gate[@]}"
 assert_decision extra-payload human_required invalid_payload \
   "$(jq -c '.token="untrusted"' <<< "$payload")" "${gate[@]}"
@@ -71,7 +90,7 @@ if [ -s "$GH_LOG" ]; then
   exit 1
 fi
 assert_decision wrong-base human_required base_changed "$payload" \
-  bash "$helper" owner/repo review "$old_sha"
+  bash "$helper" owner/repo review dev "$old_sha"
 
 PR_JSON="$(jq -c '.state="closed"' <<< "$PR_JSON")"
 assert_decision terminal ignore terminal_pr "$payload" "${gate[@]}"
@@ -80,6 +99,16 @@ assert_decision draft human_required draft_pr "$payload" "${gate[@]}"
 PR_JSON="$(jq -c '.draft=false' <<< "$PR_JSON")"
 assert_decision stale ignore stale_head \
   "$(jq -c --arg sha "$old_sha" '.validated_sha=$sha' <<< "$payload")" "${gate[@]}"
+if grep -q 'git/ref/heads/main' "$GH_LOG"; then
+  echo 'Stale dispatch reached base lookup.' >&2
+  exit 1
+fi
+PR_JSON="$(jq -c '.user.login="other[bot]"' <<< "$PR_JSON")"
+assert_decision author human_required untrusted_author "$payload" "${gate[@]}"
+PR_JSON="$(jq -c '.user.login="dev[bot]"' <<< "$PR_JSON")"
+RELATION_JSON="$(jq -c --arg sha "$old_sha" '.headRefOid=$sha' <<< "$RELATION_JSON")"
+assert_decision relation-stale ignore stale_head "$payload" "${gate[@]}"
+RELATION_JSON="$(jq -c --arg sha "$head_sha" '.headRefOid=$sha' <<< "$RELATION_JSON")"
 
 PR_JSON="$(jq -c '.head.repo.full_name="other/repo"' <<< "$PR_JSON")"
 assert_decision fork human_required invalid_pr "$payload" "${gate[@]}"

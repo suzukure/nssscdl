@@ -13,14 +13,17 @@ emit() {
 human() { emit human_required "$1" "$2"; exit 0; }
 ignore() { emit ignore "$1" "$2"; exit 0; }
 
-[ "$#" -eq 3 ] || human invalid_context 'Expected repository, reviewer App slug, and trusted base SHA.'
+[ "$#" -eq 4 ] || human invalid_context 'Expected repository, reviewer App slug, developer App slug, and trusted base SHA.'
 repo="$1"
 reviewer="$2"
-trusted_base="$3"
+developer="$3"
+trusted_base="$4"
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || human invalid_context 'Invalid repository.'
 [[ "$reviewer" =~ ^[A-Za-z0-9_-]+$ ]] \
   || human invalid_context 'Invalid reviewer identity.'
+[[ "$developer" =~ ^[A-Za-z0-9_-]+$ ]] \
+  || human invalid_context 'Invalid developer identity.'
 [[ "$trusted_base" =~ ^[0-9a-f]{40}$ ]] \
   || human invalid_context 'Invalid trusted base SHA.'
 
@@ -54,12 +57,13 @@ pr_facts="$(jq -cse --arg repo "$repo" --argjson number "$pr_number" '
        or ($p.base.ref | type) != "string"
        or ($p.base.repo.full_name | type) != "string"
        or $p.base.repo.full_name != $repo
+       or ($p.user.login | type) != "string"
        or ($p.labels | type) != "array"
        or ([$p.labels[] | type == "object" and (.name | type == "string")] | all | not)
     then error("pr")
     else {state:$p.state, merged:$p.merged, draft:$p.draft,
           head:$p.head.sha, head_ref:$p.head.ref, base_ref:$p.base.ref,
-          labels:[$p.labels[].name]}
+          author:$p.user.login, labels:([$p.labels[].name] | sort)}
     end
   end
 ' <<< "$pr" 2>/dev/null)" || human invalid_pr 'Current PR metadata is inconsistent.'
@@ -70,6 +74,14 @@ if [ "$state" = closed ]; then
   ignore terminal_pr 'PR is closed or merged.'
 fi
 [ "$merged" = false ] || human invalid_pr 'Open PR has a merged state.'
+if [ "$(jq -r '.head' <<< "$pr_facts")" != "$validated_sha" ]; then
+  ignore stale_head 'Dispatch validation belongs to an older HEAD.'
+fi
+author="$(jq -r '.author' <<< "$pr_facts")"
+if [ "$author" != "$developer" ] && [ "$author" != "${developer}[bot]" ] \
+    && [ "$author" != "app/${developer}" ]; then
+  human untrusted_author 'PR author is not the developer App.'
+fi
 
 base_ref="$(jq -r '.base_ref' <<< "$pr_facts")"
 [[ "$base_ref" =~ ^[A-Za-z0-9_./-]+$ && "$base_ref" != *..* ]] \
@@ -86,6 +98,10 @@ base_sha="$(jq -rse 'if length == 1 and (.[0].object.sha | type) == "string"
 relation="$(gh pr view "$pr_number" --repo "$repo" \
   --json number,headRefOid,closingIssuesReferences)" \
   || human relation_unavailable 'Could not fetch closing Issue relation.'
+relation_head="$(jq -r '.headRefOid // empty' <<< "$relation")"
+if [[ "$relation_head" =~ ^[0-9a-f]{40}$ ]] && [ "$relation_head" != "$validated_sha" ]; then
+  ignore stale_head 'PR HEAD changed while fetching the closing Issue relation.'
+fi
 issue_number="$(jq -rse --arg repo "$repo" --arg head "$(jq -r '.head' <<< "$pr_facts")" \
   --arg branch "$(jq -r '.head_ref' <<< "$pr_facts")" \
   --argjson number "$pr_number" '
@@ -120,10 +136,7 @@ issue_paused="$(jq -rs --argjson number "$issue_number" '
   end
 ' <<< "$issue" 2>/dev/null)" || human invalid_issue 'Closing Issue metadata is invalid.'
 
-current_head="$(jq -r '.head' <<< "$pr_facts")"
-if [ "$current_head" != "$validated_sha" ]; then
-  ignore stale_head 'Dispatch validation belongs to an older HEAD.'
-fi
+current_head="$validated_sha"
 
 [ "$(jq -r '.draft' <<< "$pr_facts")" = false ] \
   || human draft_pr 'Current PR is draft.'
@@ -180,7 +193,23 @@ fi
 if [ "$(jq -r '.head.sha' <<< "$final_pr")" != "$validated_sha" ]; then
   ignore stale_head 'PR HEAD changed while evaluating the dispatch.'
 fi
-if ! jq -e --argjson before "$pr" '. == $before' <<< "$final_pr" >/dev/null; then
+final_facts="$(jq -cse --arg repo "$repo" --argjson number "$pr_number" '
+  if length != 1 or (.[0] | type) != "object" then error("pr")
+  else .[0] as $p |
+    if $p.number != $number or ($p.state != "open" and $p.state != "closed")
+       or ($p.draft | type) != "boolean" or ($p.merged | type) != "boolean"
+       or ($p.head.sha | type) != "string" or ($p.head.ref | type) != "string"
+       or $p.head.repo.full_name != $repo or $p.base.repo.full_name != $repo
+       or ($p.base.ref | type) != "string" or ($p.user.login | type) != "string"
+       or ($p.labels | type) != "array"
+       or ([$p.labels[] | type == "object" and (.name | type == "string")] | all | not)
+    then error("pr")
+    else {state:$p.state, merged:$p.merged, draft:$p.draft,
+          head:$p.head.sha, head_ref:$p.head.ref, base_ref:$p.base.ref,
+          author:$p.user.login, labels:([$p.labels[].name] | sort)}
+    end end
+' <<< "$final_pr" 2>/dev/null)" || human invalid_pr 'Final PR metadata is invalid.'
+if [ "$final_facts" != "$pr_facts" ]; then
   human state_changed 'PR state changed while evaluating the dispatch.'
 fi
 

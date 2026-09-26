@@ -151,7 +151,7 @@ if grep -Eq 'github\.token|^[[:space:]]+GH_TOKEN:' "$regression_workflow"; then
 fi
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
-grep -Fq 'BASE_REF: ${{ github.event.pull_request.base.ref }}' "$repo_root/.github/workflows/claude-review.yml"
+grep -Fq 'BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'git/ref/heads/${BASE_REF}' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq '^[0-9a-f]{40}$' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'steps.build-review-context.outputs.base_sha' "$repo_root/.github/workflows/claude-review.yml"

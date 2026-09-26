@@ -57,6 +57,14 @@ trap 'rm -f "$body_file"' EXIT
   fi
 } > "$body_file"
 
+if [ -n "$commit_id" ]; then
+  current_head="$(gh api "repos/${repo}/pulls/${pr_number}" --jq .head.sha)"
+  [ "$current_head" = "$commit_id" ] || {
+    echo 'Reviewed HEAD changed before verdict POST; refusing stale review.' >&2
+    exit 1
+  }
+fi
+
 jq -n \
   --arg event "$event" \
   --arg commit_id "$commit_id" \

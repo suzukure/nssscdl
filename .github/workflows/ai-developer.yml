@@ -1418,10 +1418,14 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'ai/issue-')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     concurrency:
       group: codex-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
+    outputs:
+      write_result: ${{ steps.repository-write.outputs.result }}
+      ready_done: ${{ steps.ready-traceability.outputs.done }}
+      validation_code: ${{ steps.current-validation.outputs.code }}
     steps:
       - name: Create reviewer App token for identity verification
         id: review-token
@@ -1470,6 +1474,7 @@ jobs:
           REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
           DEVELOPER_APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1477,28 +1482,35 @@ jobs:
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWER_APP_SLUG" "$DEVELOPER_APP_SLUG" "$REVIEW_BODY")"
           continue="$(jq -r .continue <<< "$result")"
           escalate="$(jq -r .escalate <<< "$result")"
-          notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
+          pause_code="$(jq -r .pause_code <<< "$result")"
 
           if [ "$escalate" = 'true' ]; then
-            # The pause helper resolves and labels the PR's closing Issues.
-            bash .github/scripts/apply-human-pause.sh \
-              "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "$reason"
+            case "$pause_code" in
+              round_limit|explicit_human_escalation|state_inconsistent) ;;
+              *) echo 'Invalid automated follow-up pause code.' >&2; exit 1 ;;
+            esac
+            app_id="$(gh api "/apps/$DEVELOPER_APP_SLUG" --jq '.id')"
+            bash .github/scripts/create-human-pause.sh create \
+              "$GITHUB_REPOSITORY" '-' "$PR_NUMBER" "$app_id" \
+              "$pause_code" "$reason"
           fi
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
-          echo "notify=${notify}" >> "$GITHUB_OUTPUT"
           echo "continue=${continue}" >> "$GITHUB_OUTPUT"
 
-      - name: Notify human of review escalation
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.notify == 'true'
+      - name: Mark automated follow-up in progress
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
         env:
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-          ESCALATION_REASON: ${{ steps.followup-gate.outputs.reason }}
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
         run: |
-          bash .github/scripts/notify-human.sh \
-            "${ESCALATION_REASON} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+          set -euo pipefail
+          gh label create ai-followup-in-progress --repo "$GITHUB_REPOSITORY" \
+            --color 0E8A16 --description 'Automated follow-up awaiting validated re-review' --force
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label ai-followup-in-progress
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+            --jq '.labels | any(.name == "ai-followup-in-progress")' | grep -Fxq true
 
       - name: Check out PR branch
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
@@ -2278,6 +2290,18 @@ jobs:
           restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
             "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
 
+          trusted_pause_dir="$RUNNER_TEMP/trusted-human-pause"
+          mkdir -p "$trusted_pause_dir"
+          for helper in create-human-pause human-pause-record list-human-pause-records \
+            validate-human-pause-record-graph decompose-human-pause-record-graph \
+            derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance \
+            reconcile-human-pause-active-pause apply-human-pause \
+            format-human-pause-notification notify-human; do
+            git show "${BASE_SHA}:.github/scripts/${helper}.sh" > "$trusted_pause_dir/${helper}.sh"
+            test "$(git hash-object --no-filters "$trusted_pause_dir/${helper}.sh")" = \
+              "$(git rev-parse "${BASE_SHA}:.github/scripts/${helper}.sh")"
+          done
+
           rm -f -- "$RUNNER_TEMP/codex-diff-guard-contract.json"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
           jq -e '
@@ -2297,23 +2321,46 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
           pause_for_human() {
-            local reason="${1:?pause reason is required}"
+            local pause_reason="${1:?pause reason is required}"
+            local detail="${2:?pause detail is required}"
+            local options=() fingerprint current_head
             if [[ "$HEAD_REF" =~ ^ai/issue-([0-9]+)$ ]]; then
               issue_number="${BASH_REMATCH[1]}"
             else
               issue_number='-'
             fi
-            bash "$RUNNER_TEMP/apply-human-pause.sh" \
-              "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$reason"
+            if [ "$pause_reason" = requirements_change ]; then
+              [ "$issue_number" != '-' ] || exit 1
+              fingerprint="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue_number}" | python3 -c '
+          import hashlib, json, sys
+          body = json.load(sys.stdin)["body"]
+          if not isinstance(body, str): raise ValueError("invalid Issue body")
+          print("sha256:" + hashlib.sha256(body.encode()).hexdigest())
+          ')"
+              options=(--issue-body-fingerprint "$fingerprint")
+            elif [ "$pause_reason" = developer_execution_failed ]; then
+              current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+              if [ "$current_head" = "$EVENT_HEAD" ]; then
+                options=(--paused-head "$current_head" --failed-action fix)
+              else
+                pause_reason=state_inconsistent
+              fi
+            fi
+            app_id="$(gh api "/apps/$APP_SLUG" --jq .id)"
+            bash "$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create \
+              "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER" "$app_id" \
+              "$pause_reason" "$detail" "${options[@]}"
             echo 'continue=false' >> "$GITHUB_OUTPUT"
           }
           if [ ! -s "$CODEX_FINAL" ]; then
-            pause_for_human 'Codex final response is missing; automated follow-up is paused pending a human decision.'
+            pause_for_human developer_execution_failed 'Codex final response is missing; automated follow-up is paused pending a human decision.'
             exit 0
           fi
           set +e
@@ -2321,21 +2368,13 @@ jobs:
           marker_status=$?
           set -e
           if [ "$marker_status" -gt 1 ]; then
-            pause_for_human 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.'
+            pause_for_human state_inconsistent 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.'
             exit 0
           elif [ "$marker_status" -eq 0 ]; then
-            pause_for_human 'Codex detected that a requirements change is required. Automated follow-up is paused for a human decision.'
+            pause_for_human requirements_change 'Codex detected that a requirements change is required. Automated follow-up is paused for a human decision.'
           else
             echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Notify human of Codex follow-up requirement escalation
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue != 'true'
-        env:
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-        run: >-
-          bash "$RUNNER_TEMP/notify-human.sh"
-          "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Evaluate trusted follow-up diff guard
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'
@@ -2344,6 +2383,8 @@ jobs:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2420,9 +2461,6 @@ jobs:
           else
             issue_number='-'
           fi
-          bash "$RUNNER_TEMP/apply-human-pause.sh" \
-            "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER"
-
           diagnostics="$reason"
           if [ "$parsed" = true ]; then
             diagnostics+=$'\n\n'"Result: ${result}."
@@ -2444,7 +2482,23 @@ jobs:
             diagnostics+=$'\n\n'"Result: unavailable."
             diagnostics+=$'\n'"Metrics: unavailable"
           fi
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$diagnostics"
+          pause_reason=diff_guard_error
+          options=()
+          if [ "$result" = stop ] && [ "$parsed" = true ]; then
+            pause_reason=diff_guard_exceeded
+            [ "$issue_number" != '-' ] || exit 1
+            fingerprint="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue_number}" | python3 -c '
+          import hashlib, json, sys
+          body = json.load(sys.stdin)["body"]
+          if not isinstance(body, str): raise ValueError("invalid Issue body")
+          print("sha256:" + hashlib.sha256(body.encode()).hexdigest())
+          ')"
+            options=(--issue-body-fingerprint "$fingerprint")
+          fi
+          app_id="$(gh api "/apps/$APP_SLUG" --jq .id)"
+          bash "$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create \
+            "$GITHUB_REPOSITORY" "$issue_number" "$PR_NUMBER" "$app_id" \
+            "$pause_reason" "$diagnostics" "${options[@]}"
 
           {
             echo '### AI Developer follow-up diff guard'
@@ -2469,15 +2523,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo 'continue=false' >> "$GITHUB_OUTPUT"
 
-      - name: Notify human of follow-up diff guard stop
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'
-        env:
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-        run: >-
-          bash "$RUNNER_TEMP/notify-human.sh"
-          "AI Developer follow-up diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
-
       - name: Commit and answer review
+        id: repository-write
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
@@ -2495,6 +2542,10 @@ jobs:
           git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"
 
           if git diff --cached --quiet; then
+            current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+            [ "$current_head" = "$EVENT_HEAD" ] || { echo 'No-diff PR HEAD changed.' >&2; exit 1; }
+            printf 'result=no_diff\nsha=%s\nstarted_at=%s\n' \
+              "$current_head" "$(date -u +%s)" >> "$GITHUB_OUTPUT"
             report_file="$(mktemp)"
             {
               echo '### Validation provenance'
@@ -2515,10 +2566,10 @@ jobs:
           git commit -m "Address Claude review for PR #${PR_NUMBER}"
           git push origin "HEAD:${HEAD_REF}"
           expected_head="$(git rev-parse HEAD)"
+          started_at="$(date -u +%s)"
           for attempt in 1 2 3 4 5; do
             current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
             if [ "$current_head" = "$expected_head" ]; then
-              gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
               break
             fi
             if [ "$current_head" != "$EVENT_HEAD" ]; then
@@ -2531,6 +2582,8 @@ jobs:
             fi
             sleep 2
           done
+          printf 'result=pushed\nsha=%s\nstarted_at=%s\n' \
+            "$expected_head" "$started_at" >> "$GITHUB_OUTPUT"
           report_file="$(mktemp)"
           {
             echo '### Validation provenance'
@@ -2545,6 +2598,82 @@ jobs:
           } > "$report_file"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
           rm -f "$report_file"
+
+      - name: Ready PR for current-head traceability
+        id: ready-traceability
+        if: steps.repository-write.outputs.result == 'pushed' || steps.repository-write.outputs.result == 'no_diff'
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+          echo 'done=true' >> "$GITHUB_OUTPUT"
+
+      - name: Validate current HEAD and dispatch re-review
+        id: current-validation
+        if: steps.repository-write.outputs.result == 'pushed' || steps.repository-write.outputs.result == 'no_diff'
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          VALIDATED_SHA: ${{ steps.repository-write.outputs.sha }}
+          WRITE_RESULT: ${{ steps.repository-write.outputs.result }}
+          STARTED_AT: ${{ steps.repository-write.outputs.started_at }}
+          REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "${BASE_SHA}:.github/scripts/snapshot-current-head-validation.py" > "$RUNNER_TEMP/snapshot-current-head-validation.py"
+          git show "${BASE_SHA}:.github/scripts/evaluate-current-head-validation.sh" > "$RUNNER_TEMP/evaluate-current-head-validation.sh"
+          round="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" |
+            jq -s --arg slug "$REVIEWER_APP_SLUG" '[.[][] | select(.state == "CHANGES_REQUESTED" and
+              (.user.login == $slug or .user.login == ($slug + "[bot]") or .user.login == ("app/" + $slug)))] | length')"
+          [ "$round" -ge 1 ] && [ "$round" -le 2 ]
+          deadline=$((STARTED_AT + 600))
+          while :; do
+            now="$(date -u +%s)"
+            [ "$now" -lt "$deadline" ] || {
+              echo 'code=validation_timeout' >> "$GITHUB_OUTPUT"
+              echo 'Current-head validation timeout.' >&2
+              exit 1
+            }
+            snapshot="$(python3 "$RUNNER_TEMP/snapshot-current-head-validation.py" \
+              "$GITHUB_REPOSITORY" "$PR_NUMBER" "$VALIDATED_SHA" "$round" "$WRITE_RESULT" "$STARTED_AT" "$GITHUB_RUN_ID")"
+            decision="$(bash "$RUNNER_TEMP/evaluate-current-head-validation.sh" <<< "$snapshot")"
+            action="$(jq -r .action <<< "$decision")"
+            code="$(jq -r .code <<< "$decision")"
+            case "$action" in
+              ready)
+                [ "$code" = success ] || exit 1
+                break ;;
+              wait) sleep 10 ;;
+              stop)
+                echo "code=$code" >> "$GITHUB_OUTPUT"
+                echo "Current-head validation stopped: $code" >&2
+                exit 1 ;;
+              *) exit 1 ;;
+            esac
+          done
+          payload="$(jq -cn --argjson pr_number "$PR_NUMBER" --arg validated_sha "$VALIDATED_SHA" \
+            --argjson round "$round" '{pr_number:$pr_number,validated_sha:$validated_sha,round:$round}')"
+          echo 'code=dispatch_failed' >> "$GITHUB_OUTPUT"
+          jq -cn --argjson payload "$payload" \
+            '{event_type:"claude-auto-rereview",client_payload:$payload}' |
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
+
+      - name: Clear machine state after human pause
+        if: always() && steps.followup-gate.outputs.continue == 'true' && (steps.codex-requirements-gate.outputs.continue == 'false' || steps.followup-diff-guard.outputs.continue == 'false')
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+            --jq '.labels | any(.name == "human-review-required")' | grep -Fxq true
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
 
   handle-claude-followup-failure:
     name: Handle Claude follow-up failure
@@ -2582,6 +2711,9 @@ jobs:
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           DRAFT_RESULT: ${{ needs.draft-after-claude-changes.result }}
           FOLLOWUP_RESULT: ${{ needs.respond-to-claude.result }}
+          WRITE_RESULT: ${{ needs.respond-to-claude.outputs.write_result }}
+          READY_DONE: ${{ needs.respond-to-claude.outputs.ready_done }}
+          VALIDATION_CODE: ${{ needs.respond-to-claude.outputs.validation_code }}
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
@@ -2604,7 +2736,18 @@ jobs:
             reason=developer_execution_failed
             options=(--paused-head "$current_head" --failed-action fix)
           fi
-          detail="Claude follow-up failure; draft job: ${DRAFT_RESULT}; follow-up job: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; current PR HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "$READY_DONE" = true ]; then
+            options=()
+            case "$VALIDATION_CODE" in
+              validation_timeout|round_limit|validation_failed) reason="$VALIDATION_CODE" ;;
+              *) reason=state_inconsistent ;;
+            esac
+          fi
+          detail="Claude follow-up failure; draft job: ${DRAFT_RESULT}; follow-up job: ${FOLLOWUP_RESULT}; write: ${WRITE_RESULT:-missing}; validation: ${VALIDATION_CODE:-missing}; event HEAD: ${EVENT_HEAD:-missing}; current PR HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           bash .github/scripts/create-human-pause.sh create \
             "$GITHUB_REPOSITORY" '-' "$PR_NUMBER" "$app_id" \
             "$reason" "$detail" "${options[@]}"
+          if gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+              --jq '.labels | any(.name == "ai-followup-in-progress")' | grep -Fxq true; then
+            gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
+          fi
