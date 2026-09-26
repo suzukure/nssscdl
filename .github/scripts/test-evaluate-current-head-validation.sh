@@ -9,13 +9,15 @@ base="$(jq -cn --arg a "$sha_a" '{
   automated_followup_count: 1,
   branch_mutating_runs: [{id: 10, sha: $a, status: "success"}],
   branch_mutating_runs_complete: true,
-  checks: [{name: "PR Traceability / Linked Issue", sha: $a, status: "success"}],
+  checks: [{id: 20, name: "PR Traceability / Linked Issue", sha: $a,
+            created_at: 1010, started_at: 1020, status: "success"}],
   checks_complete: true,
   current_head_sha: $a,
   diff_guard_passed: true,
   followup_gate_passed: true,
   human_pause: false,
   now: 1050,
+  ready_started_at: 1010,
   repository_write: "pushed",
   requirements_gate_passed: true,
   validation_sha: $a,
@@ -44,7 +46,7 @@ assert_decision runs-incomplete wait pending "$(case_snapshot '.branch_mutating_
 assert_decision traceability-missing wait pending "$(case_snapshot '.checks = []')"
 assert_decision check-failed stop validation_failed "$(case_snapshot '.checks[0].status = "failure"')"
 assert_decision run-failed stop validation_failed "$(case_snapshot '.branch_mutating_runs[0].status = "failure"')"
-assert_decision immediate-failure stop validation_failed "$(case_snapshot '.checks[0].status = "failure" | .now = 1001')"
+assert_decision immediate-failure stop validation_failed "$(case_snapshot '.checks[0].status = "failure" | .now = 1021')"
 assert_decision pending-timeout stop validation_timeout "$(case_snapshot '.checks[0].status = "pending" | .now = 1600')"
 assert_decision run-timeout stop validation_timeout "$(case_snapshot '.branch_mutating_runs[0].status = "pending" | .now = 1600')"
 assert_decision deadline stop validation_timeout "$(case_snapshot '.now = 1600')"
@@ -57,7 +59,7 @@ assert_decision round-limit stop round_limit "$(case_snapshot '.automated_follow
 
 # A new HEAD needs fresh checks and a matching validation SHA. Its original
 # write time remains fixed even when the new HEAD later qualifies.
-changed_head="$(jq -c --arg b "$sha_b" '.current_head_sha = $b | .checks += [{name: "PR Traceability / Linked Issue", sha: $b, status: "pending"}] | .branch_mutating_runs += [{id: 11, sha: $b, status: "pending"}]' <<< "$base")"
+changed_head="$(jq -c --arg b "$sha_b" '.current_head_sha = $b | .checks += [{id: 21, name: "PR Traceability / Linked Issue", sha: $b, created_at: 1100, started_at: null, status: "pending"}] | .branch_mutating_runs += [{id: 11, sha: $b, status: "pending"}]' <<< "$base")"
 assert_decision stale-head wait stale_head "$changed_head"
 assert_decision new-head-pending wait pending "$(jq -c --arg b "$sha_b" '.validation_sha = $b' <<< "$changed_head")"
 new_head_success="$(jq -c --arg b "$sha_b" '.validation_sha = $b | .checks[1].status = "success" | .branch_mutating_runs[1].status = "success" | .now = 1599' <<< "$changed_head")"
@@ -65,12 +67,27 @@ assert_decision new-head-success ready success "$new_head_success"
 assert_decision stale-head-timeout stop validation_timeout "$(jq -c '.now = 1600' <<< "$changed_head")"
 assert_decision new-head-timeout stop validation_timeout "$(jq -c '.now = 1600' <<< "$new_head_success")"
 
+# Draft checks on the current HEAD do not prove the later Ready cycle.
+draft_checks="$(case_snapshot '.checks[0].created_at = 1001 | .checks[0].started_at = 1002 | .ready_started_at = 1030')"
+assert_decision draft-success wait pending "$draft_checks"
+assert_decision draft-failure wait pending "$(jq -c '.checks[0].status = "failure"' <<< "$draft_checks")"
+assert_decision draft-skipped wait pending "$(jq -c '.checks[0].status = "skipped"' <<< "$draft_checks")"
+assert_decision ready-success ready success "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: 1032, status: "success"}]' <<< "$draft_checks")"
+assert_decision ready-failure stop validation_failed "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: 1032, status: "failure"}]' <<< "$draft_checks")"
+assert_decision ready-pending wait pending "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: null, status: "pending"}]' <<< "$draft_checks")"
+assert_decision ready-skipped stop validation_failed "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: null, status: "skipped"}]' <<< "$draft_checks")"
+assert_decision started-before-ready wait pending "$(case_snapshot '.checks[0].created_at = 1035 | .checks[0].started_at = 1020 | .ready_started_at = 1030')"
+
 # Unknown API/check states and malformed or partial snapshots cannot qualify.
 assert_decision api-failure stop invalid_snapshot "$(case_snapshot '.checks[0].status = "error"')"
 assert_decision unknown-check stop invalid_snapshot "$(case_snapshot '.checks[0].status = "neutral"')"
 assert_decision unknown-run stop invalid_snapshot "$(case_snapshot '.branch_mutating_runs[0].status = "unknown"')"
 assert_decision missing-field stop invalid_snapshot "$(case_snapshot 'del(.checks_complete)')"
 assert_decision duplicate-check stop invalid_snapshot "$(case_snapshot '.checks += [.checks[0]]')"
+assert_decision duplicate-check-id stop invalid_snapshot "$(case_snapshot '.checks += [.checks[0] | .name = "Other"]')"
+assert_decision bad-created-at stop invalid_snapshot "$(case_snapshot '.checks[0].created_at = "yesterday"')"
+assert_decision bad-started-at stop invalid_snapshot "$(case_snapshot '.checks[0].started_at = "yesterday"')"
+assert_decision bad-ready-time stop invalid_snapshot "$(case_snapshot '.ready_started_at = "yesterday"')"
 assert_decision duplicate-run stop invalid_snapshot "$(case_snapshot '.branch_mutating_runs += [.branch_mutating_runs[0]]')"
 assert_decision future-window stop invalid_snapshot "$(case_snapshot '.now = 999')"
 assert_decision extra-field stop invalid_snapshot "$(case_snapshot '.codex_report = "tests passed"')"
