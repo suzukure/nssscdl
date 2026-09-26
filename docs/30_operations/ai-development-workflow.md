@@ -481,6 +481,10 @@ Webhook登録、通知確認、main反映後のEnd-to-End確認はIssue #46で�
 
 `pull_request` workflowはdefault branchにworkflowファイルが存在してから通常運用を開始する。初回導入PRは管理者が内容を確認し、reviewer Appによる一時レビューまたは手動レビューを経てマージする。通常の自動マージは `ai/issue-*` だけに限定されるため、bootstrap用ブランチは自動マージ対象外である。
 
+`/ai resume develop` consumer自身の導入PRが `requirements_change` のactive pauseに入ると、consumer未導入のmainからは正式resumeできない。#483 / PR #484で起きたこのbootstrap deadlockでは、`human-review-required` だけを手動解除してtrusted active pause recordを孤児化させず、pauseした元Issue / PRをopenのまま維持する。Code Owner自身がbootstrap PR authorだとself-approvalではRulesetのCode Owner承認を満たせないため、Code Owner保護やRulesetを弱めない。
+
+復旧は、停止した導入PRの実装差分を保ったまま、別のbootstrap Issueのcanonical `ai/issue-N` branchを通常のIssue起点Developer経路で更新し、Developer App authorのDraft PRとして先行反映する。#485ではsource commit `cb72d3606549ab9ec5287ff3b399425df08150b6` 由来の実装差分を変更せず、追加差分を本運用文書だけに限定する。source commit由来の実装差分、追加した運用文書差分、closing Issueと後継Issueのtraceabilityを確認し、そのPRで通常のAI Workflow Regression / PR Traceability / Claude Reviewと独立した人間Code Owner reviewを受けてから、protected-pathの手動mergeでmainへ反映する。既存reviewを新PRの承認として流用しない。main反映後に元Issue / PRのactive pauseを正式な `/ai resume develop` でconsumeして元のlifecycleを再開する。#485の後継 #483の完了条件と実施順序はclosing Issue本文の `Scope-out impact and follow-up` を正本とする。
+
 Actionsが失敗した場合は、失敗step、Appのインストール先・権限、Repository secret/variable名、OIDC federation ruleの対象を確認する。モデルpreflightまたはモデル実行stepで失敗した場合は `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` の設定有無と、指定モデルが現在のAnthropic workspaceまたはOpenAI API projectで利用可能かを確認する。secret値とRepository variable値はログへ出さない。モデルIDについては前述のとおりIssue/PRの変更履歴・検証証跡へ記録してよいが、ログへは出さない。
 
 `.github/scripts/**` を変更した場合、または認可・信頼境界・closing Issue・merge gateのロジックを変更した場合は次を実行し、fixtureを確認する。
