@@ -412,6 +412,7 @@ jobs:
           bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}"
 
       - name: Gate Claude review entry
+        if: github.event_name != 'repository_dispatch' || steps.auto-entry.outputs.action == 'proceed'
         id: review-entry
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}

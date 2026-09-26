@@ -32,6 +32,23 @@ grep -Fq 'evaluate-claude-review-entry-gate.sh' "$review"
 grep -Fq 'echo '\''accepted=true'\'' >> "$GITHUB_OUTPUT"' "$review"
 grep -Fq 'Reviewed HEAD changed before verdict submission.' "$review"
 
+# Every ignored dispatch must skip the common gate and all of its prerequisites.
+# The entry-gate fixture exercises stale_head, duplicate_review, and terminal_pr.
+for step in 'Resolve review source' 'Check out pull request' \
+            'Build review context' 'Gate Claude review entry'; do
+  actual="$(awk -v step="$step" '
+    $0 == "      - name: " step { found = 1; next }
+    found { print; exit }
+  ' "$review")"
+  test "$actual" = "        if: github.event_name != 'repository_dispatch' || steps.auto-entry.outputs.action == 'proceed'"
+done
+grep -Fq "if: steps.review-entry.outputs.continue == 'true'" "$review"
+grep -Fq "always() && github.event_name == 'repository_dispatch' && needs.review.result == 'failure'" "$review"
+for code in stale_head duplicate_review terminal_pr; do
+  grep -Eq "assert_decision [^ ]+ ignore ${code} " \
+    "$root/.github/scripts/test-evaluate-claude-auto-rereview-entry-gate.sh"
+done
+
 grep -Fq '"name": "PR Traceability / Linked Issue"' "$snapshot"
 grep -Fq 'run.get("workflow_id") == workflow["id"]' "$snapshot"
 grep -Fq 'job.get("name") == "Linked Issue"' "$snapshot"
