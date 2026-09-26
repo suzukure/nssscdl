@@ -6,6 +6,7 @@ helper="$repo_root/.github/scripts/consume-ai-resume-develop.sh"
 workflow="$repo_root/.github/workflows/ai-developer.yml"
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
+MOCK_DISPATCH='{"version":1,"target":"pr:37","action":"develop","actor":"alice","source_pause_id":"101","reason":"requirements_change","closing_issue_number":36,"pr_number":37,"paused_head":null,"prepared_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pause_issue_body_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prepared_issue_body_fingerprint":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","follow_up_issue":null}'
 
 gh() { echo 'Malformed dispatch reached GitHub.' >&2; return 1; }
 export -f gh
@@ -21,9 +22,21 @@ grep -Fq 'types: [ai-resume-develop]' "$workflow"
 grep -Fq 'bash .github/scripts/parse-ai-resume-command.sh' "$workflow"
 grep -Fq 'bash .github/scripts/build-ai-resume-prepare-context.sh' "$workflow"
 grep -Fq 'bash .github/scripts/prepare-ai-resume.sh' "$workflow"
-grep -Fq 'group: codex-issue-${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.closing_issue_number || github.event.issue.number }}' "$workflow"
+grep -Fq 'group: codex-issue-${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.dispatch.closing_issue_number || github.event.issue.number }}' "$workflow"
+grep -Fq 'RESUME_DISPATCH: ${{ toJSON(github.event.client_payload.dispatch) }}' "$workflow"
 grep -Fq 'bash .github/scripts/consume-ai-resume-develop.sh' "$workflow"
 grep -Fq 'needs.develop-from-issue.outputs.resume_accepted' "$workflow"
+awk '/^          jq -cn --argjson payload / {print; getline; print; exit}' "$workflow" > "$test_dir/build-dispatch.sh"
+[ -s "$test_dir/build-dispatch.sh" ]
+result="$(jq -cn --argjson dispatch "$MOCK_DISPATCH" '{result:"prepared",dispatch:$dispatch}')"
+RUNNER_TEMP="$test_dir"
+source "$test_dir/build-dispatch.sh"
+jq -e --argjson snapshot "$MOCK_DISPATCH" '
+  (keys == ["client_payload","event_type"]) and .event_type == "ai-resume-develop" and
+  (.client_payload | type == "object" and (keys == ["dispatch","version"]) and
+    (keys | length) <= 10 and .version == 1 and .dispatch == $snapshot and
+    (.dispatch | keys | length) == 13)
+' "$test_dir/resume-dispatch.json" >/dev/null
 python3 - "$helper" <<'PY'
 from pathlib import Path
 import sys
@@ -73,7 +86,6 @@ esac
 STUB
   chmod +x "$test_dir/scripts/$stage.sh"
 done
-MOCK_DISPATCH='{"version":1,"target":"pr:37","action":"develop","actor":"alice","source_pause_id":"101","reason":"requirements_change","closing_issue_number":36,"pr_number":37,"paused_head":null,"prepared_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pause_issue_body_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prepared_issue_body_fingerprint":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","follow_up_issue":null}'
 MOCK_LOG="$test_dir/gh.log"
 MOCK_REMOVED="$test_dir/removed"
 MOCK_DRAFT="$test_dir/draft"

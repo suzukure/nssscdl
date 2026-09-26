@@ -58,7 +58,7 @@ jobs:
             exit 1
           fi
           jq -cn --argjson payload "$(jq -c .dispatch <<< "$result")" \
-            '{event_type:"ai-resume-develop",client_payload:$payload}' > "$RUNNER_TEMP/resume-dispatch.json"
+            '{event_type:"ai-resume-develop",client_payload:{version:1,dispatch:$payload}}' > "$RUNNER_TEMP/resume-dispatch.json"
           gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" \
             --input "$RUNNER_TEMP/resume-dispatch.json" >/dev/null
 
@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}
     concurrency:
-      group: codex-issue-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.closing_issue_number || github.event.issue.number }}
+      group: codex-issue-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch.closing_issue_number || github.event.issue.number }}
       cancel-in-progress: false
     outputs:
       pre_write_remote_head: ${{ steps.remote-head.outputs.head }}
@@ -138,7 +138,7 @@ jobs:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           AI_RESUME_MAX_HISTORY_PAGES: '10'
-          RESUME_DISPATCH: ${{ toJSON(github.event.client_payload) }}
+          RESUME_DISPATCH: ${{ toJSON(github.event.client_payload.dispatch) }}
         shell: bash
         run: |
           set -euo pipefail
