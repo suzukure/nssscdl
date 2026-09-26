@@ -145,14 +145,15 @@ review_facts="$(jq -cs --arg slug "$reviewer" --arg head "$current_head" '
                     or .user.login == ("app/" + $slug)) ] as $mine |
     [$mine[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") |
       . + {submitted_epoch: (.submitted_at | fromdateiso8601)}] as $formal |
-    (if ($formal | length) == 0 then null else ($formal | max_by(.submitted_epoch)) end) as $latest |
+    [$formal[] | select(.commit_id == $head)] as $current_head_formal |
+    (if ($current_head_formal | length) == 0 then null
+     else ($current_head_formal | max_by(.submitted_epoch)) end) as $latest |
     if $latest != null and
-       ([$formal[] | select(.submitted_epoch == $latest.submitted_epoch)] | length) != 1
+       ([$current_head_formal[] | select(.submitted_epoch == $latest.submitted_epoch)] | length) != 1
     then error("ambiguous review order")
     else
     {round: ([$mine[] | select(.state == "CHANGES_REQUESTED")] | length),
-     approved_head: ($latest != null and $latest.state == "APPROVED"
-                     and $latest.commit_id == $head)}
+     approved_head: ($latest != null and $latest.state == "APPROVED")}
     end
   end
 ' <<< "$reviews" 2>/dev/null)" || human invalid_reviews 'Review history is invalid.'

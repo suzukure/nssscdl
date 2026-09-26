@@ -123,6 +123,9 @@ REVIEWS_JSON="$(jq -c --arg sha "$head_sha" \
 assert_decision duplicate-no-label ignore duplicate_review "$payload" "${gate[@]}"
 PR_JSON="$(jq -c '.labels=[{name:"ai-followup-in-progress"}]' <<< "$PR_JSON")"
 assert_decision duplicate-with-label ignore duplicate_review "$payload" "${gate[@]}"
+REVIEWS_JSON="$(jq -c '.[0].submitted_at="2026-01-03T00:00:00Z"' <<< "$REVIEWS_JSON")"
+assert_decision newer-stale-change-request ignore duplicate_review "$payload" "${gate[@]}"
+REVIEWS_JSON="$(jq -c '.[0].submitted_at="2026-01-01T00:00:00Z"' <<< "$REVIEWS_JSON")"
 REVIEWS_JSON="$(jq -c --arg sha "$head_sha" '.[0].commit_id=$sha' <<< "$REVIEWS_JSON")"
 assert_decision no-diff-change-request-then-approved ignore duplicate_review \
   "$payload" "${gate[@]}"
