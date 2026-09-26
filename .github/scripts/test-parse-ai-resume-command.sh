@@ -3,6 +3,34 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 helper="$repo_root/.github/scripts/parse-ai-resume-command.sh"
+workflow="$repo_root/.github/workflows/ai-developer.yml"
+
+# Run the producer's actual shell expression and capture its parser input.
+test_dir="$(mktemp -d)"
+trap 'rm -rf "$test_dir"' EXIT
+awk '
+  /^          command="\$\(jq -cn --arg body / { in_command = 1 }
+  in_command { sub(/^          /, ""); print; if (/parse-ai-resume-command.sh\)"$/) exit }
+' "$workflow" > "$test_dir/producer.sh"
+[ "$(wc -l < "$test_dir/producer.sh")" -eq 3 ]
+(
+  cd "$repo_root"
+  COMMENT_BODY='/ai resume develop'
+  COMMENT_ACTOR=alice
+  COMMENT_ASSOCIATION=OWNER
+  bash() {
+    if [ "$1" = .github/scripts/parse-ai-resume-command.sh ]; then
+      cat > "$test_dir/envelope.json"
+      command bash "$@" < "$test_dir/envelope.json"
+    else
+      command bash "$@"
+    fi
+  }
+  source "$test_dir/producer.sh"
+  jq -e '. == {result:"accepted",actor:"alice",action:"develop"}' <<< "$command" > /dev/null
+)
+jq -e '. == {body:"/ai resume develop",actor:"alice",author_association:"OWNER"}' \
+  "$test_dir/envelope.json" > /dev/null
 
 command_input() {
   jq -cn --arg body "$1" --arg association "${2:-OWNER}" \
