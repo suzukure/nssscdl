@@ -35,11 +35,12 @@ required = [
     'derive-human-pause-pre-resume-state.sh',
     'reconcile-human-pause-resume-acceptance.sh',
     'reconcile-human-pause-active-pause.sh',
-    'gh issue edit "$issue"', 'gh issue edit "$pr"',
+    'gh pr ready "$pr"', 'gh issue edit "$issue"', 'gh issue edit "$pr"',
 ]
 for token in required:
     assert token in body, token
 assert body.index('prepare-ai-resume.sh') < body.index('human-pause-record.sh" create')
+assert body.index('gh pr ready "$pr"') < body.index('human-pause-record.sh" create')
 assert body.index('reconcile-human-pause-active-pause.sh') < body.index('gh issue edit "$issue"')
 assert body.index('gh issue edit "$issue"') < body.index('gh issue edit "$pr"')
 PY
@@ -75,13 +76,20 @@ done
 MOCK_DISPATCH='{"version":1,"target":"pr:37","action":"develop","actor":"alice","source_pause_id":"101","reason":"requirements_change","closing_issue_number":36,"pr_number":37,"paused_head":null,"prepared_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pause_issue_body_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prepared_issue_body_fingerprint":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","follow_up_issue":null}'
 MOCK_LOG="$test_dir/gh.log"
 MOCK_REMOVED="$test_dir/removed"
-export MOCK_DISPATCH MOCK_LOG MOCK_REMOVED
+MOCK_DRAFT="$test_dir/draft"
+printf 'false\n' > "$MOCK_DRAFT"
+export MOCK_DISPATCH MOCK_LOG MOCK_REMOVED MOCK_DRAFT
 gh() {
   printf '%s\n' "$*" >> "$MOCK_LOG"
   case "$*" in
     'api /apps/dev --jq .id') printf '99\n' ;;
     *'/issues/37/comments?per_page=100&page=1'*) printf '[{"id":150,"body":"/ai resume develop","user":{"login":"alice"},"author_association":"OWNER"}]\n' ;;
     *'/issues/37/comments'*) printf '{"id":200}\n' ;;
+    'pr view 37 --repo owner/repo --json number,state,isDraft')
+      jq -cn --argjson draft "$(cat "$MOCK_DRAFT")" '{number:37,state:"OPEN",isDraft:$draft}' ;;
+    'pr ready 37 --repo owner/repo --undo')
+      [ "${MOCK_FAIL_DRAFT:-false}" != true ] || return 1
+      printf 'true\n' > "$MOCK_DRAFT" ;;
     'issue view 36'*|'issue view 37'*)
       number="$3"
       if grep -Fxq "$number" "$MOCK_REMOVED" 2>/dev/null; then
@@ -102,6 +110,16 @@ grep -Fxq 'issue_number=36' "$test_dir/output"
 grep -Fxq 'accepted=true' "$test_dir/output"
 [ "$(cat "$MOCK_REMOVED")" = $'36\n37' ]
 [ "$(grep -c 'api -X POST /repos/owner/repo/issues/37/comments ' "$MOCK_LOG")" -eq 1 ]
+python3 - "$MOCK_LOG" <<'PY'
+from pathlib import Path
+import sys
+lines = Path(sys.argv[1]).read_text().splitlines()
+draft = lines.index('pr ready 37 --repo owner/repo --undo')
+ack = next(i for i, line in enumerate(lines) if line.startswith('api -X POST /repos/owner/repo/issues/37/comments '))
+issue = next(i for i, line in enumerate(lines) if line.startswith('issue edit 36 '))
+pr = next(i for i, line in enumerate(lines) if line.startswith('issue edit 37 '))
+assert draft < lines.index('pr view 37 --repo owner/repo --json number,state,isDraft', draft + 1) < ack < issue < pr
+PY
 if bash "$test_dir/scripts/consume-ai-resume-develop.sh" owner/repo dev "$test_dir/duplicate" \
   <<< "$MOCK_DISPATCH" >/dev/null 2>&1; then
   echo 'Duplicate dispatch passed the paused label gate.' >&2
@@ -110,6 +128,26 @@ fi
 [ "$(grep -c 'api -X POST /repos/owner/repo/issues/37/comments ' "$MOCK_LOG")" -eq 1 ]
 printf '' > "$MOCK_REMOVED"
 printf '' > "$MOCK_LOG"
+printf 'false\n' > "$MOCK_DRAFT"
+export MOCK_FAIL_DRAFT=true
+if bash "$test_dir/scripts/consume-ai-resume-develop.sh" owner/repo dev "$test_dir/draft-failed" \
+  <<< "$MOCK_DISPATCH" >/dev/null 2>&1; then
+  echo 'Draft transition failure incorrectly consumed the pause.' >&2
+  exit 1
+fi
+[ ! -e "$test_dir/draft-failed" ]
+! grep -Eq 'api -X POST|issue edit' "$MOCK_LOG"
+unset MOCK_FAIL_DRAFT
+printf '' > "$MOCK_REMOVED"
+printf '' > "$MOCK_LOG"
+printf 'true\n' > "$MOCK_DRAFT"
+bash "$test_dir/scripts/consume-ai-resume-develop.sh" owner/repo dev "$test_dir/already-draft" \
+  <<< "$MOCK_DISPATCH"
+grep -Fxq 'accepted=true' "$test_dir/already-draft"
+! grep -Fq 'pr ready ' "$MOCK_LOG"
+printf '' > "$MOCK_REMOVED"
+printf '' > "$MOCK_LOG"
+printf 'false\n' > "$MOCK_DRAFT"
 export MOCK_FAIL_PR=true
 if bash "$test_dir/scripts/consume-ai-resume-develop.sh" owner/repo dev "$test_dir/failed" \
   <<< "$MOCK_DISPATCH" >/dev/null 2>&1; then

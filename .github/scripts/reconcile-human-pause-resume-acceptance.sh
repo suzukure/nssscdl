@@ -53,7 +53,9 @@ jq -ce '
            and .records[-1].record.kind == "pause"
            and .records[-1].record.reason == "resume_transition_failed"
            and .records[-1].record.source_pause_id == $accepted[0].pause_id
-           and .records[-1].record.payload.failed_action == "develop"
+           and ($accepted[0].record.payload.action
+             | IN("develop","validate","review","fix","follow-up","no-action"))
+           and .records[-1].record.payload.failed_action == $accepted[0].record.payload.action
         then {status: "active", pause_id: .records[-1].pause_id,
               reason: "resume_transition_failed"}
         else error("invalid post-acceptance transition") end

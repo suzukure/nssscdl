@@ -80,6 +80,25 @@ label_state() {
 [ "$(label_state "$issue")" = present ] || fail 'closing Issue pause label is absent'
 if [ "$pr" != '-' ]; then [ "$(label_state "$pr")" = present ] || fail 'PR pause label is absent'; fi
 
+# A Ready PR would start Claude review when its pause label is removed.
+# Establish and verify Draft before posting the irreversible acceptance.
+if [ "$pr" != '-' ]; then
+  pr_draft_state() {
+    local metadata
+    metadata="$(gh pr view "$pr" --repo "$repo" --json number,state,isDraft)" || return 1
+    jq -er --argjson number "$pr" '
+      if .number == $number and .state == "OPEN" and (.isDraft | type) == "boolean"
+      then if .isDraft then "draft" else "ready" end
+      else error("invalid PR Draft state") end
+    ' <<< "$metadata"
+  }
+  draft_state="$(pr_draft_state)" || fail 'could not verify PR Draft state'
+  if [ "$draft_state" = ready ]; then
+    gh pr ready "$pr" --repo "$repo" --undo || fail 'could not make PR Draft'
+  fi
+  [ "$(pr_draft_state)" = draft ] || fail 'PR Draft state was not confirmed'
+fi
+
 accepted_id=''
 acceptance_attempted=false
 transition_done=false
@@ -134,6 +153,9 @@ jq -e --arg source "$source" --arg accepted "$accepted_id" --argjson record "$re
 jq -e --arg target "$target" '.target == $target and .result == "no_active_pause"' \
   <<< "$active" >/dev/null
 
+if [ "$pr" != '-' ]; then
+  [ "$(pr_draft_state)" = draft ] || { echo 'PR is not Draft before label removal' >&2; false; }
+fi
 gh issue edit "$issue" --repo "$repo" --remove-label human-review-required
 if [ "$pr" != '-' ]; then
   gh issue edit "$pr" --repo "$repo" --remove-label human-review-required
