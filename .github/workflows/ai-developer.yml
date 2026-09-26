@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           command="$(jq -cn --arg body "$COMMENT_BODY" --arg actor "$COMMENT_ACTOR" \
-            --arg author_association "$COMMENT_ASSOCIATION" '{body,actor,author_association}' |
+            --arg author_association "$COMMENT_ASSOCIATION" '{body:$body,actor:$actor,author_association:$author_association}' |
             bash .github/scripts/parse-ai-resume-command.sh)"
           if ! jq -e '.result == "accepted" and .action == "develop"' <<< "$command" >/dev/null; then
             echo 'Resume command rejected or ignored.' >&2
