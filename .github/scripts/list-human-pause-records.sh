@@ -45,9 +45,29 @@ records_jsonl="$tmp_dir/records.jsonl"
 
 # --slurp preserves pagination boundaries. The nested arrays are validated
 # below before flattening so an unexpected API response cannot become state.
-gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
-  "/repos/$repo/issues/$conversation_number/comments" > "$comments_json" \
-  || fail_closed 'could not fetch Conversation comments'
+if [ -n "${AI_RESUME_MAX_HISTORY_PAGES:-}" ]; then
+  is_positive_decimal "$AI_RESUME_MAX_HISTORY_PAGES" || fail_closed 'invalid history page bound'
+  [ "$AI_RESUME_MAX_HISTORY_PAGES" -le 10 ] || fail_closed 'history page bound exceeds 10'
+  : > "$tmp_dir/pages.jsonl"
+  for ((page=1; page<=AI_RESUME_MAX_HISTORY_PAGES; page++)); do
+    gh api -H 'Accept: application/vnd.github+json' \
+      "/repos/$repo/issues/$conversation_number/comments?per_page=100&page=$page" \
+      > "$tmp_dir/page.json" || fail_closed 'could not fetch bounded Conversation page'
+    count="$(jq -r 'if type == "array" then length else error("invalid page") end' "$tmp_dir/page.json")" \
+      || fail_closed 'invalid Conversation page'
+    cat "$tmp_dir/page.json" >> "$tmp_dir/pages.jsonl"
+    printf '\n' >> "$tmp_dir/pages.jsonl"
+    if [ "$count" -lt 100 ]; then break; fi
+    if [ "$page" -eq "$AI_RESUME_MAX_HISTORY_PAGES" ]; then
+      fail_closed 'Conversation history exceeds bounded scan'
+    fi
+  done
+  jq -s '.' "$tmp_dir/pages.jsonl" > "$comments_json" || fail_closed 'could not assemble pages'
+else
+  gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
+    "/repos/$repo/issues/$conversation_number/comments" > "$comments_json" \
+    || fail_closed 'could not fetch Conversation comments'
+fi
 
 jq -e '
   type == "array" and all(.[]; type == "array" and all(.[]; type == "object"))

@@ -5,11 +5,63 @@ on:
     types: [created]
   pull_request_review:
     types: [submitted]
+  repository_dispatch:
+    types: [ai-resume-develop]
 
 permissions:
   contents: read
 
 jobs:
+  prepare-resume-develop:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.comment.body == '/ai resume develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: dev-token
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+      - name: Prepare and dispatch trusted resume command
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          AI_RESUME_MAX_HISTORY_PAGES: '10'
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ASSOCIATION: ${{ github.event.comment.author_association }}
+          TARGET_NUMBER: ${{ github.event.issue.number }}
+          TARGET_KIND: ${{ github.event.issue.pull_request && 'pr' || 'issue' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          command="$(jq -cn --arg body "$COMMENT_BODY" --arg actor "$COMMENT_ACTOR" \
+            --arg author_association "$COMMENT_ASSOCIATION" '{body,actor,author_association}' |
+            bash .github/scripts/parse-ai-resume-command.sh)"
+          if ! jq -e '.result == "accepted" and .action == "develop"' <<< "$command" >/dev/null; then
+            echo 'Resume command rejected or ignored.' >&2
+            exit 1
+          fi
+          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          context="$(bash .github/scripts/build-ai-resume-prepare-context.sh \
+            "$GITHUB_REPOSITORY" "$TARGET_KIND" "$TARGET_NUMBER" "$app_id" <<< "$command")"
+          result="$(bash .github/scripts/prepare-ai-resume.sh <<< "$context")"
+          if ! jq -e '.result == "prepared" and .dispatch.action == "develop"' <<< "$result" >/dev/null; then
+            echo 'Resume PREPARE rejected; active pause remains.' >&2
+            exit 1
+          fi
+          jq -cn --argjson payload "$(jq -c .dispatch <<< "$result")" \
+            '{event_type:"ai-resume-develop",client_payload:$payload}' > "$RUNNER_TEMP/resume-dispatch.json"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            --input "$RUNNER_TEMP/resume-dispatch.json" >/dev/null
+
   gate-issue-entry:
     name: Gate Issue entry
     if: >-
@@ -51,14 +103,20 @@ jobs:
   develop-from-issue:
     name: Develop from Issue
     needs: gate-issue-entry
-    if: needs.gate-issue-entry.outputs.continue == 'true'
+    if: >-
+      always() &&
+      ((github.event_name == 'issue_comment' && needs.gate-issue-entry.outputs.continue == 'true') ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'ai-resume-develop')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}
     concurrency:
-      group: codex-issue-${{ github.event.issue.number }}
+      group: codex-issue-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.closing_issue_number || github.event.issue.number }}
       cancel-in-progress: false
     outputs:
       pre_write_remote_head: ${{ steps.remote-head.outputs.head }}
+      resume_accepted: ${{ steps.resume-gate.outputs.accepted }}
+      issue_number: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
     steps:
       - name: Create developer App token
         id: dev-token
@@ -73,11 +131,37 @@ jobs:
           token: ${{ steps.dev-token.outputs.token }}
           fetch-depth: 0
 
+      - name: Revalidate and consume resume inside Issue concurrency
+        if: github.event_name == 'repository_dispatch'
+        id: resume-gate
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          AI_RESUME_MAX_HISTORY_PAGES: '10'
+          RESUME_DISPATCH: ${{ toJSON(github.event.client_payload) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$RESUME_DISPATCH" |
+            bash .github/scripts/consume-ai-resume-develop.sh "$GITHUB_REPOSITORY" "$APP_SLUG" \
+              "$GITHUB_OUTPUT"
+
+      - name: Recheck normal Issue entry inside Issue concurrency
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(bash .github/scripts/evaluate-issue-entry-gate.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER")"
+          jq -e '.continue == true' <<< "$result" >/dev/null
+
       - name: Capture pre-write remote branch HEAD
         id: remote-head
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
         shell: bash
         run: |
           set -euo pipefail
@@ -125,7 +209,7 @@ jobs:
         id: issue_context
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
         shell: bash
         run: |
           set -euo pipefail
@@ -938,7 +1022,7 @@ jobs:
         id: development-gate
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
@@ -1008,7 +1092,7 @@ jobs:
         id: diff-guard
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
@@ -1170,8 +1254,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
         shell: bash
         run: |
@@ -1222,6 +1305,9 @@ jobs:
             end
           ' <<< "$pr_list")"
           if [ "$pr_number" = - ]; then
+            issue_title="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title \
+              --jq '.title | select(type == "string" and length > 0)')"
+            [ -n "$issue_title" ]
             body_file="$(mktemp)"
             {
               echo "Closes #${ISSUE_NUMBER}"
@@ -1239,7 +1325,7 @@ jobs:
               echo
               echo 'This PR starts as Draft. Keep related corrections here, then have a human mark it Ready for review. Draft updates do not run Claude review. Follow docs/30_operations/ai-development-workflow.md for readiness checks and paused-review recovery.'
             } > "$body_file"
-            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$AI_BRANCH" --draft --title "$ISSUE_TITLE" --body-file "$body_file")"
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$AI_BRANCH" --draft --title "$issue_title" --body-file "$body_file")"
             rm -f "$body_file"
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codex opened ${pr_url} as Draft. Check related corrections and validation, then mark it Ready for review to request Claude review."
           else
@@ -1252,10 +1338,12 @@ jobs:
     needs: [gate-issue-entry, develop-from-issue]
     if: >-
       always() &&
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request == null &&
-      needs.gate-issue-entry.result == 'success' &&
-      needs.gate-issue-entry.outputs.continue == 'true' &&
+      ((github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request == null &&
+        needs.gate-issue-entry.result == 'success' &&
+        needs.gate-issue-entry.outputs.continue == 'true') ||
+       (github.event_name == 'repository_dispatch' &&
+        needs.develop-from-issue.outputs.resume_accepted == 'true')) &&
       needs.develop-from-issue.result != 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -1280,7 +1368,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ needs.develop-from-issue.outputs.issue_number }}
           JOB_RESULT: ${{ needs.develop-from-issue.result }}
           PRE_HEAD: ${{ needs.develop-from-issue.outputs.pre_write_remote_head }}
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}

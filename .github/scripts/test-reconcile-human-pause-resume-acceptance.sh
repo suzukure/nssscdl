@@ -79,6 +79,13 @@ consumed_expected="$(jq -cn --argjson records "[$root_101,$replacement_102,$acce
   '{target: "issue:278", chains: [{records: $records, pre_resume: {status: "active", pause_id: "102", reason: "scope_decision"}, effective: {status: "consumed", pause_id: "102", reason: "scope_decision", accepted_record_id: "103"}}]}')"
 assert_reconciles terminal-matching-acceptance-is-consumed "$consumed_input" "$consumed_expected"
 
+transition_pause="$(jq -cn '{pause_id:"104",record:{kind:"pause",reason:"resume_transition_failed",source_pause_id:"103",payload:{failed_action:"develop"}}}')"
+transition_chain="$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_103" "$transition_pause")"
+transition_expected="$(jq -cn --argjson records "[$root_101,$replacement_102,$accepted_103,$transition_pause]" \
+  '{target:"issue:278",chains:[{records:$records,pre_resume:{status:"active",pause_id:"102",reason:"scope_decision"},effective:{status:"active",pause_id:"104",reason:"resume_transition_failed"}}]}')"
+assert_reconciles accepted-transition-failure-is-active "$(envelope "$transition_chain")" "$transition_expected"
+assert_rejected transition-without-action "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_103" "$(entry 104 pause resume_transition_failed 103)")")"
+
 second_root="$(entry 201 pause round_limit)"
 multiple_input="$(envelope "$consumed_chain" "$(chain "$(pre_resume 201 round_limit)" "$second_root")")"
 multiple_expected="$(jq -cn --argjson consumed "$(jq '.chains[0]' <<< "$consumed_expected")" --argjson root "$second_root" \
