@@ -9,13 +9,15 @@ base="$(jq -cn --arg a "$sha_a" '{
   automated_followup_count: 1,
   branch_mutating_runs: [{id: 10, sha: $a, status: "success"}],
   branch_mutating_runs_complete: true,
-  checks: [{name: "PR Traceability / Linked Issue", sha: $a, status: "success"}],
+  checks: [{id: 20, name: "PR Traceability / Linked Issue", sha: $a, created_at: 1008,
+            started_at: 1010, status: "success"}],
   checks_complete: true,
   current_head_sha: $a,
   diff_guard_passed: true,
   followup_gate_passed: true,
   human_pause: false,
   now: 1050,
+  ready_started_at: 1005,
   repository_write: "pushed",
   requirements_gate_passed: true,
   validation_sha: $a,
@@ -44,7 +46,7 @@ assert_decision runs-incomplete wait pending "$(case_snapshot '.branch_mutating_
 assert_decision traceability-missing wait pending "$(case_snapshot '.checks = []')"
 assert_decision check-failed stop validation_failed "$(case_snapshot '.checks[0].status = "failure"')"
 assert_decision run-failed stop validation_failed "$(case_snapshot '.branch_mutating_runs[0].status = "failure"')"
-assert_decision immediate-failure stop validation_failed "$(case_snapshot '.checks[0].status = "failure" | .now = 1001')"
+assert_decision immediate-failure stop validation_failed "$(case_snapshot '.checks[0].status = "failure" | .now = 1011')"
 assert_decision pending-timeout stop validation_timeout "$(case_snapshot '.checks[0].status = "pending" | .now = 1600')"
 assert_decision run-timeout stop validation_timeout "$(case_snapshot '.branch_mutating_runs[0].status = "pending" | .now = 1600')"
 assert_decision deadline stop validation_timeout "$(case_snapshot '.now = 1600')"
@@ -57,13 +59,22 @@ assert_decision round-limit stop round_limit "$(case_snapshot '.automated_follow
 
 # A new HEAD needs fresh checks and a matching validation SHA. Its original
 # write time remains fixed even when the new HEAD later qualifies.
-changed_head="$(jq -c --arg b "$sha_b" '.current_head_sha = $b | .checks += [{name: "PR Traceability / Linked Issue", sha: $b, status: "pending"}] | .branch_mutating_runs += [{id: 11, sha: $b, status: "pending"}]' <<< "$base")"
+changed_head="$(jq -c --arg b "$sha_b" '.current_head_sha = $b | .checks += [{id: 21, name: "PR Traceability / Linked Issue", sha: $b, created_at: 1019, started_at: 1020, status: "pending"}] | .branch_mutating_runs += [{id: 11, sha: $b, status: "pending"}]' <<< "$base")"
 assert_decision stale-head wait stale_head "$changed_head"
 assert_decision new-head-pending wait pending "$(jq -c --arg b "$sha_b" '.validation_sha = $b' <<< "$changed_head")"
 new_head_success="$(jq -c --arg b "$sha_b" '.validation_sha = $b | .checks[1].status = "success" | .branch_mutating_runs[1].status = "success" | .now = 1599' <<< "$changed_head")"
 assert_decision new-head-success ready success "$new_head_success"
 assert_decision stale-head-timeout stop validation_timeout "$(jq -c '.now = 1600' <<< "$changed_head")"
 assert_decision new-head-timeout stop validation_timeout "$(jq -c '.now = 1600' <<< "$new_head_success")"
+
+# Draft synchronize can produce a skipped check on the same HEAD. Only a
+# distinct check run started after the trusted Ready boundary is evidence.
+draft_skip="$(case_snapshot '.checks = [{id:19,name:"PR Traceability / Linked Issue",sha:.current_head_sha,created_at:1001,started_at:1002,status:"failure"}]')"
+assert_decision draft-skip-ready-unseen wait pending "$draft_skip"
+assert_decision ready-check-success ready success "$(jq -c '.checks += [{id:20,name:"PR Traceability / Linked Issue",sha:.current_head_sha,created_at:1005,started_at:1006,status:"success"}]' <<< "$draft_skip")"
+assert_decision ready-check-failed stop validation_failed "$(jq -c '.checks += [{id:20,name:"PR Traceability / Linked Issue",sha:.current_head_sha,created_at:1005,started_at:1006,status:"failure"}]' <<< "$draft_skip")"
+assert_decision ready-queued wait pending "$(jq -c '.checks += [{id:20,name:"PR Traceability / Linked Issue",sha:.current_head_sha,created_at:1006,started_at:null,status:"pending"}]' <<< "$draft_skip")"
+assert_decision ready-boundary-after-deadline stop invalid_snapshot "$(case_snapshot '.ready_started_at = 1601')"
 
 # Unknown API/check states and malformed or partial snapshots cannot qualify.
 assert_decision api-failure stop invalid_snapshot "$(case_snapshot '.checks[0].status = "error"')"

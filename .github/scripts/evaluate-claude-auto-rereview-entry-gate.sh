@@ -13,14 +13,17 @@ emit() {
 human() { emit human_required "$1" "$2"; exit 0; }
 ignore() { emit ignore "$1" "$2"; exit 0; }
 
-[ "$#" -eq 3 ] || human invalid_context 'Expected repository, reviewer App slug, and trusted base SHA.'
+[ "$#" -eq 4 ] || human invalid_context 'Expected repository, reviewer and developer App slugs, and trusted base SHA.'
 repo="$1"
 reviewer="$2"
-trusted_base="$3"
+developer="$3"
+trusted_base="$4"
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || human invalid_context 'Invalid repository.'
 [[ "$reviewer" =~ ^[A-Za-z0-9_-]+$ ]] \
   || human invalid_context 'Invalid reviewer identity.'
+[[ "$developer" =~ ^[A-Za-z0-9_-]+$ ]] \
+  || human invalid_context 'Invalid developer identity.'
 [[ "$trusted_base" =~ ^[0-9a-f]{40}$ ]] \
   || human invalid_context 'Invalid trusted base SHA.'
 
@@ -40,7 +43,8 @@ round="$(jq -r '.round' <<< "$parsed")"
 
 pr="$(gh api "repos/${repo}/pulls/${pr_number}")" \
   || human pr_unavailable 'Could not fetch the current PR.'
-pr_facts="$(jq -cse --arg repo "$repo" --argjson number "$pr_number" '
+normalize_pr() {
+  jq -cse --arg repo "$repo" --argjson number "$pr_number" '
   def sha: type == "string" and test("^[0-9a-f]{40}$");
   if length != 1 or (.[0] | type) != "object" then error("pr")
   else .[0] as $p |
@@ -54,15 +58,19 @@ pr_facts="$(jq -cse --arg repo "$repo" --argjson number "$pr_number" '
        or ($p.base.ref | type) != "string"
        or ($p.base.repo.full_name | type) != "string"
        or $p.base.repo.full_name != $repo
+       or ($p.user.login | type) != "string"
        or ($p.labels | type) != "array"
        or ([$p.labels[] | type == "object" and (.name | type == "string")] | all | not)
     then error("pr")
-    else {state:$p.state, merged:$p.merged, draft:$p.draft,
+    else {state:$p.state, merged:$p.merged, draft:$p.draft, author:$p.user.login,
           head:$p.head.sha, head_ref:$p.head.ref, base_ref:$p.base.ref,
-          labels:[$p.labels[].name]}
+          human_pause: ([$p.labels[].name] | index("human-review-required") != null),
+          machine_state: ([$p.labels[].name] | index("ai-followup-in-progress") != null)}
     end
   end
-' <<< "$pr" 2>/dev/null)" || human invalid_pr 'Current PR metadata is inconsistent.'
+'
+}
+pr_facts="$(normalize_pr <<< "$pr" 2>/dev/null)" || human invalid_pr 'Current PR metadata is inconsistent.'
 
 state="$(jq -r '.state' <<< "$pr_facts")"
 merged="$(jq -r '.merged' <<< "$pr_facts")"
@@ -70,6 +78,14 @@ if [ "$state" = closed ]; then
   ignore terminal_pr 'PR is closed or merged.'
 fi
 [ "$merged" = false ] || human invalid_pr 'Open PR has a merged state.'
+if [ "$(jq -r '.head' <<< "$pr_facts")" != "$validated_sha" ]; then
+  ignore stale_head 'Dispatch validation belongs to an older HEAD.'
+fi
+author="$(jq -r '.author' <<< "$pr_facts")"
+if [ "$author" != "$developer" ] && [ "$author" != "$developer[bot]" ] \
+    && [ "$author" != "app/$developer" ]; then
+  human untrusted_author 'PR author is not the developer App.'
+fi
 
 base_ref="$(jq -r '.base_ref' <<< "$pr_facts")"
 [[ "$base_ref" =~ ^[A-Za-z0-9_./-]+$ && "$base_ref" != *..* ]] \
@@ -86,6 +102,12 @@ base_sha="$(jq -rse 'if length == 1 and (.[0].object.sha | type) == "string"
 relation="$(gh pr view "$pr_number" --repo "$repo" \
   --json number,headRefOid,closingIssuesReferences)" \
   || human relation_unavailable 'Could not fetch closing Issue relation.'
+relation_head="$(jq -rse 'if length == 1 and (.[0].headRefOid | type == "string"
+  and test("^[0-9a-f]{40}$")) then .[0].headRefOid else error("relation") end' \
+  <<< "$relation" 2>/dev/null)" || human invalid_relation 'PR relation metadata is invalid.'
+if [ "$relation_head" != "$validated_sha" ]; then
+  ignore stale_head 'PR HEAD changed while fetching its closing Issue relation.'
+fi
 issue_number="$(jq -rse --arg repo "$repo" --arg head "$(jq -r '.head' <<< "$pr_facts")" \
   --arg branch "$(jq -r '.head_ref' <<< "$pr_facts")" \
   --argjson number "$pr_number" '
@@ -120,16 +142,13 @@ issue_paused="$(jq -rs --argjson number "$issue_number" '
   end
 ' <<< "$issue" 2>/dev/null)" || human invalid_issue 'Closing Issue metadata is invalid.'
 
-current_head="$(jq -r '.head' <<< "$pr_facts")"
-if [ "$current_head" != "$validated_sha" ]; then
-  ignore stale_head 'Dispatch validation belongs to an older HEAD.'
-fi
+current_head="$validated_sha"
 
 [ "$(jq -r '.draft' <<< "$pr_facts")" = false ] \
   || human draft_pr 'Current PR is draft.'
 [ "$issue_paused" = false ] \
   || human human_pause 'Closing Issue has a human pause.'
-if jq -e '.labels | index("human-review-required") != null' <<< "$pr_facts" >/dev/null; then
+if [ "$(jq -r '.human_pause' <<< "$pr_facts")" = true ]; then
   human human_pause 'PR has a human pause.'
 fi
 
@@ -165,22 +184,18 @@ actual_round="$(jq -r '.round' <<< "$review_facts")"
 if [ "$(jq -r '.approved_head' <<< "$review_facts")" = true ]; then
   ignore duplicate_review 'Current HEAD already has the latest approving reviewer verdict.'
 fi
-if ! jq -e '.labels | index("ai-followup-in-progress") != null' <<< "$pr_facts" >/dev/null; then
+if [ "$(jq -r '.machine_state' <<< "$pr_facts")" != true ]; then
   human missing_machine_state 'Current PR lacks the follow-up in-progress label.'
 fi
 
 final_pr="$(gh api "repos/${repo}/pulls/${pr_number}")" \
   || human pr_unavailable 'Could not recheck the current PR.'
-if ! jq -es --argjson number "$pr_number" '
-  length == 1 and (.[0] | type == "object" and .number == $number
-    and (.head.sha | type == "string" and test("^[0-9a-f]{40}$")))
-' <<< "$final_pr" >/dev/null; then
-  human invalid_pr 'Final PR metadata is invalid.'
-fi
-if [ "$(jq -r '.head.sha' <<< "$final_pr")" != "$validated_sha" ]; then
+final_facts="$(normalize_pr <<< "$final_pr" 2>/dev/null)" \
+  || human invalid_pr 'Final PR metadata is invalid.'
+if [ "$(jq -r '.head' <<< "$final_facts")" != "$validated_sha" ]; then
   ignore stale_head 'PR HEAD changed while evaluating the dispatch.'
 fi
-if ! jq -e --argjson before "$pr" '. == $before' <<< "$final_pr" >/dev/null; then
+if [ "$final_facts" != "$pr_facts" ]; then
   human state_changed 'PR state changed while evaluating the dispatch.'
 fi
 

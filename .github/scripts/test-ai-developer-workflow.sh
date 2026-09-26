@@ -12,6 +12,12 @@ operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
 [ -f "$workflow" ]
 [ -f "$agents" ]
 
+# Issue development, resume development, and Claude follow-up write the same
+# canonical ai/issue-N branch under one non-cancelling writer lock.
+grep -Fqx '      group: codex-writer-ai/issue-${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.dispatch.closing_issue_number || github.event.issue.number }}' "$workflow"
+grep -Fqx '      group: codex-writer-${{ github.event.pull_request.head.ref }}' "$workflow"
+[ "$(grep -Fc '      cancel-in-progress: false' "$workflow")" -ge 2 ]
+
 # Exercise the Issue-entry conversation selector in the repository-wide
 # AI Workflow Regression, which enumerates test-*.sh fixtures.
 python3 "$repo_root/.github/scripts/test-build-development-context.py"

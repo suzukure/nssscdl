@@ -81,6 +81,8 @@ AI Developerの投稿またはjob successだけでは、別のmachine-generated 
 
 Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
 
+Issue起点の開発、resume develop、Claude Blocking follow-upは、同じcanonical `ai/issue-N` branchへのwriterとしてIssue番号由来の共通concurrency groupを使い、進行中のwriterをcancelしない。
+
 `human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中のopen PRに対する解除順序と再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。Draft PRではラベル解除だけでClaudeは起動せず、準備完了後のReady化がレビュー要求になる。
 
 ### 承認後の非Blocking改善

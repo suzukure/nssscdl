@@ -5,9 +5,11 @@ set -euo pipefail
 # evidence and sets window_started_at when the follow-up write step finishes,
 # including a legitimate no-diff. All times are Unix seconds. A later HEAD
 # never changes window_started_at. The complete flags certify API enumeration:
-# checks are keyed by name/SHA, and branch_mutating_runs includes in-flight
+# checks are keyed by check-run ID, and branch_mutating_runs includes in-flight
 # runs from older SHAs. False means pending; API errors or unknown states stop.
-# Codex report text is deliberately absent from this interface.
+# ready_started_at is the trusted Ready transition boundary. A check started
+# while Draft cannot qualify or fail the new Ready validation cycle. Codex
+# report text is deliberately absent from this interface.
 #
 # Output: {action: "ready"|"wait"|"stop", code: fixed_code}.
 # A wait result may be polled until the original deadline. Stop is terminal.
@@ -15,18 +17,23 @@ if ! result="$(jq -c -s '
   def sha: type == "string" and test("^[0-9a-f]{40}$");
   def integer: type == "number" and floor == .;
   def state: . == "success" or . == "pending" or . == "failure";
-  def check: type == "object" and (keys | sort) == ["name", "sha", "status"]
+  def check: type == "object" and (keys | sort) == ["created_at", "id", "name", "sha", "started_at", "status"]
+    and (.id | integer and . > 0)
     and (.name | type == "string" and length > 0)
-    and (.sha | sha) and (.status | state);
+    and (.sha | sha) and (.status | state)
+    and (.created_at | integer and . >= 0)
+    and (. as $c | $c.started_at == null or
+         ($c.started_at | integer and . >= $c.created_at))
+    and (if .started_at == null then .status == "pending" else true end);
   def run: type == "object" and (keys | sort) == ["id", "sha", "status"]
     and (.id | integer and . > 0) and (.sha | sha) and (.status | state);
   def valid:
     type == "object" and
-    (keys | sort) == ["automated_followup_count", "branch_mutating_runs", "branch_mutating_runs_complete", "checks", "checks_complete", "current_head_sha", "diff_guard_passed", "followup_gate_passed", "human_pause", "now", "repository_write", "requirements_gate_passed", "validation_sha", "window_started_at"] and
+    (keys | sort) == ["automated_followup_count", "branch_mutating_runs", "branch_mutating_runs_complete", "checks", "checks_complete", "current_head_sha", "diff_guard_passed", "followup_gate_passed", "human_pause", "now", "ready_started_at", "repository_write", "requirements_gate_passed", "validation_sha", "window_started_at"] and
     (.automated_followup_count | integer and . >= 1) and
     (.branch_mutating_runs | type == "array" and all(.[]; run) and ([.[].id] | length == (unique | length))) and
     (.branch_mutating_runs_complete | type == "boolean") and
-    (.checks | type == "array" and all(.[]; check) and ([.[] | [.name, .sha]] | length == (unique | length))) and
+    (.checks | type == "array" and all(.[]; check) and ([.[].id] | length == (unique | length))) and
     (.checks_complete | type == "boolean") and
     (.current_head_sha | sha) and (.validation_sha | sha) and
     (.diff_guard_passed | type == "boolean") and
@@ -35,14 +42,16 @@ if ! result="$(jq -c -s '
     (.repository_write == "pushed" or .repository_write == "no_diff") and
     (.requirements_gate_passed | type == "boolean") and
     (.now | integer and . >= 0) and
+    (.ready_started_at | integer and . >= 0) and
     (.window_started_at | integer and . >= 0) and
-    .now >= .window_started_at;
+    .now >= .ready_started_at and .ready_started_at >= .window_started_at;
   def decision($action; $code): {action: $action, code: $code};
   if length != 1 or (.[0] | valid | not) then
     decision("stop"; "invalid_snapshot")
   else
     .[0] as $s |
-    ($s.checks | map(select(.sha == $s.current_head_sha))) as $current_checks |
+    ($s.checks | map(select(.sha == $s.current_head_sha and
+                             (.started_at // .created_at) >= $s.ready_started_at))) as $current_checks |
     if ($s.followup_gate_passed and $s.requirements_gate_passed and $s.diff_guard_passed) | not then
       decision("stop"; "validation_failed")
     elif $s.human_pause then decision("stop"; "human_pause")
