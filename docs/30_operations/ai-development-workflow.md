@@ -364,6 +364,8 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 
 #### Issue起点developerのCodex実行境界
 
+Issue Developer / `/ai resume develop` はIssue単位のwriter concurrency内で、Codex runtime準備前に `origin/main` を明示fetchし、そのcommitをcurrent trusted base SHAとしてhelper blob、`AGENTS.md`、diff guard contractに使用する。canonical `ai/issue-N` branchが存在しない場合だけこのSHAから作成する。既存branchはremote HEADを取得し、current mainがbranch HEADのancestorである場合だけCodexへ進む。stale branch、fetch失敗、ancestry検証失敗ではremote branchへのwriteやpaid Codexを行わずfail-closedし、remote HEADがpre-write snapshotから不変なら既存failure handlerの `developer_execution_failed`（`failed_action=develop`）pauseへ進む。branchの自動merge / rebase / resetは行わず、Codex diff guardは今回のstaged diffだけを計測する。#484 / #487のpaused PRは自動同期せずsuperseded候補として保持し、pause解除やPR normalizationは#229 / #483 / #485の正本に従う。
+
 2026-09-18の #309 調査では、Issue起点AI Developerの長時間停止を段階的に切り分けた。
 
 * #312ではGitHub Actionsのbackground/cancel後もcomposite内部processがjob cleanupまで残り得ることを実証し、background/cancelをprocess停止境界として不採用とした。
