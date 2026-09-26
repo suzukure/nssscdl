@@ -1474,6 +1474,7 @@ jobs:
           REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
           DEVELOPER_APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1481,18 +1482,20 @@ jobs:
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWER_APP_SLUG" "$DEVELOPER_APP_SLUG" "$REVIEW_BODY")"
           continue="$(jq -r .continue <<< "$result")"
           escalate="$(jq -r .escalate <<< "$result")"
-          notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
+          pause_code="$(jq -r .pause_code <<< "$result")"
 
           if [ "$escalate" = 'true' ]; then
-            # The pause helper resolves and labels the PR's closing Issues.
-            bash .github/scripts/apply-human-pause.sh \
-              "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "$reason"
+            case "$pause_code" in
+              round_limit|explicit_human_escalation|state_inconsistent) ;;
+              *) echo 'Invalid automated follow-up pause code.' >&2; exit 1 ;;
+            esac
+            app_id="$(gh api "/apps/$DEVELOPER_APP_SLUG" --jq '.id')"
+            bash .github/scripts/create-human-pause.sh create \
+              "$GITHUB_REPOSITORY" '-' "$PR_NUMBER" "$app_id" \
+              "$pause_code" "$reason"
           fi
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
-          echo "notify=${notify}" >> "$GITHUB_OUTPUT"
           echo "continue=${continue}" >> "$GITHUB_OUTPUT"
 
       - name: Mark automated follow-up in progress
@@ -1508,15 +1511,6 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label ai-followup-in-progress
           gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
             --jq '.labels | any(.name == "ai-followup-in-progress")' | grep -Fxq true
-
-      - name: Notify human of review escalation
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.notify == 'true'
-        env:
-          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
-          ESCALATION_REASON: ${{ steps.followup-gate.outputs.reason }}
-        run: |
-          bash .github/scripts/notify-human.sh \
-            "${ESCALATION_REASON} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Check out PR branch
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'

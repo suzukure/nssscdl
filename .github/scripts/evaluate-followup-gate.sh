@@ -28,7 +28,8 @@ emit_result() {
     --argjson escalate "$2" \
     --argjson notify "$3" \
     --arg reason "$4" \
-    '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason}'
+    --arg pause_code "${5:-}" \
+    '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason, pause_code: $pause_code}'
 }
 
 normal_followup_reason() {
@@ -87,7 +88,7 @@ review_count="$(
 
 if ! grep -Fxq -- '--- BEGIN REVIEW SUMMARY DATA ---' <<< "$review_body" \
     || ! grep -Fxq -- '--- END REVIEW SUMMARY DATA ---' <<< "$review_body"; then
-  emit_result false true false "Could not parse the trusted reviewer summary; refusing automated follow-up. $(human_decision_pause_reason)"
+  emit_result false true false "Could not parse the trusted reviewer summary; refusing automated follow-up. $(human_decision_pause_reason)" state_inconsistent
   exit 0
 fi
 review_summary="$(
@@ -107,9 +108,9 @@ while IFS= read -r summary_line || [ -n "$summary_line" ]; do
 done <<< "$review_summary"
 
 if [ "$human_escalation" = true ]; then
-  emit_result false true false "Claude requested a human decision. $(human_decision_pause_reason)"
+  emit_result false true false "Claude requested a human decision. $(human_decision_pause_reason)" explicit_human_escalation
 elif [ "$review_count" -ge 3 ]; then
-  emit_result false true true "Automated review reached ${review_count} change-request rounds. $(human_decision_pause_reason)"
+  emit_result false true true "Automated review reached ${review_count} change-request rounds. $(human_decision_pause_reason)" round_limit
 else
   emit_result true false false "$(normal_followup_reason)"
 fi
