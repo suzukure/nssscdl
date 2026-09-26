@@ -72,12 +72,37 @@ replacement_normalization_expected="$(jq -cn --argjson records "[$root_101,$repl
   '{target: "issue:278", chains: [{records: $records, pre_resume: {status: "active", pause_id: "103", reason: "state_inconsistent"}, effective: {status: "active", pause_id: "103", reason: "state_inconsistent"}}]}')"
 assert_reconciles no-acceptance-after-replacement-and-normalization "$(envelope "$replacement_normalization_chain")" "$replacement_normalization_expected"
 
-accepted_103="$(entry 103 ai-resume-accepted scope_decision 102)"
+accepted_103="$(jq -c '.record.payload.action = "develop"' <<< "$(entry 103 ai-resume-accepted scope_decision 102)")"
 consumed_chain="$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_103")"
 consumed_input="$(envelope "$consumed_chain")"
 consumed_expected="$(jq -cn --argjson records "[$root_101,$replacement_102,$accepted_103]" \
   '{target: "issue:278", chains: [{records: $records, pre_resume: {status: "active", pause_id: "102", reason: "scope_decision"}, effective: {status: "consumed", pause_id: "102", reason: "scope_decision", accepted_record_id: "103"}}]}')"
 assert_reconciles terminal-matching-acceptance-is-consumed "$consumed_input" "$consumed_expected"
+
+transition_pause="$(jq -cn '{pause_id:"104",record:{kind:"pause",reason:"resume_transition_failed",source_pause_id:"103",payload:{failed_action:"develop"}}}')"
+transition_chain="$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_103" "$transition_pause")"
+transition_expected="$(jq -cn --argjson records "[$root_101,$replacement_102,$accepted_103,$transition_pause]" \
+  '{target:"issue:278",chains:[{records:$records,pre_resume:{status:"active",pause_id:"102",reason:"scope_decision"},effective:{status:"active",pause_id:"104",reason:"resume_transition_failed"}}]}')"
+assert_reconciles accepted-transition-failure-is-active "$(envelope "$transition_chain")" "$transition_expected"
+assert_rejected transition-without-action "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_103" "$(entry 104 pause resume_transition_failed 103)")")"
+for action in validate review fix follow-up no-action; do
+  accepted_other="$(jq -c --arg action "$action" '.record.payload.action = $action' <<< "$accepted_103")"
+  failed_other="$(jq -c --arg action "$action" '.record.payload.failed_action = $action' <<< "$transition_pause")"
+  assert_reconciles "matching-$action-transition" \
+    "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$accepted_other" "$failed_other")")" \
+    "$(jq -c --argjson accepted "$accepted_other" --argjson failed "$failed_other" \
+      '.chains[0].records[-2] = $accepted | .chains[0].records[-1] = $failed' <<< "$transition_expected")"
+done
+for invalid in mismatch unknown missing-accepted missing-failed; do
+  case "$invalid" in
+    mismatch) bad_accepted="$accepted_103"; bad_pause="$(jq -c '.record.payload.failed_action = "fix"' <<< "$transition_pause")" ;;
+    unknown) bad_accepted="$(jq -c '.record.payload.action = "unknown"' <<< "$accepted_103")"; bad_pause="$(jq -c '.record.payload.failed_action = "unknown"' <<< "$transition_pause")" ;;
+    missing-accepted) bad_accepted="$(jq -c 'del(.record.payload.action)' <<< "$accepted_103")"; bad_pause="$transition_pause" ;;
+    missing-failed) bad_accepted="$accepted_103"; bad_pause="$(jq -c 'del(.record.payload.failed_action)' <<< "$transition_pause")" ;;
+  esac
+  assert_rejected "$invalid-transition-action" \
+    "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$bad_accepted" "$bad_pause")")"
+done
 
 second_root="$(entry 201 pause round_limit)"
 multiple_input="$(envelope "$consumed_chain" "$(chain "$(pre_resume 201 round_limit)" "$second_root")")"

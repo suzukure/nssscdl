@@ -44,12 +44,21 @@ jq -ce '
          reason: $pre_resume.reason}
       elif ($accepted | length) != 1 then
         error("chain has multiple resume acceptances")
-      elif $accepted[0] != .records[-1] then
-        error("resume acceptance is not terminal")
       elif $accepted[0].record.source_pause_id != $pre_resume.pause_id then
         error("resume acceptance source does not match pre-resume pause")
       elif $accepted[0].record.reason != $pre_resume.reason then
         error("resume acceptance reason does not match pre-resume reason")
+      elif $accepted[0] != .records[-1] then
+        if .records[-2] == $accepted[0]
+           and .records[-1].record.kind == "pause"
+           and .records[-1].record.reason == "resume_transition_failed"
+           and .records[-1].record.source_pause_id == $accepted[0].pause_id
+           and ($accepted[0].record.payload.action
+             | IN("develop","validate","review","fix","follow-up","no-action"))
+           and .records[-1].record.payload.failed_action == $accepted[0].record.payload.action
+        then {status: "active", pause_id: .records[-1].pause_id,
+              reason: "resume_transition_failed"}
+        else error("invalid post-acceptance transition") end
       else
         {status: "consumed", pause_id: $pre_resume.pause_id,
          reason: $pre_resume.reason,

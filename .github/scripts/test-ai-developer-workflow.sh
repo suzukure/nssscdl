@@ -190,13 +190,14 @@ awk '
 [ -s "$handler" ]
 grep -Fqx '    needs: [gate-issue-entry, develop-from-issue]' "$handler"
 grep -Fqx '      always() &&' "$handler"
-grep -Fqx "      needs.gate-issue-entry.outputs.continue == 'true' &&" "$handler"
+grep -Fq "needs.gate-issue-entry.outputs.continue == 'true') ||" "$handler"
 grep -Fqx "      needs.develop-from-issue.result != 'success'" "$handler"
 grep -Fqx '    runs-on: ubuntu-latest' "$handler"
 grep -Fqx '      pull-requests: write' "$handler"
-grep -Fqx "      github.event_name == 'issue_comment' &&" "$handler"
-grep -Fqx '      github.event.issue.pull_request == null &&' "$handler"
-grep -Fqx "      needs.gate-issue-entry.result == 'success' &&" "$handler"
+grep -Fq "github.event_name == 'issue_comment' &&" "$handler"
+grep -Fq 'github.event.issue.pull_request == null &&' "$handler"
+grep -Fq "needs.gate-issue-entry.result == 'success' &&" "$handler"
+grep -Fq "needs.develop-from-issue.outputs.resume_accepted == 'true'" "$handler"
 grep -Fq 'ref: ${{ github.sha }}' "$handler"
 grep -Fq 'client-id: ${{ vars.DEV_APP_CLIENT_ID }}' "$handler"
 grep -Fq 'private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}' "$handler"
@@ -251,7 +252,7 @@ for producer in 'Gate requirement changes' 'Evaluate trusted diff guard'; do
     in_step && /^      - name: / { exit }
     in_step { print }
   ' "$workflow" > "$producer_step"
-  grep -Fq 'ISSUE_NUMBER: ${{ github.event.issue.number }}' "$producer_step"
+  grep -Fq "steps.resume-gate.outputs.issue_number || github.event.issue.number" "$producer_step"
   grep -Fq -- '--head "$branch" --state open --json number,headRefName,isCrossRepository --limit 100' "$producer_step"
   if grep -Fq -- "--jq '.[0].number // empty'" "$producer_step"; then
     echo "$producer uses first-match PR selection." >&2
@@ -1433,7 +1434,7 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
     export PUBLISH_CASE="$publish_case" PUBLISH_LOG="$case_dir/calls.log"
     export PUBLISH_BODY="$case_dir/body.md" PUBLISH_COMMENT="$case_dir/comment.md"
     export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
-    export ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
+    export AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
     publish_script="$publish_step"
     case "$PUBLISH_CASE" in
       commit-a-regression)
@@ -1472,6 +1473,7 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
       printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
       case "$1 $2" in
         'api /users/dev[bot]') echo 123 ;;
+        'issue view') printf 'Related correction\n' ;;
         'pr list')
           [ "$PUBLISH_CASE" != list-failure ] || return 1
           case "$PUBLISH_CASE" in

@@ -20,6 +20,13 @@ $record_end"
 
 gh() {
   [ "$1" = api ] || { echo "Unexpected gh invocation: $*" >&2; return 2; }
+  if [[ "$*" == *'?per_page=100&page='* ]]; then
+    case "$*" in
+      */issues/37/comments*) jq -c '.[0] + .[1]' <<< "$MOCK_PR_COMMENTS" ;;
+      *) printf '[]\n' ;;
+    esac
+    return
+  fi
   [[ "$*" == *'--paginate --slurp'* ]] || { echo 'Expected paginated slurped REST request.' >&2; return 2; }
   case "$*" in
     */issues/37/comments*) printf '%s\n' "$MOCK_PR_COMMENTS" ;;
@@ -52,6 +59,9 @@ jq -e '
   and [.records[].pause_id] == ["101", "106"]
   and all(.records[]; .record.target == "pr:37")
 ' "$test_dir/pr.json" > /dev/null
+
+AI_RESUME_MAX_HISTORY_PAGES=10 bash "$helper" owner/repo 36 37 99 > "$test_dir/bounded.json"
+jq -e '. == input' "$test_dir/pr.json" "$test_dir/bounded.json" > /dev/null
 
 bash "$helper" owner/repo 36 - 99 > "$test_dir/issue.json"
 jq -e '.target == "issue:36" and [.records[].pause_id] == ["201"]' "$test_dir/issue.json" > /dev/null

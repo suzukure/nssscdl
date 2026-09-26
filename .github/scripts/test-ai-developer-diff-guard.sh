@@ -382,6 +382,12 @@ run_publisher_case() {
       printf 'gh %s\n' "$*" >> "$PUBLISH_LOG"
       case "$1 $2" in
         'api /users/dev[bot]') echo 123 ;;
+        'issue view')
+          [ "$#" -eq 9 ] && [ "$3" = 36 ] && [ "$4" = --repo ] &&
+            [ "$5" = owner/repo ] && [ "$6" = --json ] && [ "$7" = title ] &&
+            [ "$8" = --jq ] && [ "$9" = '.title | select(type == "string" and length > 0)' ] || return 2
+          echo 'Related correction'
+          ;;
         'pr list') printf '[]\n' ;;
         'pr create') echo 'https://github.com/owner/repo/pull/37' ;;
         'pr view')
