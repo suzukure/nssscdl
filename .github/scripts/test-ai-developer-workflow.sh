@@ -381,6 +381,7 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
     set -euo pipefail
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 app_id=123
     DRAFT_RESULT=failure FOLLOWUP_RESULT=skipped
+    WRITE_RESULT="" READY_DONE="" VALIDATION_CODE=""
     GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=42
     gh() {
       [ "$MOCK_CURRENT" != error ] || return 1
@@ -449,7 +450,8 @@ grep -Fq 'gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid 
 grep -Fq 'if [ "$current_head" = "$expected_head" ]; then' "$followup_commit_step"
 grep -Fq 'EVENT_HEAD: ${{ github.event.pull_request.head.sha }}' "$followup_commit_step"
 grep -Fq 'if [ "$current_head" != "$EVENT_HEAD" ]; then' "$followup_commit_step"
-grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$followup_commit_step"
+grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"' "$workflow"
+grep -Fq '      - name: Validate current HEAD and dispatch re-review' "$workflow"
 if grep -Fq -- '--undo' "$followup_commit_step"; then
   echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
   exit 1
@@ -466,7 +468,8 @@ grep -Fq '停止ラベルの解除順序、open PRでの再レビュー起動条
 # Both Codex jobs must have a server-side wall-clock bound in addition to
 # the per-step timeout, so runner-loss cannot leave them unbounded. Issue-origin
 # development uses a fixed 35-minute exception only for the explicit extended
-# command; normal development and Claude follow-up remain at 15 minutes.
+# command; normal development stays at 15 minutes, while follow-up includes
+# the separate 10-minute current-head validation window.
 for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   codex_job="$test_dir/${codex_job_name}.yml"
   awk -v job_name="$codex_job_name" '
@@ -481,7 +484,7 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   if [ "$codex_job_name" = 'develop-from-issue' ]; then
     grep -Fqx "    timeout-minutes: \${{ github.event.comment.body == '/codex develop extended' && 35 || 15 }}" "$codex_job"
   else
-    grep -Fqx '    timeout-minutes: 15' "$codex_job"
+    grep -Fqx '    timeout-minutes: 30' "$codex_job"
   fi
   if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
     echo "$codex_job_name must fail closed." >&2
@@ -1175,15 +1178,13 @@ extract_workflow_step_run() {
   fi
 }
 
-# The follow-up notification runs after Codex, so it must use the helper
-# rematerialized from the trusted base by the post-Codex restore step rather
-# than the disposable bootstrap copy or PR-head code.
+# Follow-up pauses run the trusted-base common helper after Codex.
 followup_workflow="$test_dir/respond-to-claude.yml"
 sed -n '/^  respond-to-claude:/,$p' "$workflow" > "$followup_workflow"
-restore_notify_line="$(grep -n -F "restore_base_blob '.github/scripts/notify-human.sh'" "$followup_workflow" | tail -n 1 | cut -d: -f1)"
-notify_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_workflow" | tail -n 1 | cut -d: -f1)"
-if [ -z "$restore_notify_line" ] || [ -z "$notify_step_line" ] || [ "$restore_notify_line" -ge "$notify_step_line" ]; then
-  echo 'Follow-up requirement escalation notification is not using the restored trusted-base helper.' >&2
+restore_pause_line="$(grep -n -F 'trusted_pause_dir="$RUNNER_TEMP/trusted-human-pause"' "$followup_workflow" | head -n 1 | cut -d: -f1)"
+pause_step_line="$(grep -n -F 'bash "$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create' "$followup_workflow" | head -n 1 | cut -d: -f1)"
+if [ -z "$restore_pause_line" ] || [ -z "$pause_step_line" ] || [ "$restore_pause_line" -ge "$pause_step_line" ]; then
+  echo 'Follow-up pause is not using the restored trusted-base helper.' >&2
   exit 1
 fi
 

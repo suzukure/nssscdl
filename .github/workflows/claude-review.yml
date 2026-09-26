@@ -4,6 +4,8 @@ name: Claude Review
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, unlabeled]
+  repository_dispatch:
+    types: [claude-auto-rereview]
 
 permissions:
   contents: read
@@ -14,19 +16,27 @@ jobs:
     name: Review
     timeout-minutes: 15
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.state == 'open' &&
-      github.event.pull_request.draft == false &&
-      !contains(github.event.pull_request.labels.*.name, 'human-review-required') &&
-      (github.event.action != 'unlabeled' || github.event.label.name == 'human-review-required')
+      github.event_name == 'repository_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.state == 'open' &&
+       github.event.pull_request.draft == false &&
+       !contains(github.event.pull_request.labels.*.name, 'human-review-required') &&
+       !contains(github.event.pull_request.labels.*.name, 'ai-followup-in-progress') &&
+       (github.event.action != 'unlabeled' || github.event.label.name == 'human-review-required'))
     runs-on: ubuntu-latest
     concurrency:
-      group: claude-review-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      group: claude-review-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+      cancel-in-progress: false
     outputs:
       verdict: ${{ steps.review-result.outputs.verdict }}
       developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}
       trusted_base_sha: ${{ steps.build-review-context.outputs.base_sha }}
+      pr_number: ${{ steps.review-source.outputs.pr_number }}
+      reviewed_head: ${{ steps.review-source.outputs.head_sha }}
+      head_ref: ${{ steps.review-source.outputs.head_ref }}
+      auto_action: ${{ steps.auto-entry.outputs.action }}
+      auto_code: ${{ steps.auto-entry.outputs.code }}
+      auto_accepted: ${{ steps.review-entry.outputs.accepted }}
     steps:
       - name: Create reviewer App token
         id: review-token
@@ -42,19 +52,81 @@ jobs:
           client-id: ${{ vars.DEV_APP_CLIENT_ID }}
           private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
 
-      - name: Check out pull request
+      - name: Check out trusted automatic entry gate
+        if: github.event_name == 'repository_dispatch'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Gate automatic re-review
+        if: github.event_name == 'repository_dispatch'
+        id: auto-entry
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          DEVELOPER_APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha="$(git rev-parse HEAD)"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          git show "${base_sha}:.github/scripts/evaluate-claude-auto-rereview-entry-gate.sh" > "$RUNNER_TEMP/auto-entry.sh"
+          decision="$(bash "$RUNNER_TEMP/auto-entry.sh" "$GITHUB_REPOSITORY" \
+            "$REVIEWER_APP_SLUG" "$DEVELOPER_APP_SLUG" "$base_sha" <<< "$PAYLOAD")"
+          action="$(jq -er '.action | select(. == "proceed" or . == "ignore" or . == "human_required")' <<< "$decision")"
+          code="$(jq -er .code <<< "$decision")"
+          printf 'action=%s\ncode=%s\n' "$action" "$code" >> "$GITHUB_OUTPUT"
+          if [ "$action" = human_required ]; then
+            echo "Automatic re-review gate requires human review: $code" >&2
+            exit 1
+          fi
+          if [ "$action" = ignore ]; then
+            echo "Automatic re-review ignored: $code"
+          fi
+
+      - name: Resolve review source
+        if: github.event_name != 'repository_dispatch' || steps.auto-entry.outputs.action == 'proceed'
+        id: review-source
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_REF: ${{ github.event.pull_request.head.ref }}
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = repository_dispatch ]; then
+            pr_number="$(jq -er '.pr_number | select(type == "number" and . > 0 and floor == .)' <<< "$PAYLOAD")"
+            head_sha="$(jq -er .validated_sha <<< "$PAYLOAD")"
+            head_ref="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq .head.ref)"
+          else
+            pr_number="$EVENT_PR"
+            head_sha="$EVENT_HEAD"
+            head_ref="$EVENT_REF"
+          fi
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'pr_number=%s\nhead_sha=%s\nhead_ref=%s\n' \
+            "$pr_number" "$head_sha" "$head_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Check out pull request
+        if: github.event_name != 'repository_dispatch' || steps.auto-entry.outputs.action == 'proceed'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.review-source.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Build review context
+        if: github.event_name != 'repository_dispatch' || steps.auto-entry.outputs.action == 'proceed'
         id: build-review-context
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
           TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],app/${{ steps.dev-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
           REVIEWER_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
         shell: bash
@@ -63,6 +135,11 @@ jobs:
           BASE_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_REF}" --jq '.object.sha')"
           if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo 'Could not resolve the current base branch tip to a commit SHA; refusing review.' >&2
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = repository_dispatch ] && \
+              [ "$BASE_SHA" != '${{ steps.auto-entry.outputs.base_sha }}' ]; then
+            echo 'Base changed after automatic re-review gate.' >&2
             exit 1
           fi
           echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
@@ -338,10 +415,22 @@ jobs:
         id: review-entry
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEV_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
+          AUTO_ACTION: ${{ steps.auto-entry.outputs.action }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != repository_dispatch ]; then
+            machine="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+              --jq '.labels | any(.name == "ai-followup-in-progress")')"
+            if [ "$machine" = true ]; then
+              echo 'continue=false' >> "$GITHUB_OUTPUT"
+              echo 'Machine follow-up owns this Ready event.'
+              exit 0
+            fi
+            [ "$machine" = false ] || exit 1
+          fi
           result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")"
           continue="$(jq -r .continue <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
@@ -354,13 +443,20 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           printf '%s\n' "$reason"
+          if [ "$GITHUB_EVENT_NAME" = repository_dispatch ]; then
+            [ "$AUTO_ACTION" = proceed ] && [ "$continue" = true ] || exit 1
+            GH_TOKEN="$DEV_TOKEN" gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
+            GH_TOKEN="$DEV_TOKEN" gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+              --jq '.labels | any(.name == "ai-followup-in-progress")' | grep -Fxq false
+            echo 'accepted=true' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Select Claude review model
         id: review-model
         if: steps.review-entry.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
           STANDARD_MODEL: ${{ vars.CLAUDE_MODEL_STANDARD }}
           HIGH_RISK_MODEL: ${{ vars.CLAUDE_MODEL }}
         shell: bash
@@ -642,12 +738,17 @@ jobs:
         if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
-          REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
+          current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+          [ "$current_head" = "$REVIEWED_HEAD_SHA" ] || {
+            echo 'Reviewed HEAD changed before verdict submission.' >&2
+            exit 1
+          }
           git show "${BASE_SHA}:.github/scripts/submit-claude-review.sh" > "$RUNNER_TEMP/submit-claude-review.sh"
           bash "$RUNNER_TEMP/submit-claude-review.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$RUNNER_TEMP/claude-review.json" "$REVIEWED_HEAD_SHA"
 
@@ -688,9 +789,9 @@ jobs:
         if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ steps.review-source.outputs.head_ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -712,7 +813,54 @@ jobs:
           set -euo pipefail
           git show "${BASE_SHA}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           bash "$RUNNER_TEMP/notify-human.sh" \
-            "Claude requested a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+            "Claude requested a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ steps.review-source.outputs.pr_number }}"
+
+  handle-auto-rereview-failure:
+    name: Pause failed automatic re-review
+    needs: review
+    if: >-
+      always() && github.event_name == 'repository_dispatch' && needs.review.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Create reviewer App token
+        id: review-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Check out trusted pause helper
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Pause and clear machine state
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          AUTO_ACTION: ${{ needs.review.outputs.auto_action }}
+          AUTO_CODE: ${{ needs.review.outputs.auto_code }}
+          AUTO_ACCEPTED: ${{ needs.review.outputs.auto_accepted }}
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_number="$(jq -er '.pr_number | select(type == "number" and . > 0 and floor == .)' <<< "$PAYLOAD")"
+          app_id="$(gh api "/apps/$APP_SLUG" --jq .id)"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          reason=state_inconsistent
+          if [ "$AUTO_ACCEPTED" = true ]; then reason=claude_execution_failed; fi
+          detail="Automatic Claude re-review failed at run ${GITHUB_RUN_ID}; gate action: ${AUTO_ACTION:-unavailable}; gate code: ${AUTO_CODE:-unavailable}."
+          bash .github/scripts/create-human-pause.sh create \
+            "$GITHUB_REPOSITORY" '-' "$pr_number" "$app_id" "$reason" "$detail"
+          if gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json labels \
+              --jq '.labels | any(.name == "ai-followup-in-progress")' | grep -Fxq true; then
+            gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
+          fi
 
   merge:
     name: Merge approved PR
@@ -720,10 +868,10 @@ jobs:
     if: >-
       needs.review.result == 'success' &&
       needs.review.outputs.verdict == 'approve' &&
-      startsWith(github.event.pull_request.head.ref, 'ai/issue-')
+      startsWith(needs.review.outputs.head_ref, 'ai/issue-')
     runs-on: ubuntu-latest
     concurrency:
-      group: claude-merge-${{ github.event.pull_request.number }}
+      group: claude-merge-${{ needs.review.outputs.pr_number }}
       cancel-in-progress: false
     steps:
       - name: Create reviewer App token
@@ -742,15 +890,15 @@ jobs:
       - name: Verify merge gates
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ needs.review.outputs.pr_number }}
           DEV_APP_SLUG: ${{ needs.review.outputs.developer_app_slug }}
         run: bash .github/scripts/verify-pr-gates.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" merge "$DEV_APP_SLUG"
 
       - name: Squash merge as reviewer
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ needs.review.outputs.pr_number }}
+          REVIEWED_HEAD_SHA: ${{ needs.review.outputs.reviewed_head }}
         shell: bash
         run: |
           set -euo pipefail
