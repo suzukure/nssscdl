@@ -64,6 +64,7 @@ jobs:
 
   gate-issue-entry:
     name: Gate Issue entry
+    # The event snapshot rejects unrelated commands and untrusted actors early.
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request == null &&
@@ -88,7 +89,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Reject a paused Issue or related PR
+      - name: Check current Issue and related PR before concurrency
         id: pause-gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,7 +147,8 @@ jobs:
             bash .github/scripts/consume-ai-resume-develop.sh "$GITHUB_REPOSITORY" "$APP_SLUG" \
               "$GITHUB_OUTPUT"
 
-      - name: Recheck normal Issue entry inside Issue concurrency
+      # The event snapshot is not evidence of Issue state after the writer wait.
+      - name: Recheck current Issue inside Issue concurrency
         if: github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
