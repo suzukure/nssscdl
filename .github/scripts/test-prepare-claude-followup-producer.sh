@@ -117,9 +117,25 @@ assert cleanup pause_recorded '{"active_pause_id":41,"recorded_pause_id":41}' '{
 
 # Consumer #499 is absent: neither the old follow-up job nor the normal
 # Claude Ready event may reach the prepared producer or dedicated dispatch.
-if rg -q 'prepare-claude-followup-producer|claude-auto-rereview|ai-followup-in-progress' \
+for production_workflow in "$workflow" "$claude_workflow"; do
+  if [ ! -f "$production_workflow" ] || [ ! -r "$production_workflow" ]; then
+    echo "Production workflow is missing or unreadable: $production_workflow" >&2
+    exit 1
+  fi
+done
+if grep -Eq 'prepare-claude-followup-producer|claude-auto-rereview|ai-followup-in-progress' \
   "$workflow" "$claude_workflow"; then
-  echo 'Dormant producer became reachable from a production workflow.' >&2
-  exit 1
+  search_rc=0
+else
+  search_rc=$?
 fi
+case "$search_rc" in
+  0)
+    echo 'Dormant producer became reachable from a production workflow.' >&2
+    exit 1 ;;
+  1) ;;
+  *)
+    echo "Production workflow search failed (exit $search_rc)." >&2
+    exit 1 ;;
+esac
 echo 'Prepared Claude follow-up producer fixtures passed.'
