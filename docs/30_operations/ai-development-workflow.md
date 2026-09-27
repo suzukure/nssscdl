@@ -86,6 +86,10 @@ Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはre
 
 旧`pull_request_review` follow-upはcanonical PR writer待機後、trusted baseの`check-claude-followup-target.sh`でreview ID・review commit、PR番号・open状態・head・branch、canonical closing Issueのopen状態、両者の停止ラベルを再取得する。checkoutしたHEADもreview commitと照合し、実際のpaid Codex起動直前に同じtargetを再照合する。stale・closed・停止中・取得不能なら正常skipし、Codex、post-Codex gate、repository writeへ進まない。人間エスカレーションのpause/comment直前とCodex後のrepository write直前にも再照合し、対象が変わった場合はwriteと通知をskipする。#498の後継producerへ切り替える際は、その経路で同等のcurrent review・PR・closing Issue・checkout HEADとpaid call / target write直前の再照合を確認してから旧producerを停止する。新経路が確認されるまで旧経路の開始前提を撤去しない。
 
+#498の`prepare-claude-followup-producer.sh`は後継producerの準備済み判定器であり、production workflowから呼び出さない。#499のconsumer、Ready eventでの通常paid review抑止、accepted後のmachine label消費、独立failure recovery、および必要な正式resume / normalization / reevaluation経路がmainで揃うまで、`ai-followup-in-progress`付与・専用Ready化・`claude-auto-rereview` dispatchを有効化しない。したがって#498と#499の間にこの準備済み経路から未消費dispatch、Ready event、machine label、human pauseは生成されない。旧follow-upの復旧は上記の現行契約に従う。
+
+有効化後のproducerは同じIssue writer ownershipの中で、trusted gate後とrepository write直前にcanonical target helperを再実行する。machine label付与をpaid Codexより先に確認し、write/no-diff確定時刻を固定してReadyへ戻し、Ready以降のcurrent HEAD checkだけを10分以内に評価する。helperが`wait`を返す間だけpollし、`ready/success`のvalidated HEADだけ固定3-field payloadで一度dispatchする。失敗時はcommon human pause recordがactiveになったことを確認してからmachine labelを除去し、dispatch成功時はconsumer acceptedまで保持する。中断・重複・stale dispatchでは既存のvalidated HEADを再利用せず、current PR / Issue / HEADとReady以降の検証を再取得する。consumer未受理のmachine labelまたはReady状態が残った場合は自動再送せず、人間がpause recordと現状態を確認して正式な復旧経路で処理する。
+
 `human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中のopen PRに対する解除順序と再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。Draft PRではラベル解除だけでClaudeは起動せず、準備完了後のReady化がレビュー要求になる。
 
 ### 承認後の非Blocking改善
