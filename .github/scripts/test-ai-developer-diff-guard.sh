@@ -519,6 +519,43 @@ grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new file
 assert_no_metric_diagnostics "$test_dir/error/gh.log"
 assert_no_metric_diagnostics "$test_dir/error/summary"
 
+# Compose the real helper with the extracted Issue-origin consumer. Only the
+# GitHub and pause side effects are mocked; the binary is staged by its git add.
+composition_dir="$test_dir/real-binary-composition"
+make_case_environment "$composition_dir"
+rm "$composition_dir/bin/git"
+cp "$repo_root/.github/scripts/evaluate-codex-diff-gate.sh" \
+  "$composition_dir/runner/evaluate-codex-diff-gate.sh"
+git init -q "$composition_dir/repo"
+git -C "$composition_dir/repo" config user.name 'Diff guard composition test'
+git -C "$composition_dir/repo" config user.email 'diff-guard-test@example.invalid'
+printf 'baseline\n' > "$composition_dir/repo/baseline.txt"
+git -C "$composition_dir/repo" add -A
+git -C "$composition_dir/repo" commit -q -m baseline
+mkdir "$composition_dir/repo/.ai-context"
+: > "$composition_dir/repo/.ai-context/request.md"
+printf '\000\001\002\003' > "$composition_dir/repo/binary.dat"
+(
+  cd "$composition_dir/repo"
+  PATH="$composition_dir/bin:$PATH" \
+  RUNNER_TEMP="$composition_dir/runner" \
+  GITHUB_OUTPUT="$composition_dir/github-output" \
+  GITHUB_STEP_SUMMARY="$composition_dir/summary" \
+  GITHUB_REPOSITORY='owner/repo' ISSUE_NUMBER='169' APP_SLUG='dev' \
+  GH_LOG="$composition_dir/gh.log" PAUSE_LOG="$composition_dir/pause.log" \
+    bash "$guard_script"
+)
+[ ! -e "$composition_dir/repo/.ai-context" ]
+git -C "$composition_dir/repo" diff --cached --numstat -- binary.dat | grep -Fxq -- $'-\t-\tbinary.dat'
+grep -Fxq 'continue=false' "$composition_dir/github-output"
+grep -Fq 'create owner/repo 169 - 123 diff_guard_error' "$composition_dir/pause.log"
+for diagnostic in "$composition_dir/gh.log" "$composition_dir/summary"; do
+  grep -Fq 'error: git_numstat_unavailable' "$diagnostic"
+  grep -Fq '"offending_paths":["binary.dat"]' "$diagnostic"
+  grep -Fq '"offending_paths_truncated":false' "$diagnostic"
+  assert_no_metric_diagnostics "$diagnostic"
+done
+
 run_case malformed 'printf '\''%s\n'\'' '\''not-json'\'''
 grep -Fxq 'continue=false' "$test_dir/malformed/github-output"
 grep -Fq 'create owner/repo 169 - 123 diff_guard_error' "$test_dir/malformed/pause.log"
