@@ -1336,11 +1336,15 @@ extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
 
 # The fixture verifies that, even when its checkout root differs from this
 # repository root, the gate resolves helpers only beneath that checkout's
-# .github directory. Existing bootstrap assertions cover the base-derived
-# trust boundary. Invoke the extracted script from outside that checkout root.
+# .github directory. Resolve the helper blob from the trusted base checkout
+# while invoking the extracted script from outside that checkout root.
 followup_gate_workdir="$test_dir/gate-automated-follow-up-workdir"
 mkdir "$followup_gate_workdir"
 ln -s "$repo_root/.github" "$followup_gate_workdir/.github"
+FOLLOWUP_FIXTURE_BASE_ROOT="$repo_root"
+export FOLLOWUP_FIXTURE_BASE_ROOT
+git() { command git -C "$FOLLOWUP_FIXTURE_BASE_ROOT" "$@"; }
+export -f git
 
 assert_followup_gate_pause() {
   local fixture_name="${1:?fixture name is required}"
@@ -1408,6 +1412,8 @@ if [ -s "$test_dir/followup-pause-failure.log" ]; then
   echo 'Closing Issue lookup failure must not perform any GitHub write.' >&2
   exit 1
 fi
+unset -f git
+unset FOLLOWUP_FIXTURE_BASE_ROOT
 
 for fixture in valid app-author; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
