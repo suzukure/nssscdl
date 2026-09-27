@@ -654,11 +654,17 @@ grep -Fq "grep -Fxq 'SubState=running'" "$host_before_step"
 grep -Fq "printf 'notify=%s\\n' \"\$notify_before\" >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
 grep -Fq "printf 'dbus=%s\\n' \"\$dbus_before\" >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
 grep -Fq "printf 'resolved=%s\\n' \"\$resolved_before\" >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
+grep -Fq "printf 'captured=true\\n' >> \"\$GITHUB_OUTPUT\"" "$host_before_step"
+test "$(grep -Fc "printf 'captured=true\\n' >> \"\$GITHUB_OUTPUT\"" "$host_before_step")" -eq 1
+test "$(grep -nF 'getent ahosts api.github.com >/dev/null' "$host_before_step" | cut -d: -f1)" -lt \
+  "$(grep -nF "printf 'captured=true\\n' >> \"\$GITHUB_OUTPUT\"" "$host_before_step" | cut -d: -f1)"
 grep -Fq 'getent ahosts github.com >/dev/null' "$host_before_step"
 grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_before_step"
 grep -Fq 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok' "$host_before_step"
 
-grep -Fqx '        if: always()' "$host_after_step"
+# No captured baseline skips verification; always() still runs it after a
+# completed baseline even if the developer step fails.
+grep -Fqx "        if: always() && steps.host_integrity_before.outputs.captured == 'true'" "$host_after_step"
 grep -Fqx '        timeout-minutes: 1' "$host_after_step"
 grep -Fqx '          HOST_NOTIFY_BEFORE: ${{ steps.host_integrity_before.outputs.notify }}' "$host_after_step"
 grep -Fqx '          HOST_DBUS_BEFORE: ${{ steps.host_integrity_before.outputs.dbus }}' "$host_after_step"
@@ -902,6 +908,33 @@ grep -Fq '      - name: Resolve trusted Codex follow-up runtime' "$followup_work
 grep -Fq '      - name: Prepare fixed Codex follow-up prompt' "$followup_workflow"
 grep -Fq '      - name: Capture Codex follow-up host integrity baseline' "$followup_workflow"
 grep -Fq '      - name: Verify Codex follow-up host integrity' "$followup_workflow"
+followup_before_step="$test_dir/Capture-Codex-follow-up-host-integrity-baseline.yml"
+followup_after_step="$test_dir/Verify-Codex-follow-up-host-integrity.yml"
+for pair in \
+  "Capture Codex follow-up host integrity baseline|$followup_before_step" \
+  "Verify Codex follow-up host integrity|$followup_after_step"; do
+  step_name="${pair%%|*}"
+  step_path="${pair#*|}"
+  awk -v step_name="$step_name" '
+    $0 == "      - name: " step_name { in_step = 1 }
+    in_step && /^      - name: / && $0 != "      - name: " step_name { exit }
+    in_step { print }
+  ' "$followup_workflow" > "$step_path"
+  test -s "$step_path"
+done
+grep -Fq "printf 'captured=true\\n' >> \"\$GITHUB_OUTPUT\"" "$followup_before_step"
+test "$(grep -Fc "printf 'captured=true\\n' >> \"\$GITHUB_OUTPUT\"" "$followup_before_step")" -eq 1
+test "$(grep -nF 'getent ahosts api.github.com >/dev/null' "$followup_before_step" | cut -d: -f1)" -lt \
+  "$(grep -nF "printf 'captured=true\\n' >> \"\$GITHUB_OUTPUT\"" "$followup_before_step" | cut -d: -f1)"
+grep -Fqx "        if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.followup_host_integrity_before.outputs.captured == 'true'" "$followup_after_step"
+for check in \
+  'test "$notify_after" = "$HOST_NOTIFY_BEFORE"' \
+  'test "$dbus_after" = "$HOST_DBUS_BEFORE"' \
+  'test "$resolved_after" = "$HOST_RESOLVED_BEFORE"' \
+  'getent ahosts github.com >/dev/null' \
+  'getent ahosts api.github.com >/dev/null'; do
+  grep -Fq "$check" "$followup_after_step"
+done
 grep -Fq '      - name: Restore trusted post-Codex helpers' "$followup_workflow"
 grep -Fq '        id: followup_context' "$followup_workflow"
 grep -Fq 'notify_human_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/notify-human.sh")"' "$followup_workflow"

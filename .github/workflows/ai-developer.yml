@@ -484,6 +484,7 @@ jobs:
           printf 'notify=%s\n' "$notify_before" >> "$GITHUB_OUTPUT"
           printf 'dbus=%s\n' "$dbus_before" >> "$GITHUB_OUTPUT"
           printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
+          printf 'captured=true\n' >> "$GITHUB_OUTPUT"
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
 
       - name: Run Codex developer
@@ -935,7 +936,7 @@ jobs:
             "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
 
       - name: Verify AI Developer host integrity
-        if: always()
+        if: always() && steps.host_integrity_before.outputs.captured == 'true'
         timeout-minutes: 1
         env:
           HOST_NOTIFY_BEFORE: ${{ steps.host_integrity_before.outputs.notify }}
@@ -1950,6 +1951,7 @@ jobs:
           printf 'notify=%s\n' "$notify_before" >> "$GITHUB_OUTPUT"
           printf 'dbus=%s\n' "$dbus_before" >> "$GITHUB_OUTPUT"
           printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
+          printf 'captured=true\n' >> "$GITHUB_OUTPUT"
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
 
       - name: Run Codex follow-up
@@ -2417,7 +2419,7 @@ jobs:
             "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
 
       - name: Verify Codex follow-up host integrity
-        if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
+        if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.followup_host_integrity_before.outputs.captured == 'true'
         timeout-minutes: 1
         env:
           HOST_NOTIFY_BEFORE: ${{ steps.followup_host_integrity_before.outputs.notify }}
