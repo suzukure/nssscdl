@@ -1146,10 +1146,24 @@ jobs:
             (.additions | type == "number" and . >= 0 and floor == .) and
             (.deletions | type == "number" and . >= 0 and floor == .) and
             (.total_changed_lines | type == "number" and . >= 0 and floor == .) and
-            (.new_files | type == "number" and . >= 0 and floor == .)
+            (.new_files | type == "number" and . >= 0 and floor == .) and
+            (if has("offending_paths") then
+              (.offending_paths | type == "array" and length <= 10 and
+                all(.[]; type == "string" and (tojson | utf8bytelength) <= 512) and
+                (map(tojson | utf8bytelength) | add <= 2048)) and
+              (.offending_paths_truncated | type == "boolean") and
+              (.offending_paths_unknown | type == "boolean")
+            else true end)
           ' <<< "$result_json" > /dev/null 2>&1; then
             parsed=true
             result="$(jq -r .result <<< "$result_json")"
+          fi
+
+          offending_json=''
+          if [ "$parsed" = true ] && [ "$result" = error ]; then
+            offending_json="$(jq -ac 'if has("offending_paths") then
+              {offending_paths, offending_paths_truncated, offending_paths_unknown}
+            else empty end' <<< "$result_json")"
           fi
 
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]; then
@@ -1231,6 +1245,9 @@ jobs:
                 if [ -n "$error_code" ]; then
                   diagnostics+=$'\n'"error: ${error_code}"
                 fi
+                if [ -n "$offending_json" ]; then
+                  diagnostics+=$'\n'"offending staged paths (JSON):"$'\n'"    ${offending_json}"
+                fi
               fi
               diagnostics+=$'\n'"Metrics: unavailable"
             fi
@@ -1255,6 +1272,10 @@ jobs:
                 error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
                 if [ -n "$error_code" ]; then
                   echo "- error: ${error_code}"
+                fi
+                if [ -n "$offending_json" ]; then
+                  echo '- Offending staged paths (JSON):'
+                  echo "    ${offending_json}"
                 fi
               fi
               echo '- Metrics: unavailable'
@@ -2488,10 +2509,24 @@ jobs:
             (.additions | type == "number" and . >= 0 and floor == .) and
             (.deletions | type == "number" and . >= 0 and floor == .) and
             (.total_changed_lines | type == "number" and . >= 0 and floor == .) and
-            (.new_files | type == "number" and . >= 0 and floor == .)
+            (.new_files | type == "number" and . >= 0 and floor == .) and
+            (if has("offending_paths") then
+              (.offending_paths | type == "array" and length <= 10 and
+                all(.[]; type == "string" and (tojson | utf8bytelength) <= 512) and
+                (map(tojson | utf8bytelength) | add <= 2048)) and
+              (.offending_paths_truncated | type == "boolean") and
+              (.offending_paths_unknown | type == "boolean")
+            else true end)
           ' <<< "$result_json" > /dev/null 2>&1; then
             parsed=true
             result="$(jq -r .result <<< "$result_json")"
+          fi
+
+          offending_json=''
+          if [ "$parsed" = true ] && [ "$result" = error ]; then
+            offending_json="$(jq -ac 'if has("offending_paths") then
+              {offending_paths, offending_paths_truncated, offending_paths_unknown}
+            else empty end' <<< "$result_json")"
           fi
 
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]; then
@@ -2544,6 +2579,9 @@ jobs:
                 if [ -n "$error_code" ]; then
                   diagnostics+=$'\n'"error: ${error_code}"
                 fi
+                if [ -n "$offending_json" ]; then
+                  diagnostics+=$'\n'"offending staged paths (JSON):"$'\n'"    ${offending_json}"
+                fi
               fi
               diagnostics+=$'\n'"Metrics: unavailable"
             fi
@@ -2568,6 +2606,10 @@ jobs:
                 error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
                 if [ -n "$error_code" ]; then
                   echo "- error: ${error_code}"
+                fi
+                if [ -n "$offending_json" ]; then
+                  echo '- Offending staged paths (JSON):'
+                  echo "    ${offending_json}"
                 fi
               fi
               echo '- Metrics: unavailable'

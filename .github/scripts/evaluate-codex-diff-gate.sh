@@ -69,7 +69,7 @@ fi
 if ! git -c core.quotepath=true diff --cached --no-ext-diff --no-textconv --diff-filter=A --name-only -z > "$new_names_file"; then
   fail_closed git_new_files_failed
 fi
-if ! git -c core.quotepath=true diff --cached --no-ext-diff --no-textconv --numstat > "$numstat_file"; then
+if ! git -c core.quotepath=true diff --cached --no-ext-diff --no-textconv --numstat -z > "$numstat_file"; then
   fail_closed git_numstat_failed
 fi
 
@@ -77,27 +77,76 @@ mapfile -d '' -t changed_names < "$names_file"
 mapfile -d '' -t new_names < "$new_names_file"
 changed_files="${#changed_names[@]}"
 new_files="${#new_names[@]}"
-additions=0
-deletions=0
+python3 - "$numstat_file" "$changed_files" "$new_files" \
+  "$max_changed_files" "$max_changed_lines" "$max_new_files" <<'PY'
+import json
+import sys
 
-while IFS=$'\t' read -r added deleted _path; do
-  # Attributes supplied by the staged diff can also produce "-\t-". Do not
-  # omit such paths: fail closed because total_changed_lines is unknowable.
-  if [ "$added" = '-' ] && [ "$deleted" = '-' ]; then
-    fail_closed git_numstat_unavailable
-  fi
-  if [[ ! "$added" =~ ^[0-9]+$ ]] || [[ ! "$deleted" =~ ^[0-9]+$ ]]; then
-    fail_closed git_numstat_malformed
-  fi
-  additions=$((additions + added))
-  deletions=$((deletions + deleted))
-done < "$numstat_file"
+data = open(sys.argv[1], 'rb').read()
+changed_files, new_files, max_files, max_lines, max_new = map(int, sys.argv[2:])
+paths = []
+path_bytes = 0
+truncated = False
+unknown = False
+error = None
+additions = deletions = 0
 
-total_changed_lines=$((additions + deletions))
-if [ "$changed_files" -gt "$max_changed_files" ] \
-    || [ "$total_changed_lines" -gt "$max_changed_lines" ] \
-    || [ "$new_files" -gt "$max_new_files" ]; then
-  emit_result stop "$changed_files" "$additions" "$deletions" "$total_changed_lines" "$new_files"
-else
-  emit_result pass "$changed_files" "$additions" "$deletions" "$total_changed_lines" "$new_files"
-fi
+def record_path(raw):
+    global path_bytes, truncated, unknown
+    if not raw:
+        unknown = True
+        return
+    # Count the JSON representation, including escapes, before publishing it.
+    encoded = json.dumps(raw.decode('utf-8', 'backslashreplace'), ensure_ascii=True)
+    size = len(encoded.encode('ascii'))
+    if len(raw) > 256 or size > 512 or len(paths) >= 10 or path_bytes + size > 2048:
+        truncated = True
+        return
+    paths.append(json.loads(encoded))
+    path_bytes += size
+
+rows = data.split(b'\0')
+if rows.pop() != b'':
+    unknown = True
+    error = 'git_numstat_malformed'
+i = 0
+while i < len(rows):
+    fields = rows[i].split(b'\t', 2)
+    i += 1
+    if len(fields) != 3:
+        error = error or 'git_numstat_malformed'
+        unknown = True
+        continue
+    added, deleted, path = fields
+    if not path:
+        # Git uses an empty header path followed by old/new NUL fields for renames.
+        if i + 1 >= len(rows):
+            error = error or 'git_numstat_malformed'
+            unknown = True
+            break
+        path = rows[i + 1]
+        i += 2
+    if added == deleted == b'-':
+        error = error or 'git_numstat_unavailable'
+        record_path(path)
+    elif not added.isdigit() or not deleted.isdigit() or not added or not deleted:
+        error = error or 'git_numstat_malformed'
+        record_path(path)
+    else:
+        additions += int(added)
+        deletions += int(deleted)
+
+result = dict(result='error' if error else 'pass', changed_files=changed_files,
+              additions=additions, deletions=deletions,
+              total_changed_lines=additions + deletions, new_files=new_files)
+if error:
+    # Error metrics are deliberately unavailable, including any numeric rows.
+    result.update(changed_files=0, additions=0, deletions=0,
+                  total_changed_lines=0, new_files=0, error=error,
+                  offending_paths=paths, offending_paths_truncated=truncated,
+                  offending_paths_unknown=unknown)
+elif changed_files > max_files or additions + deletions > max_lines or new_files > max_new:
+    result['result'] = 'stop'
+print(json.dumps(result, ensure_ascii=True, separators=(',', ':')))
+sys.exit(1 if error else 0)
+PY
