@@ -17,7 +17,13 @@ gh() {
       printf '%s\n' "$MOCK_REVIEW" ;;
     'pr view')
       [ "${MOCK_FAIL:-}" != pr ] || return 1
-      printf '%s\n' "$MOCK_PR" ;;
+      if [[ " $* " == *' --json isDraft '* ]]; then
+        printf '%s\n' "${MOCK_DRAFT:-false}"
+      else
+        printf '%s\n' "$MOCK_PR"
+      fi ;;
+    'pr ready')
+      printf 'ready\n' >> "$MOCK_WRITE_LOG" ;;
     'api repos/owner/repo/issues/36')
       [ "${MOCK_FAIL:-}" != issue ] || return 1
       printf '%s\n' "$MOCK_ISSUE" ;;
@@ -64,8 +70,68 @@ grep -Fq 'Checked-out HEAD differs from the reviewed commit; skipping follow-up.
 grep -Fq 'Draft target changed; skipping.' "$workflow"
 grep -Fq 'Diff guard escalation target changed; skipping target write.' "$workflow"
 grep -Fq 'Follow-up target changed before repository write; skipping.' "$workflow"
-grep -Fq 'Failure target is stale or unverifiable; skipping pause.' "$workflow"
 grep -Fq 'steps.codex-requirements-gate.outputs.notify == '\''true'\''' "$workflow"
 grep -Fq 'steps.followup-diff-guard.outputs.notify == '\''true'\''' "$workflow"
+
+test_dir="$(mktemp -d)"
+trap 'rm -rf "$test_dir"' EXIT
+for marker in FOLLOWUP_TARGET_DRAFT FOLLOWUP_TARGET_GATE; do
+  awk -v marker="$marker" '
+    $0 == "            cat > \"$RUNNER_TEMP/check-claude-followup-target.sh\" <<\047" marker "\047" { block = 1; next }
+    block && $0 == "          " marker { exit }
+    block { sub(/^          /, ""); print }
+  ' "$workflow" > "$test_dir/$marker.sh"
+  cmp "$helper" "$test_dir/$marker.sh"
+done
+
+awk '
+  /      - name: Convert pull request to Draft/ { step = 1 }
+  step && /        run: \|/ { run = 1; next }
+  run && /      - name: / { exit }
+  run && /^  [[:alnum:]_-]+:$/ { exit }
+  run { sub(/^          /, ""); print }
+' "$workflow" > "$test_dir/draft-step.sh"
+[ -s "$test_dir/draft-step.sh" ]
+export RUNNER_TEMP="$test_dir" MOCK_WRITE_LOG="$test_dir/writes"
+export GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEW_ID=123 REVIEW_COMMIT="$sha"
+export REVIEWER_APP_SLUG=review HEAD_REF=ai/issue-36
+cd "$repo_root"
+bash "$test_dir/draft-step.sh"
+[ "$(cat "$MOCK_WRITE_LOG")" = ready ]
+rm "$MOCK_WRITE_LOG"
+# Simulate the introducing PR's trusted base, which lacks the new helper.
+bash -c 'git() { [ "$1" != cat-file ]; }; source "$1"' bash "$test_dir/draft-step.sh"
+[ "$(cat "$MOCK_WRITE_LOG")" = ready ]
+rm "$MOCK_WRITE_LOG"
+MOCK_PR="$(jq -c '.headRefOid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$valid_pr")" \
+  bash -c 'git() { [ "$1" != cat-file ]; }; source "$1"' bash "$test_dir/draft-step.sh"
+[ ! -e "$MOCK_WRITE_LOG" ]
+
+awk '
+  /      - name: Gate automated follow-up/ { step = 1 }
+  step && /        run: \|/ { run = 1; next }
+  run && /      - name: / { exit }
+  run { sub(/^          /, ""); print }
+' "$workflow" > "$test_dir/gate-step.sh"
+[ -s "$test_dir/gate-step.sh" ]
+export GITHUB_OUTPUT="$test_dir/gate-output" DEVELOPER_APP_SLUG=developer REVIEW_BODY=valid
+for mode in base bootstrap; do
+  : > "$GITHUB_OUTPUT"
+  MOCK_MODE="$mode" bash -c '
+    git() {
+      if [ "$MOCK_MODE" = bootstrap ] && [ "$1" = cat-file ]; then return 1; fi
+      command git "$@"
+    }
+    bash() {
+      if [ "$1" = .github/scripts/evaluate-followup-gate.sh ]; then
+        printf "%s\n" '\''{"continue":true,"escalate":false,"notify":false,"reason":"current"}'\''
+      else
+        command bash "$@"
+      fi
+    }
+    source "$1"
+  ' bash "$test_dir/gate-step.sh"
+  grep -Fqx 'continue=true' "$GITHUB_OUTPUT"
+done
 
 echo 'Claude follow-up target fixture tests passed.'

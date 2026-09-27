@@ -369,8 +369,9 @@ if grep -Fq "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" "$foll
 fi
 followup_classifier="$test_dir/followup-failure-classifier.sh"
 awk '
-  /          current_head=unknown/ { in_classifier = 1 }
-  in_classifier { sub(/^          /, ""); print }
+  /      - name: Create common human pause/ { in_step = 1 }
+  in_step && /        run: \|/ { in_run = 1; next }
+  in_run { sub(/^          /, ""); print }
 ' "$followup_failure_handler" > "$followup_classifier"
 for case in same changed missing malformed uppercase lookup-error malformed-json wrong-repo wrong-pr missing-event malformed-event uppercase-event; do
   sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -392,10 +393,11 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
   esac
   actual="$(EVENT_HEAD="$event" MOCK_CURRENT="$current" bash -c '
     set -euo pipefail
-    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 app_id=123
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 APP_SLUG=developer
     DRAFT_RESULT=failure FOLLOWUP_RESULT=skipped
     GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=42
     gh() {
+      if [ "$2" = /apps/developer ]; then printf "123\n"; return; fi
       [ "$MOCK_CURRENT" != error ] || return 1
       case "$MOCK_CURRENT" in
         missing) printf '\''{"number":37,"head":{"repo":{"full_name":"owner/repo"}}}\n'\'' ;;

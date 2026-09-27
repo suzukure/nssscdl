@@ -1545,7 +1545,64 @@ jobs:
           set -euo pipefail
           is_draft="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" || exit 0
           case "$is_draft" in true|false) ;; *) exit 0 ;; esac
-          target="$(bash .github/scripts/check-claude-followup-target.sh \
+          if git cat-file -e 'HEAD:.github/scripts/check-claude-followup-target.sh' 2>/dev/null; then
+            git show 'HEAD:.github/scripts/check-claude-followup-target.sh' > "$RUNNER_TEMP/check-claude-followup-target.sh"
+          else
+            # Inline bootstrap for the helper's introducing PR; never run the PR head copy.
+            cat > "$RUNNER_TEMP/check-claude-followup-target.sh" <<'FOLLOWUP_TARGET_DRAFT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # A stale or unverifiable review is a normal skip, not a failed developer run.
+          repo="${1:-}"
+          pr_number="${2:-}"
+          review_id="${3:-}"
+          review_commit="${4:-}"
+          reviewer_slug="${5:-}"
+          head_ref="${6:-}"
+          skip() { printf 'skip\n'; exit 0; }
+
+          [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || skip
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ && "$review_id" =~ ^[1-9][0-9]*$ ]] || skip
+          [[ "$review_commit" =~ ^[0-9a-f]{40}$ && "$head_ref" =~ ^ai/issue-([1-9][0-9]*)$ ]] || skip
+          issue_number="${BASH_REMATCH[1]}"
+          [[ -n "$reviewer_slug" ]] || skip
+
+          review="$(gh api "repos/$repo/pulls/$pr_number/reviews/$review_id" 2>/dev/null)" || skip
+          jq -es --argjson id "$review_id" --arg sha "$review_commit" --arg slug "$reviewer_slug" '
+            length == 1 and (.[0] |
+              type == "object" and .id == $id and .state == "CHANGES_REQUESTED" and
+              .commit_id == $sha and
+              (.user.login == $slug or .user.login == ($slug + "[bot]") or
+               .user.login == ("app/" + $slug)))
+          ' <<< "$review" >/dev/null 2>&1 || skip
+
+          pr="$(gh pr view "$pr_number" --repo "$repo" --json number,state,headRefOid,headRefName,labels,closingIssuesReferences 2>/dev/null)" || skip
+          jq -es --argjson number "$pr_number" --arg sha "$review_commit" \
+            --arg ref "$head_ref" --arg issue "$issue_number" \
+            --arg url "https://github.com/$repo/issues/$issue_number" '
+            length == 1 and (.[0] |
+              type == "object" and .number == $number and .state == "OPEN" and
+              .headRefOid == $sha and .headRefName == $ref and
+              (.labels | type == "array" and all(.[]; type == "object" and (.name | type == "string")) and
+                all(.[]; .name != "human-review-required")) and
+              (.closingIssuesReferences | type == "array" and
+                any(.[]; .number == ($issue | tonumber) and .url == $url)))
+          ' <<< "$pr" >/dev/null 2>&1 || skip
+
+          issue="$(gh api "repos/$repo/issues/$issue_number" 2>/dev/null)" || skip
+          jq -es --argjson number "$issue_number" '
+            length == 1 and (.[0] |
+              type == "object" and .number == $number and .state == "open" and
+              (has("pull_request") | not) and
+              (.labels | type == "array" and all(.[]; type == "object" and (.name | type == "string")) and
+                all(.[]; .name != "human-review-required")))
+          ' <<< "$issue" >/dev/null 2>&1 || skip
+
+          printf 'current\n'
+          FOLLOWUP_TARGET_DRAFT
+          fi
+          target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
           if [ "$target" != current ]; then
             echo 'Draft target changed; skipping.'
@@ -1623,8 +1680,65 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          target_helper_blob="$(git hash-object --no-filters .github/scripts/check-claude-followup-target.sh)"
-          cp .github/scripts/check-claude-followup-target.sh "$RUNNER_TEMP/check-claude-followup-target.sh"
+          if git cat-file -e 'HEAD:.github/scripts/check-claude-followup-target.sh' 2>/dev/null; then
+            git show 'HEAD:.github/scripts/check-claude-followup-target.sh' > "$RUNNER_TEMP/check-claude-followup-target.sh"
+            target_helper_blob="$(git rev-parse 'HEAD:.github/scripts/check-claude-followup-target.sh')"
+          else
+            # Inline bootstrap for the helper's introducing PR; never run the PR head copy.
+            cat > "$RUNNER_TEMP/check-claude-followup-target.sh" <<'FOLLOWUP_TARGET_GATE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # A stale or unverifiable review is a normal skip, not a failed developer run.
+          repo="${1:-}"
+          pr_number="${2:-}"
+          review_id="${3:-}"
+          review_commit="${4:-}"
+          reviewer_slug="${5:-}"
+          head_ref="${6:-}"
+          skip() { printf 'skip\n'; exit 0; }
+
+          [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || skip
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ && "$review_id" =~ ^[1-9][0-9]*$ ]] || skip
+          [[ "$review_commit" =~ ^[0-9a-f]{40}$ && "$head_ref" =~ ^ai/issue-([1-9][0-9]*)$ ]] || skip
+          issue_number="${BASH_REMATCH[1]}"
+          [[ -n "$reviewer_slug" ]] || skip
+
+          review="$(gh api "repos/$repo/pulls/$pr_number/reviews/$review_id" 2>/dev/null)" || skip
+          jq -es --argjson id "$review_id" --arg sha "$review_commit" --arg slug "$reviewer_slug" '
+            length == 1 and (.[0] |
+              type == "object" and .id == $id and .state == "CHANGES_REQUESTED" and
+              .commit_id == $sha and
+              (.user.login == $slug or .user.login == ($slug + "[bot]") or
+               .user.login == ("app/" + $slug)))
+          ' <<< "$review" >/dev/null 2>&1 || skip
+
+          pr="$(gh pr view "$pr_number" --repo "$repo" --json number,state,headRefOid,headRefName,labels,closingIssuesReferences 2>/dev/null)" || skip
+          jq -es --argjson number "$pr_number" --arg sha "$review_commit" \
+            --arg ref "$head_ref" --arg issue "$issue_number" \
+            --arg url "https://github.com/$repo/issues/$issue_number" '
+            length == 1 and (.[0] |
+              type == "object" and .number == $number and .state == "OPEN" and
+              .headRefOid == $sha and .headRefName == $ref and
+              (.labels | type == "array" and all(.[]; type == "object" and (.name | type == "string")) and
+                all(.[]; .name != "human-review-required")) and
+              (.closingIssuesReferences | type == "array" and
+                any(.[]; .number == ($issue | tonumber) and .url == $url)))
+          ' <<< "$pr" >/dev/null 2>&1 || skip
+
+          issue="$(gh api "repos/$repo/issues/$issue_number" 2>/dev/null)" || skip
+          jq -es --argjson number "$issue_number" '
+            length == 1 and (.[0] |
+              type == "object" and .number == $number and .state == "open" and
+              (has("pull_request") | not) and
+              (.labels | type == "array" and all(.[]; type == "object" and (.name | type == "string")) and
+                all(.[]; .name != "human-review-required")))
+          ' <<< "$issue" >/dev/null 2>&1 || skip
+
+          printf 'current\n'
+          FOLLOWUP_TARGET_GATE
+            target_helper_blob="$(git hash-object --no-filters "$RUNNER_TEMP/check-claude-followup-target.sh")"
+          fi
           test "$(git hash-object --no-filters "$RUNNER_TEMP/check-claude-followup-target.sh")" = "$target_helper_blob"
           echo "target_helper_blob=$target_helper_blob" >> "$GITHUB_OUTPUT"
           target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
@@ -2825,13 +2939,6 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Create reviewer App token for target verification
-        id: review-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.REVIEW_APP_CLIENT_ID }}
-          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
-
       - name: Create developer App token
         id: dev-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -2851,22 +2958,12 @@ jobs:
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
-          REVIEW_ID: ${{ github.event.review.id }}
-          REVIEW_COMMIT: ${{ github.event.review.commit_id }}
-          REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           DRAFT_RESULT: ${{ needs.draft-after-claude-changes.result }}
           FOLLOWUP_RESULT: ${{ needs.respond-to-claude.result }}
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
-          target="$(bash .github/scripts/check-claude-followup-target.sh \
-            "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
-          if [ "$target" != current ]; then
-            echo 'Failure target is stale or unverifiable; skipping pause.'
-            exit 0
-          fi
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
           [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
