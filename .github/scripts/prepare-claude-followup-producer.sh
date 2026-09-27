@@ -6,8 +6,10 @@ set -euo pipefail
 # Load this file and its sibling helpers from the trusted base, never a PR
 # worktree. Each call accepts exactly one trusted JSON snapshot on stdin and
 # emits one instruction. The future caller owns GitHub writes, calls entry
-# immediately before paid Codex and pre_write immediately before repository
-# write, and executes a dispatch instruction only once. An ambiguous dispatch
+# after checkout, then pre_codex after the label transition immediately before
+# paid Codex, and pre_write immediately before repository write. Each target
+# snapshot includes a freshly observed machine label and checked-out HEAD.
+# Execute a dispatch instruction only once. An ambiguous dispatch
 # result goes to common pause; it is never retried automatically.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 phase="${1:-}"
@@ -15,11 +17,11 @@ input="$(cat)"
 stop() { jq -cn --arg code "$1" '{action:"stop",code:$code}'; exit 0; }
 pause() { jq -cn --arg code "$1" '{action:"pause_record",code:$code}'; exit 0; }
 target_failure() {
-  if [ "$phase" = pre_write ]; then pause state_inconsistent; fi
+  if [[ "$phase" == pre_codex || "$phase" == pre_write ]]; then pause state_inconsistent; fi
   stop "$1"
 }
 if ! valid="$(jq -cse 'if length == 1 and (.[0] | type) == "object" then .[0] else error("snapshot") end' <<< "$input" 2>/dev/null)"; then
-  if [[ "$phase" == pre_write || "$phase" == validate || "$phase" == written || "$phase" == ready_result || "$phase" == dispatch_result ]]; then pause state_inconsistent; fi
+  if [[ "$phase" == machine_label_result || "$phase" == pre_codex || "$phase" == pre_write || "$phase" == validate || "$phase" == written || "$phase" == ready_result || "$phase" == dispatch_result ]]; then pause state_inconsistent; fi
   stop invalid_snapshot
 fi
 
@@ -29,29 +31,38 @@ case "$phase" in
       if length != 1 or (.[0] | keys | sort) != ["label_present","transition_succeeded"]
         or (.[0].label_present | type != "boolean")
         or (.[0].transition_succeeded | type != "boolean")
-      then {action:"stop",code:"invalid_snapshot"}
+      then {action:"pause_record",code:"state_inconsistent"}
       elif .[0].label_present and .[0].transition_succeeded then
-        {action:"paid_codex"}
-      else {action:"stop",code:"machine_label_failed"} end
-    ' <<< "$input" 2>/dev/null || stop invalid_snapshot
+        {action:"check_pre_codex_target"}
+      elif (.[0].label_present | not) and (.[0].transition_succeeded | not) then
+        {action:"stop",code:"machine_label_failed"}
+      else {action:"pause_record",code:"state_inconsistent"} end
+    ' <<< "$input" 2>/dev/null || pause state_inconsistent
     ;;
-  entry|pre_write)
+  entry|pre_codex|pre_write)
     # This is the canonical #523 current review/PR/Issue/HEAD/pause check.
     facts="$(jq -cse '
       def positive: type == "number" and floor == . and . > 0;
       def sha: type == "string" and test("^[0-9a-f]{40}$");
       if length != 1 or (.[0] | keys | sort) !=
-        ["developer_gate_passed","diff_guard_passed","head_ref","pr_number","repo","requirements_gate_passed","review_commit","review_id","reviewer_slug","round"]
+        ["checked_out_sha","developer_gate_passed","diff_guard_passed","head_ref","machine_label","pr_number","repo","requirements_gate_passed","review_commit","review_id","reviewer_slug","round"]
         or (.[0].repo | type != "string" or (test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") | not))
         or (.[0].pr_number | positive | not) or (.[0].review_id | positive | not)
         or (.[0].round | positive | not) or (.[0].review_commit | sha | not)
+        or (.[0].checked_out_sha | sha | not)
         or (.[0].head_ref | type != "string" or (test("^ai/issue-[1-9][0-9]*$") | not))
         or (.[0].reviewer_slug | type != "string" or length == 0)
         or (.[0].developer_gate_passed | type != "boolean")
+        or (.[0].machine_label | type != "boolean")
         or (.[0].requirements_gate_passed | type != "boolean")
         or (.[0].diff_guard_passed | type != "boolean")
       then error("snapshot") else .[0] end
     ' <<< "$input" 2>/dev/null)" || target_failure invalid_snapshot
+    [ "$(jq -r .checked_out_sha <<< "$facts")" = "$(jq -r .review_commit <<< "$facts")" ] \
+      || target_failure stale_checkout
+    if [ "$phase" != entry ]; then
+      [ "$(jq -r .machine_label <<< "$facts")" = true ] || pause state_inconsistent
+    fi
     round="$(jq -r .round <<< "$facts")"
     target="$(bash "$script_dir/check-claude-followup-target.sh" \
       "$(jq -r .repo <<< "$facts")" "$(jq -r .pr_number <<< "$facts")" \
@@ -60,6 +71,9 @@ case "$phase" in
       || target_failure target_unavailable
     [ "$target" = current ] || target_failure stale_target
     if [ "$round" -gt 2 ]; then pause round_limit; fi
+    if [ "$phase" = entry ]; then
+      [ "$(jq -r .machine_label <<< "$facts")" = false ] || target_failure machine_label_present
+    fi
     if [ "$(jq -r .developer_gate_passed <<< "$facts")" != true ]; then target_failure followup_gate_failed; fi
     if [ "$phase" = pre_write ]; then
       [ "$(jq -r .requirements_gate_passed <<< "$facts")" = true ] || pause requirements_change
@@ -67,6 +81,8 @@ case "$phase" in
     fi
     if [ "$phase" = entry ]; then
       jq -cn '{action:"add_machine_label",label:"ai-followup-in-progress"}'
+    elif [ "$phase" = pre_codex ]; then
+      jq -cn '{action:"paid_codex"}'
     else
       jq -cn '{action:"repository_write"}'
     fi

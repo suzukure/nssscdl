@@ -27,7 +27,8 @@ chmod +x "$test_dir/bin/gh"
 export PATH="$test_dir/bin:$PATH"
 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 entry="$(jq -cn --arg sha "$sha" '{repo:"owner/repo",pr_number:37,review_id:41,
-  review_commit:$sha,reviewer_slug:"reviewer",head_ref:"ai/issue-36",round:1,
+  review_commit:$sha,checked_out_sha:$sha,machine_label:false,
+  reviewer_slug:"reviewer",head_ref:"ai/issue-36",round:1,
   developer_gate_passed:true,requirements_gate_passed:true,diff_guard_passed:true}')"
 
 assert() {
@@ -44,18 +45,31 @@ assert entry entry "$entry" '{"action":"add_machine_label","label":"ai-followup-
 assert second-round entry "$(case_entry '.round = 2')" '{"action":"add_machine_label","label":"ai-followup-in-progress"}'
 assert third-round entry "$(case_entry '.round = 3')" '{"action":"pause_record","code":"round_limit"}'
 assert third-round-gate-stopped entry "$(case_entry '.round = 3 | .developer_gate_passed = false')" '{"action":"pause_record","code":"round_limit"}'
+assert third-round-labeled entry "$(case_entry '.round = 3 | .machine_label = true')" '{"action":"pause_record","code":"round_limit"}'
 assert failed-gate entry "$(case_entry '.developer_gate_passed = false')" '{"action":"stop","code":"followup_gate_failed"}'
+assert stale-checkout entry "$(case_entry '.checked_out_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')" '{"action":"stop","code":"stale_checkout"}'
+assert preexisting-machine-label entry "$(case_entry '.machine_label = true')" '{"action":"stop","code":"machine_label_present"}'
 MOCK_PR_STATE=CLOSED assert closed-pr entry "$entry" '{"action":"stop","code":"stale_target"}'
 MOCK_ISSUE_STATE=closed assert closed-issue entry "$entry" '{"action":"stop","code":"stale_target"}'
 MOCK_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb assert moved-head entry "$entry" '{"action":"stop","code":"stale_target"}'
 assert label-failed machine_label_result '{"label_present":false,"transition_succeeded":false}' '{"action":"stop","code":"machine_label_failed"}'
-assert label-ready machine_label_result '{"label_present":true,"transition_succeeded":true}' '{"action":"paid_codex"}'
-assert fresh-write pre_write "$entry" '{"action":"repository_write"}'
-assert requirements-stop pre_write "$(case_entry '.requirements_gate_passed = false')" '{"action":"pause_record","code":"requirements_change"}'
-assert diff-stop pre_write "$(case_entry '.diff_guard_passed = false')" '{"action":"pause_record","code":"diff_guard_error"}'
-MOCK_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb assert stale-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
-MOCK_PR_STATE=CLOSED assert closed-before-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
-MOCK_ISSUE_STATE=closed assert issue-closed-before-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
+assert label-ready machine_label_result '{"label_present":true,"transition_succeeded":true}' '{"action":"check_pre_codex_target"}'
+assert label-partial machine_label_result '{"label_present":true,"transition_succeeded":false}' '{"action":"pause_record","code":"state_inconsistent"}'
+assert label-unknown machine_label_result '{"label_present":false,"transition_succeeded":true}' '{"action":"pause_record","code":"state_inconsistent"}'
+assert label-result-malformed machine_label_result '{"label_present":true}' '{"action":"pause_record","code":"state_inconsistent"}'
+labeled_entry="$(case_entry '.machine_label = true')"
+assert fresh-pre-codex pre_codex "$labeled_entry" '{"action":"paid_codex"}'
+MOCK_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb assert moved-before-codex pre_codex "$labeled_entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_PR_STATE=CLOSED assert closed-before-codex pre_codex "$labeled_entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_ISSUE_STATE=closed assert issue-closed-before-codex pre_codex "$labeled_entry" '{"action":"pause_record","code":"state_inconsistent"}'
+assert missing-label-before-codex pre_codex "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
+assert fresh-write pre_write "$labeled_entry" '{"action":"repository_write"}'
+assert requirements-stop pre_write "$(jq -c '.requirements_gate_passed = false' <<< "$labeled_entry")" '{"action":"pause_record","code":"requirements_change"}'
+assert diff-stop pre_write "$(jq -c '.diff_guard_passed = false' <<< "$labeled_entry")" '{"action":"pause_record","code":"diff_guard_error"}'
+assert missing-label-before-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb assert stale-write pre_write "$labeled_entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_PR_STATE=CLOSED assert closed-before-write pre_write "$labeled_entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_ISSUE_STATE=closed assert issue-closed-before-write pre_write "$labeled_entry" '{"action":"pause_record","code":"state_inconsistent"}'
 
 written="$(jq -cn --arg sha "$sha" '{repository_write:"pushed",expected_sha:$sha,
   current_head_sha:$sha,machine_label:true,now:1050,window_started_at:1000}')"
