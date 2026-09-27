@@ -249,13 +249,30 @@ assert_rejected create developer_execution_failed 'different target' --failed-ac
 unset MOCK_POST_FAIL
 cp "$test_dir/trusted-comments.json" "$test_dir/comments.json"
 
+# With no active pause, the failure handler creates and notifies even when the
+# PR relation or HEAD no longer matches the conditions required for repair.
+for mismatch in relation head; do
+  printf '[]\n' > "$test_dir/comments.json"
+  : > "$test_dir/events"
+  if [ "$mismatch" = relation ]; then
+    export MOCK_CLOSING_ISSUE=38
+  else
+    export MOCK_PR_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  fi
+  jq -e '.result == "created" and .pause_id == "101"' \
+    <<< "$(create developer_execution_failed 'handler failed' --failed-action develop \
+      --repair-active --repair-head "$head_sha")" > /dev/null
+  [ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+  grep -q '^label 36$' "$test_dir/events"
+  grep -q '^label 37$' "$test_dir/events"
+  [ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
+  unset MOCK_CLOSING_ISSUE
+  export MOCK_PR_HEAD="$head_sha"
+done
+
 # A lost POST response is recovered only from the unique matching trusted record.
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
-export MOCK_CLOSING_ISSUE=38
-assert_rejected create developer_execution_failed 'wrong new relation' --failed-action develop \
-  --repair-active --repair-head "$head_sha"
-unset MOCK_CLOSING_ISSUE
 export MOCK_POST_LOST_RESPONSE=true
 jq -e '.result == "already_active" and .pause_id == "101"' \
   <<< "$(create validation_failed 'lost response')" > /dev/null

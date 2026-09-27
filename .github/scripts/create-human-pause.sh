@@ -181,7 +181,6 @@ verify_repair() {
   verify_repair_relation
 }
 
-if [ "$mode" = create ] && [ "$repair_active" = true ]; then verify_repair_relation; fi
 history="$(reconcile)" || fail_closed 'could not reconcile trusted pause history'
 active="$(bash "$script_dir/reconcile-human-pause-active-pause.sh" <<< "$history")" \
   || fail_closed 'could not reconcile active pause'
@@ -308,7 +307,6 @@ fi
 jq -e --arg id "$pause_id" --arg reason "$reason" \
   '.result == "active" and .active_pause.pause_id == $id and .active_pause.reason == $reason' \
   <<< "$confirmed_active" > /dev/null || fail_closed 'new pause is not the sole active pause'
-if [ "$repair_active" = true ]; then verify_repair_relation; fi
 message="$(bash "$script_dir/format-human-pause-notification.sh" \
   "$reason" "$target" "$detail" "$url" "$pause_id")" \
   || fail_closed 'could not format human notification'
