@@ -37,6 +37,9 @@ assert_decision() {
 case_snapshot() { jq -c "$1" <<< "$base"; }
 
 assert_decision success ready success "$base"
+assert_decision repeated-traceability-success ready success "$(case_snapshot '.checks += [(.checks[0] | .id = 21 | .created_at = 1030 | .started_at = 1040)]')"
+assert_decision repeated-traceability-pending wait pending "$(case_snapshot '.checks += [(.checks[0] | .id = 21 | .created_at = 1030 | .started_at = null | .status = "pending")]')"
+assert_decision repeated-traceability-failure stop validation_failed "$(case_snapshot '.checks += [(.checks[0] | .id = 21 | .created_at = 1030 | .started_at = 1040 | .status = "failure")]')"
 assert_decision no-diff ready success "$(case_snapshot '.repository_write = "no_diff"')"
 assert_decision second-round ready success "$(case_snapshot '.automated_followup_count = 2')"
 assert_decision check-pending wait pending "$(case_snapshot '.checks[0].status = "pending"')"
@@ -75,7 +78,9 @@ assert_decision draft-skipped wait pending "$(jq -c '.checks[0].status = "skippe
 assert_decision ready-success ready success "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: 1032, status: "success"}]' <<< "$draft_checks")"
 assert_decision ready-failure stop validation_failed "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: 1032, status: "failure"}]' <<< "$draft_checks")"
 assert_decision ready-pending wait pending "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: null, status: "pending"}]' <<< "$draft_checks")"
-assert_decision ready-skipped stop validation_failed "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: null, status: "skipped"}]' <<< "$draft_checks")"
+assert_decision ready-skipped wait pending "$(jq -c '.checks += [{id: 22, name: "PR Traceability / Linked Issue", sha: .current_head_sha, created_at: 1031, started_at: null, status: "skipped"}]' <<< "$draft_checks")"
+assert_decision draft-skipped-after-ready wait pending "$(case_snapshot '.checks[0].created_at = 1031 | .checks[0].started_at = null | .checks[0].status = "skipped" | .ready_started_at = 1030')"
+assert_decision skipped-with-ready-success ready success "$(case_snapshot '.checks += [(.checks[0] | .id = 21 | .created_at = 1030 | .started_at = null | .status = "skipped")]')"
 assert_decision started-before-ready wait pending "$(case_snapshot '.checks[0].created_at = 1035 | .checks[0].started_at = 1020 | .ready_started_at = 1030')"
 
 # Unknown API/check states and malformed or partial snapshots cannot qualify.

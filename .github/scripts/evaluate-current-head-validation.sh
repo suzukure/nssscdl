@@ -55,7 +55,7 @@ if ! result="$(jq -c -s '
       decision("stop"; "validation_failed")
     elif $s.human_pause then decision("stop"; "human_pause")
     elif $s.automated_followup_count > 2 then decision("stop"; "round_limit")
-    elif (any($current_checks[]; .status == "failure" or .status == "skipped") or
+    elif (any($current_checks[]; .status == "failure") or
           any($s.branch_mutating_runs[]; .status == "failure")) then
       decision("stop"; "validation_failed")
     elif $s.now - $s.window_started_at >= 600 then
@@ -65,7 +65,7 @@ if ! result="$(jq -c -s '
     elif ($s.checks_complete | not) or ($s.branch_mutating_runs_complete | not) or
          (any($current_checks[]; .status == "pending")) or
          (any($s.branch_mutating_runs[]; .status == "pending")) or
-         ([ $current_checks[] | select(.name == "PR Traceability / Linked Issue" and .status == "success") ] | length != 1) then
+         ([ $current_checks[] | select(.name == "PR Traceability / Linked Issue" and .status == "success") ] | length == 0) then
       decision("wait"; "pending")
     else decision("ready"; "success")
     end
