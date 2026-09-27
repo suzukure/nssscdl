@@ -301,9 +301,9 @@ for case in absent-unchanged sha-unchanged cancelled-unchanged absent-to-sha sha
   sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   sha_b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   case "$case" in
-    absent-unchanged) pre=absent; current=absent; result=failure; expected='developer_execution_failed --failed-action develop' ;;
-    sha-unchanged) pre=$sha_a; current=$sha_a; result=failure; expected='developer_execution_failed --failed-action develop' ;;
-    cancelled-unchanged) pre=$sha_a; current=$sha_a; result=cancelled; expected='developer_execution_failed --failed-action develop' ;;
+    absent-unchanged) pre=absent; current=absent; result=failure; expected='developer_execution_failed --failed-action develop --repair-active' ;;
+    sha-unchanged) pre=$sha_a; current=$sha_a; result=failure; expected="developer_execution_failed --failed-action develop --repair-active --repair-head $sha_a" ;;
+    cancelled-unchanged) pre=$sha_a; current=$sha_a; result=cancelled; expected="developer_execution_failed --failed-action develop --repair-active --repair-head $sha_a" ;;
     absent-to-sha) pre=absent; current=$sha_a; result=failure; expected='state_inconsistent ' ;;
     sha-to-sha) pre=$sha_a; current=$sha_b; result=failure; expected='state_inconsistent ' ;;
     sha-to-absent) pre=$sha_a; current=absent; result=failure; expected='state_inconsistent ' ;;
@@ -317,6 +317,8 @@ for case in absent-unchanged sha-unchanged cancelled-unchanged absent-to-sha sha
     set -euo pipefail
     GITHUB_REPOSITORY=owner/repo
     branch=ai/issue-123
+    pr_number=-
+    if [ "$MOCK_CURRENT" = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]; then pr_number=37; fi
     python3() { [ "$MOCK_CURRENT" != error ] && printf "%s\n" "$MOCK_CURRENT"; }
     source "$1"
   ' bash "$classifier")"
@@ -363,7 +365,7 @@ awk '
 for case in same changed missing malformed uppercase lookup-error malformed-json wrong-repo wrong-pr missing-event malformed-event uppercase-event; do
   sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   sha_b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  event=$sha_a current=$sha_a expected="developer_execution_failed --paused-head $sha_a --failed-action fix"
+  event=$sha_a current=$sha_a expected="developer_execution_failed --paused-head $sha_a --failed-action fix --repair-active --repair-head $sha_a"
   case "$case" in
     same) ;;
     changed) current=$sha_b; expected='state_inconsistent ' ;;

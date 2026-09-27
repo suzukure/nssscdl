@@ -6,6 +6,7 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 export TEST_DIR="$test_dir"
 export NOTIFICATION_WEBHOOK_URL='https://discord.invalid/webhook'
+export MOCK_PR_HEAD='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
 
@@ -15,6 +16,7 @@ gh() {
       jq -c '[.]' "$TEST_DIR/comments.json"
       ;;
     'api -X')
+      if [ "${MOCK_POST_FAIL:-false}" = true ]; then return 1; fi
       local body='' arg
       for arg in "$@"; do
         case "$arg" in body=*) body="${arg#body=}" ;; esac
@@ -32,16 +34,23 @@ gh() {
         mv "$TEST_DIR/next.json" "$TEST_DIR/comments.json"
       fi
       printf 'record %s\n' "$id" >> "$TEST_DIR/events"
+      if [ "${MOCK_POST_LOST_RESPONSE:-false}" = true ]; then return 1; fi
+      if [ "${MOCK_POST_EMPTY_RESPONSE:-false}" = true ]; then return 0; fi
       jq -cn --argjson id "$id" '{id:$id}'
       ;;
     'pr view')
-      printf '%s\n' '{"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+      jq -cn --arg head "$MOCK_PR_HEAD" --arg issue "${MOCK_CLOSING_ISSUE:-36}" \
+        --arg branch "${MOCK_PR_BRANCH:-ai/issue-36}" \
+        '{headRefName:$branch,headRefOid:$head,
+          closingIssuesReferences:[{number:($issue|tonumber),url:("https://github.com/owner/repo/issues/"+$issue)}]}'
       ;;
     'label create')
+      if [ "${MOCK_LABEL_CREATE_FAIL:-false}" = true ]; then return 1; fi
       printf 'label-create\n' >> "$TEST_DIR/events"
       ;;
     'issue edit')
-      if [ "${MOCK_LABEL_FAIL:-false}" = true ]; then return 1; fi
+      if [ "${MOCK_LABEL_FAIL:-false}" = true ] ||
+         [ "${MOCK_LABEL_FAIL_TARGET:-}" = "$3" ]; then return 1; fi
       printf 'label %s\n' "$3" >> "$TEST_DIR/events"
       ;;
     *) echo "Unexpected gh invocation: $*" >&2; return 2 ;;
@@ -60,6 +69,14 @@ create() {
 }
 inspect() {
   bash "$script_dir/create-human-pause.sh" inspect owner/repo 36 37 99 "$1"
+}
+assert_rejected() {
+  local count
+  count="$(jq 'length' "$test_dir/comments.json")"
+  if "$@" > /dev/null 2>&1; then
+    echo "Expected input to be rejected: $*" >&2; exit 1
+  fi
+  [ "$(jq 'length' "$test_dir/comments.json")" -eq "$count" ]
 }
 
 fingerprint="sha256:$(printf 'a%.0s' {1..64})"
@@ -157,6 +174,8 @@ grep -q '^label 36$' "$test_dir/events"
 grep -q '^label 37$' "$test_dir/events"
 [ "$(grep -c '^notify$' "$test_dir/events")" -eq 1 ]
 jq -e '.content | contains("state_inconsistent")' "$test_dir/notification.json" > /dev/null
+assert_rejected create developer_execution_failed 'ambiguous repair' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
 
 # Failed label synchronization cannot send Discord; retry repairs labels only.
 printf '[]\n' > "$test_dir/comments.json"
@@ -179,6 +198,88 @@ if grep -q '^notify$' "$test_dir/events"; then
   echo 'A retry duplicated the notification.' >&2
   exit 1
 fi
+
+# A later developer failure repairs the original pause without replacing its
+# reason, payload, or lifecycle. Partial and repeated label failures stay errors.
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+export MOCK_LABEL_FAIL_TARGET=37
+if create requirements_change 'upstream decision' --issue-body-fingerprint "$fingerprint" \
+  > /dev/null 2>&1; then exit 1; fi
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+assert_rejected create developer_execution_failed 'handler failed' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+unset MOCK_LABEL_FAIL_TARGET
+jq -e '.result == "already_active" and .pause_id == "101"' \
+  <<< "$(create developer_execution_failed 'handler failed' --failed-action develop \
+    --repair-active --repair-head "$head_sha")" > /dev/null
+jq -e '.result == "already_active" and .pause_id == "101"' \
+  <<< "$(create developer_execution_failed 'duplicate handler' --failed-action develop \
+    --repair-active --repair-head "$head_sha")" > /dev/null
+jq -e --arg fingerprint "$fingerprint" 'length == 1 and
+  (.[0].body | split("\n")[1] | fromjson |
+    .reason == "requirements_change" and .payload.issue_body_fingerprint == $fingerprint)' \
+  "$test_dir/comments.json" > /dev/null
+[ "$(grep -c '^record ' "$test_dir/events")" -eq 1 ]
+if grep -q '^notify$' "$test_dir/events"; then
+  echo 'Repair sent a duplicate notification.' >&2; exit 1
+fi
+export MOCK_PR_HEAD='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+assert_rejected create developer_execution_failed 'handler failed' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+export MOCK_PR_HEAD="$head_sha"
+export MOCK_CLOSING_ISSUE=38
+assert_rejected create developer_execution_failed 'handler failed' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+unset MOCK_CLOSING_ISSUE
+export MOCK_PR_BRANCH=ai/issue-38
+assert_rejected create developer_execution_failed 'handler failed' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+unset MOCK_PR_BRANCH
+cp "$test_dir/comments.json" "$test_dir/trusted-comments.json"
+export MOCK_POST_FAIL=true
+jq '.[0].performed_via_github_app.id = 98' "$test_dir/trusted-comments.json" \
+  > "$test_dir/comments.json"
+assert_rejected create developer_execution_failed 'untrusted record' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+jq '.[0].body |= (sub("pr:37"; "pr:38"))' "$test_dir/trusted-comments.json" \
+  > "$test_dir/comments.json"
+assert_rejected create developer_execution_failed 'different target' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+unset MOCK_POST_FAIL
+cp "$test_dir/trusted-comments.json" "$test_dir/comments.json"
+
+# A lost POST response is recovered only from the unique matching trusted record.
+printf '[]\n' > "$test_dir/comments.json"
+: > "$test_dir/events"
+export MOCK_CLOSING_ISSUE=38
+assert_rejected create developer_execution_failed 'wrong new relation' --failed-action develop \
+  --repair-active --repair-head "$head_sha"
+unset MOCK_CLOSING_ISSUE
+export MOCK_POST_LOST_RESPONSE=true
+jq -e '.result == "already_active" and .pause_id == "101"' \
+  <<< "$(create validation_failed 'lost response')" > /dev/null
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+if grep -q '^notify$' "$test_dir/events"; then exit 1; fi
+unset MOCK_POST_LOST_RESPONSE
+printf '[]\n' > "$test_dir/comments.json"
+export MOCK_POST_EMPTY_RESPONSE=true
+jq -e '.result == "already_active" and .pause_id == "101"' \
+  <<< "$(create validation_failed 'empty response')" > /dev/null
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+unset MOCK_POST_EMPTY_RESPONSE
+printf '[]\n' > "$test_dir/comments.json"
+export MOCK_POST_FAIL=true
+assert_rejected create validation_failed 'POST did not happen'
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 0 ]
+unset MOCK_POST_FAIL
+export MOCK_LABEL_CREATE_FAIL=true
+if create validation_failed 'label creation failed' > /dev/null 2>&1; then exit 1; fi
+[ "$(jq 'length' "$test_dir/comments.json")" -eq 1 ]
+unset MOCK_LABEL_CREATE_FAIL
+jq -e '.result == "already_active"' \
+  <<< "$(create developer_execution_failed 'handler failed' --failed-action develop \
+    --repair-active --repair-head "$head_sha")" > /dev/null
 
 # Without a PR, the Issue is the record and label target. An unset webhook is
 # best effort and does not undo the GitHub pause.
@@ -207,6 +308,12 @@ grep -q '^label 36$' "$test_dir/events"
 grep -q '^label 37$' "$test_dir/events"
 jq -e '.[0].body | contains("\"target\":\"pr:37\"")' \
   "$test_dir/comments.json" > /dev/null
+export MOCK_PR_BRANCH=feature/review
+jq -e '.result == "already_active" and .pause_id == "101"' \
+  <<< "$(bash "$script_dir/create-human-pause.sh" create owner/repo - 37 99 \
+    developer_execution_failed 'PR handler failure' --failed-action fix \
+    --paused-head "$head_sha" --repair-active --repair-head "$head_sha")" > /dev/null
+unset MOCK_PR_BRANCH
 
 # The optional review producer input is a strict PR HEAD and remains part of
 # the schema-owned record; legacy callers still omit it.
@@ -229,15 +336,6 @@ fi
 printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/events"
 
-
-assert_rejected() {
-  local count
-  count="$(jq 'length' "$test_dir/comments.json")"
-  if "$@" > /dev/null 2>&1; then
-    echo "Expected create input to be rejected: $*" >&2; exit 1
-  fi
-  [ "$(jq 'length' "$test_dir/comments.json")" -eq "$count" ]
-}
 
 set_active_machine_field() {
   jq --arg field "$1" --arg value "$2" '
@@ -333,6 +431,10 @@ jq -e --arg head "$head_sha" \
   "$test_dir/comments.json" > /dev/null
 jq -e '.result == "already_active"' <<< "$(create claude_execution_failed \
   'review failed' --paused-head "$head_sha")" > /dev/null
+export MOCK_PR_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+assert_rejected create developer_execution_failed 'different HEAD' --failed-action develop \
+  --repair-active --repair-head "$MOCK_PR_HEAD"
+export MOCK_PR_HEAD="$head_sha"
 assert_rejected create claude_execution_failed detail --paused-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 assert_rejected create claude_execution_failed detail --paused-head AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 assert_rejected create claude_execution_failed detail --paused-head "$head_sha" --paused-head "$head_sha"
