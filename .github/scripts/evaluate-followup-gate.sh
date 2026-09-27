@@ -7,7 +7,19 @@ reviewer_app_slug="${3:?reviewer App slug is required}"
 developer_app_slug="${4:?developer App slug is required}"
 review_body="${5:-}"
 
-metadata="$(gh pr view "$pr_number" --repo "$repo" --json author,reviews,labels,closingIssuesReferences)"
+emit_result() {
+  jq -cn \
+    --argjson continue "$1" \
+    --argjson escalate "$2" \
+    --argjson notify "$3" \
+    --arg reason "$4" \
+    '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason}'
+}
+
+metadata="$(gh pr view "$pr_number" --repo "$repo" --json author,reviews,labels,closingIssuesReferences 2>/dev/null)" || {
+  emit_result false false false 'Follow-up metadata is unavailable; skipping.'
+  exit 0
+}
 if ! jq -es 'length == 1 and (.[0] | type == "object" and
     (.author.login | type == "string") and
     (.reviews | type == "array") and
@@ -17,19 +29,10 @@ if ! jq -es 'length == 1 and (.[0] | type == "object" and
     all(.closingIssuesReferences[]; type == "object" and
       (.number | type == "number" and . > 0 and floor == .) and
       (.url | type == "string")))' <<< "$metadata" > /dev/null; then
-  echo 'Invalid pull request metadata; refusing automated follow-up.' >&2
-  exit 1
+  emit_result false false false 'Follow-up metadata is invalid; skipping.'
+  exit 0
 fi
 author_login="$(jq -r '.author.login' <<< "$metadata")"
-
-emit_result() {
-  jq -cn \
-    --argjson continue "$1" \
-    --argjson escalate "$2" \
-    --argjson notify "$3" \
-    --arg reason "$4" \
-    '{continue: $continue, escalate: $escalate, notify: $notify, reason: $reason}'
-}
 
 normal_followup_reason() {
   printf '%s\n' 'Automated Codex follow-up passed the entry gate; successful trusted completion will request re-review by marking the PR ready for review.'
@@ -56,21 +59,21 @@ issue_prefix="https://github.com/${repo}/issues/"
 if ! closing_issues="$(jq -r --arg prefix "$issue_prefix" \
     '.closingIssuesReferences[] | select(.url | startswith($prefix)) | .number' \
     <<< "$metadata")"; then
-  echo 'Could not extract closing Issues; refusing automated follow-up.' >&2
-  exit 1
+  emit_result false false false 'Closing Issue metadata is unavailable; skipping.'
+  exit 0
 fi
 while IFS= read -r issue_number; do
   [ -n "$issue_number" ] || continue
   if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
-    echo "Could not fetch closing Issue #${issue_number}; refusing automated follow-up." >&2
-    exit 1
+    emit_result false false false "Closing Issue #${issue_number} is unavailable; skipping."
+    exit 0
   fi
   if ! jq -es 'length == 1 and (.[0] | type == "object" and
       (.labels | type == "array") and
       all(.labels[]; type == "object" and (.name | type == "string")))' \
       <<< "$issue_json" > /dev/null; then
-    echo "Invalid closing Issue #${issue_number} label metadata; refusing automated follow-up." >&2
-    exit 1
+    emit_result false false false "Closing Issue #${issue_number} metadata is invalid; skipping."
+    exit 0
   fi
   issue_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$issue_json")"
   if [ "$issue_paused" = true ]; then

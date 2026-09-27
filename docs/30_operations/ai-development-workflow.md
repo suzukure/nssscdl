@@ -84,6 +84,8 @@ AI Developerの投稿またはjob successだけでは、別のmachine-generated 
 
 Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
 
+旧`pull_request_review` follow-upはcanonical PR writer待機後、trusted baseの`check-claude-followup-target.sh`でreview ID・review commit、PR番号・open状態・head・branch、canonical closing Issueのopen状態、両者の停止ラベルを再取得する。checkoutしたHEADもreview commitと照合し、実際のpaid Codex起動直前に同じtargetを再照合する。stale・closed・停止中・取得不能なら正常skipし、Codex、post-Codex gate、repository writeへ進まない。人間エスカレーションのpause/comment直前とCodex後のrepository write直前にも再照合し、対象が変わった場合はwriteと通知をskipする。#498の後継producerへ切り替える際は、その経路で同等のcurrent review・PR・closing Issue・checkout HEADとpaid call / target write直前の再照合を確認してから旧producerを停止する。新経路が確認されるまで旧経路の開始前提を撤去しない。
+
 `human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中のopen PRに対する解除順序と再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。Draft PRではラベル解除だけでClaudeは起動せず、準備完了後のReady化がレビュー要求になる。
 
 ### 承認後の非Blocking改善
@@ -462,7 +464,7 @@ extended-runでもtimeoutまたは異常終了した場合は、同じcommandを
 
 #### Claude review follow-upの異常終了
 
-Claude review follow-upでは、通常の `Gate automated follow-up` は停止ラベルを付けない。trusted Draft復帰jobまたは `Run Codex follow-up` がtimeout、runner-loss、action failure等で異常終了した場合は、専用failure handlerがtrusted base checkoutの `create-human-pause.sh` でPRをprimary targetとして停止する。event HEADとdeveloper App tokenで再取得したcurrent PR HEADがともに有効な40文字の小文字SHAで一致する場合だけ、current HEADを `paused_head` とする `developer_execution_failed`（`failed_action=fix`）を記録する。HEADの差異・欠落・形式不正・取得不能は `state_inconsistent` とし、再開可能なfix failureに分類しない。common helperがclosing IssueとPRへ `human-review-required` を同期し、GitHub pause成立後に日本語Discord通知をbest-effortで試行する。通知失敗でも停止を維持し、自動retry、rollback、branch deleteは行わない。
+Claude review follow-upでは、通常の `Gate automated follow-up` は停止ラベルを付けない。stale・closed・停止中・取得不能なtargetは前段jobが正常skipし、failure handlerを起動しない。trusted Draft復帰jobまたは `Run Codex follow-up` がtimeout、runner-loss、action failure等で異常終了した場合は、専用failure handlerがtrusted base checkoutの `create-human-pause.sh` でPRをprimary targetとして停止する。event HEADとdeveloper App tokenで再取得したcurrent PR HEADがともに有効な40文字の小文字SHAで一致する場合だけ、current HEADを `paused_head` とする `developer_execution_failed`（`failed_action=fix`）を記録する。その後のHEAD差異（同runのpush後の失敗を含む）・欠落・形式不正・取得不能は `state_inconsistent` とし、再開可能なfix failureに分類しない。common helperがclosing IssueとPRへ `human-review-required` を同期し、GitHub pause成立後に日本語Discord通知をbest-effortで試行する。通知失敗でも停止を維持し、自動retry、rollback、branch deleteは行わない。
 
 異常終了後にCodex follow-upを自動retryしない。現行workflowには、停止状態を維持したまま同じClaude指摘に対するCodex follow-upだけを安全に再実行する専用入口はない。
 

@@ -148,7 +148,7 @@ followup_publish_if="$(awk '
   found && /^        if: / { print; exit }
   found && /^      - name: / { exit }
 ' "$followup_job")"
-[ "$followup_publish_if" = "        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'" ]
+[ "$followup_publish_if" = "        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'" ]
 
 make_case_environment() {
   local case_dir="${1:?case dir is required}"
@@ -164,6 +164,7 @@ make_case_environment() {
   : > "$case_dir/gh.log"
   : > "$case_dir/pause.log"
   : > "$case_dir/git.log"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "current\\n"' > "$case_dir/runner/check-claude-followup-target.sh"
 
   cat > "$case_dir/bin/git" <<'EOF'
 #!/usr/bin/env bash
@@ -252,6 +253,7 @@ run_case() {
     GIT_LOG="$case_dir/git.log" \
       PR_NUMBER='172' \
       HEAD_REF='ai/issue-170' \
+      REVIEW_ID=123 REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REVIEWER_APP_SLUG=review \
       bash "$guard"
   )
 
@@ -344,6 +346,8 @@ run_publisher_case() {
   local expected_head="${6-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   local case_dir="$test_dir/publisher-$name"
   mkdir -p "$case_dir"
+  mkdir -p "$case_dir/runner"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "current\\n"' > "$case_dir/runner/check-claude-followup-target.sh"
   : > "$case_dir/calls.log"
   printf '%s\n' 'result summary' > "$case_dir/final.md"
 
@@ -406,6 +410,7 @@ run_publisher_case() {
     EVENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36 PR_NUMBER=37 \
     ISSUE_TITLE='Related correction' AI_BRANCH=ai/issue-36 HEAD_REF=ai/issue-36 \
+    RUNNER_TEMP="$case_dir/runner" REVIEW_ID=123 REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REVIEWER_APP_SLUG=review \
     CODEX_FINAL="$case_dir/final.md" \
       bash "$case_dir/publisher.sh"
   )
@@ -647,7 +652,7 @@ if grep -Fq '      - name: Notify human of diff guard stop' "$developer_job"; th
 fi
 grep -Fq '"$RUNNER_TEMP/trusted-human-pause/create-human-pause.sh" create' "$guard_script"
 grep -Fq '      - name: Notify human of follow-up diff guard stop' "$followup_job"
-grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'" "$followup_job"
+grep -Fq "steps.followup-diff-guard.outputs.notify == 'true'" "$followup_job"
 grep -Fq 'bash "$RUNNER_TEMP/notify-human.sh"' "$followup_notify_script"
 
 printf '%s\n' 'AI Developer diff guard fixture tests passed'

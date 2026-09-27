@@ -62,6 +62,17 @@ assert_stops() {
   fi
 }
 
+assert_followup_skips() {
+  local name="$1" output
+  shift
+  : > "$GH_LOG"
+  output="$("$@")"
+  if ! jq -e '.continue == false and .escalate == false and .notify == false' <<< "$output" >/dev/null; then
+    echo "Expected $name to skip without escalation." >&2
+    exit 1
+  fi
+}
+
 assert_passes bash "$issue_gate" owner/repo 36
 assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
@@ -77,7 +88,7 @@ for payload in '{}' '{"number":37,"state":"open","labels":[]}' \
 done
 for payload in '{}' '{"labels":null}' '{"labels":{}}' '{"labels":[null]}' '{"labels":[{"name":null}]}' '{'; do
   MOCK_API_JSON="$payload" assert_stops "Claude closing Issue: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
-  MOCK_API_JSON="$payload" assert_stops "follow-up closing Issue: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
+  MOCK_API_JSON="$payload" assert_followup_skips "follow-up closing Issue: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
 done
 for payload in '{}' 'null' '[{"labels":[]}]' '[{"number":37,"labels":null}]' '[{"number":37,"labels":{}}]' '[{"number":37,"labels":[{"name":3}]}]' '['; do
   MOCK_PR_LIST_JSON="$payload" assert_stops "related PR list: $payload" bash "$issue_gate" owner/repo 36
@@ -90,7 +101,7 @@ for payload in \
   '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":"36","url":"https://github.com/owner/repo/issues/36"}]}' \
   '{'; do
   MOCK_PR_JSON="$payload" assert_stops "Claude PR metadata: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
-  MOCK_PR_JSON="$payload" assert_stops "follow-up PR metadata: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
+  MOCK_PR_JSON="$payload" assert_followup_skips "follow-up PR metadata: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
 done
 for payload in \
   '{"number":38,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}' \
@@ -101,16 +112,14 @@ done
 for failure in api list; do
   MOCK_FAIL="$failure" assert_stops "Issue entry API: $failure" bash "$issue_gate" owner/repo 36
 done
-for gate in review followup; do
-  if [ "$gate" = review ]; then
-    args=(bash "$review_gate" owner/repo 37 "$reviewed_head")
-  else
-    args=(bash "$followup_gate" owner/repo 37 review dev "$review_body")
-  fi
-  MOCK_FAIL=pr assert_stops "$gate PR API" "${args[@]}"
-  MOCK_FAIL=api assert_stops "$gate closing Issue API" "${args[@]}"
-  MOCK_JQ_EXTRACT_FAIL=true assert_stops "$gate relation extraction" "${args[@]}"
-done
+args=(bash "$review_gate" owner/repo 37 "$reviewed_head")
+MOCK_FAIL=pr assert_stops 'review PR API' "${args[@]}"
+MOCK_FAIL=api assert_stops 'review closing Issue API' "${args[@]}"
+MOCK_JQ_EXTRACT_FAIL=true assert_stops 'review relation extraction' "${args[@]}"
+args=(bash "$followup_gate" owner/repo 37 review dev "$review_body")
+MOCK_FAIL=pr assert_followup_skips 'follow-up PR API' "${args[@]}"
+MOCK_FAIL=api assert_followup_skips 'follow-up closing Issue API' "${args[@]}"
+MOCK_JQ_EXTRACT_FAIL=true assert_followup_skips 'follow-up relation extraction' "${args[@]}"
 
 MOCK_PR_JSON='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'
 export MOCK_PR_JSON

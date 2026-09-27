@@ -369,8 +369,9 @@ if grep -Fq "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" "$foll
 fi
 followup_classifier="$test_dir/followup-failure-classifier.sh"
 awk '
-  /          current_head=unknown/ { in_classifier = 1 }
-  in_classifier { sub(/^          /, ""); print }
+  /      - name: Create common human pause/ { in_step = 1 }
+  in_step && /        run: \|/ { in_run = 1; next }
+  in_run { sub(/^          /, ""); print }
 ' "$followup_failure_handler" > "$followup_classifier"
 for case in same changed missing malformed uppercase lookup-error malformed-json wrong-repo wrong-pr missing-event malformed-event uppercase-event; do
   sha_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -392,10 +393,11 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
   esac
   actual="$(EVENT_HEAD="$event" MOCK_CURRENT="$current" bash -c '
     set -euo pipefail
-    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 app_id=123
+    GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 APP_SLUG=developer
     DRAFT_RESULT=failure FOLLOWUP_RESULT=skipped
     GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=42
     gh() {
+      if [ "$2" = /apps/developer ]; then printf "123\n"; return; fi
       [ "$MOCK_CURRENT" != error ] || return 1
       case "$MOCK_CURRENT" in
         missing) printf '\''{"number":37,"head":{"repo":{"full_name":"owner/repo"}}}\n'\'' ;;
@@ -1242,7 +1244,7 @@ fi
 grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$workflow"
 grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$workflow"
 grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$workflow"
-grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
+grep -Fq "steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
 
 gh() {
   case "$1 $2" in
@@ -1254,6 +1256,15 @@ gh() {
       author='dev[bot]'
       reviews='[]'
       labels='[]'
+      head='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      if [ -n "${MOCK_PR_CALLS_FILE:-}" ]; then
+        calls="$(cat "$MOCK_PR_CALLS_FILE")"
+        calls=$((calls + 1))
+        printf '%s\n' "$calls" > "$MOCK_PR_CALLS_FILE"
+        if [ "$calls" -ge "${MOCK_PR_MOVE_ON_CALL:-999}" ]; then
+          head='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+        fi
+      fi
       case "${MOCK_CASE:-valid}" in
         human-author) author='owner' ;;
         app-author)
@@ -1269,8 +1280,11 @@ gh() {
           ;;
         human-label) labels='[{"name":"human-review-required"}]' ;;
       esac
-      jq -cn --arg author "$author" --argjson reviews "$reviews" --argjson labels "$labels" \
-        '{author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
+      jq -cn --arg author "$author" --arg head "$head" --argjson reviews "$reviews" --argjson labels "$labels" \
+        '{number:37,state:"OPEN",headRefOid:$head,headRefName:"ai/issue-36",author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
+      ;;
+    'api repos/owner/repo/pulls/37/reviews/123')
+      printf '%s\n' '{"id":123,"state":"CHANGES_REQUESTED","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","user":{"login":"review[bot]"}}'
       ;;
     'api repos/owner/repo/issues/36')
       [ "${MOCK_API_FAIL:-false}" != true ] && [ "${MOCK_ENTRY_FETCH_FAIL:-false}" != true ] || return 1
@@ -1308,16 +1322,16 @@ gh() {
 export -f gh
 
 review_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
+export REVIEW_ID=123 REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HEAD_REF=ai/issue-36
+export RUNNER_TEMP="$test_dir"
 
 # The trusted-base follow-up gate must resolve closing Issues through the pause
 # helper, synchronize both labels, and record exactly one reason on the PR.
 followup_gate_step="$test_dir/gate-automated-follow-up.yml"
 followup_gate_script="$test_dir/gate-automated-follow-up.sh"
 extract_workflow_step 'Gate automated follow-up' "$followup_gate_step"
-if grep -Eq 'HEAD_REF|head\.ref|ai/issue-' "$followup_gate_step"; then
-  echo 'Automated follow-up gate must not derive a closing Issue from the PR branch.' >&2
-  exit 1
-fi
+grep -Fq '"$GITHUB_REPOSITORY" '\''-'\'' "$PR_NUMBER"' "$followup_gate_step"
+grep -Fq 'check-claude-followup-target.sh' "$followup_gate_step"
 extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
 
 # The fixture verifies that, even when its checkout root differs from this
@@ -1364,6 +1378,21 @@ assert_followup_gate_continue() {
 assert_followup_gate_continue
 assert_followup_gate_pause followup-escalate three-reviews false
 
+# The HEAD can move after the first target check and the review-count lookup.
+# Escalation must then exit without labels, comments, or notification.
+printf '0\n' > "$test_dir/followup-race.calls"
+: > "$test_dir/followup-race.log"
+: > "$test_dir/followup-race.output"
+MOCK_CASE=three-reviews MOCK_PR_CALLS_FILE="$test_dir/followup-race.calls" \
+  MOCK_PR_MOVE_ON_CALL=3 MOCK_GH_LOG="$test_dir/followup-race.log" \
+  GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
+  DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
+  GITHUB_OUTPUT="$test_dir/followup-race.output" \
+  bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
+[ ! -s "$test_dir/followup-race.log" ]
+grep -Fxq 'continue=false' "$test_dir/followup-race.output"
+grep -Fxq 'notify=false' "$test_dir/followup-race.output"
+
 : > "$test_dir/followup-pause-failure.output"
 : > "$test_dir/followup-pause-failure.log"
 if MOCK_CASE=three-reviews MOCK_PR_CLOSING_FETCH_FAIL=true \
@@ -1405,10 +1434,8 @@ followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-g
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
 jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
-if MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body"; then
-  echo 'Expected follow-up gate to fail closed when closing Issue lookup fails.' >&2
-  exit 1
-fi
+followup="$(MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 
 MOCK_GH_LOG="$test_dir/human-pause.log"
 export MOCK_GH_LOG
