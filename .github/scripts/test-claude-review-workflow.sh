@@ -80,12 +80,24 @@ gh() {
   if [ "$1 $2" = 'api /apps/reviewer' ]; then
     printf '%s\n' "${MOCK_REVIEWER_APP_ID:-99}"
   elif [ "$1 $2" = 'pr view' ]; then
+    if [ "${MOCK_PR_FAIL:-false}" = true ]; then
+      return 1
+    fi
     case "${MOCK_CASE:-valid}" in
       no-links)
-        printf '%s\n' '{"state":"OPEN","labels":[],"closingIssuesReferences":[]}'
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[]}'
         ;;
       pr-paused)
-        printf '%s\n' '{"state":"OPEN","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      draft)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":true,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[]}'
+        ;;
+      stale)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","labels":[],"closingIssuesReferences":[]}'
+        ;;
+      bad-head)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"invalid","labels":[],"closingIssuesReferences":[]}'
         ;;
       closed)
         printf '%s\n' '{"state":"CLOSED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
@@ -100,7 +112,7 @@ gh() {
         printf '%s\n' '{"state":"DRAFT","labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
-        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
         ;;
     esac
   elif [ "$1" = api ]; then
@@ -149,23 +161,24 @@ gh() {
 }
 export -f gh
 
+expected_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 MOCK_CASE=valid
 export MOCK_CASE
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 
 MOCK_CASE=no-links
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 
 for closed_case in closed merged; do
   MOCK_CASE="$closed_case"
-  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
   jq -e '.continue == false and (.reason | contains("pull request state"))' <<< "$review_entry" > /dev/null
 done
 
 MOCK_CASE=state-missing
-if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
   > /dev/null 2> "$test_dir/entry-gate-state-missing.err"; then
   echo 'Expected Claude review entry to fail closed when PR state is missing.' >&2
   exit 1
@@ -173,7 +186,7 @@ fi
 grep -Fq 'Could not determine pull request state; refusing Claude review.' "$test_dir/entry-gate-state-missing.err"
 
 MOCK_CASE=unknown-state
-if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
   > /dev/null 2> "$test_dir/entry-gate-state-unknown.err"; then
   echo 'Expected Claude review entry to fail closed for an unsupported PR state.' >&2
   exit 1
@@ -181,25 +194,95 @@ fi
 grep -Fq 'Unsupported pull request state DRAFT; refusing Claude review.' "$test_dir/entry-gate-state-unknown.err"
 
 MOCK_CASE=pr-paused
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
+
+for blocked_case in draft stale; do
+  MOCK_CASE="$blocked_case"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
+  jq -e '.continue == false and (.reason | length > 0)' <<< "$review_entry" > /dev/null
+done
+MOCK_CASE=bad-head
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+  > /dev/null 2> "$test_dir/entry-gate-bad-head.err"; then
+  echo 'Expected malformed current PR HEAD to fail closed.' >&2
+  exit 1
+fi
+grep -Fq 'Invalid pull request metadata' "$test_dir/entry-gate-bad-head.err"
+MOCK_CASE=valid
+MOCK_PR_FAIL=true
+export MOCK_PR_FAIL
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+  > /dev/null 2> "$test_dir/entry-gate-pr-api-failure.err"; then
+  echo 'Expected PR metadata lookup failure to fail closed.' >&2
+  exit 1
+fi
+grep -Fq 'Could not fetch current pull request metadata' "$test_dir/entry-gate-pr-api-failure.err"
+unset MOCK_PR_FAIL
 
 MOCK_CASE=valid
 MOCK_ISSUE_PAUSED=true
 export MOCK_CASE MOCK_ISSUE_PAUSED
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == false and (.reason | contains("Issue #36"))' <<< "$review_entry" > /dev/null
 unset MOCK_ISSUE_PAUSED
 
 MOCK_API_FAIL=true
 export MOCK_API_FAIL
-if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
   > /dev/null 2> "$test_dir/entry-gate-api-failure.err"; then
   echo 'Expected Claude review entry to fail when a closing Issue cannot be fetched.' >&2
   exit 1
 fi
 grep -Fq 'Could not fetch closing Issue #36; refusing Claude review.' "$test_dir/entry-gate-api-failure.err"
 unset MOCK_API_FAIL
+
+gate_runner_temp="$test_dir/gate-runner"
+mkdir "$gate_runner_temp"
+cp "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" "$gate_runner_temp/"
+extract_step_run 'Gate Claude review entry' "$test_dir/gate-entry-step.sh"
+extract_step_run 'Recheck Claude review HEAD before verdict' "$test_dir/gate-verdict-step.sh"
+for gate_phase in entry verdict; do
+  gate_step="$test_dir/gate-$gate_phase-step.sh"
+  for gate_case in valid stale closed draft pr-paused; do
+    MOCK_CASE="$gate_case" RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+      GITHUB_OUTPUT="$test_dir/gate-$gate_phase-$gate_case.outputs" \
+      GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-$gate_case.summary" \
+      bash "$gate_step" > /dev/null
+    expected_continue=false
+    [ "$gate_case" = valid ] && expected_continue=true
+    grep -Fqx "continue=$expected_continue" "$test_dir/gate-$gate_phase-$gate_case.outputs"
+    if [ "$expected_continue" = false ]; then
+      grep -Fq 'Reason:' "$test_dir/gate-$gate_phase-$gate_case.summary"
+    fi
+  done
+  if MOCK_CASE=valid MOCK_PR_FAIL=true RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+    PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+    GITHUB_OUTPUT="$test_dir/gate-$gate_phase-failed.outputs" \
+    GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-failed.summary" \
+    bash "$gate_step" > /dev/null 2> "$test_dir/gate-$gate_phase-failed.err"; then
+    echo "Expected $gate_phase PR API failure to stop review." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/gate-$gate_phase-failed.outputs" ]
+done
+# Model a HEAD update after the event gate has accepted the paid attempt.
+MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+  GITHUB_OUTPUT="$test_dir/gate-during-entry.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/gate-during-entry.summary" \
+  bash "$test_dir/gate-entry-step.sh" > /dev/null
+MOCK_CASE=stale RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+  GITHUB_OUTPUT="$test_dir/gate-during-verdict.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/gate-during-verdict.summary" \
+  bash "$test_dir/gate-verdict-step.sh" > /dev/null
+grep -Fqx 'continue=true' "$test_dir/gate-during-entry.outputs"
+grep -Fqx 'continue=false' "$test_dir/gate-during-verdict.outputs"
+grep -Fqx "        if: steps.verdict-entry.outputs.continue == 'true'" <(sed -n '/      - name: Submit reviewer verdict/,/      - name: Record verdict/p' "$workflow")
+grep -Fq "        if: steps.submit-verdict.outcome == 'success'" "$workflow"
+grep -Fq -- '--match-head-commit "$REVIEWED_HEAD_SHA"' "$workflow"
 
 MOCK_CHANGED_PATH=src/CLAUDE.md
 export MOCK_CHANGED_PATH

@@ -209,7 +209,8 @@ jobs:
           ' "$execution_file"
           SUMMARIZER
           fi
-          if git cat-file -e "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" 2> /dev/null; then
+          if git cat-file -e "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" 2> /dev/null &&
+            git show "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" | grep -Fq 'reviewed_head="${3:?reviewed head SHA is required}"'; then
             git show "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" > "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh"
           else
             # Bootstrap only the introducing PR. Never execute the entry gate from the untrusted PR head.
@@ -219,8 +220,13 @@ jobs:
 
           repo="${1:?repository is required}"
           pr_number="${2:?pull request number is required}"
+          reviewed_head="${3:?reviewed head SHA is required}"
+          [[ "$reviewed_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid reviewed head SHA; refusing Claude review.' >&2; exit 1; }
 
-          metadata="$(gh pr view "$pr_number" --repo "$repo" --json state,labels,closingIssuesReferences)"
+          if ! metadata="$(gh pr view "$pr_number" --repo "$repo" --json number,state,isDraft,headRefOid,labels,closingIssuesReferences)"; then
+            echo 'Could not fetch current pull request metadata; refusing Claude review.' >&2
+            exit 1
+          fi
 
           emit_result() {
             jq -cn --argjson continue "$1" --arg reason "$2" \
@@ -245,6 +251,9 @@ jobs:
           esac
 
           if ! jq -es 'length == 1 and (.[0] | type == "object" and
+              (.number | type == "number" and . > 0 and floor == .) and
+              (.isDraft | type == "boolean") and
+              (.headRefOid | type == "string" and test("^[0-9a-f]{40}$")) and
               (.labels | type == "array") and
               all(.labels[]; type == "object" and (.name | type == "string")) and
               (.closingIssuesReferences | type == "array") and
@@ -253,6 +262,18 @@ jobs:
                 (.url | type == "string")))' <<< "$metadata" > /dev/null; then
             echo 'Invalid pull request metadata; refusing Claude review.' >&2
             exit 1
+          fi
+          if [ "$(jq -r .number <<< "$metadata")" != "$pr_number" ]; then
+            echo 'Pull request number mismatch; refusing Claude review.' >&2
+            exit 1
+          fi
+          if [ "$(jq -r .isDraft <<< "$metadata")" = true ]; then
+            emit_result false 'Claude review is not run for a Draft pull request.'
+            exit 0
+          fi
+          if [ "$(jq -r .headRefOid <<< "$metadata")" != "$reviewed_head" ]; then
+            emit_result false 'Claude review is not run because the current PR HEAD differs from the reviewed event HEAD.'
+            exit 0
           fi
 
           pr_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$metadata")"
@@ -339,10 +360,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER")"
+          result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWED_HEAD_SHA")"
           continue="$(jq -r .continue <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
           echo "continue=$continue" >> "$GITHUB_OUTPUT"
@@ -638,8 +660,32 @@ jobs:
           echo "Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict." >&2
           exit 1
 
-      - name: Submit reviewer verdict
+      - name: Recheck Claude review HEAD before verdict
+        id: verdict-entry
         if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWED_HEAD_SHA")"
+          continue="$(jq -r .continue <<< "$result")"
+          reason="$(jq -r .reason <<< "$result")"
+          echo "continue=$continue" >> "$GITHUB_OUTPUT"
+          if [ "$continue" = false ]; then
+            {
+              echo '### Claude verdict not submitted'
+              echo
+              echo "Reason: ${reason:-unavailable}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "$reason"
+
+      - name: Submit reviewer verdict
+        id: submit-verdict
+        if: steps.verdict-entry.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -653,15 +699,13 @@ jobs:
 
       - name: Record verdict
         id: review-result
-        if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
+        if: steps.submit-verdict.outcome == 'success'
         shell: bash
         run: echo "verdict=$(jq -r .verdict "$RUNNER_TEMP/claude-review.json")" >> "$GITHUB_OUTPUT"
 
       - name: Classify human escalation
         id: human-escalation
-        if: >-
-          steps.review-entry.outputs.continue == 'true' &&
-          steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'
+        if: steps.submit-verdict.outcome == 'success'
         env:
           BASE_SHA: ${{ steps.build-review-context.outputs.base_sha }}
         shell: bash
