@@ -8,14 +8,13 @@ export GH_LOG="$test_dir/gh.log" PAID_LOG="$test_dir/paid.log"
 
 reviewed_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 valid_pr='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
-valid_issue='{"labels":[]}'
+valid_issue='{"number":36,"state":"open","labels":[]}'
 valid_pr_list='[]'
-export MOCK_PR_JSON="$valid_pr" MOCK_ISSUE_JSON="$valid_issue" MOCK_PR_LIST_JSON="$valid_pr_list" MOCK_API_JSON="$valid_issue"
+export MOCK_PR_JSON="$valid_pr" MOCK_PR_LIST_JSON="$valid_pr_list" MOCK_API_JSON="$valid_issue"
 
 gh() {
   printf '%s\n' "$*" >> "$GH_LOG"
   case "$1 $2" in
-    'issue view') [ "${MOCK_FAIL:-}" != issue ] || return 1; printf '%s\n' "$MOCK_ISSUE_JSON" ;;
     'pr list') [ "${MOCK_FAIL:-}" != list ] || return 1; printf '%s\n' "$MOCK_PR_LIST_JSON" ;;
     'pr view') [ "${MOCK_FAIL:-}" != pr ] || return 1; printf '%s\n' "$MOCK_PR_JSON" ;;
     'api repos/owner/repo/issues/36') [ "${MOCK_FAIL:-}" != api ] || return 1; printf '%s\n' "$MOCK_API_JSON" ;;
@@ -57,7 +56,7 @@ assert_stops() {
     echo "Unsafe continuation in $name." >&2
     exit 1
   fi
-  if grep -Ev '^(issue view|pr list|pr view|api repos/owner/repo/issues/36)( |$)' "$GH_LOG"; then
+  if grep -Ev '^(pr list|pr view|api repos/owner/repo/issues/36)( |$)' "$GH_LOG"; then
     echo "Unexpected GitHub call in $name." >&2
     exit 1
   fi
@@ -67,8 +66,16 @@ assert_passes bash "$issue_gate" owner/repo 36
 assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
 
+for payload in '{}' '{"number":37,"state":"open","labels":[]}' \
+  '{"number":36,"state":"OPEN","labels":[]}' \
+  '{"number":36,"state":"open","pull_request":{},"labels":[]}' \
+  '{"number":36,"state":"open","labels":null}' \
+  '{"number":36,"state":"open","labels":{}}' \
+  '{"number":36,"state":"open","labels":[null]}' \
+  '{"number":36,"state":"open","labels":[{"name":null}]}' '{'; do
+  MOCK_API_JSON="$payload" assert_stops "Issue metadata: $payload" bash "$issue_gate" owner/repo 36
+done
 for payload in '{}' '{"labels":null}' '{"labels":{}}' '{"labels":[null]}' '{"labels":[{"name":null}]}' '{'; do
-  MOCK_ISSUE_JSON="$payload" assert_stops "Issue metadata: $payload" bash "$issue_gate" owner/repo 36
   MOCK_API_JSON="$payload" assert_stops "Claude closing Issue: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
   MOCK_API_JSON="$payload" assert_stops "follow-up closing Issue: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
 done
@@ -91,7 +98,7 @@ for payload in \
   '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"invalid","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'; do
   MOCK_PR_JSON="$payload" assert_stops "Claude PR metadata: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
 done
-for failure in issue list; do
+for failure in api list; do
   MOCK_FAIL="$failure" assert_stops "Issue entry API: $failure" bash "$issue_gate" owner/repo 36
 done
 for gate in review followup; do
@@ -110,8 +117,24 @@ export MOCK_PR_JSON
 assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
 
-MOCK_ISSUE_JSON='{"labels":[{"name":"human-review-required"}]}'
-export MOCK_ISSUE_JSON
+MOCK_API_JSON='{"number":36,"state":"closed","labels":[]}'
+export MOCK_API_JSON
+jq -e '.continue == false and (.reason | contains("closed"))' \
+  <<< "$(bash "$issue_gate" owner/repo 36)" > /dev/null
+: > "$GH_LOG"
+: > "$PAID_LOG"
+if bash -c 'set -e; result="$(bash "$1" owner/repo 36)"; jq -e ".continue == true" <<< "$result" >/dev/null; printf "paid\n" >> "$PAID_LOG"' -- "$issue_gate"; then
+  echo 'Event-time open Issue must stop when current Issue is closed.' >&2
+  exit 1
+fi
+[ ! -s "$PAID_LOG" ]
+if grep -Fq 'pr list' "$GH_LOG"; then
+  echo 'Closed Issue must stop before related PR lookup.' >&2
+  exit 1
+fi
+
+MOCK_API_JSON='{"number":36,"state":"open","labels":[{"name":"human-review-required"}]}'
+export MOCK_API_JSON
 jq -e '.continue == false' <<< "$(bash "$issue_gate" owner/repo 36)" > /dev/null
 
 echo 'AI entry gate metadata tests passed.'

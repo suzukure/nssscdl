@@ -9,13 +9,20 @@ if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-issue_json="$(gh issue view "$issue_number" --repo "$repo" --json labels)"
-if ! jq -es 'length == 1 and (.[0] | type == "object" and
+issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"
+if ! jq -es --argjson expected_number "$issue_number" 'length == 1 and (.[0] | type == "object" and
+    .number == $expected_number and
+    (.state == "open" or .state == "closed") and
+    (has("pull_request") | not) and
     (.labels | type == "array") and
     all(.labels[]; type == "object" and (.name | type == "string")))' \
     <<< "$issue_json" > /dev/null; then
-  echo 'Invalid Issue label metadata; refusing development.' >&2
+  echo 'Invalid Issue identity, state, or label metadata; refusing development.' >&2
   exit 1
+fi
+if [ "$(jq -r .state <<< "$issue_json")" = closed ]; then
+  jq -cn '{continue: false, reason: "Issue is closed."}'
+  exit 0
 fi
 issue_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$issue_json")"
 if [ "$issue_paused" = true ]; then

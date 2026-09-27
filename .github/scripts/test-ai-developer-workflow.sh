@@ -214,6 +214,16 @@ if grep -Eq 'continue-on-error: true|GH_TOKEN: \$\{\{ github.token \}\}|apply-hu
   exit 1
 fi
 grep -Fq 'pre_write_remote_head: ${{ steps.remote-head.outputs.head }}' "$workflow"
+recheck="$test_dir/recheck-issue-entry.yml"
+awk '
+  /      - name: Recheck current Issue inside Issue concurrency/ { in_step = 1 }
+  in_step && /      - name: Capture pre-write remote branch HEAD/ { exit }
+  in_step { print }
+' "$workflow" > "$recheck"
+[ -s "$recheck" ]
+grep -Fq "if: github.event_name == 'issue_comment'" "$recheck"
+grep -Fq 'bash .github/scripts/evaluate-issue-entry-gate.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER"' "$recheck"
+grep -Fq "jq -e '.continue == true'" "$recheck"
 prewrite="$test_dir/prewrite-remote-head.yml"
 awk '
   /      - name: Capture pre-write remote branch HEAD/ { in_step = 1 }
@@ -1263,11 +1273,11 @@ gh() {
         '{author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
       ;;
     'api repos/owner/repo/issues/36')
-      [ "${MOCK_API_FAIL:-false}" != true ] || return 1
+      [ "${MOCK_API_FAIL:-false}" != true ] && [ "${MOCK_ENTRY_FETCH_FAIL:-false}" != true ] || return 1
       if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
-        printf '%s\n' '{"labels":[{"name":"human-review-required"}]}'
+        printf '%s\n' '{"number":36,"state":"open","labels":[{"name":"human-review-required"}]}'
       else
-        printf '%s\n' '{"labels":[]}'
+        printf '%s\n' '{"number":36,"state":"open","labels":[]}'
       fi
       ;;
     'label create'|'issue edit'|'pr comment')
