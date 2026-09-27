@@ -53,15 +53,21 @@ assert label-ready machine_label_result '{"label_present":true,"transition_succe
 assert fresh-write pre_write "$entry" '{"action":"repository_write"}'
 assert requirements-stop pre_write "$(case_entry '.requirements_gate_passed = false')" '{"action":"pause_record","code":"requirements_change"}'
 assert diff-stop pre_write "$(case_entry '.diff_guard_passed = false')" '{"action":"pause_record","code":"diff_guard_error"}'
-MOCK_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb assert stale-write pre_write "$entry" '{"action":"stop","code":"stale_target"}'
+MOCK_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb assert stale-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_PR_STATE=CLOSED assert closed-before-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
+MOCK_ISSUE_STATE=closed assert issue-closed-before-write pre_write "$entry" '{"action":"pause_record","code":"state_inconsistent"}'
 
 written="$(jq -cn --arg sha "$sha" '{repository_write:"pushed",expected_sha:$sha,
-  current_head_sha:$sha,machine_label:true,window_started_at:1000}')"
+  current_head_sha:$sha,machine_label:true,now:1050,window_started_at:1000}')"
 assert pushed written "$written" "$(jq -cn --arg sha "$sha" '{action:"ready_pr",validated_sha:$sha,window_started_at:1000}')"
 assert no-diff written "$(jq -c '.repository_write = "no_diff"' <<< "$written")" "$(jq -cn --arg sha "$sha" '{action:"ready_pr",validated_sha:$sha,window_started_at:1000}')"
-assert head-not-converged written "$(jq -c '.current_head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$written")" '{"action":"stop","code":"stale_head"}'
-assert ready-success ready_result '{"machine_label":true,"ready_started_at":1030,"ready_succeeded":true,"window_started_at":1000}' '{"action":"validate","ready_started_at":1030,"window_started_at":1000}'
-assert ready-failure ready_result '{"machine_label":true,"ready_started_at":1030,"ready_succeeded":false,"window_started_at":1000}' '{"action":"pause_record","code":"state_inconsistent"}'
+assert head-not-converged written "$(jq -c '.current_head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$written")" '{"action":"pause_record","code":"state_inconsistent"}'
+assert written-expired written "$(jq -c '.now = 1600' <<< "$written")" '{"action":"pause_record","code":"validation_timeout"}'
+assert written-invalid written "$(jq -c 'del(.now)' <<< "$written")" '{"action":"pause_record","code":"state_inconsistent"}'
+assert ready-success ready_result '{"machine_label":true,"now":1050,"ready_started_at":1030,"ready_succeeded":true,"window_started_at":1000}' '{"action":"validate","ready_started_at":1030,"window_started_at":1000}'
+assert ready-failure ready_result '{"machine_label":true,"now":1050,"ready_started_at":1030,"ready_succeeded":false,"window_started_at":1000}' '{"action":"pause_record","code":"state_inconsistent"}'
+assert ready-expired ready_result '{"machine_label":true,"now":1600,"ready_started_at":1599,"ready_succeeded":true,"window_started_at":1000}' '{"action":"pause_record","code":"validation_timeout"}'
+assert ready-invalid ready_result '{"machine_label":true,"ready_started_at":1030,"ready_succeeded":true,"window_started_at":1000}' '{"action":"pause_record","code":"state_inconsistent"}'
 
 snapshot="$(jq -cn --arg sha "$sha" '{automated_followup_count:1,
   branch_mutating_runs:[],branch_mutating_runs_complete:true,
@@ -91,6 +97,7 @@ assert api-invalid validate "$(case_validation '.checks_complete = null')" '{"ac
 assert unknown-status validate "$(case_validation '.checks[0].status = "unknown"')" '{"action":"pause_record","code":"state_inconsistent"}'
 assert dispatch-success dispatch_result '{"dispatch_succeeded":true,"machine_label":true}' '{"action":"await_consumer"}'
 assert dispatch-failure dispatch_result '{"dispatch_succeeded":false,"machine_label":true}' '{"action":"pause_record","code":"state_inconsistent"}'
+assert dispatch-unknown dispatch_result '{"dispatch_succeeded":null,"machine_label":true}' '{"action":"pause_record","code":"state_inconsistent"}'
 assert pause-first pause_recorded '{"active_pause_id":41,"recorded_pause_id":42}' '{"action":"stop","code":"pause_not_active"}'
 assert cleanup pause_recorded '{"active_pause_id":41,"recorded_pause_id":41}' '{"action":"remove_machine_label","label":"ai-followup-in-progress"}'
 

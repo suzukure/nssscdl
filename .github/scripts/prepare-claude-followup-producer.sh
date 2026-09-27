@@ -14,8 +14,12 @@ phase="${1:-}"
 input="$(cat)"
 stop() { jq -cn --arg code "$1" '{action:"stop",code:$code}'; exit 0; }
 pause() { jq -cn --arg code "$1" '{action:"pause_record",code:$code}'; exit 0; }
+target_failure() {
+  if [ "$phase" = pre_write ]; then pause state_inconsistent; fi
+  stop "$1"
+}
 if ! valid="$(jq -cse 'if length == 1 and (.[0] | type) == "object" then .[0] else error("snapshot") end' <<< "$input" 2>/dev/null)"; then
-  if [ "$phase" = validate ]; then pause state_inconsistent; fi
+  if [[ "$phase" == pre_write || "$phase" == validate || "$phase" == written || "$phase" == ready_result || "$phase" == dispatch_result ]]; then pause state_inconsistent; fi
   stop invalid_snapshot
 fi
 
@@ -47,16 +51,16 @@ case "$phase" in
         or (.[0].requirements_gate_passed | type != "boolean")
         or (.[0].diff_guard_passed | type != "boolean")
       then error("snapshot") else .[0] end
-    ' <<< "$input" 2>/dev/null)" || stop invalid_snapshot
+    ' <<< "$input" 2>/dev/null)" || target_failure invalid_snapshot
     round="$(jq -r .round <<< "$facts")"
     target="$(bash "$script_dir/check-claude-followup-target.sh" \
       "$(jq -r .repo <<< "$facts")" "$(jq -r .pr_number <<< "$facts")" \
       "$(jq -r .review_id <<< "$facts")" "$(jq -r .review_commit <<< "$facts")" \
       "$(jq -r .reviewer_slug <<< "$facts")" "$(jq -r .head_ref <<< "$facts")")" \
-      || stop target_unavailable
-    [ "$target" = current ] || stop stale_target
+      || target_failure target_unavailable
+    [ "$target" = current ] || target_failure stale_target
     if [ "$round" -gt 2 ]; then pause round_limit; fi
-    if [ "$(jq -r .developer_gate_passed <<< "$facts")" != true ]; then stop followup_gate_failed; fi
+    if [ "$(jq -r .developer_gate_passed <<< "$facts")" != true ]; then target_failure followup_gate_failed; fi
     if [ "$phase" = pre_write ]; then
       [ "$(jq -r .requirements_gate_passed <<< "$facts")" = true ] || pause requirements_change
       [ "$(jq -r .diff_guard_passed <<< "$facts")" = true ] || pause diff_guard_error
@@ -74,33 +78,40 @@ case "$phase" in
       def sha: type == "string" and test("^[0-9a-f]{40}$");
       def time: type == "number" and floor == . and . >= 0;
       if length != 1 or (.[0] | keys | sort) !=
-        ["current_head_sha","expected_sha","machine_label","repository_write","window_started_at"]
+        ["current_head_sha","expected_sha","machine_label","now","repository_write","window_started_at"]
         or (.[0].current_head_sha | sha | not) or (.[0].expected_sha | sha | not)
         or (.[0].machine_label != true)
         or (.[0].repository_write != "pushed" and .[0].repository_write != "no_diff")
         or (.[0].window_started_at | time | not)
-      then {action:"stop",code:"invalid_snapshot"}
+        or (.[0].now | time | not) or .[0].now < .[0].window_started_at
+      then {action:"pause_record",code:"state_inconsistent"}
       elif .[0].current_head_sha != .[0].expected_sha then
-        {action:"stop",code:"stale_head"}
+        {action:"pause_record",code:"state_inconsistent"}
+      elif .[0].now - .[0].window_started_at >= 600 then
+        {action:"pause_record",code:"validation_timeout"}
       else {action:"ready_pr",validated_sha:.[0].expected_sha,
             window_started_at:.[0].window_started_at}
       end
-    ' <<< "$input" 2>/dev/null || stop invalid_snapshot
+    ' <<< "$input" 2>/dev/null || pause state_inconsistent
     ;;
   ready_result)
     jq -cse '
       if length != 1 or (.[0] | keys | sort) !=
-        ["machine_label","ready_started_at","ready_succeeded","window_started_at"]
+        ["machine_label","now","ready_started_at","ready_succeeded","window_started_at"]
         or (.[0].machine_label != true)
         or (.[0].ready_succeeded | type != "boolean")
         or (.[0].window_started_at | type != "number" or floor != . or . < 0)
         or (.[0].ready_started_at | type != "number" or floor != . or . < 0)
-      then {action:"stop",code:"invalid_snapshot"}
+        or (.[0].now | type != "number" or floor != . or . < 0)
+        or .[0].now < .[0].ready_started_at
+      then {action:"pause_record",code:"state_inconsistent"}
+      elif .[0].now - .[0].window_started_at >= 600 then
+        {action:"pause_record",code:"validation_timeout"}
       elif .[0].ready_succeeded and .[0].ready_started_at >= .[0].window_started_at then
         {action:"validate",ready_started_at:.[0].ready_started_at,
          window_started_at:.[0].window_started_at}
       else {action:"pause_record",code:"state_inconsistent"} end
-    ' <<< "$input" 2>/dev/null || stop invalid_snapshot
+    ' <<< "$input" 2>/dev/null || pause state_inconsistent
     ;;
   validate)
     # The caller supplies complete current-head checks and only known branch
@@ -168,10 +179,10 @@ case "$phase" in
       if length != 1 or (.[0] | keys | sort) != ["dispatch_succeeded","machine_label"]
         or (.[0].dispatch_succeeded | type != "boolean")
         or (.[0].machine_label != true)
-      then {action:"stop",code:"invalid_snapshot"}
+      then {action:"pause_record",code:"state_inconsistent"}
       elif .[0].dispatch_succeeded then {action:"await_consumer"}
       else {action:"pause_record",code:"state_inconsistent"} end
-    ' <<< "$input" 2>/dev/null || stop invalid_snapshot
+    ' <<< "$input" 2>/dev/null || pause state_inconsistent
     ;;
   *) stop invalid_phase ;;
 esac
