@@ -323,6 +323,7 @@ jobs:
           codex-version: 0.156.1
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
+          allow-bot-users: ${{ steps.dev-token.outputs.app-slug }}
 
       - name: Resolve trusted Codex developer runtime
         id: codex_runtime

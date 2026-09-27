@@ -537,6 +537,33 @@ grep -Fqx '          openai-api-key: ${{ secrets.OPENAI_API_KEY }}' "$setup_step
 grep -Fqx '          codex-version: 0.156.1' "$setup_step"
 grep -Fqx '          codex-home: ${{ runner.temp }}/codex-home' "$setup_step"
 grep -Fqx '          safety-strategy: unsafe' "$setup_step"
+grep -Fqx '          allow-bot-users: ${{ steps.dev-token.outputs.app-slug }}' "$setup_step"
+if grep -Eq '^[[:space:]]+(allow-bots|allow-users):' "$setup_step"; then
+  echo 'Developer setup must retain the human write-access check and limit bot access to the Developer App.' >&2
+  exit 1
+fi
+developer_job="$test_dir/develop-from-issue.yml"
+token_step="$test_dir/Create-developer-App-token.yml"
+awk '
+  $0 == "      - name: Create developer App token" { in_step = 1 }
+  in_step && /^      - name: / && $0 != "      - name: Create developer App token" { exit }
+  in_step { print }
+' "$developer_job" > "$token_step"
+grep -Fqx '        id: dev-token' "$token_step"
+grep -Fqx '        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0' "$token_step"
+grep -Fqx '          client-id: ${{ vars.DEV_APP_CLIENT_ID }}' "$token_step"
+grep -Fqx '          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}' "$token_step"
+python3 - "$developer_job" "$setup_step" <<'PY'
+from pathlib import Path
+import sys
+
+job = Path(sys.argv[1]).read_text()
+setup = Path(sys.argv[2]).read_text()
+entry = job.split('    steps:\n', 1)[0]
+assert "github.event_name == 'issue_comment' && needs.gate-issue-entry.outputs.continue == 'true'" in entry
+assert "github.event_name == 'repository_dispatch' && github.event.action == 'ai-resume-develop'" in entry
+assert '\n        if:' not in setup
+PY
 if grep -Eq '^[[:space:]]+(prompt|prompt-file|output-file):' "$setup_step"; then
   echo 'Secure Codex setup must not enter the action wrapper execution path.' >&2
   exit 1
