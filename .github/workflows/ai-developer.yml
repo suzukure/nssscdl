@@ -1454,6 +1454,11 @@ jobs:
              [[ "$PRE_HEAD" == "$current_head" ]]; then
             reason=developer_execution_failed
             options=(--failed-action develop)
+            if [ "$pr_number" != '-' ]; then
+              options+=(--repair-active --repair-head "$current_head")
+            else
+              options+=(--repair-active)
+            fi
           fi
           detail="Issue developer job result: ${JOB_RESULT}; pre-write remote HEAD: ${PRE_HEAD:-missing}; current remote HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           bash .github/scripts/create-human-pause.sh create \
@@ -2701,7 +2706,8 @@ jobs:
           options=()
           if [[ "$EVENT_HEAD" =~ ^[0-9a-f]{40}$ ]] && [[ "$current_head" == "$EVENT_HEAD" ]]; then
             reason=developer_execution_failed
-            options=(--paused-head "$current_head" --failed-action fix)
+            options=(--paused-head "$current_head" --failed-action fix
+              --repair-active --repair-head "$current_head")
           fi
           detail="Claude follow-up failure; draft job: ${DRAFT_RESULT}; follow-up job: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; current PR HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           bash .github/scripts/create-human-pause.sh create \
