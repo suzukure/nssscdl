@@ -22,7 +22,27 @@ grep -Fq 'types: [ai-resume-develop]' "$workflow"
 grep -Fq 'bash .github/scripts/parse-ai-resume-command.sh' "$workflow"
 grep -Fq 'bash .github/scripts/build-ai-resume-prepare-context.sh' "$workflow"
 grep -Fq 'bash .github/scripts/prepare-ai-resume.sh' "$workflow"
-grep -Fq 'group: codex-issue-${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.dispatch.closing_issue_number || github.event.issue.number }}' "$workflow"
+grep -Fq 'group: codex-writer-ai/issue-${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.dispatch.closing_issue_number || github.event.issue.number }}' "$workflow"
+python3 - "$workflow" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+workflow = Path(sys.argv[1]).read_text()
+jobs = {}
+for name in ('develop-from-issue', 'respond-to-claude'):
+    match = re.search(rf'^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S)
+    assert match, name
+    jobs[name] = match.group(1)
+    assert 'cancel-in-progress: false' in jobs[name], name
+assert "group: codex-writer-ai/issue-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dispatch.closing_issue_number || github.event.issue.number }}" in jobs['develop-from-issue']
+assert 'group: codex-writer-${{ github.event.pull_request.head.ref }}' in jobs['respond-to-claude']
+# Both Issue commands and resume enter the same job; canonical follow-up uses
+# the head ref ai/issue-N as the suffix of that identical writer namespace.
+assert "github.event.comment.body == '/codex develop'" in workflow
+assert "github.event.action == 'ai-resume-develop'" in jobs['develop-from-issue']
+assert "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" in jobs['respond-to-claude']
+PY
 grep -Fq 'RESUME_DISPATCH: ${{ toJSON(github.event.client_payload.dispatch) }}' "$workflow"
 grep -Fq 'bash .github/scripts/consume-ai-resume-develop.sh' "$workflow"
 grep -Fq 'needs.develop-from-issue.outputs.resume_accepted' "$workflow"
