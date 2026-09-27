@@ -3,8 +3,13 @@ set -euo pipefail
 
 repo="${1:?repository is required}"
 pr_number="${2:?pull request number is required}"
+reviewed_head="${3:?reviewed head SHA is required}"
+[[ "$reviewed_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid reviewed head SHA; refusing Claude review.' >&2; exit 1; }
 
-metadata="$(gh pr view "$pr_number" --repo "$repo" --json state,labels,closingIssuesReferences)"
+if ! metadata="$(gh pr view "$pr_number" --repo "$repo" --json number,state,isDraft,headRefOid,labels,closingIssuesReferences)"; then
+  echo 'Could not fetch current pull request metadata; refusing Claude review.' >&2
+  exit 1
+fi
 
 emit_result() {
   jq -cn --argjson continue "$1" --arg reason "$2" \
@@ -29,6 +34,9 @@ case "$pr_state" in
 esac
 
 if ! jq -es 'length == 1 and (.[0] | type == "object" and
+    (.number | type == "number" and . > 0 and floor == .) and
+    (.isDraft | type == "boolean") and
+    (.headRefOid | type == "string" and test("^[0-9a-f]{40}$")) and
     (.labels | type == "array") and
     all(.labels[]; type == "object" and (.name | type == "string")) and
     (.closingIssuesReferences | type == "array") and
@@ -37,6 +45,18 @@ if ! jq -es 'length == 1 and (.[0] | type == "object" and
       (.url | type == "string")))' <<< "$metadata" > /dev/null; then
   echo 'Invalid pull request metadata; refusing Claude review.' >&2
   exit 1
+fi
+if [ "$(jq -r .number <<< "$metadata")" != "$pr_number" ]; then
+  echo 'Pull request number mismatch; refusing Claude review.' >&2
+  exit 1
+fi
+if [ "$(jq -r .isDraft <<< "$metadata")" = true ]; then
+  emit_result false 'Claude review is not run for a Draft pull request.'
+  exit 0
+fi
+if [ "$(jq -r .headRefOid <<< "$metadata")" != "$reviewed_head" ]; then
+  emit_result false 'Claude review is not run because the current PR HEAD differs from the reviewed event HEAD.'
+  exit 0
 fi
 
 pr_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$metadata")"
