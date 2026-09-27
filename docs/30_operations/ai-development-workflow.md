@@ -17,7 +17,7 @@ Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上�
 
 通常commandのworkflow入口はevent snapshotでcommand、actor、Issueのopen状態を早期判定する。Issue単位のwriter concurrency待機後はtrusted GitHub APIで対象番号・non-PR identity・現在のopen状態と停止ラベルを再取得し、関連open PRの停止ラベルと併せて判定する。取得失敗、metadata欠損・不一致、closed状態ではbranch操作やpaid Codexへ進まない。event snapshotのIssue stateだけを待機後の現在状態の証拠としない。
 
-旧`REQUEST_CHANGES` follow-upでは、Draft化直前とcanonical PR writer待機後のpaid Codex開始前に、trusted base由来の`check-legacy-review-target.sh`でreview ID・reviewer・review commit、現在のPR番号・open状態・HEAD・停止ラベル、closing Issueのopen状態・停止ラベルをAPIから再照合する。stale、closed、停止中、取得不能、不正なmetadataではDraft化、paid Codex、対象への自動pause/writeを行わない。#498の後継producerもwriter待機後かつpaid実行・remote write前に同等の現在状態確認を実装・fixtureで証明してから有効化し、その後に旧経路とこのhelperを削除する。移行時に旧経路を先に削除して開始前提の検証を失わせない。
+旧`REQUEST_CHANGES` follow-upでは、Draft化直前とcanonical PR writer待機後のgateで、trusted base由来の`check-legacy-review-target.sh`でreview ID・reviewer・review commit、現在のPR番号・open状態・HEAD・停止ラベル、closing Issueのopen状態・停止ラベルをAPIから再照合する。writer jobではgate後の人間停止write直前、PR branch checkout直後、runtime準備後のpaid Codex起動直前にも同じtargetを照合し、checkout済みHEADがreview commitと一致することを確認する。stale、closed、停止中、取得不能、不正なmetadataではDraft化、paid Codex、対象への自動pause/writeを行わず、正常skipとして後続のrequirements判定・diff判定・writeも実行しない。#498の後継producerもwriter待機後かつpaid実行・remote write前に同等の現在状態確認を実装・fixtureで証明してから有効化し、その後に旧経路とこのhelperを削除する。移行時に旧経路を先に削除して開始前提の検証を失わせない。
 
 人間や任意ブランチから作成したPRはClaudeレビューの対象にはできるが、自動マージしない。
 

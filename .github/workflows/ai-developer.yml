@@ -1606,17 +1606,28 @@ jobs:
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWER_APP_SLUG" "$DEVELOPER_APP_SLUG" "$REVIEW_BODY" "$REVIEW_ID" "$REVIEW_COMMIT")"; then
             result='{"continue":false,"escalate":false,"notify":false,"reason":"Follow-up metadata is unavailable; automated follow-up is skipped."}'
           fi
+          target_blob="$(git hash-object --no-filters .github/scripts/check-legacy-review-target.sh)"
+          cp .github/scripts/check-legacy-review-target.sh "$RUNNER_TEMP/check-legacy-review-target.sh"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/check-legacy-review-target.sh")" = "$target_blob"
+          echo "target_blob=$target_blob" >> "$GITHUB_OUTPUT"
           continue="$(jq -r .continue <<< "$result")"
           escalate="$(jq -r .escalate <<< "$result")"
           notify="$(jq -r .notify <<< "$result")"
           reason="$(jq -r .reason <<< "$result")"
 
           if [ "$escalate" = 'true' ]; then
-            # The pause helper resolves and labels the PR's closing Issues.
-            bash .github/scripts/apply-human-pause.sh \
-              "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
-            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body "$reason"
+            if ! bash "$RUNNER_TEMP/check-legacy-review-target.sh" \
+                "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG"; then
+              escalate=false
+              notify=false
+              reason='Review target changed before escalation; automated write is skipped.'
+            else
+              # The pause helper resolves and labels the PR's closing Issues.
+              bash .github/scripts/apply-human-pause.sh \
+                "$GITHUB_REPOSITORY" '-' "$PR_NUMBER"
+              gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "$reason"
+            fi
           fi
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "notify=${notify}" >> "$GITHUB_OUTPUT"
@@ -1639,9 +1650,33 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
+      - name: Check checked-out review target
+        id: checkout-target
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_COMMIT: ${{ github.event.review.commit_id }}
+          REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+          TARGET_BLOB: ${{ steps.followup-gate.outputs.target_blob }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_BLOB" =~ ^[0-9a-f]{40}$ ]] ||
+             [ "$(git hash-object --no-filters "$RUNNER_TEMP/check-legacy-review-target.sh")" != "$TARGET_BLOB" ] ||
+             [ "$(git rev-parse HEAD)" != "$REVIEW_COMMIT" ] ||
+             ! bash "$RUNNER_TEMP/check-legacy-review-target.sh" \
+               "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG"; then
+            echo 'Checked-out review target is stale or unverifiable; follow-up skipped.'
+            echo 'continue=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'continue=true' >> "$GITHUB_OUTPUT"
+
       - name: Build review context
         id: followup_context
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -1692,7 +1727,7 @@ jobs:
             "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
       - name: Validate Codex model configuration
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         env:
           CODEX_MODEL: ${{ vars.CODEX_MODEL }}
         shell: bash
@@ -1704,7 +1739,7 @@ jobs:
           fi
 
       - name: Prepare Codex follow-up runtime
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         env:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
@@ -1716,7 +1751,7 @@ jobs:
           rm -f "$CODEX_FINAL"
 
       - name: Setup Codex follow-up runtime
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -1726,7 +1761,7 @@ jobs:
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
 
       - name: Resolve trusted Codex follow-up runtime
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         id: followup_codex_runtime
         timeout-minutes: 3
         env:
@@ -1846,7 +1881,7 @@ jobs:
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex follow-up prompt
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         timeout-minutes: 3
         env:
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
@@ -1864,7 +1899,7 @@ jobs:
           CODEX_PROMPT
 
       - name: Capture Codex follow-up host integrity baseline
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         id: followup_host_integrity_before
         timeout-minutes: 1
         shell: bash
@@ -1890,10 +1925,16 @@ jobs:
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
 
       - name: Run Codex follow-up
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'
         id: codex
         timeout-minutes: 12
         env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_COMMIT: ${{ github.event.review.commit_id }}
+          REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+          TARGET_BLOB: ${{ steps.followup-gate.outputs.target_blob }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
@@ -2204,6 +2245,16 @@ jobs:
           CODEX_RUN
           chmod 700 "$RUNNER_TEMP/run-native-codex.sh"
 
+          if [[ ! "$TARGET_BLOB" =~ ^[0-9a-f]{40}$ ]] ||
+             [ "$(git hash-object --no-filters "$RUNNER_TEMP/check-legacy-review-target.sh")" != "$TARGET_BLOB" ] ||
+             [ "$(git rev-parse HEAD)" != "$REVIEW_COMMIT" ] ||
+             ! bash "$RUNNER_TEMP/check-legacy-review-target.sh" \
+               "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG"; then
+            echo 'Review target changed before paid Codex invocation; follow-up skipped.'
+            echo 'target_current=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'target_current=true' >> "$GITHUB_OUTPUT"
           exec sudo -n -- \
             env -u ENV -u BASH_ENV -u SHELLOPTS \
             /bin/sh -c '
@@ -2339,7 +2390,7 @@ jobs:
             "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
 
       - name: Verify Codex follow-up host integrity
-        if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true'
         timeout-minutes: 1
         env:
           HOST_NOTIFY_BEFORE: ${{ steps.followup_host_integrity_before.outputs.notify }}
@@ -2372,7 +2423,7 @@ jobs:
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
 
       - name: Restore trusted post-Codex helpers
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           NOTIFY_HUMAN_BLOB: ${{ steps.followup_context.outputs.notify_human_blob }}
@@ -2421,7 +2472,7 @@ jobs:
           echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
 
       - name: Gate Codex follow-up requirement changes
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true'
         id: codex-requirements-gate
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
@@ -2461,7 +2512,7 @@ jobs:
           fi
 
       - name: Notify human of Codex follow-up requirement escalation
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue != 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true' && steps.codex-requirements-gate.outputs.continue != 'true'
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         run: >-
@@ -2469,7 +2520,7 @@ jobs:
           "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Evaluate trusted follow-up diff guard
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'
         id: followup-diff-guard
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
@@ -2601,7 +2652,7 @@ jobs:
           echo 'continue=false' >> "$GITHUB_OUTPUT"
 
       - name: Notify human of follow-up diff guard stop
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue != 'true'
         env:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         run: >-
@@ -2609,7 +2660,7 @@ jobs:
           "AI Developer follow-up diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Commit and answer review
-        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'
+        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}

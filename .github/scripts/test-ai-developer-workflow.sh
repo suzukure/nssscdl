@@ -946,11 +946,11 @@ for disposable_helper in \
   '"$RUNNER_TEMP/codex-diff-guard-contract.json"'; do
   grep -Fq "$disposable_helper" "$followup_disposable_block"
 done
-if [ "$(grep -Fc "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$followup_workflow")" -lt 6 ]; then
-  echo 'Every follow-up runtime step must remain behind the trusted follow-up gate.' >&2
+if [ "$(grep -Fc "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.checkout-target.outputs.continue == 'true'" "$followup_workflow")" -lt 6 ]; then
+  echo 'Every follow-up runtime step must remain behind the checked-out target gate.' >&2
   exit 1
 fi
-grep -Fq "if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$followup_workflow"
+grep -Fq "if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true'" "$followup_workflow"
 grep -Fqx '        timeout-minutes: 12' "$followup_step"
 grep -Fqx '          CODEX_RUNTIME_MAX_SEC: 700' "$followup_step"
 grep -Fq '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_workflow"
@@ -1250,7 +1250,7 @@ fi
 grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$workflow"
 grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$workflow"
 grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$workflow"
-grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
+grep -Fq "if: steps.verify-reviewer.outputs.trusted == 'true' && steps.codex.outputs.target_current == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
 
 gh() {
   case "$1 $2" in
@@ -1277,8 +1277,17 @@ gh() {
           ;;
         human-label) labels='[{"name":"human-review-required"}]' ;;
       esac
-      jq -cn --arg author "$author" --argjson reviews "$reviews" --argjson labels "$labels" \
-        '{number:37,state:(env.MOCK_PR_STATE // "OPEN"),headRefOid:(env.MOCK_PR_HEAD // "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
+      current_head="${MOCK_PR_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+      if [ -n "${MOCK_PR_VIEW_COUNT_FILE:-}" ]; then
+        view_count="$(cat "$MOCK_PR_VIEW_COUNT_FILE")"
+        view_count="$((view_count + 1))"
+        printf '%s\n' "$view_count" > "$MOCK_PR_VIEW_COUNT_FILE"
+        if [ -n "${MOCK_HEAD_MOVE_AT_VIEW:-}" ] && [ "$view_count" -ge "$MOCK_HEAD_MOVE_AT_VIEW" ]; then
+          current_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        fi
+      fi
+      jq -cn --arg author "$author" --argjson reviews "$reviews" --argjson labels "$labels" --arg head "$current_head" \
+        '{number:37,state:(env.MOCK_PR_STATE // "OPEN"),headRefOid:$head,author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
       ;;
     'api repos/owner/repo/pulls/37/reviews/9')
       [ "${MOCK_REVIEW_FETCH_FAIL:-false}" != true ] || return 1
@@ -1287,9 +1296,9 @@ gh() {
     'api repos/owner/repo/issues/36')
       [ "${MOCK_API_FAIL:-false}" != true ] && [ "${MOCK_ENTRY_FETCH_FAIL:-false}" != true ] || return 1
       if [ "${MOCK_ISSUE_PAUSED:-false}" = true ]; then
-        printf '%s\n' '{"number":36,"state":"open","labels":[{"name":"human-review-required"}]}'
+        jq -cn --arg state "${MOCK_ISSUE_STATE:-open}" '{number:36,state:$state,labels:[{name:"human-review-required"}]}'
       else
-        printf '%s\n' '{"number":36,"state":"open","labels":[]}'
+        jq -cn --arg state "${MOCK_ISSUE_STATE:-open}" '{number:36,state:$state,labels:[]}'
       fi
       ;;
     'label create'|'issue edit'|'pr comment')
@@ -1339,6 +1348,8 @@ extract_workflow_step_run "$followup_gate_step" "$followup_gate_script"
 followup_gate_workdir="$test_dir/gate-automated-follow-up-workdir"
 mkdir "$followup_gate_workdir"
 ln -s "$repo_root/.github" "$followup_gate_workdir/.github"
+mkdir "$test_dir/runner"
+export RUNNER_TEMP="$test_dir/runner"
 
 assert_followup_gate_pause() {
   local fixture_name="${1:?fixture name is required}"
@@ -1419,6 +1430,96 @@ followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-g
 jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
+
+# Exercise the writer's actual target checks with API and checkout races.
+checkout_target_step="$test_dir/checkout-target.yml"
+checkout_target_script="$test_dir/checkout-target.sh"
+extract_workflow_step 'Check checked-out review target' "$checkout_target_step"
+extract_workflow_step_run "$checkout_target_step" "$checkout_target_script"
+grep -Fqx "        if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true'" "$checkout_target_step"
+grep -Fq 'target_current=false' "$followup_step"
+grep -Fq 'target_current=true' "$followup_step"
+paid_target_script="$test_dir/paid-target.sh"
+awk '
+  /^          if \[\[ ! "\$TARGET_BLOB"/ { in_check = 1 }
+  in_check && /^          exec sudo -n --/ { exit }
+  in_check { sub(/^          /, ""); print }
+' "$followup_step" > "$paid_target_script"
+[ -s "$paid_target_script" ]
+for target_script in "$checkout_target_script" "$paid_target_script"; do
+  printf 'printf "paid-or-context\\n" >> "$PAID_LOG"\n' >> "$target_script"
+done
+git() {
+  if [ "$1 $2" = 'rev-parse HEAD' ]; then
+    printf '%s\n' "${MOCK_CHECKOUT_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  else
+    command git "$@"
+  fi
+}
+export -f git
+export GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEW_ID=9
+export REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REVIEWER_APP_SLUG=review
+export TARGET_BLOB="$(command git hash-object --no-filters "$RUNNER_TEMP/check-legacy-review-target.sh")"
+export GITHUB_OUTPUT="$test_dir/target.output" PAID_LOG="$test_dir/target-paid.log"
+
+assert_target_check() {
+  local name="$1" script="$2" expected="$3"
+  local output_key=continue output_value=false
+  shift 3
+  if [ "$script" = "$paid_target_script" ]; then output_key=target_current; fi
+  if [ "$expected" = pass ]; then output_value=true; fi
+  : > "$GITHUB_OUTPUT"
+  : > "$PAID_LOG"
+  env "$@" bash "$script"
+  if ! grep -Fxq "${output_key}=${output_value}" "$GITHUB_OUTPUT"; then
+    echo "Incorrect target decision for $name." >&2
+    exit 1
+  fi
+  if [ "$expected" = pass ]; then
+    [ -s "$PAID_LOG" ]
+  else
+    [ ! -s "$PAID_LOG" ]
+  fi
+}
+
+assert_target_check current-checkout "$checkout_target_script" pass MOCK_CHECKOUT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+assert_target_check checkout-moved "$checkout_target_script" stop MOCK_CHECKOUT_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+for target_state in 'MOCK_PR_STATE=CLOSED' 'MOCK_ISSUE_STATE=closed' 'MOCK_ISSUE_PAUSED=true' 'MOCK_API_FAIL=true'; do
+  assert_target_check "checkout-$target_state" "$checkout_target_script" stop "$target_state"
+done
+assert_target_check current-paid "$paid_target_script" pass MOCK_CHECKOUT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+for target_state in 'MOCK_PR_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+  'MOCK_PR_STATE=CLOSED' 'MOCK_ISSUE_STATE=closed' 'MOCK_ISSUE_PAUSED=true' 'MOCK_API_FAIL=true'; do
+  assert_target_check "paid-$target_state" "$paid_target_script" stop "$target_state"
+done
+
+# The gate can pass before the remote HEAD moves; checkout must reject it.
+: > "$GITHUB_OUTPUT"
+printf '0\n' > "$test_dir/pr-view-count"
+MOCK_PR_VIEW_COUNT_FILE="$test_dir/pr-view-count" MOCK_HEAD_MOVE_AT_VIEW=2 \
+  MOCK_CASE=valid MOCK_GH_LOG="$test_dir/gate-race.log" REVIEW_BODY="$review_body" \
+  DEVELOPER_APP_SLUG=dev bash "$followup_gate_script"
+grep -Fxq 'continue=true' "$GITHUB_OUTPUT"
+assert_target_check post-gate-head-move "$checkout_target_script" stop \
+  MOCK_PR_VIEW_COUNT_FILE="$test_dir/pr-view-count" MOCK_HEAD_MOVE_AT_VIEW=2
+
+# A HEAD change between gate evaluation and escalation must cause no write.
+: > "$test_dir/escalation-race.log"
+: > "$GITHUB_OUTPUT"
+printf '0\n' > "$test_dir/pr-view-count"
+MOCK_PR_VIEW_COUNT_FILE="$test_dir/pr-view-count" MOCK_HEAD_MOVE_AT_VIEW=3 \
+  MOCK_CASE=three-reviews MOCK_GH_LOG="$test_dir/escalation-race.log" REVIEW_BODY="$review_body" \
+  DEVELOPER_APP_SLUG=dev bash "$followup_gate_script"
+grep -Fxq 'continue=false' "$GITHUB_OUTPUT"
+grep -Fxq 'notify=false' "$GITHUB_OUTPUT"
+[ ! -s "$test_dir/escalation-race.log" ]
+
+for post_step in 'Gate Codex follow-up requirement changes' \
+  'Evaluate trusted follow-up diff guard' 'Commit and answer review'; do
+  post_step_file="$test_dir/${post_step// /-}.yml"
+  extract_workflow_step "$post_step" "$post_step_file"
+  grep -Fq "steps.codex.outputs.target_current == 'true'" "$post_step_file"
+done
 
 MOCK_GH_LOG="$test_dir/human-pause.log"
 export MOCK_GH_LOG
