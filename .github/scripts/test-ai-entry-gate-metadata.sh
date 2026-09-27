@@ -6,7 +6,8 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 export GH_LOG="$test_dir/gh.log" PAID_LOG="$test_dir/paid.log"
 
-valid_pr='{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+reviewed_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+valid_pr='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
 valid_issue='{"labels":[]}'
 valid_pr_list='[]'
 export MOCK_PR_JSON="$valid_pr" MOCK_ISSUE_JSON="$valid_issue" MOCK_PR_LIST_JSON="$valid_pr_list" MOCK_API_JSON="$valid_issue"
@@ -63,33 +64,39 @@ assert_stops() {
 }
 
 assert_passes bash "$issue_gate" owner/repo 36
-assert_passes bash "$review_gate" owner/repo 37
+assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
 
 for payload in '{}' '{"labels":null}' '{"labels":{}}' '{"labels":[null]}' '{"labels":[{"name":null}]}' '{'; do
   MOCK_ISSUE_JSON="$payload" assert_stops "Issue metadata: $payload" bash "$issue_gate" owner/repo 36
-  MOCK_API_JSON="$payload" assert_stops "Claude closing Issue: $payload" bash "$review_gate" owner/repo 37
+  MOCK_API_JSON="$payload" assert_stops "Claude closing Issue: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
   MOCK_API_JSON="$payload" assert_stops "follow-up closing Issue: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
 done
 for payload in '{}' 'null' '[{"labels":[]}]' '[{"number":37,"labels":null}]' '[{"number":37,"labels":{}}]' '[{"number":37,"labels":[{"name":3}]}]' '['; do
   MOCK_PR_LIST_JSON="$payload" assert_stops "related PR list: $payload" bash "$issue_gate" owner/repo 36
 done
 for payload in \
-  '{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":{},"closingIssuesReferences":[]}' \
-  '{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":null,"closingIssuesReferences":[]}' \
-  '{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":36,"url":null}]}' \
-  '{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":null}' \
-  '{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":"36","url":"https://github.com/owner/repo/issues/36"}]}' \
+  '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":{},"closingIssuesReferences":[]}' \
+  '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":null,"closingIssuesReferences":[]}' \
+  '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":36,"url":null}]}' \
+  '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":null}' \
+  '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":"36","url":"https://github.com/owner/repo/issues/36"}]}' \
   '{'; do
-  MOCK_PR_JSON="$payload" assert_stops "Claude PR metadata: $payload" bash "$review_gate" owner/repo 37
+  MOCK_PR_JSON="$payload" assert_stops "Claude PR metadata: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
   MOCK_PR_JSON="$payload" assert_stops "follow-up PR metadata: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
+done
+for payload in \
+  '{"number":38,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}' \
+  '{"number":37,"state":"OPEN","isDraft":null,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}' \
+  '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"invalid","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'; do
+  MOCK_PR_JSON="$payload" assert_stops "Claude PR metadata: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
 done
 for failure in issue list; do
   MOCK_FAIL="$failure" assert_stops "Issue entry API: $failure" bash "$issue_gate" owner/repo 36
 done
 for gate in review followup; do
   if [ "$gate" = review ]; then
-    args=(bash "$review_gate" owner/repo 37)
+    args=(bash "$review_gate" owner/repo 37 "$reviewed_head")
   else
     args=(bash "$followup_gate" owner/repo 37 review dev "$review_body")
   fi
@@ -98,9 +105,9 @@ for gate in review followup; do
   MOCK_JQ_EXTRACT_FAIL=true assert_stops "$gate relation extraction" "${args[@]}"
 done
 
-MOCK_PR_JSON='{"state":"OPEN","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'
+MOCK_PR_JSON='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'
 export MOCK_PR_JSON
-assert_passes bash "$review_gate" owner/repo 37
+assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
 
 MOCK_ISSUE_JSON='{"labels":[{"name":"human-review-required"}]}'
