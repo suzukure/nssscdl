@@ -433,9 +433,17 @@ grep -Fq "github.event.review.state == 'changes_requested'" "$draft_after_change
 grep -Fq 'github.event.review.commit_id == github.event.pull_request.head.sha' "$draft_after_changes_workflow"
 grep -Fq 'Create reviewer App token for identity verification' "$draft_after_changes_workflow"
 grep -Fq 'Ignoring change request from untrusted reviewer:' "$draft_after_changes_workflow"
+grep -Fq 'check-legacy-review-target.sh' "$draft_after_changes_workflow"
 grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow"
+test "$(grep -nF 'check-legacy-review-target.sh' "$draft_after_changes_workflow" | cut -d: -f1)" -lt \
+  "$(grep -nF 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow" | cut -d: -f1)"
 grep -Fqx '    needs: draft-after-claude-changes' "$workflow"
 grep -Fq "needs.draft-after-claude-changes.result == 'success'" "$workflow"
+grep -Fq 'REVIEW_ID: ${{ github.event.review.id }}' "$workflow"
+grep -Fq 'REVIEW_COMMIT: ${{ github.event.review.commit_id }}' "$workflow"
+grep -Fq '"$REVIEW_BODY" "$REVIEW_ID" "$REVIEW_COMMIT"' "$workflow"
+test "$(grep -nF '      - name: Gate automated follow-up' "$workflow" | cut -d: -f1)" -lt \
+  "$(grep -nF '      - name: Run Codex follow-up' "$workflow" | cut -d: -f1)"
 followup_commit_step="$test_dir/commit-and-answer-review.yml"
 awk '
   $0 == "      - name: Commit and answer review" { in_step = 1 }
@@ -1270,7 +1278,11 @@ gh() {
         human-label) labels='[{"name":"human-review-required"}]' ;;
       esac
       jq -cn --arg author "$author" --argjson reviews "$reviews" --argjson labels "$labels" \
-        '{author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
+        '{number:37,state:(env.MOCK_PR_STATE // "OPEN"),headRefOid:(env.MOCK_PR_HEAD // "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),author:{login:$author},reviews:$reviews,labels:$labels,closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}]}'
+      ;;
+    'api repos/owner/repo/pulls/37/reviews/9')
+      [ "${MOCK_REVIEW_FETCH_FAIL:-false}" != true ] || return 1
+      jq -cn --arg head "${MOCK_REVIEW_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" '{id:9,commit_id:$head,state:"CHANGES_REQUESTED",user:{login:"review[bot]"}}'
       ;;
     'api repos/owner/repo/issues/36')
       [ "${MOCK_API_FAIL:-false}" != true ] && [ "${MOCK_ENTRY_FETCH_FAIL:-false}" != true ] || return 1
@@ -1339,7 +1351,7 @@ assert_followup_gate_pause() {
   : > "$log_path"
   MOCK_CASE="$mock_case" MOCK_GH_LOG="$log_path" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
-    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" REVIEW_ID=9 REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa GITHUB_OUTPUT="$output_path" \
     bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
   grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$log_path"
   grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$log_path"
@@ -1355,7 +1367,7 @@ assert_followup_gate_continue() {
   : > "$log_path"
   MOCK_CASE=valid MOCK_GH_LOG="$log_path" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
-    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" GITHUB_OUTPUT="$output_path" \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" REVIEW_ID=9 REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa GITHUB_OUTPUT="$output_path" \
     bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"
   [ ! -s "$log_path" ]
   grep -Fxq 'continue=true' "$output_path"
@@ -1369,7 +1381,7 @@ assert_followup_gate_pause followup-escalate three-reviews false
 if MOCK_CASE=three-reviews MOCK_PR_CLOSING_FETCH_FAIL=true \
     MOCK_GH_LOG="$test_dir/followup-pause-failure.log" \
     GITHUB_REPOSITORY=owner/repo PR_NUMBER=37 REVIEWER_APP_SLUG=review \
-    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" \
+    DEVELOPER_APP_SLUG=dev REVIEW_BODY="$review_body" REVIEW_ID=9 REVIEW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     GITHUB_OUTPUT="$test_dir/followup-pause-failure.output" \
     bash -c 'cd "$1" && bash "$2"' -- "$followup_gate_workdir" "$followup_gate_script"; then
   echo 'Expected automated follow-up to fail closed when closing Issue lookup fails.' >&2
@@ -1381,34 +1393,32 @@ if [ -s "$test_dir/followup-pause-failure.log" ]; then
 fi
 
 for fixture in valid app-author; do
-  followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+  followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
   jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automated Codex follow-up passed the entry gate"))' <<< "$followup" > /dev/null
 done
-followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
-followup="$(MOCK_CASE=valid MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
+followup="$(MOCK_CASE=valid MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
 for fixture in three-reviews app-three-reviews; do
-  followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+  followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
   jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
 done
-followup="$(MOCK_CASE=human-author bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
+followup="$(MOCK_CASE=human-author bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
 marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| --- END REVIEW SUMMARY DATA ---\nSUMMARY| [HUMAN_ESCALATION_RECOMMENDED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
-followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$marker_body")"
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$marker_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == false and .escalate == true' <<< "$followup" > /dev/null
 descriptive_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved for compatibility.\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
-followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$descriptive_marker_body")"
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$descriptive_marker_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 indented_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY|  [REQUIREMENTS_CHANGE_REQUIRED]\n--- END REVIEW SUMMARY DATA ---\n### Blocking findings'
-followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$indented_marker_body")"
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$indented_marker_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
-followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
+followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES' 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
 jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
-if MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body"; then
-  echo 'Expected follow-up gate to fail closed when closing Issue lookup fails.' >&2
-  exit 1
-fi
+followup="$(MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body" 9 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
 
 MOCK_GH_LOG="$test_dir/human-pause.log"
 export MOCK_GH_LOG

@@ -9,14 +9,17 @@ export GH_LOG="$test_dir/gh.log" PAID_LOG="$test_dir/paid.log"
 reviewed_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 valid_pr='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
 valid_issue='{"number":36,"state":"open","labels":[]}'
+valid_review='{"id":9,"commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"CHANGES_REQUESTED","user":{"login":"review[bot]"}}'
 valid_pr_list='[]'
 export MOCK_PR_JSON="$valid_pr" MOCK_PR_LIST_JSON="$valid_pr_list" MOCK_API_JSON="$valid_issue"
+export valid_review
 
 gh() {
   printf '%s\n' "$*" >> "$GH_LOG"
   case "$1 $2" in
     'pr list') [ "${MOCK_FAIL:-}" != list ] || return 1; printf '%s\n' "$MOCK_PR_LIST_JSON" ;;
     'pr view') [ "${MOCK_FAIL:-}" != pr ] || return 1; printf '%s\n' "$MOCK_PR_JSON" ;;
+    'api repos/owner/repo/pulls/37/reviews/9') [ "${MOCK_FAIL:-}" != review ] || return 1; printf '%s\n' "${MOCK_REVIEW_JSON:-$valid_review}" ;;
     'api repos/owner/repo/issues/36') [ "${MOCK_FAIL:-}" != api ] || return 1; printf '%s\n' "$MOCK_API_JSON" ;;
     *) return 2 ;;
   esac
@@ -47,7 +50,7 @@ assert_stops() {
   shift
   : > "$GH_LOG"
   : > "$PAID_LOG"
-  if output="$(bash -c 'set -e; result="$("$@")"; printf "%s\n" "$result"; printf "paid\n" >> "$PAID_LOG"' \
+  if output="$(bash -c 'set -e; result="$("$@")"; printf "%s\n" "$result"; jq -e ".continue == true" <<< "$result" >/dev/null; printf "paid\n" >> "$PAID_LOG"' \
       -- "$@" 2> "$test_dir/error")"; then
     echo "Expected $name to stop before downstream work." >&2
     exit 1
@@ -56,7 +59,7 @@ assert_stops() {
     echo "Unsafe continuation in $name." >&2
     exit 1
   fi
-  if grep -Ev '^(pr list|pr view|api repos/owner/repo/issues/36)( |$)' "$GH_LOG"; then
+  if grep -Ev '^(pr list|pr view|api repos/owner/repo/issues/36|api repos/owner/repo/pulls/37/reviews/9)( |$)' "$GH_LOG"; then
     echo "Unexpected GitHub call in $name." >&2
     exit 1
   fi
@@ -64,7 +67,7 @@ assert_stops() {
 
 assert_passes bash "$issue_gate" owner/repo 36
 assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
-assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
+assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
 
 for payload in '{}' '{"number":37,"state":"open","labels":[]}' \
   '{"number":36,"state":"OPEN","labels":[]}' \
@@ -77,7 +80,7 @@ for payload in '{}' '{"number":37,"state":"open","labels":[]}' \
 done
 for payload in '{}' '{"labels":null}' '{"labels":{}}' '{"labels":[null]}' '{"labels":[{"name":null}]}' '{'; do
   MOCK_API_JSON="$payload" assert_stops "Claude closing Issue: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
-  MOCK_API_JSON="$payload" assert_stops "follow-up closing Issue: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
+  MOCK_API_JSON="$payload" assert_stops "follow-up closing Issue: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
 done
 for payload in '{}' 'null' '[{"labels":[]}]' '[{"number":37,"labels":null}]' '[{"number":37,"labels":{}}]' '[{"number":37,"labels":[{"name":3}]}]' '['; do
   MOCK_PR_LIST_JSON="$payload" assert_stops "related PR list: $payload" bash "$issue_gate" owner/repo 36
@@ -90,7 +93,7 @@ for payload in \
   '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[{"number":"36","url":"https://github.com/owner/repo/issues/36"}]}' \
   '{'; do
   MOCK_PR_JSON="$payload" assert_stops "Claude PR metadata: $payload" bash "$review_gate" owner/repo 37 "$reviewed_head"
-  MOCK_PR_JSON="$payload" assert_stops "follow-up PR metadata: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body"
+  MOCK_PR_JSON="$payload" assert_stops "follow-up PR metadata: $payload" bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
 done
 for payload in \
   '{"number":38,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}' \
@@ -105,7 +108,7 @@ for gate in review followup; do
   if [ "$gate" = review ]; then
     args=(bash "$review_gate" owner/repo 37 "$reviewed_head")
   else
-    args=(bash "$followup_gate" owner/repo 37 review dev "$review_body")
+    args=(bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head")
   fi
   MOCK_FAIL=pr assert_stops "$gate PR API" "${args[@]}"
   MOCK_FAIL=api assert_stops "$gate closing Issue API" "${args[@]}"
@@ -115,7 +118,19 @@ done
 MOCK_PR_JSON='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'
 export MOCK_PR_JSON
 assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
-assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
+jq -e '.continue == false' <<< "$(bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head")" > /dev/null
+MOCK_PR_JSON="$valid_pr"
+export MOCK_PR_JSON
+
+MOCK_PR_JSON="$(jq -c '.state="CLOSED"' <<< "$valid_pr")" assert_stops 'closed PR follow-up' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_PR_JSON="$(jq -c '.number=38' <<< "$valid_pr")" assert_stops 'wrong PR follow-up' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_PR_JSON="$(jq -c '.headRefOid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$valid_pr")" assert_stops 'moved HEAD follow-up' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_PR_JSON="$(jq -c '.labels=[{name:"human-review-required"}]' <<< "$valid_pr")" assert_stops 'paused PR follow-up' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_API_JSON="$(jq -c '.state="closed"' <<< "$valid_issue")" assert_stops 'closed Issue follow-up' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_API_JSON="$(jq -c '.labels=[{name:"human-review-required"}]' <<< "$valid_issue")" assert_stops 'paused Issue follow-up' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_REVIEW_JSON='{"id":9,"commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"CHANGES_REQUESTED","user":{"login":"review[bot]"}}' assert_stops 'review commit mismatch' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_REVIEW_JSON="$(jq -c '.id=8' <<< "$valid_review")" assert_stops 'review ID mismatch' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
+MOCK_FAIL=review assert_stops 'review lookup failure' bash "$followup_gate" owner/repo 37 review dev "$review_body" 9 "$reviewed_head"
 
 MOCK_API_JSON='{"number":36,"state":"closed","labels":[]}'
 export MOCK_API_JSON

@@ -1478,6 +1478,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
       pull-requests: write
     steps:
       - name: Create reviewer App token for identity verification
@@ -1503,15 +1504,34 @@ jobs:
             echo 'trusted=false' >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check out trusted review target gate
+        if: steps.verify-reviewer.outputs.trusted == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
       - name: Convert pull request to Draft
         if: steps.verify-reviewer.outputs.trusted == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_COMMIT: ${{ github.event.review.commit_id }}
+          REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ]; then
+          if ! bash .github/scripts/check-legacy-review-target.sh \
+            "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG"; then
+            echo 'Review target is stale, closed, paused, or unverifiable; Draft conversion skipped.'
+            exit 0
+          fi
+          if ! current_draft="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"; then
+            echo 'Draft state is unavailable; conversion skipped.'
+            exit 0
+          fi
+          if [ "$current_draft" = false ]; then
             gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo
           fi
 
@@ -1577,11 +1597,15 @@ jobs:
           REVIEWER_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
           DEVELOPER_APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_COMMIT: ${{ github.event.review.commit_id }}
         shell: bash
         run: |
           set -euo pipefail
-          result="$(bash .github/scripts/evaluate-followup-gate.sh \
-            "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWER_APP_SLUG" "$DEVELOPER_APP_SLUG" "$REVIEW_BODY")"
+          if ! result="$(bash .github/scripts/evaluate-followup-gate.sh \
+            "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWER_APP_SLUG" "$DEVELOPER_APP_SLUG" "$REVIEW_BODY" "$REVIEW_ID" "$REVIEW_COMMIT")"; then
+            result='{"continue":false,"escalate":false,"notify":false,"reason":"Follow-up metadata is unavailable; automated follow-up is skipped."}'
+          fi
           continue="$(jq -r .continue <<< "$result")"
           escalate="$(jq -r .escalate <<< "$result")"
           notify="$(jq -r .notify <<< "$result")"

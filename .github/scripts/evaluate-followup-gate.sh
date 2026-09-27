@@ -6,6 +6,15 @@ pr_number="${2:?pull request number is required}"
 reviewer_app_slug="${3:?reviewer App slug is required}"
 developer_app_slug="${4:?developer App slug is required}"
 review_body="${5:-}"
+review_id="${6:?review ID is required}"
+review_commit="${7:?review commit is required}"
+
+if ! bash "$(dirname "$0")/check-legacy-review-target.sh" \
+    "$repo" "$pr_number" "$review_id" "$review_commit" "$reviewer_app_slug"; then
+  jq -cn '{continue:false,escalate:false,notify:false,
+    reason:"Review target is stale, closed, paused, or unverifiable; automated follow-up is skipped."}'
+  exit 0
+fi
 
 metadata="$(gh pr view "$pr_number" --repo "$repo" --json author,reviews,labels,closingIssuesReferences)"
 if ! jq -es 'length == 1 and (.[0] | type == "object" and
