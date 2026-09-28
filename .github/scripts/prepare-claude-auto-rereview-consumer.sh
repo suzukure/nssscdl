@@ -4,25 +4,37 @@ set -euo pipefail
 # Prepared contract only. Load this file and the entry gate from the trusted
 # base commit. The caller owns GitHub writes and carries only the identity
 # returned by entry into later phases; never reconstruct it from dispatch.
-# Follow entry -> machine_state_result -> paid review -> pre_verdict. Call
+# Follow entry -> pre_consume -> machine_state_result -> paid review -> pre_verdict. Call
 # merge_inputs only after an approving verdict was posted. A pause_record
 # instruction uses the existing common pause path.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 phase="${1:-}"
-pause() { jq -cn --arg code "$1" '{action:"pause_record",code:$code}'; exit 0; }
+stop() { jq -cn --arg code "$1" '{action:"stop",code:$code}'; exit 0; }
+pause() {
+  [ -n "${identity:-}" ] || stop "$1"
+  jq -cn --arg code "$1" --argjson identity "$identity" \
+    '{action:"pause_record",code:$code,identity:$identity}'
+  exit 0
+}
 
 if [ "$phase" = entry ]; then
   shift
   decision="$(bash "$script_dir/evaluate-claude-auto-rereview-entry-gate.sh" "$@")" \
-    || pause entry_gate_failed
+    || stop entry_gate_failed
   case "$(jq -r '.action // empty' <<< "$decision")" in
     ignore) printf '%s\n' "$decision" ;;
     human_required)
-      jq -c '{action:"pause_record",code,reason}' <<< "$decision" ;;
+      if [ "$(jq -r .code <<< "$decision")" = state_changed ]; then
+        stop state_changed
+      elif jq -e '.identity | type == "object"' <<< "$decision" >/dev/null; then
+        jq -c '{action:"pause_record",code,reason,identity}' <<< "$decision"
+      else
+        jq -c '{action:"stop",code,reason}' <<< "$decision"
+      fi ;;
     proceed)
-      jq -c '{action:"accepted",identity, next:"consume_machine_state"}' \
+      jq -c '{action:"accepted",identity, next:"pre_consume"}' \
         <<< "$decision" ;;
-    *) pause entry_gate_failed ;;
+    *) stop entry_gate_failed ;;
   esac
   exit 0
 fi
@@ -47,6 +59,35 @@ identity="$(jq -cse '
 ' <<< "$input" 2>/dev/null)" || pause invalid_identity
 
 case "$phase" in
+  pre_consume)
+    [ "$#" -eq 3 ] || stop invalid_context
+    reviewer="$2"
+    developer="$3"
+    payload="$(jq -cn --argjson identity "$identity" \
+      '{pr_number:$identity.pr_number,validated_sha:$identity.validated_sha,round:$identity.round}')"
+    decision="$(printf '%s\n' "$payload" | bash "$script_dir/evaluate-claude-auto-rereview-entry-gate.sh" \
+      "$(jq -r .repo <<< "$identity")" "$reviewer" "$developer" \
+      "$(jq -r .trusted_base_sha <<< "$identity")")" || stop entry_gate_failed
+    case "$(jq -r '.action // empty' <<< "$decision")" in
+      ignore) printf '%s\n' "$decision" ;;
+      human_required)
+        if [ "$(jq -r .code <<< "$decision")" = state_changed ]; then
+          stop state_changed
+        elif [ "$(jq -c '.identity // null' <<< "$decision")" = "$identity" ]; then
+          jq -c '{action:"pause_record",code,reason,identity}' <<< "$decision"
+        else
+          stop state_changed
+        fi ;;
+      proceed)
+        if [ "$(jq -c '.identity // null' <<< "$decision")" = "$identity" ]; then
+          jq -cn --argjson identity "$identity" \
+            '{action:"remove_machine_state",identity:$identity}'
+        else
+          stop state_changed
+        fi ;;
+      *) stop entry_gate_failed ;;
+    esac
+    ;;
   machine_state_result)
     [ "$(jq -r 'keys == ["identity","label_removed"] and (.label_removed | type == "boolean")' <<< "$input")" = true ] \
       || pause state_inconsistent

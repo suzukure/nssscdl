@@ -60,6 +60,9 @@ assert_decision() {
      and (.reason | type == "string" and length > 0)
      and (if $action == "proceed" then
        (.identity | keys) == ["base_ref","closing_issue_number","head_ref","pr_number","repo","round","trusted_base_sha","validated_sha"]
+       elif has("identity") then
+       keys == ["action","code","identity","reason"] and
+       (.identity | keys) == ["base_ref","closing_issue_number","head_ref","pr_number","repo","round","trusted_base_sha","validated_sha"]
        else keys == ["action","code","reason"] end)' <<< "$result" >/dev/null; then
     printf 'Unexpected decision for %s: %s\n' "$name" "$result" >&2
     exit 1
