@@ -50,6 +50,42 @@ Issueは、独立して判断・実施・検証・完了判定でき、単独で
 
 作業開始後に独立したスコープ外責務が判明した場合も、本節の基準で分割可否を再評価する。後継Issueへ分離する場合は「スコープ外影響と後継Issue」の契約に従い、後続Issueが未実施であることを理由に不完全または不整合な状態をmainへ反映してはならない。
 
+### AI開発環境Issueのruntime scope確認
+
+AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記の「意味のある最小単位」を満たす候補について、inner `RuntimeMaxSec=700s` 内に実装・検証・報告まで収まるscopeかを見積もる。これはIssue境界の下位に置く事前確認であり、責務数や差分量を理由に、安全性・正確性・要求／設計整合性に不可分な変更を機械的に分割しない。
+
+次のproduction runtime責務を各1つのheavy responsibilityとして数える。
+
+1. 新しいproduction event、`repository_dispatch`、workflow entryの接続。
+2. accepted record、label、machine state、Ready/Draft等の不可逆または外部状態遷移。
+3. paid AI callへの新規接続、または既存paid pathのownership変更。
+4. timeout、cancellation、runner lossを扱う独立failure recovery。
+5. workflow間handoff、producer-consumer ownership transfer。
+6. concurrency、polling、deadline、retry suppression等のruntime orchestration。
+7. App tokenまたはtrust boundaryを跨ぐ新しい権限境界。
+8. 既存normal pathを維持した新path追加に伴う対称性・重複抑止。
+
+単なるfixture追加、既存helperへの局所的なpure判定追加、docs同期は原則として数えない。ただしproduction ownershipやstate transitionを実際に変更する場合は数える。見積もった数を次の事前scope riskに当てはめる。
+
+| Risk | Heavy responsibility数 | 投入前の判断 |
+|---|---:|---|
+| Green | 0〜3 | 通常投入可。 |
+| Yellow | 4〜5 | 分割を優先検討し、少なくともprepared/helperとproduction wiringを分離できないか確認する。 |
+| Red | 6以上 | 原則として投入前に分割する。 |
+
+次の組合せは個数にかかわらず強制分割候補とする。
+
+- 新しいproduction pathと独立runner-loss recoveryを同じIssueで初めて実装する。
+- producerとconsumerを同時に初めてproduction接続する。
+- paid AI boundary、accepted/state lifecycle、独立failure recoveryを同時に実装する。
+- 新しいproduction workflowを2本以上追加する。
+
+強制分割候補は、各段階を安全性・正確性・要求／設計整合性を保つ独立単位へ分けられる場合に分割必須とする。分割自体が正本不整合を生む場合はIssue本文に不可分な理由を明示して人間が判断し、extended-runへ安易に切り替えない。runtime-heavyなworkflow変更は、可能なら (1) pure helper / trusted gate / prepared lifecycle、(2) production wiring / event connection、(3) independent failure recovery / cancellation recovery の順に分ける。各段階は単独でmainへ反映しても安全で、後続未実装の間にproductionが不完全状態へ到達しないことを必須とする。prepared/dormant codeを先行反映する場合は、default production runtimeから到達不能であることをfixtureで固定する。
+
+通常Codex runの実績は次回同種Issueの判断へ反映する。5分以下は粒度が概ね適切、5分超〜8分は次回同種scopeを一段細かく分割することを優先、8分超〜10分は同一Issueへの大きな追加責務を避ける危険域、10分超はsuccessでも分割不足の実績として扱う。700秒上限に到達した場合は同scopeを単純retryせず、「Issue本文におけるcurrent implementation contract」と「Codex timeout・runner異常終了時の診断と再開」で現行契約とfailure categoryを確認し、scope再分割を第一選択にする。timeoutだけでscope過大と断定せず、host/runtime障害、契約矛盾、non-convergence等を切り分けた後に本基準を適用する。
+
+変更行数とファイル数は補助指標であり、Issue境界の主指標にしない。概算のchanged lines（追加＋削除）は400以下を通常、400超〜700を注意、700超を分割優先検討の警告とする。小差分でもheavy responsibilityが多ければtimeoutし得るため責務数を主指標とし、1つの確定判断と整合性維持に不可分な変更を行数だけで分割しない。
+
 ## 関連修正の集約とレビュー準備
 
 Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすため、新規のIssue起点PRをDraftで作成する方式を採用した。本節は、確定済みIssueのcoherent changeをDraft PRへ集約しreviewを準備する手順を定める。Issueの境界と再評価は「Issueの分割単位」を正本とする。
