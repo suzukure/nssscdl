@@ -15,10 +15,9 @@
 
 基本設計全体は以下の残件が完了するまで完了扱いにしない。
 
-- #541 `OI-BD-012` — Backup / Recovery
 - #542 `OI-BD-013` — Deployment / Environment
 
-通知・Scheduled Processingの基本形は #540、認証・Sessionの基本形は #539 で確定済み。残りの論理Entityは #541 / #542 の確定時に必要な範囲を既存の基本設計文書へ反映する。D1の最終カラム型、補助Index、DDL、具体的Guard SQL等は `02_DataModel.md` および `05_BookingAndConcurrency.md` に従い後続の物理データ設計・詳細設計で確定する。Schedule生成・変更の基本形は `06_APIOverview.md` §12で確定済みであり、`disabled` 理由の保持・表示粒度等の具体表現は詳細設計で確定する。
+通知・Scheduled Processingの基本形は #540、認証・Sessionの基本形は #539、Backup / Recoveryの基本形は #541 で確定済み。残りのDeployment / Environment境界は #542 で既存の基本設計文書へ反映する。D1の最終カラム型、補助Index、DDL、具体的Guard SQL等は `02_DataModel.md` および `05_BookingAndConcurrency.md` に従い後続の物理データ設計・詳細設計で確定する。Schedule生成・変更の基本形は `06_APIOverview.md` §12で確定済みであり、`disabled` 理由の保持・表示粒度等の具体表現は詳細設計で確定する。
 
 外部Provider運用の関連未決 #34 は、#540 で固定したScheduled Handlerとの境界を維持し、#542 / #537 で必要な範囲を参照する。
 

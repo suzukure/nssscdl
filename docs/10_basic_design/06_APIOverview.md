@@ -18,6 +18,8 @@ API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008`、管�
 
 初期リリースでは共通名前空間を `/api/...` とし、`/api/v1/...` のようなVersion Namespaceは設けない。将来、独立Frontend、外部Client、第三者連携等によりAPI互換性維持が正式要件となった時点でVersioning導入を再検討する。
 
+Backup生成、D1 Time Travel / Restore、Recovery D1 import、Production Cutoverは保守担当者の運用操作とし、公開業務APIに追加しない。Backup用R2権限とD1 export管理credentialを公開Application Workerの通常Request pathへ持たせない。境界は `01_SystemArchitecture.md` §3.3 / §5.3を正とする。
+
 この方針は、初期規模と必要機能に対して過剰な複雑化を避ける `POL-001` に従う。
 
 ## 3. Query / Command 分離
@@ -354,6 +356,8 @@ Application Error Code: INTEGRITY_STATE_UNAVAILABLE
 ```
 
 具体Response Schemaは詳細設計で確定する。
+
+Maintenance / Recovery中は、検証未完了の復元状態に対する通常業務のQuery / Command、Login、通知Delivery、Scheduled Handlerを再開しない。公開APIは安全なMaintenance表示・安定した利用不可Responseへfail-closedし、内部Recovery状態やcredentialを露出しない。再開Gateは `01_SystemArchitecture.md` §5.3を正とし、Maintenance modeの具体wireは #542 と詳細設計で確定する。
 
 ## 9. 保存モデルとAPI Modelの分離
 
@@ -1249,7 +1253,7 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 
 氏名、連絡先メール、Google等の認証紐付けなど直接管理する個人情報の実削除・匿名化は、要求どおり24時間以内に完了させる。Worker停止等があっても削除義務を失わないよう、削除CommandのTransaction内で後続処理必要状態を永続化する。
 
-後続処理のJob / Entity / Retry / Monitoringは詳細・運用設計、Backup復旧時の再適用は #541 で確定する。
+後続処理のJob / Entity / Retry / Monitoringは詳細・運用設計、Backup復旧時の再適用は `02_DataModel.md` §2.2と `05_BookingAndConcurrency.md` §13.14に従う。
 
 ### 17.5 通知・履歴・成功Response
 
@@ -1451,6 +1455,7 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - Account / AuthMethod / Session / ChallengeのDDL・index・unique constraint
 - Login / Logout / callback / method-management endpoint path・Request / Response、Registration / Invitation UI順序、Provider API呼出し詳細
 - Admin bootstrap / recovery command・runbook（#542の運用権限・Deploy境界に従う）
+- Backup / Restoreを公開APIから分離するoperator runbook、Maintenance / write freeze / Recovery D1 cutover / rollbackのwire境界（#542のDeploy・Binding境界に従う）
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format
@@ -1488,7 +1493,7 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - 管理者対応終了／再開のEndpoint path、Request / Response、Expected State wire、終了済み一覧のFilter / Pagination / Sort、1年経過後の物理Cleanup
 - Dispatcher routing / logical due state、Cron式・環境別binding、Cleanup具体周期、Handler heartbeat・metric・Alert閾値、Holiday Masterの取得時刻・対象年・staging / update transaction方式
 
-生徒削除後の個人情報削除・匿名化の再実行可能な物理状態と24時間以内完了の監視・失敗時対応は詳細・運用設計、Backup復旧時の再適用は #541 で具体化する。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
+生徒削除後の個人情報削除・匿名化の再実行可能な物理状態と24時間以内完了の監視・失敗時対応、Backup復旧時のPurge再適用の具体queryは詳細・運用設計で定める。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
 
 ## 21. 関連要求・方針
 

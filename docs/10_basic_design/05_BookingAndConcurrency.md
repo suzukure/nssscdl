@@ -478,6 +478,8 @@ Preview対象集合 != Commit直前対象集合
 
 Student用AuthMethodを含む個人情報削除・匿名化用Entity、列、Scheduled Job等は詳細設計で確定する。
 
+削除前の状態を含むBackupからの復旧に備え、削除確定と独立した `Recovery Purge Registry` のdurable記録を整合させる。Registryの連続性を欠く障害窓を許容したまま削除を成功扱いにせず、旧Backupから削除済みStudentが復活しないInvariantを保証する。論理データ境界は `02_DataModel.md` §2.2、書込み順序・冪等性・障害窓を閉じる物理方式は詳細設計で確定する。物理方式で保証できない場合は要求・基本設計へ戻して判断する。
+
 ### 9.5 classification
 
 `student_deleted` では同一生徒の将来confirmed Reservationをすべて取消すため、正常Commit後に未開始confirmed Reservationは残らない。
@@ -797,11 +799,19 @@ Delivery Attemptの安定したidentityはProvider call前に確定する。Prov
 
 `REQ-102 / AC-102-001` に従い、予約確定時点でLesson開始まで24時間未満ならReminder Intentを追加生成しない。それ以外は概念上 `reminder_due_at = lesson_start - 24h` とし、`reminder_due_at <= now < lesson_start` かつReservationが現在もReminder対象のとき生成する。正常稼働時は24時間前境界から次の15分tickまでのmaterialization遅れを許容する。停止で境界tickを逃してもLesson開始前に復旧し義務が有効ならcatch-up生成する。同一Reservationの同一Reminder義務は重複tick・並行実行でもIntentを重複生成しない。Cronの瞬間一致を正しさの前提にしない。
 
-Cancellation、生徒削除、Lesson開始等で通知義務が失効した場合は生成・再送しない。時刻と業務状態から導出できる失効はQuery / Commandに加えてdelivery直前Guardでも再評価する。Cleanup Jobの先行実行や物理削除の有無によって期限切れデータを有効扱いに戻さない。生徒削除等のCommandで確定する削除・匿名化義務と期限はdurableに記録し、Privacy / Retention Cleanupが要求上の期限内に実行する。具体周期は詳細設計で定める。Session / Token固有の期限・revocation意味は `01_SystemArchitecture.md` §2.1と本書§3.8、Backup artifactは #541 に従う。
+Cancellation、生徒削除、Lesson開始等で通知義務が失効した場合は生成・再送しない。時刻と業務状態から導出できる失効はQuery / Commandに加えてdelivery直前Guardでも再評価する。Cleanup Jobの先行実行や物理削除の有無によって期限切れデータを有効扱いに戻さない。生徒削除等のCommandで確定する削除・匿名化義務と期限はdurableに記録し、Privacy / Retention Cleanupが要求上の期限内に実行する。具体周期は詳細設計で定める。Session / Token固有の期限・revocation意味は `01_SystemArchitecture.md` §2.1と本書§3.8、Backup ArtifactのRetentionは同書§3.4に従う。
 
 ### 13.13 Provider Callback
 
 Provider CallbackはScheduled Jobと分けた外部HTTP eventとして真正性を確認した後、既知Delivery Attemptへ関連付ける。Provider Message IDだけをDomainや公開APIの正本識別子にしない。重複Callbackは冪等に処理し、順序逆転・stale eventで新しい確定配送事実を巻き戻さない。矛盾するeventや安全に関連付けられないeventでは配送事実を推測せず診断対象とする。Callbackは確定済みReservation等をRollbackしない。客観的失効済みまたは管理者対応終了済みIntentへの後着Callbackは配送事実として記録し得るが、通知義務や管理者対応状態を自動復活させない。
+
+### 13.14 Restore後の再開境界
+
+Restoreした既存Sessionをそのまま信頼せず、Disaster Recovery後は原則として一括失効し再Loginを要求する。復元されたMagic Link / Invitation / ownership challenge等の単回Tokenも原則無効化・再発行する。通常Service再開前に、選択capture pointより後のStudent削除に対するPurge / 匿名化を `02_DataModel.md` §2.2のRegistryから再適用する。Registryの連続性・integrityが確認できなければMaintenanceを維持する。
+
+Provider側の既送信メールはDB restoreで取り消せない。Deliveryを一時停止してNotificationIntent / Delivery Attemptをreconcileし、Providerが受理した可能性を否定できないAttemptは §13.7 / §13.11の結果確認中・blind resend禁止境界に従う。復旧後に現在も有効な通知義務だけを再評価する。Reminder、Cleanup、Holiday、Integrity等のScheduled Handlerは検証完了前に通常処理を開始せず、再開時に現在時刻と復旧済み状態からdue workを再評価する。
+
+Reservation / SlotOccupancy等の主要Domain invariantを検査し、異常時は §14のFail Closed方針に従う。Service再開の全Gate、Recovery source選定、監査・smoke testは `01_SystemArchitecture.md` §5.3を正とする。
 
 ## 14. 未来Slotの現在状態Invariant
 
@@ -1002,6 +1012,7 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - BR-110 重大障害通知
 - BR-111〜BR-116 通知
 - BR-123〜BR-125 生徒削除時処理
+- BR-128 Backup内個人情報
 - BR-131 管理操作説明
 - BR-132 監査
 - BR-133 利用者向けエラー表現
@@ -1013,12 +1024,14 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - REQ-302 / REQ-307 / REQ-308 / REQ-309 / REQ-310 / REQ-313 / REQ-315 / REQ-316 / REQ-317 管理操作
 - REQ-311 / REQ-312 生徒削除
 - REQ-907 業務Timezone
+- REQ-908 / REQ-909 / REQ-910 復旧・Backup
 - REQ-911 競合整合性
 - REQ-912 外部API Retry
 - REQ-913 無料枠運用
 - REQ-914 障害・エラー時利用者表示
 - REQ-940 監査Logging
 - REQ-942 監視・重大Incident
+- REQ-952 Backup Privacy
 - REQ-951 Provider分離
 - CON-001 Cloudflare Platform
 
@@ -1048,6 +1061,8 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - Integrity Incidentの物理Schema・Index
 - 重大Incidentへ昇格する具体Threshold
 - Repair Command / Scriptの具体実装・権限制御・Runbook
+- Recovery Purge Registryの物理store、Recovery key、削除確定とのdurable記録順序・冪等性・障害窓の封鎖
+- Session / AuthChallenge sanitation、Notification reconciliation、Scheduled Handler再開、Domain invariant validationの具体query・runbook
 
 ## 17. 設計判断記録
 

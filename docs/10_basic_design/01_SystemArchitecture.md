@@ -6,7 +6,7 @@
 
 ## 2. アーキテクチャ判断
 
-初期リリースでは、アプリケーションのデプロイ単位として **単一のApplication Worker** を使用する。
+初期リリースでは、公開業務アプリケーションのデプロイ単位として **単一のApplication Worker** を使用する。長期Backup生成は権限を分離したBackup専用Cloudflare Workflow / Scheduled operational componentが担う。具体的なWorkflow / Worker構成、binding、credential、デプロイ単位は詳細設計と #542 で確定する。
 
 Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理、Schedule／管理者機能、通知Orchestration、Scheduled Job Handlerを、同一のCloudflare Workerへまとめてデプロイする。
 
@@ -42,7 +42,7 @@ Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理�
 - 予約、キャンセル、Schedule、Profile、管理者向けUse Caseを実行する。
 - 状態変更前に認可と業務ルールを検証する。
 - 外部メール送信要求をOrchestrationし、必要なProvider Callbackを受け取る。
-- Scheduled Dispatcherから通知Recovery、Reminder、Cleanup、祝日Master更新、未来Slot Integrity Scanの論理Handlerを実行する。Backup関連処理の設計は #541 で定める。
+- Scheduled Dispatcherから通知Recovery、Reminder、Cleanup、祝日Master更新、未来Slot Integrity Scanの論理Handlerを実行する。Backup生成・Restoreはこの公開Request処理の責務に含めない。
 - D1上の正式な業務状態を読み書きする。
 
 **初期リリースでは独立Containerにしないもの:**
@@ -65,16 +65,28 @@ Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理�
 
 論理Data Modelは `02_DataModel.md`、Transaction / Concurrency境界は `05_BookingAndConcurrency.md` を正とし、物理Schemaは詳細設計で定める。
 
-### 3.3 Backup Storage
+### 3.3 Backup / Recovery運用Container
+
+**技術:** Backup専用Cloudflare Workflow / Scheduled operational component、D1 Time Travel / PITR相当機能
+
+**責務:**
+
+- 短期RecoveryはD1 Time Travel / PITR相当機能を主経路とし、`REQ-909` の7:00–24:00 JSTで3時間、それ以外で24時間のRPOを担う。日次R2 Backupだけを3時間RPOの根拠にしない。Production投入前に対象D1で要求以上の復旧可能性を実測し、仕様変更等で証明できなければ代替方式を用意するまでProduction要件を満たした扱いにしない。
+- Backup専用componentはscheduleからlogical runを開始し、D1のconsistent export、完了確認・安全なretry、R2への保存、manifest / integrity確定、Retention class更新、Monitoringへの結果記録を担う。公開Application Workerの通常Request pathにはBackup用R2権限やD1 export管理credentialを付与しない。
+- Restore / Cutoverは保守担当者の運用操作とし、公開業務APIから分離する。復旧Source選定とService再開Gateは §5.3 を正とする。
+
+### 3.4 Backup Storage
 
 **技術:** Cloudflare R2
 
 **責務:**
 
-- Backup / Retention要件で必要となる長期Backup Artifactを保持する。
+- `REQ-910` の長期Backup Artifact、manifest、Recovery metadataを保持する。Recovery Purge Registryの論理責務は `02_DataModel.md` §2.2を正とし、物理storeは詳細設計で確定する。
 - Production Transaction Storeとは論理的に分離する。
 
-具体的なBackup生成・Restore方式はBackup / Recovery設計で定義する。
+長期Artifactはschema + dataを含むfull logical D1 exportを原則とする。成功はexport・R2保存・非空と基本構造の確認・checksumまたは同等のintegrity情報生成・manifestとの対応確定後だけ記録する。manifestは少なくともbackup_id、source environment / D1 identity、captured_at、source capture point、application / schema revision、artifact size、checksum、retention class membership、generation / validation statusを記録する。
+
+成功ArtifactはDaily / Weekly / Monthlyの複数classに所属でき、物理コピーは必須としない。各classの最新15 / 4 / 3世代を保持し、必須classに属さなくなったArtifactだけをCleanup対象とする。Time Travelの保持期間を長期Retentionの根拠にしない。具体的な曜日・月境界、Object key、Lifecycleは詳細・運用設計で確定する。
 
 ## 4. 外部システム
 
@@ -99,7 +111,7 @@ Magic Link発行等の公開認証入口に対するBot Abuse Mitigationを提�
 3. 正常CommitされたD1上の業務状態を正とし、外部Providerの結果によって無言で取り消さない。
 4. Concurrency Ruleの対象となる操作ではCommit時に最新状態を再検証し、先にCommit済みの競合状態を無言で上書きしない。
 5. 外部連携は、Idempotencyと内部状態の正本性を維持できる形で、業務状態遷移の前後または周辺で呼び出す。
-6. Scheduled Processingは同一Application Worker内のHandlerで実行し、初期リリースでは独立したデプロイ単位にしない。
+6. 通常業務のScheduled Processingは同一Application Worker内のHandlerで実行する。Backup専用componentはこの境界から分離する。
 
 ### 5.1 Scheduled Dispatcherと論理Handler
 
@@ -109,7 +121,7 @@ Magic Link発行等の公開認証入口に対するBot Abuse Mitigationを提�
 |---|---|---|
 | Notification Delivery Recovery | Commit済みIntent / Attemptの未処理・安全にretry可能なdue workを回収する | 5分ごと |
 | Reminder Materializer | 対象Reservationの24時間前境界を通過したReminder義務を重複なくIntent化する | 15分ごと |
-| Privacy / Retention Cleanup | 確定済みの削除・匿名化義務と期限切れToken、Rate Limit一時データ、Log等を処理する。Backup artifactは #541 の対象 | 要求上の削除・Retention期限を確実に満たす周期。具体周期は詳細設計 |
+| Privacy / Retention Cleanup | 確定済みの削除・匿名化義務と期限切れToken、Rate Limit一時データ、Log等を処理する。Backup ArtifactのRetentionはBackup専用境界で管理する | 要求上の削除・Retention期限を確実に満たす周期。具体周期は詳細設計 |
 | Holiday Master Refresh | 内閣府公式情報を検証し、成功時のみD1を更新する | 1日1回 |
 | Future Slot Integrity Scan | Command Guardと独立に未来LessonSlotのInvariant違反を検知・集約する | 1時間ごと |
 
@@ -125,9 +137,21 @@ Reminder停止、広範な通知配送停止・backlog、Mail Platform障害、C
 
 Scheduled Handlerの正しさをProvider Quota pollingや変動するQuota値に依存させず、Quota確認だけの高頻度Jobは設けない。通常送信Responseから得られる情報をTelemetryに利用する余地は残す。Quota超過等を機械的にTransient Errorと扱わない。Quota / Billing等の未決は #34、Cron式と環境別bindingは #542 で扱う。
 
+### 5.3 Backup生成・復旧運用
+
+Backup runは安定したlogical identityで追跡し、retryを別Generationとして数えない。安全なstepだけbounded retryし、未完了runと次runが重なっても同じlogical generationを競合確定しない。失敗は `REQ-910 / REQ-942` に従って保守担当者が検知できるようにし、長期世代不足やRPO機構の健全性喪失が続く場合はRecovery readiness degradedとしてエスカレーションする。Backup失敗単独に `AC-908-004` の4時間RTOを機械適用しない。
+
+D1 exportはquery提供に影響し得るため、初期規模では低負荷時間帯を候補とする。Production前に実データ規模相当で所要時間とService影響を計測し、24時間Service方針またはRTOへ実質的に悪影響があれば方式・運用Windowを再評価する。具体時刻・retry・alert閾値・run stateの物理保存先は詳細設計で確定する。
+
+障害原因と必要復旧時点から、検証済みの最も新しい安全なRecovery pointを選ぶ。直近障害では安全なbookmark / timestampを特定できるD1 Time Travelを第一候補とし、Production restoreはMaintenance / write停止境界でrestore前のundo用情報を記録して実行する。R2の長期Artifactは原則として隔離したRecovery D1へintegrity・schema / application互換性を確認してimportし、必要なforward migration、`REQ-952` Purge再適用、Domain invariant検査、外部副作用reconciliation、smoke test後に #542 のDeploy / Binding / Cutover境界でProductionへ切り替える。古いArtifactを無検証でProduction D1へ直接上書きしない。
+
+通常Service再開前にsource / capture pointとArtifact / bookmark integrity、schema / application互換性、Migration、Purge / 匿名化、Session / 単回Token sanitation、Reservation / SlotOccupancy等の主要Invariant、Notificationのblind resend防止、Scheduled Handler再開可能性、Read / Login / Reservation smoke check、Recovery event・Actor・時刻・sourceの監査記録を確認する。安全に確認できなければMaintenanceを維持する。具体的な再開処理は `05_BookingAndConcurrency.md` §13.14を正とする。
+
+Periodic Restore Testは月1回、Productionから分離した環境でR2 ArtifactをRecovery D1へimportし、checksum・schema、主要Invariantとsmoke query、削除済み生徒fixtureのPurge / 匿名化、Session / 単回Token sanitation、復旧所要時間を検証して証跡を残す。Time TravelもTest用D1で既知時刻の更新からpoint-in-time restoreを定期検証する。Production開始前には想定データ量で重大停止時の `REQ-908` 4時間目標内に収まる根拠を確認する。具体的なtest日・自動化・証跡保持は詳細・運用設計で確定する。
+
 ## 6. デプロイ境界・障害境界
 
-Application Workerは1つのデプロイ・Rollback単位である。このため、1回のWorkerデプロイがWeb Request、API Request、Scheduled Handlerへ同時に影響する可能性がある。
+Application Workerは公開業務処理の1つのデプロイ・Rollback単位である。このため、1回のWorkerデプロイがWeb Request、API Request、通常業務Scheduled Handlerへ同時に影響する可能性がある。Backup専用componentの具体的なデプロイ・障害境界は #542 で定める。
 
 D1、R2、Google認証、Resend、Turnstileはそれぞれ別のPlatform / Service境界であり、独立して障害が発生し得る。障害時の扱いは、内部業務状態の正本性、外部Retry、通知失敗、可用性／Recoveryに関する要求に従う。
 
@@ -140,14 +164,18 @@ D1、R2、Google認証、Resend、Turnstileはそれぞれ別のPlatform / Servi
 - POL-006 ロール分離と最小権限
 - POL-007 外部Provider依存の局所化
 - POL-008 競合時の確定状態優先
+- POL-012 サービス提供時間と有人保守時間の分離
+- BR-128 Backup内個人情報
 - REQ-102 24時間Reminder
 - REQ-105 通知失敗管理
 - REQ-202 / REQ-203 / REQ-207 / REQ-209 / REQ-210 認証・Session
 - REQ-211 / REQ-320 / REQ-934 停止・管理者認証・個人情報削除
 - REQ-321 祝日マスタ更新
 - REQ-912 外部API Retry
+- REQ-908 / REQ-909 / REQ-910 RTO・RPO・長期Backup
 - REQ-913 無料枠運用
 - REQ-942 監視・重大Incident
+- REQ-952 Backup Privacy
 - REQ-951 Provider分離
 - CON-001 Cloudflare Platform
 - CON-002 Email Provider

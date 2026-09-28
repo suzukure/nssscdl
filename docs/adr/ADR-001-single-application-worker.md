@@ -13,6 +13,8 @@
 
 初期リリースでは、アプリケーションの単一デプロイ単位として **1つのApplication Worker** を使用する。
 
+この決定は公開業務アプリケーションと通常業務Scheduled Handlerの境界である。`OI-BD-012` / #541で確定したD1 export・R2長期Backup生成は、最小権限のためBackup専用Cloudflare Workflow / Scheduled operational componentへ分離する。具体的なデプロイ単位は #542 で定める。
+
 Application Workerには次の入口と処理を含める。
 
 - Web UI / Static Asset配信
@@ -21,7 +23,7 @@ Application Workerには次の入口と処理を含める。
 - 予約・キャンセルUse Case
 - Schedule・スクール管理処理
 - 通知Orchestration
-- Scheduled Job Handler
+- 通常業務のScheduled Job Handler
 
 D1は主要なTransactionデータストアとして維持し、R2は長期Backup Storageとして使用する。Google認証、Resend、Turnstileは外部サービスとして扱う。
 
