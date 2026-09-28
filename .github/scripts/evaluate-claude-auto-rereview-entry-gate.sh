@@ -90,6 +90,9 @@ fi
 current_head="$(jq -r '.head' <<< "$pr_facts")"
 [ "$current_head" = "$validated_sha" ] \
   || ignore stale_head 'Dispatch validation belongs to an older HEAD.'
+if [ "$(jq -r '.machine_state' <<< "$pr_facts")" != true ]; then
+  ignore duplicate_dispatch 'Current PR no longer has the follow-up in-progress label.'
+fi
 
 base_ref="$(jq -r '.base_ref' <<< "$pr_facts")"
 [[ "$base_ref" =~ ^[A-Za-z0-9_./-]+$ && "$base_ref" != *..* ]] \
@@ -194,10 +197,6 @@ actual_round="$(jq -r '.round' <<< "$review_facts")"
 if [ "$(jq -r '.approved_head' <<< "$review_facts")" = true ]; then
   ignore duplicate_review 'Current HEAD already has the latest approving reviewer verdict.'
 fi
-if [ "$(jq -r '.machine_state' <<< "$pr_facts")" != true ]; then
-  human missing_machine_state 'Current PR lacks the follow-up in-progress label.'
-fi
-
 accepted_identity="$pause_identity"
 unset pause_identity
 final_pr="$(gh api "repos/${repo}/pulls/${pr_number}")" \

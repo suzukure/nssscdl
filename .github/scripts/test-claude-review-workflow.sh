@@ -212,12 +212,13 @@ MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
 export MOCK_SOURCE_PR_JSON
 assert_source ready_for_review false
 grep -Fq 'normal Claude review suppressed' "$test_dir/source-ready_for_review.summary"
-assert_source opened true
+assert_source opened false
+assert_source unlabeled false
 MOCK_SOURCE_PR_JSON="$(jq -c '.labels=[{name:"unrelated"}]' <<< "$MOCK_SOURCE_PR_JSON")"
 assert_source ready_for_review true
 assert_source ready_for_review false true
 grep -Fq 'normal Claude review suppressed' "$test_dir/source-ready_for_review.summary"
-assert_source opened true true
+assert_source opened false true
 for edit in '.draft=true' '.state="closed"' '.head.repo.full_name="other/repo"' '.labels=[{name:"human-review-required"}]'; do
   original_source="$MOCK_SOURCE_PR_JSON"
   MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$original_source")"
@@ -298,7 +299,9 @@ MOCK_CASE=machine-state
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review)"
 jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" opened)"
-jq -e '.continue == true' <<< "$review_entry" > /dev/null
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" unlabeled)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
 MOCK_CASE=valid
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review true)"
 jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
@@ -381,7 +384,7 @@ MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
   GITHUB_STEP_SUMMARY="$test_dir/gate-ready-race.summary" \
   bash "$test_dir/gate-entry-step.sh" > /dev/null
 grep -Fqx 'continue=false' "$test_dir/gate-ready-race.outputs"
-grep -Fq 'machine-state Ready event' "$test_dir/gate-ready-race.summary"
+grep -Fq 'machine-state PR' "$test_dir/gate-ready-race.summary"
 # Model a HEAD update after the event gate has accepted the paid attempt.
 MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
   PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \

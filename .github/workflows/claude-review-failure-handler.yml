@@ -2,7 +2,7 @@ name: Claude Review Failure Handler
 
 on:
   workflow_run:
-    workflows: [Claude Review]
+    workflows: [Claude Review, Claude Auto Rereview]
     types: [completed]
 
 permissions:
@@ -41,8 +41,14 @@ jobs:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
         shell: bash
         run: |
           set -euo pipefail
-          bash .github/scripts/handle-claude-review-failure.sh \
+          case "$SOURCE_WORKFLOW_NAME" in
+            'Claude Review') handler=handle-claude-review-failure.sh ;;
+            'Claude Auto Rereview') handler=handle-claude-auto-rereview-failure.sh ;;
+            *) echo 'Unknown source workflow' >&2; exit 1 ;;
+          esac
+          bash ".github/scripts/$handler" \
             "$GITHUB_REPOSITORY" "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" "$REVIEW_APP_SLUG"

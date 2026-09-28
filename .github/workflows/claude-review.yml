@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     outputs:
       verdict: ${{ steps.review-result.outputs.verdict }}
       developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}
@@ -81,14 +81,13 @@ jobs:
           proceed="$(jq -r --arg event_head "$EVENT_HEAD_SHA" --arg action "$EVENT_ACTION" '
             .same_repository and .open and .non_draft and (.human_paused | not)
             and .reviewed_head_sha == $event_head
-            and ($action != "ready_for_review" or ((.machine_state or .event_machine_state) | not))
+            and ((.machine_state or .event_machine_state) | not)
           ' <<< "$facts")"
           if [ "$proceed" = false ]; then
             jq -r '. + {source_kind:"pull_request",base_sha:"",continue:false}
               | to_entries[] | "\(.key)=\(.value)"' <<< "$facts" >> "$GITHUB_OUTPUT"
-            if [ "$EVENT_ACTION" = ready_for_review ] &&
-              [ "$(jq -r '.machine_state or .event_machine_state' <<< "$facts")" = true ]; then
-              echo 'Ready event has ai-followup-in-progress; normal Claude review suppressed.' >> "$GITHUB_STEP_SUMMARY"
+            if [ "$(jq -r '.machine_state or .event_machine_state' <<< "$facts")" = true ]; then
+              echo 'Machine-state PR has ai-followup-in-progress; normal Claude review suppressed.' >> "$GITHUB_STEP_SUMMARY"
             fi
             exit 0
           fi
@@ -356,10 +355,9 @@ jobs:
             emit_result false 'Claude review is paused by the human-review-required label on the PR.'
             exit 0
           fi
-          if [ "$event_action" = ready_for_review ] &&
-            { [ "$event_machine_state" = true ] ||
-              [ "$(jq -r '.labels | any(.name == "ai-followup-in-progress")' <<< "$metadata")" = true ]; }; then
-            emit_result false 'Normal Claude review is suppressed for a machine-state Ready event.'
+          if [ "$event_machine_state" = true ] ||
+            [ "$(jq -r '.labels | any(.name == "ai-followup-in-progress")' <<< "$metadata")" = true ]; then
+            emit_result false 'Normal Claude review is suppressed for a machine-state PR.'
             exit 0
           fi
 
