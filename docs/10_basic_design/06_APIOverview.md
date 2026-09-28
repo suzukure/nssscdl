@@ -18,7 +18,7 @@ API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008`、管�
 
 初期リリースでは共通名前空間を `/api/...` とし、`/api/v1/...` のようなVersion Namespaceは設けない。将来、独立Frontend、外部Client、第三者連携等によりAPI互換性維持が正式要件となった時点でVersioning導入を再検討する。
 
-Backup生成、D1 Time Travel / Restore、Recovery D1 import、Production Cutoverは保守担当者の運用操作とし、公開業務APIに追加しない。Backup用R2権限とD1 export管理credentialを公開Application Workerの通常Request pathへ持たせない。境界は `01_SystemArchitecture.md` §3.3 / §5.3を正とする。
+Backup生成、D1 Time Travel / Restore、Recovery D1 import、Production deploy / rollback、D1 migration、Infrastructure / Secret変更、Recovery cutoverは保守担当者のInfrastructure操作とし、通常のStudent / Admin Application Roleから実行できる公開業務APIに追加しない。Backup用R2権限とD1 export管理credentialを公開Application Workerの通常Request pathへ持たせない。境界は `01_SystemArchitecture.md` §3.3 / §5.3 / §6を正とする。
 
 この方針は、初期規模と必要機能に対して過剰な複雑化を避ける `POL-001` に従う。
 
@@ -357,7 +357,9 @@ Application Error Code: INTEGRITY_STATE_UNAVAILABLE
 
 具体Response Schemaは詳細設計で確定する。
 
-Maintenance / Recovery中は、検証未完了の復元状態に対する通常業務のQuery / Command、Login、通知Delivery、Scheduled Handlerを再開しない。公開APIは安全なMaintenance表示・安定した利用不可Responseへfail-closedし、内部Recovery状態やcredentialを露出しない。再開Gateは `01_SystemArchitecture.md` §5.3を正とし、Maintenance modeの具体wireは #542 と詳細設計で確定する。
+Maintenance / Recovery中は、検証未完了の復元状態に対する通常業務のQuery / Command、Login、通知Delivery、Scheduled Handlerを再開しない。公開APIは安全なMaintenance表示・安定した利用不可Responseへfail-closedし、内部Recovery状態やcredentialを露出しない。再開Gateとcutover境界は `01_SystemArchitecture.md` §5.3 / §6.5を正とし、Maintenance modeの具体wireは #537 / 詳細設計で確定する。
+
+環境identityとbindingの整合が確認できない場合、または未完成機能が当該環境で有効と確認できない場合も、該当Query / Commandと外部副作用をserver-sideでfail-closedする。UI非表示やhostname推測を安全境界とせず、API直接アクセス、Scheduled Handler、Provider Callbackにも `01_SystemArchitecture.md` §6.1 / §6.4の隔離・露出条件を適用する。利用者向けResponseは安全な利用不可表現とし、具体Status / Application Error Codeは詳細設計で定める。
 
 ## 9. 保存モデルとAPI Modelの分離
 
@@ -400,7 +402,7 @@ Open Registrationはverified Google emailまたはMagic Linkで所有確認し�
 
 Cookie Sessionによる認証済みunsafe methodのCommandではSession-bound CSRF tokenを検証し、Origin / same-origin確認も行う。CSRF tokenはIdentityや認可の代替にしない。Google callbackはOAuth state / nonce / PKCE等でrequest origin / replayを防ぎ、Magic Link / Invitation / 所有確認Tokenは通常Session CSRF tokenと分離したpurpose-bound・single-useのbearer challengeとする。
 
-Public Admin Registrationは設けない。System Setupで1つのAdmin Accountと少なくとも1つの事前binding済みAuth Methodを生成する。初期候補はSetup指定Admin emailのAdmin用Magic Linkとする。Login済みAdminは `REQ-320` に従い新方式を検証後に有効化し、最後の方式を削除できない。全方式喪失時は公開ResetではなくInfrastructure / 保守権限による既存Admin Accountへの明示的な再bindingで回復し、公開EndpointやStudent登録からAdmin Roleを生成しない。具体運用権限と手順は #542 で定める。
+Public Admin Registrationは設けない。System Setupで1つのAdmin Accountと少なくとも1つの事前binding済みAuth Methodを生成する。初期候補はSetup指定Admin emailのAdmin用Magic Linkとする。Login済みAdminは `REQ-320` に従い新方式を検証後に有効化し、最後の方式を削除できない。全方式喪失時は公開ResetではなくInfrastructure / 保守権限による既存Admin Accountへの明示的な再bindingで回復し、公開EndpointやStudent登録からAdmin Roleを生成しない。運用権限は `01_SystemArchitecture.md` §6.6を正とし、具体手順は #537 / 詳細運用設計で定める。
 
 ## 11. 生徒向けAPI基本形
 
@@ -1435,6 +1437,8 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 
 Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal callback入口とし、Providerの真正性を確認してから既知Delivery Attemptの配送状態へ反映する。Callbackの重複・順序逆転・矛盾、および失効・管理者対応終了後の扱いは `05_BookingAndConcurrency.md` §13.13を正とする。Provider Message IDを管理者APIのtargetにせず、Callbackだけで管理者対応を自動再開しない。具体Path、認証方式、event mapping、Response wireは詳細設計で定める。
 
+Callbackは受信環境のProvider credential / callback設定と既知Attemptに対応する場合だけ処理し、ProductionとNon-Productionを跨いで受け渡し・処理しない。環境境界は `01_SystemArchitecture.md` §6.1 / §6.2を正とする。
+
 ## 20. 詳細設計へ送る事項
 
 以下は基本原則ではなく詳細設計で確定する。
@@ -1454,8 +1458,9 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - Google state / nonce / PKCE wire・SDK、Magic Link / Invitation / 所有確認Token生成・hash・URL・consume transaction
 - Account / AuthMethod / Session / ChallengeのDDL・index・unique constraint
 - Login / Logout / callback / method-management endpoint path・Request / Response、Registration / Invitation UI順序、Provider API呼出し詳細
-- Admin bootstrap / recovery command・runbook（#542の運用権限・Deploy境界に従う）
-- Backup / Restoreを公開APIから分離するoperator runbook、Maintenance / write freeze / Recovery D1 cutover / rollbackのwire境界（#542のDeploy・Binding境界に従う）
+- Admin bootstrap / recovery command・runbook（`01_SystemArchitecture.md` §6.6の運用権限に従う）
+- Backup / Restoreを公開APIから分離するoperator runbook、Maintenance / write freeze / Recovery D1 cutover / rollbackのwire境界（`01_SystemArchitecture.md` §5.3 / §6.5に従う）
+- #537で定める環境identity / bindingの検証方式、未完成機能のserver-side gate、disabled endpoint / Callbackの具体Status・Error表現
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format

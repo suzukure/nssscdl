@@ -11,14 +11,12 @@
 - `05_BookingAndConcurrency.md` — 予約・キャンセル・再分類のTransaction境界と競合設計。`OI-BD-006` で確定済み
 - `06_APIOverview.md` — Application APIの基本原則、Command / Query境界、Identity / Role境界、認証・Session、Preview / Confirm、Conflict・Error方針、生徒・管理者向け主要API Flow。一括予約の専用Preview / Confirm API契約（Issue #66）を含む。API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008`、管理者向けAPI基本形は `OI-BD-009`、認証・Sessionは `OI-BD-010` で確定済み
 
-## 今後の検討項目
+## 基本設計の残件と引継ぎ
 
-基本設計全体は以下の残件が完了するまで完了扱いにしない。
+`OI-BD-013` / #542でDeployment / Environmentの基本境界を `01_SystemArchitecture.md` §6へ反映した。OI-BDの主要残件はない。基本設計フェーズ全体は文書整合follow-up #564 / #561を解消するまで完了扱いにしない。
 
-- #542 `OI-BD-013` — Deployment / Environment
+通知・Scheduled Processingの基本形は #540、認証・Sessionの基本形は #539、Backup / Recoveryの基本形は #541 で確定済み。Preview / Test、Deploy / migration / recovery runbookとfeature exposureの具体方式は #537へ引き継ぐ。D1の最終カラム型、補助Index、DDL、具体的Guard SQL等は `02_DataModel.md` および `05_BookingAndConcurrency.md` に従い後続の物理データ設計・詳細設計で確定する。Schedule生成・変更の基本形は `06_APIOverview.md` §12で確定済みであり、`disabled` 理由の保持・表示粒度等の具体表現は詳細設計で確定する。
 
-通知・Scheduled Processingの基本形は #540、認証・Sessionの基本形は #539、Backup / Recoveryの基本形は #541 で確定済み。残りのDeployment / Environment境界は #542 で既存の基本設計文書へ反映する。D1の最終カラム型、補助Index、DDL、具体的Guard SQL等は `02_DataModel.md` および `05_BookingAndConcurrency.md` に従い後続の物理データ設計・詳細設計で確定する。Schedule生成・変更の基本形は `06_APIOverview.md` §12で確定済みであり、`disabled` 理由の保持・表示粒度等の具体表現は詳細設計で確定する。
-
-外部Provider運用の関連未決 #34 は、#540 で固定したScheduled Handlerとの境界を維持し、#542 / #537 で必要な範囲を参照する。
+外部Provider運用の関連未決 #34 は、#540 で固定したScheduled Handlerと #542 の環境隔離境界を維持し、#537で必要な範囲を参照する。
 
 このフェーズで未決の設計事項は上記のGitHub Issueで管理し、基本設計の論点には `OI-BD-xxx` 形式の識別子を用いる。最終決定はIssueをCloseする前に、本ディレクトリの設計文書またはADRへ反映する。

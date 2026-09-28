@@ -21,6 +21,14 @@ System_Ext(google, "Google Authentication", "External authentication provider fo
 System_Ext(resend, "Resend", "Outbound email delivery and delivery/failure callbacks.")
 System_Ext(turnstile, "Cloudflare Turnstile", "Bot-abuse mitigation for public authentication entry points.")
 
+note right of app
+  Logical container topology per environment.
+  Production and Persistent Test use separate instances of
+  Worker, D1, R2, Backup Operations, credentials, and routes
+  wherever those resources are present.
+  Preview is isolated; Recovery is a separate temporary boundary.
+end note
+
 Rel(student, app, "Uses", "HTTPS")
 Rel(admin, app, "Uses", "HTTPS")
 Rel(operator, db, "Uses Time Travel for short-term recovery", "Operational access")
