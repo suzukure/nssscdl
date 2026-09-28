@@ -115,15 +115,15 @@ assert dispatch-unknown dispatch_result '{"dispatch_succeeded":null,"machine_lab
 assert pause-first pause_recorded '{"active_pause_id":41,"recorded_pause_id":42}' '{"action":"stop","code":"pause_not_active"}'
 assert cleanup pause_recorded '{"active_pause_id":41,"recorded_pause_id":41}' '{"action":"remove_machine_label","label":"ai-followup-in-progress"}'
 
-# Consumer #499 is absent: neither the old follow-up job nor the normal
-# Claude Ready event may reach the prepared producer or dedicated dispatch.
+# Consumer activation is absent: neither production workflow may reach the
+# prepared producer or dedicated dispatch. Ready suppression may read its label.
 for production_workflow in "$workflow" "$claude_workflow"; do
   if [ ! -f "$production_workflow" ] || [ ! -r "$production_workflow" ]; then
     echo "Production workflow is missing or unreadable: $production_workflow" >&2
     exit 1
   fi
 done
-if grep -Eq 'prepare-claude-followup-producer|claude-auto-rereview|ai-followup-in-progress' \
+if grep -Eq 'prepare-claude-followup-producer|claude-auto-rereview' \
   "$workflow" "$claude_workflow"; then
   search_rc=0
 else
