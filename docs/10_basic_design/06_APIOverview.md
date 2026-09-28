@@ -8,7 +8,7 @@
 
 本段階は基本設計であり、個別Request / Response Schema、全Endpoint一覧、Correlation ID、Idempotency Key、Cookie属性、CSRF対策の具体方式等は詳細設計で確定する。
 
-API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定した。管理者向けAPI基本形は `OI-BD-009` で段階的に確定する。
+API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008`、管理者向けAPI基本形は `OI-BD-009` で確定した。
 
 ## 2. APIの位置づけ
 
@@ -649,7 +649,7 @@ Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生�
 
 本節は `OI-BD-009` で確定した、管理者向けAPIのうち月間Scheduleに関する基本設計を示す。
 
-管理者向け分類管理、生徒管理等の残りのAPIは `OI-BD-009` で継続検討する。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
+管理者向け分類管理、生徒管理等のAPI基本形は§13〜19で確定済みとする。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
 
 ### 12.1 主要Endpoint
 
@@ -1433,6 +1433,7 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format
+- `disabled` 理由の保持・表示粒度と具体表現
 - 一括予約Preview / Confirmの具体的なRequest / Response Wire Format
 - 一括予約の選択Slot集合、同一暦月、操作上限N、classification影響を確認するExpected State / Guardの具体形
 - 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送・Reject Responseの具体形
