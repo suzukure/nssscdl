@@ -4,7 +4,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflow="$root/.github/workflows/ai-resume-review-consumer.yml"
 recovery="$root/.github/workflows/ai-resume-review-recovery.yml"
-[ -f "$workflow" ] && [ -f "$recovery" ]
+developer="$root/.github/workflows/ai-developer.yml"
+[ -f "$workflow" ] && [ -f "$recovery" ] && [ -f "$developer" ]
 
 for expected in \
   'name: AI Resume Review Consumer' \
@@ -130,15 +131,32 @@ fi
 operations="$root/docs/30_operations/ai-development-workflow.md"
 for expected in \
   'consumerのfailure / cancelled / timed_outをsource' \
-  'Recoveryは既存pause invariantの修復write' \
+  'Recoveryは既存のIssue/PR pause invariantを修復するwrite' \
+  'closing Issue / PR双方で欠けた `human-review-required` labelを再同期' \
   '新しいpendingが古いpendingをcancelし得る' \
   'run ID、run attempt、display title、conclusion' \
+  'developer runではeventとsource identity' \
   'consumer `inspect`' \
   'Recovery `recover`' \
+  '`pre_acceptance` の欠落Issue/PR label' \
   'AI Developer `develop-from-issue`' \
+  '`issue_comment` の通常 `/codex develop`' \
+  '`repository_dispatch: ai-resume-develop`' \
+  'resume-gate前にpending cancelされ、source pauseが未consumed' \
+  'PR側 `/ai resume develop` の再発行' \
+  '通常 `/codex develop` へ切り替えない' \
+  'resume acceptanceまたはrepository writeが始まった証拠があればgeneric retryせず' \
   'partial writeや所有者不明なら停止' \
   'current factsを再取得する'; do
   grep -Fq "$expected" "$operations"
+done
+for expected in \
+  'types: [ai-resume-develop]' \
+  "(github.event_name == 'issue_comment' && needs.gate-issue-entry.outputs.continue == 'true')" \
+  "(github.event_name == 'repository_dispatch' && github.event.action == 'ai-resume-develop')" \
+  'if: github.event_name == '\''repository_dispatch'\''' \
+  'bash .github/scripts/consume-ai-resume-develop.sh'; do
+  grep -Fq "$expected" "$developer"
 done
 
 filter="$(sed -n "/          jq -ce '/,/          ' \"\$GITHUB_EVENT_PATH\" >\/dev\/null/p" "$workflow" |
