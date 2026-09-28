@@ -4,7 +4,10 @@ set -euo pipefail
 repo="${1:?repository is required}"
 pr_number="${2:?pull request number is required}"
 reviewed_head="${3:?reviewed head SHA is required}"
+event_action="${4:-}"
+event_machine_state="${5:-false}"
 [[ "$reviewed_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid reviewed head SHA; refusing Claude review.' >&2; exit 1; }
+[[ "$event_machine_state" = true || "$event_machine_state" = false ]] || { echo 'Invalid event machine-state fact; refusing Claude review.' >&2; exit 1; }
 
 if ! metadata="$(gh pr view "$pr_number" --repo "$repo" --json number,state,isDraft,headRefOid,labels,closingIssuesReferences)"; then
   echo 'Could not fetch current pull request metadata; refusing Claude review.' >&2
@@ -62,6 +65,12 @@ fi
 pr_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$metadata")"
 if [ "$pr_paused" = true ]; then
   emit_result false 'Claude review is paused by the human-review-required label on the PR.'
+  exit 0
+fi
+if [ "$event_action" = ready_for_review ] &&
+  { [ "$event_machine_state" = true ] ||
+    [ "$(jq -r '.labels | any(.name == "ai-followup-in-progress")' <<< "$metadata")" = true ]; }; then
+  emit_result false 'Normal Claude review is suppressed for a machine-state Ready event.'
   exit 0
 fi
 

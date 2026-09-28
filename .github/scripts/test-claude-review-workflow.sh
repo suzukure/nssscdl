@@ -90,6 +90,9 @@ gh() {
       pr-paused)
         printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
         ;;
+      machine-state)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"ai-followup-in-progress"}],"closingIssuesReferences":[]}'
+        ;;
       draft)
         printf '%s\n' '{"number":37,"state":"OPEN","isDraft":true,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[]}'
         ;;
@@ -118,6 +121,17 @@ gh() {
   elif [ "$1" = api ]; then
     if [ "${MOCK_API_FAIL:-false}" = true ]; then
       return 1
+    fi
+    if [ "$2" = 'repos/owner/repo/pulls/37' ]; then
+      if [ -n "${MOCK_SOURCE_PR_JSON:-}" ]; then
+        printf '%s\n' "$MOCK_SOURCE_PR_JSON"
+      else
+        jq -cn --arg head "$expected_head" '
+          {number:37,state:"open",draft:false,
+           head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
+           base:{ref:"main",repo:{full_name:"owner/repo"}},labels:[]}'
+      fi
+      return
     fi
     if [[ "$2" =~ ^repos/owner/repo/git/ref/heads/ ]]; then
       base_ref="${2#repos/owner/repo/git/ref/heads/}"
@@ -162,6 +176,90 @@ gh() {
 export -f gh
 
 expected_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export expected_head
+extract_step_run 'Normalize trusted review source' "$test_dir/normalize-review-source.sh"
+assert_source() {
+  local action="$1" expected="$2" event_machine_state="${3:-false}" output="$test_dir/source-$1.outputs"
+  : > "$output"
+  : > "$test_dir/source-$1.summary"
+  GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$output" \
+    GITHUB_STEP_SUMMARY="$test_dir/source-$1.summary" \
+    EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION="$action" \
+    EVENT_MACHINE_STATE="$event_machine_state" \
+    bash "$test_dir/normalize-review-source.sh"
+  grep -Fqx "continue=$expected" "$output"
+  grep -Fqx 'source_kind=pull_request' "$output"
+  grep -Fqx 'pr_number=37' "$output"
+  grep -Fqx "reviewed_head_sha=$expected_head" "$output"
+  grep -Fqx "event_machine_state=$event_machine_state" "$output"
+  grep -Fqx 'head_ref=ai/issue-36' "$output"
+  grep -Fqx 'base_ref=main' "$output"
+  if [ "$expected" = true ]; then
+    grep -Fqx "base_sha=$expected_head" "$output"
+  else
+    grep -Fqx 'base_sha=' "$output"
+  fi
+}
+for action in opened ready_for_review reopened; do
+  assert_source "$action" true
+done
+MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
+  {number:37,state:"open",draft:false,
+   head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
+   base:{ref:"main",repo:{full_name:"owner/repo"}},
+   labels:[{name:"ai-followup-in-progress"}]}'
+)"
+export MOCK_SOURCE_PR_JSON
+assert_source ready_for_review false
+grep -Fq 'normal Claude review suppressed' "$test_dir/source-ready_for_review.summary"
+assert_source opened true
+MOCK_SOURCE_PR_JSON="$(jq -c '.labels=[{name:"unrelated"}]' <<< "$MOCK_SOURCE_PR_JSON")"
+assert_source ready_for_review true
+assert_source ready_for_review false true
+grep -Fq 'normal Claude review suppressed' "$test_dir/source-ready_for_review.summary"
+assert_source opened true true
+for edit in '.draft=true' '.state="closed"' '.head.repo.full_name="other/repo"' '.labels=[{name:"human-review-required"}]'; do
+  original_source="$MOCK_SOURCE_PR_JSON"
+  MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$original_source")"
+  assert_source ready_for_review false
+  MOCK_SOURCE_PR_JSON="$original_source"
+done
+MOCK_SOURCE_PR_JSON="$(jq -c '.head.sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$MOCK_SOURCE_PR_JSON")"
+GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/source-stale.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/source-stale.summary" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh"
+grep -Fqx 'continue=false' "$test_dir/source-stale.outputs"
+MOCK_SOURCE_PR_JSON='{"number":37,"state":"open","draft":false}'
+if GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/source-malformed.outputs" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=opened \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh" > /dev/null 2> "$test_dir/source-malformed.err"; then
+  echo 'Malformed fresh PR facts passed review source normalization.' >&2
+  exit 1
+fi
+MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
+  {number:37,state:"open",draft:false,
+   head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
+   base:{ref:"main",repo:{full_name:"owner/repo"}},labels:[{}]}'
+)"
+if GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/source-bad-label.outputs" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh" > /dev/null 2> "$test_dir/source-bad-label.err"; then
+  echo 'Malformed fresh PR labels passed review source normalization.' >&2
+  exit 1
+fi
+unset MOCK_SOURCE_PR_JSON
+if MOCK_BASE_TIP_SHA=invalid GITHUB_REPOSITORY=owner/repo \
+  GITHUB_OUTPUT="$test_dir/source-invalid-base.outputs" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=opened \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh" > /dev/null 2> "$test_dir/source-invalid-base.err"; then
+  echo 'Malformed fresh base facts passed review source normalization.' >&2
+  exit 1
+fi
 MOCK_CASE=valid
 export MOCK_CASE
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
@@ -196,6 +294,16 @@ grep -Fq 'Unsupported pull request state DRAFT; refusing Claude review.' "$test_
 MOCK_CASE=pr-paused
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
+MOCK_CASE=machine-state
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" opened)"
+jq -e '.continue == true' <<< "$review_entry" > /dev/null
+MOCK_CASE=valid
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review true)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review false)"
+jq -e '.continue == true' <<< "$review_entry" > /dev/null
 
 for blocked_case in draft stale; do
   MOCK_CASE="$blocked_case"
@@ -246,7 +354,7 @@ for gate_phase in entry verdict; do
   gate_step="$test_dir/gate-$gate_phase-step.sh"
   for gate_case in valid stale closed draft pr-paused; do
     MOCK_CASE="$gate_case" RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
-      PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+      PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
       GITHUB_OUTPUT="$test_dir/gate-$gate_phase-$gate_case.outputs" \
       GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-$gate_case.summary" \
       bash "$gate_step" > /dev/null
@@ -258,7 +366,7 @@ for gate_phase in entry verdict; do
     fi
   done
   if MOCK_CASE=valid MOCK_PR_FAIL=true RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
-    PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+    PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
     GITHUB_OUTPUT="$test_dir/gate-$gate_phase-failed.outputs" \
     GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-failed.summary" \
     bash "$gate_step" > /dev/null 2> "$test_dir/gate-$gate_phase-failed.err"; then
@@ -267,9 +375,16 @@ for gate_phase in entry verdict; do
   fi
   [ ! -s "$test_dir/gate-$gate_phase-failed.outputs" ]
 done
+MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=true \
+  GITHUB_OUTPUT="$test_dir/gate-ready-race.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/gate-ready-race.summary" \
+  bash "$test_dir/gate-entry-step.sh" > /dev/null
+grep -Fqx 'continue=false' "$test_dir/gate-ready-race.outputs"
+grep -Fq 'machine-state Ready event' "$test_dir/gate-ready-race.summary"
 # Model a HEAD update after the event gate has accepted the paid attempt.
 MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
-  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
   GITHUB_OUTPUT="$test_dir/gate-during-entry.outputs" \
   GITHUB_STEP_SUMMARY="$test_dir/gate-during-entry.summary" \
   bash "$test_dir/gate-entry-step.sh" > /dev/null
@@ -392,7 +507,7 @@ legacy_pause_step="$test_dir/mark-human-escalation.sh"
 legacy_notify_step="$test_dir/notify-human-escalation.sh"
 extract_step_run 'Mark human escalation' "$legacy_pause_step"
 extract_step_run 'Notify human of escalation' "$legacy_notify_step"
-sed -i 's/${{ github.event.pull_request.number }}/37/' "$legacy_notify_step"
+sed -i 's/${{ steps.review-source.outputs.pr_number }}/37/' "$legacy_notify_step"
 git() {
   if [ "$1" = show ]; then
     printf '%s\n' "$2" >> "$MOCK_PAUSE_BOOTSTRAP_LOG"
@@ -485,6 +600,7 @@ export repo_root
   GITHUB_REPOSITORY=owner/repo \
   RUNNER_TEMP="$workflow_bootstrap_dir" \
   BASE_REF=main \
+  SOURCE_BASE_SHA="$current_base_tip_sha" \
   EVENT_BASE_SHA="$stale_event_base_sha" \
   PR_NUMBER=37 \
   TRUSTED_LOGINS=dev \
@@ -509,6 +625,7 @@ if (
     GITHUB_REPOSITORY=owner/repo \
     RUNNER_TEMP="$workflow_bootstrap_dir" \
     BASE_REF=main \
+    SOURCE_BASE_SHA="$current_base_tip_sha" \
     PR_NUMBER=37 \
     TRUSTED_LOGINS=dev \
     bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"
@@ -1393,14 +1510,20 @@ grep -Fqx '      needs.review.result == '\''success'\'' &&' "$merge_job"
 grep -Fqx '      needs.review.outputs.verdict == '\''approve'\'' &&' "$merge_job"
 review_job_if="$test_dir/review-job-if.txt"
 extract_job_if review "$review_job_if"
+grep -Fq "github.event.action != 'unlabeled'" "$review_job_if"
+grep -Fq "github.event.pull_request.head.repo.full_name == github.repository" "$review_job_if"
 grep -Fq "github.event.pull_request.state == 'open'" "$review_job_if"
+grep -Fq '!github.event.pull_request.draft' "$review_job_if"
 grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$review_job_if"
+grep -Fq "EVENT_MACHINE_STATE: \${{ contains(github.event.pull_request.labels.*.name, 'ai-followup-in-progress') }}" "$review_job"
+grep -Fq 'EVENT_MACHINE_STATE: ${{ steps.review-source.outputs.event_machine_state }}' "$review_job"
 if grep -Fq 'synchronize' "$workflow"; then
   echo 'Claude Review must not start a paid review from a head synchronization.' >&2
   exit 1
 fi
 grep -Fq "github.event.label.name == 'human-review-required'" "$workflow"
-grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$workflow"
+grep -Fq 'human_paused:([.labels[].name] | index("human-review-required") != null)' "$workflow"
+grep -Fq 'if: steps.review-source.outputs.continue == '\''true'\''' "$workflow"
 if grep -Fq "contains(fromJSON(steps.structured-review.outputs.json).summary" "$workflow"; then
   echo 'Claude human escalation must not use substring matching on the review summary.' >&2
   exit 1
