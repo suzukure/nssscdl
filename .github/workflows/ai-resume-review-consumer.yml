@@ -1,0 +1,44 @@
+name: AI Resume Review Consumer
+run-name: AI Resume Review Consumer pr:${{ github.event.client_payload.dispatch.pr_number }} pause:${{ github.event.client_payload.dispatch.source_pause_id }}
+
+on:
+  repository_dispatch:
+    types: [ai-resume-review]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  consume:
+    name: Consume review resume
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: codex-writer-ai/issue-${{ github.event.client_payload.dispatch.closing_issue_number }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Create developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Consume trusted current HEAD resume
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          READ_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          RESUME_ENVELOPE: ${{ toJSON(github.event.client_payload) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$RESUME_ENVELOPE" |
+            bash .github/scripts/consume-ai-resume-review.sh "$GITHUB_REPOSITORY" "$APP_SLUG"

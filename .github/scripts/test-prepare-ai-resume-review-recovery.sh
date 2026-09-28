@@ -108,11 +108,18 @@ MODE=replacement; assert_actions '["add_pr_human_label"]'
 PR_LABEL=true; assert_actions '[]'
 MODE=accepted; REVIEW=entered; assert_actions '[]'
 [ "$(run | jq -r .result)" = normal_review_owns ]
-for REVIEW in early_failure cancelled timed_out stale pending; do
+for REVIEW in early_failure cancelled timed_out stale; do
   assert_actions '[]'
   [ "$(run | jq -r .result)" = normal_review_owns ]
 done
-MODE=normalpause; assert_actions '[]'
+REVIEW=pending
+assert_actions '[]'
+[ "$(run | jq -r .result)" = undetermined ]
+# A queued Review can later finish successfully after its entry gate declines.
+REVIEW=skipped
+assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
+REVIEW=none
+MODE=normalpause; REVIEW=entered; assert_actions '[]'
 REVIEW=none
 if run >/dev/null 2>&1; then exit 1; fi
 MODE=accepted
@@ -157,50 +164,6 @@ if (grep() { return 127; }; check_read_only_log >/dev/null 2>&1); then
   echo 'Missing repository write log search tool was accepted.' >&2
   exit 1
 fi
-# The prepared helper must be unreachable from all production workflows.
-check_dormant_workflows() {
-  local directory="$1" workflow search_rc
-  local -a workflows
-  shopt -s nullglob
-  workflows=("$directory"/*.yml "$directory"/*.yaml)
-  if [ "${#workflows[@]}" -eq 0 ]; then
-    echo "No production workflows found in $directory." >&2
-    return 1
-  fi
-  for workflow in "${workflows[@]}"; do
-    if [ ! -f "$workflow" ] || [ ! -r "$workflow" ] || [ -L "$workflow" ]; then
-      echo "Production workflow is not a readable regular file: $workflow" >&2
-      return 1
-    fi
-    if grep -Eq 'prepare-ai-resume-review-recovery\.sh|ai-resume-review-consumer\.yml' "$workflow"; then
-      search_rc=0
-    else
-      search_rc=$?
-    fi
-    case "$search_rc" in
-      0) echo "Prepared recovery became reachable from $workflow." >&2; return 1 ;;
-      1) ;;
-      *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; return 1 ;;
-    esac
-  done
-}
-check_dormant_workflows "$root/.github/workflows"
-mkdir "$tmp/empty-workflows" "$tmp/invalid-workflows"
-if check_dormant_workflows "$tmp/empty-workflows" >/dev/null 2>&1; then exit 1; fi
-ln -s "$root/.github/workflows/ai-workflow-regression.yml" "$tmp/invalid-workflows/link.yml"
-if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
-rm "$tmp/invalid-workflows/link.yml"
-mkdir "$tmp/invalid-workflows/dir.yaml"
-if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
-rmdir "$tmp/invalid-workflows/dir.yaml"
-printf 'name: unreadable\n' > "$tmp/invalid-workflows/unreadable.yml"
-chmod 000 "$tmp/invalid-workflows/unreadable.yml"
-if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
-chmod 600 "$tmp/invalid-workflows/unreadable.yml"
-printf 'run: prepare-ai-resume-review-recovery.sh\n' > "$tmp/invalid-workflows/reachable.yaml"
-if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
-if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then
-  echo 'Missing workflow search tool was accepted.' >&2
-  exit 1
-fi
+grep -Fq 'workflows: [AI Resume Review Consumer]' "$root/.github/workflows/ai-resume-review-recovery.yml"
+grep -Fq 'recover-ai-resume-review.sh' "$root/.github/workflows/ai-resume-review-recovery.yml"
 echo 'prepare-ai-resume-review-recovery fixture passed.'

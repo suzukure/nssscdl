@@ -1,0 +1,79 @@
+name: AI Resume Review Recovery
+
+on:
+  workflow_run:
+    workflows: [AI Resume Review Consumer]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  identify:
+    name: Identify source Conversation
+    if: contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    outputs:
+      issue: ${{ steps.source.outputs.issue }}
+      pr: ${{ steps.source.outputs.pr }}
+      pause: ${{ steps.source.outputs.pause }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve current closing Issue
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TITLE: ${{ github.event.workflow_run.display_title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_TITLE" =~ ^AI\ Resume\ Review\ Consumer\ pr:([1-9][0-9]*)\ pause:([1-9][0-9]*)$ ]] || exit 1
+          pr="${BASH_REMATCH[1]}"
+          pause="${BASH_REMATCH[2]}"
+          relation="$(bash .github/scripts/resolve-ai-resume-target.sh "$GITHUB_REPOSITORY" pr "$pr" \
+            <<< '{"result":"accepted","action":"review","actor":"recovery"}')"
+          issue="$(jq -er '.closing_issue.number | if type == "number" and . > 0 and floor == . then tostring else error("issue") end' <<< "$relation")"
+          printf 'issue=%s\npr=%s\npause=%s\n' "$issue" "$pr" "$pause" >> "$GITHUB_OUTPUT"
+
+  recover:
+    name: Reconcile incomplete transition
+    needs: identify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: codex-writer-ai/issue-${{ needs.identify.outputs.issue }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: dev-token
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Apply prepared recovery decision
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          READ_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          PR_NUMBER: ${{ needs.identify.outputs.pr }}
+          ISSUE_NUMBER: ${{ needs.identify.outputs.issue }}
+          SOURCE_PAUSE: ${{ needs.identify.outputs.pause }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/recover-ai-resume-review.sh "$GITHUB_REPOSITORY" \
+            "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" "$APP_SLUG" \
+            "$PR_NUMBER" "$ISSUE_NUMBER" "$SOURCE_PAUSE"

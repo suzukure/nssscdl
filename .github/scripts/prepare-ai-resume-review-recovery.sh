@@ -172,7 +172,13 @@ while IFS=$'\t' read -r review_id review_attempt; do
     | if .conclusion == "skipped" then "skipped"
       elif (.conclusion | IN("failure","cancelled","timed_out","stale")) then "entered"
       elif .conclusion == null and (.status | IN("queued","in_progress","waiting","pending","requested"))
-        then "entered"
+        then ([.steps[]? | select(.name == "Select Claude review model")] |
+          if length == 0 then "undetermined"
+          elif length == 1 and (.[0].status == "in_progress" or
+            (.[0].conclusion | IN("success","failure","cancelled","timed_out")))
+            then "entered"
+          elif length == 1 and .[0].conclusion == "skipped" then "undetermined"
+          else "undetermined" end)
       elif .conclusion == "success" then
         [.steps[]? | select(.name == "Select Claude review model")]
         | if length != 1 then error("entry step ambiguity") else .[0] end
@@ -186,6 +192,11 @@ while IFS=$'\t' read -r review_id review_attempt; do
     read_labels
     jq -cn --argjson run "$review_id" --argjson attempt "$review_attempt" \
       '{result:"normal_review_owns",normal_review:{run_id:$run,attempt:$attempt},actions:[]}'
+    exit 0
+  fi
+  if [ "$state" = undetermined ]; then
+    jq -cn --argjson run "$review_id" --argjson attempt "$review_attempt" \
+      '{result:"undetermined",normal_review:{run_id:$run,attempt:$attempt},actions:[]}'
     exit 0
   fi
 done < "$tmp/candidates.tsv"

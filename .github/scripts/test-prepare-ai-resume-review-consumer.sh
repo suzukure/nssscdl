@@ -138,37 +138,11 @@ if (grep() { return 127; }; check_read_only_log >/dev/null 2>&1); then
   echo 'Missing repository write log search tool was accepted.' >&2
   exit 1
 fi
-check_dormant_workflows() {
-  local directory="$1" workflow search_rc
-  local -a workflows
-  shopt -s nullglob
-  workflows=("$directory"/*.yml "$directory"/*.yaml)
-  if [ "${#workflows[@]}" -eq 0 ]; then
-    echo "No production workflows found in $directory." >&2
-    return 1
-  fi
-  for workflow in "${workflows[@]}"; do
-    if [ ! -f "$workflow" ] || [ ! -r "$workflow" ] || [ -L "$workflow" ]; then
-      echo "Production workflow is not a readable regular file: $workflow" >&2
-      return 1
-    fi
-    if grep -Eq 'prepare-ai-resume-review-consumer\.sh|ai-resume-review' "$workflow"; then
-      search_rc=0
-    else
-      search_rc=$?
-    fi
-    case "$search_rc" in
-      0) echo "Prepared review consumer became reachable from $workflow." >&2; return 1 ;;
-      1) ;;
-      *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; return 1 ;;
-    esac
-  done
-}
-check_dormant_workflows "$root/.github/workflows"
-mkdir "$tmp/empty-workflows"
-if check_dormant_workflows "$tmp/empty-workflows" >/dev/null 2>&1; then exit 1; fi
-if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then
-  echo 'Missing workflow search tool was accepted.' >&2
+grep -Fq 'types: [ai-resume-review]' "$root/.github/workflows/ai-resume-review-consumer.yml"
+grep -Fq 'consume-ai-resume-review.sh' "$root/.github/workflows/ai-resume-review-consumer.yml"
+# The comment producer remains disconnected.
+if rg -l '/ai resume review' "$root/.github/workflows" | grep -v 'ai-resume-review-consumer.yml' >/dev/null; then
+  echo 'Review comment producer became reachable.' >&2
   exit 1
 fi
 echo 'prepare-ai-resume-review-consumer fixture passed.'
