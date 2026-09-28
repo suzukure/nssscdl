@@ -17,6 +17,8 @@ pause() {
   exit 0
 }
 
+case "$phase" in entry|pre_consume|machine_state_result|pre_verdict|merge_inputs) ;; *) stop invalid_phase ;; esac
+
 if [ "$phase" = entry ]; then
   shift
   decision="$(bash "$script_dir/evaluate-claude-auto-rereview-entry-gate.sh" "$@")" \
@@ -111,16 +113,27 @@ case "$phase" in
          or ([.labels[] | type == "object" and (.name | type) == "string"] | all | not)
       then error("pr") else
         {head:.head.sha,head_ref:.head.ref,base_ref:.base.ref,
+         terminal:(.state == "closed"),
          ready:(.state == "open" and (.draft | not)
            and ([.labels[].name] | index("human-review-required") == null))}
       end
     ' <<< "$pr" 2>/dev/null)" || pause invalid_pr
     [ "$(jq -r .head <<< "$current")" = "$(jq -r .validated_sha <<< "$identity")" ] \
       || { jq -cn '{action:"suppress_verdict",code:"stale_head"}'; exit 0; }
+    [ "$(jq -r .terminal <<< "$current")" = false ] \
+      || { jq -cn '{action:"suppress_verdict",code:"terminal_pr"}'; exit 0; }
     [ "$(jq -r .ready <<< "$current")" = true ] \
       && [ "$(jq -r .head_ref <<< "$current")" = "$(jq -r .head_ref <<< "$identity")" ] \
       && [ "$(jq -r .base_ref <<< "$current")" = "$(jq -r .base_ref <<< "$identity")" ] \
       || pause state_changed
+    issue="$(gh api "repos/${repo}/issues/$(jq -r .closing_issue_number <<< "$identity")")" || pause issue_unavailable
+    jq -e --argjson number "$(jq -r .closing_issue_number <<< "$identity")" '
+      .number == $number and .state == "open" and (has("pull_request") | not)
+      and (.labels | type) == "array"
+      and all(.labels[]; type == "object" and (.name | type) == "string")
+    ' <<< "$issue" > /dev/null || pause invalid_issue
+    [ "$(jq -r '[.labels[].name] | index("human-review-required") != null' <<< "$issue")" = false ] \
+      || pause human_pause
     jq -cn --argjson identity "$identity" '{action:"submit_verdict",identity:$identity}'
     ;;
   merge_inputs)

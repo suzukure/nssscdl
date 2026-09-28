@@ -67,10 +67,9 @@ if [ "$pr_paused" = true ]; then
   emit_result false 'Claude review is paused by the human-review-required label on the PR.'
   exit 0
 fi
-if [ "$event_action" = ready_for_review ] &&
-  { [ "$event_machine_state" = true ] ||
-    [ "$(jq -r '.labels | any(.name == "ai-followup-in-progress")' <<< "$metadata")" = true ]; }; then
-  emit_result false 'Normal Claude review is suppressed for a machine-state Ready event.'
+if [ "$event_machine_state" = true ] ||
+  [ "$(jq -r '.labels | any(.name == "ai-followup-in-progress")' <<< "$metadata")" = true ]; then
+  emit_result false 'Normal Claude review is suppressed for a machine-state PR.'
   exit 0
 fi
 

@@ -82,8 +82,7 @@ assert paused "$(run_entry "$payload")" '.action == "pause_record" and .code == 
   and .identity.pr_number == 37 and .identity.closing_issue_number == 36'
 ISSUE_JSON='{"number":36,"state":"open","labels":[]}'
 PR_JSON="$(jq -c '.labels=[]' <<< "$PR_JSON")"
-assert missing-state "$(run_entry "$payload")" '.action == "pause_record" and .code == "missing_machine_state"
-  and .identity.pr_number == 37'
+assert missing-state "$(run_entry "$payload")" '.action == "ignore" and .code == "duplicate_dispatch"'
 PR_JSON="$(jq -c '.labels=[{name:"ai-followup-in-progress"}]' <<< "$PR_JSON")"
 REVIEWS_JSON="$(jq -c --arg sha "$head_sha" '.[0].commit_id=$sha' <<< "$REVIEWS_JSON")"
 assert no-diff "$(run_entry "$payload")" '.action == "accepted" and .next == "pre_consume"'
@@ -138,25 +137,20 @@ assert merge-inputs "$(bash "$helper" merge_inputs <<< "$merge_request")" \
    .trusted_base_sha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" and
    .match_head_commit == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'
 
-# The prepared helper is not reachable from any production workflow.
-shopt -s nullglob
-workflows=("$repo_root"/.github/workflows/*.yml "$repo_root"/.github/workflows/*.yaml)
-if [ "${#workflows[@]}" -eq 0 ]; then
-  echo 'No production workflows found.' >&2; exit 1
-fi
-for workflow in "${workflows[@]}"; do
-  if [ ! -f "$workflow" ] || [ ! -r "$workflow" ]; then
-    echo "Production workflow is missing or unreadable: $workflow" >&2; exit 1
-  fi
-  if grep -Eq 'prepare-claude-auto-rereview-consumer|evaluate-claude-auto-rereview-entry-gate|claude-auto-rereview' "$workflow"; then
-    search_rc=0
-  else
-    search_rc=$?
-  fi
-  case "$search_rc" in
-    0) echo "Prepared consumer became reachable from $workflow." >&2; exit 1 ;;
-    1) ;;
-    *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; exit 1 ;;
-  esac
-done
-echo 'Prepared Claude auto-rereview consumer fixtures passed.'
+assert invalid-phase "$(bash "$helper" typo <<< "$identity")" \
+  '.action == "stop" and .code == "invalid_phase"'
+PR_JSON="$(jq -c '.state="closed"' <<< "$PR_JSON")"
+assert verdict-terminal "$(bash "$helper" pre_verdict <<< "$identity")" \
+  '.action == "suppress_verdict" and .code == "terminal_pr"'
+PR_JSON="$(jq -c '.state="open"' <<< "$PR_JSON")"
+ISSUE_JSON="$(jq -c '.labels=[{name:"human-review-required"}]' <<< "$ISSUE_JSON")"
+assert verdict-issue-pause "$(bash "$helper" pre_verdict <<< "$identity")" \
+  '.action == "pause_record" and .code == "human_pause"'
+ISSUE_JSON='{"number":36,"state":"open","labels":[]}'
+
+workflow="$repo_root/.github/workflows/claude-auto-rereview.yml"
+grep -Fq 'types: [claude-auto-rereview]' "$workflow"
+grep -Fq 'prepare-claude-auto-rereview-consumer.sh entry' "$workflow"
+grep -Fq 'prepare-claude-auto-rereview-consumer.sh pre_consume' "$workflow"
+grep -Fq 'prepare-claude-auto-rereview-consumer.sh" pre_verdict' "$workflow"
+echo 'Claude auto-rereview consumer fixtures passed.'

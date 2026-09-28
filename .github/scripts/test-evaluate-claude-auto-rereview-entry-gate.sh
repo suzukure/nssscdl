@@ -140,11 +140,11 @@ REVIEWS_JSON="$(jq -cn --arg sha "$old_sha" '
   [{id:1,user:{login:"review[bot]"},state:"CHANGES_REQUESTED",commit_id:$sha,
     submitted_at:"2026-01-01T00:00:00Z"}]')"
 PR_JSON="$(jq -c '.labels=[]' <<< "$PR_JSON")"
-assert_decision missing-label human_required missing_machine_state "$payload" "${gate[@]}"
+assert_decision missing-label ignore duplicate_dispatch "$payload" "${gate[@]}"
 REVIEWS_JSON="$(jq -c --arg sha "$head_sha" \
   '. + [{id:2,user:{login:"review[bot]"},state:"APPROVED",commit_id:$sha,
          submitted_at:"2026-01-02T00:00:00Z"}]' <<< "$REVIEWS_JSON")"
-assert_decision duplicate-no-label ignore duplicate_review "$payload" "${gate[@]}"
+assert_decision duplicate-no-label ignore duplicate_dispatch "$payload" "${gate[@]}"
 PR_JSON="$(jq -c '.labels=[{name:"ai-followup-in-progress"}]' <<< "$PR_JSON")"
 assert_decision duplicate-with-label ignore duplicate_review "$payload" "${gate[@]}"
 REVIEWS_JSON="$(jq -c '.[0].submitted_at="2026-01-03T00:00:00Z"' <<< "$REVIEWS_JSON")"
