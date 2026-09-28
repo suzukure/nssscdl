@@ -65,6 +65,7 @@ WCAG 2.2 AAを参照目標とし、初期リリースでは正式Certification�
 - AC-912-003 認証・権限・入力不正・Bad Recipient等Permanent Errorは自動Retryしない。
 - AC-912-004 Google Login自体は自動Retryせず利用者再操作とする。
 - AC-912-005 Provider受理後のメール配信RetryはREQ-105の通知固有ルールを優先し、アプリから盲目的に重複再送しない。
+- AC-912-006 最大3回は各Delivery Attempt内で安全かつ冪等な一時障害に対してApplicationが自動で行う再試行の上限とし、管理者が後から明示的に開始する別Attempt数の上限にしない。手動Attempt内でも同じ自動再試行条件と上限を守る。
 
 ## REQ-913 無料枠運用
 通常規模で無料枠を優先する。

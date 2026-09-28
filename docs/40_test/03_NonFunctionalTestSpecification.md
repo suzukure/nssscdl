@@ -77,6 +77,7 @@
 | `TC-NF-912-02` | AC-912-003 | P1 | Fault injection | 401/403/入力不正/Bad Recipient等を返すStub。 対象処理を実行する。 | Permanent Errorは自動Retryしない。 | Provider call count、Application result | 自動化候補 |
 | `TC-NF-912-03` | AC-912-004 | P1 | Fault injection | Google Loginで一時失敗を返す。 Loginフローを実行する。 | Login自体をアプリが自動反復せず、利用者再操作へ案内する。 | Google call count、UI/response | 自動化候補 |
 | `TC-NF-912-04` | AC-912-005 | P0 | Idempotency / Fault injection | Provider accepted後に配信失敗Eventを発生。 Application retry機構を動作させる。 | Provider固有配信Retryルールを優先し、アプリから盲目的な重複再送をしない。 | Message IDs、Provider call count | 自動化候補 |
+| `TC-NF-912-05` | AC-912-006 | P0 | Fault injection / Retry | 同じIntentへ管理者が複数Attemptを明示開始し、各Attemptで安全・冪等な一時障害を発生させる。 | 手動Attempt数に固定上限はなく、各Attempt内のApplication自動再試行は最大3回かつREQ-912の条件に従う。 | Attempt IDs、Provider call count、Retry timestamps | 自動化候補 |
 
 ### REQ-913 無料枠運用
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |
