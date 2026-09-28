@@ -115,27 +115,33 @@ assert dispatch-unknown dispatch_result '{"dispatch_succeeded":null,"machine_lab
 assert pause-first pause_recorded '{"active_pause_id":41,"recorded_pause_id":42}' '{"action":"stop","code":"pause_not_active"}'
 assert cleanup pause_recorded '{"active_pause_id":41,"recorded_pause_id":41}' '{"action":"remove_machine_label","label":"ai-followup-in-progress"}'
 
-# Consumer activation is absent: neither production workflow may reach the
-# prepared producer or dedicated dispatch. Ready suppression may read its label.
+# Consumer activation is absent: AI Developer cannot reach the prepared producer,
+# dispatch, or machine label. Claude Review may read the label for Ready suppression.
 for production_workflow in "$workflow" "$claude_workflow"; do
   if [ ! -f "$production_workflow" ] || [ ! -r "$production_workflow" ]; then
     echo "Production workflow is missing or unreadable: $production_workflow" >&2
     exit 1
   fi
 done
-if grep -Eq 'prepare-claude-followup-producer|claude-auto-rereview' \
-  "$workflow" "$claude_workflow"; then
-  search_rc=0
-else
-  search_rc=$?
-fi
-case "$search_rc" in
-  0)
-    echo 'Dormant producer became reachable from a production workflow.' >&2
-    exit 1 ;;
-  1) ;;
-  *)
-    echo "Production workflow search failed (exit $search_rc)." >&2
-    exit 1 ;;
-esac
+check_dormant_workflow() {
+  local production_workflow="$1" forbidden="$2" search_rc
+  if grep -Eq "$forbidden" "$production_workflow"; then
+    search_rc=0
+  else
+    search_rc=$?
+  fi
+  case "$search_rc" in
+    0)
+      echo "Dormant producer became reachable from $production_workflow." >&2
+      exit 1 ;;
+    1) ;;
+    *)
+      echo "Production workflow search failed for $production_workflow (exit $search_rc)." >&2
+      exit 1 ;;
+  esac
+}
+check_dormant_workflow "$workflow" \
+  'prepare-claude-followup-producer|claude-auto-rereview|ai-followup-in-progress'
+check_dormant_workflow "$claude_workflow" \
+  'prepare-claude-followup-producer|claude-auto-rereview'
 echo 'Prepared Claude follow-up producer fixtures passed.'
