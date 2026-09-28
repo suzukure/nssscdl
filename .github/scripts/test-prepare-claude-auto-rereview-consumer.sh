@@ -139,8 +139,24 @@ assert merge-inputs "$(bash "$helper" merge_inputs <<< "$merge_request")" \
    .match_head_commit == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'
 
 # The prepared helper is not reachable from any production workflow.
-if grep -Eq 'prepare-claude-auto-rereview-consumer|evaluate-claude-auto-rereview-entry-gate|claude-auto-rereview' \
-  "$repo_root"/.github/workflows/*.yml; then
-  echo 'Prepared consumer became reachable from a production workflow.' >&2; exit 1
+shopt -s nullglob
+workflows=("$repo_root"/.github/workflows/*.yml "$repo_root"/.github/workflows/*.yaml)
+if [ "${#workflows[@]}" -eq 0 ]; then
+  echo 'No production workflows found.' >&2; exit 1
 fi
+for workflow in "${workflows[@]}"; do
+  if [ ! -f "$workflow" ] || [ ! -r "$workflow" ]; then
+    echo "Production workflow is missing or unreadable: $workflow" >&2; exit 1
+  fi
+  if grep -Eq 'prepare-claude-auto-rereview-consumer|evaluate-claude-auto-rereview-entry-gate|claude-auto-rereview' "$workflow"; then
+    search_rc=0
+  else
+    search_rc=$?
+  fi
+  case "$search_rc" in
+    0) echo "Prepared consumer became reachable from $workflow." >&2; exit 1 ;;
+    1) ;;
+    *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; exit 1 ;;
+  esac
+done
 echo 'Prepared Claude auto-rereview consumer fixtures passed.'
