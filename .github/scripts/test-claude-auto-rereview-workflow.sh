@@ -20,6 +20,7 @@ if grep -Fq 'prepare-claude-followup-producer.sh' "$developer"; then
 fi
 [ "$(grep -Fc 'uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507' "$auto")" -eq 1 ]
 for step in 'Upload accepted identity' 'Recheck accepted identity before machine state consumption' \
+  'Check out accepted PR HEAD' \
   'Consume machine state' 'Upload paid review boundary' 'Run Claude review' \
   'Recheck verdict identity' 'Signal verdict suppressed' 'Submit reviewer verdict' 'Pause for human decision' \
   'Verify merge gates' 'Squash merge as reviewer'; do
@@ -33,6 +34,15 @@ line() { grep -Fn "      - name: $1" "$auto" | head -1 | cut -d: -f1; }
 [ "$(line 'Recheck verdict identity')" -lt "$(line 'Submit reviewer verdict')" ]
 grep -Fq 'prepare-claude-auto-rereview-consumer.sh pre_verdict' "$auto" || \
   grep -Fq 'prepare-claude-auto-rereview-consumer.sh" pre_verdict' "$auto"
+grep -Fq '| bash "$RUNNER_TEMP/prepare-claude-auto-rereview-consumer.sh" machine_state_result)' "$auto"
+if awk '
+  /^      - name: Check out accepted PR HEAD$/ { after_pr_checkout = 1; next }
+  /^  merge:$/ { after_pr_checkout = 0 }
+  after_pr_checkout && /bash[[:space:]]+\.github\/scripts\// { found = 1 }
+  END { exit !found }
+' "$auto"; then
+  echo 'Auto review runs a PR HEAD helper after checkout.' >&2; exit 1
+fi
 grep -Fq 'bash .github/scripts/verify-pr-gates.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" merge "$DEV_APP_SLUG"' "$auto"
 grep -Fq -- '--match-head-commit "$HEAD_SHA"' "$auto"
 bash -n "$repo_root/.github/scripts/handle-claude-auto-rereview-failure.sh" \

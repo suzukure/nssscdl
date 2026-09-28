@@ -186,7 +186,7 @@ jobs:
           set -euo pipefail
           gh issue edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
           decision="$(jq -cn --argjson identity "$(cat "$RUNNER_TEMP/auto-identity.json")" \
-            '{identity:$identity,label_removed:true}' | bash .github/scripts/prepare-claude-auto-rereview-consumer.sh machine_state_result)"
+            '{identity:$identity,label_removed:true}' | bash "$RUNNER_TEMP/prepare-claude-auto-rereview-consumer.sh" machine_state_result)"
           echo "action=$(jq -r .action <<< "$decision")" >> "$GITHUB_OUTPUT"
           jq -c . <<< "$decision" > "$RUNNER_TEMP/auto-decision.json"
 
