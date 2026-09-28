@@ -71,8 +71,16 @@ gh() {
             pull_requests:[{number:37,head:{sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}] end)}]' ;;
     'api --paginate --slurp /repos/owner/repo/actions/runs/600/attempts/1/jobs?per_page=100')
       jq -cn --arg mode "$REVIEW" '
-        [{jobs:[{name:"Review",steps:[{name:"Select Claude review model",
-          status:"completed",conclusion:(if $mode == "skipped" then "skipped" else "success" end)}]}]}]' ;;
+        [{jobs:[{name:"Review",
+          status:(if $mode == "pending" then "in_progress" else "completed" end),
+          conclusion:(if $mode == "early_failure" then "failure"
+            elif $mode == "job_skipped" then "skipped"
+            elif ($mode | IN("cancelled","timed_out","stale")) then $mode
+            elif $mode == "pending" then null else "success" end),
+          steps:(if $mode == "job_skipped" or $mode == "pending" then [] else
+            [{name:"Select Claude review model",status:"completed",
+              conclusion:(if $mode == "skipped" or $mode == "early_failure"
+                then "skipped" else "success" end)}] end)}]}]' ;;
     'api /repos/owner/repo/issues/36'|'api /repos/owner/repo/issues/37')
       local number="${2##*/}" present="$ISSUE_LABEL"
       [ "$number" = 37 ] && present="$PR_LABEL"
@@ -100,11 +108,16 @@ MODE=replacement; assert_actions '["add_pr_human_label"]'
 PR_LABEL=true; assert_actions '[]'
 MODE=accepted; REVIEW=entered; assert_actions '[]'
 [ "$(run | jq -r .result)" = normal_review_owns ]
+for REVIEW in early_failure cancelled timed_out stale pending; do
+  assert_actions '[]'
+  [ "$(run | jq -r .result)" = normal_review_owns ]
+done
 MODE=normalpause; assert_actions '[]'
 REVIEW=none
 if run >/dev/null 2>&1; then exit 1; fi
 MODE=accepted
 REVIEW=skipped; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
+REVIEW=job_skipped; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
 REVIEW=unrelated; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
 REVIEW=none; HEAD_MODE=stale
 if run >/dev/null 2>&1; then exit 1; fi

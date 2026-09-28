@@ -125,7 +125,7 @@ else
 fi
 
 # Accepted comment creation time bounds normal runs. A run's existence alone
-# never proves entry: the Review job must enter the model selection step.
+# never proves ownership: classify the Review job as the Failure Handler does.
 gh api "/repos/$repo/issues/comments/$accepted" > "$tmp/accepted.json" \
   || fail 'accepted comment unavailable'
 jq -e --argjson id "$accepted" --argjson app "$app_id" '
@@ -169,13 +169,18 @@ while IFS=$'\t' read -r review_id review_attempt; do
     if type != "array" or any(.[]; (.jobs | type) != "array") then error("jobs") end
     | [.[] .jobs[] | select(.name == "Review")]
     | if length != 1 then error("Review job ambiguity") else .[0] end
-    | [.steps[]? | select(.name == "Select Claude review model")]
-    | if length != 1 then error("entry step ambiguity") else .[0] end
-    | if .status == "in_progress" or .conclusion == "success" or
-         .conclusion == "failure" or .conclusion == "cancelled" or
-         .conclusion == "timed_out" then "entered"
-      elif .conclusion == "skipped" then "skipped"
-      else error("unknown entry state") end
+    | if .conclusion == "skipped" then "skipped"
+      elif (.conclusion | IN("failure","cancelled","timed_out","stale")) then "entered"
+      elif .conclusion == null and (.status | IN("queued","in_progress","waiting","pending","requested"))
+        then "entered"
+      elif .conclusion == "success" then
+        [.steps[]? | select(.name == "Select Claude review model")]
+        | if length != 1 then error("entry step ambiguity") else .[0] end
+        | if .status == "in_progress" or
+             (.conclusion | IN("success","failure","cancelled","timed_out")) then "entered"
+          elif .conclusion == "skipped" then "skipped"
+          else error("unknown entry state") end
+      else error("unknown Review job state") end
   ' "$tmp/review-jobs.json")" || fail 'Review ownership ambiguous'
   if [ "$state" = entered ]; then
     read_labels
