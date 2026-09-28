@@ -11,9 +11,9 @@
 
 ## 決定
 
-初期リリースでは、アプリケーションの単一デプロイ単位として **1つのApplication Worker** を使用する。
+初期リリースでは、各永続環境内の公開業務アプリケーションの単一デプロイ単位として **1つのApplication Worker** を使用する。同じ論理構成でも環境ごとのWorker / binding resource instanceは分離する（`docs/10_basic_design/01_SystemArchitecture.md` §6.1）。
 
-この決定は公開業務アプリケーションと通常業務Scheduled Handlerの境界である。`OI-BD-012` / #541で確定したD1 export・R2長期Backup生成は、最小権限のためBackup専用Cloudflare Workflow / Scheduled operational componentへ分離する。具体的なデプロイ単位は #542 で定める。
+この決定は公開業務アプリケーションと通常業務Scheduled Handlerの境界である。`OI-BD-012` / #541で確定したD1 export・R2長期Backup生成は、最小権限のためBackup専用Cloudflare Workflow / Scheduled operational componentへ分離し、Application Workerとは別のDeploy / privilege boundaryとする。Recovery D1とcutoverも公開Application WorkerのDeployとは別の保守境界で扱う。これらの変更単位は `docs/10_basic_design/01_SystemArchitecture.md` §6.3 / §6.5を正とする。
 
 Application Workerには次の入口と処理を含める。
 
