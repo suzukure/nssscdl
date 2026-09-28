@@ -58,6 +58,12 @@ Open Registrationでは所有確認済みemailから新Student / StudentAccount�
 
 削除確定時、StudentAccountとStudent用AuthMethodは通常Login対象外とし、直接管理する認証識別子等は `REQ-934` に従い24時間以内に削除・匿名化する。独立したAdminAccount / Admin Sessionおよび独立した保持目的を持つAdmin用AuthMethodはStudent削除だけで失効・削除しない。物理Table分割、column、hash、index、constraint名は詳細設計で定める。
 
+### 2.2 Recovery metadataの論理境界
+
+Backup Artifactとmanifestは通常業務Entityではなく、Backup専用境界のRecovery Artifact / metadataとする。長期Artifactの構成・Retentionは `01_SystemArchitecture.md` §3.4を正とし、Student / Reservation等の通常業務関係図には混在させない。
+
+`Recovery Purge Registry`（または同等のRecovery metadata）は、復旧対象の業務D1 snapshotから独立して、削除前の状態を含む旧Artifactの復旧時に削除済みStudentを識別する。通常業務Query・Student検索には使用せず、Backup / Recovery専用権限からのみ参照する。氏名、email、Google subject等は持たず、必要最小限のRecovery keyと削除時刻等に限る。削除前状態を含み得るArtifactが存在する期間を超えて不要に保持しない。選択したcapture pointより後に成立した削除を通常Service再開前または同時に再適用し、Registryの連続性・integrityを確認できなければ再開しない。削除確定とRegistryのdurable記録順序・障害窓を閉じる物理方式は詳細設計で確定する。
+
 ## 3. Student・LessonSlot・StudentReservation の関係
 
 ### 3.1 Student と StudentReservation
@@ -366,6 +372,7 @@ Student
 - 実効区分の根拠となる明示Overrideは別Entityとして保持する。
 - 同じ関係をStudentやLessonSlotへ予約ID配列として重複保存しない。
 - `IntegrityIncident` は利用者向け予約状態の代替正本ではなく、保守・監視用の状態として通常表示モデルから分離する。
+- Backup Artifact / manifest / Recovery Purge Registryは通常業務の保存・表示モデルから分離する。
 
 ## 7. 整合性上の原則
 
@@ -422,6 +429,7 @@ Student
 - BR-110 重大障害通知
 - BR-116 スクール都合キャンセル通知
 - BR-125 将来予約処理
+- BR-128 Backup内個人情報
 - BR-132 監査
 - BR-133 利用者向けエラー表現
 - REQ-003 予約
@@ -445,6 +453,9 @@ Student
 - REQ-914 障害・エラー時利用者表示
 - REQ-940 監査Logging
 - REQ-942 監視・重大Incident
+- REQ-910 長期Backup保持
+- REQ-952 Backup Privacy
+- CON-009 Backup方式非依存
 
 ## 9. 設計判断記録
 
