@@ -228,8 +228,8 @@ D1、R2、Google認証、Resend、Turnstileはそれぞれ別のPlatform / Servi
 - REQ-951 Provider分離
 - CON-001 Cloudflare Platform
 - CON-002 Email Provider
-- CON-004 祝日Source
 - CON-003 認証
+- CON-004 祝日Source
 - CON-006 初期規模
 - CON-007 初期管理者
 - CON-009 Backup方式非依存
