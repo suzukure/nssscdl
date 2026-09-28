@@ -1366,9 +1366,9 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 
 氏名変更成功ResponseはCommit後の確定プロフィール状態を返す。連絡先メール変更開始成功Responseは、旧メールが現在有効なままであること、新メール所有確認待ちであること、および管理画面が次の行動を判断するために必要な情報を返せる形とする。
 
-## 19. 管理者向け通知失敗Dashboard・個別再送API基本形
+## 19. 管理者向け通知失敗Dashboard・個別再送・対応終了／再開API基本形
 
-本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜005` および `REQ-314 / AC-314-001〜003` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく、現在も通知義務が有効で管理者対応を要する `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeはこのDashboardおよび個別retry APIの対象外とし、各Flow固有の回復操作またはSecurity Noticeの再送なしを適用する。
+本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜011` および `REQ-314 / AC-314-001〜005` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく、現在も通知義務が有効で管理者対応を要する `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeはこのDashboardおよび個別retry APIの対象外とし、各Flow固有の回復操作またはSecurity Noticeの再送なしを適用する。
 
 ### 19.1 主要Endpointと認可
 
@@ -1378,12 +1378,13 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 | 失敗一覧 | `GET /api/admin/notification-failures` | Query |
 | 失敗詳細 | `GET /api/admin/notification-failures/{notificationId}` | Query |
 | 個別再送 | `POST /api/admin/notification-failures/{notificationId}/retry` | Command |
+| 管理者対応終了・再開 | 詳細設計でPathを確定 | Command |
 
 `notificationId` は通知管理の論理IDであり、Provider Message IDをAPI Targetの正本にしない。Actorは4.2の原則どおり認証済みAdmin Sessionから解決し、すべてのQueryとCommandで管理者認可を行う。
 
 ### 19.2 Dashboard・Query View
 
-現在管理者対応を要する未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通知義務が有効な通常予約系の未解決NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。業務上の客観的な有効条件を失って失効したIntentは、未配信であっても警告件数・通常の失敗一覧から除外する。
+現在管理者対応を要する未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通知義務が有効で現在の管理者対応状態が対応要の通常予約系NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。業務上の客観的な有効条件を失って失効したIntent、および管理者対応終了済みIntentは未配信でも警告件数から除外する。終了済み案件は同じ失敗一覧の明示フィルタから初期リリースでは1年間参照可能とする。技術確認待ちは通常の判断可能な警告として管理者へ渡さず、安全な非操作表示またはMonitoring / Incidentで可視性を担保する。配送成功、客観的失効、管理者対応終了を同じ解決表示へ統合しない。
 
 失敗一覧では、少なくとも種別、予約日時、生徒名、失敗時の実送信先、失敗理由、失敗日時、再送状態を画面表示可能なApplication View Modelとして返せる形とする。詳細Queryでは、通知内容の要約、Delivery Attempt履歴、今回の再送先、再送可否および必要な対応を確認できる形とする。詳細確認後に通知義務が失効した場合は、古い表示を根拠に再送可能とせず、最新の再送不可状態または再確認要求を返せるようにする。再送前の確認はこの詳細Queryを基に管理画面で行い、専用Preview APIは設けない。
 
@@ -1397,7 +1398,7 @@ Provider等の生Error、Message ID、内部技術情報を画面または公開
 
 ### 19.4 Confirm時再検証・Transaction境界
 
-再送Commandは、最新の未解決状態、通知種別固有の客観的な有効条件、対象通知の再送可否、実送信時に有効な宛先、および先行する再送・解決・失効状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。物理的な失効更新が未反映でも、現在の業務状態から通知義務が失効している場合は送信しない。
+再送Commandは、最新の未解決状態、通知種別固有の客観的な有効条件、対象通知の再送可否、技術安全性、実送信時に有効な宛先、並行Attempt、および先行する再送・解決・失効・管理者対応状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。物理的な失効更新が未反映でも、現在の業務状態から通知義務が失効している場合は送信しない。
 
 正常受付では `05_BookingAndConcurrency.md` §13.8を正とし、再送要求の永続化、同時再送防止、Admin Actorと対象通知を追跡できるAuditLogを同一の業務Transactionで確定する。外部Providerへの送信はCommit後に行う。再送は元のReservation、確定時classification、アプリ内通知の確認状態を変更せず、送信失敗で確定済み業務状態をRollbackしない。
 
@@ -1413,7 +1414,15 @@ Provider等の生Error、Message ID、内部技術情報を画面または公開
 
 生徒削除・Reservation取消等の明示的Commandで失効が確定する場合は、可能な限り原因となる業務Transactionで失効を整合させる。Lesson開始時刻到来だけのために専用失効Jobを正しさの前提とせず、Dashboard Queryと再送Commandでも現在時刻・最新業務状態から有効性を再評価する。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。失効済みIntent専用の恒常的な閲覧UIは初期リリースへ追加しない。
 
-Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeのFlow固有Endpoint・Token・状態表示は詳細設計で定める。自動Retry上限到達後の最終処理、任意の管理者「対応済み」は本節では確定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeのFlow固有Endpoint・Token・状態表示は詳細設計で定める。自動Retry上限到達後は`05_BookingAndConcurrency.md` §13.7に従い、同じIntentを安全な管理者対応へ渡す。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+
+### 19.6 管理者対応終了・再開Command
+
+認証済み管理者だけが通常通知の管理者対応を終了・再開できる。終了では3理由区分「別経路で必要な連絡を完了」「追加の連絡手段がなく、未達を認識した上で対応終了」「その他」を選び、「その他」は補足必須とし不要な個人情報を記さない注意を表示する。確定前には配信成功にならず未配信・未確認の履歴が残ること、警告から外れること、理由が監査されることを明示する。結果確認中ではProvider側配送を取消せず後から到達し得ることも示す。
+
+終了Commandは認可、対象種別、通知義務、配送成功・失効の有無、安全な説明と代替行動、技術安全性を最新状態で再検証し、新規送信・retry確定と競合させない。Integrity / Security異常等で通知対象・内容・宛先・状態を信用できず安全な次の行動を提示できない場合は拒否する。配送結果とAttemptは変更せず、管理者対応状態のみ終了にし、Actor、時刻、理由、最小限のBefore / Afterを同一Transactionで監査する。技術原因は終了理由でなくMonitoring / Incident側で分類する。
+
+終了済み案件は明示的再開後にだけretryできる。再開Commandは通知義務、配信成功、客観的失効、個人情報削除、技術安全性を再検証し、可能なら対応状態だけを対応要へ戻して監査する。過去のAttempt・配送結果・対応履歴を上書きせず、Provider Callback等だけでは自動再開しない。終了済み案件と管理者対応履歴、必要最小限のIncident summaryは1年間参照可能とし、Technical Logは`REQ-940 / AC-940-004`に従う。具体Path、Request / Response、Expected Stateのwire表現、Filter / Pagination / Sortと物理Cleanupは詳細設計で確定する。
 
 ## 20. 詳細設計へ送る事項
 
