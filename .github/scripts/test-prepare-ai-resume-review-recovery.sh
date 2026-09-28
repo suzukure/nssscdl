@@ -103,7 +103,9 @@ assert_actions() {
 }
 MODE=before; assert_actions '[]'
 ISSUE_LABEL=false; assert_actions '["add_issue_human_label"]'
-ISSUE_LABEL=true
+PR_LABEL=false; assert_actions '["add_issue_human_label","add_pr_human_label"]'
+ISSUE_LABEL=true; assert_actions '["add_pr_human_label"]'
+PR_LABEL=true
 MODE=accepted; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
 ISSUE_LABEL=false; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph","add_issue_human_label"]'
 PR_LABEL=false; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph","add_issue_human_label","add_pr_human_label"]'

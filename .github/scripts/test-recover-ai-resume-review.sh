@@ -13,9 +13,11 @@ state="$(cat "$MOCK_STATE")"
 case "$state" in
   owner) echo '{"result":"normal_review_owns","actions":[]}' ;;
   before)
-    jq -cn --argjson issue "$(cat "$MOCK_ISSUE_LABEL")" '
+    jq -cn --argjson issue "$(cat "$MOCK_ISSUE_LABEL")" \
+      --argjson pr "$(cat "$MOCK_PR_LABEL")" '
       {result:"pre_acceptance",actions:
-        [if $issue == false then {action:"add_issue_human_label",number:36} else empty end]}' ;;
+        ([if $issue == false then {action:"add_issue_human_label",number:36} else empty end]
+         + [if $pr == false then {action:"add_pr_human_label",number:37} else empty end])}' ;;
   *)
     jq -cn --arg state "$state" --argjson issue "$(cat "$MOCK_ISSUE_LABEL")" \
       --argjson pr "$(cat "$MOCK_PR_LABEL")" '
@@ -75,10 +77,12 @@ printf owner > "$MOCK_STATE"; printf true > "$MOCK_ISSUE_LABEL"
 printf true > "$MOCK_PR_LABEL"; : > "$MOCK_LOG"
 run
 assert_no_write
-printf before > "$MOCK_STATE"; printf false > "$MOCK_ISSUE_LABEL"; : > "$MOCK_LOG"
+printf before > "$MOCK_STATE"; printf false > "$MOCK_ISSUE_LABEL"
+printf false > "$MOCK_PR_LABEL"; : > "$MOCK_LOG"
 run
 [ "$(cat "$MOCK_STATE")" = before ]
 grep -Fq 'issue edit 36 --repo owner/repo --add-label human-review-required' "$MOCK_LOG"
+grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$MOCK_LOG"
 printf accepted > "$MOCK_STATE"; printf false > "$MOCK_ISSUE_LABEL"
 printf false > "$MOCK_PR_LABEL"; : > "$MOCK_LOG"
 MOCK_NO_CREATE=true; export MOCK_NO_CREATE
