@@ -56,8 +56,14 @@ assert_decision() {
   : > "$GH_LOG"
   result="$(printf '%s\n' "$input" | "$@")"
   if ! jq -e --arg action "$action" --arg code "$code" \
-    'keys == ["action","code","reason"] and .action == $action and .code == $code
-     and (.reason | type == "string" and length > 0)' <<< "$result" >/dev/null; then
+    '.action == $action and .code == $code
+     and (.reason | type == "string" and length > 0)
+     and (if $action == "proceed" then
+       (.identity | keys) == ["base_ref","closing_issue_number","head_ref","pr_number","repo","round","trusted_base_sha","validated_sha"]
+       elif has("identity") then
+       keys == ["action","code","identity","reason"] and
+       (.identity | keys) == ["base_ref","closing_issue_number","head_ref","pr_number","repo","round","trusted_base_sha","validated_sha"]
+       else keys == ["action","code","reason"] end)' <<< "$result" >/dev/null; then
     printf 'Unexpected decision for %s: %s\n' "$name" "$result" >&2
     exit 1
   fi
@@ -67,6 +73,8 @@ assert_decision ready proceed ready "$payload" "${gate[@]}"
 assert_decision malformed human_required invalid_payload '{}' "${gate[@]}"
 assert_decision extra-payload human_required invalid_payload \
   "$(jq -c '.token="untrusted"' <<< "$payload")" "${gate[@]}"
+assert_decision oversized human_required invalid_payload \
+  "$(printf '%65536s' x)" "${gate[@]}"
 if [ -s "$GH_LOG" ]; then
   echo 'Malformed payload reached GitHub.' >&2
   exit 1

@@ -8,7 +8,9 @@ set -euo pipefail
 
 emit() {
   jq -cn --arg action "$1" --arg code "$2" --arg reason "$3" \
-    '{action:$action,code:$code,reason:$reason}'
+    --argjson identity "${pause_identity:-null}" \
+    '{action:$action,code:$code,reason:$reason} +
+      (if $action == "human_required" and $identity != null then {identity:$identity} else {} end)'
 }
 human() { emit human_required "$1" "$2"; exit 0; }
 ignore() { emit ignore "$1" "$2"; exit 0; }
@@ -27,7 +29,10 @@ trusted_base="$4"
 [[ "$trusted_base" =~ ^[0-9a-f]{40}$ ]] \
   || human invalid_context 'Invalid trusted base SHA.'
 
-payload="$(cat)" || human invalid_payload 'Could not read dispatch payload.'
+payload_file="$(mktemp)" || human invalid_payload 'Could not prepare dispatch payload.'
+trap 'rm -f "$payload_file"' EXIT
+head -c 65536 > "$payload_file" || human invalid_payload 'Could not read dispatch payload.'
+[ "$(wc -c < "$payload_file")" -le 65535 ] || human invalid_payload 'Dispatch payload is too large.'
 parsed="$(jq -cse '
   def positive: type == "number" and floor == . and . > 0;
   def sha: type == "string" and test("^[0-9a-f]{40}$");
@@ -36,7 +41,7 @@ parsed="$(jq -cse '
   elif (.[0].pr_number | positive | not) or (.[0].round | positive | not)
        or (.[0].validated_sha | sha | not) then error("payload")
   else .[0] end
-' <<< "$payload" 2>/dev/null)" || human invalid_payload 'Invalid dispatch payload.'
+' "$payload_file" 2>/dev/null)" || human invalid_payload 'Invalid dispatch payload.'
 pr_number="$(jq -r '.pr_number' <<< "$parsed")"
 validated_sha="$(jq -r '.validated_sha' <<< "$parsed")"
 round="$(jq -r '.round' <<< "$parsed")"
@@ -128,6 +133,14 @@ issue_number="$(jq -rse --arg repo "$repo" --arg head "$current_head" \
     end
   end
 ' <<< "$relation" 2>/dev/null)" || human invalid_relation 'PR closing Issue relation is invalid.'
+pause_identity="$(jq -cn --arg repo "$repo" --argjson pr_number "$pr_number" \
+  --arg validated_sha "$validated_sha" --argjson round "$round" \
+  --arg head_ref "$(jq -r .head_ref <<< "$pr_facts")" \
+  --arg base_ref "$base_ref" --arg trusted_base_sha "$base_sha" \
+  --argjson closing_issue_number "$issue_number" \
+  '{repo:$repo,pr_number:$pr_number,validated_sha:$validated_sha,
+    round:$round,head_ref:$head_ref,base_ref:$base_ref,
+    trusted_base_sha:$trusted_base_sha,closing_issue_number:$closing_issue_number}')"
 issue="$(gh api "repos/${repo}/issues/${issue_number}")" \
   || human issue_unavailable 'Could not fetch closing Issue.'
 issue_paused="$(jq -rs --argjson number "$issue_number" '
@@ -185,6 +198,8 @@ if [ "$(jq -r '.machine_state' <<< "$pr_facts")" != true ]; then
   human missing_machine_state 'Current PR lacks the follow-up in-progress label.'
 fi
 
+accepted_identity="$pause_identity"
+unset pause_identity
 final_pr="$(gh api "repos/${repo}/pulls/${pr_number}")" \
   || human pr_unavailable 'Could not recheck the current PR.'
 final_head="$(jq -rse 'if length == 1 and (.[0].head.sha | type) == "string"
@@ -200,4 +215,6 @@ if [ "$final_facts" != "$pr_facts" ]; then
   human state_changed 'PR state changed while evaluating the dispatch.'
 fi
 
-emit proceed ready 'Current PR and dispatch state permit automated re-review.'
+jq -cn --argjson identity "$accepted_identity" \
+  '{action:"proceed",code:"ready",reason:"Current PR and dispatch state permit automated re-review.",
+    identity:$identity}'
