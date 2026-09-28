@@ -1,0 +1,114 @@
+name: AI Resume Review Consumer
+run-name: AI Resume Review Consumer pr:${{ github.event.client_payload.dispatch.pr_number }} pause:${{ github.event.client_payload.dispatch.source_pause_id }}
+
+on:
+  repository_dispatch:
+    types: [ai-resume-review]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  gate:
+    name: Resolve current resume Review candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      issue: ${{ steps.candidate.outputs.issue }}
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Validate dispatch envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -ce '
+            .action == "ai-resume-review" and
+            (.client_payload | type == "object" and keys == ["dispatch","version"]
+              and .version == 1 and (.dispatch | type == "object"))
+          ' "$GITHUB_EVENT_PATH" >/dev/null
+          jq -c '.client_payload.dispatch' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/resume-review-dispatch.json"
+      - name: Create read-only developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+      - name: Revalidate current candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          result="$(bash .github/scripts/prepare-ai-resume-review-consumer.sh \
+            "$GITHUB_REPOSITORY" "$app_id" < "$RUNNER_TEMP/resume-review-dispatch.json")"
+          jq -e '.result == "accepted_candidate" or .result == "ignore"' <<< "$result" >/dev/null
+          jq -r '.result + (if .result == "ignore" then ":" + .code else "" end)' <<< "$result"
+          if [ "$(jq -r '.result' <<< "$result")" = accepted_candidate ]; then
+            issue="$(jq -er '.identity.closing_issue_number | select(type == "number" and . > 0 and floor == .)' <<< "$result")"
+            printf 'issue=%s\n' "$issue" >> "$GITHUB_OUTPUT"
+          fi
+
+  inspect:
+    name: Inspect candidate within canonical writer
+    needs: gate
+    if: ${{ needs.gate.outputs.issue != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: codex-writer-ai/issue-${{ needs.gate.outputs.issue }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Validate dispatch envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -ce '
+            .action == "ai-resume-review" and
+            (.client_payload | type == "object" and keys == ["dispatch","version"]
+              and .version == 1 and (.dispatch | type == "object"))
+          ' "$GITHUB_EVENT_PATH" >/dev/null
+          jq -c '.client_payload.dispatch' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/resume-review-dispatch.json"
+      - name: Create read-only developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+      - name: Revalidate current candidate after writer wait
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          TRUSTED_ISSUE: ${{ needs.gate.outputs.issue }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
+          [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
+          result="$(bash .github/scripts/prepare-ai-resume-review-consumer.sh \
+            "$GITHUB_REPOSITORY" "$app_id" < "$RUNNER_TEMP/resume-review-dispatch.json")"
+          jq -e '.result == "accepted_candidate" or .result == "ignore"' <<< "$result" >/dev/null
+          if [ "$(jq -r '.result' <<< "$result")" = accepted_candidate ]; then
+            jq -e --argjson issue "$TRUSTED_ISSUE" '.identity.closing_issue_number == $issue' <<< "$result" >/dev/null
+          fi
+          jq -r '.result + (if .result == "ignore" then ":" + .code else "" end)' <<< "$result"

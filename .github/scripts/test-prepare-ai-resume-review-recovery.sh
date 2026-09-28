@@ -173,7 +173,7 @@ if (grep() { return 127; }; check_read_only_log >/dev/null 2>&1); then
   echo 'Missing repository write log search tool was accepted.' >&2
   exit 1
 fi
-# The recovery source is absent even after its independent workflow is wired.
+# Only the dedicated read-only consumer may reach the recovery source.
 check_dormant_workflows() {
   local directory="$1" workflow pattern search_rc
   local -a workflows
@@ -187,6 +187,9 @@ check_dormant_workflows() {
     if [ ! -f "$workflow" ] || [ ! -r "$workflow" ] || [ -L "$workflow" ]; then
       echo "Production workflow is not a readable regular file: $workflow" >&2
       return 1
+    fi
+    if [ "$workflow" = "$root/.github/workflows/ai-resume-review-consumer.yml" ]; then
+      continue
     fi
     pattern='prepare-ai-resume-review-consumer\.sh|ai-resume-review'
     if [ "$workflow" = "$root/.github/workflows/ai-resume-review-recovery.yml" ]; then
@@ -205,10 +208,7 @@ check_dormant_workflows() {
   done
 }
 check_dormant_workflows "$root/.github/workflows"
-if [ -e "$root/.github/workflows/ai-resume-review-consumer.yml" ]; then
-  echo 'Production consumer exists before activation.' >&2
-  exit 1
-fi
+[ -f "$root/.github/workflows/ai-resume-review-consumer.yml" ]
 grep -Fq 'workflows: [AI Resume Review Consumer]' \
   "$root/.github/workflows/ai-resume-review-recovery.yml"
 mkdir "$tmp/empty-workflows" "$tmp/invalid-workflows"

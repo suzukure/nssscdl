@@ -152,6 +152,9 @@ check_dormant_workflows() {
       echo "Production workflow is not a readable regular file: $workflow" >&2
       return 1
     fi
+    if [ "$workflow" = "$root/.github/workflows/ai-resume-review-consumer.yml" ]; then
+      continue
+    fi
     pattern='prepare-ai-resume-review-consumer\.sh|ai-resume-review'
     if [ "$workflow" = "$root/.github/workflows/ai-resume-review-recovery.yml" ]; then
       pattern='repository_dispatch|prepare-ai-resume-review-consumer\.sh|^name: AI Resume Review Consumer$'
@@ -169,10 +172,7 @@ check_dormant_workflows() {
   done
 }
 check_dormant_workflows "$root/.github/workflows"
-if [ -e "$root/.github/workflows/ai-resume-review-consumer.yml" ]; then
-  echo 'Production consumer exists before activation.' >&2
-  exit 1
-fi
+[ -f "$root/.github/workflows/ai-resume-review-consumer.yml" ]
 mkdir "$tmp/empty-workflows"
 if check_dormant_workflows "$tmp/empty-workflows" >/dev/null 2>&1; then exit 1; fi
 mkdir "$tmp/dispatch-workflows"
