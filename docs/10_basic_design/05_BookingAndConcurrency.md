@@ -118,6 +118,12 @@ Commit必須条件が不成立の場合は、DB Transaction全体が失敗する
 
 結果が不明な場合は最新確定状態を再取得し、業務結果を判定することを基本とする。一括予約Confirmの再送は5.5.3の操作識別子によるIdempotency方針に従う。他のCommandにCommand Idempotency Key等の追加方式が必要かはAPI詳細設計で判断する。
 
+### 3.8 認証状態と競合するCommand
+
+Security Suspension Commandは`StudentSecurityAccess`の停止と全Student Sessionの失効を同一業務Transactionで確定する。生徒削除も§9.1の境界で失効させる。Login / Session issuanceは発行と同じ原子的Transaction内で最新Student access stateとlifecycleを最終Guardし、停止・削除が先にCommitされれば発行しない。Loginが先にCommitされても、後続の停止・削除でそのSessionを失効させる。Session middlewareとStudent Write CommandはSessionレコードに加え現在のaccess state / lifecycleを再確認する。解除は旧Sessionの失効を取り消さない。Session一括UPDATE / revocation epoch等の物理方式は詳細設計で定める。
+
+連絡先メール所有確認のCommitでは、現在の`PendingContactEmailChange`、単回Tokenの有効性、新メール所有確認、Active Student間のメール一意性、Security Suspensionおよび削除・利用不能状態を同一Transactionで再検証する。成功時にStudent連絡先とStudent用Magic Link login addressを一体として切り替え、旧メールSecurity Notice義務を既存通知設計に従い確定する。置換済みPendingや旧Tokenは後から変更を成立させない。具体Guard SQLとconsume方式は詳細設計で定める。
+
 ## 4. 競合・エラー表現
 
 本節は要求仕様v1.4の `POL-014 利用者向けエラー情報の安全な抽象化`、`BR-133 利用者向けエラー表現`、`REQ-914 障害・エラー時利用者表示` を、D1 TransactionとAPI境界で実現するための基本設計である。
@@ -429,7 +435,7 @@ Resend等への外部メール送信はCommit後に行う。送信失敗によ�
 生徒削除の正常Commitでは、少なくとも次を同一TransactionでAll-or-Nothingに確定する。
 
 - 対象生徒を通常利用不能な削除確定状態へ遷移
-- 既存Session無効化
+- 対象Studentの全Student Session失効、およびStudentAccount / Student用AuthMethodの通常Login対象外化（独立Admin Account / Sessionは維持）
 - Server Commit基準時刻 `T` で将来と判定される全 `confirmed` Reservationを `system_cancelled` 化
 - 各 `cancelled_at = T`
 - 各 `SystemCancellationDetail(reason_code = student_deleted)`
@@ -470,7 +476,7 @@ Preview対象集合 != Commit直前対象集合
 
 生徒削除Commit時に個人情報削除・匿名化の後続処理必要状態をD1へ永続化し、Worker停止等があっても要求を失わない。個人情報の実削除・匿名化は24時間以内の後続処理とする。
 
-個人情報削除・匿名化用Entity、列、Scheduled Job等は認証・アカウント設計／詳細設計で確定する。
+Student用AuthMethodを含む個人情報削除・匿名化用Entity、列、Scheduled Job等は詳細設計で確定する。
 
 ### 9.5 classification
 
@@ -791,7 +797,7 @@ Delivery Attemptの安定したidentityはProvider call前に確定する。Prov
 
 `REQ-102 / AC-102-001` に従い、予約確定時点でLesson開始まで24時間未満ならReminder Intentを追加生成しない。それ以外は概念上 `reminder_due_at = lesson_start - 24h` とし、`reminder_due_at <= now < lesson_start` かつReservationが現在もReminder対象のとき生成する。正常稼働時は24時間前境界から次の15分tickまでのmaterialization遅れを許容する。停止で境界tickを逃してもLesson開始前に復旧し義務が有効ならcatch-up生成する。同一Reservationの同一Reminder義務は重複tick・並行実行でもIntentを重複生成しない。Cronの瞬間一致を正しさの前提にしない。
 
-Cancellation、生徒削除、Lesson開始等で通知義務が失効した場合は生成・再送しない。時刻と業務状態から導出できる失効はQuery / Commandに加えてdelivery直前Guardでも再評価する。Cleanup Jobの先行実行や物理削除の有無によって期限切れデータを有効扱いに戻さない。生徒削除等のCommandで確定する削除・匿名化義務と期限はdurableに記録し、Privacy / Retention Cleanupが要求上の期限内に実行する。具体周期は詳細設計で定める。Session / Token固有の期限・revocation意味は #539、Backup artifactは #541 に従う。
+Cancellation、生徒削除、Lesson開始等で通知義務が失効した場合は生成・再送しない。時刻と業務状態から導出できる失効はQuery / Commandに加えてdelivery直前Guardでも再評価する。Cleanup Jobの先行実行や物理削除の有無によって期限切れデータを有効扱いに戻さない。生徒削除等のCommandで確定する削除・匿名化義務と期限はdurableに記録し、Privacy / Retention Cleanupが要求上の期限内に実行する。具体周期は詳細設計で定める。Session / Token固有の期限・revocation意味は `01_SystemArchitecture.md` §2.1と本書§3.8、Backup artifactは #541 に従う。
 
 ### 13.13 Provider Callback
 

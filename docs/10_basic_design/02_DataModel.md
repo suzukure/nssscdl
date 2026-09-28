@@ -11,6 +11,13 @@
 以下を基本概念として扱う。
 
 - `Student` — 生徒本人を表す。
+- `StudentAccount` / `AdminAccount` — Student / AdminとしてLoginする別々のSecurity Principal。
+- `AuthMethod` — Role別AccountへbindingするGoogle OIDC / Email Magic Link identity。
+- `Session` — 認証済みAccountとRole scopeをD1で保持するLogin状態。
+- `AuthChallenge` — Magic Link、Invitation、メール所有確認等の短期・単回Token。
+- `Invitation` — Invitation Onlyでの新Student登録許可。
+- `PendingContactEmailChange` — 新メール所有確認待ちの変更。
+- `StudentSecurityAccess` — Student lifecycleと分離したSecurity Suspension状態。
 - `LessonSlot` — 公開・管理対象となる固定レッスン時間枠を表す。
 - `SlotOccupancy` — LessonSlotの現在の占有を表す共通レコード。
 - `StudentReservation` — 生徒による個人レッスン予約の業務レコード。キャンセル等の履歴、自動分類値、現在の実効分類を保持する。
@@ -28,6 +35,28 @@
 `StudentReservation`、`AdminHold`、`GroupLesson` は「枠を占有する」という点では共通するが、業務上は異なる意味を持つため同一状態として扱わない。
 
 また、Reservation周辺でも、予約ライフサイクル、取消種別、欠席、月間回数算入、自動分類、実効classification、明示Overrideを同一状態へ統合しない。
+
+### 2.1 認証・Accountの論理関係
+
+`Student` は予約・プロフィール・連絡先の業務Entityで、内部Student IDを正本識別子とする。`StudentAccount` は1つのActive Studentへ紐付き、`AdminAccount` は独立したAdmin RoleのPrincipalとする。同一人物が両方を持ってもAccount / Sessionは別で、Student側のAuth Method自動linkからAdmin bindingを生成しない。
+
+```text
+Student 1 ───── 0..1 StudentAccount ───── 0..* AuthMethod
+    │                    └───── 0..* Session (Student scope)
+    ├───── 1 StudentSecurityAccess
+    └───── 0..1 active PendingContactEmailChange ── AuthChallenge
+AdminAccount 1 ───── 0..* AuthMethod
+             └───── 0..* Session (Admin scope)
+Invitation ───── AuthChallenge (new Student registration)
+```
+
+`AuthMethod` はGoogleのstable subject / verified emailまたはMagic Link login addressをAccountへ明示的にbindingする。Student連絡先メールとGoogle identityのemailは別概念とする。`Session` はAccount / Role scope、期限、失効状態を保持し、Browserのopaque tokenからServer側で解決する。`AuthChallenge` はpurpose / Account scopeを持つ単回TokenでありSessionではない。Invitationは72時間の登録許可で、再発行時は旧Tokenを無効化する。Tokenの期限・使用済み・supersededをCleanup遅延によって有効扱いに戻さない。
+
+Open Registrationでは所有確認済みemailから新Student / StudentAccountを作成できる。Invitation Onlyでの新Student作成には有効なInvitationを要し、Invitation emailとGoogle emailの一致は必須としない。既存Active Studentの一意なverified emailは`REQ-205`のlinkへ進め、異なるemailの既存Accountを自動mergeしない。削除済みStudentのIDや履歴へ再接続しない。Registration modeは既存StudentのLogin可否に影響しない。
+
+`PendingContactEmailChange` はStudentあたりactive最大1件で、新規開始は旧Pendingをsupersedeする。確認完了までは旧連絡先を維持し、成功時はStudentの連絡先とMagic Link login addressを新verified emailへ同期する。Google Auth Methodのbindingは変更しない。確認時Guardと通知境界は `06_APIOverview.md` §18、Transaction競合は `05_BookingAndConcurrency.md` を正とする。
+
+削除確定時、StudentAccountとStudent用AuthMethodは通常Login対象外とし、直接管理する認証識別子等は `REQ-934` に従い24時間以内に削除・匿名化する。独立したAdminAccount / Admin Sessionおよび独立した保持目的を持つAdmin用AuthMethodはStudent削除だけで失効・削除しない。物理Table分割、column、hash、index、constraint名は詳細設計で定める。
 
 ## 3. Student・LessonSlot・StudentReservation の関係
 
@@ -369,6 +398,7 @@ Student
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
+- POL-006 ロール分離と最小権限
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-010 既定ルールと例外を分離する
@@ -387,12 +417,17 @@ Student
 - BR-066 予約状態と月間算入の分離
 - BR-067 未来枠の現在予約状態の一貫性
 - BR-100 生徒削除
+- BR-090〜BR-099 認証・Account・Security Suspension
+- BR-120 / BR-121 / BR-123 / BR-124 / BR-127 プロフィール・認証情報・削除
 - BR-110 重大障害通知
 - BR-116 スクール都合キャンセル通知
 - BR-125 将来予約処理
 - BR-132 監査
 - BR-133 利用者向けエラー表現
 - REQ-003 予約
+- REQ-201〜REQ-207 / REQ-210 / REQ-211 生徒登録・認証・Session
+- REQ-320 管理者認証方法管理
+- REQ-934 個人情報削除
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
 - REQ-104 標準／追加区分変更通知
