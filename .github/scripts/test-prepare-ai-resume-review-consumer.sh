@@ -115,7 +115,29 @@ export COMMENT_MODE=valid
 first="$(dispatch | bash "$helper" owner/repo 99)"
 second="$(dispatch | bash "$helper" owner/repo 99)"
 [ "$first" = "$second" ]
-! grep -E 'api -X|issue edit|pr ready|dispatch' "$GH_LOG"
+check_read_only_log() {
+  local search_rc
+  if grep -Eq 'api -X|issue edit|pr ready|dispatch' "$GH_LOG"; then
+    search_rc=0
+  else
+    search_rc=$?
+  fi
+  case "$search_rc" in
+    0) echo 'Prepared review consumer attempted a repository write.' >&2; return 1 ;;
+    1) return 0 ;;
+    *) echo "Repository write log search failed (exit $search_rc)." >&2; return 1 ;;
+  esac
+}
+check_read_only_log
+printf '%s\n' 'api -X POST /repos/owner/repo/issues/37/comments' >> "$GH_LOG"
+if check_read_only_log >/dev/null 2>&1; then
+  echo 'Repository write log was accepted.' >&2
+  exit 1
+fi
+if (grep() { return 127; }; check_read_only_log >/dev/null 2>&1); then
+  echo 'Missing repository write log search tool was accepted.' >&2
+  exit 1
+fi
 check_dormant_workflows() {
   local directory="$1" workflow search_rc
   local -a workflows
