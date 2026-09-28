@@ -372,29 +372,31 @@ Security Suspensionの論理状態も、将来の物理SchemaをそのままAPI 
 
 ## 10. 認証・Session設計との境界
 
-本書では、APIが認証済みIdentityとRoleをServer側で解決し、その情報を用いて認可するところまでを原則として定義する。
+Application Workerは `01_SystemArchitecture.md` §2.1のD1正本opaque Server-side SessionをCookieで扱う。Student Account / Admin AccountとSessionはRole scopeごとに分離し、同一Sessionで権限を混在させない。各Requestで期限、失効、Account / Role、Studentの最新access state / lifecycleを検証する。Adminはabsolute最大7日・Idle 12時間（request時にlast activityを評価）、Studentはabsolute最大30日・Idleなしとする。Session bearer tokenをlocalStorage等へ保持しない。
 
 生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、管理者APIのActor / Target決定Ruleは **4.2 管理者向けAPIのActor / Target Scope原則** を正とする。本節では重複定義しない。
 
-Security Suspensionについては、停止後に既存Sessionが即時利用不能となり、停止中は認証成功後も新しいSessionを発行せず、解除後も停止前Sessionを復活させないことを基本設計上の保証とする。Session保存・revocationの具体方式は後続の認証・Session基本設計で確定する。
+Security Suspensionについては、停止と全Student Session失効を同一Transactionで確定し、停止中は認証成功後も新しいSessionを発行せず、解除後も停止前Sessionを復活させない。Student Write Commandも現在の利用可否をCommit時に再確認する。競合境界は `05_BookingAndConcurrency.md` §3.8を正とする。
 
-生徒削除については、削除Commandの正常完了時点で既存Sessionが利用不能であることを基本設計上の保証とする。個人情報の実削除・匿名化は24時間以内の後続処理とするが、後続処理が必要であるという義務自体は削除CommandのTransaction内で失われない形で永続化する。
+生徒削除については、削除Commandで利用不能化、全Student Session失効、Student Account / Auth Methodの通常Login対象外化、個人情報削除・匿名化義務を同一Transactionで確定する。独立したAdmin Account / Sessionは維持し、Student用認証識別子等は24時間以内に削除・匿名化する。
 
-連絡先メール変更については、生徒本人・管理者のどちらが開始しても新メール所有確認を省略せず、確認完了までは旧メールを有効な連絡先として維持する。Pending変更の物理Entity、Token、期限、再送、確認Endpoint等の具体方式は後続の認証・アカウント設計／詳細設計で確定する。
+連絡先メール変更については、生徒本人・管理者のどちらが開始しても新メール所有確認を省略せず、確認完了までは旧メールを有効な連絡先として維持する。確認完了時は最新状態を再確認し、連絡先とStudent用Magic Link login addressを同期する。Google Auth Method bindingは変更しない。
 
-以下は後続の認証・Session基本設計で確定する。
+### 10.1 Login / LogoutとRegistration
 
-- Session保存方式
-- Session Cookie / Token方式
-- Cookie属性
-- CSRF対策
-- Login / Logout Endpoint詳細
-- Google OAuth Flow詳細
-- Magic Link Flow詳細
-- Session失効・更新方式
-- Security Suspensionの即時Session失効・非復活を実現するrevocation方式
-- 生徒削除時のSession即時失効と個人情報削除・匿名化後続処理の具体方式
-- 連絡先メール所有確認のPending状態、Token、期限、再送、無効化方式
+GoogleはOIDC Authorization Code Flowのcallbackでstable subject、email、email verifiedを検証する。既存のStudent用bindingを優先し、未bindingなら一意なActive Studentの同一正規化verified連絡先メールへ `REQ-205` に従いlinkできる。異なるemailの既存Accountを自動mergeせず、削除済みStudentへ接続しない。AdminはAdmin Accountへ明示的にbinding済みのidentityだけを使い、email一致やStudent側の自動linkで昇格させない。Google認証入口の異常Trafficも `REQ-210` に従いRate Limitする。
+
+Magic Link要求は公開入口でTurnstile、送信先（初期値60秒1回・1時間5回・1日10回、設定可能）と送信元のRate LimitをProvider呼出前に適用し、登録有無で公開Responseを変えず、認証失敗だけで恒久lockしない。Challengeはpurpose / Account scopeを持ち15分・単回使用で、使用済み・期限切れ・supersededを復活させない。consumeとSession発行を安全な整合境界で扱う。Google / Magic Link成功後も現在のAccount bindingとStudent利用可否を確認し、新しいRole別Sessionを発行する。Logoutは対象SessionをServer側で即時失効させる。
+
+Open Registrationはverified Google emailまたはMagic Linkで所有確認したemailから新Student / Student Accountを作成できる。Invitation Onlyでは有効な72時間のInvitationなしに新Studentを作らず、Invitation emailとGoogle emailの一致は求めない。再発行は新Tokenで旧Tokenを無効化する。Registration modeは既存StudentのLoginには使わない。削除済みStudentと同じemailの新登録には新しいStudent IDを発行する。
+
+### 10.2 認可、CSRF、Admin初期化
+
+`/api/me/...` はStudent Sessionから内部Student IDを、`/api/admin/...` はAdmin SessionからAdmin Actor / RoleをServer側で解決する。認証成功だけでRoleを付与せず、明示的な登録・Invitation・Admin setup / method追加FlowでAccountを作成・bindingする。Role判定にClient入力やURLだけを使わない。
+
+Cookie Sessionによる認証済みunsafe methodのCommandではSession-bound CSRF tokenを検証し、Origin / same-origin確認も行う。CSRF tokenはIdentityや認可の代替にしない。Google callbackはOAuth state / nonce / PKCE等でrequest origin / replayを防ぎ、Magic Link / Invitation / 所有確認Tokenは通常Session CSRF tokenと分離したpurpose-bound・single-useのbearer challengeとする。
+
+Public Admin Registrationは設けない。System Setupで1つのAdmin Accountと少なくとも1つの事前binding済みAuth Methodを生成する。初期候補はSetup指定Admin emailのAdmin用Magic Linkとする。Login済みAdminは `REQ-320` に従い新方式を検証後に有効化し、最後の方式を削除できない。全方式喪失時は公開ResetではなくInfrastructure / 保守権限による既存Admin Accountへの明示的な再bindingで回復し、公開EndpointやStudent登録からAdmin Roleを生成しない。具体運用権限と手順は #542 で定める。
 
 ## 11. 生徒向けAPI基本形
 
@@ -1110,7 +1112,7 @@ Security Access State
   active / suspended
 ```
 
-物理的にStudent属性として保持するか、別Entityやrevocation状態と組み合わせるかは後続の認証・Session基本設計で確定できる。ただし、業務上 `suspended` と削除・退会・Reservation取消を同一状態として扱わない。
+論理Entityは `02_DataModel.md` の `StudentSecurityAccess` とする。物理Table分割やrevocation状態との組合せは詳細設計で定める。業務上 `suspended` と削除・退会・Reservation取消を同一状態として扱わない。
 
 停止・解除CommandではTarget Studentを内部Student IDで特定し、Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
 
@@ -1123,9 +1125,9 @@ Security Access State
 - 停止後の認証成功だけでは新しいStudent Sessionを発行しない
 - `AuditLog` から管理者Actor、対象Student、停止操作、時刻を追跡できる
 
-Session物理レコードの一括削除、revocation epoch / version等、即時失効を実現する具体方式は認証・Session基本設計で確定する。ただし方式にかかわらず、停止確定後に旧Sessionが一時的に有効なままとなることを正常状態として許容しない。
+Session物理レコードの一括更新、revocation epoch / version等の具体方式は詳細設計で定める。方式にかかわらず停止確定後に旧Sessionが一時的に有効なままとなることを正常状態として許容しない。
 
-認証済みStudent Requestでも、Sessionの形式的有効性だけでなく現在のSecurity Access Stateを認可条件へ含める。停止中は少なくとも `REQ-211` が禁止する新規予約、生徒キャンセル、プロフィール変更を成立させない。他の生徒本人APIをどこまで参照可能とするかの詳細は認証・Session設計で要求との整合を確認するが、停止中にLogin済み状態として通常利用を継続できる実装にはしない。
+認証済みStudent Requestでも、Sessionの形式的有効性だけでなく現在のSecurity Access Stateを認可条件へ含める。停止中はStudent Sessionを利用不能とし、`REQ-211` が禁止する新規予約、生徒キャンセル、プロフィール変更も成立させない。
 
 ### 16.4 解除と旧Session非復活
 
@@ -1200,6 +1202,7 @@ Preview表示に個人情報を過剰に含めず、対象確認と影響理解�
 
 - 対象Studentを通常利用不能な削除確定状態へ遷移
 - 既存Session失効
+- Student Account / Student用Auth Methodの通常Login対象外化（独立Admin Account / Sessionは維持）
 - Server Commit基準時刻 `T` で将来と判定される全 `confirmed` Reservationを `system_cancelled` 化
 - 各 `cancelled_at = T`
 - 各 `SystemCancellationDetail(reason_code = student_deleted)`
@@ -1246,7 +1249,7 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 
 氏名、連絡先メール、Google等の認証紐付けなど直接管理する個人情報の実削除・匿名化は、要求どおり24時間以内に完了させる。Worker停止等があっても削除義務を失わないよう、削除CommandのTransaction内で後続処理必要状態を永続化する。
 
-後続処理のJob / Entity / Retry / Monitoring、Backup復旧時の再適用等の具体方式は認証・アカウント設計、運用設計、詳細設計で確定する。
+後続処理のJob / Entity / Retry / Monitoringは詳細・運用設計、Backup復旧時の再適用は #541 で確定する。
 
 ### 17.5 通知・履歴・成功Response
 
@@ -1346,7 +1349,7 @@ Security Noticeは変更直前の旧メールSnapshotへ送る通知義務を、
 
 新メール所有確認完了時に、そのメールがActiveな別Studentの連絡先として既に使用されている場合は変更を成立させない。連絡先メール一意性は変更開始時だけに依存せず、変更確定時の最新状態で保証する。
 
-Pending Entity、Token、確認期限、再送、具体的な無効化方法、確認Endpoint、Application Error Code等は認証・アカウント設計／詳細設計で確定する。
+Pending / Tokenの物理Schema、確認期限、再送、具体的な無効化方法、確認Endpoint、Application Error Code等は詳細設計で確定する。
 
 確認メールの配送失敗、期限切れまたは使用済みからの回復は、現在有効なPending変更の新メール宛に確認Flowとして再要求／再発行する。通常の通知失敗Dashboardまたは`notification-failures/{notificationId}/retry`で再送しない。置換・無効化・終了したPendingに対して新たな確認メールを送信せず、旧Tokenを再活性化しない。
 
@@ -1362,7 +1365,7 @@ Pending Entity、Token、確認期限、再送、具体的な無効化方法、�
 
 `AC-317-003 / BR-132 / REQ-940` に従い、氏名代理変更および連絡先メール変更開始を監査する。
 
-AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、必要最小限のBefore / Afterを基本とし、氏名・メールそのものを必要なく重複保存しない。メール所有確認完了による実変更についても、変更開始との因果関係を追跡できる形を認証・アカウント設計で具体化する。
+AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、必要最小限のBefore / Afterを基本とし、氏名・メールそのものを必要なく重複保存しない。メール所有確認完了による実変更についても、変更開始との因果関係を追跡できる形を詳細設計で具体化する。
 
 氏名変更成功ResponseはCommit後の確定プロフィール状態を返す。連絡先メール変更開始成功Responseは、旧メールが現在有効なままであること、新メール所有確認待ちであること、および管理画面が次の行動を判断するために必要な情報を返せる形とする。
 
@@ -1442,7 +1445,12 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - Application Error Code全一覧
 - Validation ErrorのField表現
 - HTTP Header方針
-- CSRFの具体方式
+- CSRF token生成・header・具体方式、Origin allowlist
+- Cookie名・SameSite・Path・prefix、Session token生成・hash・storage、Admin last-activity更新粒度、具体revocation query / version方式
+- Google state / nonce / PKCE wire・SDK、Magic Link / Invitation / 所有確認Token生成・hash・URL・consume transaction
+- Account / AuthMethod / Session / ChallengeのDDL・index・unique constraint
+- Login / Logout / callback / method-management endpoint path・Request / Response、Registration / Invitation UI順序、Provider API呼出し詳細
+- Admin bootstrap / recovery command・runbook（#542の運用権限・Deploy境界に従う）
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format
@@ -1480,11 +1488,7 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - 管理者対応終了／再開のEndpoint path、Request / Response、Expected State wire、終了済み一覧のFilter / Pagination / Sort、1年経過後の物理Cleanup
 - Dispatcher routing / logical due state、Cron式・環境別binding、Cleanup具体周期、Handler heartbeat・metric・Alert閾値、Holiday Masterの取得時刻・対象年・staging / update transaction方式
 
-認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
-
-生徒削除については、認証・アカウント設計でSession即時失効、個人情報削除・匿名化対象、後続処理の永続状態と再実行可能性を具体化する。運用設計では24時間以内完了の監視・失敗時対応、Backup復旧時の再適用を具体化する。
-
-プロフィール代理支援については、認証・アカウント設計で生徒本人と管理者開始を共通化できる連絡先メール所有確認Flow、Pending変更の排他、旧メールSecurity Noticeを具体化する。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
+生徒削除後の個人情報削除・匿名化の再実行可能な物理状態と24時間以内完了の監視・失敗時対応は詳細・運用設計、Backup復旧時の再適用は #541 で具体化する。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
 
 ## 21. 関連要求・方針
 
@@ -1526,12 +1530,14 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
 - BR-091 連絡先メール一意
+- BR-092〜BR-098 代替認証・Magic Link・Invitation・Account・管理者認証
 - BR-099 セキュリティ利用停止
 - BR-100 生徒削除
 - BR-113 リマインド
 - BR-114 通知失敗
 - BR-116 スクール都合キャンセル通知
 - BR-120 最小プロフィール
+- BR-121 Googleデータ最小化
 - BR-122 削除権限
 - BR-123 削除時即時無効化
 - BR-124 直接管理個人情報削除
@@ -1553,6 +1559,7 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
 - REQ-105 通知失敗管理
+- REQ-201〜REQ-205 / REQ-209 / REQ-210 生徒登録・認証・Invitation・悪用防止
 - REQ-206 連絡先メール変更
 - REQ-207 Session管理
 - REQ-211 セキュリティ利用停止
@@ -1572,19 +1579,25 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - REQ-315 欠席記録
 - REQ-316 セキュリティ利用停止管理
 - REQ-317 プロフィール代理支援
+- REQ-319 / REQ-320 登録モード・管理者認証方法管理
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-912 外部API Retry
 - REQ-914 障害・エラー時利用者表示
 - REQ-934 個人情報削除
+- REQ-935 認証可用性
 - REQ-940 監査Logging
 - REQ-951 Provider分離
 - CON-001 Cloudflare基盤
 - CON-006 初期規模
+- CON-003 認証
+- CON-007 初期管理者
 - OOS-002 管理者代理予約
+- OOS-006 複数管理者管理UI
 
 ## 22. 設計判断記録
 
+- `OI-BD-010` / #539でRole別Account、D1正本opaque Session、Google / Magic Link、登録・Invitation、CSRF、Admin bootstrap / recoveryの基本境界を確定した。Session方式の比較と採用理由は `01_SystemArchitecture.md` §2.1を正とする。
 - API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
 - 生徒一括予約の専用Preview / Confirm API契約はIssue #66で確定した。既存の単一予約APIを維持し、`REQ-008 / AC-008-001〜009` に対して、同一暦月・最新N・選択Slot・classification影響をServerが再検証する全体Confirmと、409での全体未適用・再Preview要求を定義した。
@@ -1606,7 +1619,7 @@ Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal ca
 - 欠席設定は終了済みの未取消confirmed Reservationだけに行い、Reservationライフサイクル、Slot、Occupancyを変更せず、対象Reservationを分類対象外とした上で必要な未開始Reservation再分類を行う。
 - 欠席解除は無条件な再算入ではなく、`ReservationAbsence` 解除後に月間回数除外等の最新条件から実効算入可否を再評価する。欠席設定・解除そのものの専用メールは生成せず、波及したstandard / additional区分変更だけ `REQ-104` に従い通知する。
 - Security Suspensionは休会・退会・削除・Reservation取消とは別のSecurity Access Stateとして扱い、設定・解除には専用Preview APIを設けず管理画面上の確定前説明で `AC-316-001〜003` を満たす。
-- Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は認証・Session基本設計で確定する。
+- Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は詳細設計で確定する。
 - Security SuspensionとStudent Write Commandの並行時は先行正常Commitを優先し、停止が先行Commitされた場合は後続Student WriteをCommit時Guardで成立させない。停止・解除自体ではReservation、SlotOccupancy、月間算入、classificationを変更しない。
 - 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、客観的に失効する通常予約系未配信NotificationIntentの失効終端、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
 - 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再Previewへ戻す。Lesson開始済み・過去Reservationは削除を理由に遡及キャンセルしない。
