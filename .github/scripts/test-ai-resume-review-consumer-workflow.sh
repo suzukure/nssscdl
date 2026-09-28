@@ -158,6 +158,26 @@ for expected in \
   'bash .github/scripts/consume-ai-resume-develop.sh'; do
   grep -Fq "$expected" "$developer"
 done
+followup="$(sed -n '/^  respond-to-claude:/,/^  handle-claude-followup-failure:/p' "$developer" | sed '$d')"
+[ -n "$followup" ]
+for expected in \
+  "github.event_name == 'pull_request_review'" \
+  "github.event.review.state == 'changes_requested'" \
+  "startsWith(github.event.pull_request.head.ref, 'ai/issue-')" \
+  'group: codex-writer-${{ github.event.pull_request.head.ref }}'; do
+  grep -Fq "$expected" <<< "$followup"
+done
+grep -Fq "needs.respond-to-claude.result == 'failure'" "$developer"
+for expected in \
+  '`respond-to-claude` のgroup式は `codex-writer-${{ github.event.pull_request.head.ref }}`' \
+  'AI Developer `respond-to-claude`（`pull_request_review` のchanges_requested）' \
+  'eventとreview ID、review対象HEAD、current PR HEAD / Draft状態' \
+  '`Run Codex follow-up` の開始・push有無' \
+  '`cancelled` は `handle-claude-followup-failure` のfailure条件に該当せず' \
+  '専用follow-up retry入口はないため' \
+  'partial pushやwriter ownershipが曖昧ならfail-closed'; do
+  grep -Fq "$expected" "$operations"
+done
 
 filter="$(sed -n "/          jq -ce '/,/          ' \"\$GITHUB_EVENT_PATH\" >\/dev\/null/p" "$workflow" |
   awk '/GITHUB_EVENT_PATH/ {exit} {print}' | sed '1d')"
