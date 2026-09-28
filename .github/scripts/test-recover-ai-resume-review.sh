@@ -31,7 +31,7 @@ esac
 STUB
 export MOCK_STATE="$tmp/state" MOCK_ISSUE_LABEL="$tmp/issue-label" \
   MOCK_PR_LABEL="$tmp/pr-label" MOCK_LOG="$tmp/gh.log" MOCK_LOSS=false \
-  MOCK_NO_CREATE=false
+  MOCK_NO_CREATE=false MOCK_LABEL_LOSS=none MOCK_LABEL_NO_WRITE=none
 gh() {
   printf '%s\n' "$*" >> "$MOCK_LOG"
   case "$*" in
@@ -41,9 +41,13 @@ gh() {
       printf 'replacement' > "$MOCK_STATE"
       [ "$MOCK_LOSS" != true ] ;;
     'issue edit 36 --repo owner/repo --add-label human-review-required')
-      printf true > "$MOCK_ISSUE_LABEL" ;;
+      [ "$MOCK_LABEL_NO_WRITE" != issue ] || return 1
+      printf true > "$MOCK_ISSUE_LABEL"
+      [ "$MOCK_LABEL_LOSS" != issue ] ;;
     'issue edit 37 --repo owner/repo --add-label human-review-required')
-      printf true > "$MOCK_PR_LABEL" ;;
+      [ "$MOCK_LABEL_NO_WRITE" != pr ] || return 1
+      printf true > "$MOCK_PR_LABEL"
+      [ "$MOCK_LABEL_LOSS" != pr ] ;;
     *) echo "Unexpected write: $*" >&2; return 1 ;;
   esac
 }
@@ -55,6 +59,15 @@ assert_no_write() {
   case "$rc" in
     0) echo 'Unexpected repository write.' >&2; exit 1 ;;
     1) ;;
+    *) echo 'Write log search failed.' >&2; exit 1 ;;
+  esac
+}
+assert_write_count() {
+  local count rc
+  if count="$(grep -Fc -- "$1" "$MOCK_LOG")"; then rc=0; else rc=$?; fi
+  case "$rc" in
+    0) [ "$count" = "$2" ] || { echo "Unexpected write count for $1: $count" >&2; exit 1; } ;;
+    1) [ "$2" = 0 ] || { echo "Missing write: $1" >&2; exit 1; } ;;
     *) echo 'Write log search failed.' >&2; exit 1 ;;
   esac
 }
@@ -83,9 +96,54 @@ run
 [ "$(cat "$MOCK_STATE")" = replacement ]
 [ "$(cat "$MOCK_ISSUE_LABEL")" = true ]
 [ "$(cat "$MOCK_PR_LABEL")" = true ]
-[ "$(grep -c 'api -X POST' "$MOCK_LOG")" = 1 ]
+assert_write_count 'api -X POST' 1
 MOCK_LOSS=false; export MOCK_LOSS
 : > "$MOCK_LOG"
+run
+assert_no_write
+
+# A lost label response is reconciled from fresh facts without a second write.
+printf replacement > "$MOCK_STATE"; printf false > "$MOCK_ISSUE_LABEL"
+printf false > "$MOCK_PR_LABEL"; : > "$MOCK_LOG"
+MOCK_LABEL_LOSS=issue; export MOCK_LABEL_LOSS
+run
+assert_write_count 'issue edit 36 --repo owner/repo --add-label human-review-required' 1
+assert_write_count 'issue edit 37 --repo owner/repo --add-label human-review-required' 1
+[ "$(cat "$MOCK_ISSUE_LABEL")" = true ]
+[ "$(cat "$MOCK_PR_LABEL")" = true ]
+
+printf true > "$MOCK_ISSUE_LABEL"; printf false > "$MOCK_PR_LABEL"
+: > "$MOCK_LOG"
+MOCK_LABEL_LOSS=pr; export MOCK_LABEL_LOSS
+run
+assert_write_count 'issue edit 36 --repo owner/repo --add-label human-review-required' 0
+assert_write_count 'issue edit 37 --repo owner/repo --add-label human-review-required' 1
+[ "$(cat "$MOCK_PR_LABEL")" = true ]
+
+MOCK_LABEL_LOSS=none; MOCK_LABEL_NO_WRITE=issue
+export MOCK_LABEL_LOSS MOCK_LABEL_NO_WRITE
+printf false > "$MOCK_ISSUE_LABEL"; printf false > "$MOCK_PR_LABEL"
+: > "$MOCK_LOG"
+if run >/dev/null 2>&1; then
+  echo 'Unconfirmed Issue label write was accepted.' >&2
+  exit 1
+fi
+assert_write_count 'issue edit 36 --repo owner/repo --add-label human-review-required' 1
+assert_write_count 'issue edit 37 --repo owner/repo --add-label human-review-required' 0
+[ "$(cat "$MOCK_ISSUE_LABEL")" = false ]
+
+MOCK_LABEL_NO_WRITE=pr; export MOCK_LABEL_NO_WRITE
+printf true > "$MOCK_ISSUE_LABEL"; printf false > "$MOCK_PR_LABEL"
+: > "$MOCK_LOG"
+if run >/dev/null 2>&1; then
+  echo 'Unconfirmed PR label write was accepted.' >&2
+  exit 1
+fi
+assert_write_count 'issue edit 37 --repo owner/repo --add-label human-review-required' 1
+[ "$(cat "$MOCK_PR_LABEL")" = false ]
+
+MOCK_LABEL_NO_WRITE=none; export MOCK_LABEL_NO_WRITE
+printf true > "$MOCK_PR_LABEL"; : > "$MOCK_LOG"
 run
 assert_no_write
 workflow="$root/.github/workflows/ai-resume-review-recovery.yml"

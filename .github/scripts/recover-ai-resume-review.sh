@@ -73,8 +73,13 @@ for iteration in 1 2 3; do
   esac
   jq -e --argjson number "$number" '.actions[0].number == $number' \
     <<< "$plan" >/dev/null || fail 'label target mismatch'
+  # The server may have applied the label even when its response was lost.
+  # Reconcile once from fresh facts; never resend an uncertain write here.
   gh issue edit "$number" --repo "$repo" --add-label human-review-required \
-    || fail 'label repair failed'
+    || true
   plan="$(prepare)" || fail 'label repair cannot be verified'
+  jq -e --arg action "$action" --argjson number "$number" '
+    any(.actions[]; .action == $action and .number == $number) | not
+  ' <<< "$plan" >/dev/null || fail 'label repair is not confirmed'
 done
 fail 'recovery did not converge'
