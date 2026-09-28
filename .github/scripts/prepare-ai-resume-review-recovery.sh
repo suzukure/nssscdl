@@ -171,14 +171,14 @@ while IFS=$'\t' read -r review_id review_attempt; do
     | if length != 1 then error("Review job ambiguity") else .[0] end
     | if .conclusion == "skipped" then "skipped"
       elif (.conclusion | IN("failure","cancelled","timed_out","stale")) then "entered"
-      elif .conclusion == null and (.status | IN("queued","in_progress","waiting","pending","requested"))
-        then "entered"
-      elif .conclusion == "success" then
+      elif .conclusion == "success" or
+           (.conclusion == null and (.status | IN("queued","in_progress","waiting","pending","requested"))) then
         [.steps[]? | select(.name == "Select Claude review model")]
-        | if length != 1 then error("entry step ambiguity") else .[0] end
+        | if length == 0 then error("entry step not observed")
+          elif length != 1 then error("entry step ambiguity") else .[0] end
         | if .status == "in_progress" or
              (.conclusion | IN("success","failure","cancelled","timed_out")) then "entered"
-          elif .conclusion == "skipped" then "skipped"
+          elif .conclusion == "skipped" and (.status == "completed") then "skipped"
           else error("unknown entry state") end
       else error("unknown Review job state") end
   ' "$tmp/review-jobs.json")" || fail 'Review ownership ambiguous'

@@ -72,14 +72,18 @@ gh() {
     'api --paginate --slurp /repos/owner/repo/actions/runs/600/attempts/1/jobs?per_page=100')
       jq -cn --arg mode "$REVIEW" '
         [{jobs:[{name:"Review",
-          status:(if $mode == "pending" then "in_progress" else "completed" end),
+          status:(if ($mode | IN("pending","pending_entered","pending_skipped","pending_step_queued"))
+            then "in_progress" else "completed" end),
           conclusion:(if $mode == "early_failure" then "failure"
             elif $mode == "job_skipped" then "skipped"
             elif ($mode | IN("cancelled","timed_out","stale")) then $mode
-            elif $mode == "pending" then null else "success" end),
+            elif ($mode | IN("pending","pending_entered","pending_skipped","pending_step_queued"))
+              then null else "success" end),
           steps:(if $mode == "job_skipped" or $mode == "pending" then [] else
-            [{name:"Select Claude review model",status:"completed",
-              conclusion:(if $mode == "skipped" or $mode == "early_failure"
+            [{name:"Select Claude review model",
+              status:(if $mode == "pending_step_queued" then "queued" else "completed" end),
+              conclusion:(if $mode == "pending_step_queued" then null
+                elif ($mode | IN("skipped","early_failure","pending_skipped"))
                 then "skipped" else "success" end)}] end)}]}]' ;;
     'api /repos/owner/repo/issues/36'|'api /repos/owner/repo/issues/37')
       local number="${2##*/}" present="$ISSUE_LABEL"
@@ -108,10 +112,22 @@ MODE=replacement; assert_actions '["add_pr_human_label"]'
 PR_LABEL=true; assert_actions '[]'
 MODE=accepted; REVIEW=entered; assert_actions '[]'
 [ "$(run | jq -r .result)" = normal_review_owns ]
-for REVIEW in early_failure cancelled timed_out stale pending; do
+for REVIEW in early_failure cancelled timed_out stale pending_entered; do
   assert_actions '[]'
   [ "$(run | jq -r .result)" = normal_review_owns ]
 done
+REVIEW=pending
+if run >/dev/null 2>&1; then
+  echo 'Pending Review without model entry was treated as owned.' >&2
+  exit 1
+fi
+REVIEW=pending_step_queued
+if run >/dev/null 2>&1; then
+  echo 'Queued model step was treated as owned.' >&2
+  exit 1
+fi
+REVIEW=pending_skipped; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
+REVIEW=entered
 MODE=normalpause; assert_actions '[]'
 REVIEW=none
 if run >/dev/null 2>&1; then exit 1; fi
@@ -157,9 +173,9 @@ if (grep() { return 127; }; check_read_only_log >/dev/null 2>&1); then
   echo 'Missing repository write log search tool was accepted.' >&2
   exit 1
 fi
-# The prepared helper must be unreachable from all production workflows.
+# The recovery source is absent even after its independent workflow is wired.
 check_dormant_workflows() {
-  local directory="$1" workflow search_rc
+  local directory="$1" workflow pattern search_rc
   local -a workflows
   shopt -s nullglob
   workflows=("$directory"/*.yml "$directory"/*.yaml)
@@ -172,19 +188,29 @@ check_dormant_workflows() {
       echo "Production workflow is not a readable regular file: $workflow" >&2
       return 1
     fi
-    if grep -Eq 'prepare-ai-resume-review-recovery\.sh|ai-resume-review-consumer\.yml' "$workflow"; then
+    pattern='prepare-ai-resume-review-consumer\.sh|ai-resume-review'
+    if [ "$workflow" = "$root/.github/workflows/ai-resume-review-recovery.yml" ]; then
+      pattern='repository_dispatch|prepare-ai-resume-review-consumer\.sh|^name: AI Resume Review Consumer$'
+    fi
+    if grep -Eq "$pattern" "$workflow"; then
       search_rc=0
     else
       search_rc=$?
     fi
     case "$search_rc" in
-      0) echo "Prepared recovery became reachable from $workflow." >&2; return 1 ;;
+      0) echo "Resume Review consumer became reachable from $workflow." >&2; return 1 ;;
       1) ;;
       *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; return 1 ;;
     esac
   done
 }
 check_dormant_workflows "$root/.github/workflows"
+if [ -e "$root/.github/workflows/ai-resume-review-consumer.yml" ]; then
+  echo 'Production consumer exists before activation.' >&2
+  exit 1
+fi
+grep -Fq 'workflows: [AI Resume Review Consumer]' \
+  "$root/.github/workflows/ai-resume-review-recovery.yml"
 mkdir "$tmp/empty-workflows" "$tmp/invalid-workflows"
 if check_dormant_workflows "$tmp/empty-workflows" >/dev/null 2>&1; then exit 1; fi
 ln -s "$root/.github/workflows/ai-workflow-regression.yml" "$tmp/invalid-workflows/link.yml"
@@ -197,8 +223,14 @@ printf 'name: unreadable\n' > "$tmp/invalid-workflows/unreadable.yml"
 chmod 000 "$tmp/invalid-workflows/unreadable.yml"
 if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
 chmod 600 "$tmp/invalid-workflows/unreadable.yml"
-printf 'run: prepare-ai-resume-review-recovery.sh\n' > "$tmp/invalid-workflows/reachable.yaml"
+printf 'run: ai-resume-review-consumer.yml\n' > "$tmp/invalid-workflows/reachable.yaml"
 if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
+printf 'name: Other\non:\n  repository_dispatch:\n    types: [ai-resume-review]\n' \
+  > "$tmp/invalid-workflows/reachable.yaml"
+if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then
+  echo 'Block-style Resume Review dispatch was accepted.' >&2
+  exit 1
+fi
 if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then
   echo 'Missing workflow search tool was accepted.' >&2
   exit 1
