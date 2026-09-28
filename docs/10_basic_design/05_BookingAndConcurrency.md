@@ -763,7 +763,7 @@ Reminderは、Lesson開始前かつ対象ReservationがReminder対象として�
 
 Dashboard警告件数と通常の通知失敗一覧は、現在管理者対応を要する未解決Intentを対象とする。失効済みIntentは未配信でも警告件数・通常再送対象から除外するが、配信成功として扱わない。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、その配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。初期リリースでは失効済み通知専用の恒常的な閲覧UIを追加しない。通知義務が存在したこと、未配信であったこと、失効理由・時刻等は既存Retention方針の範囲で必要最小限保持するが、生徒削除では通知履歴・Deliveryを理由に氏名・連絡先メール等の個人情報を保持しない。
 
-配信結果と通知義務有効性を分離する物理状態、失効理由、永続化・導出の具体方式、DB Schemaは詳細設計へ送る。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合は、未検証のProvider能力を保証せず、後続の通知設計・詳細設計で具体化する。
+配信結果と通知義務有効性を分離する物理状態、失効理由、永続化・導出の具体方式、DB Schemaは詳細設計へ送る。Provider Callback・結果不明・重複／順序逆転Eventの基本方針は13.11・13.13に従い、具体的な照合・event mapping・送信直前の宛先再評価は未検証のProvider能力を保証せず詳細設計で定める。
 
 管理者対応状態は配送結果・通知義務有効性・技術的な業務判断可否と別軸とする。認証済み管理者による「管理者対応終了」は、未配信・未確認の事実を残して現在の対応のみ終了し、配信成功・客観的失効・Attemptを上書きしない。安全な説明と代替行動を提示できる結果確認中でも許可できるが、Provider側の配送取消にはならない。通知対象・内容・宛先・状態を安全に信用できず代替行動も提示できないIntegrity / Security異常等では技術確認待ちとして操作を拒否する。単なるProvider障害、結果不明、retry不可だけでは技術確認待ちに固定しない。技術原因はMonitoring / Incidentで分類し、個別Intentの業務判断可否とは別に扱う。
 
@@ -778,6 +778,24 @@ Magic Linkは公開要求Flowの再実行、Invitationは管理者による再�
 Security Noticeは変更直前の旧メールSnapshotへCommit後に送信し、送信失敗で確定済みのメール変更をRollbackしない。一時的障害のRetryおよびProvider受理後の配送Retryは`REQ-912`およびProvider固有Ruleに従いうるが、最終失敗後に現在の新メールへ再送する操作は提供しない。必要最小限の技術的観測は可能とするが、通常の通知失敗管理と同一視しない。
 
 Token生成・保存・supersede、Pending確認期限・再発行Endpoint、Security Notice Snapshotの物理保存・削除／不可逆最小化、Flow固有の状態表示および診断情報は詳細設計で定める。
+
+### 13.11 Commit後DeliveryとRecovery
+
+業務Commandは業務状態とNotificationIntentを同一D1 TransactionでCommitした後、待機Jobを通常送信の唯一の経路にせず即時にdeliveryをkickする。HTTP成功ResponseはProvider受付・配送成功を待たない。kick失敗やWorker終了時もdurableなIntent / Attemptを `01_SystemArchitecture.md` §5.1のNotification Delivery Recoveryが5分ごとに再発見し、同じclaim / send責務へ渡す。Scheduled起点のReminder Intentと管理者手動retryの新Attemptも、それぞれのCommit後に同じ責務へ渡す。具体的なkick方式は詳細設計で定める。
+
+claim時はD1の最新状態でdue、通知義務・宛先の有効性、Attempt状態を再検証する。重複invocationや並行workerが同じworkを送信しないようdurable claim / leaseまたは同等の排他を設け、期限切れleaseはreclaim可能にしつつ、古いworkerの結果更新はfencing / expected-state guardで拒否する。Provider call中にD1 Transactionを保持しない。itemごとに進捗を永続化し、batch内の別itemの完了を一件の失敗でRollbackしない。DB接続不能等でwork selectionや状態を信用できない場合は外部送信を推測で続行しない。
+
+Delivery Attemptの安定したidentityはProvider call前に確定する。Provider未呼出しを確認できる場合だけ安全条件の範囲で同Attemptを再実行できる。Provider受理の可能性がありlocal resultだけ不明なら「結果確認中」として盲目的に新送信しない。Providerの冪等性keyや安全な照会機能は確認できた場合にAdapter内で使える余地を持たせ、未確認の能力を保証にしない。照合不能時の技術安全性境界、自動Retry上限・Permanent Error後の管理者対応要／技術確認待ちは13.7〜13.9に従う。
+
+### 13.12 Reminder Materializerと時刻Guard
+
+`REQ-102 / AC-102-001` に従い、予約確定時点でLesson開始まで24時間未満ならReminder Intentを追加生成しない。それ以外は概念上 `reminder_due_at = lesson_start - 24h` とし、`reminder_due_at <= now < lesson_start` かつReservationが現在もReminder対象のとき生成する。正常稼働時は24時間前境界から次の15分tickまでのmaterialization遅れを許容する。停止で境界tickを逃してもLesson開始前に復旧し義務が有効ならcatch-up生成する。同一Reservationの同一Reminder義務は重複tick・並行実行でもIntentを重複生成しない。Cronの瞬間一致を正しさの前提にしない。
+
+Cancellation、生徒削除、Lesson開始等で通知義務が失効した場合は生成・再送しない。時刻と業務状態から導出できる失効はQuery / Commandに加えてdelivery直前Guardでも再評価する。Cleanup Jobの先行実行や物理削除の有無によって期限切れデータを有効扱いに戻さない。生徒削除等のCommandで確定する削除・匿名化義務と期限はdurableに記録し、Privacy / Retention Cleanupが要求上の期限内に実行する。具体周期は詳細設計で定める。Session / Token固有の期限・revocation意味は #539、Backup artifactは #541 に従う。
+
+### 13.13 Provider Callback
+
+Provider CallbackはScheduled Jobと分けた外部HTTP eventとして真正性を確認した後、既知Delivery Attemptへ関連付ける。Provider Message IDだけをDomainや公開APIの正本識別子にしない。重複Callbackは冪等に処理し、順序逆転・stale eventで新しい確定配送事実を巻き戻さない。矛盾するeventや安全に関連付けられないeventでは配送事実を推測せず診断対象とする。Callbackは確定済みReservation等をRollbackしない。客観的失効済みまたは管理者対応終了済みIntentへの後着Callbackは配送事実として記録し得るが、通知義務や管理者対応状態を自動復活させない。
 
 ## 14. 未来Slotの現在状態Invariant
 
@@ -1008,8 +1026,13 @@ Integrity IncidentとRepair Auditの保持を分離する。
 - Application Error Codeの追加値、HTTP Response Schema、Correlation ID
 - Command Idempotency Key
 - 通知失敗の再送要求・Delivery Attemptの具体的な識別子、保存、冪等性Guard、状態遷移
+- Delivery Attempt内retry count、next attempt時刻、具体Backoff
 - NotificationIntentの配信結果と通知義務有効性を分離する物理状態、失効理由、永続化／導出方式、DB Schema
-- Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価
+- post-commit kick方式、Dispatcher routing / logical due state、Cron式・環境別binding、Cleanup具体周期
+- claim / lease / fencingのSchema・SQL・Index、batch size・pagination、Reminder義務のlogical key・一意性Guard
+- Provider idempotency key / Message ID mapping、安全な照合API、Callback真正性・event identity / mapping / precedence・矛盾処理、送信直前の宛先再評価
+- 管理者対応終了／再開のEndpoint path、Request / Response、Expected State wire、終了済み一覧のFilter / Pagination / Sort、1年経過後の物理Cleanup
+- Handler heartbeat・metric・Alert閾値、Holiday Masterの取得時刻・対象年・staging / update transaction方式
 - 一括予約ConfirmのExpected Stateの具体表現、Guard SQL、集合書込みSQL、Conflict Responseの具体Wire表現
 - 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送Response表現
 - 分類管理Commandの具体的Guard SQL、集合再分類SQL、Expected Stateの具体表現
