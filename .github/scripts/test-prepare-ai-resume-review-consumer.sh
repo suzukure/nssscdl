@@ -152,7 +152,7 @@ check_dormant_workflows() {
       echo "Production workflow is not a readable regular file: $workflow" >&2
       return 1
     fi
-    if grep -Eq 'prepare-ai-resume-review-consumer\.sh|ai-resume-review' "$workflow"; then
+    if grep -Eq 'prepare-ai-resume-review-consumer\.sh|ai-resume-review-consumer\.yml|event_type: ai-resume-review' "$workflow"; then
       search_rc=0
     else
       search_rc=$?
@@ -165,6 +165,10 @@ check_dormant_workflows() {
   done
 }
 check_dormant_workflows "$root/.github/workflows"
+if [ -e "$root/.github/workflows/ai-resume-review-consumer.yml" ]; then
+  echo 'Production consumer exists before activation.' >&2
+  exit 1
+fi
 mkdir "$tmp/empty-workflows"
 if check_dormant_workflows "$tmp/empty-workflows" >/dev/null 2>&1; then exit 1; fi
 if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then

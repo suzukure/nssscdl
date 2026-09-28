@@ -1,0 +1,86 @@
+name: AI Resume Review Recovery
+
+on:
+  workflow_run:
+    workflows: [AI Resume Review Consumer]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  resolve:
+    name: Resolve canonical writer
+    if: ${{ contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion) }}
+    runs-on: ubuntu-latest
+    outputs:
+      issue: ${{ steps.target.outputs.issue }}
+      pr: ${{ steps.target.outputs.pr }}
+      source: ${{ steps.target.outputs.source }}
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve source title and closing Issue
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TITLE: ${{ github.event.workflow_run.display_title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_TITLE" =~ ^AI\ Resume\ Review\ Consumer\ pr:([1-9][0-9]*)\ pause:([1-9][0-9]*)$ ]] || exit 1
+          pr="${BASH_REMATCH[1]}"
+          source="${BASH_REMATCH[2]}"
+          relation="$(printf '%s\n' '{"result":"accepted","action":"review","actor":"recovery"}' |
+            bash .github/scripts/resolve-ai-resume-target.sh "$GITHUB_REPOSITORY" pr "$pr")"
+          issue="$(jq -er --argjson pr "$pr" '
+            select(.target == ("pr:" + ($pr | tostring)) and .pull_request.number == $pr
+              and .pull_request.base_ref == "main" and .closing_issue.state == "open")
+            | .closing_issue.number | select(type == "number" and . > 0 and floor == .)
+          ' <<< "$relation")"
+          printf 'issue=%s\npr=%s\nsource=%s\n' "$issue" "$pr" "$source" >> "$GITHUB_OUTPUT"
+
+  recover:
+    name: Reconcile failed resume Review
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: codex-writer-ai/issue-${{ needs.resolve.outputs.issue }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Create developer App token
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Reconcile source run
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_PR: ${{ needs.resolve.outputs.pr }}
+          SOURCE_PAUSE: ${{ needs.resolve.outputs.source }}
+          CLOSING_ISSUE: ${{ needs.resolve.outputs.issue }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/recover-ai-resume-review.sh \
+            "$GITHUB_REPOSITORY" "$SOURCE_RUN" "$SOURCE_ATTEMPT" \
+            "$APP_SLUG" "$SOURCE_PR" "$CLOSING_ISSUE" "$SOURCE_PAUSE"
