@@ -18,8 +18,8 @@ for expected in \
   'ref: ${{ github.event.repository.default_branch }}' \
   'persist-credentials: false' \
   'permission-contents: read' \
-  'permission-issues: read' \
-  'permission-pull-requests: read' \
+  'permission-issues: write' \
+  'permission-pull-requests: write' \
   'bash .github/scripts/prepare-ai-resume-review-consumer.sh'; do
   grep -Fq "$expected" "$workflow"
 done
@@ -52,14 +52,16 @@ for expected in \
   "if: \${{ needs.gate.outputs.issue != '' }}" \
   'group: codex-writer-ai/issue-${{ needs.gate.outputs.issue }}' \
   'TRUSTED_ISSUE: ${{ needs.gate.outputs.issue }}' \
-  'bash .github/scripts/prepare-ai-resume-review-consumer.sh' \
-  '.identity.closing_issue_number == $issue'; do
+  'bash .github/scripts/consume-ai-resume-review.sh' \
+  '"$TRUSTED_ISSUE"'; do
   grep -Fq "$expected" <<< "$inspect"
 done
-[ "$(grep -Fc 'bash .github/scripts/prepare-ai-resume-review-consumer.sh' "$workflow")" -eq 2 ]
+[ "$(grep -Fc 'bash .github/scripts/prepare-ai-resume-review-consumer.sh' "$workflow")" -eq 1 ]
 [ "$(grep -Fc 'ref: ${{ github.event.repository.default_branch }}' "$workflow")" -eq 2 ]
-[ "$(grep -Fc 'permission-issues: read' "$workflow")" -eq 2 ]
-[ "$(grep -Fc 'permission-pull-requests: read' "$workflow")" -eq 2 ]
+[ "$(grep -Fc 'permission-issues: read' "$workflow")" -eq 1 ]
+[ "$(grep -Fc 'permission-pull-requests: read' "$workflow")" -eq 1 ]
+[ "$(grep -Fc 'permission-issues: write' "$workflow")" -eq 1 ]
+[ "$(grep -Fc 'permission-pull-requests: write' "$workflow")" -eq 1 ]
 
 check_no_forbidden() {
   local search_rc file="${1:-$workflow}" content
@@ -70,12 +72,12 @@ check_no_forbidden() {
     search_rc=$?
   fi
   case "$search_rc" in
-    0) echo 'Consumer workflow contains a write or paid review path.' >&2; return 1 ;;
+    0) echo 'Pre-gate contains a write or paid review path.' >&2; return 1 ;;
     1) return 0 ;;
     *) echo "Consumer workflow search failed (exit $search_rc)." >&2; return 1 ;;
   esac
 }
-check_no_forbidden
+check_no_forbidden <(printf '%s\n' "$gate")
 if (grep() { return 127; }; check_no_forbidden >/dev/null 2>&1); then
   echo 'Missing workflow search tool was accepted.' >&2
   exit 1
@@ -87,7 +89,7 @@ check_envelope_symmetry() {
   first="$(awk -v wanted=1 '/^      - name: Validate dispatch envelope$/ {count++; if (count == wanted) active=1} active && /^      - name: Create read-only developer App token$/ {exit} active {print}' "$file")" || return 1
   count="$(grep -Fc '      - name: Validate dispatch envelope' "$file")" || return 1
   [ "$count" -eq 2 ] || return 1
-  second="$(awk -v wanted=2 '/^      - name: Validate dispatch envelope$/ {count++; if (count == wanted) active=1} active && /^      - name: Create read-only developer App token$/ {exit} active {print}' "$file")" || return 1
+  second="$(awk -v wanted=2 '/^      - name: Validate dispatch envelope$/ {count++; if (count == wanted) active=1} active && /^      - name: Create developer App token for transition$/ {exit} active {print}' "$file")" || return 1
   [ -n "$first" ] && [ "$first" = "$second" ]
 }
 check_envelope_symmetry
