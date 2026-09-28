@@ -378,6 +378,8 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `prepare-ai-resume.sh` を変更した場合は `bash .github/scripts/test-prepare-ai-resume.sh` を実行する。
 
+`/ai resume review` のprepared consumerは `prepare-ai-resume-review-consumer.sh` が返す `ai-resume-accepted` recordとaction sequenceを正本とする。独立復旧用の `prepare-ai-resume-review-recovery.sh` は、将来の `AI Resume Review Consumer` の失敗run/attempt、canonical closing IssueとPR、trusted Appのrecord graph、両方のcurrent label、同一HEADのnormal `Claude Review` job/stepを別runnerから再取得してcaller actionだけを返す。source runの `display_title` は `AI Resume Review Consumer pr:<PR番号> pause:<source_pause_id>` に固定し、同一attemptの開始から終了までの間にaccepted recordが成立したことを要求する。source pauseが未consumedなら元pauseのlabelだけを維持する。accepted後の同一HEADのnormal Reviewは、`Claude Review Failure Handler` が扱うReview jobの状態を優先してownershipを判定する。Review jobの失敗・cancel・timeout・stale、実行中・待機中、または成功かつmodel選択step開始済みならnormal Reviewへownershipを渡し、resume recoveryはpauseを指示しない。Review job自体がskip、または成功してmodel選択stepがskipされた場合はhandoff未成立とし、既存replacement pauseを再利用し、なければ `resume_transition_failed` (`failed_action=review`) の作成・graph再確認、欠けたIssue/PR labelの再同期を順に指示する。runの存在だけではhandoffとしない。source/accepted/HEAD/関係の不一致や曖昧な証跡はfail-closedとし、再dispatchや自動retryは行わない。このhelperはread-onlyで、production trigger、consumer/producer wiring、paid Review起動は後続activationまで行わない。
+
 schema形式の正本は `human-pause-record.sh`、graph構造の正本はgraph validator、chain分解の正本はdecomposition helperである。pre-resume意味論、acceptance意味論、Conversation集約は、それぞれ後段のderive、resume-acceptance、active-pause helperが担当する。後段helperの防御的validationは、自身が安全に処理するために必要な入力境界をfail-closedで確認するものであり、上流契約を第二の正本として再実装するものではない。特に、この防御的validationをgraph validatorの第二schema正本化へ逆流させない。
 
 ### trusted diff guard
