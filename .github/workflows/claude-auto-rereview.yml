@@ -104,23 +104,8 @@ jobs:
           echo "action=$(jq -r .action <<< "$decision")" >> "$GITHUB_OUTPUT"
           jq -c . <<< "$decision" > "$RUNNER_TEMP/auto-decision.json"
 
-      - name: Consume machine state
-        id: consume
-        if: steps.pre-consume.outputs.action == 'remove_machine_state'
-        env:
-          GH_TOKEN: ${{ steps.reviewer-token.outputs.token }}
-          PR_NUMBER: ${{ steps.entry.outputs.pr_number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh issue edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
-          decision="$(jq -cn --argjson identity "$(cat "$RUNNER_TEMP/auto-identity.json")" \
-            '{identity:$identity,label_removed:true}' | bash .github/scripts/prepare-claude-auto-rereview-consumer.sh machine_state_result)"
-          echo "action=$(jq -r .action <<< "$decision")" >> "$GITHUB_OUTPUT"
-          jq -c . <<< "$decision" > "$RUNNER_TEMP/auto-decision.json"
-
       - name: Check out accepted PR HEAD
-        if: steps.consume.outputs.action == 'paid_review'
+        if: steps.pre-consume.outputs.action == 'remove_machine_state'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ steps.entry.outputs.head_sha }}
@@ -129,7 +114,7 @@ jobs:
 
       - name: Prepare review context and trusted helpers
         id: context
-        if: steps.consume.outputs.action == 'paid_review'
+        if: steps.pre-consume.outputs.action == 'remove_machine_state'
         env:
           GH_TOKEN: ${{ steps.reviewer-token.outputs.token }}
           BASE_SHA: ${{ steps.entry.outputs.base_sha }}
@@ -176,6 +161,7 @@ jobs:
             .number == $number and .state == "open" and .draft == false
             and .head.sha == $sha
             and ([.labels[].name] | index("human-review-required") == null)
+            and ([.labels[].name] | index("ai-followup-in-progress") != null)
           ' <<< "$current" >/dev/null || { echo 'Accepted HEAD changed before paid review.' >&2; exit 1; }
           cp "$RUNNER_TEMP/accepted.json" "$RUNNER_TEMP/paid-start.json"
 
@@ -189,9 +175,24 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Consume machine state
+        id: consume
+        if: steps.paid-boundary.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.reviewer-token.outputs.token }}
+          PR_NUMBER: ${{ steps.entry.outputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
+          decision="$(jq -cn --argjson identity "$(cat "$RUNNER_TEMP/auto-identity.json")" \
+            '{identity:$identity,label_removed:true}' | bash .github/scripts/prepare-claude-auto-rereview-consumer.sh machine_state_result)"
+          echo "action=$(jq -r .action <<< "$decision")" >> "$GITHUB_OUTPUT"
+          jq -c . <<< "$decision" > "$RUNNER_TEMP/auto-decision.json"
+
       - name: Run Claude review
         id: claude-attempt
-        if: steps.context.outcome == 'success' && steps.paid-boundary.outcome == 'success'
+        if: steps.consume.outputs.action == 'paid_review'
         continue-on-error: true
         uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280
         with:
@@ -308,6 +309,10 @@ jobs:
           decision="$(bash "$RUNNER_TEMP/prepare-claude-auto-rereview-consumer.sh" pre_verdict < "$RUNNER_TEMP/auto-identity.json")"
           echo "action=$(jq -r .action <<< "$decision")" >> "$GITHUB_OUTPUT"
           jq -c . <<< "$decision" > "$RUNNER_TEMP/auto-decision.json"
+
+      - name: Signal verdict suppressed
+        if: steps.pre-verdict.outputs.action == 'suppress_verdict'
+        run: ':'
 
       - name: Pause for human decision
         if: always() && (steps.entry.outputs.action == 'pause_record' || steps.pre-consume.outputs.action == 'pause_record' || steps.consume.outputs.action == 'pause_record' || steps.pre-verdict.outputs.action == 'pause_record')

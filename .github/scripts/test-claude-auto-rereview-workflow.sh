@@ -21,12 +21,14 @@ fi
 [ "$(grep -Fc 'uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507' "$auto")" -eq 1 ]
 for step in 'Upload accepted identity' 'Recheck accepted identity before machine state consumption' \
   'Consume machine state' 'Upload paid review boundary' 'Run Claude review' \
-  'Recheck verdict identity' 'Submit reviewer verdict' 'Pause for human decision' \
+  'Recheck verdict identity' 'Signal verdict suppressed' 'Submit reviewer verdict' 'Pause for human decision' \
   'Verify merge gates' 'Squash merge as reviewer'; do
   grep -Fq "      - name: $step" "$auto"
 done
 line() { grep -Fn "      - name: $1" "$auto" | head -1 | cut -d: -f1; }
 [ "$(line 'Upload accepted identity')" -lt "$(line 'Consume machine state')" ]
+[ "$(line 'Upload paid review boundary')" -lt "$(line 'Consume machine state')" ]
+[ "$(line 'Consume machine state')" -lt "$(line 'Run Claude review')" ]
 [ "$(line 'Upload paid review boundary')" -lt "$(line 'Run Claude review')" ]
 [ "$(line 'Recheck verdict identity')" -lt "$(line 'Submit reviewer verdict')" ]
 grep -Fq 'prepare-claude-auto-rereview-consumer.sh pre_verdict' "$auto" || \
