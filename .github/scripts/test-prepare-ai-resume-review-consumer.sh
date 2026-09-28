@@ -116,5 +116,37 @@ first="$(dispatch | bash "$helper" owner/repo 99)"
 second="$(dispatch | bash "$helper" owner/repo 99)"
 [ "$first" = "$second" ]
 ! grep -E 'api -X|issue edit|pr ready|dispatch' "$GH_LOG"
-! rg -l 'prepare-ai-resume-review-consumer\.sh|ai-resume-review' "$root/.github/workflows" >/dev/null
+check_dormant_workflows() {
+  local directory="$1" workflow search_rc
+  local -a workflows
+  shopt -s nullglob
+  workflows=("$directory"/*.yml "$directory"/*.yaml)
+  if [ "${#workflows[@]}" -eq 0 ]; then
+    echo "No production workflows found in $directory." >&2
+    return 1
+  fi
+  for workflow in "${workflows[@]}"; do
+    if [ ! -f "$workflow" ] || [ ! -r "$workflow" ] || [ -L "$workflow" ]; then
+      echo "Production workflow is not a readable regular file: $workflow" >&2
+      return 1
+    fi
+    if grep -Eq 'prepare-ai-resume-review-consumer\.sh|ai-resume-review' "$workflow"; then
+      search_rc=0
+    else
+      search_rc=$?
+    fi
+    case "$search_rc" in
+      0) echo "Prepared review consumer became reachable from $workflow." >&2; return 1 ;;
+      1) ;;
+      *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; return 1 ;;
+    esac
+  done
+}
+check_dormant_workflows "$root/.github/workflows"
+mkdir "$tmp/empty-workflows"
+if check_dormant_workflows "$tmp/empty-workflows" >/dev/null 2>&1; then exit 1; fi
+if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then
+  echo 'Missing workflow search tool was accepted.' >&2
+  exit 1
+fi
 echo 'prepare-ai-resume-review-consumer fixture passed.'
