@@ -16,6 +16,7 @@ jobs:
     name: Resolve canonical writer
     if: ${{ contains(fromJSON('["failure","cancelled","timed_out"]'), github.event.workflow_run.conclusion) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       issue: ${{ steps.target.outputs.issue }}
       pr: ${{ steps.target.outputs.pr }}

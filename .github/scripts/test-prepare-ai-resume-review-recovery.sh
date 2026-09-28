@@ -72,16 +72,18 @@ gh() {
     'api --paginate --slurp /repos/owner/repo/actions/runs/600/attempts/1/jobs?per_page=100')
       jq -cn --arg mode "$REVIEW" '
         [{jobs:[{name:"Review",
-          status:(if ($mode | IN("pending","pending_entered","pending_skipped"))
+          status:(if ($mode | IN("pending","pending_entered","pending_skipped","pending_step_queued"))
             then "in_progress" else "completed" end),
           conclusion:(if $mode == "early_failure" then "failure"
             elif $mode == "job_skipped" then "skipped"
             elif ($mode | IN("cancelled","timed_out","stale")) then $mode
-            elif ($mode | IN("pending","pending_entered","pending_skipped"))
+            elif ($mode | IN("pending","pending_entered","pending_skipped","pending_step_queued"))
               then null else "success" end),
           steps:(if $mode == "job_skipped" or $mode == "pending" then [] else
-            [{name:"Select Claude review model",status:"completed",
-              conclusion:(if ($mode | IN("skipped","early_failure","pending_skipped"))
+            [{name:"Select Claude review model",
+              status:(if $mode == "pending_step_queued" then "queued" else "completed" end),
+              conclusion:(if $mode == "pending_step_queued" then null
+                elif ($mode | IN("skipped","early_failure","pending_skipped"))
                 then "skipped" else "success" end)}] end)}]}]' ;;
     'api /repos/owner/repo/issues/36'|'api /repos/owner/repo/issues/37')
       local number="${2##*/}" present="$ISSUE_LABEL"
@@ -117,6 +119,11 @@ done
 REVIEW=pending
 if run >/dev/null 2>&1; then
   echo 'Pending Review without model entry was treated as owned.' >&2
+  exit 1
+fi
+REVIEW=pending_step_queued
+if run >/dev/null 2>&1; then
+  echo 'Queued model step was treated as owned.' >&2
   exit 1
 fi
 REVIEW=pending_skipped; assert_actions '["create_or_reconcile_replacement_pause","revalidate_record_graph"]'
@@ -168,7 +175,7 @@ if (grep() { return 127; }; check_read_only_log >/dev/null 2>&1); then
 fi
 # The recovery source is absent even after its independent workflow is wired.
 check_dormant_workflows() {
-  local directory="$1" workflow search_rc
+  local directory="$1" workflow pattern search_rc
   local -a workflows
   shopt -s nullglob
   workflows=("$directory"/*.yml "$directory"/*.yaml)
@@ -181,7 +188,11 @@ check_dormant_workflows() {
       echo "Production workflow is not a readable regular file: $workflow" >&2
       return 1
     fi
-    if grep -Eq 'repository_dispatch:.*ai-resume-review|ai-resume-review-consumer\.yml' "$workflow"; then
+    pattern='prepare-ai-resume-review-consumer\.sh|ai-resume-review'
+    if [ "$workflow" = "$root/.github/workflows/ai-resume-review-recovery.yml" ]; then
+      pattern='repository_dispatch|prepare-ai-resume-review-consumer\.sh|^name: AI Resume Review Consumer$'
+    fi
+    if grep -Eq "$pattern" "$workflow"; then
       search_rc=0
     else
       search_rc=$?
@@ -214,6 +225,12 @@ if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1
 chmod 600 "$tmp/invalid-workflows/unreadable.yml"
 printf 'run: ai-resume-review-consumer.yml\n' > "$tmp/invalid-workflows/reachable.yaml"
 if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then exit 1; fi
+printf 'name: Other\non:\n  repository_dispatch:\n    types: [ai-resume-review]\n' \
+  > "$tmp/invalid-workflows/reachable.yaml"
+if check_dormant_workflows "$tmp/invalid-workflows" >/dev/null 2>&1; then
+  echo 'Block-style Resume Review dispatch was accepted.' >&2
+  exit 1
+fi
 if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then
   echo 'Missing workflow search tool was accepted.' >&2
   exit 1
