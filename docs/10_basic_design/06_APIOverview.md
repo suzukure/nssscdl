@@ -1414,7 +1414,7 @@ Provider等の生Error、Message ID、内部技術情報を画面または公開
 
 生徒削除・Reservation取消等の明示的Commandで失効が確定する場合は、可能な限り原因となる業務Transactionで失効を整合させる。Lesson開始時刻到来だけのために専用失効Jobを正しさの前提とせず、Dashboard Queryと再送Commandでも現在時刻・最新業務状態から有効性を再評価する。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。失効済みIntent専用の恒常的な閲覧UIは初期リリースへ追加しない。
 
-Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeのFlow固有Endpoint・Token・状態表示は詳細設計で定める。自動Retry上限到達後は`05_BookingAndConcurrency.md` §13.7に従い、同じIntentを安全な管理者対応へ渡す。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeのFlow固有Endpoint・Token・状態表示は詳細設計で定める。自動Retry上限到達後は`05_BookingAndConcurrency.md` §13.7に従い、同じIntentを安全な管理者対応へ渡す。Provider Callback・結果不明・重複／順序逆転Eventの基本方針は同書§13.11・13.13に従い、具体的な照合・event mapping・送信直前の宛先再評価と詳細で確認した内容の整合は詳細設計で定める。
 
 ### 19.6 管理者対応終了・再開Command
 
@@ -1423,6 +1423,10 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 終了Commandは認可、対象種別、通知義務、配送成功・失効の有無、安全な説明と代替行動、技術安全性を最新状態で再検証し、新規送信・retry確定と競合させない。Integrity / Security異常等で通知対象・内容・宛先・状態を信用できず安全な次の行動を提示できない場合は拒否する。配送結果とAttemptは変更せず、管理者対応状態のみ終了にし、Actor、時刻、理由、最小限のBefore / Afterを同一Transactionで監査する。技術原因は終了理由でなくMonitoring / Incident側で分類する。
 
 終了済み案件は明示的再開後にだけretryできる。再開Commandは通知義務、配信成功、客観的失効、個人情報削除、技術安全性を再検証し、可能なら対応状態だけを対応要へ戻して監査する。過去のAttempt・配送結果・対応履歴を上書きせず、Provider Callback等だけでは自動再開しない。終了済み案件と管理者対応履歴、必要最小限のIncident summaryは1年間参照可能とし、Technical Logは`REQ-940 / AC-940-004`に従う。具体Path、Request / Response、Expected Stateのwire表現、Filter / Pagination / Sortと物理Cleanupは詳細設計で確定する。
+
+### 19.7 Provider Callbackの外部HTTP境界
+
+Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal callback入口とし、Providerの真正性を確認してから既知Delivery Attemptの配送状態へ反映する。Callbackの重複・順序逆転・矛盾、および失効・管理者対応終了後の扱いは `05_BookingAndConcurrency.md` §13.13を正とする。Provider Message IDを管理者APIのtargetにせず、Callbackだけで管理者対応を自動再開しない。具体Path、認証方式、event mapping、Response wireは詳細設計で定める。
 
 ## 20. 詳細設計へ送る事項
 
@@ -1470,7 +1474,11 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - 通知失敗DashboardのPagination / Filter / Sort、Response Schema、表示用状態・業務理由の具体形
 - NotificationIntentの配信結果と通知義務有効性を分離する物理状態、失効理由、永続化／導出方式、DB Schema
 - 再送要求の具体的な識別子、保存、Delivery Attempt状態遷移、試行単位の冪等性Guard
-- Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合
+- Delivery Attempt内retry count、next attempt時刻、具体Backoff、post-commit kick方式
+- claim / lease / fencingのSchema・SQL・Index、batch size・pagination、Reminder義務のlogical key・一意性Guard
+- Provider idempotency key / Message ID mapping、安全な照合API、Callback endpoint / 真正性・event identity / mapping / precedence・矛盾処理、送信直前の宛先再評価と確認内容の整合
+- 管理者対応終了／再開のEndpoint path、Request / Response、Expected State wire、終了済み一覧のFilter / Pagination / Sort、1年経過後の物理Cleanup
+- Dispatcher routing / logical due state、Cron式・環境別binding、Cleanup具体周期、Handler heartbeat・metric・Alert閾値、Holiday Masterの取得時刻・対象年・staging / update transaction方式
 
 認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
 
