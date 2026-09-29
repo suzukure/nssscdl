@@ -33,10 +33,16 @@ accepted_record="$(jq -cn --arg head "$a" \
 replacement_record='{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"pr:37","source_pause_id":"201","payload":{"failed_action":"validate"}}'
 validation_record="$(jq -cn --arg head "$a" \
   '{version:1,kind:"pause",reason:"validation_failed",target:"pr:37",paused_head:$head}')"
+other_record="$(jq -cn --arg head "$a" \
+  '{version:1,kind:"pause",reason:"claude_execution_failed",target:"pr:37",paused_head:$head}')"
+round_record="$(jq -cn --arg head "$a" \
+  '{version:1,kind:"pause",reason:"round_limit",target:"pr:37",paused_head:$head}')"
 export PAUSE_BODY="$(bash "$tmp/scripts/human-pause-record.sh" create "$pause_record")"
 export ACCEPTED_BODY="$(bash "$tmp/scripts/human-pause-record.sh" create "$accepted_record")"
 export REPLACEMENT_BODY="$(bash "$tmp/scripts/human-pause-record.sh" create "$replacement_record")"
 export VALIDATION_BODY="$(bash "$tmp/scripts/human-pause-record.sh" create "$validation_record")"
+export OTHER_BODY="$(bash "$tmp/scripts/human-pause-record.sh" create "$other_record")"
+export ROUND_BODY="$(bash "$tmp/scripts/human-pause-record.sh" create "$round_record")"
 gh() {
   printf '%s\n' "$*" >> "$GH_LOG"
   [ "$API_MODE" = valid ] || { echo 'API unavailable' >&2; return 1; }
@@ -58,7 +64,8 @@ gh() {
       if [ "$RECORD_MODE" = malformed ]; then echo '{}'; return; fi
       jq -cn --arg mode "$MODE" --arg pause "$PAUSE_BODY" \
         --arg accepted "$ACCEPTED_BODY" --arg replacement "$REPLACEMENT_BODY" \
-        --arg validation "$VALIDATION_BODY" '
+        --arg validation "$VALIDATION_BODY" --arg other "$OTHER_BODY" \
+        --arg round "$ROUND_BODY" '
         [{id:101,body:$pause,performed_via_github_app:{id:99}}]
         + (if $mode == "before" then [] else
             [{id:201,body:$accepted,performed_via_github_app:{id:99}}] end)
@@ -66,6 +73,10 @@ gh() {
             [{id:301,body:$replacement,performed_via_github_app:{id:99}}]
           elif $mode == "validation_pause" then
             [{id:301,body:$validation,performed_via_github_app:{id:99}}]
+          elif $mode == "other_pause" then
+            [{id:301,body:$other,performed_via_github_app:{id:99}}]
+          elif $mode == "round_pause" then
+            [{id:301,body:$round,performed_via_github_app:{id:99}}]
           else [] end)' ;;
     'api /repos/owner/repo/actions/runs/500')
       jq -cn --arg mode "$RUN_MODE" '
@@ -80,7 +91,7 @@ gh() {
       jq -cn --arg head "$HEAD_MODE" --arg draft "$DRAFT" --arg machine "$MACHINE" --arg label "$PR_LABEL" '
         {number:37,state:"open",draft:($draft == "true"),
          head:{repo:{full_name:"owner/repo"},ref:"ai/issue-36",
-           sha:(if $head == "stale" then "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" else
+           sha:(if ($head == "stale" or $head == "pr_race") then "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" else
              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" end)},
          base:{repo:{full_name:"owner/repo"},ref:"main"},
          labels:([if $machine == "true" then {name:"ai-followup-in-progress"} else empty end,
@@ -125,7 +136,59 @@ jq -cn --arg a "$a" --argjson now "$((started + 50))" '
      current_head_sha:$a,diff_guard_passed:true,followup_gate_passed:true,
      human_pause:false,now:$now,ready_started_at:($now - 30),repository_write:"pushed",
      requirements_gate_passed:true,validation_sha:$a}}' > "$tmp/durable.json"
-run() { bash "$helper" owner/repo 500 2 99 37 36 101 "$tmp/durable.json"; }
+run() {
+  local output
+  output="$(bash "$helper" owner/repo 500 2 99 37 36 101 "$tmp/durable.json")" || return
+  assert_schema <<< "$output"
+  printf '%s\n' "$output"
+}
+assert_schema() {
+  jq -e '
+    def positive_id: type == "string" and test("^[1-9][0-9]*$");
+    def action:
+      (keys | sort) as $keys |
+      if .action == "add_issue_human_label" or .action == "add_pr_human_label" then
+        $keys == ["action","number"] and (.number | type == "number")
+      elif .action == "create_or_reconcile_replacement_pause" then
+        $keys == ["action","failed_action","reason","source_pause_id"]
+        and .reason == "resume_transition_failed" and .failed_action == "validate"
+        and (.source_pause_id | positive_id)
+      elif .action == "create_or_reconcile_validation_pause" then
+        $keys == ["accepted_record_id","action","failed_action","paused_head","reason"]
+        and (.accepted_record_id | positive_id) and .failed_action == "validate"
+        and (.paused_head | test("^[0-9a-f]{40}$"))
+        and (.reason | IN("validation_failed","validation_timeout","round_limit"))
+      elif .action == "revalidate_record_graph" or .action == "remove_machine_label" then
+        $keys == ["action","requires"] and (.requires | type == "string")
+      else false end;
+    .diagnostics as $d |
+    ($d | keys | sort) == ["current","normal_review","source","target"]
+    and ($d.target | keys | sort) == ["issue_number","pr_number","repository"]
+    and $d.target == {repository:"owner/repo",issue_number:36,pr_number:37}
+    and ($d.source | keys | sort) == ["accepted_record","accepted_record_id","attempt","pause_id","pause_record","paused_head","run_id"]
+    and $d.source.run_id == 500 and $d.source.attempt == 2 and $d.source.pause_id == "101"
+    and ($d.current | keys | sort) == ["active_pause_id","active_pause_record","draft","head","issue_human_label","machine_state","pr_human_label","writer_ownership"]
+    and $d.current.writer_ownership == null
+    and ($d.normal_review | type == "array")
+    and (.actions | type == "array" and all(.[]; action))
+    and (.result | IN("pre_acceptance","normal_review_owns","paused","recover","cycle_wait","manual_reconcile"))
+    and ([keys[] | IN("result","actions","diagnostics","code","normal_review",
+        "accepted_record_id","replacement_pause_id","validation_pause_id",
+        "window_started_at","cycle")] | all)
+    and (if .result == "pre_acceptance" then (keys | sort) == ["actions","diagnostics","result"]
+      elif .result == "normal_review_owns" then
+        (keys | sort) == ["actions","diagnostics","normal_review","result"] and .actions == []
+      elif .result == "cycle_wait" then
+        (keys | sort) == ["actions","cycle","diagnostics","result"] and .actions == []
+      elif .result == "paused" then
+        (.accepted_record_id | positive_id)
+        and ((has("replacement_pause_id") and (has("validation_pause_id") | not))
+          or (has("validation_pause_id") and (has("replacement_pause_id") | not)))
+      elif .result == "recover" then (.accepted_record_id | positive_id)
+      else true end)
+    and (if .result == "manual_reconcile" then .actions == [] and (.code | type == "string") else true end)
+  ' >/dev/null
+}
 list_records() {
   AI_RESUME_MAX_HISTORY_PAGES=10 \
     bash "$tmp/scripts/list-human-pause-records.sh" owner/repo 36 37 99
@@ -138,13 +201,20 @@ assert_result() {
 MODE=before
 list_records | jq -e '.target == "pr:37" and [.records[].pause_id] == ["101"]' >/dev/null
 assert_result pre_acceptance
-[ "$(run | jq -c '[.actions[].action]')" = '["add_issue_human_label","add_pr_human_label"]' ]
+[ "$(run | jq -c '.actions')" = '[{"action":"add_issue_human_label","number":36},{"action":"add_pr_human_label","number":37}]' ]
+ISSUE_LABEL=true
+[ "$(run | jq -c '.actions')" = '[{"action":"add_pr_human_label","number":37}]' ]
+ISSUE_LABEL=false; PR_LABEL=true
+[ "$(run | jq -c '.actions')" = '[{"action":"add_issue_human_label","number":36}]' ]
 MODE=accepted; ISSUE_LABEL=false; PR_LABEL=false
 list_records | jq -e '.target == "pr:37" and [.records[].pause_id] == ["101","201"]
   and .records[1].record.payload.action == "validate"' >/dev/null
 assert_result cycle_wait
 NOW=1767226200
 [ "$(run | jq -r '.actions[0].reason')" = validation_timeout ]
+run | assert_schema
+run | jq -e --arg head "$a" '.actions[0] == {action:"create_or_reconcile_validation_pause",
+  accepted_record_id:"201",paused_head:$head,reason:"validation_timeout",failed_action:"validate"}' >/dev/null
 NOW=1767225650
 jq '.validation.now = 1767225650 | .validation.checks[0].status = "failure"' \
   "$tmp/durable.json" > "$tmp/new.json"
@@ -181,15 +251,31 @@ MODE=replacement; ISSUE_LABEL=true
 list_records | jq -e '[.records[].pause_id] == ["101","201","301"]
   and .records[2].record.reason == "resume_transition_failed"' >/dev/null
 [ "$(run | jq -c '[.actions[].action]')" = '["add_pr_human_label","remove_machine_label"]' ]
+run | assert_schema
 PR_LABEL=true
 assert_result paused
 MODE=validation_pause
 assert_result paused
+run | assert_schema
+MODE=round_pause
+assert_result paused
+MODE=other_pause
+[ "$(run | jq -r .code)" = another_active_pause ]
+run | assert_schema
+run | jq -e '.diagnostics.current.active_pause_id == "301"
+  and .diagnostics.current.active_pause_record.reason == "claude_execution_failed"
+  and .diagnostics.source.accepted_record.kind == "ai-resume-accepted"
+  and .actions == []' >/dev/null
 MODE=accepted; ISSUE_LABEL=false; PR_LABEL=false
 REVIEW=early_failure; assert_result normal_review_owns
 REVIEW=entered; assert_result normal_review_owns
 REVIEW=queued
-if run >/dev/null 2>&1; then echo 'Queued Review gained ownership.' >&2; exit 1; fi
+[ "$(run | jq -r .code)" = review_ownership_unconfirmed ]
+run | assert_schema
+run | jq -e '.actions == [] and .diagnostics.normal_review[0].run_id == 600
+  and .diagnostics.normal_review[0].attempt == 1
+  and .diagnostics.normal_review[0].ownership == "unconfirmed"
+  and .diagnostics.normal_review[0].review_jobs[0].status == "in_progress"' >/dev/null
 REVIEW=skip; assert_result recover
 REVIEW=none
 jq '.validation.checks[0].status = "success"' "$tmp/durable.json" > "$tmp/new.json"
@@ -206,8 +292,14 @@ ISSUE_LABEL=true; PR_LABEL=false
 ISSUE_LABEL=false
 run_without_evidence() { bash "$helper" owner/repo 500 2 99 37 36 101; }
 [ "$(run_without_evidence | jq -r .code)" = durable_validation_evidence_missing ]
+run_without_evidence | assert_schema
 REVIEW=none; HEAD_MODE=stale
-if run >/dev/null 2>&1; then echo 'HEAD change was accepted.' >&2; exit 1; fi
+[ "$(run | jq -r .code)" = source_head_changed ]
+run | assert_schema
+HEAD_MODE=pr_race
+[ "$(run | jq -r .code)" = head_changed_during_read ]
+run | jq -e --arg head "$b" '.diagnostics.current.head == $head
+  and .diagnostics.source.paused_head == null and .actions == []' >/dev/null
 HEAD_MODE=current; RELATION=terminal
 if run >/dev/null 2>&1; then echo 'Terminal target was accepted.' >&2; exit 1; fi
 RELATION=wrong

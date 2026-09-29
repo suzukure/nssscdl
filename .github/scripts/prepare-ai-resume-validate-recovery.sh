@@ -13,9 +13,38 @@ issue="${6:?closing Issue number required}"
 source="${7:?source pause ID required}"
 evidence="${8:--}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+head='' pr_head='' source_head='' accepted='' active='' draft='' machine=''
+source_record='null' accepted_record='null' active_record='null'
+issue_label='' pr_label='' candidates='[]'
 fail() {
   echo "prepare-ai-resume-validate-recovery: $1 (run=$run_id attempt=$attempt pr=$pr issue=$issue source=$source)" >&2
   exit 1
+}
+diagnostics() {
+  jq -cn --arg repo "$repo" --argjson run "$run_id" --argjson attempt "$attempt" \
+    --argjson issue "$issue" --argjson pr "$pr" --arg source "$source" \
+    --arg accepted "$accepted" --arg source_head "$source_head" \
+    --arg head "$pr_head" --arg issue_label "$issue_label" \
+    --arg pr_label "$pr_label" --arg draft "$draft" --arg machine "$machine" \
+    --arg active "$active" --argjson source_record "$source_record" \
+    --argjson accepted_record "$accepted_record" --argjson active_record "$active_record" \
+    --argjson candidates "$candidates" '
+    def known: if . == "" then null else . end;
+    {target:{repository:$repo,issue_number:$issue,pr_number:$pr},
+     source:{run_id:$run,attempt:$attempt,pause_id:$source,paused_head:($source_head|known),
+       pause_record:$source_record,accepted_record_id:($accepted|known),
+       accepted_record:$accepted_record},
+     current:{head:($head|known),issue_human_label:($issue_label|known|if . == null then . else . == "true" end),
+       pr_human_label:($pr_label|known|if . == null then . else . == "true" end),
+       draft:($draft|known|if . == null then . else . == "true" end),
+       machine_state:($machine|known|if . == null then . else . == "true" end),
+       active_pause_id:($active|known),active_pause_record:$active_record,
+       writer_ownership:null},normal_review:$candidates}'
+}
+emit() { jq -c --argjson diagnostics "$(diagnostics)" '. + {diagnostics:$diagnostics}'; }
+manual() {
+  jq -cn --arg code "$1" '{result:"manual_reconcile",code:$code,actions:[]}' | emit
+  exit 0
 }
 positive() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'invalid repository'
@@ -59,15 +88,33 @@ jq -e --argjson pr "$pr" --argjson issue "$issue" '
 ' "$tmp/target.json" >/dev/null || fail 'target relation mismatch or terminal'
 head="$(jq -r .pull_request.head_sha "$tmp/target.json")"
 gh api "/repos/$repo/pulls/$pr" > "$tmp/pr.json" || fail 'PR state unavailable'
-jq -e --arg repo "$repo" --argjson pr "$pr" --arg issue "$issue" --arg head "$head" '
+jq -e --arg repo "$repo" --argjson pr "$pr" --arg issue "$issue" '
   .number == $pr and .state == "open" and (.draft | type == "boolean")
   and .head.repo.full_name == $repo and .base.repo.full_name == $repo
   and .head.ref == ("ai/issue-" + $issue) and .base.ref == "main"
-  and .head.sha == $head and (.labels | type == "array")
+  and (.head.sha | type == "string" and test("^[0-9a-f]{40}$"))
+  and (.labels | type == "array")
   and all(.labels[]; type == "object" and (.name | type) == "string")
-' "$tmp/pr.json" >/dev/null || fail 'PR state or HEAD changed during read'
+' "$tmp/pr.json" >/dev/null || fail 'PR state malformed or relation changed'
+pr_head="$(jq -r .head.sha "$tmp/pr.json")"
 draft="$(jq -r .draft "$tmp/pr.json")"
 machine="$(jq -r 'any(.labels[]; .name == "ai-followup-in-progress")' "$tmp/pr.json")"
+read_labels() {
+  local number
+  for number in "$issue" "$pr"; do
+    gh api "/repos/$repo/issues/$number" > "$tmp/label-$number.json" || fail 'label fact unavailable'
+    jq -e --argjson number "$number" '
+      .number == $number and .state == "open" and (.labels | type) == "array"
+      and all(.labels[]; type == "object" and (.name | type) == "string")
+    ' "$tmp/label-$number.json" >/dev/null || fail 'label fact malformed or terminal'
+  done
+  issue_label="$(jq -r 'any(.labels[]; .name == "human-review-required")' "$tmp/label-$issue.json")"
+  pr_label="$(jq -r 'any(.labels[]; .name == "human-review-required")' "$tmp/label-$pr.json")"
+  [ "$pr_label" = "$(jq -r 'any(.labels[]; .name == "human-review-required")' "$tmp/pr.json")" ] \
+    || manual pr_label_changed_during_read
+}
+read_labels
+[ "$pr_head" = "$head" ] || manual head_changed_during_read
 
 export AI_RESUME_MAX_HISTORY_PAGES=10
 bash "$script_dir/list-human-pause-records.sh" "$repo" "$issue" "$pr" "$app_id" \
@@ -104,23 +151,16 @@ jq -ce --arg source "$source" '
 ' "$tmp/graph-4.json" > "$tmp/chain.json" || fail 'source or accepted identity mismatch'
 accepted="$(jq -r '[.records[] | select(.record.kind == "ai-resume-accepted")][0].pause_id // empty' "$tmp/chain.json")"
 source_head="$(jq -r --arg source "$source" '.records[] | select(.pause_id == $source) | .record.paused_head' "$tmp/chain.json")"
-[ "$source_head" = "$head" ] || fail 'current HEAD differs from source pause'
+source_record="$(jq -c --arg source "$source" '.records[] | select(.pause_id == $source) | .record' "$tmp/chain.json")"
+if [ -n "$accepted" ]; then
+  accepted_record="$(jq -c --arg accepted "$accepted" '.records[] | select(.pause_id == $accepted) | .record' "$tmp/chain.json")"
+fi
+[ "$source_head" = "$head" ] || manual source_head_changed
 effective="$(jq -r .effective.status "$tmp/chain.json")"
 active="$(jq -r '.active_pause.pause_id // empty' "$tmp/graph-5.json")"
-read_labels() {
-  local number
-  for number in "$issue" "$pr"; do
-    gh api "/repos/$repo/issues/$number" > "$tmp/label-$number.json" || fail 'label fact unavailable'
-    jq -e --argjson number "$number" '
-      .number == $number and .state == "open" and (.labels | type) == "array"
-      and all(.labels[]; type == "object" and (.name | type) == "string")
-    ' "$tmp/label-$number.json" >/dev/null || fail 'label fact malformed or terminal'
-  done
-  issue_label="$(jq -r 'any(.labels[]; .name == "human-review-required")' "$tmp/label-$issue.json")"
-  pr_label="$(jq -r 'any(.labels[]; .name == "human-review-required")' "$tmp/label-$pr.json")"
-  [ "$pr_label" = "$(jq -r 'any(.labels[]; .name == "human-review-required")' "$tmp/pr.json")" ] \
-    || fail 'PR labels changed during read'
-}
+if [ -n "$active" ]; then
+  active_record="$(jq -c --arg active "$active" '[.chains[].records[] | select(.pause_id == $active) | .record][0] // null' "$tmp/graph-4.json")"
+fi
 label_actions() {
   jq -cn --argjson issue "$issue" --argjson pr "$pr" \
     --arg issue_label "$issue_label" --arg pr_label "$pr_label" '
@@ -132,7 +172,7 @@ if [ -z "$accepted" ]; then
     || fail 'pre-acceptance pause is not active'
   read_labels
   jq -cn --argjson actions "$(label_actions)" \
-    '{result:"pre_acceptance",actions:$actions}'
+    '{result:"pre_acceptance",actions:$actions}' | emit
   exit 0
 fi
 if [ "$effective" = active ]; then
@@ -144,10 +184,10 @@ else
   if [ -n "$active" ]; then
     jq -e --arg head "$head" --arg active "$active" --arg accepted "$accepted" '
       [.chains[] | select(.effective.status == "active" and .effective.pause_id == $active)]
-      | length == 1 and (.[0].effective.reason | IN("validation_failed","validation_timeout"))
+      | length == 1 and (.[0].effective.reason | IN("validation_failed","validation_timeout","round_limit"))
         and (.[0].records[0].record.paused_head == $head)
         and (.[0].records[0].pause_id | tonumber) > ($accepted | tonumber)
-    ' "$tmp/graph-4.json" >/dev/null || fail 'another pause owns Conversation'
+    ' "$tmp/graph-4.json" >/dev/null || manual another_active_pause
   fi
   replacement=''
 fi
@@ -196,6 +236,13 @@ while IFS=$'\t' read -r review_id review_attempt; do
   gh api --paginate --slurp \
     "/repos/$repo/actions/runs/$review_id/attempts/$review_attempt/jobs?per_page=100" \
     > "$tmp/review-jobs.json" || fail 'Review job evidence unavailable'
+  jq -e 'type == "array" and all(.[]; (.jobs | type) == "array")
+    and ([.[] .jobs[] | select(.name == "Review")] | length == 1)' \
+    "$tmp/review-jobs.json" >/dev/null || fail 'Review job evidence malformed'
+  candidates="$(jq -cn --argjson prior "$candidates" --argjson run "$review_id" \
+    --argjson attempt "$review_attempt" --slurpfile jobs "$tmp/review-jobs.json" '
+    $prior + [{run_id:$run,attempt:$attempt,ownership:"unconfirmed",
+      review_jobs:[$jobs[0][] .jobs[] | select(.name == "Review")]}]')"
   state="$(jq -er '
     if type != "array" or any(.[]; (.jobs | type) != "array") then error("jobs") end
     | [.[] .jobs[] | select(.name == "Review")]
@@ -212,10 +259,12 @@ while IFS=$'\t' read -r review_id review_attempt; do
           elif .conclusion == "skipped" and .status == "completed" then "skipped"
           else error("unknown entry state") end
       else error("unknown Review job state") end
-  ' "$tmp/review-jobs.json")" || fail 'Review ownership ambiguous'
+  ' "$tmp/review-jobs.json" 2>/dev/null)" || manual review_ownership_unconfirmed
+  candidates="$(jq -cn --argjson prior "$candidates" --arg state "$state" \
+    '$prior | .[-1].ownership = $state')"
   if [ "$state" = entered ]; then
     jq -cn --argjson run "$review_id" --argjson attempt "$review_attempt" \
-      '{result:"normal_review_owns",normal_review:{run_id:$run,attempt:$attempt},actions:[]}'
+      '{result:"normal_review_owns",normal_review:{run_id:$run,attempt:$attempt},actions:[]}' | emit
     exit 0
   fi
 done < "$tmp/candidates.tsv"
@@ -227,7 +276,7 @@ if [ -n "$replacement" ]; then
     {result:"paused",accepted_record_id:$accepted,replacement_pause_id:$replacement,
      actions:($actions + [if $machine == "true" then
        {action:"remove_machine_label",requires:"fresh graph active and both human labels present"}
-       else empty end])}'
+       else empty end])}' | emit
   exit 0
 fi
 if [ -n "$active" ]; then
@@ -236,18 +285,17 @@ if [ -n "$active" ]; then
     {result:"paused",accepted_record_id:$accepted,validation_pause_id:$pause,
      actions:($actions + [if $machine == "true" then
        {action:"remove_machine_label",requires:"fresh graph active and both human labels present"}
-       else empty end])}'
+       else empty end])}' | emit
   exit 0
 fi
 
 if [ "$draft" = false ] && [ "$machine" = false ]; then
-  jq -cn --arg accepted "$accepted" '
+  jq -cn --arg accepted "$accepted" --argjson labels "$(label_actions)" '
     {result:"recover",accepted_record_id:$accepted,
-     actions:[{action:"create_or_reconcile_replacement_pause",source_pause_id:$accepted,
+     actions:([{action:"create_or_reconcile_replacement_pause",source_pause_id:$accepted,
        reason:"resume_transition_failed",failed_action:"validate"},
-       {action:"revalidate_record_graph",requires:"one matching active replacement pause"},
-       {action:"reconcile_issue_human_label",requires:"fresh graph confirms active pause"},
-       {action:"reconcile_pr_human_label",requires:"fresh Issue label present and active pause"}]}'
+       {action:"revalidate_record_graph",requires:"one matching active replacement pause"}]
+       + $labels)}' | emit
   exit 0
 fi
 
@@ -256,13 +304,8 @@ fi
 # success or a validation-failure classification.
 if [ "$evidence" = - ] || [ ! -f "$evidence" ]; then
   jq -cn --arg accepted "$accepted" --argjson started "$started" \
-    --arg head "$head" --arg draft "$draft" --arg machine "$machine" \
-    --arg issue_label "$issue_label" --arg pr_label "$pr_label" \
     '{result:"manual_reconcile",code:"durable_validation_evidence_missing",
-      accepted_record_id:$accepted,window_started_at:$started,
-      facts:{head:$head,draft:($draft == "true"),machine_state:($machine == "true"),
-        issue_human_label:($issue_label == "true"),pr_human_label:($pr_label == "true")},
-      actions:[]}'
+      accepted_record_id:$accepted,window_started_at:$started,actions:[]}' | emit
   exit 0
 fi
 jq -e --argjson run "$run_id" --argjson attempt "$attempt" \
@@ -294,28 +337,28 @@ action="$(jq -r .action <<< "$cycle_result")"
 code="$(jq -r .code <<< "$cycle_result")"
 case "$action/$code" in
   wait/*) jq -cn --argjson cycle "$cycle_result" \
-    '{result:"cycle_wait",cycle:$cycle,actions:[]}' ;;
+    '{result:"cycle_wait",cycle:$cycle,actions:[]}' | emit ;;
   pause_record/validation_failed|pause_record/validation_timeout|pause_record/round_limit)
-    jq -cn --arg accepted "$accepted" --arg reason "$code" --arg machine "$machine" \
+    jq -cn --arg accepted "$accepted" --arg reason "$code" --arg head "$head" \
+      --argjson labels "$(label_actions)" --arg machine "$machine" \
       '{result:"recover",accepted_record_id:$accepted,
-        actions:([{action:"create_or_reconcile_validation_pause",reason:$reason},
-          {action:"revalidate_record_graph",requires:"one active validation pause"},
-          {action:"reconcile_issue_human_label",requires:"fresh graph confirms active pause"},
-          {action:"reconcile_pr_human_label",requires:"fresh Issue label present and active pause"}]
+        actions:([{action:"create_or_reconcile_validation_pause",reason:$reason,
+          accepted_record_id:$accepted,paused_head:$head,failed_action:"validate"},
+          {action:"revalidate_record_graph",requires:"one active validation pause"}]
+          + $labels
           + [if $machine == "true" then
               {action:"remove_machine_label",requires:"fresh graph active and both human labels present"}
-             else empty end])}' ;;
+             else empty end])}' | emit ;;
   stop/labels_not_cleared|stop/review_suppression_unverified|handoff_candidate/success)
-    jq -cn --arg accepted "$accepted" --argjson cycle "$cycle_result" --arg machine "$machine" \
+    jq -cn --arg accepted "$accepted" --argjson cycle "$cycle_result" \
+      --argjson labels "$(label_actions)" --arg machine "$machine" \
       '{result:"recover",accepted_record_id:$accepted,cycle:$cycle,
         actions:([{action:"create_or_reconcile_replacement_pause",source_pause_id:$accepted,
           reason:"resume_transition_failed",failed_action:"validate"},
-          {action:"revalidate_record_graph",requires:"one matching active replacement pause"},
-          {action:"reconcile_issue_human_label",requires:"fresh graph confirms active pause"},
-          {action:"reconcile_pr_human_label",requires:"fresh Issue label present and active pause"}]
+          {action:"revalidate_record_graph",requires:"one matching active replacement pause"}]
+          + $labels
           + [if $machine == "true" then
               {action:"remove_machine_label",requires:"fresh graph active and both human labels present"}
-             else empty end])}' ;;
-  *) jq -cn --arg accepted "$accepted" --arg code "$code" \
-    '{result:"manual_reconcile",code:$code,accepted_record_id:$accepted,actions:[]}' ;;
+             else empty end])}' | emit ;;
+  *) manual "$code" ;;
 esac
