@@ -145,7 +145,7 @@ D1 exportはquery提供に影響し得るため、初期規模では低負荷時
 
 障害原因と必要復旧時点から、検証済みの最も新しい安全なRecovery pointを選ぶ。直近障害では安全なbookmark / timestampを特定できるD1 Time Travelを第一候補とし、Production restoreはMaintenance / write停止境界でrestore前のundo用情報を記録して実行する。R2の長期Artifactは原則として隔離したRecovery D1へintegrity・schema / application互換性を確認してimportし、必要なforward migration、`REQ-952` Purge再適用、Domain invariant検査、外部副作用reconciliation、smoke test後に §6.5 のRecovery cutover境界でProductionへ切り替える。古いArtifactを無検証でProduction D1へ直接上書きしない。
 
-通常Service再開前にsource / capture pointとArtifact / bookmark integrity、schema / application互換性、Migration、Purge / 匿名化、Session / 単回Token sanitation、Reservation / SlotOccupancy等の主要Invariant、Notificationのblind resend防止、Scheduled Handler再開可能性、Read / Login / Reservation smoke check、Recovery event・Actor・時刻・sourceの監査記録を確認する。安全に確認できなければMaintenanceを維持する。具体的な再開処理は `05_BookingAndConcurrency.md` §13.14を正とする。
+通常Service再開前にsource / capture pointとArtifact / bookmark integrity、schema / application互換性、Migration、Purge / 匿名化、Session / 単回Token sanitation、Reservation / SlotOccupancy等の主要Invariant、Notificationのblind resend防止、Scheduled Handler再開可能性、Read / Login / Reservation smoke check、Recovery event・Actor・時刻・sourceの監査記録を確認する。安全に確認できなければMaintenanceを維持する。Recovery source / capture point選定、Service再開の全Gate、Recovery全体の監査記録とsmoke testは本節を正本とし、domain-specificな再開処理は `05_BookingAndConcurrency.md` §13.14を参照する。
 
 Periodic Restore Testは月1回、Productionから分離した環境でR2 ArtifactをRecovery D1へimportし、checksum・schema、主要Invariantとsmoke query、削除済み生徒fixtureのPurge / 匿名化、Session / 単回Token sanitation、復旧所要時間を検証して証跡を残す。Time TravelもTest用D1で既知時刻の更新からpoint-in-time restoreを定期検証する。Production開始前には想定データ量で重大停止時の `REQ-908` 4時間目標内に収まる根拠を確認する。具体的なtest日・自動化・証跡保持は詳細・運用設計で確定する。
 
@@ -190,7 +190,7 @@ Binding / route / secret / Provider callback変更はWorker code rollbackで復�
 
 WorkerのProduction activationは `docs/00_requirements/01_Introduction.md` §3のBusiness Cutoverではない。Initial Admin setup、Provider / Backup / Monitoring確認、対象月Schedule準備はCutover前にProductionで実施できる。Release readiness確認後、対象となる新しい月の予約受付を新システムで開始した時点をCutoverとし、旧運用の過去予約履歴は移行しない。Cutover後のWorker rollbackでも成立済みReservation / business stateを過去へ巻き戻さない。
 
-Recovery D1へのrestore後は通常deployと区別する。§5.3のService再開Gate完了までpublic routeを向けず、cutover前Production D1 / binding情報をrollback用に保持する。Binding切替後にsmoke確認し、旧Production D1を即削除しない。問題時は復旧後の新規write有無を含めて戻し方を判断し、安易なbinding往復でwriteを分岐させない。具体runbookは #537 / 運用設計で定める。
+Recovery D1へのrestore後は通常deployと区別する。§5.3のService再開Gate完了までpublic routeを向けず、cutover前Production D1 / binding情報をrollback用に保持する。Binding切替後にsmoke確認し、旧Production D1を即削除しない。問題時は復旧後の新規write有無を含めて戻し方を判断し、安易なbinding往復でwriteを分岐させない。Gate通過後のRecovery cutover、public route / binding切替、切替後smoke、旧Production D1の保持、write分岐を避けるrollback判断のdeploy / infrastructure操作は本節を正本とし、Gateの定義は §5.3 を参照する。具体runbookは #537 / 運用設計で定める。
 
 ### 6.6 保守権限と詳細設計への引継ぎ
 
