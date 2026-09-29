@@ -10,6 +10,29 @@ valid="$(jq -cse '
   def integer: type == "number" and floor == . and . >= 0;
   def positive: integer and . > 0;
   def sha: type == "string" and test("^[0-9a-f]{40}$");
+  def state: IN("success","pending","failure");
+  def check: type == "object" and (keys | sort) ==
+    ["created_at","id","name","sha","started_at","status"]
+    and (.id | positive) and (.name | type == "string" and length > 0)
+    and (.sha | sha) and (.status | state or . == "skipped")
+    and (.created_at | integer) and (.started_at | . == null or integer);
+  def run: type == "object" and (keys | sort) == ["id","sha","status"]
+    and (.id | positive) and (.sha | sha) and (.status | state);
+  def validation: type == "object" and (keys | sort) ==
+    ["automated_followup_count","branch_mutating_runs","branch_mutating_runs_complete","checks","checks_complete","current_head_sha","diff_guard_passed","followup_gate_passed","human_pause","now","ready_started_at","repository_write","requirements_gate_passed","validation_sha"]
+    and (.automated_followup_count | positive)
+    and (.branch_mutating_runs | type == "array" and all(.[]; run) and ([.[].id] | length == (unique | length)))
+    and (.checks | type == "array" and all(.[]; check) and ([.[].id] | length == (unique | length)))
+    and (.branch_mutating_runs_complete | type == "boolean")
+    and (.checks_complete | type == "boolean")
+    and (.current_head_sha | sha) and (.validation_sha | sha)
+    and (.diff_guard_passed | type == "boolean")
+    and (.followup_gate_passed | type == "boolean")
+    and (.human_pause | type == "boolean")
+    and (.repository_write | IN("pushed","no_diff"))
+    and (.requirements_gate_passed | type == "boolean")
+    and (.now | integer)
+    and (.ready_started_at | . == null or integer);
   def identity: type == "object" and (keys | sort) ==
     ["action","closing_issue_number","command_comment_id","head","pr_number","reason","source_pause_id","target"]
     and .action == "validate" and (.closing_issue_number | positive)
@@ -42,7 +65,9 @@ valid="$(jq -cse '
       or (.issue_label_absent | type != "boolean")
       or (.pr_label_absent | type != "boolean")
       or (.normal_review_suppressed | type != "boolean")
-      or (.validation | type) != "object"
+      or (.validation | validation | not)
+      or .validation.now < .accepted.created_at
+      or (.validation.ready_started_at != null and .validation.ready_started_at > .validation.now)
     then error("snapshot") else . end
 ' <<< "$input" 2>/dev/null)" || stop invalid_snapshot
 cycle="$(jq -c '{accepted_record_id:.accepted.record_id,identity:.accepted.identity,window_started_at:.accepted.created_at}' <<< "$valid")"
@@ -63,14 +88,19 @@ emit() {
 accepted_head="$(jq -r .accepted.identity.head <<< "$valid")"
 current_head="$(jq -r '.validation.current_head_sha // empty' <<< "$valid")"
 [[ "$current_head" =~ ^[0-9a-f]{40}$ ]] || emit stop invalid_snapshot
-[ "$current_head" = "$accepted_head" ] || emit requalify changed_head
 # The accepted comment creation time is the immutable window anchor, including
 # after response loss, duplicate polling, or HEAD changes.
 normalized="$(jq -c --argjson started "$(jq -r .accepted.created_at <<< "$valid")" \
   '.validation + {window_started_at:$started}' <<< "$valid")"
 ready="$(jq -r '.ready_started_at // empty' <<< "$normalized")"
-[[ "$ready" =~ ^[0-9]+$ ]] || emit stop ready_evidence_unavailable
-[ "$ready" -ge "$(jq -r .window_started_at <<< "$normalized")" ] || emit stop stale_ready
+if [ "$current_head" != "$accepted_head" ] ||
+   [ -z "$ready" ] || [ "$ready" -le "$(jq -r .window_started_at <<< "$normalized")" ]; then
+  if [ "$(jq -r '.now - .window_started_at' <<< "$normalized")" -ge 600 ]; then
+    emit pause_record validation_timeout
+  fi
+  [ "$current_head" = "$accepted_head" ] || emit requalify changed_head
+  emit wait pending
+fi
 result="$(bash "$script_dir/evaluate-current-head-validation.sh" <<< "$normalized")" || emit stop evaluator_unavailable
 case "$(jq -r '.action + "/" + .code' <<< "$result")" in
   ready/success)

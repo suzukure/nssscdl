@@ -28,7 +28,7 @@ assert() {
      (if .cycle then .cycle.window_started_at == 1000 and
        .cycle.accepted_record_id == "201" else true end) and
      (if .cycle then .observation.current_head_sha != null and
-       .observation.ready_started_at != null and
+       (.observation | has("ready_started_at")) and
        (.observation | has("checks_complete")) else true end) and
      (if .action == "handoff_candidate" then
        .current_validated_sha == .handoff.validated_sha and
@@ -47,7 +47,9 @@ assert failure-at-deadline pause_record validation_failed "$(case_input '.valida
 cycle="$(bash "$helper" <<< "$base" | jq -c .cycle)"
 assert duplicate wait pending "$(jq -c --argjson cycle "$cycle" '.cycle=$cycle | .validation.now=1051' <<< "$base")"
 assert changed-head requalify changed_head "$(jq -c --arg b "$b" '.validation.current_head_sha=$b' <<< "$base")"
-assert changed-head-deadline requalify changed_head "$(jq -c --arg b "$b" '.validation.current_head_sha=$b | .validation.now=1600' <<< "$base")"
+assert changed-head-before-deadline requalify changed_head "$(jq -c --arg b "$b" '.validation.current_head_sha=$b | .validation.now=1599' <<< "$base")"
+assert changed-head-deadline pause_record validation_timeout "$(jq -c --arg b "$b" '.validation.current_head_sha=$b | .validation.now=1600' <<< "$base")"
+assert changed-head-after-deadline pause_record validation_timeout "$(jq -c --arg b "$b" '.validation.current_head_sha=$b | .validation.now=1601' <<< "$base")"
 assert mismatched-cycle stop invalid_snapshot "$(jq -c --argjson cycle "$cycle" '.cycle=$cycle | .cycle.window_started_at=1100' <<< "$base")"
 assert stale-check wait pending "$(case_input '.validation.checks[0].status="success" | .validation.checks[0].started_at=999')"
 assert incomplete wait pending "$(case_input '.validation.checks_complete=false')"
@@ -56,7 +58,17 @@ assert human-pause stop already_paused "$(case_input '.active_pause="other"')"
 assert source-unconsumed stop source_not_consumed "$(case_input '.source_consumed=false')"
 assert round-limit pause_record round_limit "$(case_input '.validation.automated_followup_count=3')"
 assert no-review-suppression stop review_suppression_unverified "$(case_input '.normal_review_suppressed=false')"
-assert stale-ready stop stale_ready "$(case_input '.validation.ready_started_at=999')"
+assert draft-awaits-ready wait pending "$(case_input '.validation.ready_started_at=null')"
+assert ready-wait-before-deadline wait pending "$(case_input '.validation.ready_started_at=null | .validation.now=1599')"
+assert old-ready-awaits-fresh wait pending "$(case_input '.validation.ready_started_at=999')"
+assert same-second-ready-awaits-proof wait pending "$(case_input '.validation.ready_started_at=1000')"
+assert fresh-ready handoff_candidate success "$(case_input '.validation.ready_started_at=1011 | .validation.checks[0].started_at=1012 | .validation.checks[0].status="success"')"
+assert ready-wait-deadline pause_record validation_timeout "$(case_input '.validation.ready_started_at=null | .validation.now=1600')"
+assert old-ready-deadline pause_record validation_timeout "$(case_input '.validation.ready_started_at=999 | .validation.now=1600')"
+assert missing-ready-field stop invalid_snapshot "$(case_input 'del(.validation.ready_started_at)')"
+assert future-ready stop invalid_snapshot "$(case_input '.validation.ready_started_at=1051')"
+assert ready-wait-api-failure stop invalid_snapshot "$(case_input '.validation.ready_started_at=null | .validation.checks[0].status="unknown"')"
+assert ready-wait-missing-writer stop invalid_snapshot "$(case_input '.validation.ready_started_at=null | del(.validation.branch_mutating_runs)')"
 assert forged-gate stop invalid_snapshot "$(case_input 'del(.validation.requirements_gate_passed)')"
 assert wrong-sha wait stale_head "$(case_input '.validation.validation_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')"
 # The helper is prepared only: no production entry, write, dispatch, or paid call.
