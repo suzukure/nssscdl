@@ -27,6 +27,30 @@ Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理�
 
 `REQ-207` のAdmin最大7日・Idle 12時間、Student最大30日、Logout / Security Suspension / deletionの即時失効、解除後の旧Session非復活、Google / Magic Linkの同一Application Sessionへの収束を優先する。`CON-006` の初期規模ではD1 lookupを伴う単純で監査しやすい方式が適する。将来方式を変更する場合も同等以上のrevocation、idle、Role境界を示す。Session token生成・hash・storage、last-activity更新粒度、具体revocation方式は詳細設計で定める。
 
+### 2.2 Browser support baseline（REQ-901）
+
+`REQ-901` の対象は各Vendorの通常のStable / Release channelにおける現行Majorと直前のStable major familyとする。「直前」は数値上の `N-1` ではなく公式Stable release history上の直前を指す。Beta / Dev / Canary / Early Stable / Extended Stable / ESRは判定に使わない。最低Versionは、基準日時点で直前のStable major familyに提供されている最新の通常Stable / Release patchをfloorとし、同じmajor familyの古いpatch / minorすべてを保証するものではない。
+
+基準日: **2026-09-29 JST**。以下はこの日時点の基本設計baselineである。
+
+| Browser | 現行Stable major | 直前Stable major | 厳密な最低Version |
+|---|---:|---:|---|
+| Chrome Desktop | 154 | 153 | 153.0.8010.52 |
+| Microsoft Edge Stable | 153 | 152 | 152.0.4191.96 |
+| Safari | 26 | 18 | 18.6 |
+| Firefox Release | 156 | 155 | 155.0.1 |
+
+基準日のVendor公式情報:
+
+- Chrome: [Stable promotion / release history](https://chromereleases.googleblog.com/2026/09)（2026-09-22の154 Stable昇格）、[Chrome 153 Stable update](https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_0194356994.html)（2026-09-17、153.0.8010.52）。
+- Microsoft Edge: [Stable Channel release notes](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel)（153.0.4234.48 / 152.0.4191.96）。154のschedule / web-platform記載は通常Stable昇格の根拠にしない。
+- Safari: [Safari Release Notes](https://developer.apple.com/documentation/safari-release-notes)（通常Stable 26 / 直前Stable 18、18.6が直前familyのlatest。27はBeta）。
+- Firefox: [Firefox releases](https://www.firefox.com/en-US/releases/)、[156.0.1 release notes](https://www.firefox.com/en-US/firefox/156.0.1/releasenotes/)（通常Release 156 / 直前155、latest patchは156.0.1 / 155.0.1）。
+
+Release readiness確認時に同じVendor公式Stable / Release sourceで現行と直前のmajor familyを再確認し、各familyのその時点のlatest通常Stable / Release patchを `docs/40_test/01_TestPlan.md` §7のBrowser Matrixへ固定する。現行 / 直前majorまたは最低Version floorが上記baselineから変わった場合、Production release判定前に本節のbaseline・基準日・根拠を更新する。テスト実行だけでsupport範囲を暗黙に変更しない。Early Stable / Beta等のみの先行時は通常Stableへの昇格まで更新せず、versioning変更やmajor skip時も公式Stable release history上の直前familyを採用する。
+
+Browser Matrixの実行証跡にはBrowser名、exact version、OS、実行日時、build / commitを残す。`TC-NF-901-01` はこのbaselineと更新規則に従う。
+
 ## 3. C4 Level 2 Container
 
 ### 3.1 Application Worker
@@ -217,6 +241,7 @@ D1、R2、Google認証、Resend、Turnstileはそれぞれ別のPlatform / Servi
 - REQ-202 / REQ-203 / REQ-207 / REQ-209 / REQ-210 認証・Session
 - REQ-211 / REQ-320 / REQ-934 停止・管理者認証・個人情報削除
 - REQ-321 祝日マスタ更新
+- REQ-901 対応Browser
 - REQ-912 外部API Retry
 - REQ-908 / REQ-909 / REQ-910 RTO・RPO・長期Backup
 - REQ-904 Production相当Performance

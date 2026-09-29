@@ -9,7 +9,7 @@
 ### REQ-901 対応Browser
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |
 |---|---|:---:|---|---|---|---|---|
-| `TC-NF-901-01` | AC-901-001 | P1 | Browser matrix / Pairwise | 実行時点のChrome/Edge/Safari/Firefox 現行Major＋1つ前を確定。S1/A1標準データ。 各BrowserでLogin、Schedule閲覧、予約、キャンセル、管理者主要操作の代表Happy pathを実行する。 | 各対象BrowserでMust業務を完了でき、Browser固有のBlockerがない。 | Browser/Version別実行結果、Screenshot | 自動化候補 |
+| `TC-NF-901-01` | AC-901-001 | P1 | Browser matrix / Pairwise | `docs/10_basic_design/01_SystemArchitecture.md` §2.2とTestPlan §7に従い、実行時点のChrome/Edge/Safari/Firefoxの現行・直前Stable major familyを確定し、各familyのlatest通常Stable / Release patchを固定する。S1/A1標準データ。各対象VersionでLogin、Schedule閲覧、予約、キャンセル、管理者主要操作の代表Happy pathを実行する。 | 各対象Browser / VersionでMust業務を完了でき、Browser固有のBlockerがない。 | Browser名、exact version、OS、実行日時、build / commit、Version別実行結果、Screenshot | 自動化候補 |
 
 ### REQ-902 Responsive
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |

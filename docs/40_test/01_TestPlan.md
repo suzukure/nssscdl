@@ -122,7 +122,7 @@
 
 Production相当構成を基本とする。外部Providerの破壊的Fault Injectionや時刻境界試験は、Provider Stubまたは隔離環境で行う。
 
-Browser Matrixは要求の「現行Major＋1つ前」を実行時点で確定し、実行記録へVersionを固定する。
+Browser Matrixは `docs/10_basic_design/01_SystemArchitecture.md` §2.2のbaseline / rolling更新規則に従い、Release readiness時点の公式Stable / Release情報から現行Major＋直前のStable major familyを確定する。各familyのlatest通常Stable / Release patchをexact versionとして実行対象へ固定し、majorまたは最低Version floorに差分があればProduction release判定前に基本設計baselineを更新する。実行記録にはBrowser名、exact version、OS、実行日時、build / commitを残す。
 
 ## 8. Entry Criteria
 
