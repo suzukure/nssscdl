@@ -811,7 +811,7 @@ Restoreした既存Sessionをそのまま信頼せず、Disaster Recovery後は�
 
 Provider側の既送信メールはDB restoreで取り消せない。Deliveryを一時停止してNotificationIntent / Delivery Attemptをreconcileし、Providerが受理した可能性を否定できないAttemptは §13.7 / §13.11の結果確認中・blind resend禁止境界に従う。復旧後に現在も有効な通知義務だけを再評価する。Reminder、Cleanup、Holiday、Integrity等のScheduled Handlerは検証完了前に通常処理を開始せず、再開時に現在時刻と復旧済み状態からdue workを再評価する。
 
-Reservation / SlotOccupancy等の主要Domain invariantを検査し、異常時は §14のFail Closed方針に従う。Service再開の全Gate、Recovery source選定、監査・smoke testは `01_SystemArchitecture.md` §5.3を正とする。
+Reservation / SlotOccupancy等の主要Domain invariantを検査し、異常時は §14のFail Closed方針に従う。Session / 単回Token sanitation、Purge再適用、Notification reconciliation、Scheduled Handler再開、Domain invariant validationのdomain-specific再開処理は本節を正本とする。Service再開の全Gate、Recovery source / capture point選定、Recovery全体の監査・smoke testは `01_SystemArchitecture.md` §5.3を参照する。
 
 ## 14. 未来Slotの現在状態Invariant
 
