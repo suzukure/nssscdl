@@ -60,10 +60,79 @@ assert stale-ready stop stale_ready "$(case_input '.validation.ready_started_at=
 assert forged-gate stop invalid_snapshot "$(case_input 'del(.validation.requirements_gate_passed)')"
 assert wrong-sha wait stale_head "$(case_input '.validation.validation_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')"
 # The helper is prepared only: no production entry, write, dispatch, or paid call.
-if rg -n 'prepare-ai-resume-validate-cycle\.sh|ai-resume-validate' "$root/.github/workflows"; then
-  echo 'Validate cycle is production reachable.' >&2; exit 1
+check_dormant_workflows() (
+  local directory="$1" workflow search_rc
+  [ -d "$directory" ] && [ -r "$directory" ] && [ -x "$directory" ] || {
+    echo "Production workflow directory is unavailable: $directory" >&2; return 1;
+  }
+  shopt -s nullglob
+  local workflows=("$directory"/*.yml "$directory"/*.yaml)
+  [ "${#workflows[@]}" -gt 0 ] || {
+    echo "No production workflows found in $directory." >&2; return 1;
+  }
+  for workflow in "${workflows[@]}"; do
+    if [ ! -f "$workflow" ] || [ ! -r "$workflow" ] || [ -L "$workflow" ]; then
+      echo "Production workflow is not a readable regular file: $workflow" >&2
+      return 1
+    fi
+    if grep -En 'prepare-ai-resume-validate-cycle\.sh|ai-resume-validate' "$workflow"; then
+      search_rc=0
+    else
+      search_rc=$?
+    fi
+    case "$search_rc" in
+      0) echo "Validate cycle is production reachable from $workflow." >&2; return 1 ;;
+      1) ;;
+      *) echo "Production workflow search failed for $workflow (exit $search_rc)." >&2; return 1 ;;
+    esac
+  done
+)
+check_no_external_calls() {
+  local file="$1" matches search_rc line
+  if [ ! -f "$file" ] || [ ! -r "$file" ] || [ -L "$file" ]; then
+    echo "Validate cycle helper is not a readable regular file: $file" >&2
+    return 1
+  fi
+  if matches="$(grep -En '(^|[^[:alnum:]_])gh([^[:alnum:]_]|$)|curl|git[[:space:]]+push|repository_dispatch|claude|codex' "$file")"; then
+    search_rc=0
+  else
+    search_rc=$?
+  fi
+  case "$search_rc" in
+    0) while IFS= read -r line; do
+         [[ "$line" =~ ^[0-9]+:[[:space:]]*# ]] && continue
+         echo "Validate cycle has an external call: $line" >&2
+         return 1
+       done <<< "$matches" ;;
+    1) ;;
+    *) echo "Validate cycle helper search failed (exit $search_rc)." >&2; return 1 ;;
+  esac
+}
+check_dormant_workflows "$root/.github/workflows"
+check_no_external_calls "$helper"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/workflows"
+if check_dormant_workflows "$tmp/workflows" >/dev/null 2>&1; then
+  echo 'Empty workflow directory was accepted.' >&2; exit 1
 fi
-if rg -n '\bgh\b|curl|git push|repository_dispatch|claude|codex' "$helper" | rg -v '^.*#|normal_trusted_review'; then
-  echo 'Validate cycle has an external call.' >&2; exit 1
+mkdir "$tmp/workflows/not-a-file.yaml"
+if check_dormant_workflows "$tmp/workflows" >/dev/null 2>&1; then
+  echo 'Non-file workflow was accepted.' >&2; exit 1
+fi
+rmdir "$tmp/workflows/not-a-file.yaml"
+printf 'run: prepare-ai-resume-validate-cycle.sh\n' > "$tmp/workflows/reachable.yml"
+if check_dormant_workflows "$tmp/workflows" >/dev/null 2>&1; then
+  echo 'Production wiring was accepted.' >&2; exit 1
+fi
+if (grep() { return 127; }; check_dormant_workflows "$root/.github/workflows" >/dev/null 2>&1); then
+  echo 'Missing workflow search tool was accepted.' >&2; exit 1
+fi
+printf 'gh api /repos/example\n' > "$tmp/external.sh"
+if check_no_external_calls "$tmp/external.sh" >/dev/null 2>&1; then
+  echo 'External call was accepted.' >&2; exit 1
+fi
+if (grep() { return 127; }; check_no_external_calls "$helper" >/dev/null 2>&1); then
+  echo 'Missing helper search tool was accepted.' >&2; exit 1
 fi
 echo 'prepare-ai-resume-validate-cycle fixture passed.'
