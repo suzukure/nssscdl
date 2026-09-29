@@ -11,6 +11,15 @@ class Student {
   contact_email
 }
 
+class StudentAccount
+class AdminAccount
+class AuthMethod
+class Session
+class AuthChallenge
+class Invitation
+class PendingContactEmailChange
+class StudentSecurityAccess
+
 class ScheduleMonth {
   id
   year
@@ -98,6 +107,16 @@ class GroupLesson {
   occupancy_id <<UNIQUE>>
   recurrence_source
 }
+
+Student "1" -- "0..1" StudentAccount
+StudentAccount "1" -- "0..*" AuthMethod : Student scope >
+StudentAccount "1" -- "0..*" Session : Student scope >
+AdminAccount "1" -- "0..*" AuthMethod : Admin scope >
+AdminAccount "1" -- "0..*" Session : Admin scope >
+Student "1" -- "1" StudentSecurityAccess
+Student "1" -- "0..1" PendingContactEmailChange : active >
+PendingContactEmailChange -- AuthChallenge
+Invitation -- AuthChallenge : new Student registration >
 
 ScheduleMonth "1" -- "0..*" LessonSlot : contains >
 Student "1" -- "0..*" StudentReservation : books >
