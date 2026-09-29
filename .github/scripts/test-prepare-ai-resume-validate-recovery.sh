@@ -115,6 +115,9 @@ gh() {
         [{jobs:[{name:"Review",status:(if ($mode == "queued" or $mode == "queued_no_steps") then "in_progress" else "completed" end),
           conclusion:(if $mode == "early_failure" then "failure"
             elif $mode == "skip" then "skipped"
+            elif $mode == "neutral" then "neutral"
+            elif $mode == "action_required" then "action_required"
+            elif $mode == "completed_null" then null
             elif ($mode == "queued" or $mode == "queued_no_steps") then null else "success" end),
           steps:(if $mode == "skip" or $mode == "queued" or $mode == "queued_no_steps" then [] else
             [{name:"Select Claude review model",status:"completed",conclusion:"success"}]
@@ -301,6 +304,16 @@ run | jq -e '.actions == [] and .diagnostics.normal_review[0].run_id == 600
 REVIEW=queued_no_steps
 [ "$(run | jq -r .code)" = review_ownership_unconfirmed ]
 run | jq -e '.actions == [] and .diagnostics.normal_review[0].review_jobs[0].steps == null' >/dev/null
+for REVIEW in neutral action_required completed_null; do
+  run | jq -e --arg mode "$REVIEW" '
+    .result == "manual_reconcile" and .code == "review_ownership_unconfirmed"
+    and .actions == [] and (.diagnostics.normal_review | length) == 1
+    and .diagnostics.normal_review[0].ownership == "unconfirmed"
+    and .diagnostics.normal_review[0].review_jobs == [{name:"Review",status:"completed",
+      conclusion:(if $mode == "completed_null" then null else $mode end),
+      steps:[{name:"Select Claude review model",status:"completed",conclusion:"success"}]}]
+  ' >/dev/null
+done
 for REVIEW in bad_jobs duplicate_job duplicate_entry unknown_job_status \
   unknown_job_conclusion unknown_entry_status; do
   if run >/dev/null 2>&1; then echo "Malformed Review evidence accepted: $REVIEW" >&2; exit 1; fi
