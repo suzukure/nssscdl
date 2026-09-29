@@ -74,6 +74,16 @@ verify_graph() {
   printf '%s\n' "$id"
 }
 
+# Review step names are trusted only when this PR leaves the workflow intact.
+# Check the pinned HEAD before acceptance so Recovery can retain the source pause.
+current || fail 'target changed before Review trust check'
+files="$(gh api --paginate --slurp "/repos/$repo/pulls/$pr/files?per_page=100")" \
+  || fail 'PR file list unavailable'
+jq -e 'type == "array" and all(.[]; type == "array" and
+  all(.[]; type == "object" and (.filename | type) == "string"))
+  and (any(.[][]; .filename == ".github/workflows/claude-review.yml") | not)' \
+  <<< "$files" >/dev/null || fail 'Review workflow evidence is untrusted'
+
 # A failed POST may have committed. Re-list once and never repeat an uncertain write.
 before="$(graph)" || fail 'source graph unavailable'
 if accepted_id "$before" >/dev/null 2>&1; then fail 'acceptance already exists'; fi
@@ -108,13 +118,6 @@ since="$(jq -er --argjson id "$accepted" --argjson app "$app_id" '
   select(.id == $id and .performed_via_github_app.id == $app)
   | .created_at | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))
 ' <<< "$accepted_fact")" || fail 'acceptance provenance unavailable'
-# Review step names are trusted only when this PR leaves the workflow intact.
-files="$(gh api --paginate --slurp "/repos/$repo/pulls/$pr/files?per_page=100")" \
-  || fail 'PR file list unavailable'
-jq -e 'type == "array" and all(.[]; type == "array" and
-  all(.[]; type == "object" and (.filename | type) == "string"))
-  and (any(.[][]; .filename == ".github/workflows/claude-review.yml") | not)' \
-  <<< "$files" >/dev/null || fail 'Review workflow evidence is untrusted'
 for poll in {1..9}; do
   current || fail 'HEAD changed during Review handoff'
   runs="$(gh api --paginate --slurp "/repos/$repo/actions/workflows/claude-review.yml/runs?event=pull_request&per_page=100")" \

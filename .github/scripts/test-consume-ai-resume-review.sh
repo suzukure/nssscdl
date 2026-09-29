@@ -80,7 +80,11 @@ gh() {
     'api /repos/owner/repo/issues/comments/201')
       echo '{"id":201,"performed_via_github_app":{"id":99},"created_at":"2026-01-01T00:00:00Z"}' ;;
     'api --paginate --slurp /repos/owner/repo/pulls/37/files?per_page=100')
-      echo '[[]]' ;;
+      if [ "$MOCK_MODE" = workflow_change ]; then
+        echo '[[{"filename":".github/workflows/claude-review.yml"}]]'
+      else
+        echo '[[]]'
+      fi ;;
     'api --paginate --slurp /repos/owner/repo/actions/workflows/claude-review.yml/runs?event=pull_request&per_page=100')
       jq -cn --arg head "$MOCK_HEAD" '
         [{workflow_runs:[{id:501,run_attempt:1,name:"Claude Review",event:"pull_request",
@@ -135,4 +139,13 @@ for mode in head_change terminal; do
   fi
   [ ! -s "$tmp/writes" ]
 done
+if run_case workflow_change; then
+  echo 'Changed Review workflow passed the trust check.' >&2
+  exit 1
+fi
+grep -Fq 'Review workflow evidence is untrusted' "$tmp/err"
+[ ! -s "$tmp/writes" ]
+[ "$(cat "$tmp/accepted")" = no ]
+[ "$(cat "$tmp/issue")" = present ]
+[ "$(cat "$tmp/pr")" = present ]
 echo 'consume-ai-resume-review fixture passed.'
