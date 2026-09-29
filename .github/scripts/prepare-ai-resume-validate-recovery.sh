@@ -237,7 +237,17 @@ while IFS=$'\t' read -r review_id review_attempt; do
     "/repos/$repo/actions/runs/$review_id/attempts/$review_attempt/jobs?per_page=100" \
     > "$tmp/review-jobs.json" || fail 'Review job evidence unavailable'
   jq -e 'type == "array" and all(.[]; (.jobs | type) == "array")
-    and ([.[] .jobs[] | select(.name == "Review")] | length == 1)' \
+    and ([.[] .jobs[] | select(.name == "Review")] | length == 1)
+    and ([.[] .jobs[] | select(.name == "Review")] | all(.[];
+      (.status | IN("queued","in_progress","completed","waiting","pending","requested"))
+      and (.conclusion | IN(null,"success","failure","neutral","cancelled","skipped",
+          "timed_out","action_required","stale"))
+      and (.steps == null or (.steps | type == "array"))
+      and ([.steps[]? | select(.name == "Select Claude review model")] | length <= 1)
+      and all(.steps[]?; .name != "Select Claude review model" or
+        ((.status | IN("queued","in_progress","completed","waiting","pending","requested"))
+         and (.conclusion | IN(null,"success","failure","neutral","cancelled","skipped",
+             "timed_out","action_required","stale"))))))' \
     "$tmp/review-jobs.json" >/dev/null || fail 'Review job evidence malformed'
   candidates="$(jq -cn --argjson prior "$candidates" --argjson run "$review_id" \
     --argjson attempt "$review_attempt" --slurpfile jobs "$tmp/review-jobs.json" '
@@ -282,7 +292,7 @@ fi
 if [ -n "$active" ]; then
   jq -cn --arg accepted "$accepted" --arg pause "$active" \
     --argjson actions "$(label_actions)" --arg machine "$machine" '
-    {result:"paused",accepted_record_id:$accepted,validation_pause_id:$pause,
+    {result:"paused",accepted_record_id:$accepted,active_pause_id:$pause,
      actions:($actions + [if $machine == "true" then
        {action:"remove_machine_label",requires:"fresh graph active and both human labels present"}
        else empty end])}' | emit
@@ -343,7 +353,7 @@ case "$action/$code" in
       --argjson labels "$(label_actions)" --arg machine "$machine" \
       '{result:"recover",accepted_record_id:$accepted,
         actions:([{action:"create_or_reconcile_validation_pause",reason:$reason,
-          accepted_record_id:$accepted,paused_head:$head,failed_action:"validate"},
+          accepted_record_id:$accepted,paused_head:$head},
           {action:"revalidate_record_graph",requires:"one active validation pause"}]
           + $labels
           + [if $machine == "true" then
