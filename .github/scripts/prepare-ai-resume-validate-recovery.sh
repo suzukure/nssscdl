@@ -286,7 +286,7 @@ snapshot="$(jq -cn --argjson identity "$identity" --argjson record "$record" \
   {accepted:{record_id:$accepted,created_at:$started,identity:$identity,record:$record},
    cycle:$evidence.cycle,validation:($evidence.validation + {now:$now}),
    source_consumed:true,active_pause:"none",
-   issue_label_absent:true,pr_label_absent:true,
+   issue_label_absent:($issue_label == "false"),pr_label_absent:($pr_label == "false"),
    normal_review_suppressed:($draft == "true" or $machine == "true")}')"
 cycle_result="$(bash "$script_dir/prepare-ai-resume-validate-cycle.sh" <<< "$snapshot")" \
   || fail 'validation cycle unavailable'
@@ -305,7 +305,7 @@ case "$action/$code" in
           + [if $machine == "true" then
               {action:"remove_machine_label",requires:"fresh graph active and both human labels present"}
              else empty end])}' ;;
-  handoff_candidate/success)
+  stop/labels_not_cleared|stop/review_suppression_unverified|handoff_candidate/success)
     jq -cn --arg accepted "$accepted" --argjson cycle "$cycle_result" --arg machine "$machine" \
       '{result:"recover",accepted_record_id:$accepted,cycle:$cycle,
         actions:([{action:"create_or_reconcile_replacement_pause",source_pause_id:$accepted,

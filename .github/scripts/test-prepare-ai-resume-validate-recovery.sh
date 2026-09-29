@@ -150,6 +150,33 @@ jq '.validation.now = 1767225650 | .validation.checks[0].status = "failure"' \
   "$tmp/durable.json" > "$tmp/new.json"
 mv "$tmp/new.json" "$tmp/durable.json"
 [ "$(run | jq -r '.actions[0].reason')" = validation_failed ]
+for status in pending failure; do
+  jq --arg status "$status" '.validation.checks[0].status = $status' \
+    "$tmp/durable.json" > "$tmp/new.json"
+  mv "$tmp/new.json" "$tmp/durable.json"
+  for labels in 'true false' 'false true'; do
+    read -r ISSUE_LABEL PR_LABEL <<< "$labels"
+    result="$(run)"
+    jq -e '
+      .result == "recover" and .cycle.action == "stop"
+      and .cycle.code == "labels_not_cleared"
+      and .actions[0].action == "create_or_reconcile_replacement_pause"
+      and .actions[0].reason == "resume_transition_failed"
+      and .actions[0].failed_action == "validate"
+      and ([.actions[].reason] | index("validation_failed") == null
+        and index("validation_timeout") == null)
+    ' <<< "$result" >/dev/null || {
+      echo "Partial labels misclassified with $status evidence: $labels" >&2; exit 1;
+    }
+  done
+done
+NOW=1767226200; ISSUE_LABEL=true; PR_LABEL=false
+[ "$(run | jq -r '.cycle.code + "/" + .actions[0].reason')" = \
+  labels_not_cleared/resume_transition_failed ]
+NOW=1767225650
+ISSUE_LABEL=false; PR_LABEL=false
+jq '.validation.checks[0].status = "failure"' "$tmp/durable.json" > "$tmp/new.json"
+mv "$tmp/new.json" "$tmp/durable.json"
 MODE=replacement; ISSUE_LABEL=true
 list_records | jq -e '[.records[].pause_id] == ["101","201","301"]
   and .records[2].record.reason == "resume_transition_failed"' >/dev/null
