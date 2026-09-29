@@ -109,10 +109,10 @@ class GroupLesson {
 }
 
 Student "1" -- "0..1" StudentAccount
-StudentAccount "1" -- "0..*" AuthMethod : Student scope >
-StudentAccount "1" -- "0..*" Session : Student scope >
-AdminAccount "1" -- "0..*" AuthMethod : Admin scope >
-AdminAccount "1" -- "0..*" Session : Admin scope >
+StudentAccount -- "0..*" AuthMethod : Student scope >
+StudentAccount -- "0..*" Session : Student scope >
+AdminAccount -- "0..*" AuthMethod : Admin scope >
+AdminAccount -- "0..*" Session : Admin scope >
 Student "1" -- "1" StudentSecurityAccess
 Student "1" -- "0..1" PendingContactEmailChange : active >
 PendingContactEmailChange -- AuthChallenge
