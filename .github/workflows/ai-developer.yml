@@ -12,10 +12,11 @@ permissions:
   contents: read
 
 jobs:
-  prepare-resume-develop:
+  prepare-resume-command:
     if: >-
       github.event_name == 'issue_comment' &&
-      github.event.comment.body == '/ai resume develop'
+      (github.event.comment.body == '/ai resume develop' ||
+       github.event.comment.body == '/ai resume review')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,23 +45,47 @@ jobs:
           command="$(jq -cn --arg body "$COMMENT_BODY" --arg actor "$COMMENT_ACTOR" \
             --arg author_association "$COMMENT_ASSOCIATION" '{body:$body,actor:$actor,author_association:$author_association}' |
             bash .github/scripts/parse-ai-resume-command.sh)"
-          if ! jq -e '.result == "accepted" and .action == "develop"' <<< "$command" >/dev/null; then
+          if ! jq -e '.result == "accepted" and (.action == "develop" or .action == "review")' <<< "$command" >/dev/null; then
             echo 'Resume command rejected or ignored.' >&2
             exit 1
           fi
+          action="$(jq -r .action <<< "$command")"
           app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
           [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
           context="$(bash .github/scripts/build-ai-resume-prepare-context.sh \
             "$GITHUB_REPOSITORY" "$TARGET_KIND" "$TARGET_NUMBER" "$app_id" <<< "$command")"
           result="$(bash .github/scripts/prepare-ai-resume.sh <<< "$context")"
-          if ! jq -e '.result == "prepared" and .dispatch.action == "develop"' <<< "$result" >/dev/null; then
+          if ! jq -e --arg action "$action" '
+            .result == "prepared" and (.dispatch | type == "object") and
+            .dispatch.action == $action and .dispatch.version == 1 and
+            (.dispatch | keys == ["action","actor","closing_issue_number","follow_up_issue",
+                                 "pause_issue_body_fingerprint","paused_head","pr_number",
+                                 "prepared_head","prepared_issue_body_fingerprint","reason",
+                                 "source_pause_id","target","version"]) and
+            (if $action == "review" then
+              (.dispatch.reason | IN("claude_execution_failed","review_disagreement_decision",
+                                     "resume_transition_failed")) and
+              (.dispatch.target | type == "string" and test("^pr:[1-9][0-9]*$")) and
+              (.dispatch.pr_number | type == "number" and . >= 1 and floor == .) and
+              (.dispatch.paused_head | type == "string" and test("^[0-9a-f]{40}$")) and
+              .dispatch.prepared_head == .dispatch.paused_head
+            else true end)
+          ' <<< "$result" >/dev/null; then
             echo 'Resume PREPARE rejected; active pause remains.' >&2
             exit 1
           fi
+          reason="$(jq -r .dispatch.reason <<< "$result")"
+          target="$(jq -r .dispatch.target <<< "$result")"
+          echo "Resume dispatch run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} target=${target} action=${action} reason=${reason}"
           jq -cn --argjson payload "$(jq -c .dispatch <<< "$result")" \
-            '{event_type:"ai-resume-develop",client_payload:{version:1,dispatch:$payload}}' > "$RUNNER_TEMP/resume-dispatch.json"
-          gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" \
-            --input "$RUNNER_TEMP/resume-dispatch.json" >/dev/null
+            --arg event_type "ai-resume-$action" \
+            '{event_type:$event_type,client_payload:{version:1,dispatch:$payload}}' > "$RUNNER_TEMP/resume-dispatch.json"
+          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            --input "$RUNNER_TEMP/resume-dispatch.json" >/dev/null 2>&1; then
+            echo 'Resume dispatch API failed or response was lost; outcome unknown, no producer retry.' >&2
+            exit 1
+          fi
+          echo 'Resume dispatch API accepted the request; consumer owns acceptance.'
 
   gate-issue-entry:
     name: Gate Issue entry
