@@ -18,6 +18,7 @@ export LABEL_MODE=valid
 export COMMENT_MODE=valid
 export PAUSE_MODE=active
 export API_MODE=valid
+export CONTEXT_MODE=valid
 dispatch() {
   jq -cn --arg reason "$REASON" --arg head "$HEAD_SHA" --arg fp "$FINGERPRINT" \
     '{version:1,target:"pr:37",action:"validate",actor:"alice",source_pause_id:"101",
@@ -27,6 +28,8 @@ dispatch() {
 }
 cat > "$tmp/scripts/build-ai-resume-prepare-context.sh" <<'STUB'
 #!/usr/bin/env bash
+if [ "$CONTEXT_MODE" = fail ]; then exit 1; fi
+if [ "$CONTEXT_MODE" = invalid ]; then printf 'null\n'; exit 0; fi
 command="$(cat)"
 jq -cn --argjson command "$command" --arg reason "$REASON" --arg head "$HEAD_SHA" \
   --arg fp "$FINGERPRINT" --arg failed "$FAILED_ACTION" --arg fresh "$FRESH_HEAD" '
@@ -41,8 +44,13 @@ STUB
 export GH_LOG="$tmp/gh.log"
 : > "$GH_LOG"
 gh() {
-  [ "$API_MODE" = valid ] || return 1
   printf '%s\n' "$*" >> "$GH_LOG"
+  case "$API_MODE:$*" in
+    'pr:api /repos/owner/repo/pulls/37'|\
+    'issue_label:api /repos/owner/repo/issues/36'|\
+    'pr_label:api /repos/owner/repo/issues/37'|\
+    comments:*'/issues/37/comments?per_page=100&page=1') return 1 ;;
+  esac
   case "$*" in
     'api /repos/owner/repo/pulls/37')
       jq -cn --arg mode "$PR_MODE" --arg head "$FRESH_HEAD" '
@@ -59,10 +67,17 @@ gh() {
                               then [] else [{name:"human-review-required"}] end)}' ;;
     *'/issues/37/comments?per_page=100&page=1')
       jq -cn --arg mode "$COMMENT_MODE" '
+        if $mode == "non_array" then {} else
         [{id:(if $mode == "before" then 100 else 150 end),
           body:(if $mode == "body" then "/ai resume validate " else "/ai resume validate" end),
           user:{login:(if $mode == "actor" then "bob" else "alice" end)},
-          author_association:(if $mode == "outsider" then "NONE" else "OWNER" end)}]' ;;
+          author_association:(if $mode == "outsider" then "NONE" else "OWNER" end)}]
+        | if $mode == "duplicate" then
+            [{id:175,body:"/ai resume validate",user:{login:"alice"},author_association:"OWNER"},
+             {id:100,body:"/ai resume validate",user:{login:"alice"},author_association:"OWNER"}] + .
+          elif $mode == "missing_association" then .[0] |= del(.author_association)
+          else . end
+        end' ;;
     *) echo "unexpected GitHub call: $*" >&2; return 1 ;;
   esac
 }
@@ -83,6 +98,21 @@ accept() {
       "remove_issue_label","confirm_issue_label_absent",
       "remove_pr_label","start_validation_cycle"]
   ' <<< "$result" >/dev/null
+}
+expect_failure() {
+  local expected_error="$1"
+  if dispatch | bash "$helper" owner/repo 99 > "$tmp/failure.out" 2> "$tmp/failure.err"; then
+    echo "Expected failure for API_MODE=$API_MODE CONTEXT_MODE=$CONTEXT_MODE COMMENT_MODE=$COMMENT_MODE" >&2
+    exit 1
+  fi
+  if [ -s "$tmp/failure.out" ]; then
+    echo 'Failed requalification produced output.' >&2
+    exit 1
+  fi
+  if ! grep -Fq "prepare-ai-resume-validate-consumer: $expected_error" "$tmp/failure.err"; then
+    echo "Expected failure path was not reached: $expected_error" >&2
+    exit 1
+  fi
 }
 for REASON in validation_failed validation_timeout resume_transition_failed; do
   export REASON
@@ -124,6 +154,31 @@ for COMMENT_MODE in before body actor outsider; do
   export COMMENT_MODE
   [ "$(dispatch | bash "$helper" owner/repo 99 | jq -r .result)" = ignore ]
 done
+export COMMENT_MODE=valid
+for API_MODE in pr issue_label pr_label comments; do
+  export API_MODE
+  case "$API_MODE" in
+    pr) expect_failure 'PR fact unavailable' ;;
+    issue_label|pr_label) expect_failure 'label fact unavailable' ;;
+    comments) expect_failure 'command history unavailable' ;;
+  esac
+done
+export API_MODE=valid
+for CONTEXT_MODE in fail invalid; do
+  export CONTEXT_MODE
+  if [ "$CONTEXT_MODE" = fail ]; then
+    expect_failure 'trusted context unavailable'
+  else
+    expect_failure 'resume policy unavailable'
+  fi
+done
+export CONTEXT_MODE=valid
+for COMMENT_MODE in non_array missing_association; do
+  export COMMENT_MODE
+  expect_failure 'invalid command history'
+done
+export COMMENT_MODE=duplicate
+accept
 export COMMENT_MODE=valid
 first="$(dispatch | bash "$helper" owner/repo 99)"
 second="$(dispatch | bash "$helper" owner/repo 99)"
