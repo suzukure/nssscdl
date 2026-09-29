@@ -474,4 +474,6 @@ PlantUML source: `docs/diagrams/plantuml/data-model-overview.puml`
 
 Rendered SVG: `docs/diagrams/rendered/data-model-overview.svg`（自動生成）
 
-`IntegrityIncident` は予約・占有の中核業務関係図には含めず、運用・監視データモデルとして詳細設計で物理関係を具体化する。
+`data-model-overview` は通常業務の主要論理概念を俯瞰し、§2.1の認証・Account系と予約・占有系の関係を含む。認証・Account系の詳細な意味は§2.1を正とする。
+
+`IntegrityIncident` は運用・整合性監視Entityのため概要図に含めず、詳細設計で物理関係を具体化する。Backup Artifact / manifest / Recovery Purge Registry等もBackup / Recovery専用metadataのため概要図に含めない（§2.2）。
