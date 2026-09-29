@@ -46,10 +46,11 @@ PY
 grep -Fq 'RESUME_DISPATCH: ${{ toJSON(github.event.client_payload.dispatch) }}' "$workflow"
 grep -Fq 'bash .github/scripts/consume-ai-resume-develop.sh' "$workflow"
 grep -Fq 'needs.develop-from-issue.outputs.resume_accepted' "$workflow"
-awk '/^          jq -cn --argjson payload / {print; getline; print; exit}' "$workflow" > "$test_dir/build-dispatch.sh"
+awk '/^          jq -cn --argjson payload / {print; getline; print; getline; print; exit}' "$workflow" > "$test_dir/build-dispatch.sh"
 [ -s "$test_dir/build-dispatch.sh" ]
 result="$(jq -cn --argjson dispatch "$MOCK_DISPATCH" '{result:"prepared",dispatch:$dispatch}')"
 RUNNER_TEMP="$test_dir"
+action=develop
 source "$test_dir/build-dispatch.sh"
 jq -e --argjson snapshot "$MOCK_DISPATCH" '
   (keys == ["client_payload","event_type"]) and .event_type == "ai-resume-develop" and
