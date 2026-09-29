@@ -4,7 +4,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/scripts"
-for script in prepare-ai-resume-validate-recovery prepare-ai-resume-validate-cycle \
+for script in prepare-ai-resume-validate-recovery prepare-ai-resume-validate-pause-record \
+  prepare-ai-resume-validate-cycle \
   evaluate-current-head-validation validate-human-pause-record-graph \
   decompose-human-pause-record-graph derive-human-pause-pre-resume-state \
   reconcile-human-pause-resume-acceptance reconcile-human-pause-active-pause \
@@ -111,12 +112,22 @@ gh() {
             pull_requests:[{number:37,head:{sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}] end)}]' ;;
     'api --paginate --slurp /repos/owner/repo/actions/runs/600/attempts/1/jobs?per_page=100')
       jq -cn --arg mode "$REVIEW" '
-        [{jobs:[{name:"Review",status:(if $mode == "queued" then "in_progress" else "completed" end),
+        [{jobs:[{name:"Review",status:(if ($mode == "queued" or $mode == "queued_no_steps") then "in_progress" else "completed" end),
           conclusion:(if $mode == "early_failure" then "failure"
             elif $mode == "skip" then "skipped"
-            elif $mode == "queued" then null else "success" end),
-          steps:(if $mode == "skip" or $mode == "queued" then [] else
-            [{name:"Select Claude review model",status:"completed",conclusion:"success"}] end)}]}]' ;;
+            elif ($mode == "queued" or $mode == "queued_no_steps") then null else "success" end),
+          steps:(if $mode == "skip" or $mode == "queued" or $mode == "queued_no_steps" then [] else
+            [{name:"Select Claude review model",status:"completed",conclusion:"success"}]
+            + (if $mode == "duplicate_entry" then
+                [{name:"Select Claude review model",status:"completed",conclusion:"success"}]
+              else [] end) end)}]}]
+          | if $mode == "queued_no_steps" then del(.[0].jobs[0].steps)
+            elif $mode == "bad_jobs" then .[0].jobs = "invalid"
+            elif $mode == "duplicate_job" then .[0].jobs += [.[0].jobs[0]]
+            elif $mode == "unknown_job_status" then .[0].jobs[0].status = "unknown"
+            elif $mode == "unknown_job_conclusion" then .[0].jobs[0].conclusion = "unknown"
+            elif $mode == "unknown_entry_status" then .[0].jobs[0].steps[0].status = "unknown"
+            else . end' ;;
     'api /repos/owner/repo/issues/36'|'api /repos/owner/repo/issues/37')
       local number="${2##*/}" present="$ISSUE_LABEL"
       [ "$number" = 37 ] && present="$PR_LABEL"
@@ -154,8 +165,8 @@ assert_schema() {
         and .reason == "resume_transition_failed" and .failed_action == "validate"
         and (.source_pause_id | positive_id)
       elif .action == "create_or_reconcile_validation_pause" then
-        $keys == ["accepted_record_id","action","failed_action","paused_head","reason"]
-        and (.accepted_record_id | positive_id) and .failed_action == "validate"
+        $keys == ["accepted_record_id","action","paused_head","reason"]
+        and (.accepted_record_id | positive_id)
         and (.paused_head | test("^[0-9a-f]{40}$"))
         and (.reason | IN("validation_failed","validation_timeout","round_limit"))
       elif .action == "revalidate_record_graph" or .action == "remove_machine_label" then
@@ -173,7 +184,7 @@ assert_schema() {
     and (.actions | type == "array" and all(.[]; action))
     and (.result | IN("pre_acceptance","normal_review_owns","paused","recover","cycle_wait","manual_reconcile"))
     and ([keys[] | IN("result","actions","diagnostics","code","normal_review",
-        "accepted_record_id","replacement_pause_id","validation_pause_id",
+        "accepted_record_id","replacement_pause_id","active_pause_id",
         "window_started_at","cycle")] | all)
     and (if .result == "pre_acceptance" then (keys | sort) == ["actions","diagnostics","result"]
       elif .result == "normal_review_owns" then
@@ -182,8 +193,8 @@ assert_schema() {
         (keys | sort) == ["actions","cycle","diagnostics","result"] and .actions == []
       elif .result == "paused" then
         (.accepted_record_id | positive_id)
-        and ((has("replacement_pause_id") and (has("validation_pause_id") | not))
-          or (has("validation_pause_id") and (has("replacement_pause_id") | not)))
+        and ((has("replacement_pause_id") and (has("active_pause_id") | not))
+          or (has("active_pause_id") and (has("replacement_pause_id") | not)))
       elif .result == "recover" then (.accepted_record_id | positive_id)
       else true end)
     and (if .result == "manual_reconcile" then .actions == [] and (.code | type == "string") else true end)
@@ -214,7 +225,10 @@ NOW=1767226200
 [ "$(run | jq -r '.actions[0].reason')" = validation_timeout ]
 run | assert_schema
 run | jq -e --arg head "$a" '.actions[0] == {action:"create_or_reconcile_validation_pause",
-  accepted_record_id:"201",paused_head:$head,reason:"validation_timeout",failed_action:"validate"}' >/dev/null
+  accepted_record_id:"201",paused_head:$head,reason:"validation_timeout"}' >/dev/null
+run | jq -c .actions[0] | bash "$tmp/scripts/prepare-ai-resume-validate-pause-record.sh" 37 |
+  jq -e --arg head "$a" '. == {version:1,kind:"pause",reason:"validation_timeout",
+    target:"pr:37",paused_head:$head,payload:{accepted_record_id:"201"}}' >/dev/null
 NOW=1767225650
 jq '.validation.now = 1767225650 | .validation.checks[0].status = "failure"' \
   "$tmp/durable.json" > "$tmp/new.json"
@@ -238,6 +252,10 @@ for status in pending failure; do
     ' <<< "$result" >/dev/null || {
       echo "Partial labels misclassified with $status evidence: $labels" >&2; exit 1;
     }
+    jq -c .actions[0] <<< "$result" |
+      bash "$tmp/scripts/prepare-ai-resume-validate-pause-record.sh" 37 |
+      jq -e '. == {version:1,kind:"pause",reason:"resume_transition_failed",
+        target:"pr:37",source_pause_id:"201",payload:{failed_action:"validate"}}' >/dev/null
   done
 done
 NOW=1767226200; ISSUE_LABEL=true; PR_LABEL=false
@@ -258,7 +276,11 @@ MODE=validation_pause
 assert_result paused
 run | assert_schema
 MODE=round_pause
+ISSUE_LABEL=false
 assert_result paused
+run | jq -e '.active_pause_id == "301" and (.validation_pause_id == null)
+  and .actions[0].action == "add_issue_human_label"
+  and .actions[1].action == "remove_machine_label"' >/dev/null
 MODE=other_pause
 [ "$(run | jq -r .code)" = another_active_pause ]
 run | assert_schema
@@ -276,6 +298,13 @@ run | jq -e '.actions == [] and .diagnostics.normal_review[0].run_id == 600
   and .diagnostics.normal_review[0].attempt == 1
   and .diagnostics.normal_review[0].ownership == "unconfirmed"
   and .diagnostics.normal_review[0].review_jobs[0].status == "in_progress"' >/dev/null
+REVIEW=queued_no_steps
+[ "$(run | jq -r .code)" = review_ownership_unconfirmed ]
+run | jq -e '.actions == [] and .diagnostics.normal_review[0].review_jobs[0].steps == null' >/dev/null
+for REVIEW in bad_jobs duplicate_job duplicate_entry unknown_job_status \
+  unknown_job_conclusion unknown_entry_status; do
+  if run >/dev/null 2>&1; then echo "Malformed Review evidence accepted: $REVIEW" >&2; exit 1; fi
+done
 REVIEW=skip; assert_result recover
 REVIEW=none
 jq '.validation.checks[0].status = "success"' "$tmp/durable.json" > "$tmp/new.json"
