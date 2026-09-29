@@ -18,7 +18,8 @@ grep -Fq 'handle-claude-auto-rereview-failure.sh' "$handler"
 if grep -Fq 'prepare-claude-followup-producer.sh' "$developer"; then
   echo 'Producer was activated before its separate gate.' >&2; exit 1
 fi
-[ "$(grep -Fc 'uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507' "$auto")" -eq 1 ]
+[ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$auto")" -eq 1 ]
+[ "$(grep -Fxc '        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # Upstream pin: Claude Code 2.1.284 / Agent SDK 0.3.284' "$auto")" -eq 1 ]
 for step in 'Upload accepted identity' 'Recheck accepted identity before machine state consumption' \
   'Check out accepted PR HEAD' \
   'Consume machine state' 'Upload paid review boundary' 'Run Claude review' \
