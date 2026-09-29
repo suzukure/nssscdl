@@ -99,6 +99,37 @@ git -C "$small_repo" add .
 assert_output "$small_repo" pass \
   '.changed_files == 2 and .additions == 3 and .deletions == 1 and .total_changed_lines == 4 and .new_files == 1'
 
+# Python imports can create bytecode during either AI Developer path. The
+# repository ignore rules must keep it out of git add -A and the staged gate.
+cache_repo="$(new_repo bytecode-cache)"
+git -C "$cache_repo" config core.excludesFile /dev/null
+cp "$repo_root/.gitignore" "$cache_repo/.gitignore"
+printf 'value = 1\n' > "$cache_repo/module.py"
+printf 'before\n' > "$cache_repo/intended.txt"
+commit_baseline "$cache_repo"
+env -u PYTHONDONTWRITEBYTECODE python3 - "$cache_repo/module.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('fixture_module', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.value == 1
+PY
+cache_file="$(find "$cache_repo/__pycache__" -name '*.pyc' -print -quit)"
+[ -n "$cache_file" ]
+cp "$cache_file" "$cache_repo/standalone.pyc"
+cp "$cache_file" "$cache_repo/legacy.pyo"
+printf 'after\n' > "$cache_repo/intended.txt"
+git -C "$cache_repo" add -A
+[ "$(git -C "$cache_repo" diff --cached --name-only)" = intended.txt ]
+assert_output "$cache_repo" pass \
+  '.changed_files == 1 and .additions == 1 and .deletions == 1 and .total_changed_lines == 2 and .new_files == 0'
+printf '\000\001\002\003' > "$cache_repo/unrelated.bin"
+git -C "$cache_repo" add -A
+assert_error "$cache_repo" git_numstat_unavailable \
+  '.offending_paths == ["unrelated.bin"] and .offending_paths_truncated == false'
+
 # NUL numstat uses separate old/new path fields for a detected rename.
 rename_repo="$(new_repo rename)"
 printf 'renamed text\n' > "$rename_repo/old.txt"
