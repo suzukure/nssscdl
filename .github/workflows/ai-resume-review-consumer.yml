@@ -86,16 +86,16 @@ jobs:
               and .version == 1 and (.dispatch | type == "object"))
           ' "$GITHUB_EVENT_PATH" >/dev/null
           jq -c '.client_payload.dispatch' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/resume-review-dispatch.json"
-      - name: Create read-only developer App token
+      - name: Create developer App token for transition
         id: dev-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.DEV_APP_CLIENT_ID }}
           private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
-          permission-contents: read
-          permission-issues: read
-          permission-pull-requests: read
-      - name: Revalidate current candidate after writer wait
+          permission-actions: read
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Consume current candidate after writer wait
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
@@ -105,10 +105,6 @@ jobs:
           set -euo pipefail
           app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
           [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
-          result="$(bash .github/scripts/prepare-ai-resume-review-consumer.sh \
-            "$GITHUB_REPOSITORY" "$app_id" < "$RUNNER_TEMP/resume-review-dispatch.json")"
-          jq -e '.result == "accepted_candidate" or .result == "ignore"' <<< "$result" >/dev/null
-          if [ "$(jq -r '.result' <<< "$result")" = accepted_candidate ]; then
-            jq -e --argjson issue "$TRUSTED_ISSUE" '.identity.closing_issue_number == $issue' <<< "$result" >/dev/null
-          fi
-          jq -r '.result + (if .result == "ignore" then ":" + .code else "" end)' <<< "$result"
+          bash .github/scripts/consume-ai-resume-review.sh \
+            "$GITHUB_REPOSITORY" "$app_id" "$TRUSTED_ISSUE" \
+            < "$RUNNER_TEMP/resume-review-dispatch.json"
