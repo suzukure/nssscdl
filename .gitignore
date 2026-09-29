@@ -6,6 +6,11 @@ dist/
 build/
 coverage/
 
+# Python bytecode caches
+__pycache__/
+*.pyc
+*.pyo
+
 # Local environment / secrets
 .env
 .env.*
