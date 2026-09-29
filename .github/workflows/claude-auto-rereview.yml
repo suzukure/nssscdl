@@ -194,7 +194,7 @@ jobs:
         id: claude-attempt
         if: steps.consume.outputs.action == 'paid_review'
         continue-on-error: true
-        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # Upstream pin: Claude Code 2.1.284 / Agent SDK 0.3.284
         with:
           github_token: ${{ steps.reviewer-token.outputs.token }}
           allowed_bots: ${{ steps.developer-token.outputs.app-slug }}[bot]

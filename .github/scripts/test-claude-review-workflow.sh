@@ -1490,7 +1490,11 @@ if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$workflow")" -ne 1 ]; t
   echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
-grep -Fqx '        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280 / Agent SDK 0.3.280' "$run_step"
+grep -Fqx '        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # Upstream pin: Claude Code 2.1.284 / Agent SDK 0.3.284' "$run_step"
+if grep -Eq 'claude-(sonnet|opus)-[0-9]' "$workflow"; then
+  echo 'Claude review model IDs must be selected through repository variables.' >&2
+  exit 1
+fi
 if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
   exit 1
