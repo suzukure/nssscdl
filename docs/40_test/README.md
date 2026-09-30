@@ -27,7 +27,7 @@ v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_Requirement
 
 ## 文書一覧
 
-- `01_TestPlan.md` — テスト計画、範囲、環境、データ、開始／終了基準、優先度
+- `01_TestPlan.md` — テスト計画、範囲、環境、データ、開発単位の検証・完了、開始／終了基準、優先度
 - `02_FunctionalTestSpecification.md` — 機能要求に対するテストケース仕様（ベース）
 - `02a_ReservationOwnershipTestSpecification.md` — 要求v1.5で追加された生徒本人予約の所有者同一性テスト
 - `02b_RequirementsV1.6V1.7TestSpecification.md` — 要求v1.6/v1.7で追加された予約区分影響事前表示・Schedule競合説明性テスト
