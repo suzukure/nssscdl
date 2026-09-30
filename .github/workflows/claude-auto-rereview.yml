@@ -71,7 +71,7 @@ jobs:
               echo "pr_number=$(jq -r .identity.pr_number <<< "$decision")" >> "$GITHUB_OUTPUT"
               echo "head_sha=$(jq -r .identity.validated_sha <<< "$decision")" >> "$GITHUB_OUTPUT"
               echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT" ;;
-            ignore|stop) echo "Auto rereview: $(jq -r .code <<< "$decision")" >> "$GITHUB_STEP_SUMMARY" ;;
+            ignore|stop) echo "Claude自動再レビュー: $(jq -r .code <<< "$decision")" >> "$GITHUB_STEP_SUMMARY" ;;
             *) exit 1 ;;
           esac
           if [ "$action" = accepted ]; then
@@ -162,7 +162,7 @@ jobs:
             and .head.sha == $sha
             and ([.labels[].name] | index("human-review-required") == null)
             and ([.labels[].name] | index("ai-followup-in-progress") != null)
-          ' <<< "$current" >/dev/null || { echo 'Accepted HEAD changed before paid review.' >&2; exit 1; }
+          ' <<< "$current" >/dev/null || { echo '有料レビューの開始前に受理済みHEADが変わりました。' >&2; exit 1; }
           cp "$RUNNER_TEMP/accepted.json" "$RUNNER_TEMP/paid-start.json"
 
       - name: Upload paid review boundary
@@ -210,7 +210,7 @@ jobs:
             Submit the review through the provided JSON Schema structured output.
             Use exactly these five keys: verdict, summary, blocking_findings, non_blocking_findings, linked_issues_checked.
             If you cannot form a valid review, return a schema-compliant request_changes JSON object.
-            Every finding must cite concrete repository evidence.
+            Write summary and every finding in Japanese. Keep schema keys, verdict values, exact markers, and identifiers unchanged. Every finding must cite concrete repository evidence.
           claude_args: >-
             --model "${{ steps.context.outputs.model }}"
             ${{ steps.context.outputs.budget_arg }}
@@ -348,7 +348,7 @@ jobs:
               GH_TOKEN="$REVIEW_APP_TOKEN" bash "$scripts/create-human-pause.sh" create \
                 "$GITHUB_REPOSITORY" "$issue_number" "$pr_number" "$app_id" "$reason" \
                 "Claude auto-rereview requires human review: $code" "$(jq -r .validated_sha "$identity")" ;;
-            *) echo 'Common pause history is inconsistent.' >&2; exit 1 ;;
+            *) echo '共通pause履歴に不整合があります。' >&2; exit 1 ;;
           esac
           gh issue edit "$(jq -r .pr_number "$identity")" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress
 

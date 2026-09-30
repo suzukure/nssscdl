@@ -46,6 +46,8 @@ if awk '
 fi
 grep -Fq 'bash .github/scripts/verify-pr-gates.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" merge "$DEV_APP_SLUG"' "$auto"
 grep -Fq -- '--match-head-commit "$HEAD_SHA"' "$auto"
+grep -Fq 'Write summary and every finding in Japanese. Keep schema keys, verdict values, exact markers, and identifiers unchanged.' "$auto"
+grep -Fq 'Write summary and every finding in Japanese. Keep schema keys, verdict values, exact markers, and identifiers unchanged.' "$normal"
 bash -n "$repo_root/.github/scripts/handle-claude-auto-rereview-failure.sh" \
   "$repo_root/.github/scripts/prepare-claude-auto-rereview-consumer.sh"
 echo 'Claude auto-rereview workflow wiring fixtures passed.'

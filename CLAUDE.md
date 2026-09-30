@@ -72,6 +72,8 @@ When conducting a specification review outside this GitHub workflow, the same in
 
 ## Verdict
 
+Write `summary` and all findings in Japanese for every GitHub review. Preserve schema keys, verdict values, exact markers, identifiers, and quoted evidence as written.
+
 Return `request_changes` for any blocking defect, missing linked Issue, undocumented requirement change, unresolved upstream dependency, material inconsistency, or confirmed external-system constraint that makes the specification infeasible or incorrect. Return `approve` only when no blocking finding remains.
 
 Keep findings specific and actionable. Cite file paths, requirement IDs, or Issue numbers. A preference without correctness or requirement impact is non-blocking.

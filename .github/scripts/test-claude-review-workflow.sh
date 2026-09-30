@@ -217,13 +217,13 @@ MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
 )"
 export MOCK_SOURCE_PR_JSON
 assert_source ready_for_review false
-grep -Fq 'normal Claude review suppressed' "$test_dir/source-ready_for_review.summary"
+grep -Fq '通常のClaudeレビューを実行しません' "$test_dir/source-ready_for_review.summary"
 assert_source opened false
 assert_source unlabeled false
 MOCK_SOURCE_PR_JSON="$(jq -c '.labels=[{name:"unrelated"}]' <<< "$MOCK_SOURCE_PR_JSON")"
 assert_source ready_for_review true
 assert_source ready_for_review false true
-grep -Fq 'normal Claude review suppressed' "$test_dir/source-ready_for_review.summary"
+grep -Fq '通常のClaudeレビューを実行しません' "$test_dir/source-ready_for_review.summary"
 assert_source opened false true
 for edit in '.draft=true' '.state="closed"' '.head.repo.full_name="other/repo"' '.labels=[{name:"human-review-required"}]'; do
   original_source="$MOCK_SOURCE_PR_JSON"
@@ -281,14 +281,14 @@ for link_case in no-links foreign-link malformed-link; do
   fi
   [ ! -s "$test_dir/entry-gate-$link_case.out" ]
 done
-grep -Fq 'No same-repository closing Issue' "$test_dir/entry-gate-no-links.err"
-grep -Fq 'No same-repository closing Issue' "$test_dir/entry-gate-foreign-link.err"
-grep -Fq 'Invalid pull request metadata' "$test_dir/entry-gate-malformed-link.err"
+grep -Fq '同じリポジトリのclosing Issueがない' "$test_dir/entry-gate-no-links.err"
+grep -Fq '同じリポジトリのclosing Issueがない' "$test_dir/entry-gate-foreign-link.err"
+grep -Fq 'PRメタデータが不正' "$test_dir/entry-gate-malformed-link.err"
 
 for closed_case in closed merged; do
   MOCK_CASE="$closed_case"
   review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
-  jq -e '.continue == false and (.reason | contains("pull request state"))' <<< "$review_entry" > /dev/null
+  jq -e '.continue == false and (.reason | contains("PR状態が"))' <<< "$review_entry" > /dev/null
 done
 
 MOCK_CASE=state-missing
@@ -297,7 +297,7 @@ if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/
   echo 'Expected Claude review entry to fail closed when PR state is missing.' >&2
   exit 1
 fi
-grep -Fq 'Could not determine pull request state; refusing Claude review.' "$test_dir/entry-gate-state-missing.err"
+grep -Fq 'PR状態を確認できないため、Claudeレビューを停止します。' "$test_dir/entry-gate-state-missing.err"
 
 MOCK_CASE=unknown-state
 if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
@@ -305,7 +305,7 @@ if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/
   echo 'Expected Claude review entry to fail closed for an unsupported PR state.' >&2
   exit 1
 fi
-grep -Fq 'Unsupported pull request state DRAFT; refusing Claude review.' "$test_dir/entry-gate-state-unknown.err"
+grep -Fq '未対応のPR状態DRAFTのため、Claudeレビューを停止します。' "$test_dir/entry-gate-state-unknown.err"
 
 MOCK_CASE=pr-paused
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
@@ -334,7 +334,7 @@ if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/
   echo 'Expected malformed current PR HEAD to fail closed.' >&2
   exit 1
 fi
-grep -Fq 'Invalid pull request metadata' "$test_dir/entry-gate-bad-head.err"
+grep -Fq 'PRメタデータが不正' "$test_dir/entry-gate-bad-head.err"
 MOCK_CASE=valid
 MOCK_PR_FAIL=true
 export MOCK_PR_FAIL
@@ -343,7 +343,7 @@ if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/
   echo 'Expected PR metadata lookup failure to fail closed.' >&2
   exit 1
 fi
-grep -Fq 'Could not fetch current pull request metadata' "$test_dir/entry-gate-pr-api-failure.err"
+grep -Fq '現在のPRメタデータを取得できない' "$test_dir/entry-gate-pr-api-failure.err"
 unset MOCK_PR_FAIL
 
 MOCK_CASE=valid
@@ -360,7 +360,7 @@ if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/
   echo 'Expected Claude review entry to fail when a closing Issue cannot be fetched.' >&2
   exit 1
 fi
-grep -Fq 'Could not fetch closing Issue #36; refusing Claude review.' "$test_dir/entry-gate-api-failure.err"
+grep -Fq 'closing Issue #36を取得できないため、Claudeレビューを停止します。' "$test_dir/entry-gate-api-failure.err"
 unset MOCK_API_FAIL
 
 gate_runner_temp="$test_dir/gate-runner"
@@ -380,7 +380,7 @@ for gate_phase in entry verdict; do
     [ "$gate_case" = valid ] && expected_continue=true
     grep -Fqx "continue=$expected_continue" "$test_dir/gate-$gate_phase-$gate_case.outputs"
     if [ "$expected_continue" = false ]; then
-      grep -Fq 'Reason:' "$test_dir/gate-$gate_phase-$gate_case.summary"
+      grep -Fq '理由:' "$test_dir/gate-$gate_phase-$gate_case.summary"
     fi
   done
   for link_case in no-links foreign-link malformed-link; do
@@ -662,7 +662,7 @@ if (
   echo 'Workflow bootstrap accepted an invalid current base tip.' >&2
   exit 1
 fi
-grep -Fq 'Could not resolve the current base branch tip' "$test_dir/build-context-invalid.err"
+grep -Fq '現在のbase branch先端のcommit SHAを確認できない' "$test_dir/build-context-invalid.err"
 unset -f git
 
 # The env hand-off is masked first using the pinned Action's serialization.
@@ -953,7 +953,7 @@ assert_workflow_failure_classification() {
     bash "$validate_step_script"
   grep -Fqx "reason=$expected_reason" "$output_path"
   grep -Fqx 'valid=false' "$output_path"
-  grep -Fq "Reason code: $expected_reason" "$summary_path"
+  grep -Fq "理由コード: $expected_reason" "$summary_path"
   if CLASSIFICATION_REASON="$expected_reason" GITHUB_OUTPUT="$test_dir/workflow-$fixture_name-save.outputs" \
     RUNNER_TEMP="$workflow_runner_temp" bash "$save_step_script" > /dev/null 2> "$stderr_path"; then
     echo "Expected workflow fixture $fixture_name to fail closed." >&2
@@ -967,7 +967,7 @@ GITHUB_OUTPUT="$test_dir/validate-valid.outputs" GITHUB_STEP_SUMMARY="$test_dir/
   ACTION_OUTCOME=success STRUCTURED_OUTPUT="$valid_structured_review" bash "$validate_step_script"
 grep -Fqx 'reason=REVIEW_VALID' "$test_dir/validate-valid.outputs"
 grep -Fqx 'valid=true' "$test_dir/validate-valid.outputs"
-grep -Fq 'Reason code: REVIEW_VALID' "$test_dir/validate-valid.summary"
+grep -Fq '理由コード: REVIEW_VALID' "$test_dir/validate-valid.summary"
 CLASSIFICATION_REASON=REVIEW_VALID GITHUB_OUTPUT="$test_dir/save-valid.outputs" \
   RUNNER_TEMP="$workflow_runner_temp" bash "$save_step_script"
 jq -e '.verdict == "approve"' "$workflow_runner_temp/claude-review.json" > /dev/null
@@ -1037,8 +1037,8 @@ grep -Fq 'CLASSIFIER_INTERNAL_ERROR' "$test_dir/workflow-unclassified-save.stder
 rm -f "$workflow_runner_temp/validate-claude-review-output.sh"
 assert_workflow_failure_classification CLASSIFIER_INTERNAL_ERROR classifier-internal "$test_dir/valid-execution-with-review.json"
 grep -Fq "if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$workflow"
-grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict.' "$workflow"
-grep -Fq 'Verify the trusted classifier and validator bootstrap' "$workflow"
+grep -Fq 'Claudeレビュー結果の分類は${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}です。判定の投稿を停止します。' "$workflow"
+grep -Fq '信頼済みclassifierとvalidatorの準備を確認' "$workflow"
 grep -Fq "steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$workflow"
 grep -Fq -- "--json-schema '\${{ steps.review-schema.outputs.schema }}'" "$workflow"
 grep -Fq "STRUCTURED_OUTPUT: \${{ steps.mask-native.outputs.ready == 'true' && steps.claude-attempt-1.outputs.structured_output || '' }}" "$workflow"
@@ -1243,7 +1243,7 @@ if TEST_RISK=unsupported \
   echo 'Expected an unsupported risk classification to fail closed.' >&2
   exit 1
 fi
-grep -Fq 'Unsupported Claude review risk classification: unsupported' "$test_dir/model-unsupported.stderr"
+grep -Fq '未対応のClaudeレビューリスク区分: unsupported' "$test_dir/model-unsupported.stderr"
 
 if TEST_RISK=standard \
   RUNNER_TEMP="$runner_temp" \
@@ -1256,7 +1256,7 @@ if TEST_RISK=standard \
   echo 'Expected a whitespace-only standard model variable to fail preflight.' >&2
   exit 1
 fi
-grep -Fq 'CLAUDE_MODEL_STANDARD repository variable must contain a non-whitespace value.' "$test_dir/model-whitespace.stderr"
+grep -Fq 'repository variable CLAUDE_MODEL_STANDARDには空白以外の値が必要です。' "$test_dir/model-whitespace.stderr"
 
 if TEST_RISK=high \
   RUNNER_TEMP="$runner_temp" \
@@ -1269,7 +1269,7 @@ if TEST_RISK=high \
   echo 'Expected a whitespace-only high-risk model variable to fail preflight.' >&2
   exit 1
 fi
-grep -Fq 'CLAUDE_MODEL repository variable must contain a non-whitespace value.' "$test_dir/model-high-whitespace.stderr"
+grep -Fq 'repository variable CLAUDE_MODELには空白以外の値が必要です。' "$test_dir/model-high-whitespace.stderr"
 
 jq -cn '[
   {
@@ -1437,8 +1437,8 @@ if grep -Fq "$usage_summary" "$test_dir/usage-summary.md"; then
   echo 'Usage JSON was written to the Job Summary instead of only stdout.' >&2
   exit 1
 fi
-grep -Fq '### Claude review usage' "$test_dir/usage-summary.md"
-grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
+grep -Fq '### Claudeレビュー利用量' "$test_dir/usage-summary.md"
+grep -Fq '| 入力token数 | 30 |' "$test_dir/usage-summary.md"
 
 jq -cn '[]' > "$test_dir/no-success-usage-execution.json"
 
@@ -1476,12 +1476,12 @@ assert_usage_step_unavailable() {
     echo "Unexpected usage diagnostic for $fixture." >&2
     exit 1
   fi
-  grep -Fqx 'Execution usage was unavailable.' "$summary_path"
+  grep -Fqx '実行時の利用量を取得できませんでした。' "$summary_path"
 }
 
 assert_usage_step_unavailable unset-execution-file ''
 assert_usage_step_unavailable missing-execution-file '' "$test_dir/does-not-exist.json"
-assert_usage_step_unavailable summarizer-failure 'Claude usage summarization failed.' "$test_dir/no-success-usage-execution.json"
+assert_usage_step_unavailable summarizer-failure 'Claudeの利用量集計に失敗しました。' "$test_dir/no-success-usage-execution.json"
 
 no_success_stderr="$test_dir/no-success-execution.stderr"
 if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-usage-execution.json" \
@@ -1573,10 +1573,39 @@ grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-human-escalation
 grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$workflow"
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"
 grep -Fq 'Record Claude review usage' "$workflow"
-grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$workflow"
-grep -Fq 'Claude review not run' "$workflow"
+grep -Fq 'if $risk == "" then "取得不可" else $risk end' "$workflow"
+grep -Fq 'Claudeレビュー未実施' "$workflow"
 grep -Fq 'Gate Claude review entry' "$workflow"
 grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
+
+export -n -f gh
+unset -f gh
+mkdir -p "$test_dir/mock-bin"
+cat > "$test_dir/mock-bin/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = 'api --method POST repos/owner/repo/pulls/37/reviews --input -' ]
+cat > "$MOCK_REVIEW_REQUEST"
+MOCK_GH
+chmod +x "$test_dir/mock-bin/gh"
+for verdict in approve request_changes; do
+  jq -cn --arg verdict "$verdict" \
+    '{verdict:$verdict,summary:"総評\n[REQUIREMENTS_CHANGE_REQUIRED]",blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
+    > "$test_dir/review-$verdict.json"
+  PATH="$test_dir/mock-bin:$PATH" MOCK_REVIEW_REQUEST="$test_dir/request-$verdict.json" \
+    bash "$repo_root/.github/scripts/submit-claude-review.sh" owner/repo 37 \
+      "$test_dir/review-$verdict.json" "$expected_head" > /dev/null
+  expected_event=APPROVE
+  [ "$verdict" != request_changes ] || expected_event=REQUEST_CHANGES
+  jq -e --arg event "$expected_event" --arg sha "$expected_head" '
+    .event == $event and .commit_id == $sha and
+    (.body | contains("## Claudeレビュー\n") and contains("**判定:**") and
+      contains("### 修正必須の指摘\n\n- なし。") and
+      contains("### 修正任意の指摘\n\n- なし。") and
+      contains("### 確認した関連Issue\n\n- なし。") and
+      contains("SUMMARY| [REQUIREMENTS_CHANGE_REQUIRED]"))
+  ' "$test_dir/request-$verdict.json" > /dev/null
+done
 
 echo 'Claude Review workflow fixture tests passed.'
