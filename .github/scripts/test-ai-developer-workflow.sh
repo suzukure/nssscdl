@@ -415,6 +415,13 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
       [ "${4-}" = - ] || { echo "Unexpected helper argument 4: ${4-}" >&2; return 1; }
       [ "${5-}" = 37 ] || { echo "Unexpected helper argument 5: ${5-}" >&2; return 1; }
       [ "${6-}" = 123 ] || { echo "Unexpected helper argument 6: ${6-}" >&2; return 1; }
+      local -a args=("$@")
+      local count=${#args[@]}
+      [ "${args[count-2]}" = --notification-detail ] || { echo "Missing notification detail option" >&2; return 1; }
+      [ "${args[count-1]}" = "Claudeフォローアップ失敗。Draft job: ${DRAFT_RESULT}; フォローアップjob: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" ] || { echo "Discord notification detail changed" >&2; return 1; }
+      [ "$8" = "Claudeフォローアップ失敗。Draft jobの結果: ${DRAFT_RESULT}; フォローアップjobの結果: ${FOLLOWUP_RESULT}; event時のHEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" ] || { echo "GitHub pause detail changed" >&2; return 1; }
+      unset 'args[count-1]' 'args[count-2]'
+      set -- "${args[@]}"
       printf "%s %s\n" "$7" "${*:9}"
     }
     source "$1"

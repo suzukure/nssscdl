@@ -22,11 +22,11 @@ prepare() {
   bash "$script_dir/prepare-ai-resume-review-recovery.sh" \
     "$repo" "$run_id" "$attempt" "$app_id" "$pr" "$issue" "$source"
 }
-plan="$(prepare)" || fail 'recovery facts unavailable'
+plan="$(prepare)" || fail '復旧に必要な情報を取得できません'
 result="$(jq -er '.result | select(IN("pre_acceptance","normal_review_owns","recover"))' \
-  <<< "$plan")" || fail 'invalid recovery result'
+  <<< "$plan")" || fail '復旧結果が不正です'
 if [ "$result" = normal_review_owns ]; then
-  jq -e '.actions == []' <<< "$plan" >/dev/null || fail 'normal Review action mismatch'
+  jq -e '.actions == []' <<< "$plan" >/dev/null || fail '通常Reviewのactionが一致しません'
   exit 0
 fi
 
@@ -34,22 +34,22 @@ fi
 # an uncertain write: a later recovery invocation can recheck its outcome.
 if jq -e 'any(.actions[]; .action == "create_or_reconcile_replacement_pause")' \
   <<< "$plan" >/dev/null; then
-  [ "$result" = recover ] || fail 'replacement requested before acceptance'
+  [ "$result" = recover ] || fail '受理前に置換が要求されました'
   accepted="$(jq -er '.accepted_record_id | select(type == "string" and test("^[1-9][0-9]*$"))' \
-    <<< "$plan")" || fail 'accepted identity unavailable'
+    <<< "$plan")" || fail '受理記録の識別情報を取得できません'
   record="$(jq -cn --arg target "pr:$pr" --arg accepted "$accepted" \
     '{version:1,kind:"pause",reason:"resume_transition_failed",target:$target,
       source_pause_id:$accepted,payload:{failed_action:"review"}}')"
   body="$(bash "$script_dir/human-pause-record.sh" create "$record")" \
-    || fail 'replacement record invalid'
+    || fail '置換記録が不正です'
   gh api -X POST "/repos/$repo/issues/$pr/comments" -f "body=$body" >/dev/null || true
-  plan="$(prepare)" || fail 'replacement POST outcome cannot be reconciled'
+  plan="$(prepare)" || fail '置換記録のPOST結果を照合できません'
   jq -e --arg accepted "$accepted" '
     .result == "recover" and .accepted_record_id == $accepted
     and (.replacement_pause_id | type == "string" and test("^[1-9][0-9]*$"))
     and (any(.actions[]; .action == "create_or_reconcile_replacement_pause" or
                               .action == "revalidate_record_graph") | not)
-  ' <<< "$plan" >/dev/null || fail 'replacement is not uniquely active'
+  ' <<< "$plan" >/dev/null || fail '置換記録が一意に有効ではありません'
 fi
 
 # Re-read mutable facts after each write, applying only labels still missing.
@@ -64,22 +64,22 @@ for iteration in 1 2 3; do
            (.actions | length) then .actions[0].action
       else error("unexpected recovery action") end
     else error("invalid recovery state") end
-  ' <<< "$plan")" || fail 'invalid recovery action'
+  ' <<< "$plan")" || fail '復旧actionが不正です'
   [ "$action" != done ] || exit 0
   case "$action" in
     add_issue_human_label) number="$issue" ;;
     add_pr_human_label) number="$pr" ;;
-    *) fail 'unknown label action' ;;
+    *) fail '不明なラベルactionです' ;;
   esac
   jq -e --argjson number "$number" '.actions[0].number == $number' \
-    <<< "$plan" >/dev/null || fail 'label target mismatch'
+    <<< "$plan" >/dev/null || fail 'ラベル対象が一致しません'
   # The server may have applied the label even when its response was lost.
   # Reconcile once from fresh facts; never resend an uncertain write here.
   gh issue edit "$number" --repo "$repo" --add-label human-review-required \
     || true
-  plan="$(prepare)" || fail 'label repair cannot be verified'
+  plan="$(prepare)" || fail 'ラベルの修復を確認できません'
   jq -e --arg action "$action" --argjson number "$number" '
     any(.actions[]; .action == $action and .number == $number) | not
-  ' <<< "$plan" >/dev/null || fail 'label repair is not confirmed'
+  ' <<< "$plan" >/dev/null || fail 'ラベルの修復を確認できません'
 done
-fail 'recovery did not converge'
+fail '復旧が収束しませんでした'
