@@ -231,7 +231,7 @@ Claude reviewのrun単位budgetはrisk classごとに設定する。protected pa
 
 production Claude Reviewとauto-rereview consumerは `anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829` を固定し、Claude Code 2.1.284 / Agent SDK 0.3.284を使用する。high-risk reviewはmodelやbudgetと同じrisk選択で `--effort high` を明示する。standard-risk reviewにはeffort引数を渡さず、現行の挙動を維持する。runtime更新時点のRepository variable `CLAUDE_MODEL_STANDARD` は `claude-sonnet-5` を維持する。Sonnet 5.5へのmodel切替は後続Issue #588でRepository variableを変更して行う。
 
-利用量記録stepはverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加するRisk class、Action outcome、Schema validも含める。Risk class、Action outcome、Schema validはusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`Execution usage was unavailable.`を記録する。集計失敗時だけはraw execution由来のstderrを通常logへ出さず、固定文言`Claude usage summarization failed.`を1行だけstderrへ出力する。
+利用量記録stepはverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加する`リスク区分`、`Actionの結果`、`Schemaの検証結果`も含める。これらの付加項目はusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`実行時の利用量を取得できませんでした。`を記録する。集計失敗時だけはraw execution由来のstderrを通常logへ出さず、固定文言`Claudeの利用量集計に失敗しました。`を1行だけstderrへ出力する。
 
 `modelUsage` が1件以上ある場合、token fieldはClaude Code session全体のモデル別累積値として、対象fieldが全modelで数値の場合だけ合算する。1modelでも欠落・非数値ならそのfieldは`null`とし、query call内の累積値であるtop-level `usage`へfield単位でfallbackしない。`modelUsage`が空または利用不能の場合だけ、token fieldをtop-level `usage`から取得する。`estimated_cost_usd`はquery全体のSDK見積りである数値の`total_cost_usd`を優先し、利用不能な場合のみ、全modelで数値の`modelUsage.costUSD`を合算する。一部でも欠落・非数値なら`null`とする。`modelUsage`とtop-level `usage`は集計範囲が異なり得る。
 
@@ -257,7 +257,7 @@ Action successかつ最後のresultがsuccess/is_error=falseの場合、自由�
 
 例外として `Mask native review output` step自体が失敗すると、`Validate Claude review` はskipされ、Job Summaryのreasonは記録されない。この場合は `Save structured review` の固定エラー `CLASSIFIER_INTERNAL_ERROR` とmask stepの成否を診断の起点とし、raw出力を転載せずマスク処理を調査する。保存・verdict投稿はfail-closedで停止する。mask stepが成功してもreadyを出さない場合は通常の分類経路を継続し、native入力を空として扱う。
 
-| Reason code | 判定 | 人間の復旧手順 |
+| 理由コード | 判定 | 人間の復旧手順 |
 |---|---|---|
 | `REVIEW_VALID` | 構造化reviewが検証済みである。 | 既存のverdict投稿を継続する。 |
 | `RUN_BUDGET_LIMIT_REACHED` | result subtypeが`error_max_budget_usd`で、当該review実行の予算上限に達した。 | 当該実行の予算を利用可能にできる判断をした後、同じheadで新しいreviewを人が起動する。自動再試行しない。 |

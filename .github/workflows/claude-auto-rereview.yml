@@ -210,7 +210,7 @@ jobs:
             Submit the review through the provided JSON Schema structured output.
             Use exactly these five keys: verdict, summary, blocking_findings, non_blocking_findings, linked_issues_checked.
             If you cannot form a valid review, return a schema-compliant request_changes JSON object.
-            Write summary and every finding in Japanese. Keep schema keys, verdict values, exact markers, and identifiers unchanged. Every finding must cite concrete repository evidence.
+            Write summary and every finding in Japanese. Preserve schema keys, verdict values, exact markers, identifiers, and quoted evidence as written. Every finding must cite concrete repository evidence.
           claude_args: >-
             --model "${{ steps.context.outputs.model }}"
             ${{ steps.context.outputs.budget_arg }}

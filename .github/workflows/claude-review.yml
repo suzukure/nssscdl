@@ -538,7 +538,7 @@ jobs:
             Use exactly these five keys: verdict, summary, blocking_findings, non_blocking_findings, linked_issues_checked.
             verdict must be approve or request_changes; summary must be a string; the three findings/issues fields must be arrays of strings.
             If you cannot form a valid normal review, return a schema-compliant request_changes JSON object; never return free text.
-            Write summary and every finding in Japanese. Keep schema keys, verdict values, exact markers, and identifiers unchanged. Every finding must cite concrete repository evidence.
+            Write summary and every finding in Japanese. Preserve schema keys, verdict values, exact markers, identifiers, and quoted evidence as written. Every finding must cite concrete repository evidence.
           claude_args: >-
             --model "${{ steps.review-model.outputs.model }}"
             ${{ steps.review-model.outputs.budget_arg }}
