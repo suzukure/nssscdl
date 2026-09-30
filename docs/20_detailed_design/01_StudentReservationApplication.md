@@ -2,7 +2,7 @@
 
 ## 1. 適用範囲と正本
 
-初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§8、§10〜11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセル、認証Provider、D1の物理Table / Index / SQL / migrationは本書の対象外である。
+初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§8、§10〜11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセル、認証Providerは本書の対象外である。D1物理Table / Index / SQL / migrationは `02_StudentReservationD1.md` を正とする。
 
 図の正本は `../diagrams/plantuml/c4-student-reservation-components.puml` と `../diagrams/plantuml/student-reservation-sequence.puml`。C4 Level 3は `01_SystemArchitecture.md` の単一Application Worker内の論理責務を示し、別Deploy Unitを意味しない。
 
@@ -18,11 +18,11 @@
 | Reservation Confirm Application Service | 最新確定状態を再評価し、Expected State一致と業務Guard成立時だけ予約Commandを確定する。結果はCommit済みのViewで返す。 |
 | Reservation History Query Application Service | 本人のReservation履歴を安定順序でPage化し、ライフサイクル、欠席、実効分類を分離して返す。 |
 | Reservation / Classification Domain Service | `BR-050〜059 / BR-066〜068` の予約可否、Slot View、月間算入、自動分類、実効分類、変更差分を計算する。 |
-| Repository / Transaction Port | 確定業務状態の読取と単一予約Commandの原子的Commitを提供する。Guard失敗・Invariant異常では部分Commitしない。D1 Adapterの物理方式は後続詳細設計。 |
+| Repository / Transaction Port | 確定業務状態の読取と単一予約Commandの原子的Commitを提供する。Guard失敗・Invariant異常では部分Commitしない。D1 Adapterの物理方式は `02_StudentReservationD1.md`。 |
 | Audit Port | `REQ-940` に従う予約確定Audit義務を同じ業務Transactionへ渡す。 |
 | Notification Intent Port | `REQ-101 / REQ-104` に従う予約確認および必要な区分変更Intentを同じ業務Transactionへ渡す。配送はCommit後の別責務。 |
 
-RouterはGuardを経ずにServiceへ本人対象を渡さない。Repository / Audit / Notificationの物理D1実装は本書では確定しない。
+RouterはGuardを経ずにServiceへ本人対象を渡さない。Repository / Audit / Notificationの予約Confirm物理D1境界は `02_StudentReservationD1.md` を参照する。
 
 ## 3. 共通wire規則
 
@@ -89,7 +89,7 @@ Requestは`{"slotId":"opaque-id","expectedStateToken":"v1.opaque"}`。正常時H
 
 `classificationChanges`のitemは§5と同形で、同じTransactionで実効分類が変わった本人の未開始Reservationを返す。Serverは本人の予約操作可否、公開月、Slot利用可否と占有、開始前、月間分類・既存Reservationへの差分、未来Slot Invariantを最新状態で再検証する。Preview後にSnapshotの業務上の意味が変わった場合は全体未適用の`RESERVATION_STATE_CHANGED`で再Previewへ戻す。Slotが現在予約不可、開始境界を越えた等の業務拒否も状態を推測して上書きしない。`standard → additional`と逆方向に同じ規則を適用する。
 
-正常Commitは、新規ReservationとSlotOccupancy、必要な再分類、AuditLog、予約確認NotificationIntent 1件、必要な区分変更NotificationIntentを1つの業務Transactionで確定したことを意味する。`201`は外部Providerの受付・配送完了を表さず、Responseに配送成功fieldを設けない。UIは確定業務状態を画面に表示し、メール配送と混同しない。通知失敗で確定済み予約をRollbackしない。具体的なTransaction SQLと通知物理Modelは後続詳細設計へ送る。
+正常Commitは、新規ReservationとSlotOccupancy、必要な再分類、AuditLog、予約確認NotificationIntent 1件、必要な区分変更NotificationIntentを1つの業務Transactionで確定したことを意味する。`201`は外部Providerの受付・配送完了を表さず、Responseに配送成功fieldを設けない。UIは確定業務状態を画面に表示し、メール配送と混同しない。通知失敗で確定済み予約をRollbackしない。具体的なTransaction Guardと通知pickup境界は `02_StudentReservationD1.md` を参照する。
 
 ## 7. `GET /api/me/reservations`
 
@@ -137,4 +137,4 @@ Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。S
 | §7 履歴 | REQ-005、AC-005-001〜002、BR-066 | `02_FunctionalTestSpecification.md` の対応TC |
 | §8 Error / Audit | REQ-914 / 940、POL-014、BR-111 | `03_NonFunctionalTestSpecification.md` の対応TC |
 
-`REQ-911 / 914 / 940`、`OOS-001 / 002`を含む既存POL→BR→REQ→AC→TCの関係は変更しない。予約確認のwireに月間回数・料金は含めず、管理者代理予約を導入しない。D1物理Schema / migration / Transaction Guardは後続Issue #611で確定する。単一予約Application実装は、詳細設計・基盤確定後に#608配下の後続実装Issueとして切り出す。#536は本体build / test / PR CI基盤、#537は操作評価環境、#538はAI Developer runtime適合を扱う。
+`REQ-911 / 914 / 940`、`OOS-001 / 002`を含む既存POL→BR→REQ→AC→TCの関係は変更しない。予約確認のwireに月間回数・料金は含めず、管理者代理予約を導入しない。D1物理Schema / migration / Transaction Guardは `02_StudentReservationD1.md` で確定する。単一予約Application実装は、詳細設計・基盤確定後に#608配下の後続実装Issueとして切り出す。#536は本体build / test / PR CI基盤、#537は操作評価環境、#538はAI Developer runtime適合を扱う。

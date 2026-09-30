@@ -1,0 +1,83 @@
+@startuml
+title Student single reservation - D1 physical relationships
+hide circle
+skinparam linetype ortho
+
+entity students {
+  * id : TEXT PK
+}
+entity schedule_months {
+  * id : TEXT PK
+  * month_key : TEXT UNIQUE
+  published_at : INTEGER
+}
+entity lesson_slots {
+  * id : TEXT PK
+  * schedule_month_id : TEXT FK
+  * starts_at : INTEGER
+  * ends_at : INTEGER
+  * availability_status : TEXT
+}
+entity student_monthly_lesson_configs {
+  * student_id : TEXT PK, FK
+  * schedule_month_id : TEXT PK, FK
+  * standard_count : INTEGER
+}
+entity student_reservations {
+  * id : TEXT PK
+  * student_id : TEXT FK
+  * lesson_slot_id : TEXT FK
+  * status : TEXT
+  * automatic_classification : TEXT
+  classification : TEXT
+}
+entity slot_occupancies {
+  * id : TEXT PK
+  * slot_id : TEXT UNIQUE, FK
+  reservation_id : TEXT UNIQUE, FK
+  * occupancy_type : TEXT
+}
+entity reservation_absences {
+  * reservation_id : TEXT PK, FK
+}
+entity reservation_monthly_count_overrides {
+  * reservation_id : TEXT PK, FK
+}
+entity reservation_classification_overrides {
+  * reservation_id : TEXT PK, FK
+}
+entity notification_intents {
+  * id : TEXT PK
+  * recipient_student_id : TEXT FK
+  * reservation_id : TEXT FK
+  * kind : TEXT
+}
+entity notification_outbox {
+  * intent_id : TEXT PK, FK
+  * due_at : INTEGER
+}
+entity business_audit_logs {
+  * id : TEXT PK
+  * actor_id : TEXT
+  * target_id : TEXT
+}
+
+students ||--o{ student_reservations
+students ||--o{ student_monthly_lesson_configs
+students ||--o{ notification_intents
+schedule_months ||--o{ lesson_slots
+schedule_months ||--o{ student_monthly_lesson_configs
+lesson_slots ||--o{ student_reservations
+lesson_slots ||--o| slot_occupancies : "slot_id UNIQUE"
+student_reservations |o--o| slot_occupancies : "(reservation_id, slot_id) FK"
+student_reservations ||--o| reservation_absences
+student_reservations ||--o| reservation_monthly_count_overrides
+student_reservations ||--o| reservation_classification_overrides
+student_reservations ||--o{ notification_intents
+notification_intents ||--o| notification_outbox
+
+note bottom of business_audit_logs
+  Actor / target IDs reference a polymorphic audit subject.
+  Confirm inserts one success row in the same batch.
+end note
+@enduml
