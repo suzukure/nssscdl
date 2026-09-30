@@ -12,7 +12,7 @@
 | --- | --- |
 | Web/UI Presentation | 月間Calendar / List、Preview確認、確定状態、競合時の再確認、本人履歴を表示する。追加区分には `AC-003-008` の再分類可能性を示し、金額と配送成功を表示しない。 |
 | HTTP Router / API Adapter | Path、Method、JSON / Queryの形と型を検証し、Application View / ErrorをHTTPへ変換する。本人Identityや業務状態をRequest値から決定しない。 |
-| Student Session / Authorization Guard | 各Requestで`06_APIOverview.md` §9のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。 |
+| Student Session / Authorization Guard | 各Requestで`06_APIOverview.md` §10のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。 |
 | Schedule Query Application Service | 公開月と本人の確定状態から、各Slotにつき矛盾しない単一Viewを導出する。 |
 | Reservation Preview Application Service | 対象Slot、公開、開始境界、占有、本人月間分類と既存未開始Reservationの区分差分を評価し、確認用ViewとExpected State Tokenを返す。業務状態は変更しない。 |
 | Reservation Confirm Application Service | 最新確定状態を再評価し、Expected State一致と業務Guard成立時だけ予約Commandを確定する。結果はCommit済みのViewで返す。 |
