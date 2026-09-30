@@ -161,7 +161,7 @@ Codexはスコープ外影響を発見した場合、その安全性・正確性
 
 IssueとPRの新規記録では `## スコープ外影響と後継Issue` 見出しを使用する。各same-repository後継Issueは `- 後継Issue: #<number>` の1行で明示し、対象がなければ `none` とする。review context生成はPR本文とclosing Issue本文のこの定型欄と、既存の英語形式 `## Scope-out impact and follow-up` / `- Follow-up Issue: #<number>` だけを読み、closing Issueと重複しない後継Issueを再帰せずに取得する。PRとclosing Issueから抽出した異なる後継Issueの合計に適用する上限値の正本は `build-review-context.sh` の `follow_up_issue_limit` であり、現在は5件である。6件以上が抽出された場合は切り捨てずreview context生成をfail-closedで停止する。後継Issueを整理・分割するか、人間レビューへ切り替えて復旧する。後継Issueの番号・タイトル・state・本文はuntrusted data境界内のsnapshotとしてClaudeへ渡す。定型欄外の通常の番号参照は後継Issueとして扱わない。明示された後継Issueを取得できない場合も、存在しないと推測せずreview context生成をfail-closedで停止する。
 
-見出しと後継Issue行の言語が混在する場合は定型欄として抽出しない。これは過去データとの互換のためであり、新規記録には日本語形式を使う。
+見出しと後継Issue行の言語が混在する場合は定型欄として抽出しない。`## スコープ外影響と後継Issue` など上記の定型見出しに文言が完全一致する欄だけを抽出し、`## 追加のスコープ外影響と後継Issue` のような派生見出しは対象外とする。これは過去データとの互換のためであり、新規記録には日本語形式を使う。
 
 ## 必要なGitHub Actions設定
 
