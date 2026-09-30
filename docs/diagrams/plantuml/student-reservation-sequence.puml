@@ -1,0 +1,88 @@
+@startuml
+title Student single reservation - schedule, preview, confirm and history
+
+actor Student
+participant "Web/UI" as UI
+participant "HTTP Router" as HTTP
+participant "Session / Authorization Guard" as Guard
+participant "Schedule Query" as Schedule
+participant "Preview Service" as Preview
+participant "Confirm Service" as Confirm
+participant "History Query" as History
+participant "Reservation / Classification Domain" as Domain
+participant "Repository / Transaction Port" as Repo
+participant "Audit Port" as Audit
+participant "Notification Intent Port" as Intent
+database "Main D1" as D1
+
+Student -> UI: Open published month
+UI -> HTTP: GET /api/me/schedule-months/{month}
+HTTP -> Guard: Validate session, role, access, lifecycle
+Guard --> HTTP: Resolved student
+HTTP -> Schedule: Query month for student
+Schedule -> Repo: Read published slots and current state
+Repo -> D1: Read
+D1 --> Repo: Committed state
+Repo --> Schedule: State
+Schedule -> Domain: Derive one view per slot
+Domain --> Schedule: bookable / reserved_by_me / group_lesson / unavailable
+Schedule --> HTTP: Month view
+HTTP --> UI: 200 JSON
+UI --> Student: Calendar / list
+
+Student -> UI: Select slot and request preview
+UI -> HTTP: POST /api/me/reservations/preview {slotId}
+HTTP -> Guard: Validate this request
+Guard --> HTTP: Resolved student
+HTTP -> Preview: Preview for student
+Preview -> Repo: Read latest slot, month and student reservations
+Repo -> D1: Read
+D1 --> Repo: Committed state
+Repo --> Preview: State
+Preview -> Domain: Check eligibility and compute classification effects
+Domain --> Preview: Preview result and canonical business snapshot
+Preview --> HTTP: Preview view + opaque state token
+HTTP --> UI: 200 JSON
+UI --> Student: Show time, classification and all changes
+
+Student -> UI: Confirm reviewed preview
+UI -> HTTP: POST /api/me/reservations {slotId, expectedStateToken}
+HTTP -> Guard: Validate this request
+Guard --> HTTP: Resolved student
+HTTP -> Confirm: Confirm for student
+Confirm -> Repo: Read and guard latest committed state
+Repo -> D1: Read latest
+D1 --> Repo: State
+Repo --> Confirm: State
+Confirm -> Domain: Recompute eligibility, snapshot and effects
+Domain --> Confirm: Latest result
+alt token matches and all guards hold
+  Confirm -> Audit: Include booking audit obligation
+  Confirm -> Intent: Include confirmation and needed change intents
+  Confirm -> Repo: Commit reservation, occupancy, reclassification, audit, intents
+  Repo -> D1: Atomic business transaction
+  D1 --> Repo: Committed result
+  Repo --> Confirm: Confirmed state
+  Confirm --> HTTP: Reservation, slot and classification changes
+  HTTP --> UI: 201 JSON; no delivery result
+  UI --> Student: Show confirmed business state
+else state changed or a booking guard fails
+  Confirm --> HTTP: 409 safe application error
+  HTTP --> UI: Error, optional safe latestSlot
+  UI --> Student: Explain change; reload and repreview
+end
+
+Student -> UI: Open reservation history
+UI -> HTTP: GET /api/me/reservations?limit=50
+HTTP -> Guard: Validate this request
+Guard --> HTTP: Resolved student
+HTTP -> History: Query student page
+History -> Repo: Read ordered reservations
+Repo -> D1: Read
+D1 --> Repo: Rows
+Repo --> History: Student page
+History --> HTTP: items and nextCursor
+HTTP --> UI: 200 JSON
+UI --> Student: Show reservation, attendance, classification separately
+
+@enduml

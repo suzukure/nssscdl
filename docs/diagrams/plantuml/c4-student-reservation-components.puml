@@ -1,0 +1,45 @@
+@startuml
+!include <C4/C4_Component>
+
+LAYOUT_WITH_LEGEND()
+title Student Single Reservation - C4 Level 3 Application Worker
+
+Person(student, "Student", "Checks schedule, previews and confirms one reservation, views history.")
+ContainerDb(db, "Main Database", "Cloudflare D1", "Authoritative business state; physical adapter designed later.")
+
+Container_Boundary(worker, "Application Worker - one Cloudflare Worker deploy unit") {
+  Component(ui, "Web/UI Presentation", "Web UI", "Calendar/list, preview confirmation, result and history.")
+  Component(router, "HTTP Router / API Adapter", "HTTP / JSON", "Validates wire and maps application results.")
+  Component(guard, "Student Session / Authorization Guard", "Application", "Validates each request and resolves the student.")
+  Component(schedule, "Schedule Query Application Service", "Application", "Builds one student slot view.")
+  Component(preview, "Reservation Preview Application Service", "Application", "Computes confirmation view and state token.")
+  Component(confirm, "Reservation Confirm Application Service", "Application", "Revalidates and commits one booking.")
+  Component(history, "Reservation History Query Application Service", "Application", "Pages student reservation history.")
+  Component(domain, "Reservation / Classification Domain Service", "Domain", "Availability, monthly classification and effects.")
+  Component(repo, "Repository / Transaction Port", "Port", "Reads committed state and commits atomic command.")
+  Component(audit, "Audit Port", "Port", "Supplies audit obligation to transaction.")
+  Component(intent, "Notification Intent Port", "Port", "Supplies notification obligations to transaction.")
+}
+
+Rel(student, ui, "Uses", "HTTPS")
+Rel(ui, router, "Calls four /api/me endpoints", "JSON")
+Rel(router, guard, "Checks every request")
+Rel(router, schedule, "Routes schedule query after guard")
+Rel(router, preview, "Routes preview after guard")
+Rel(router, confirm, "Routes confirm after guard")
+Rel(router, history, "Routes history after guard")
+Rel(schedule, domain, "Derives slot view")
+Rel(preview, domain, "Computes classification and snapshot")
+Rel(confirm, domain, "Recomputes and checks")
+Rel(schedule, repo, "Reads")
+Rel(preview, repo, "Reads")
+Rel(confirm, repo, "Atomic command")
+Rel(history, repo, "Reads")
+Rel(confirm, audit, "Adds audit obligation")
+Rel(confirm, intent, "Adds notification intent obligation")
+Rel(repo, db, "Uses", "D1 binding")
+Rel(audit, repo, "Participates in same transaction")
+Rel(intent, repo, "Participates in same transaction")
+
+SHOW_LEGEND()
+@enduml
