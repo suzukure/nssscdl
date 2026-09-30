@@ -13,9 +13,9 @@
 
 ## 基本設計の残件と引継ぎ
 
-`OI-BD-013` / #542でDeployment / Environmentの基本境界を `01_SystemArchitecture.md` §6へ反映した。OI-BDの主要残件はなく、文書整合follow-up #558 / #564 / #561および既知の対応 #599 / #601は解消済みである。基本設計フェーズの完了は未判定であり、#584で最新main・反映PR・Actionsを確認し、必要範囲を再監査してBlocking 0件を含む全完了条件を確認する監査Gateが残る。本READMEの同期や#603のPRだけをもって最終PASS / Closeとはしない。
+`OI-BD-013` / #542でDeployment / Environmentの基本境界を `01_SystemArchitecture.md` §6へ反映した。OI-BDの主要残件はなく、文書整合follow-up #558 / #564 / #561および既知の対応 #599 / #601は解消済みである。基本設計フェーズの最終判定、監査対象main commitおよび判定根拠は #584 を正本とする。判定は最新main・反映PR・Actionsと必要範囲の監査に基づき、Blocking 0件を含む全完了条件を確認して行う。本READMEの同期や個別修正PRのマージだけをもって最終PASS / Closeとはしない。
 
-#535 / #537 / #551の後続責務は各Issueで扱う。#537はBrowser provider・exact version × OS・実端末・cost・credential・evidence・fallback、および下記の詳細設計・運用設計を扱う。#551は13 ACとCoverage summary、`TC-F-206-03` の表現整理を扱う。これらの後続作業を#584の監査GateのPASS済みと読み替えない。
+#535 / #537 / #551の後続責務は各Issueで扱う。#535は価値単位の詳細設計・実装・テスト・評価の進め方を扱う。#537はBrowser provider・exact version × OS・実端末・cost・credential・evidence・fallback、およびPreview / Test、Deploy / migration / recovery runbook、feature exposureの具体方式を扱う。#551は13 ACとCoverage summary、`TC-F-206-03` の表現整理を扱う。
 
 通知・Scheduled Processingの基本形は #540、認証・Sessionの基本形は #539、Backup / Recoveryの基本形は #541 で確定済み。Preview / Test、Deploy / migration / recovery runbookとfeature exposureの具体方式は #537へ引き継ぐ。D1の最終カラム型、補助Index、DDL、具体的Guard SQL等は `02_DataModel.md` および `05_BookingAndConcurrency.md` に従い後続の物理データ設計・詳細設計で確定する。Schedule生成・変更の基本形は `06_APIOverview.md` §12で確定済みであり、`disabled` 理由の保持・表示粒度等の具体表現は詳細設計で確定する。
 
