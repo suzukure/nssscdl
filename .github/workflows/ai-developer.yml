@@ -383,10 +383,10 @@ jobs:
             fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
           );
           if (mainPackage.name !== "@openai/codex") {
-            throw new Error(`unexpected package name: ${mainPackage.name}`);
+            throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
           if (mainPackage.version !== "0.156.1") {
-            throw new Error(`unexpected package version: ${mainPackage.version}`);
+            throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
           let platformPackage;
@@ -399,7 +399,7 @@ jobs:
             targetTriple = "aarch64-unknown-linux-musl";
           } else {
             throw new Error(
-              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+              `未対応のCodex実行環境: ${process.platform}/${process.arch}`,
             );
           }
 
@@ -416,7 +416,7 @@ jobs:
           );
           const nativeStat = fs.statSync(nativePath);
           if (!nativeStat.isFile()) {
-            throw new Error("native codex is not a regular file");
+            throw new Error("Codexのネイティブ実行ファイルは通常ファイルではありません。");
           }
           fs.accessSync(nativePath, fs.constants.X_OK);
 
@@ -1010,9 +1010,9 @@ jobs:
           set -euo pipefail
 
           restore_base_blob() {
-            local source_path="${1:?source path is required}"
-            local destination="${2:?destination is required}"
-            local expected_blob="${3:?expected blob is required}"
+            local source_path="${1:?復元元のパスが必要です}"
+            local destination="${2:?復元先が必要です}"
+            local expected_blob="${3:?期待するblobが必要です}"
             if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
               echo "信頼済みhelperのblob identityが不正です: $source_path。" >&2
               exit 1
@@ -1851,10 +1851,10 @@ jobs:
             fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
           );
           if (mainPackage.name !== "@openai/codex") {
-            throw new Error(`unexpected package name: ${mainPackage.name}`);
+            throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
           if (mainPackage.version !== "0.156.1") {
-            throw new Error(`unexpected package version: ${mainPackage.version}`);
+            throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
           let platformPackage;
@@ -1867,7 +1867,7 @@ jobs:
             targetTriple = "aarch64-unknown-linux-musl";
           } else {
             throw new Error(
-              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+              `未対応のCodex実行環境: ${process.platform}/${process.arch}`,
             );
           }
 
@@ -1884,7 +1884,7 @@ jobs:
           );
           const nativeStat = fs.statSync(nativePath);
           if (!nativeStat.isFile()) {
-            throw new Error("native codex is not a regular file");
+            throw new Error("Codexのネイティブ実行ファイルは通常ファイルではありません。");
           }
           fs.accessSync(nativePath, fs.constants.X_OK);
 
@@ -2499,9 +2499,9 @@ jobs:
           set -euo pipefail
 
           restore_base_blob() {
-            local source_path="${1:?source path is required}"
-            local destination="${2:?destination is required}"
-            local expected_blob="${3:?expected blob is required}"
+            local source_path="${1:?復元元のパスが必要です}"
+            local destination="${2:?復元先が必要です}"
+            local expected_blob="${3:?期待するblobが必要です}"
             if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
               echo "信頼済みhelperのblob identityが不正です: $source_path。" >&2
               exit 1

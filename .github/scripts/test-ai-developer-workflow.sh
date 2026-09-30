@@ -616,6 +616,19 @@ grep -Fq "printf 'package_root=%s\\n' \"\$package_root\" >> \"\$GITHUB_OUTPUT\""
 grep -Fq "printf 'action_main=%s\\n' \"\$action_main\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 grep -Fq "printf 'runner_credentials=%s\\n' \"\$credentials\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 grep -Fq "信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。" "$resolver_step"
+for diagnostic in \
+  '予期しないCodexパッケージ名:' \
+  '予期しないCodexパッケージのバージョン:' \
+  '未対応のCodex実行環境:' \
+  'Codexのネイティブ実行ファイルは通常ファイルではありません。' \
+  '復元元のパスが必要です' \
+  '復元先が必要です' \
+  '期待するblobが必要です'; do
+  [ "$(grep -Fc "$diagnostic" "$workflow")" -eq 2 ] || {
+    echo "Issue起点とClaudeフォローアップの診断が一致しません: $diagnostic" >&2
+    exit 1
+  }
+done
 if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$resolver_step"; then
   echo 'Trusted Codex resolver must not receive repository secrets.' >&2
   exit 1
