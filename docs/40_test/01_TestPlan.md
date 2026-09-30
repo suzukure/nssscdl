@@ -122,7 +122,13 @@
 
 Production相当構成を基本とする。外部Providerの破壊的Fault Injectionや時刻境界試験は、Provider Stubまたは隔離環境で行う。
 
-Browser Matrixは `docs/10_basic_design/01_SystemArchitecture.md` §2.2のbaseline / rolling更新規則に従い、Release readiness時点の公式Stable / Release情報から現行Major＋直前のStable major familyを確定する。各familyのlatest通常Stable / Release patchをexact versionとして実行対象へ固定し、majorまたは最低Version floorに差分があればProduction release判定前に基本設計baselineを更新する。実行記録にはBrowser名、exact version、OS、実行日時、build / commitを残す。
+通常CIではPlaywright等のChromium / Firefox / WebKit系による回帰検知を行う。これはChrome / Edge / Safari / Firefox実ブラウザの正式な互換性証跡とは区別する。
+
+Release readiness時には `docs/10_basic_design/01_SystemArchitecture.md` §2.2の通常Stable / Release family baselineを公式情報で再確認する。familyが変わればProduction release判定前に同節を更新する。Release Test Matrixには各familyの実行対象となるexact Browser version × 代表OSを固定し、Browser名、channel、OS、公式情報のURL・公開日・取得日時、選定したexact versionを記録する。OS別build差を単一のpatch floorへ統合しない。Matrix更新だけで基本設計のsupport familyを変更しない。
+
+Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / remote環境の実ブラウザで現行・直前familyのMust業務を確認する。代表例はWindows上のChrome / Edge / FirefoxとmacOS上のSafariとし、具体的な代表OS・provider・証跡取得方法は #537 で確定する。OS別物理実機のプロジェクト所有は必須としない。実行証跡にはMatrixの対象、実行日時、build / commit、family・version別結果を残す。
+
+`REQ-902` のスマートフォン確認は別に行う。日常CIにはviewport / device emulationを利用できるが、Release前はCloud上の実iPhone Safari / Android Chrome等で主要Must業務を確認する。Desktopの `REQ-901` baselineはこの確認を免除しない。
 
 ## 8. Entry Criteria
 
