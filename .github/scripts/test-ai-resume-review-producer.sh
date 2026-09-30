@@ -129,7 +129,7 @@ if (
   exit 1
 fi
 [ "$(wc -l < "$tmp/calls")" -eq 1 ]
-grep -Fq 'outcome unknown, no producer retry' "$tmp/stderr"
+grep -Fq '結果は不明です。producerから再試行しません。' "$tmp/stderr"
 if grep -Eq 'gh (issue|pr)|ai-resume-accepted|human-review-required|claude-code-action|claude -p' "$tmp/producer.sh"; then
   echo 'Producer crossed the consumer ownership boundary.' >&2
   exit 1

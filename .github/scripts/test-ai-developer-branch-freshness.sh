@@ -91,7 +91,7 @@ for scenario in absent fresh stale; do
     [ "$scenario" = stale ] || { cat "$case_dir/log" >&2; exit 1; }
     [ "$(cat "$case_dir/base")" = "$current" ]
     ! grep -Fq 'paid-codex-reached' "$case_dir/env"
-    grep -Fq 'does not contain current main' "$case_dir/log"
+    grep -Fq "AI branch ai/issue-492 に現在のmain $current が含まれていないため、Codex実行前に停止します。" "$case_dir/log"
   fi
   if [ "$scenario" != absent ]; then
     [ "$(git -C "$case_dir/origin.git" rev-parse refs/heads/ai/issue-492)" = "$before" ]
