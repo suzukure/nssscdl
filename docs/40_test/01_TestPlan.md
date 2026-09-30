@@ -139,7 +139,17 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 - Server Clock、Provider Stub、Concurrency Harness等、該当試験に必要な制御点が利用可能
 - P0テストについて観測すべきAudit / Log / Business Stateの確認手段がある
 
-## 9. Exit Criteria
+## 9. 開発単位の検証・完了
+
+基本設計後の価値単位と実施Issueの選択・分割・Done判断は `docs/30_operations/ai-development-workflow.md` の「基本設計後の価値単位の開発」を正本とする。開発単位では、対象REQ / ACと既存TCを要求側Matrixおよび本ディレクトリのAC→TC追跡表で照合し、正常・境界・競合・失敗の具体例と期待結果を実装前に確認する。テストの期待結果は要求・基本設計を正とし、実装出力から導出しない。
+
+実施Issueの完了には変更内容に応じた設計整合とAC→TC対応、現在PR headの該当CI証跡を確認する。実装を含むIssueでは対象AC→TC→自動テストと実行結果の対応、該当するDB / API結合・競合・外部依存失敗の検証、影響する既存機能の回帰を確認する。TDD対象の重要業務ロジックは失敗確認・最小実装・構造改善後の再実行を記録する。未実施・失敗を成功と扱わず、Defectと残課題をIssueに記録する。
+
+価値単位の完了は、実施Issueの検証を統合した業務シナリオで確認し、実際の画面を用いる探索的な操作評価で利用者が目的を達成できるか、手順の分かりにくさや既存の具体例にない問題がないかを判定する。Build / Commit、環境、Actor、操作、観察結果、必要な画面・Response / Audit証跡、Defect、改善判断をIssueに残す。複数PRで構成しても統合評価を省略しない。操作評価環境・手順の具体化は #537、CIとテスト基盤は #536 に従う。
+
+この単位の完了は初期リリースの判定ではない。次節の全REQ / AC対応、P0 / P1、欠陥、非機能・Browser等のExit Criteriaは維持する。
+
+## 10. 初期リリース全体のExit Criteria
 
 - 全REQに1件以上のテストケースが存在する
 - 全ACが `04_RequirementsTestTraceability.md` および要求変更追補Traceabilityで1件以上のTCへ対応する
@@ -149,7 +159,7 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 - REQ-911の競合整合性、REQ-909/910の復旧性、REQ-934のPII削除について証跡を保存する
 - 実行対象Browser MatrixでMust業務が完了する
 
-## 10. Defect Severity
+## 11. Defect Severity
 
 | Severity | 定義例 |
 |---|---|
@@ -157,13 +167,13 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 | Major | Critical条件に至らない予約所有者不整合（存在しない生徒への紐付け等）、主要業務が実行不能、誤った取消・分類、期限判定誤り、通知失敗で業務状態がRollback |
 | Minor | 代替手段がある表示・文言・局所的UI不具合 |
 
-## 11. 証跡
+## 12. 証跡
 
 テスト結果には最低限、TC ID、Build/Commit、実行日時、環境、Actor/Test Data、結果、必要なScreenshot/Response/Audit evidence、Defect IDを残す。
 
 PIIを証跡へ不要に複製しない。テスト用の架空データを優先する。
 
-## 12. 自動化方針
+## 13. 自動化方針
 
 - P0/P1の決定論的なAPI/Domain挙動は自動化を優先する。
 - Browser E2EはMust業務のHappy pathと主要Boundary/Conflictへ限定し、下位レベルの自動テストと重複させすぎない。
@@ -171,7 +181,7 @@ PIIを証跡へ不要に複製しない。テスト用の架空データを優�
 - WCAG、文言、管理者への説明性は自動検査と人手Reviewを併用する。
 - 自動テスト名またはmetadataへTC IDを埋め込み、要求テスト仕様と実装テストを追跡可能にする。
 
-## 13. 設計進行に伴う詳細化ポイント
+## 14. 設計進行に伴う詳細化ポイント
 
 以下は製品要求の未決事項ではなく、テスト実装上の詳細化項目である。
 

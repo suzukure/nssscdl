@@ -1,0 +1,50 @@
+name: Value unit execution
+description: Record an independently deliverable part of a user business scenario after basic design.
+title: "[Value unit] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: "Use this for an execution Issue. For a separate design decision, use Engineering decision. Follow docs/30_operations/ai-development-workflow.md for value-unit selection, safe Issue splitting, and integrated Done."
+  - type: textarea
+    id: value
+    attributes:
+      label: User, completed business task, and value
+      description: State who completes what, the effect, and why this work has priority. Link the parent value-unit Issue when split.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Target IDs and design
+      description: List applicable POL/BR/REQ/AC/TC/CON/OOS, existing basic design, and detailed design to confirm before implementation. Do not redefine their expected results here.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Dependencies and exclusions
+      description: Identify prerequisites, dependent Issues, out-of-scope work, and conditions for safe standalone merge to main.
+    validations:
+      required: true
+  - type: textarea
+    id: work
+    attributes:
+      label: Implementation, DB, test, and operations scope
+      description: Describe the applicable UI/API/DB/Job work, migration, tests, and operational work.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification and user operation evaluation
+      description: Map AC to TC and implementation tests; include regression, current-head CI evidence, integrated scenario, user operation observations, and evidence to collect.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done conditions and remaining issues
+      description: State this Issue's completion checks, parent scenario integration checks when applicable, known defects, and decisions or follow-ups still needed.
+    validations:
+      required: true

@@ -26,3 +26,5 @@ ChatGPTやローカルワークスペースは作業領域として利用でき�
 
 要求仕様のベースラインは `docs/00_requirements/` に格納する。
 要求ベースのテスト仕様は `docs/40_test/` に格納し、`POL → BR → REQ → AC → TC` のトレーサビリティを維持する。
+
+基本設計の完了後は、利用者が完了できる業務を価値単位として選び、必要な詳細設計・実装・テスト・操作評価を反復する。進行方法と実施Issueの記録・完了判断は[AI開発・ClaudeレビューのGitHub運用](docs/30_operations/ai-development-workflow.md#基本設計後の価値単位の開発)を正本とする。
