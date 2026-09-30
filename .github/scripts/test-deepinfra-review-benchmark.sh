@@ -223,6 +223,9 @@ current validation evidence
 ## Review readiness
 initial review blocking fixed
 
+## レビュー準備
+current review blocking fixed
+
 ## Review response
 Claude initial review secret expected finding
 
@@ -235,8 +238,9 @@ assert "safe summary" in filtered
 assert "current validation evidence" in filtered
 assert "Follow-up Issue: #307" in filtered
 assert "initial review blocking fixed" not in filtered
+assert "current review blocking fixed" not in filtered
 assert "Claude initial review secret expected finding" not in filtered
-assert set(excluded) == {"Review readiness", "Review response"}
+assert set(excluded) == {"Review readiness", "レビュー準備", "Review response"}
 
 case_id = "A01-defect"
 case = m.CASES[case_id]
@@ -313,7 +317,7 @@ assert meta["selected_head_sha"] == case["head"]
 assert "diagnostic_a" not in meta
 assert meta["follow_up_issues"] == [307, 999]
 assert meta["excluded_follow_up_issues"] == [342]
-assert set(meta["excluded_pr_body_sections"]) == {"Review readiness", "Review response"}
+assert set(meta["excluded_pr_body_sections"]) == {"Review readiness", "レビュー準備", "Review response"}
 assert "PULL REQUEST METADATA" in context
 assert "historical PR title" in context
 assert "PULL REQUEST BODY" in context
