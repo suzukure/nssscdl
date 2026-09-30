@@ -2,7 +2,7 @@
 
 ## 1. 適用範囲と正本
 
-初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセル、認証Provider、D1の物理Table / Index / SQL / migrationは本書の対象外である。
+初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§8、§10〜11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセル、認証Provider、D1の物理Table / Index / SQL / migrationは本書の対象外である。
 
 図の正本は `../diagrams/plantuml/c4-student-reservation-components.puml` と `../diagrams/plantuml/student-reservation-sequence.puml`。C4 Level 3は `01_SystemArchitecture.md` の単一Application Worker内の論理責務を示し、別Deploy Unitを意味しない。
 
@@ -12,7 +12,7 @@
 | --- | --- |
 | Web/UI Presentation | 月間Calendar / List、Preview確認、確定状態、競合時の再確認、本人履歴を表示する。追加区分には `AC-003-008` の再分類可能性を示し、金額と配送成功を表示しない。 |
 | HTTP Router / API Adapter | Path、Method、JSON / Queryの形と型を検証し、Application View / ErrorをHTTPへ変換する。本人Identityや業務状態をRequest値から決定しない。 |
-| Student Session / Authorization Guard | 各Requestで`06_APIOverview.md` §10のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。 |
+| Student Session / Authorization Guard | 各Requestで`06_APIOverview.md` §10のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。Session失効は401、有効な認証済みSessionにStudent操作権限がない場合は403とする。 |
 | Schedule Query Application Service | 公開月と本人の確定状態から、各Slotにつき矛盾しない単一Viewを導出する。 |
 | Reservation Preview Application Service | 対象Slot、公開、開始境界、占有、本人月間分類と既存未開始Reservationの区分差分を評価し、確認用ViewとExpected State Tokenを返す。業務状態は変更しない。 |
 | Reservation Confirm Application Service | 最新確定状態を再評価し、Expected State一致と業務Guard成立時だけ予約Commandを確定する。結果はCommit済みのViewで返す。 |
@@ -115,14 +115,16 @@ Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、
 | code | HTTP | 適用と`retry` |
 | --- | --- | --- |
 | `INVALID_REQUEST` | 400 | Path / Query / JSON / token形式が不正。`none`。 |
-| `UNAUTHENTICATED` | 401 | 有効なStudent Sessionがない。`none`。 |
+| `UNAUTHENTICATED` | 401 | 有効な認証済みSessionがない。`none`。 |
+| `FORBIDDEN` | 403 | 認証済みだがStudent role / self-scope操作権限がない。`none`。 |
 | `SCHEDULE_MONTH_NOT_AVAILABLE` | 404 | 指定月が公開済みでない。`none`。 |
 | `RESERVATION_NOT_AVAILABLE` | 409 | 対象Slotが予約不可または本人の新規予約条件を満たさない。`reload`。 |
 | `RESERVATION_WINDOW_CLOSED` | 409 | Server時刻でSlot開始以降。`reload`。 |
 | `RESERVATION_STATE_CHANGED` | 409 | Preview後の重要状態または分類影響が変化した。`repreview`。 |
-| `SERVICE_UNAVAILABLE` | 503 | Maintenance、環境identity / feature exposureのfail-closed、D1障害・Invariant異常等。`later`。 |
+| `SERVICE_UNAVAILABLE` | 503 | Maintenance、環境identity / feature exposureのfail-closed、D1障害等。`later`。 |
+| `INTEGRITY_STATE_UNAVAILABLE` | 503 | 永続化済みInvariant違反等の整合性異常。`later`。 |
 
-Confirmではtokenと最新Snapshotが異なる場合に`RESERVATION_STATE_CHANGED`を使う。Preview時点から予約不可なら`RESERVATION_NOT_AVAILABLE`、開始済みなら`RESERVATION_WINDOW_CLOSED`を使う。認証・利用可否などのGuardを先に評価し、token一致だけで確定しない。409では安全に導出できるときだけ`error.latestSlot`（§4の本人向けSlot itemと同形）または再Previewに必要な本人向け情報を付けられる。これは完全な競合列挙を保証しない。SQL Error、Constraint / Table / Column名、内部Invariant code、他生徒の識別子・個人情報を返さない。内部診断は技術Log / Monitoringへ分離する。
+`FORBIDDEN`の利用者向け`message`は「この操作は利用できません。」とし、内部Role、lifecycle、Resourceの存在を説明しない。Security Suspensionや削除等でSessionが失効した場合は`UNAUTHENTICATED`を使い、403のために失効Sessionを有効扱いしない。Confirmではtokenと最新Snapshotが異なる場合に`RESERVATION_STATE_CHANGED`を使う。Preview時点から予約不可なら`RESERVATION_NOT_AVAILABLE`、開始済みなら`RESERVATION_WINDOW_CLOSED`を使う。認証・利用可否などのGuardを先に評価し、token一致だけで確定しない。409では安全に導出できるときだけ`error.latestSlot`（§4の本人向けSlot itemと同形）または再Previewに必要な本人向け情報を付けられる。これは完全な競合列挙を保証しない。SQL Error、Constraint / Table / Column名、内部Invariant code、他生徒の識別子・個人情報を返さない。内部診断は技術Log / Monitoringへ分離する。
 
 ## 9. UI / API FlowとTraceability
 
@@ -135,4 +137,4 @@ Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。S
 | §7 履歴 | REQ-005、AC-005-001〜002、BR-066 | `02_FunctionalTestSpecification.md` の対応TC |
 | §8 Error / Audit | REQ-914 / 940、POL-014、BR-111 | `03_NonFunctionalTestSpecification.md` の対応TC |
 
-`REQ-911 / 914 / 940`、`OOS-001 / 002`を含む既存POL→BR→REQ→AC→TCの関係は変更しない。予約確認のwireに月間回数・料金は含めず、管理者代理予約を導入しない。D1物理Transactionの実現方式は後続Issue #609、実装・評価は #536〜538の責務である。
+`REQ-911 / 914 / 940`、`OOS-001 / 002`を含む既存POL→BR→REQ→AC→TCの関係は変更しない。予約確認のwireに月間回数・料金は含めず、管理者代理予約を導入しない。D1物理Schema / migration / Transaction Guardは後続Issue #611で確定する。単一予約Application実装は、詳細設計・基盤確定後に#608配下の後続実装Issueとして切り出す。#536は本体build / test / PR CI基盤、#537は操作評価環境、#538はAI Developer runtime適合を扱う。
