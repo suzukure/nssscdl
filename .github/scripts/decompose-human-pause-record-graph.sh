@@ -11,7 +11,7 @@ fail_closed() {
   exit 1
 }
 
-input="$(cat)" || fail_closed 'could not read input'
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 # The listing and graph-validation helpers own trust, schema, target, and
 # graph validation.  This boundary checks only enough envelope and edge shape
@@ -36,9 +36,9 @@ jq -ce '
   . as $graph
   | [inputs] as $additional_values
   | if $additional_values != [] then
-      error("expected one JSON value")
+      error("JSON値は1個である必要があります")
     elif valid_envelope | not then
-      error("record graph envelope is invalid")
+      error("記録グラフの外枠が不正です")
     else
       .records as $records
       | [$records[].pause_id] as $ids
@@ -62,16 +62,16 @@ jq -ce '
               | .record.source_pause_id? // empty
               | select(. != null) ]
             | group_by(.) | any(.[]; length != 1))
-        then error("record graph cannot be uniquely decomposed")
+        then error("記録グラフを一意に分解できません")
         else
           ($roots | map({records: follow($entries; $successors; .pause_id)}))
             as $chains
           | [$chains[].records[]] as $decomposed
           | if ($decomposed | length) != ($records | length)
             or ([$decomposed[].pause_id] | sort) != ($ids | sort)
-            then error("record graph cannot be fully decomposed")
+            then error("記録グラフを完全に分解できません")
             else {target: $graph.target, chains: $chains}
             end
         end
     end
-' <<< "$input" || fail_closed 'record graph cannot be uniquely decomposed'
+' <<< "$input" || fail_closed '記録グラフを一意に分解できません'

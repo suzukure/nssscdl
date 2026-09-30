@@ -383,10 +383,10 @@ jobs:
             fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
           );
           if (mainPackage.name !== "@openai/codex") {
-            throw new Error(`unexpected package name: ${mainPackage.name}`);
+            throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
           if (mainPackage.version !== "0.156.1") {
-            throw new Error(`unexpected package version: ${mainPackage.version}`);
+            throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
           let platformPackage;
@@ -399,7 +399,7 @@ jobs:
             targetTriple = "aarch64-unknown-linux-musl";
           } else {
             throw new Error(
-              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+              `未対応のCodex実行環境: ${process.platform}/${process.arch}`,
             );
           }
 
@@ -416,7 +416,7 @@ jobs:
           );
           const nativeStat = fs.statSync(nativePath);
           if (!nativeStat.isFile()) {
-            throw new Error("native codex is not a regular file");
+            throw new Error("Codexのネイティブ実行ファイルは通常ファイルではありません。");
           }
           fs.accessSync(nativePath, fs.constants.X_OK);
 
@@ -468,7 +468,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
+          printf '信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex developer prompt
@@ -512,6 +512,7 @@ jobs:
           printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
           printf 'captured=true\n' >> "$GITHUB_OUTPUT"
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+          echo 'ホストの保護対象socket、名前解決サービス、DNSの事前確認が完了しました。'
 
       - name: Run Codex developer
         id: codex
@@ -551,21 +552,21 @@ jobs:
           unexpected = sorted(set(config) - allowed_top_level)
           if unexpected:
               raise SystemExit(
-                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+                  f"setup専用ランタイムのCodex設定に予期しないキーがあります: {unexpected}"
               )
 
           provider_name = config.get("model_provider")
           if provider_name != "codex-action-responses-proxy":
-              raise SystemExit("unexpected Codex model_provider")
+              raise SystemExit("Codexのmodel_providerが想定外です")
 
           providers = config.get("model_providers")
           if not isinstance(providers, dict) or set(providers) != {provider_name}:
-              raise SystemExit("unexpected Codex model_providers shape")
+              raise SystemExit("Codexのmodel_providers形式が想定外です")
           provider = providers[provider_name]
           if not isinstance(provider, dict):
-              raise SystemExit("unexpected Codex provider config")
+              raise SystemExit("Codexのprovider設定が想定外です")
           if provider.get("wire_api") != "responses":
-              raise SystemExit("Codex proxy provider must use responses wire API")
+              raise SystemExit("Codex proxy providerのwire_apiはresponsesである必要があります")
 
           parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
           if (
@@ -580,13 +581,13 @@ jobs:
               or parsed.username is not None
               or parsed.password is not None
           ):
-              raise SystemExit("Codex proxy provider must be loopback http /v1")
+              raise SystemExit("Codex proxy providerはloopbackのhttp /v1を使用する必要があります")
           PY
 
           case "$CODEX_RUNTIME_MAX_SEC" in
             700|1780) ;;
             *)
-              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              echo 'Codex RuntimeMaxSecが想定外です。' >&2
               exit 1
               ;;
           esac
@@ -605,7 +606,7 @@ jobs:
           nobody_gid="$(id -g nobody)"
           case "$nobody_gid" in
             ''|*[!0-9]*|0)
-              echo 'Could not resolve a safe nobody gid.' >&2
+              echo '安全なnobody gidを取得できませんでした。' >&2
               exit 1
               ;;
           esac
@@ -619,47 +620,47 @@ jobs:
           #!/bin/sh
           set -eu
 
-          expected_uid="${1:?expected uid is required}"
-          expected_gid="${2:?expected gid is required}"
+          expected_uid="${1:?期待するuidが必要です}"
+          expected_gid="${2:?期待するgidが必要です}"
 
           actual_uid="$(/usr/bin/id -u)"
           if [ "$actual_uid" != "$expected_uid" ]; then
-            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            echo "サービス内の保護設定の事前確認でUIDが不一致です: 期待値 $expected_uid、実際値 $actual_uid。" >&2
             exit 41
           fi
 
           actual_gid="$(/usr/bin/id -g)"
           if [ "$actual_gid" != "$expected_gid" ]; then
-            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            echo "サービス内の保護設定の事前確認でGIDが不一致です: 期待値 $expected_gid、実際値 $actual_gid。" >&2
             exit 42
           fi
 
           groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
           if [ -n "$groups_status" ]; then
-            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            echo "サービス内の保護設定の事前確認で補助グループが残っています: $groups_status。" >&2
             exit 43
           fi
 
           no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
           if [ "$no_new_privs" != 1 ]; then
-            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            echo "サービス内の保護設定の事前確認でNoNewPrivsが不一致です: 実際値 ${no_new_privs:-未取得}。" >&2
             exit 44
           fi
 
           for field in CapInh CapPrm CapEff CapBnd CapAmb; do
             value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
             if [ "$value" != 0000000000000000 ]; then
-              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              echo "サービス内の保護設定の事前確認でcapabilityがゼロではありません: $field=${value:-未取得}。" >&2
               exit 45
             fi
           done
 
           if [ ! -x /usr/bin/sudo ]; then
-            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            echo 'サービス内の保護設定の事前確認でsudoの拒否を検証できません: /usr/bin/sudoを使用できません。' >&2
             exit 39
           fi
           if /usr/bin/sudo -n true >/dev/null 2>&1; then
-            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            echo 'サービス内の保護設定の事前確認でsudo権限が残っています。' >&2
             exit 40
           fi
 
@@ -677,7 +678,7 @@ jobs:
               or any(not path.startswith("/run/") for path in protected_paths)
           ):
               print(
-                  "Service-local hardening preflight protected socket allowlist is malformed.",
+                  "サービス内の保護設定の事前確認で保護対象socketの許可リストが不正です。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -686,7 +687,7 @@ jobs:
               sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_UNIX required by Codex sandbox: {exc}",
+                  f"サービス内の保護設定の事前確認でCodex sandboxに必要なAF_UNIXが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(46)
@@ -697,7 +698,7 @@ jobs:
               sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  f"サービス内の保護設定の事前確認でAF_INETが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(47)
@@ -716,13 +717,13 @@ jobs:
                       host_ids[path] = (dev, ino)
               except (TypeError, ValueError):
                   print(
-                      "Service-local hardening preflight protected socket host baseline is malformed.",
+                      "サービス内の保護設定の事前確認で保護対象socketのホスト基準値が不正です。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
           if any(path not in protected_paths for path in host_ids):
               print(
-                  "Service-local hardening preflight protected socket host baseline has an unexpected path.",
+                  "サービス内の保護設定の事前確認で保護対象socketのホスト基準値に想定外のパスがあります。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -734,14 +735,14 @@ jobs:
                   continue
               except OSError as exc:
                   print(
-                      f"Service-local hardening preflight cannot inspect protected socket {path}: {exc}",
+                      f"サービス内の保護設定の事前確認で保護対象socket {path}を調査できません: {exc}",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
 
               if path not in host_ids:
                   print(
-                      f"Service-local hardening preflight protected socket appeared after host baseline: {path}.",
+                      f"サービス内の保護設定の事前確認でホスト基準値取得後に保護対象socketが出現しました: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -755,7 +756,7 @@ jobs:
                   or (st.st_dev, st.st_ino) == host_ids[path]
               ):
                   print(
-                      f"Service-local hardening preflight protected socket mask is ineffective: {path}.",
+                      f"サービス内の保護設定の事前確認で保護対象socketの遮断が効いていません: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -787,7 +788,7 @@ jobs:
                           residual.append(path)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight failed while scanning /run: {exc}",
+                  f"サービス内の保護設定の事前確認で/runの走査に失敗しました: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(49)
@@ -795,7 +796,7 @@ jobs:
           if residual:
               rendered = ", ".join(sorted(set(residual))[:20])
               print(
-                  "Service-local hardening preflight found writable root-owned UNIX socket(s): "
+                  "サービス内の保護設定の事前確認で書き込み可能なroot所有のUNIX socketが見つかりました: "
                   + rendered,
                   file=sys.stderr,
               )
@@ -855,19 +856,19 @@ jobs:
                 inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
                 if [ -e "$path" ]; then
                   if [ ! -S "$path" ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path is not a socket." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathはsocketではありません。" >&2
                     exit 50
                   fi
                   if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat owner for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者を確認できません。" >&2
                     exit 50
                   fi
                   if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat dev:inode for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathのdev:inodeを確認できません。" >&2
                     exit 50
                   fi
                   if [ "$host_owner" != 0 ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path owner=$host_owner." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者=$host_owner。" >&2
                     exit 50
                   fi
                   protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
@@ -936,10 +937,11 @@ jobs:
                 journal_rc=$?
                 set -e
                 if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
-                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  echo "サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。" >&2
                   exit 51
                 fi
                 printf "%s\n" "$expected_preflight_marker"
+                echo "サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。"
               fi
               exit "$rc"
             ' codex-developer \
@@ -993,6 +995,7 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+          echo 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。'
 
       - name: Restore trusted post-Codex helpers
         env:
@@ -1007,18 +1010,18 @@ jobs:
           set -euo pipefail
 
           restore_base_blob() {
-            local source_path="${1:?source path is required}"
-            local destination="${2:?destination is required}"
-            local expected_blob="${3:?expected blob is required}"
+            local source_path="${1:?復元元のパスが必要です}"
+            local destination="${2:?復元先が必要です}"
+            local expected_blob="${3:?期待するblobが必要です}"
             if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "Invalid trusted helper blob identity for $source_path." >&2
+              echo "信頼済みhelperのblob identityが不正です: $source_path。" >&2
               exit 1
             fi
             rm -f -- "$destination"
             git show "${BASE_SHA}:${source_path}" > "$destination"
             actual_blob="$(git hash-object --no-filters "$destination")"
             if [ "$actual_blob" != "$expected_blob" ]; then
-              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              echo "Codex実行中に信頼済みhelperのblobが変化しました: $source_path" >&2
               exit 1
             fi
           }
@@ -1058,6 +1061,7 @@ jobs:
             (.max_new_files | type == "number" and . > 0 and floor == .)
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
           echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
+          echo '信頼済みhelperをベースのblobから復元し、差分上限の契約を再生成しました。'
 
       - name: Gate requirement changes
         id: development-gate
@@ -1847,10 +1851,10 @@ jobs:
             fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
           );
           if (mainPackage.name !== "@openai/codex") {
-            throw new Error(`unexpected package name: ${mainPackage.name}`);
+            throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
           if (mainPackage.version !== "0.156.1") {
-            throw new Error(`unexpected package version: ${mainPackage.version}`);
+            throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
           let platformPackage;
@@ -1863,7 +1867,7 @@ jobs:
             targetTriple = "aarch64-unknown-linux-musl";
           } else {
             throw new Error(
-              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+              `未対応のCodex実行環境: ${process.platform}/${process.arch}`,
             );
           }
 
@@ -1880,7 +1884,7 @@ jobs:
           );
           const nativeStat = fs.statSync(nativePath);
           if (!nativeStat.isFile()) {
-            throw new Error("native codex is not a regular file");
+            throw new Error("Codexのネイティブ実行ファイルは通常ファイルではありません。");
           }
           fs.accessSync(nativePath, fs.constants.X_OK);
 
@@ -1932,7 +1936,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
+          printf '信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex follow-up prompt
@@ -1980,6 +1984,7 @@ jobs:
           printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
           printf 'captured=true\n' >> "$GITHUB_OUTPUT"
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+          echo 'ホストの保護対象socket、名前解決サービス、DNSの事前確認が完了しました。'
 
       - name: Run Codex follow-up
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
@@ -2026,21 +2031,21 @@ jobs:
           unexpected = sorted(set(config) - allowed_top_level)
           if unexpected:
               raise SystemExit(
-                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+                  f"setup専用ランタイムのCodex設定に予期しないキーがあります: {unexpected}"
               )
 
           provider_name = config.get("model_provider")
           if provider_name != "codex-action-responses-proxy":
-              raise SystemExit("unexpected Codex model_provider")
+              raise SystemExit("Codexのmodel_providerが想定外です")
 
           providers = config.get("model_providers")
           if not isinstance(providers, dict) or set(providers) != {provider_name}:
-              raise SystemExit("unexpected Codex model_providers shape")
+              raise SystemExit("Codexのmodel_providers形式が想定外です")
           provider = providers[provider_name]
           if not isinstance(provider, dict):
-              raise SystemExit("unexpected Codex provider config")
+              raise SystemExit("Codexのprovider設定が想定外です")
           if provider.get("wire_api") != "responses":
-              raise SystemExit("Codex proxy provider must use responses wire API")
+              raise SystemExit("Codex proxy providerのwire_apiはresponsesである必要があります")
 
           parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
           if (
@@ -2055,13 +2060,13 @@ jobs:
               or parsed.username is not None
               or parsed.password is not None
           ):
-              raise SystemExit("Codex proxy provider must be loopback http /v1")
+              raise SystemExit("Codex proxy providerはloopbackのhttp /v1を使用する必要があります")
           PY
 
           case "$CODEX_RUNTIME_MAX_SEC" in
             700) ;;
             *)
-              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              echo 'Codex RuntimeMaxSecが想定外です。' >&2
               exit 1
               ;;
           esac
@@ -2080,7 +2085,7 @@ jobs:
           nobody_gid="$(id -g nobody)"
           case "$nobody_gid" in
             ''|*[!0-9]*|0)
-              echo 'Could not resolve a safe nobody gid.' >&2
+              echo '安全なnobody gidを取得できませんでした。' >&2
               exit 1
               ;;
           esac
@@ -2094,47 +2099,47 @@ jobs:
           #!/bin/sh
           set -eu
 
-          expected_uid="${1:?expected uid is required}"
-          expected_gid="${2:?expected gid is required}"
+          expected_uid="${1:?期待するuidが必要です}"
+          expected_gid="${2:?期待するgidが必要です}"
 
           actual_uid="$(/usr/bin/id -u)"
           if [ "$actual_uid" != "$expected_uid" ]; then
-            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            echo "サービス内の保護設定の事前確認でUIDが不一致です: 期待値 $expected_uid、実際値 $actual_uid。" >&2
             exit 41
           fi
 
           actual_gid="$(/usr/bin/id -g)"
           if [ "$actual_gid" != "$expected_gid" ]; then
-            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            echo "サービス内の保護設定の事前確認でGIDが不一致です: 期待値 $expected_gid、実際値 $actual_gid。" >&2
             exit 42
           fi
 
           groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
           if [ -n "$groups_status" ]; then
-            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            echo "サービス内の保護設定の事前確認で補助グループが残っています: $groups_status。" >&2
             exit 43
           fi
 
           no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
           if [ "$no_new_privs" != 1 ]; then
-            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            echo "サービス内の保護設定の事前確認でNoNewPrivsが不一致です: 実際値 ${no_new_privs:-未取得}。" >&2
             exit 44
           fi
 
           for field in CapInh CapPrm CapEff CapBnd CapAmb; do
             value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
             if [ "$value" != 0000000000000000 ]; then
-              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              echo "サービス内の保護設定の事前確認でcapabilityがゼロではありません: $field=${value:-未取得}。" >&2
               exit 45
             fi
           done
 
           if [ ! -x /usr/bin/sudo ]; then
-            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            echo 'サービス内の保護設定の事前確認でsudoの拒否を検証できません: /usr/bin/sudoを使用できません。' >&2
             exit 39
           fi
           if /usr/bin/sudo -n true >/dev/null 2>&1; then
-            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            echo 'サービス内の保護設定の事前確認でsudo権限が残っています。' >&2
             exit 40
           fi
 
@@ -2152,7 +2157,7 @@ jobs:
               or any(not path.startswith("/run/") for path in protected_paths)
           ):
               print(
-                  "Service-local hardening preflight protected socket allowlist is malformed.",
+                  "サービス内の保護設定の事前確認で保護対象socketの許可リストが不正です。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -2161,7 +2166,7 @@ jobs:
               sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_UNIX required by Codex sandbox: {exc}",
+                  f"サービス内の保護設定の事前確認でCodex sandboxに必要なAF_UNIXが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(46)
@@ -2172,7 +2177,7 @@ jobs:
               sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  f"サービス内の保護設定の事前確認でAF_INETが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(47)
@@ -2191,13 +2196,13 @@ jobs:
                       host_ids[path] = (dev, ino)
               except (TypeError, ValueError):
                   print(
-                      "Service-local hardening preflight protected socket host baseline is malformed.",
+                      "サービス内の保護設定の事前確認で保護対象socketのホスト基準値が不正です。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
           if any(path not in protected_paths for path in host_ids):
               print(
-                  "Service-local hardening preflight protected socket host baseline has an unexpected path.",
+                  "サービス内の保護設定の事前確認で保護対象socketのホスト基準値に想定外のパスがあります。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -2209,14 +2214,14 @@ jobs:
                   continue
               except OSError as exc:
                   print(
-                      f"Service-local hardening preflight cannot inspect protected socket {path}: {exc}",
+                      f"サービス内の保護設定の事前確認で保護対象socket {path}を調査できません: {exc}",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
 
               if path not in host_ids:
                   print(
-                      f"Service-local hardening preflight protected socket appeared after host baseline: {path}.",
+                      f"サービス内の保護設定の事前確認でホスト基準値取得後に保護対象socketが出現しました: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -2230,7 +2235,7 @@ jobs:
                   or (st.st_dev, st.st_ino) == host_ids[path]
               ):
                   print(
-                      f"Service-local hardening preflight protected socket mask is ineffective: {path}.",
+                      f"サービス内の保護設定の事前確認で保護対象socketの遮断が効いていません: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -2262,7 +2267,7 @@ jobs:
                           residual.append(path)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight failed while scanning /run: {exc}",
+                  f"サービス内の保護設定の事前確認で/runの走査に失敗しました: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(49)
@@ -2270,7 +2275,7 @@ jobs:
           if residual:
               rendered = ", ".join(sorted(set(residual))[:20])
               print(
-                  "Service-local hardening preflight found writable root-owned UNIX socket(s): "
+                  "サービス内の保護設定の事前確認で書き込み可能なroot所有のUNIX socketが見つかりました: "
                   + rendered,
                   file=sys.stderr,
               )
@@ -2339,19 +2344,19 @@ jobs:
                 inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
                 if [ -e "$path" ]; then
                   if [ ! -S "$path" ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path is not a socket." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathはsocketではありません。" >&2
                     exit 50
                   fi
                   if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat owner for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者を確認できません。" >&2
                     exit 50
                   fi
                   if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat dev:inode for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathのdev:inodeを確認できません。" >&2
                     exit 50
                   fi
                   if [ "$host_owner" != 0 ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path owner=$host_owner." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者=$host_owner。" >&2
                     exit 50
                   fi
                   protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
@@ -2420,10 +2425,11 @@ jobs:
                 journal_rc=$?
                 set -e
                 if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
-                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  echo "サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。" >&2
                   exit 51
                 fi
                 printf "%s\n" "$expected_preflight_marker"
+                echo "サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。"
               fi
               exit "$rc"
             ' codex-followup \
@@ -2477,6 +2483,7 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+          echo 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。'
 
       - name: Restore trusted post-Codex helpers
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true'
@@ -2492,18 +2499,18 @@ jobs:
           set -euo pipefail
 
           restore_base_blob() {
-            local source_path="${1:?source path is required}"
-            local destination="${2:?destination is required}"
-            local expected_blob="${3:?expected blob is required}"
+            local source_path="${1:?復元元のパスが必要です}"
+            local destination="${2:?復元先が必要です}"
+            local expected_blob="${3:?期待するblobが必要です}"
             if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "Invalid trusted helper blob identity for $source_path." >&2
+              echo "信頼済みhelperのblob identityが不正です: $source_path。" >&2
               exit 1
             fi
             rm -f -- "$destination"
             git show "${BASE_SHA}:${source_path}" > "$destination"
             actual_blob="$(git hash-object --no-filters "$destination")"
             if [ "$actual_blob" != "$expected_blob" ]; then
-              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              echo "Codex実行中に信頼済みhelperのblobが変化しました: $source_path" >&2
               exit 1
             fi
           }
@@ -2529,6 +2536,7 @@ jobs:
             (.max_new_files | type == "number" and . > 0 and floor == .)
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
           echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
+          echo '信頼済みhelperをベースのblobから復元し、差分上限の契約を再生成しました。'
 
       - name: Gate Codex follow-up requirement changes
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true'

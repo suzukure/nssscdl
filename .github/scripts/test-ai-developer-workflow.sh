@@ -615,7 +615,20 @@ grep -Fq "printf 'native_path=%s\\n' \"\$native_path\" >> \"\$GITHUB_OUTPUT\"" "
 grep -Fq "printf 'package_root=%s\\n' \"\$package_root\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 grep -Fq "printf 'action_main=%s\\n' \"\$action_main\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 grep -Fq "printf 'runner_credentials=%s\\n' \"\$credentials\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
-grep -Fq "Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s)." "$resolver_step"
+grep -Fq "信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。" "$resolver_step"
+for diagnostic in \
+  '予期しないCodexパッケージ名:' \
+  '予期しないCodexパッケージのバージョン:' \
+  '未対応のCodex実行環境:' \
+  'Codexのネイティブ実行ファイルは通常ファイルではありません。' \
+  '復元元のパスが必要です' \
+  '復元先が必要です' \
+  '期待するblobが必要です'; do
+  [ "$(grep -Fc "$diagnostic" "$workflow")" -eq 2 ] || {
+    echo "Issue起点とClaudeフォローアップの診断が一致しません: $diagnostic" >&2
+    exit 1
+  }
+done
 if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$resolver_step"; then
   echo 'Trusted Codex resolver must not receive repository secrets.' >&2
   exit 1
@@ -670,6 +683,7 @@ test "$(grep -nF 'getent ahosts api.github.com >/dev/null' "$host_before_step" |
 grep -Fq 'getent ahosts github.com >/dev/null' "$host_before_step"
 grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_before_step"
 grep -Fq 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok' "$host_before_step"
+grep -Fq 'ホストの保護対象socket、名前解決サービス、DNSの事前確認が完了しました。' "$host_before_step"
 
 # No captured baseline skips verification; always() still runs it after a
 # completed baseline even if the developer step fails.
@@ -690,6 +704,7 @@ grep -Fq "grep -Fxq 'SubState=running'" "$host_after_step"
 grep -Fq 'getent ahosts github.com >/dev/null' "$host_after_step"
 grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_after_step"
 grep -Fq 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok' "$host_after_step"
+grep -Fq 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。' "$host_after_step"
 
 if grep -Eq '(chmod|chown|chgrp|setfacl|sudoers|deluser|usermod|gpasswd|adduser|systemctl[[:space:]]+(restart|stop|start|kill|reset-failed))' "$host_before_step" "$host_after_step"; then
   echo 'Host integrity observer must remain read-only.' >&2
@@ -743,9 +758,9 @@ grep -Fq 'inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
 grep -Fq '[ ! -S "$path" ]' "$developer_step"
 grep -Fq 'if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then' "$developer_step"
 grep -Fq 'if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then' "$developer_step"
-grep -Fq 'Service-local hardening root preflight protected UNIX socket baseline failed:' "$developer_step"
-grep -Fq 'could not stat owner for $path.' "$developer_step"
-grep -Fq 'could not stat dev:inode for $path.' "$developer_step"
+grep -Fq 'root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました:' "$developer_step"
+grep -Fq '$pathの所有者を確認できません。' "$developer_step"
+grep -Fq '$pathのdev:inodeを確認できません。' "$developer_step"
 grep -Fq 'exit 50' "$developer_step"
 permission_mutation_lines="$(
   grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$developer_step" ||
@@ -783,30 +798,30 @@ grep -Fq -- '--no-new-privs ' "$developer_step"
 grep -Fq -- '--bounding-set=-all ' "$developer_step"
 grep -Fq -- '--inh-caps=-all ' "$developer_step"
 grep -Fq -- '--ambient-caps=-all ' "$developer_step"
-grep -Fq 'expected_uid="${1:?expected uid is required}"' "$developer_step"
-grep -Fq 'expected_gid="${2:?expected gid is required}"' "$developer_step"
+grep -Fq 'expected_uid="${1:?期待するuidが必要です}"' "$developer_step"
+grep -Fq 'expected_gid="${2:?期待するgidが必要です}"' "$developer_step"
 grep -Fq 'actual_uid="$(/usr/bin/id -u)"' "$developer_step"
-grep -Fq 'Service-local hardening preflight UID mismatch:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でUIDが不一致です:' "$developer_step"
 grep -Fq 'exit 41' "$developer_step"
 grep -Fq 'actual_gid="$(/usr/bin/id -g)"' "$developer_step"
-grep -Fq 'Service-local hardening preflight GID mismatch:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でGIDが不一致です:' "$developer_step"
 grep -Fq 'exit 42' "$developer_step"
 grep -Fq "/^Groups:/" "$developer_step"
-grep -Fq 'Service-local hardening preflight retained supplementary groups:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認で補助グループが残っています:' "$developer_step"
 grep -Fq 'exit 43' "$developer_step"
 grep -Fq "/^NoNewPrivs:/" "$developer_step"
-grep -Fq 'Service-local hardening preflight NoNewPrivs mismatch:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でNoNewPrivsが不一致です:' "$developer_step"
 grep -Fq 'exit 44' "$developer_step"
 grep -Fq '/proc/self/status' "$developer_step"
 grep -Fq 'for field in CapInh CapPrm CapEff CapBnd CapAmb; do' "$developer_step"
-grep -Fq 'Service-local hardening preflight capability is nonzero:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でcapabilityがゼロではありません:' "$developer_step"
 grep -Fq 'exit 45' "$developer_step"
 grep -Fq 'if [ ! -x /usr/bin/sudo ]; then' "$developer_step"
 grep -Fq 'exit 39' "$developer_step"
 grep -Fq "/usr/bin/sudo -n true" "$developer_step"
 grep -Fq 'exit 40' "$developer_step"
 grep -Fq 'socket.AF_UNIX' "$developer_step"
-grep -Fq 'Service-local hardening preflight blocks AF_UNIX required by Codex sandbox:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でCodex sandboxに必要なAF_UNIXが遮断されています:' "$developer_step"
 grep -Fq 'SystemExit(46)' "$developer_step"
 grep -Fq 'socket.AF_INET' "$developer_step"
 grep -Fq 'SystemExit(47)' "$developer_step"
@@ -815,7 +830,7 @@ grep -Fq 'PROTECTED_UNIX_SOCKET_HOST_IDS' "$developer_step"
 grep -Fq 'raw_host_ids = os.environ.get("PROTECTED_UNIX_SOCKET_HOST_IDS", "")' "$developer_step"
 grep -Fq 'host_ids[path] = (dev, ino)' "$developer_step"
 grep -Fq '(st.st_dev, st.st_ino) == host_ids[path]' "$developer_step"
-grep -Fq 'protected socket appeared after host baseline:' "$developer_step"
+grep -Fq 'ホスト基準値取得後に保護対象socketが出現しました:' "$developer_step"
 grep -Fq 'len(protected_paths) != 13' "$developer_step"
 grep -Fq 'len(set(protected_paths)) != 13' "$developer_step"
 grep -Fq 'not path.startswith("/run/")' "$developer_step"
@@ -834,7 +849,7 @@ if grep -Fq 'errno.ELOOP' "$developer_step"; then
   exit 1
 fi
 grep -Fq 'st.st_uid == 0' "$developer_step"
-grep -Fq 'Service-local hardening preflight found writable root-owned UNIX socket(s):' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認で書き込み可能なroot所有のUNIX socketが見つかりました:' "$developer_step"
 grep -Fq 'SystemExit(49)' "$developer_step"
 grep -Fq '/bin/sh "$launcher" "$uid" "$nobody_gid"' "$developer_step"
 grep -Fq '"HOME=$runner_home"' "$developer_step"
@@ -995,7 +1010,7 @@ grep -Fq '          safety-strategy: unsafe' "$followup_workflow"
 grep -Fq '          codex-version: 0.156.1' "$followup_workflow"
 grep -Fq 'mainPackage.version !== "0.156.1"' "$followup_workflow"
 grep -Fq "test \"\$native_version\" = 'codex-cli 0.156.1'" "$followup_workflow"
-grep -Fq 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).' "$followup_workflow"
+grep -Fq '信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。' "$followup_workflow"
 grep -Fq '          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}' "$followup_workflow"
 grep -Fq '          CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}' "$followup_step"
 
@@ -1007,7 +1022,7 @@ for restore_rule in \
   'rm -f -- "$destination"' \
   'git show "${BASE_SHA}:${source_path}" > "$destination"' \
   'actual_blob="$(git hash-object --no-filters "$destination")"' \
-  'Trusted helper blob changed across Codex execution:' \
+  'Codex実行中に信頼済みhelperのblobが変化しました:' \
   "restore_base_blob '.github/scripts/notify-human.sh'" \
   "restore_base_blob '.github/scripts/apply-human-pause.sh'" \
   "restore_base_blob '.github/scripts/has-requirements-change-marker.sh'" \
@@ -1019,6 +1034,7 @@ for restore_rule in \
     exit 1
   fi
 done
+test "$(grep -Fc '信頼済みhelperをベースのblobから復元し、差分上限の契約を再生成しました。' "$workflow")" -eq 2
 grep -Fqx '          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}' "$workflow"
 grep -Fqx '          NOTIFY_HUMAN_BLOB: ${{ steps.issue_context.outputs.notify_human_blob }}' "$workflow"
 grep -Fqx '          BASE_SHA: ${{ github.event.pull_request.base.sha }}' "$followup_workflow"
@@ -1077,6 +1093,18 @@ assert_hardened_codex_runtime() {
   local marker_block="$test_dir/${runtime_name// /-}-preflight-marker.sh"
   local mutation_lines actual_paths
 
+  for diagnostic in \
+    'Codex RuntimeMaxSecが想定外です。' \
+    '安全なnobody gidを取得できませんでした。' \
+    'サービス内の保護設定の事前確認でUIDが不一致です:' \
+    'サービス内の保護設定の事前確認でGIDが不一致です:' \
+    'サービス内の保護設定の事前確認で保護対象socketのホスト基準値が不正です。' \
+    'root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました:' \
+    'サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。' \
+    'サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。'; do
+    grep -Fq "$diagnostic" "$runtime_step"
+  done
+
   if grep -Fq 'sudo -n -E' "$runtime_step"; then
     echo "$runtime_name root phase must not preserve the whole step environment." >&2
     exit 1
@@ -1123,7 +1151,7 @@ assert_hardened_codex_runtime() {
   grep -Fq 'preflight_journal="$(' "$marker_block"
   grep -Fq 'journal_rc=$?' "$marker_block"
   grep -Fq 'if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then' "$marker_block"
-  grep -Fq 'Service-local hardening preflight success marker unavailable from unit journal.' "$marker_block"
+  grep -Fq 'サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。' "$marker_block"
   grep -Fq 'exit 51' "$marker_block"
   grep -Fq 'printf "%s\n" "$expected_preflight_marker"' "$marker_block"
   if grep -Fq -- '--grep=' "$marker_block" || grep -Fq -- '--lines=1' "$marker_block"; then
@@ -1186,7 +1214,34 @@ assert_hardened_codex_runtime() {
     echo "$runtime_name run body must not interpolate GitHub expressions." >&2
     exit 1
   fi
+
+  # Parse the outer command and check the actual argument passed to /bin/sh -c.
+  # Checking the run body with bash -n alone misses quote breaks inside -c.
+  local root_command="$test_dir/${runtime_name// /-}-root-command.sh"
+  awk '
+    /^          exec sudo -n -- \\$/ { in_command = 1 }
+    in_command { line = $0; sub(/^          /, "", line); print line }
+    in_command && /^            "\$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"$/ { exit }
+  ' "$runtime_run" > "$root_command"
+  test -s "$root_command"
+  local expected_sh_arg0=codex-developer
+  if [ "$runtime_name" = 'Codex follow-up' ]; then
+    expected_sh_arg0=codex-followup
+  fi
+  EXPECTED_SH_ARG0="$expected_sh_arg0" \
+    PATH="$test_dir:$PATH" bash "$root_command"
 }
+
+cat > "$test_dir/sudo" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ] && [ "$1" != /bin/sh ]; do shift; done
+if [ "$#" -lt 4 ] || [ "$2" != -c ] || [ "$4" != "$EXPECTED_SH_ARG0" ]; then
+  echo '内部の /bin/sh -c 引数が不正です。' >&2
+  exit 1
+fi
+printf '%s\n' "$3" | /bin/sh -n
+SH
+chmod 700 "$test_dir/sudo"
 
 assert_hardened_codex_runtime 'Codex developer' "$developer_step"
 assert_hardened_codex_runtime 'Codex follow-up' "$followup_step"

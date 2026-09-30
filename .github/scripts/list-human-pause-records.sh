@@ -8,10 +8,10 @@ set -euo pipefail
 # in the API response order. This helper deliberately does not reconcile
 # lifecycle state or infer an active pause from the number of records.
 
-repo="${1:?repository is required}"
-issue_number="${2:?Issue number is required}"
+repo="${1:?リポジトリ指定が必要です}"
+issue_number="${2:?Issue番号が必要です}"
 pr_number="${3:--}"
-trusted_app_id="${4:?trusted GitHub App ID is required}"
+trusted_app_id="${4:?信頼済みGitHub App IDが必要です}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 record_helper="$script_dir/human-pause-record.sh"
 
@@ -24,13 +24,13 @@ is_positive_decimal() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
-is_positive_decimal "$issue_number" || fail_closed 'Issue number must be a positive decimal integer'
-is_positive_decimal "$trusted_app_id" || fail_closed 'trusted GitHub App ID must be a positive decimal integer'
+is_positive_decimal "$issue_number" || fail_closed 'Issue番号は正の十進整数である必要があります'
+is_positive_decimal "$trusted_app_id" || fail_closed '信頼済みGitHub App IDは正の十進整数である必要があります'
 if [ "$pr_number" = '-' ]; then
   target="issue:$issue_number"
   conversation_number="$issue_number"
 else
-  is_positive_decimal "$pr_number" || fail_closed 'PR number must be - or a positive decimal integer'
+  is_positive_decimal "$pr_number" || fail_closed 'PR番号は - または正の十進整数である必要があります'
   target="pr:$pr_number"
   conversation_number="$pr_number"
 fi
@@ -46,32 +46,32 @@ records_jsonl="$tmp_dir/records.jsonl"
 # --slurp preserves pagination boundaries. The nested arrays are validated
 # below before flattening so an unexpected API response cannot become state.
 if [ -n "${AI_RESUME_MAX_HISTORY_PAGES:-}" ]; then
-  is_positive_decimal "$AI_RESUME_MAX_HISTORY_PAGES" || fail_closed 'invalid history page bound'
-  [ "$AI_RESUME_MAX_HISTORY_PAGES" -le 10 ] || fail_closed 'history page bound exceeds 10'
+  is_positive_decimal "$AI_RESUME_MAX_HISTORY_PAGES" || fail_closed '履歴ページ数の上限が不正です'
+  [ "$AI_RESUME_MAX_HISTORY_PAGES" -le 10 ] || fail_closed '履歴ページ数の上限が10を超えています'
   : > "$tmp_dir/pages.jsonl"
   for ((page=1; page<=AI_RESUME_MAX_HISTORY_PAGES; page++)); do
     gh api -H 'Accept: application/vnd.github+json' \
       "/repos/$repo/issues/$conversation_number/comments?per_page=100&page=$page" \
-      > "$tmp_dir/page.json" || fail_closed 'could not fetch bounded Conversation page'
-    count="$(jq -r 'if type == "array" then length else error("invalid page") end' "$tmp_dir/page.json")" \
-      || fail_closed 'invalid Conversation page'
+      > "$tmp_dir/page.json" || fail_closed '上限内のConversationページを取得できませんでした'
+    count="$(jq -r 'if type == "array" then length else error("ページの形式が不正です") end' "$tmp_dir/page.json")" \
+      || fail_closed 'Conversationページが不正です'
     cat "$tmp_dir/page.json" >> "$tmp_dir/pages.jsonl"
     printf '\n' >> "$tmp_dir/pages.jsonl"
     if [ "$count" -lt 100 ]; then break; fi
     if [ "$page" -eq "$AI_RESUME_MAX_HISTORY_PAGES" ]; then
-      fail_closed 'Conversation history exceeds bounded scan'
+      fail_closed 'Conversation履歴が走査上限を超えています'
     fi
   done
-  jq -s '.' "$tmp_dir/pages.jsonl" > "$comments_json" || fail_closed 'could not assemble pages'
+  jq -s '.' "$tmp_dir/pages.jsonl" > "$comments_json" || fail_closed 'ページをまとめられませんでした'
 else
   gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
     "/repos/$repo/issues/$conversation_number/comments" > "$comments_json" \
-    || fail_closed 'could not fetch Conversation comments'
+    || fail_closed 'Conversationコメントを取得できませんでした'
 fi
 
 jq -e '
   type == "array" and all(.[]; type == "array" and all(.[]; type == "object"))
-' "$comments_json" > /dev/null || fail_closed 'comment API response has an unexpected shape'
+' "$comments_json" > /dev/null || fail_closed 'コメントAPIの応答形式が不正です'
 
 # The REST fixture/API fields establish both required boundary facts: .id is
 # the REST comment identifier, and performed_via_github_app.id is provenance.

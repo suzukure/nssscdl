@@ -9,7 +9,7 @@ fail_closed() {
   exit 1
 }
 
-input="$(cat)" || fail_closed 'could not read input'
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 jq -ce '
   def valid_entry:
@@ -43,11 +43,11 @@ jq -ce '
         {status: "active", pause_id: $pre_resume.pause_id,
          reason: $pre_resume.reason}
       elif ($accepted | length) != 1 then
-        error("chain has multiple resume acceptances")
+        error("記録チェーンに再開受理が複数あります")
       elif $accepted[0].record.source_pause_id != $pre_resume.pause_id then
-        error("resume acceptance source does not match pre-resume pause")
+        error("再開受理の起点が再開前の停止記録と一致しません")
       elif $accepted[0].record.reason != $pre_resume.reason then
-        error("resume acceptance reason does not match pre-resume reason")
+        error("再開受理の理由が再開前の理由と一致しません")
       elif $accepted[0] != .records[-1] then
         if .records[-2] == $accepted[0]
            and .records[-1].record.kind == "pause"
@@ -58,7 +58,7 @@ jq -ce '
            and .records[-1].record.payload.failed_action == $accepted[0].record.payload.action
         then {status: "active", pause_id: .records[-1].pause_id,
               reason: "resume_transition_failed"}
-        else error("invalid post-acceptance transition") end
+        else error("受理後の遷移が不正です") end
       else
         {status: "consumed", pause_id: $pre_resume.pause_id,
          reason: $pre_resume.reason,
@@ -67,12 +67,12 @@ jq -ce '
   . as $input
   | [inputs] as $additional_values
   | if $additional_values != [] then
-      error("expected one JSON value")
+      error("JSON値は1個である必要があります")
     elif valid_envelope | not then
-      error("pre-resume chain envelope is invalid")
+      error("再開前の記録チェーンの外枠が不正です")
     else {
       target: $input.target,
       chains: [$input.chains[] | . as $chain | $chain + {effective: effective}]
     }
     end
-' <<< "$input" || fail_closed 'could not reconcile resume acceptance'
+' <<< "$input" || fail_closed '再開受理を照合できませんでした'

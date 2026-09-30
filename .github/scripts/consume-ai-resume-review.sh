@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # Run only in the canonical Issue writer, with a trusted default-branch helper.
-repo="${1:?repository required}"
-app_id="${2:?App ID required}"
-issue="${3:?trusted closing Issue required}"
+repo="${1:?リポジトリ指定が必要です}"
+app_id="${2:?App IDが必要です}"
+issue="${3:?信頼済みclosing Issueの指定が必要です}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "consume-ai-resume-review: $1" >&2; exit 1; }
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ &&
-   "$app_id" =~ ^[1-9][0-9]*$ && "$issue" =~ ^[1-9][0-9]*$ ]] || fail 'invalid identity'
-dispatch="$(cat)" || fail 'dispatch unavailable'
+   "$app_id" =~ ^[1-9][0-9]*$ && "$issue" =~ ^[1-9][0-9]*$ ]] || fail '識別情報が不正です'
+dispatch="$(cat)" || fail 'dispatchを読み取れません'
 candidate="$(bash "$script_dir/prepare-ai-resume-review-consumer.sh" "$repo" "$app_id" <<< "$dispatch")" \
   || fail '準備済みgateを利用できません'
 case "$(jq -er '.result' <<< "$candidate")" in
@@ -50,13 +50,13 @@ label() {
     if .number == $number and .state == "open" and (.labels | type) == "array"
        and all(.labels[]; type == "object" and (.name | type) == "string")
     then if any(.labels[]; .name == "human-review-required") then "present" else "absent" end
-    else error("invalid label fact") end
+    else error("ラベルの現在情報が不正です") end
   ' <<< "$facts"
 }
 accepted_id() {
   jq -er --argjson record "$record" '
     [.chains[].records[] | select(.record == $record) | .pause_id]
-    | if length == 1 then .[0] else error("acceptance is absent or ambiguous") end
+    | if length == 1 then .[0] else error("受理記録がないか曖昧です") end
   ' <<< "$1"
 }
 verify_graph() {
@@ -124,7 +124,7 @@ for poll in {1..9}; do
     || fail 'Review runを取得できません'
   candidates="$(jq -r --arg repo "$repo" --argjson pr "$pr" --arg issue "$issue" \
     --arg head "$head" --arg since "$since" '
-    if type != "array" or any(.[]; (.workflow_runs | type) != "array") then error("runs") end
+    if type != "array" or any(.[]; (.workflow_runs | type) != "array") then error("run一覧が不正です") end
     | [.[] .workflow_runs[] | select(.name == "Claude Review" and .event == "pull_request"
       and (.path | type == "string" and test("^\\.github/workflows/claude-review\\.yml(@|$)"))
       and .head_repository.full_name == $repo and .head_sha == $head
@@ -143,16 +143,16 @@ for poll in {1..9}; do
       "/repos/$repo/actions/runs/$review_id/attempts/$review_attempt/jobs?per_page=100")" \
       || fail 'Review jobを取得できません'
     state="$(jq -er '
-      if type != "array" or any(.[]; (.jobs | type) != "array") then error("jobs") end
+      if type != "array" or any(.[]; (.jobs | type) != "array") then error("job一覧が不正です") end
       | [.[] .jobs[] | select(.name == "Review")]
       | if length == 0 then "waiting"
-        elif length != 1 then error("Review job ambiguity")
+        elif length != 1 then error("Review jobが一意ではありません")
         else .[0] | if (.conclusion | IN("failure","cancelled","timed_out","stale"))
           then "entered"
           elif .conclusion == "skipped" then "declined"
           else [.steps[]? | select(.name == "Select Claude review model")]
             | if length == 0 then "waiting"
-              elif length != 1 then error("entry step ambiguity")
+              elif length != 1 then error("入口stepが一意ではありません")
               elif .[0].status == "in_progress" or
                    (.[0].conclusion | IN("success","failure","cancelled","timed_out"))
               then "entered"

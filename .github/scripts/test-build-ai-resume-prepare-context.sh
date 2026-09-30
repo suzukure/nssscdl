@@ -102,6 +102,7 @@ MOCK_PR_COMMENTS="$(jq -cn --argjson root "$root_comment" --argjson replacement 
 assert_rejected invalid-acceptance pr 37
 MOCK_PR_COMMENTS='{"bad":"shape"}'
 assert_rejected malformed-listing pr 37
+grep -Fq 'human pause記録を取得できませんでした' "$test_dir/rejected.err"
 MOCK_PR_COMMENTS='[[]]'
 MOCK_CASE=closing_failure
 export MOCK_CASE
@@ -115,9 +116,10 @@ assert_rejected missing-command-field issue 36
 command='{"result":"ignore"}'
 assert_rejected rejected-command issue 36
 command='{"result":"accepted","actor":"suzukure","action":"fix"}'
-if printf '%s\n' "$command" | bash "$helper" owner/repo pr 37 099 > /dev/null 2>&1; then
+if printf '%s\n' "$command" | bash "$helper" owner/repo pr 37 099 > /dev/null 2> "$test_dir/rejected.err"; then
   echo 'Expected invalid App ID to fail closed.' >&2
   exit 1
 fi
+grep -Fq '信頼済みApp IDは先頭に0のない正の十進整数である必要があります' "$test_dir/rejected.err"
 
 echo 'build-ai-resume-prepare-context tests passed.'
