@@ -75,6 +75,21 @@ grep -Fq 'DATA| - x (+1 / -0)' "$test_dir/review.md"
 grep -Fq -- '--- BEGIN LINKED ISSUE DATA ---' "$test_dir/review.md"
 grep -Fq 'DATA| diff --git a/x b/x' "$test_dir/review.md"
 
+valid_metadata="$(gh pr view 37)"
+MOCK_CASE=conversation
+export MOCK_CASE
+for relation in '[]' '[{"number":36,"url":"https://github.com/other/repo/issues/36"}]' '[{"number":36}]' '[{"number":36,"url":"https://github.com/owner/repo/issues/36"},{"number":99}]'; do
+  MOCK_METADATA="$(jq -c --argjson relation "$relation" '.closingIssuesReferences = $relation' <<< "$valid_metadata")"
+  export MOCK_METADATA
+  rm -f "$test_dir/no-closing-issue.md"
+  if bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/no-closing-issue.md" 'dev'; then
+    echo 'Expected missing or malformed same-repository closing Issue to stop context generation.' >&2
+    exit 1
+  fi
+  [ ! -e "$test_dir/no-closing-issue.md" ]
+done
+MOCK_CASE=valid
+
 # Follow-up Issues are recognized only in the prescribed section and line
 # format. The closing Issue remains the decision record and both its decision
 # and the bounded, de-duplicated follow-up snapshots reach the reviewer.

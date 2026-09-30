@@ -87,6 +87,12 @@ gh() {
       no-links)
         printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[]}'
         ;;
+      foreign-link)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/other/repo/issues/36"}]}'
+        ;;
+      malformed-link)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[{"number":36}]}'
+        ;;
       pr-paused)
         printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
         ;;
@@ -266,9 +272,18 @@ export MOCK_CASE
 review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 
-MOCK_CASE=no-links
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
-jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
+for link_case in no-links foreign-link malformed-link; do
+  MOCK_CASE="$link_case"
+  if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+    > "$test_dir/entry-gate-$link_case.out" 2> "$test_dir/entry-gate-$link_case.err"; then
+    echo "Expected $link_case to fail before Claude review." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/entry-gate-$link_case.out" ]
+done
+grep -Fq 'No same-repository closing Issue' "$test_dir/entry-gate-no-links.err"
+grep -Fq 'No same-repository closing Issue' "$test_dir/entry-gate-foreign-link.err"
+grep -Fq 'Invalid pull request metadata' "$test_dir/entry-gate-malformed-link.err"
 
 for closed_case in closed merged; do
   MOCK_CASE="$closed_case"
@@ -367,6 +382,17 @@ for gate_phase in entry verdict; do
     if [ "$expected_continue" = false ]; then
       grep -Fq 'Reason:' "$test_dir/gate-$gate_phase-$gate_case.summary"
     fi
+  done
+  for link_case in no-links foreign-link malformed-link; do
+    if MOCK_CASE="$link_case" RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
+      GITHUB_OUTPUT="$test_dir/gate-$gate_phase-$link_case.outputs" \
+      GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-$link_case.summary" \
+      bash "$gate_step" > /dev/null 2> "$test_dir/gate-$gate_phase-$link_case.err"; then
+      echo "Expected $gate_phase to reject $link_case." >&2
+      exit 1
+    fi
+    [ ! -s "$test_dir/gate-$gate_phase-$link_case.outputs" ]
   done
   if MOCK_CASE=valid MOCK_PR_FAIL=true RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
     PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
