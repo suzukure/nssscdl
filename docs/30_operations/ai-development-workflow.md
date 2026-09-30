@@ -4,6 +4,8 @@
 
 Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上で協調させる。Issueを検討と作業の正本、Pull Requestを成果物とレビュー対話の正本にする。
 
+GitHub上に新規投稿・表示する人間向けのIssue / PR本文・コメント・review・ラベル説明・Actions診断・Job Summaryは原則日本語とする。過去のIssue / PR / comment / review / commitは遡って書き換えない。command、label、branch名、reason code、state、schema / JSON key、exact marker、pause record、resume action valueなどの機械可読契約は翻訳しない。外部システムの原文エラーを証拠として残す場合は原文を保持し、日本語で意味と確認先を説明する。Discord通知本文と停止・再開の状態契約は各既存契約に従う。
+
 ## 通常フロー
 
 1. 人間が実装対象Issueを作成し、対象、受入条件、上流・下流影響を記録する。
@@ -158,6 +160,8 @@ Codexはスコープ外影響を発見した場合、その安全性・正確性
 後継対応へ分離できるのは、元PRを先にマージしても安全性・正確性・要求整合性を損なわない場合に限る。確定した決定はclosing Issue本文を正本とし、残るスコープ外影響、今回のPRを先にマージできる理由、後継Issue番号、後継Issueの変更範囲・完了条件、および対応時期または順序を記録する。PR本文にはその要約と元Issue・後継Issueへのリンクを記載する。Issueコメントで決定した内容も、確定後はclosing Issue本文へ反映する。
 
 IssueとPRの新規記録では `## スコープ外影響と後継Issue` 見出しを使用する。各same-repository後継Issueは `- 後継Issue: #<number>` の1行で明示し、対象がなければ `none` とする。review context生成はPR本文とclosing Issue本文のこの定型欄と、既存の英語形式 `## Scope-out impact and follow-up` / `- Follow-up Issue: #<number>` だけを読み、closing Issueと重複しない後継Issueを再帰せずに取得する。PRとclosing Issueから抽出した異なる後継Issueの合計に適用する上限値の正本は `build-review-context.sh` の `follow_up_issue_limit` であり、現在は5件である。6件以上が抽出された場合は切り捨てずreview context生成をfail-closedで停止する。後継Issueを整理・分割するか、人間レビューへ切り替えて復旧する。後継Issueの番号・タイトル・state・本文はuntrusted data境界内のsnapshotとしてClaudeへ渡す。定型欄外の通常の番号参照は後継Issueとして扱わない。明示された後継Issueを取得できない場合も、存在しないと推測せずreview context生成をfail-closedで停止する。
+
+見出しと後継Issue行の言語が混在する場合は定型欄として抽出しない。これは過去データとの互換のためであり、新規記録には日本語形式を使う。
 
 ## 必要なGitHub Actions設定
 

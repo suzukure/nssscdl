@@ -17,7 +17,7 @@ if ! bash "$repo_root/.github/scripts/notify-human.sh" 'test escalation' \
   echo 'Expected notification to be skipped when the webhook is not configured.' >&2
   exit 1
 fi
-grep -Fq 'GitHub escalation remains active' "$test_dir/notification-unset.err"
+grep -Fq 'GitHub上の停止は継続します' "$test_dir/notification-unset.err"
 
 NOTIFICATION_WEBHOOK_URL='https://discord.invalid/api/webhooks/secret-value'
 MOCK_CURL_ARGS="$test_dir/curl.args"

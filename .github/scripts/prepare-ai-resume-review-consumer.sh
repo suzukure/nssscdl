@@ -7,10 +7,10 @@ app_id="${2:?trusted App ID is required}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "prepare-ai-resume-review-consumer: $1" >&2; exit 1; }
 ignore() { jq -cn --arg code "$1" '{result:"ignore",code:$code}'; exit 0; }
-[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'invalid repository'
-[[ "$app_id" =~ ^[1-9][0-9]*$ ]] || fail 'invalid App ID'
-dispatch="$(head -c 10001)" || fail 'could not read dispatch'
-[ "${#dispatch}" -le 10000 ] || fail 'oversized dispatch'
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'リポジトリ指定が不正です'
+[[ "$app_id" =~ ^[1-9][0-9]*$ ]] || fail 'App IDが不正です'
+dispatch="$(head -c 10001)" || fail 'dispatchを読み取れません'
+[ "${#dispatch}" -le 10000 ] || fail 'dispatchが上限を超えています'
 jq -cse '
   def positive: type == "number" and floor == . and . > 0;
   def sha: type == "string" and test("\\A[0-9a-f]{40}\\z");
@@ -34,7 +34,7 @@ jq -cse '
        or (.reason | IN("claude_execution_failed","review_disagreement_decision",
                         "resume_transition_failed") | not)
   then error("invalid review dispatch") else . end
-' <<< "$dispatch" >/dev/null || fail 'malformed dispatch'
+' <<< "$dispatch" >/dev/null || fail 'dispatchの形式が不正です'
 pr="$(jq -r '.pr_number' <<< "$dispatch")"
 issue="$(jq -r '.closing_issue_number' <<< "$dispatch")"
 source="$(jq -r '.source_pause_id' <<< "$dispatch")"
@@ -45,15 +45,15 @@ head="$(jq -r '.prepared_head' <<< "$dispatch")"
 export AI_RESUME_MAX_HISTORY_PAGES=10
 command="$(jq -c '{result:"accepted",action,actor}' <<< "$dispatch")"
 context="$(bash "$script_dir/build-ai-resume-prepare-context.sh" \
-  "$repo" pr "$pr" "$app_id" <<< "$command")" || fail 'trusted context unavailable'
-prepared="$(bash "$script_dir/prepare-ai-resume.sh" <<< "$context")" || fail 'resume policy unavailable'
+  "$repo" pr "$pr" "$app_id" <<< "$command")" || fail '信頼済み文脈を取得できません'
+prepared="$(bash "$script_dir/prepare-ai-resume.sh" <<< "$context")" || fail '再開方針を判定できません'
 jq -e --argjson snapshot "$dispatch" \
   '.result == "prepared" and .dispatch == $snapshot' <<< "$prepared" >/dev/null \
   || ignore 'stale_or_consumed'
 
 # The REST PR response establishes Draft and same-repository HEAD facts that
 # the shared PREPARE context does not carry.
-pr_fact="$(gh api "/repos/$repo/pulls/$pr")" || fail 'PR fact unavailable'
+pr_fact="$(gh api "/repos/$repo/pulls/$pr")" || fail 'PRの現在情報を取得できません'
 jq -e --arg repo "$repo" --argjson pr "$pr" --arg issue "$issue" --arg head "$head" '
   type == "object" and .number == $pr and .state == "open" and .draft == false
   and .head.repo.full_name == $repo and .base.repo.full_name == $repo
@@ -62,7 +62,7 @@ jq -e --arg repo "$repo" --argjson pr "$pr" --arg issue "$issue" --arg head "$he
 ' <<< "$pr_fact" >/dev/null || ignore 'invalid_pr'
 
 for number in "$issue" "$pr"; do
-  labels="$(gh api "/repos/$repo/issues/$number")" || fail 'label fact unavailable'
+  labels="$(gh api "/repos/$repo/issues/$number")" || fail 'ラベルの現在情報を取得できません'
   jq -e --argjson number "$number" '
     type == "object" and .number == $number and (.labels | type) == "array"
     and all(.labels[]; type == "object" and (.name | type) == "string")
@@ -75,9 +75,9 @@ done
 command_id=''
 for page in {1..10}; do
   comments="$(gh api -H 'Accept: application/vnd.github+json' \
-    "/repos/$repo/issues/$pr/comments?per_page=100&page=$page")" || fail 'command history unavailable'
+    "/repos/$repo/issues/$pr/comments?per_page=100&page=$page")" || fail 'command履歴を取得できません'
   count="$(jq -er 'if type == "array" then length else error("invalid page") end' <<< "$comments")" \
-    || fail 'invalid command history'
+    || fail 'command履歴が不正です'
   found="$(jq -r --arg actor "$actor" --arg source "$source" '
     def later($id): ($id | length) > ($source | length) or
       (($id | length) == ($source | length) and $id > $source);
@@ -86,12 +86,12 @@ for page in {1..10}; do
       and .body == "/ai resume review" and .user.login == $actor
       and (.author_association | IN("OWNER","MEMBER","COLLABORATOR")))
       | .id] | min // empty
-  ' <<< "$comments")" || fail 'invalid command history'
+  ' <<< "$comments")" || fail 'command履歴が不正です'
   if [ -n "$found" ] && { [ -z "$command_id" ] || [ "$found" -lt "$command_id" ]; }; then
     command_id="$found"
   fi
   if [ "$count" -lt 100 ]; then break; fi
-  [ "$page" -lt 10 ] || fail 'command history exceeds bound'
+  [ "$page" -lt 10 ] || fail 'command履歴が上限を超えています'
 done
 [ -n "$command_id" ] || ignore 'command_provenance_missing'
 

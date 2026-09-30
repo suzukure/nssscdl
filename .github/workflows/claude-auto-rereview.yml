@@ -347,7 +347,8 @@ jobs:
               [ "$code" != round_limit ] || reason=round_limit
               GH_TOKEN="$REVIEW_APP_TOKEN" bash "$scripts/create-human-pause.sh" create \
                 "$GITHUB_REPOSITORY" "$issue_number" "$pr_number" "$app_id" "$reason" \
-                "Claude auto-rereview requires human review: $code" "$(jq -r .validated_sha "$identity")" ;;
+                "Claude自動再レビューに人間の確認が必要です。理由: $code" "$(jq -r .validated_sha "$identity")" \
+                --notification-detail "Claude auto-rereview requires human review: $code" ;;
             *) echo '共通pause履歴に不整合があります。' >&2; exit 1 ;;
           esac
           gh issue edit "$(jq -r .pr_number "$identity")" --repo "$GITHUB_REPOSITORY" --remove-label ai-followup-in-progress

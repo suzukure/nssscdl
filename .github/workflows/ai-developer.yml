@@ -2901,7 +2901,7 @@ jobs:
             options=(--paused-head "$current_head" --failed-action fix
               --repair-active --repair-head "$current_head")
           fi
-          detail="Claudeフォローアップ失敗。Draft job: ${DRAFT_RESULT}; フォローアップjob: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          detail="Claudeフォローアップ失敗。Draft jobの結果: ${DRAFT_RESULT}; フォローアップjobの結果: ${FOLLOWUP_RESULT}; event時のHEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           bash .github/scripts/create-human-pause.sh create \
             "$GITHUB_REPOSITORY" '-' "$PR_NUMBER" "$app_id" \
             "$reason" "$detail" "${options[@]}"

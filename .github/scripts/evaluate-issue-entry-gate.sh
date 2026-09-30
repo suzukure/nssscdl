@@ -5,7 +5,7 @@ repo="${1:?repository is required}"
 issue_number="${2:?Issue number is required}"
 
 if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
-  echo "Invalid Issue number: ${issue_number}" >&2
+  echo "Issue番号が不正です: ${issue_number}" >&2
   exit 1
 fi
 
@@ -17,16 +17,16 @@ if ! jq -es --argjson expected_number "$issue_number" 'length == 1 and (.[0] | t
     (.labels | type == "array") and
     all(.labels[]; type == "object" and (.name | type == "string")))' \
     <<< "$issue_json" > /dev/null; then
-  echo 'Invalid Issue identity, state, or label metadata; refusing development.' >&2
+  echo 'Issueの識別情報・状態・ラベル情報が不正なため、開発を停止します。' >&2
   exit 1
 fi
 if [ "$(jq -r .state <<< "$issue_json")" = closed ]; then
-  jq -cn '{continue: false, reason: "Issue is closed."}'
+  jq -cn '{continue: false, reason: "Issueがclosedです。"}'
   exit 0
 fi
 issue_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$issue_json")"
 if [ "$issue_paused" = true ]; then
-  jq -cn '{continue: false, reason: "Issue is paused by human-review-required."}'
+  jq -cn '{continue: false, reason: "human-review-requiredによりIssueが停止中です。"}'
   exit 0
 fi
 
@@ -37,12 +37,12 @@ if ! jq -es 'length == 1 and (.[0] | type == "array" and
       (.labels | type == "array") and
       all(.labels[]; type == "object" and (.name | type == "string"))))' \
     <<< "$prs_json" > /dev/null; then
-  echo 'Invalid related PR label metadata; refusing development.' >&2
+  echo '関連PRのラベル情報が不正なため、開発を停止します。' >&2
   exit 1
 fi
 pr_paused="$(jq -r 'any(.labels | any(.name == "human-review-required"))' <<< "$prs_json")"
 if [ "$pr_paused" = true ]; then
-  jq -cn '{continue: false, reason: "Related open PR is paused by human-review-required."}'
+  jq -cn '{continue: false, reason: "関連するopen PRがhuman-review-requiredにより停止中です。"}'
   exit 0
 fi
 
