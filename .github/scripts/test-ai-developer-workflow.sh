@@ -1214,7 +1214,34 @@ assert_hardened_codex_runtime() {
     echo "$runtime_name run body must not interpolate GitHub expressions." >&2
     exit 1
   fi
+
+  # Parse the outer command and check the actual argument passed to /bin/sh -c.
+  # Checking the run body with bash -n alone misses quote breaks inside -c.
+  local root_command="$test_dir/${runtime_name// /-}-root-command.sh"
+  awk '
+    /^          exec sudo -n -- \\$/ { in_command = 1 }
+    in_command { line = $0; sub(/^          /, "", line); print line }
+    in_command && /^            "\$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"$/ { exit }
+  ' "$runtime_run" > "$root_command"
+  test -s "$root_command"
+  local expected_sh_arg0=codex-developer
+  if [ "$runtime_name" = 'Codex follow-up' ]; then
+    expected_sh_arg0=codex-followup
+  fi
+  EXPECTED_SH_ARG0="$expected_sh_arg0" \
+    PATH="$test_dir:$PATH" bash "$root_command"
 }
+
+cat > "$test_dir/sudo" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ] && [ "$1" != /bin/sh ]; do shift; done
+if [ "$#" -lt 4 ] || [ "$2" != -c ] || [ "$4" != "$EXPECTED_SH_ARG0" ]; then
+  echo '内部の /bin/sh -c 引数が不正です。' >&2
+  exit 1
+fi
+printf '%s\n' "$3" | /bin/sh -n
+SH
+chmod 700 "$test_dir/sudo"
 
 assert_hardened_codex_runtime 'Codex developer' "$developer_step"
 assert_hardened_codex_runtime 'Codex follow-up' "$followup_step"

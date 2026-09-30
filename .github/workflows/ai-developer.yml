@@ -941,7 +941,7 @@ jobs:
                   exit 51
                 fi
                 printf "%s\n" "$expected_preflight_marker"
-                echo 'サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。'
+                echo "サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。"
               fi
               exit "$rc"
             ' codex-developer \
@@ -2429,7 +2429,7 @@ jobs:
                   exit 51
                 fi
                 printf "%s\n" "$expected_preflight_marker"
-                echo 'サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。'
+                echo "サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。"
               fi
               exit "$rc"
             ' codex-followup \
