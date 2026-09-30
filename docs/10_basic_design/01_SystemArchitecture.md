@@ -31,7 +31,7 @@ Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理�
 
 `REQ-901` の対象は各Vendorの通常のStable / Release channelにおける現行Majorと直前のStable major familyとする。「直前」は数値上の `N-1` ではなく公式Stable / Release history上の直前を指す。Beta / Dev / Canary / Early Stable / Extended Stable / ESRは判定に使わない。本節は最低対応major familyを定義し、exact patch / OSはRelease Test Matrixで固定する。同一family内の古いpatchすべてを保証するものではない。
 
-基準日時: **2026-09-30 10:29 JST（Asia/Tokyo）**。以下はこの時点までに通常Stable / Releaseとして公開されたDesktop（Chrome / Edge / Firefox）・macOS（Safari）のfamily baselineである。
+基準日: **2026-09-30 JST（Asia/Tokyo）**。以下はこの日までに通常Stable / Releaseとして公開されたDesktop（Chrome / Edge / Firefox）・macOS（Safari）のfamily baselineである。
 
 | Browser | 現行Stable / Release family | 最低対応family（直前Stable / Release） |
 |---|---:|---:|
@@ -40,14 +40,14 @@ Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理�
 | Safari macOS | 27 | 26 |
 | Firefox Desktop | 157 | 156 |
 
-基準日時のVendor公式情報:
+基準日のVendor公式情報:
 
 - Chrome: [154 Stable promotion（2026-09-22）](https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_0856730748.html)、[153 Stable update（2026-09-17、OS別build）](https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_0194356994.html)。
 - Microsoft Edge: [release schedule（154: 2026-09-24）](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-release-schedule)、[Stable Channel release notes（154 / 153）](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel)。
 - Safari: [Appleの公開履歴（27: 2026-09-14、26.6.1: 2026-08-18）](https://support.apple.com/en-us/100100)、[Safari 27公開記事](https://support.apple.com/en-la/149039)。Safari versionとmacOS versionは区別する。
 - Firefox: [157.0 Release notes（2026-09-29）](https://www.firefox.com/en-US/firefox/157.0/releasenotes/)、[Release history（直前156）](https://www.firefox.com/en-US/releases/)。
 
-Release readiness確認時にVendor公式の通常Stable / Release情報を再取得する。現行または直前familyが変わった場合、Production release判定前に本節の基準日時・family baseline・根拠を更新する。各familyのexact Browser version × 代表OSは `docs/40_test/01_TestPlan.md` §7のRelease Test Matrixへ固定し、Matrix更新だけでsupport familyを暗黙に変更しない。先行channelのみの公開時は通常Stable / Releaseへの昇格までfamilyを更新せず、major skip時も公式履歴上の直前familyを採用する。
+Release readiness確認時にVendor公式の通常Stable / Release情報を再取得する。現行または直前familyが変わった場合、Production release判定前に本節の基準日・family baseline・根拠を更新する。各familyのexact Browser version × 代表OSは `docs/40_test/01_TestPlan.md` §7のRelease Test Matrixへ固定し、Matrix更新だけでsupport familyを暗黙に変更しない。先行channelのみの公開時は通常Stable / Releaseへの昇格までfamilyを更新せず、major skip時も公式履歴上の直前familyを採用する。
 
 `TC-NF-901-01` は本節のfamily baselineと更新規則に従う。Release Test Matrixと実行証跡の内容はTestPlan §7を正とし、`REQ-902` のスマートフォン検証も同節に従う。
 
