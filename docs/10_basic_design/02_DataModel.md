@@ -459,7 +459,7 @@ Student
 
 ## 9. 設計判断記録
 
-- `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録する。
+- `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録済みである。
 - 予約履歴と現在占有の分離は `OI-BD-001` で確定し、本書および `04_ReservationModel.md` に反映済みである。
 - Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で確定し、本書および `04_ReservationModel.md` に反映済みである。
 - Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で確定し、本書および `04_ReservationModel.md` に反映済みである。
