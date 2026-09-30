@@ -29,27 +29,27 @@ Web UI、HTTP API、認証／Session Endpoint、予約・キャンセル処理�
 
 ### 2.2 Browser support baseline（REQ-901）
 
-`REQ-901` の対象は各Vendorの通常のStable / Release channelにおける現行Majorと直前のStable major familyとする。「直前」は数値上の `N-1` ではなく公式Stable release history上の直前を指す。Beta / Dev / Canary / Early Stable / Extended Stable / ESRは判定に使わない。最低Versionは、基準日時点で直前のStable major familyに提供されている最新の通常Stable / Release patchをfloorとし、同じmajor familyの古いpatch / minorすべてを保証するものではない。
+`REQ-901` の対象は各Vendorの通常のStable / Release channelにおける現行Majorと直前のStable major familyとする。「直前」は数値上の `N-1` ではなく公式Stable / Release history上の直前を指す。Beta / Dev / Canary / Early Stable / Extended Stable / ESRは判定に使わない。本節は最低対応major familyを定義し、exact patch / OSはRelease Test Matrixで固定する。同一family内の古いpatchすべてを保証するものではない。
 
-基準日: **2026-09-29 JST**。以下はこの日時点の基本設計baselineである。
+基準日時: **2026-09-30 10:29 JST（Asia/Tokyo）**。以下はこの時点までに通常Stable / Releaseとして公開されたDesktop（Chrome / Edge / Firefox）・macOS（Safari）のfamily baselineである。
 
-| Browser | 現行Stable major | 直前Stable major | 厳密な最低Version |
-|---|---:|---:|---|
-| Chrome Desktop | 154 | 153 | 153.0.8010.52 |
-| Microsoft Edge Stable | 153 | 152 | 152.0.4191.96 |
-| Safari | 26 | 18 | 18.6 |
-| Firefox Release | 156 | 155 | 155.0.1 |
+| Browser | 現行Stable / Release family | 最低対応family（直前Stable / Release） |
+|---|---:|---:|
+| Chrome Desktop | 154 | 153 |
+| Microsoft Edge Desktop | 154 | 153 |
+| Safari macOS | 27 | 26 |
+| Firefox Desktop | 157 | 156 |
 
-基準日のVendor公式情報:
+基準日時のVendor公式情報:
 
-- Chrome: [Stable promotion / release history](https://chromereleases.googleblog.com/2026/09)（2026-09-22の154 Stable昇格）、[Chrome 153 Stable update](https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_0194356994.html)（2026-09-17、153.0.8010.52）。
-- Microsoft Edge: [Stable Channel release notes](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel)（153.0.4234.48 / 152.0.4191.96）。154のschedule / web-platform記載は通常Stable昇格の根拠にしない。
-- Safari: [Safari Release Notes](https://developer.apple.com/documentation/safari-release-notes)（通常Stable 26 / 直前Stable 18、18.6が直前familyのlatest。27はBeta）。
-- Firefox: [Firefox releases](https://www.firefox.com/en-US/releases/)、[156.0.1 release notes](https://www.firefox.com/en-US/firefox/156.0.1/releasenotes/)（通常Release 156 / 直前155、latest patchは156.0.1 / 155.0.1）。
+- Chrome: [154 Stable promotion（2026-09-22）](https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_0856730748.html)、[153 Stable update（2026-09-17、OS別build）](https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_0194356994.html)。
+- Microsoft Edge: [release schedule（154: 2026-09-24）](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-release-schedule)、[Stable Channel release notes（154 / 153）](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel)。
+- Safari: [Appleの公開履歴（27: 2026-09-14、26.6.1: 2026-08-18）](https://support.apple.com/en-us/100100)、[Safari 27公開記事](https://support.apple.com/en-la/149039)。Safari versionとmacOS versionは区別する。
+- Firefox: [157.0 Release notes（2026-09-29）](https://www.firefox.com/en-US/firefox/157.0/releasenotes/)、[Release history（直前156）](https://www.firefox.com/en-US/releases/)。
 
-Release readiness確認時に同じVendor公式Stable / Release sourceで現行と直前のmajor familyを再確認し、各familyのその時点のlatest通常Stable / Release patchを `docs/40_test/01_TestPlan.md` §7のBrowser Matrixへ固定する。現行 / 直前majorまたは最低Version floorが上記baselineから変わった場合、Production release判定前に本節のbaseline・基準日・根拠を更新する。テスト実行だけでsupport範囲を暗黙に変更しない。Early Stable / Beta等のみの先行時は通常Stableへの昇格まで更新せず、versioning変更やmajor skip時も公式Stable release history上の直前familyを採用する。
+Release readiness確認時にVendor公式の通常Stable / Release情報を再取得する。現行または直前familyが変わった場合、Production release判定前に本節の基準日時・family baseline・根拠を更新する。各familyのexact Browser version × 代表OSは `docs/40_test/01_TestPlan.md` §7のRelease Test Matrixへ固定し、Matrix更新だけでsupport familyを暗黙に変更しない。先行channelのみの公開時は通常Stable / Releaseへの昇格までfamilyを更新せず、major skip時も公式履歴上の直前familyを採用する。
 
-Browser Matrixの実行証跡にはBrowser名、exact version、OS、実行日時、build / commitを残す。`TC-NF-901-01` はこのbaselineと更新規則に従う。
+`TC-NF-901-01` は本節のfamily baselineと更新規則に従う。Release Test Matrixと実行証跡の内容はTestPlan §7を正とし、`REQ-902` のスマートフォン検証も同節に従う。
 
 ## 3. C4 Level 2 Container
 

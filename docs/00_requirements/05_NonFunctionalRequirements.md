@@ -1,7 +1,7 @@
 # 非機能要求
 
 ## REQ-901 対応Browser
-Chrome、Edge、Safari、Firefoxの現行Majorおよび1つ前のMajorを対象とする。厳密な最低Versionは基本設計で定義する。
+Chrome、Edge、Safari、Firefoxの現行および直前の通常Stable / Release major familyを対象とする。基本設計で基準日と最低対応familyを定義し、Release時に検証するexact Browser version × 代表OSはTest Matrixへ固定する。同一family内の古いpatchすべての対応は保証しない。
 - AC-901-001 対象BrowserでMust業務操作を完了できる。
 
 ## REQ-902 Responsive

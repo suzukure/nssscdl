@@ -9,12 +9,12 @@
 ### REQ-901 対応Browser
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |
 |---|---|:---:|---|---|---|---|---|
-| `TC-NF-901-01` | AC-901-001 | P1 | Browser matrix / Pairwise | `docs/10_basic_design/01_SystemArchitecture.md` §2.2とTestPlan §7に従い、実行時点のChrome/Edge/Safari/Firefoxの現行・直前Stable major familyを確定し、各familyのlatest通常Stable / Release patchを固定する。S1/A1標準データ。各対象VersionでLogin、Schedule閲覧、予約、キャンセル、管理者主要操作の代表Happy pathを実行する。 | 各対象Browser / VersionでMust業務を完了でき、Browser固有のBlockerがない。 | Browser名、exact version、OS、実行日時、build / commit、Version別実行結果、Screenshot | 自動化候補 |
+| `TC-NF-901-01` | AC-901-001 | P1 | Browser matrix / Pairwise | Architecture §2.2の現行・直前通常Stable / Release familyとTestPlan §7のRelease Test Matrixに従い、各familyのexact Browser version × 代表OSを固定する。Cloud / Virtual / remote環境の実ブラウザでS1/A1標準データを用い、各対象でLogin、Schedule閲覧、予約、キャンセル、管理者主要操作の代表Happy pathを実行する。 | 各対象Browser / version × OSでMust業務を完了でき、Browser固有のBlockerがない。 | Release Test Matrix、Browser名、exact version、OS、実行日時、build / commit、対象別結果、Screenshot | 自動化候補 |
 
 ### REQ-902 Responsive
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |
 |---|---|:---:|---|---|---|---|---|
-| `TC-NF-902-01` | AC-902-001 | P1 | Responsive / Use-case | Viewport幅320px以上のSmartphone縦。 S1がLogin→Schedule確認→予約→キャンセルを完了する。 | 主要生徒業務がSmartphoneだけで完結する。 | E2E結果、主要画面Screenshot | 自動化候補 |
+| `TC-NF-902-01` | AC-902-001 | P1 | Responsive / Use-case | Viewport幅320px以上のSmartphone縦。S1がLogin→Schedule確認→予約→キャンセルを完了する。Release前にはTestPlan §7に従いCloud上の実iPhone Safari / Android Chrome等で主要Must業務を確認する。 | 主要生徒業務がSmartphoneだけで完結する。 | 対象端末・OS・Browser version、E2E結果、主要画面Screenshot | 自動化候補 |
 | `TC-NF-902-02` | AC-902-002, AC-902-003 | P1 | Responsive inspection | 320px、Tablet、PC代表幅。 主要Pageで横Overflowを検査し、Table/Calendar内部も確認する。 | 通常Page全体にはHorizontal Scrollが発生しない。Table/Calendar内部の局所Scrollは許容。 | Layout計測、Screenshot | 自動＋手動 |
 
 ### REQ-903 Accessibility
