@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # Runs only after the canonical Issue writer concurrency group is acquired.
-repo="${1:?repository is required}"
-app_slug="${2:?developer App slug is required}"
-output="${3:?GitHub output path is required}"
+repo="${1:?リポジトリ指定が必要です}"
+app_slug="${2:?developer App slugが必要です}"
+output="${3:?GitHub出力先の指定が必要です}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "consume-ai-resume-develop: $1" >&2; exit 1; }
-[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'invalid repository'
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'リポジトリ指定が不正です'
 dispatch="$(cat)" || fail 'dispatchを読み取れません'
 jq -e '
   type == "object" and
@@ -50,7 +50,7 @@ for page in {1..10}; do
   comments="$(gh api -H 'Accept: application/vnd.github+json' \
     "/repos/$repo/issues/$conversation/comments?per_page=100&page=$page")" \
     || fail 'command履歴を取得できません'
-  count="$(jq -er 'if type == "array" then length else error("invalid comments") end' <<< "$comments")" \
+  count="$(jq -er 'if type == "array" then length else error("コメントの形式が不正です") end' <<< "$comments")" \
     || fail 'command履歴が不正です'
   if jq -e --arg actor "$actor" --arg source "$source" '
     def later($id): ($id | length) > ($source | length) or
@@ -75,7 +75,7 @@ label_state() {
              all(.labels[]; type == "object" and (.name | type) == "string")
           then if any(.labels[]; .name == "human-review-required")
                then "present" else "absent" end
-          else error("invalid labels") end' <<< "$metadata"
+          else error("ラベルの形式が不正です") end' <<< "$metadata"
 }
 [ "$(label_state "$issue")" = present ] || fail 'closing Issueに停止ラベルがありません'
 if [ "$pr" != '-' ]; then [ "$(label_state "$pr")" = present ] || fail 'PRに停止ラベルがありません'; fi
@@ -89,7 +89,7 @@ if [ "$pr" != '-' ]; then
     jq -er --argjson number "$pr" '
       if .number == $number and .state == "OPEN" and (.isDraft | type) == "boolean"
       then if .isDraft then "draft" else "ready" end
-      else error("invalid PR Draft state") end
+      else error("PRのDraft状態が不正です") end
     ' <<< "$metadata"
   }
   draft_state="$(pr_draft_state)" || fail 'PRのDraft状態を確認できません'
@@ -109,7 +109,7 @@ recover() {
     if observed="$(bash "$script_dir/list-human-pause-records.sh" "$repo" "$issue" "$pr" "$app_id")"; then
       accepted_id="$(jq -er --argjson record "$record" '
         [.records[] | select(.record == $record) | .pause_id] |
-        if length == 1 then .[0] else error("ACK identity is ambiguous") end
+        if length == 1 then .[0] else error("ACKの識別情報が曖昧です") end
       ' <<< "$observed")" || accepted_id=''
     fi
   fi
@@ -135,7 +135,7 @@ record="$(jq -cn --arg target "$target" --arg source "$source" --arg reason "$re
 body="$(bash "$script_dir/human-pause-record.sh" create "$record")"
 acceptance_attempted=true
 posted="$(gh api -X POST "/repos/$repo/issues/$conversation/comments" -f "body=$body")"
-accepted_id="$(jq -er '.id | if type == "number" and floor == . and . > 0 then tostring else error("invalid ACK ID") end' <<< "$posted")"
+accepted_id="$(jq -er '.id | if type == "number" and floor == . and . > 0 then tostring else error("ACK IDが不正です") end' <<< "$posted")"
 
 # Observe trusted App provenance and the complete lifecycle pipeline before labels move.
 listing="$(bash "$script_dir/list-human-pause-records.sh" "$repo" "$issue" "$pr" "$app_id")"

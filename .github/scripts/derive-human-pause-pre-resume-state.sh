@@ -11,7 +11,7 @@ fail_closed() {
   exit 1
 }
 
-input="$(cat)" || fail_closed 'could not read input'
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 jq -ce '
   def valid_entry:
@@ -44,22 +44,22 @@ jq -ce '
            state: {status: "active", pause_id: $entry.pause_id,
                    reason: $entry.record.reason}
          }
-         else error("chain does not begin with a root pause")
+         else error("記録チェーンの先頭が起点の停止記録ではありません")
          end
        elif ($entry.record.kind == "pause" or $entry.record.kind == "pause-normalization")
          and ($entry.record.source_pause_id? == .state.pause_id)
          and ($entry.record.reason | type == "string")
        then .state = {status: "active", pause_id: $entry.pause_id,
                       reason: $entry.record.reason}
-       else error("chain has an uninterpretable pre-acceptance transition")
+       else error("記録チェーンの受理前遷移を解釈できません")
        end)
-    | if .seen_root then .state else error("chain has no pre-acceptance root pause") end;
+    | if .seen_root then .state else error("記録チェーンに受理前の起点停止記録がありません") end;
   . as $input
   | [inputs] as $additional_values
   | if $additional_values != [] then
-      error("expected one JSON value")
+      error("JSON値は1個である必要があります")
     elif valid_envelope | not then
-      error("chain envelope is invalid")
+      error("記録チェーンの外枠が不正です")
     else {
       target: $input.target,
       chains: [
@@ -70,4 +70,4 @@ jq -ce '
       ]
     }
     end
-' <<< "$input" || fail_closed 'could not derive pre-resume pause state'
+' <<< "$input" || fail_closed '再開前の停止状態を導出できませんでした'

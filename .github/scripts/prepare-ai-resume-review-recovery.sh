@@ -3,13 +3,13 @@ set -euo pipefail
 
 # Dormant independent recovery. The caller owns concurrency and every write.
 # Source workflow identity is reserved for a later activation of this helper.
-repo="${1:?repository required}"
-run_id="${2:?source run ID required}"
-attempt="${3:?source attempt required}"
-app_id="${4:?trusted App ID required}"
-pr="${5:?PR number required}"
-issue="${6:?closing Issue number required}"
-source="${7:?source pause ID required}"
+repo="${1:?リポジトリ指定が必要です}"
+run_id="${2:?起点run IDが必要です}"
+attempt="${3:?起点attemptが必要です}"
+app_id="${4:?信頼済みApp IDが必要です}"
+pr="${5:?PR番号が必要です}"
+issue="${6:?closing Issue番号が必要です}"
+source="${7:?起点の停止記録IDが必要です}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "prepare-ai-resume-review-recovery: $1" >&2; exit 1; }
 positive() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
@@ -74,18 +74,18 @@ jq -e --arg target "pr:$pr" '.target == $target and .result != "state_inconsiste
   "$tmp/graph-5.json" >/dev/null || fail '有効な停止記録が曖昧です'
 jq -ce --arg source "$source" --arg head "$head" '
   [.chains[] | select(.pre_resume.pause_id == $source)]
-  | if length != 1 then error("source chain is not unique") else .[0] end
+  | if length != 1 then error("起点の記録チェーンが一意ではありません") else .[0] end
   | if .pre_resume.reason | IN("claude_execution_failed","review_disagreement_decision","resume_transition_failed") | not
-    then error("source reason is not resumable for review") else . end
+    then error("起点の理由ではreviewを再開できません") else . end
   | if (.records[] | select(.pause_id == $source) | .record.paused_head) != $head
-    then error("source HEAD differs from current HEAD") else . end
+    then error("起点のHEADが現在のHEADと一致しません") else . end
   | [.records[] | select(.record.kind == "ai-resume-accepted")] as $accepted
-  | if ($accepted | length) > 1 then error("multiple acceptances")
+  | if ($accepted | length) > 1 then error("受理記録が複数あります")
     elif ($accepted | length) == 1 and
          ($accepted[0].record.source_pause_id != $source or
           $accepted[0].record.payload.action != "review" or
           $accepted[0].record.reason != .pre_resume.reason)
-    then error("accepted identity mismatch") else . end
+    then error("受理記録の識別情報が一致しません") else . end
 ' "$tmp/graph-4.json" > "$tmp/chain.json" || fail '起点または受理記録の識別情報が一致しません'
 accepted="$(jq -r '[.records[] | select(.record.kind == "ai-resume-accepted")][0].pause_id // empty' "$tmp/chain.json")"
 effective="$(jq -r '.effective.status' "$tmp/chain.json")"
@@ -166,21 +166,21 @@ while IFS=$'\t' read -r review_id review_attempt; do
     "/repos/$repo/actions/runs/$review_id/attempts/$review_attempt/jobs?per_page=100" \
     > "$tmp/review-jobs.json" || fail 'Review jobの証拠を取得できません'
   state="$(jq -er '
-    if type != "array" or any(.[]; (.jobs | type) != "array") then error("jobs") end
+    if type != "array" or any(.[]; (.jobs | type) != "array") then error("job一覧が不正です") end
     | [.[] .jobs[] | select(.name == "Review")]
-    | if length != 1 then error("Review job ambiguity") else .[0] end
+    | if length != 1 then error("Review jobが一意ではありません") else .[0] end
     | if .conclusion == "skipped" then "skipped"
       elif (.conclusion | IN("failure","cancelled","timed_out","stale")) then "entered"
       elif .conclusion == "success" or
            (.conclusion == null and (.status | IN("queued","in_progress","waiting","pending","requested"))) then
         [.steps[]? | select(.name == "Select Claude review model")]
-        | if length == 0 then error("entry step not observed")
-          elif length != 1 then error("entry step ambiguity") else .[0] end
+        | if length == 0 then error("入口stepを確認できません")
+          elif length != 1 then error("入口stepが一意ではありません") else .[0] end
         | if .status == "in_progress" or
              (.conclusion | IN("success","failure","cancelled","timed_out")) then "entered"
           elif .conclusion == "skipped" and (.status == "completed") then "skipped"
-          else error("unknown entry state") end
-      else error("unknown Review job state") end
+          else error("入口の状態を判定できません") end
+      else error("Review jobの状態を判定できません") end
   ' "$tmp/review-jobs.json")" || fail 'Reviewの所有関係が曖昧です'
   if [ "$state" = entered ]; then
     read_labels

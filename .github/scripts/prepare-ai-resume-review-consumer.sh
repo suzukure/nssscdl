@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Prepared, read-only boundary. Run from the trusted base with a trusted App token.
-repo="${1:?repository is required}"
-app_id="${2:?trusted App ID is required}"
+repo="${1:?リポジトリ指定が必要です}"
+app_id="${2:?信頼済みApp IDが必要です}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "prepare-ai-resume-review-consumer: $1" >&2; exit 1; }
 ignore() { jq -cn --arg code "$1" '{result:"ignore",code:$code}'; exit 0; }
@@ -15,7 +15,7 @@ jq -cse '
   def positive: type == "number" and floor == . and . > 0;
   def sha: type == "string" and test("\\A[0-9a-f]{40}\\z");
   def fingerprint: type == "string" and test("\\Asha256:[0-9a-f]{64}\\z");
-  if length != 1 or (.[0] | type) != "object" then error("one dispatch required") end
+  if length != 1 or (.[0] | type) != "object" then error("dispatchは1件である必要があります") end
   | .[0] | if (keys) != ["action","actor","closing_issue_number","follow_up_issue",
                            "pause_issue_body_fingerprint","paused_head","pr_number",
                            "prepared_head","prepared_issue_body_fingerprint","reason",
@@ -33,7 +33,7 @@ jq -cse '
            (.pause_issue_body_fingerprint | fingerprint | not))
        or (.reason | IN("claude_execution_failed","review_disagreement_decision",
                         "resume_transition_failed") | not)
-  then error("invalid review dispatch") else . end
+  then error("review dispatchが不正です") else . end
 ' <<< "$dispatch" >/dev/null || fail 'dispatchの形式が不正です'
 pr="$(jq -r '.pr_number' <<< "$dispatch")"
 issue="$(jq -r '.closing_issue_number' <<< "$dispatch")"
@@ -76,7 +76,7 @@ command_id=''
 for page in {1..10}; do
   comments="$(gh api -H 'Accept: application/vnd.github+json' \
     "/repos/$repo/issues/$pr/comments?per_page=100&page=$page")" || fail 'command履歴を取得できません'
-  count="$(jq -er 'if type == "array" then length else error("invalid page") end' <<< "$comments")" \
+  count="$(jq -er 'if type == "array" then length else error("ページの形式が不正です") end' <<< "$comments")" \
     || fail 'command履歴が不正です'
   found="$(jq -r --arg actor "$actor" --arg source "$source" '
     def later($id): ($id | length) > ($source | length) or

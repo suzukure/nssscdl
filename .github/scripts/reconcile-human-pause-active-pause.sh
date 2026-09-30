@@ -9,7 +9,7 @@ fail_closed() {
   exit 1
 }
 
-input="$(cat)" || fail_closed 'could not read input'
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 jq -ce '
   def valid_effective:
@@ -25,9 +25,9 @@ jq -ce '
   . as $input
   | [inputs] as $additional_values
   | if $additional_values != [] then
-      error("expected one JSON value")
+      error("JSON値は1個である必要があります")
     elif valid_envelope | not then
-      error("reconciled chain envelope is invalid")
+      error("照合済み記録チェーンの外枠が不正です")
     else
       [$input.chains[] | .effective | select(.status == "active")] as $active
       | if ($active | length) == 0 then
@@ -39,4 +39,4 @@ jq -ce '
           {target: $input.target, result: "state_inconsistent"}
         end
     end
-' <<< "$input" || fail_closed 'could not reconcile active pause'
+' <<< "$input" || fail_closed '有効な停止記録を照合できませんでした'

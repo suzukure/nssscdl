@@ -2,22 +2,22 @@
 set -euo pipefail
 
 # Called only inside the canonical Issue writer group, from the default branch.
-repo="${1:?repository required}"
-run_id="${2:?source run required}"
-attempt="${3:?source attempt required}"
-app_slug="${4:?trusted App slug required}"
-pr="${5:?PR required}"
-issue="${6:?closing Issue required}"
-source="${7:?source pause required}"
+repo="${1:?リポジトリ指定が必要です}"
+run_id="${2:?起点runが必要です}"
+attempt="${3:?起点attemptが必要です}"
+app_slug="${4:?信頼済みApp slugが必要です}"
+pr="${5:?PRの指定が必要です}"
+issue="${6:?closing Issueの指定が必要です}"
+source="${7:?起点の停止記録が必要です}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "recover-ai-resume-review: $1" >&2; exit 1; }
-[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'invalid repository'
-[[ "$app_slug" =~ ^[A-Za-z0-9-]+$ ]] || fail 'invalid App slug'
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'リポジトリ指定が不正です'
+[[ "$app_slug" =~ ^[A-Za-z0-9-]+$ ]] || fail 'App slugが不正です'
 for value in "$run_id" "$attempt" "$pr" "$issue" "$source"; do
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail 'invalid numeric identity'
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail '数値の識別情報が不正です'
 done
-app_id="$(gh api "/apps/$app_slug" --jq .id)" || fail 'App identity unavailable'
-[[ "$app_id" =~ ^[1-9][0-9]*$ ]] || fail 'invalid App identity'
+app_id="$(gh api "/apps/$app_slug" --jq .id)" || fail 'Appの識別情報を取得できません'
+[[ "$app_id" =~ ^[1-9][0-9]*$ ]] || fail 'Appの識別情報が不正です'
 prepare() {
   bash "$script_dir/prepare-ai-resume-review-recovery.sh" \
     "$repo" "$run_id" "$attempt" "$app_id" "$pr" "$issue" "$source"
@@ -62,8 +62,8 @@ for iteration in 1 2 3; do
       elif ([.actions[] | select(.action == "add_issue_human_label" or
                                     .action == "add_pr_human_label")] | length) ==
            (.actions | length) then .actions[0].action
-      else error("unexpected recovery action") end
-    else error("invalid recovery state") end
+      else error("想定外の復旧actionです") end
+    else error("復旧状態が不正です") end
   ' <<< "$plan")" || fail '復旧actionが不正です'
   [ "$action" != done ] || exit 0
   case "$action" in

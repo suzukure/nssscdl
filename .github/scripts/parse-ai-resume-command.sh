@@ -9,22 +9,22 @@ fail_closed() {
   exit 1
 }
 
-input="$(cat)" || fail_closed 'could not read input'
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 jq -cse '
   def follow_up:
     [capture("\\A/ai resume follow-up #(?<issue>[1-9][0-9]*)\\z")]
     | first // null;
   if length != 1 then
-    error("expected exactly one JSON object")
+    error("JSONオブジェクトは1個である必要があります")
   elif (.[0] | type) != "object" then
-    error("input must be a JSON object")
+    error("入力はJSONオブジェクトである必要があります")
   else
     .[0] as $input
     | if (($input.body | type) != "string")
          or (($input.actor | type) != "string")
          or (($input.author_association | type) != "string") then
-        error("input envelope is invalid")
+        error("入力の外枠が不正です")
       elif (["OWNER", "MEMBER", "COLLABORATOR"]
             | index($input.author_association)) == null then
         {result: "ignore"}
@@ -51,4 +51,4 @@ jq -cse '
           end
       end
   end
-' <<< "$input" || fail_closed 'input could not be parsed safely'
+' <<< "$input" || fail_closed '入力を安全に解析できませんでした'
