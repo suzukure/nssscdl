@@ -34,6 +34,7 @@ for shared_rule in \
   grep -Fq "$shared_rule" "$agents"
 done
 grep -Fq 'if its impact cannot be determined safely' "$agents"
+grep -Fq 'Write the final report shown to humans on GitHub in Japanese.' "$agents"
 
 # Keep AGENTS repository-document references valid without duplicating GitHub's
 # heading-anchor normalization algorithm. Fixed document paths must exist, and
@@ -434,7 +435,7 @@ grep -Fqx '      pull-requests: write' "$draft_after_changes_workflow"
 grep -Fq "github.event.review.state == 'changes_requested'" "$draft_after_changes_workflow"
 grep -Fq 'github.event.review.commit_id == github.event.pull_request.head.sha' "$draft_after_changes_workflow"
 grep -Fq 'Create reviewer App token for identity verification' "$draft_after_changes_workflow"
-grep -Fq 'Ignoring change request from untrusted reviewer:' "$draft_after_changes_workflow"
+grep -Fq '信頼できないレビュアーからの変更要求を無視します:' "$draft_after_changes_workflow"
 grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow"
 grep -Fqx '    needs: draft-after-claude-changes' "$workflow"
 grep -Fq "needs.draft-after-claude-changes.result == 'success'" "$workflow"
@@ -447,16 +448,16 @@ awk '
 [ -s "$followup_commit_step" ]
 grep -Fq 'git push origin "HEAD:${HEAD_REF}"' "$followup_commit_step"
 grep -Fq 'expected_head="$(git rev-parse HEAD)"' "$followup_commit_step"
-grep -Fq 'echo "- Pushed commit: ${expected_head}"' "$followup_commit_step"
-grep -Fq 'No repository change was produced by this AI Developer run.' "$followup_commit_step"
+grep -Fq 'echo "- pushしたcommit: ${expected_head}"' "$followup_commit_step"
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。' "$followup_commit_step"
 followup_no_diff_block="$test_dir/followup-no-diff.sh"
 awk '
   /if git diff --cached --quiet; then/ { capture = 1 }
-  capture && /git commit -m "Address Claude review/ { exit }
+  capture && /git commit -m "PR #\$\{PR_NUMBER\}のClaudeレビュー指摘に対応"/ { exit }
   capture { print }
 ' "$followup_commit_step" > "$followup_no_diff_block"
-grep -Fq 'No repository change was produced by this AI Developer run.' "$followup_no_diff_block"
-if grep -Fq 'Pushed commit:' "$followup_no_diff_block"; then
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。' "$followup_no_diff_block"
+if grep -Fq 'pushしたcommit:' "$followup_no_diff_block"; then
   echo 'No-diff follow-up provenance must not invent a pushed commit.' >&2
   exit 1
 fi
@@ -469,7 +470,7 @@ if grep -Fq -- '--undo' "$followup_commit_step"; then
   echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
   exit 1
 fi
-if ! grep -Fq 'Automated Codex follow-up passed the entry gate' "$repo_root/.github/scripts/evaluate-followup-gate.sh"; then
+if ! grep -Fq 'Codexの自動フォローアップは入口条件を満たしました' "$repo_root/.github/scripts/evaluate-followup-gate.sh"; then
   echo 'Expected the follow-up gate to describe the successful re-review path.' >&2
   exit 1
 fi
@@ -618,6 +619,7 @@ grep -Fqx '        timeout-minutes: 3' "$prompt_step"
 grep -Fq "cat > \"\$CODEX_PROMPT_FILE\" <<'CODEX_PROMPT'" "$prompt_step"
 grep -Fq 'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely.' "$prompt_step"
 grep -Fq 'Implement the Issue in this working tree.' "$prompt_step"
+grep -Fq 'Write the final report for humans on GitHub in Japanese.' "$prompt_step"
 grep -Fq 'Keep the proposed repository change within the trusted diff guard contract.' "$prompt_step"
 grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
 if grep -Eq 'blocking Claude finding|finding not implemented|upstream-phase decision' "$prompt_step"; then
@@ -887,6 +889,7 @@ awk '
   in_step { print }
 ' "$followup_workflow" > "$followup_prompt_step"
 [ -s "$followup_prompt_step" ]
+grep -Fq 'Write the final report for humans on GitHub in Japanese.' "$followup_prompt_step"
 for followup_rule in \
   'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely.' \
   'Before editing, inspect every blocking finding against repository and supplied Issue evidence.' \
@@ -1264,8 +1267,8 @@ fi
 
 # Both Codex requirement-change gates must fail closed for helper and final
 # response failures, and only their successful gates may reach repository write.
-grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$workflow"
-grep -Fq 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.' "$workflow"
+grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。' "$workflow"
+grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動フォローアップを停止します。' "$workflow"
 if [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 2 ]; then
   echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
   exit 1
@@ -1274,8 +1277,8 @@ if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$workflow")" -ne 2 ]; then
   echo 'Both Codex requirement-change gates must fail closed when the final response is missing or empty.' >&2
   exit 1
 fi
-grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$workflow"
-grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$workflow"
+grep -Fq 'Codexの最終報告がありません。人間の判断があるまで自動開発を停止します。' "$workflow"
+grep -Fq 'Codexの最終報告がありません。人間の判断があるまで自動フォローアップを停止します。' "$workflow"
 grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$workflow"
 grep -Fq "steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
 
@@ -1450,7 +1453,7 @@ unset FOLLOWUP_FIXTURE_BASE_ROOT
 
 for fixture in valid app-author; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automated Codex follow-up passed the entry gate"))' <<< "$followup" > /dev/null
+  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Codexの自動フォローアップは入口条件を満たしました"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
@@ -1458,7 +1461,7 @@ followup="$(MOCK_CASE=valid MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scri
 jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
 for fixture in three-reviews app-three-reviews; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
+  jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codexフォローアップを停止しました"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-author bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
@@ -1472,7 +1475,7 @@ indented_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DA
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$indented_marker_body")"
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
-jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
+jq -e '.continue == false and .escalate == true and (.reason | contains("解析できなかった"))' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 
@@ -1524,8 +1527,8 @@ if grep -Fq '.[0]' "$publish_step"; then
   exit 1
 fi
 grep -Fq 'pushed_commit="$(git rev-parse HEAD)"' "$publish_step"
-grep -Fq 'echo "- Pushed commit: ${pushed_commit}"' "$publish_step"
-grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$publish_step"
+grep -Fq 'echo "- pushしたcommit: ${pushed_commit}"' "$publish_step"
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$publish_step"
 if grep -Eqi '(gh (run|pr checks)|/check-runs|/actions/runs|CODEX_FINAL.*(grep|jq)|((grep|jq).*CODEX_FINAL))' "$publish_step" "$followup_commit_step"; then
   echo 'AI Developer provenance must not query formal CI or parse Codex-reported validation.' >&2
   exit 1
@@ -1544,12 +1547,12 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
     case "$PUBLISH_CASE" in
       commit-a-regression)
         publish_script="$case_dir/publish-with-commit-a.sh"
-        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -a -m "Implement #${ISSUE_NUMBER} with Codex"/' \
+        sed 's/git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"/git commit -a -m "CodexでIssue #${ISSUE_NUMBER}を実装"/' \
           "$publish_step" > "$publish_script"
         ;;
       commit-am-regression)
         publish_script="$case_dir/publish-with-commit-am.sh"
-        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -am "Implement #${ISSUE_NUMBER} with Codex"/' \
+        sed 's/git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"/git commit -am "CodexでIssue #${ISSUE_NUMBER}を実装"/' \
           "$publish_step" > "$publish_script"
         ;;
     esac
@@ -1558,7 +1561,7 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
       case "$1" in
         config) return 0 ;;
         commit)
-          if [ "$#" -ne 3 ] || [ "$2" != '-m' ] || [ "$3" != 'Implement #36 with Codex' ]; then
+          if [ "$#" -ne 3 ] || [ "$2" != '-m' ] || [ "$3" != 'CodexでIssue #36を実装' ]; then
             echo 'Publish must not commit unguarded worktree changes.' >&2
             return 2
           fi
@@ -1637,24 +1640,24 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
         grep -Fq 'gh pr create ' "$PUBLISH_LOG"
         grep -Fq -- '--draft' "$PUBLISH_LOG"
         grep -Fq 'Closes #36' "$PUBLISH_BODY"
-        grep -Fq '### Validation provenance' "$PUBLISH_BODY"
-        grep -Fq '### Codex report' "$PUBLISH_BODY"
-        grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_BODY"
-        grep -Fq '## Review readiness' "$PUBLISH_BODY"
-        grep -Fq 'Remaining impacts and follow-up decisions are recorded in the closing Issue.' "$PUBLISH_BODY"
+        grep -Fq '### 検証結果の出所' "$PUBLISH_BODY"
+        grep -Fq '### Codexの報告' "$PUBLISH_BODY"
+        grep -Fq 'pushしたcommit: 0000000000000000000000000000000000000392' "$PUBLISH_BODY"
+        grep -Fq '## レビュー準備' "$PUBLISH_BODY"
+        grep -Fq '残る影響とフォローアップの判断をclosing Issueに記録した。' "$PUBLISH_BODY"
         grep -Fq 'Ready for review' "$PUBLISH_BODY"
-        grep -Fq 'as Draft.' "$PUBLISH_LOG"
+        grep -Fq 'をDraftで作成しました。' "$PUBLISH_LOG"
         ;;
       existing-*|cross-and-existing)
         grep -Fq 'git push ' "$PUBLISH_LOG"
         grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
-        grep -Fq '### Validation provenance' "$PUBLISH_COMMENT"
-        grep -Fq '### Codex report' "$PUBLISH_COMMENT"
-        grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_COMMENT"
+        grep -Fq '### 検証結果の出所' "$PUBLISH_COMMENT"
+        grep -Fq '### Codexの報告' "$PUBLISH_COMMENT"
+        grep -Fq 'pushしたcommit: 0000000000000000000000000000000000000392' "$PUBLISH_COMMENT"
         assert_no_publish_call 'gh pr create '
         ;;
       no-diff)
-        grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$PUBLISH_LOG"
+        grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$PUBLISH_LOG"
         assert_no_publish_call 'git (commit|push)|gh pr create'
         ;;
       push-failure|list-failure)
@@ -1727,9 +1730,9 @@ for gate in "$issue_requirements" "$issue_diff_guard"; do
     exit 1
   fi
 done
-grep -Fq "pause_for_human developer_execution_failed 'Codex final response is missing" "$issue_requirements"
-grep -Fq "pause_for_human developer_execution_failed 'Requirements-change marker helper failed" "$issue_requirements"
-grep -Fq "pause_for_human requirements_change 'Codex detected" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed 'Codexの最終報告がありません" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました" "$issue_requirements"
+grep -Fq "pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました" "$issue_requirements"
 grep -Fq 'local options=(--failed-action develop)' "$issue_requirements"
 grep -Fq "[ \"\$marker_status\" -gt 1 ]" "$issue_requirements"
 grep -Fq "[ \"\$marker_status\" -eq 0 ]" "$issue_requirements"

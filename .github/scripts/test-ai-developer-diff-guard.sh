@@ -114,7 +114,7 @@ assert_publisher_git_allowlist() {
 
 assert_guard_setup_order "$guard_script" 'Issue-origin'
 assert_publisher_git_allowlist "$publish_script" 'Issue-origin' \
-  'git commit -m "Implement #${ISSUE_NUMBER} with Codex"' \
+  'git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"' \
   'git push --set-upstream origin "$AI_BRANCH"'
 
 publish_if="$(awk '
@@ -140,7 +140,7 @@ grep -Fq 'Avoid broad formatting changes and large generated additions.' "$follo
 
 assert_guard_setup_order "$followup_guard_script" 'Follow-up'
 assert_publisher_git_allowlist "$followup_commit_script" 'Follow-up' \
-  'git commit -m "Address Claude review for PR #${PR_NUMBER}"' \
+  'git commit -m "PR #${PR_NUMBER}のClaudeレビュー指摘に対応"' \
   'git push origin "HEAD:${HEAD_REF}"'
 
 followup_publish_if="$(awk '
@@ -423,11 +423,11 @@ assert_publisher_bypass_is_blocked() {
   local variant_name injection expected_call case_dir stderr_file static_commit static_push
   case "$route" in
     issue-origin)
-      static_commit='git commit -m "Implement #${ISSUE_NUMBER} with Codex"'
+      static_commit='git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"'
       static_push='git push --set-upstream origin "$AI_BRANCH"'
       ;;
     followup)
-      static_commit='git commit -m "Address Claude review for PR #${PR_NUMBER}"'
+      static_commit='git commit -m "PR #${PR_NUMBER}のClaudeレビュー指摘に対応"'
       static_push='git push origin "HEAD:${HEAD_REF}"'
       ;;
     *)
@@ -484,10 +484,10 @@ run_case pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":2,"addit
 grep -Fxq 'continue=true' "$test_dir/pass/github-output"
 [ ! -s "$test_dir/pass/gh.log" ]
 [ ! -s "$test_dir/pass/pause.log" ]
-grep -Fq -- '- Result: pass' "$test_dir/pass/summary"
-grep -Fq -- '- Changed files: 2 / 3' "$test_dir/pass/summary"
-grep -Fq -- '- Total changed lines: 13 / 40' "$test_dir/pass/summary"
-grep -Fq -- '- New files: 1 / 2' "$test_dir/pass/summary"
+grep -Fq -- '- 結果: pass' "$test_dir/pass/summary"
+grep -Fq -- '- 変更ファイル数: 2 / 3' "$test_dir/pass/summary"
+grep -Fq -- '- 変更行数合計: 13 / 40' "$test_dir/pass/summary"
+grep -Fq -- '- 新規ファイル数: 1 / 2' "$test_dir/pass/summary"
 
 assert_invalid_contract_fails_closed contract_missing '{}'
 assert_missing_contract_fails_closed contract_file_missing
@@ -500,11 +500,11 @@ grep -Fxq 'continue=false' "$test_dir/stop/github-output"
 stop_fingerprint="sha256:$(printf 'fixture body\n' | sha256sum | cut -d' ' -f1)"
 grep -Fq "create owner/repo 169 - 123 diff_guard_exceeded" "$test_dir/stop/pause.log"
 grep -Fq -- "--issue-body-fingerprint $stop_fingerprint" "$test_dir/stop/pause.log"
-grep -Fq 'oversized repository change' "$test_dir/stop/gh.log"
+grep -Fq '上限超過を検出' "$test_dir/stop/gh.log"
 grep -Fq 'changed_files: 26' "$test_dir/stop/gh.log"
 grep -Fq 'total_changed_lines: 2100' "$test_dir/stop/gh.log"
 grep -Fq -- '- changed_files: 26' "$test_dir/stop/summary"
-grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/stop/summary"
+grep -Fq -- '- 上限: 3 変更ファイル / 40 変更行 / 2 新規ファイル' "$test_dir/stop/summary"
 
 run_case error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable","offending_paths":["bad\nname.bin"],"offending_paths_truncated":false,"offending_paths_unknown":false}'\''; exit 1' "$guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/error/github-output"
@@ -514,13 +514,13 @@ if grep -Fq -- '--issue-body-fingerprint' "$test_dir/error/pause.log"; then
   echo 'Diff guard error must not require an Issue body fingerprint.' >&2
   exit 1
 fi
-grep -Fq 'could not safely measure' "$test_dir/error/gh.log"
-grep -Fq 'error: git_numstat_unavailable' "$test_dir/error/gh.log"
+grep -Fq '安全に計測できなかった' "$test_dir/error/gh.log"
+grep -Fq 'エラーコード: git_numstat_unavailable' "$test_dir/error/gh.log"
 grep -Fq '"offending_paths":["bad\nname.bin"]' "$test_dir/error/gh.log"
 grep -Fq '"offending_paths":["bad\nname.bin"]' "$test_dir/error/summary"
-grep -Fq 'Metrics: unavailable' "$test_dir/error/gh.log"
-grep -Fq -- '- Metrics: unavailable' "$test_dir/error/summary"
-grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/error/summary"
+grep -Fq '計測値: unavailable' "$test_dir/error/gh.log"
+grep -Fq -- '- 計測値: unavailable' "$test_dir/error/summary"
+grep -Fq -- '- 上限: 3 変更ファイル / 40 変更行 / 2 新規ファイル' "$test_dir/error/summary"
 assert_no_metric_diagnostics "$test_dir/error/gh.log"
 assert_no_metric_diagnostics "$test_dir/error/summary"
 
@@ -555,7 +555,7 @@ git -C "$composition_dir/repo" diff --cached --numstat -- binary.dat | grep -Fxq
 grep -Fxq 'continue=false' "$composition_dir/github-output"
 grep -Fq 'create owner/repo 169 - 123 diff_guard_error' "$composition_dir/pause.log"
 for diagnostic in "$composition_dir/gh.log" "$composition_dir/summary"; do
-  grep -Fq 'error: git_numstat_unavailable' "$diagnostic"
+  grep -Fq 'エラーコード: git_numstat_unavailable' "$diagnostic"
   grep -Fq '"offending_paths":["binary.dat"]' "$diagnostic"
   grep -Fq '"offending_paths_truncated":false' "$diagnostic"
   assert_no_metric_diagnostics "$diagnostic"
@@ -564,19 +564,19 @@ done
 run_case malformed 'printf '\''%s\n'\'' '\''not-json'\'''
 grep -Fxq 'continue=false' "$test_dir/malformed/github-output"
 grep -Fq 'create owner/repo 169 - 123 diff_guard_error' "$test_dir/malformed/pause.log"
-grep -Fq 'could not be parsed' "$test_dir/malformed/gh.log"
+grep -Fq '出力を解析できなかった' "$test_dir/malformed/gh.log"
 assert_no_metric_diagnostics "$test_dir/malformed/gh.log"
 
 run_case unexpected 'printf '\''%s\n'\'' '\''{"result":"later","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\'''
 grep -Fxq 'continue=false' "$test_dir/unexpected/github-output"
 grep -Fq 'create owner/repo 169 - 123 diff_guard_error' "$test_dir/unexpected/pause.log"
-grep -Fq "unexpected result 'later'" "$test_dir/unexpected/gh.log"
+grep -Fq "予期しない結果 'later'" "$test_dir/unexpected/gh.log"
 assert_no_metric_diagnostics "$test_dir/unexpected/gh.log"
 
 run_case malformed_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files":-1,"additions":10,"deletions":3,"total_changed_lines":12,"new_files":1}'\'''
 grep -Fxq 'continue=false' "$test_dir/malformed_pass/github-output"
 grep -Fq 'create owner/repo 169 - 123 diff_guard_error' "$test_dir/malformed_pass/pause.log"
-grep -Fq 'could not be parsed' "$test_dir/malformed_pass/gh.log"
+grep -Fq '出力を解析できなかった' "$test_dir/malformed_pass/gh.log"
 
 run_case helper_failure 'exit 2'
 grep -Fxq 'continue=false' "$test_dir/helper_failure/github-output"
@@ -586,10 +586,10 @@ run_case followup_pass 'printf '\''%s\n'\'' '\''{"result":"pass","changed_files"
 grep -Fxq 'continue=true' "$test_dir/followup_pass/github-output"
 [ ! -s "$test_dir/followup_pass/gh.log" ]
 [ ! -s "$test_dir/followup_pass/pause.log" ]
-grep -Fq -- '- Result: pass' "$test_dir/followup_pass/summary"
-grep -Fq -- '- Changed files: 2 / 3' "$test_dir/followup_pass/summary"
-grep -Fq -- '- Total changed lines: 13 / 40' "$test_dir/followup_pass/summary"
-grep -Fq -- '- New files: 1 / 2' "$test_dir/followup_pass/summary"
+grep -Fq -- '- 結果: pass' "$test_dir/followup_pass/summary"
+grep -Fq -- '- 変更ファイル数: 2 / 3' "$test_dir/followup_pass/summary"
+grep -Fq -- '- 変更行数合計: 13 / 40' "$test_dir/followup_pass/summary"
+grep -Fq -- '- 新規ファイル数: 1 / 2' "$test_dir/followup_pass/summary"
 
 assert_invalid_contract_fails_closed followup_contract_missing '{}' "$followup_guard_script"
 assert_missing_contract_fails_closed followup_contract_file_missing "$followup_guard_script"
@@ -599,27 +599,27 @@ assert_invalid_contract_fails_closed followup_contract_value_invalid '{"max_chan
 run_case followup_stop 'printf '\''%s\n'\'' '\''{"result":"stop","changed_files":26,"additions":1200,"deletions":900,"total_changed_lines":2100,"new_files":4}'\''' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/followup_stop/github-output"
 [ -s "$test_dir/followup_stop/pause.log" ]
-grep -Fq 'oversized repository change' "$test_dir/followup_stop/gh.log"
+grep -Fq '上限超過を検出' "$test_dir/followup_stop/gh.log"
 grep -Fq 'changed_files: 26' "$test_dir/followup_stop/gh.log"
-grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/followup_stop/summary"
+grep -Fq -- '- 上限: 3 変更ファイル / 40 変更行 / 2 新規ファイル' "$test_dir/followup_stop/summary"
 
 run_case followup_error 'printf '\''%s\n'\'' '\''{"result":"error","changed_files":0,"additions":0,"deletions":0,"total_changed_lines":0,"new_files":0,"error":"git_numstat_unavailable","offending_paths":["binary.dat"],"offending_paths_truncated":true,"offending_paths_unknown":false}'\''; exit 1' "$followup_guard_script" "$fixture_contract"
 grep -Fxq 'continue=false' "$test_dir/followup_error/github-output"
-grep -Fq 'Metrics: unavailable' "$test_dir/followup_error/gh.log"
+grep -Fq '計測値: unavailable' "$test_dir/followup_error/gh.log"
 grep -Fq '"offending_paths":["binary.dat"]' "$test_dir/followup_error/gh.log"
 grep -Fq '"offending_paths_truncated":true' "$test_dir/followup_error/summary"
-grep -Fq -- '- Thresholds: 3 changed files / 40 total changed lines / 2 new files' "$test_dir/followup_error/summary"
+grep -Fq -- '- 上限: 3 変更ファイル / 40 変更行 / 2 新規ファイル' "$test_dir/followup_error/summary"
 assert_no_metric_diagnostics "$test_dir/followup_error/gh.log"
 assert_no_metric_diagnostics "$test_dir/followup_error/summary"
 
 run_case followup_malformed 'printf '\''%s\n'\'' '\''not-json'\''' "$followup_guard_script"
 grep -Fxq 'continue=false' "$test_dir/followup_malformed/github-output"
-grep -Fq 'could not be parsed' "$test_dir/followup_malformed/gh.log"
+grep -Fq '出力を解析できなかった' "$test_dir/followup_malformed/gh.log"
 assert_no_metric_diagnostics "$test_dir/followup_malformed/gh.log"
 
 run_case followup_unexpected 'printf '\''%s\n'\'' '\''{"result":"later","changed_files":2,"additions":10,"deletions":3,"total_changed_lines":13,"new_files":1}'\''' "$followup_guard_script"
 grep -Fxq 'continue=false' "$test_dir/followup_unexpected/github-output"
-grep -Fq "unexpected result 'later'" "$test_dir/followup_unexpected/gh.log"
+grep -Fq "予期しない結果 'later'" "$test_dir/followup_unexpected/gh.log"
 assert_no_metric_diagnostics "$test_dir/followup_unexpected/gh.log"
 
 # Exercise both extracted publishers. The normal case demonstrates that the
@@ -627,14 +627,14 @@ assert_no_metric_diagnostics "$test_dir/followup_unexpected/gh.log"
 # either a post-guard index write or a commit mode that absorbs worktree
 # changes, and must stop before an allowed commit, push, or GitHub publication
 # side effect.
-run_publisher_case issue-origin "$publish_script" 'Implement #36 with Codex'
-grep -Fq 'git commit -m Implement #36 with Codex' "$test_dir/publisher-issue-origin/calls.log"
+run_publisher_case issue-origin "$publish_script" 'CodexでIssue #36を実装'
+grep -Fq 'git commit -m CodexでIssue #36を実装' "$test_dir/publisher-issue-origin/calls.log"
 grep -Fq 'git push --set-upstream origin ai/issue-36' "$test_dir/publisher-issue-origin/calls.log"
-run_publisher_case followup "$followup_commit_script" 'Address Claude review for PR #37'
-grep -Fq 'git commit -m Address Claude review for PR #37' "$test_dir/publisher-followup/calls.log"
+run_publisher_case followup "$followup_commit_script" 'PR #37のClaudeレビュー指摘に対応'
+grep -Fq 'git commit -m PR #37のClaudeレビュー指摘に対応' "$test_dir/publisher-followup/calls.log"
 grep -Fq 'git push origin HEAD:ai/issue-36' "$test_dir/publisher-followup/calls.log"
 grep -Fq 'gh pr ready 37 --repo owner/repo' "$test_dir/publisher-followup/calls.log"
-if run_publisher_case followup-stale-head "$followup_commit_script" 'Address Claude review for PR #37' '' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
+if run_publisher_case followup-stale-head "$followup_commit_script" 'PR #37のClaudeレビュー指摘に対応' '' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
   echo 'Follow-up publisher readied a PR before its pushed head was visible.' >&2
   exit 1
 fi
@@ -642,8 +642,8 @@ if grep -Fq 'gh pr ready' "$test_dir/publisher-followup-stale-head/calls.log"; t
   echo 'Follow-up publisher readied a PR with a stale remote head.' >&2
   exit 1
 fi
-assert_publisher_bypass_is_blocked issue-origin "$publish_script" 'Implement #36 with Codex'
-assert_publisher_bypass_is_blocked followup "$followup_commit_script" 'Address Claude review for PR #37'
+assert_publisher_bypass_is_blocked issue-origin "$publish_script" 'CodexでIssue #36を実装'
+assert_publisher_bypass_is_blocked followup "$followup_commit_script" 'PR #37のClaudeレビュー指摘に対応'
 
 # Issue-origin notification is owned by the common helper; follow-up retains its separate step.
 if grep -Fq '      - name: Notify human of diff guard stop' "$developer_job"; then
