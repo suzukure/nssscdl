@@ -231,7 +231,7 @@ Claude reviewのrun単位budgetはrisk classごとに設定する。protected pa
 
 production Claude Reviewとauto-rereview consumerは `anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829` を固定し、Claude Code 2.1.284 / Agent SDK 0.3.284を使用する。high-risk reviewはmodelやbudgetと同じrisk選択で `--effort high` を明示する。standard-risk reviewにはeffort引数を渡さず、現行の挙動を維持する。runtime更新時点のRepository variable `CLAUDE_MODEL_STANDARD` は `claude-sonnet-5` を維持する。Sonnet 5.5へのmodel切替は後続Issue #588でRepository variableを変更して行う。
 
-利用量記録stepはverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加するRisk class、Action outcome、Schema validも含める。Risk class、Action outcome、Schema validはusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`Execution usage was unavailable.`を記録する。集計失敗時だけはraw execution由来のstderrを通常logへ出さず、固定文言`Claude usage summarization failed.`を1行だけstderrへ出力する。
+利用量記録stepはverdict経路を阻害しない非致命stepとする。通常step logには、集計済みusage JSONを1行だけ出力し、Actions Job logs APIから回収可能にする。このJSONの項目はresult subtype、is error、turns、duration、estimated cost、input/output token、cache creation/read tokenだけである。Job Summaryにはそれらの利用量を表形式で記録し、workflowが付加する`リスク区分`、`Actionの結果`、`Schemaの検証結果`も含める。これらの付加項目はusage JSONには含めない。prompt本文、review本文、raw execution file、secret値はどちらにも記録しない。execution file未設定、ファイル不在、または集計失敗時はusage JSONをstep logへ出力せず、Job Summaryへ`実行時の利用量を取得できませんでした。`を記録する。集計失敗時だけはraw execution由来のstderrを通常logへ出さず、固定文言`Claudeの利用量集計に失敗しました。`を1行だけstderrへ出力する。
 
 `modelUsage` が1件以上ある場合、token fieldはClaude Code session全体のモデル別累積値として、対象fieldが全modelで数値の場合だけ合算する。1modelでも欠落・非数値ならそのfieldは`null`とし、query call内の累積値であるtop-level `usage`へfield単位でfallbackしない。`modelUsage`が空または利用不能の場合だけ、token fieldをtop-level `usage`から取得する。`estimated_cost_usd`はquery全体のSDK見積りである数値の`total_cost_usd`を優先し、利用不能な場合のみ、全modelで数値の`modelUsage.costUSD`を合算する。一部でも欠落・非数値なら`null`とする。`modelUsage`とtop-level `usage`は集計範囲が異なり得る。
 
@@ -251,13 +251,13 @@ Claude Reviewの`review` jobは異常stallに対するwall-clock hard boundary�
 
 生成用Schemaは `claude-review.yml` の `review-json-schema` データ行をcurrent baseから取得する。導入前base `9bf6ffcf5caa1dc8f98629851f0557653de542f7` にデータ行がない場合だけ固定生成制約をbootstrapし、既存base validatorを必須とする。他のbaseでの欠落、取得失敗、破損は停止する。workflow自体の改変は既存のCode Owner境界で保護し、PR側workflowが検証処理を削除した場合まで実行時に阻止する保証は追加しない。
 
-Claude reviewの実行結果は、`Validate Claude review` stepがJob Summaryへ記録する `Reason code` を一次情報とする。`Record Claude review usage` の集計済みusage JSONと表は費用・利用量の補助証跡であり、失敗原因またはverdictを決めない。reason codeは信頼済みbase commit由来classifierによる実行分類と、workflowによるnative入力検査・base validatorの検証結果から決めるローカルな分類であり、Claude Providerの障害理由・復旧時刻・quotaを保証するものではない。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載・再集計しない。
+Claude reviewの実行結果は、`Validate Claude review` stepがJob Summaryへ記録する `理由コード` を一次情報とする。`Record Claude review usage` の集計済みusage JSONと表は費用・利用量の補助証跡であり、失敗原因またはverdictを決めない。reason codeは信頼済みbase commit由来classifierによる実行分類と、workflowによるnative入力検査・base validatorの検証結果から決めるローカルな分類であり、Claude Providerの障害理由・復旧時刻・quotaを保証するものではない。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載・再集計しない。
 
 Action successかつ最後のresultがsuccess/is_error=falseの場合、自由テキストresultの複数性は最終reasonを決めない。native出力がなければ `REVIEW_RESULT_MISSING`、あればnative検証結果を優先する。`REVIEW_RESULT_AMBIGUOUS` は下表の限定条件に残す。
 
 例外として `Mask native review output` step自体が失敗すると、`Validate Claude review` はskipされ、Job Summaryのreasonは記録されない。この場合は `Save structured review` の固定エラー `CLASSIFIER_INTERNAL_ERROR` とmask stepの成否を診断の起点とし、raw出力を転載せずマスク処理を調査する。保存・verdict投稿はfail-closedで停止する。mask stepが成功してもreadyを出さない場合は通常の分類経路を継続し、native入力を空として扱う。
 
-| Reason code | 判定 | 人間の復旧手順 |
+| 理由コード | 判定 | 人間の復旧手順 |
 |---|---|---|
 | `REVIEW_VALID` | 構造化reviewが検証済みである。 | 既存のverdict投稿を継続する。 |
 | `RUN_BUDGET_LIMIT_REACHED` | result subtypeが`error_max_budget_usd`で、当該review実行の予算上限に達した。 | 当該実行の予算を利用可能にできる判断をした後、同じheadで新しいreviewを人が起動する。自動再試行しない。 |
@@ -272,7 +272,7 @@ Action successかつ最後のresultがsuccess/is_error=falseの場合、自由�
 
 HTTP status、特にHTTP 429、Action logの文言、または利用量だけから`ACCOUNT_SPEND_LIMIT_REACHED`と推定してはならない。構造化metadataがこのcodeを示さない失敗は、分類不能または別のreason codeとして扱う。上限到達と分類不能な失敗（少なくとも`CLASSIFIER_INTERNAL_ERROR`、不明なreason code、またはJob Summaryを取得できない場合）では自動再試行を行わず、人間が調査・判断する。
 
-同じheadを再実行する前に、人間はIssue番号、closing Issue、PR番号、対象PR head SHA、失敗run ID、および失敗runのhead SHAを照合する。Job Summaryの`Claude review result`でreason codeを先に確認し、必要な場合だけ該当stepの最小限の非機密情報を確認する。PR差分を変えずに再実行する場合は、GitHub Actions UIで当該runのreviewを再実行し、完了後に新しいrun IDとhead SHAが対象PRの現在head SHAに一致することを確認する。`human-review-required` による停止中の解除順序と、ラベル解除が同じheadへの再review要求になる条件は「人間エスカレーション」節を正本とする。head SHAが変わった場合は同じ実行の再試行として扱わず、新しい差分に対するreviewとして必要な確認をやり直す。
+同じheadを再実行する前に、人間はIssue番号、closing Issue、PR番号、対象PR head SHA、失敗run ID、および失敗runのhead SHAを照合する。Job Summaryの`Claudeレビュー結果`でreason codeを先に確認し、必要な場合だけ該当stepの最小限の非機密情報を確認する。PR差分を変えずに再実行する場合は、GitHub Actions UIで当該runのreviewを再実行し、完了後に新しいrun IDとhead SHAが対象PRの現在head SHAに一致することを確認する。`human-review-required` による停止中の解除順序と、ラベル解除が同じheadへの再review要求になる条件は「人間エスカレーション」節を正本とする。head SHAが変わった場合は同じ実行の再試行として扱わず、新しい差分に対するreviewとして必要な確認をやり直す。
 
 ### Claude Review Cost Guard
 
@@ -331,7 +331,7 @@ Issue起点のpost-Codex requirements gateは、明示マーカーだけを `req
 
 人間が判断を記録し再開可能と確認した後、open PRの停止ラベルはclosing Issue側を先に、PR側を最後に外す。誤ってopen PR側を先に外した場合は、PRへラベルを再付与してからclosing Issue側、PR側の順に外し直す。openかつ非Draft PRではPR側の `human-review-required` が外れたeventが明示的なClaude再レビュー要求となり、Draft PRではラベル解除では起動せずReady for reviewが再レビュー要求となる。
 
-manual protected-path merge等によりmerge後もstale `human-review-required` が残った場合も、cleanup順序はclosing Issue側を先に、merged/closed PR側を最後とする。ただしmerged/closed PR側のラベル解除はClaude再レビュー要求として扱わず、paid Claude Reviewを起動しない。この停止解除・cleanup順序とreview起動条件の正本は本節であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claude review not run」で未実施理由を確認する。
+manual protected-path merge等によりmerge後もstale `human-review-required` が残った場合も、cleanup順序はclosing Issue側を先に、merged/closed PR側を最後とする。ただしmerged/closed PR側のラベル解除はClaude再レビュー要求として扱わず、paid Claude Reviewを起動しない。この停止解除・cleanup順序とreview起動条件の正本は本節であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claudeレビュー未実施」で未実施理由を確認する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `content` と自動mentionを無効にする `allowed_mentions: {parse: []}` を送り、contentが1800 byteを超える場合は送信に失敗する。Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
