@@ -148,6 +148,8 @@ GitHub Actions and the human/reviewer workflow perform repository orchestration 
 
 ## Final response
 
+Write the final report shown to humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
+
 Summarize:
 
 - changed files and the resulting behavior/specification change;

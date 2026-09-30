@@ -17,7 +17,7 @@ emit_result() {
 }
 
 metadata="$(gh pr view "$pr_number" --repo "$repo" --json author,reviews,labels,closingIssuesReferences 2>/dev/null)" || {
-  emit_result false false false 'Follow-up metadata is unavailable; skipping.'
+  emit_result false false false 'フォローアップに必要なメタデータを取得できなかったため、処理をスキップします。'
   exit 0
 }
 if ! jq -es 'length == 1 and (.[0] | type == "object" and
@@ -29,29 +29,29 @@ if ! jq -es 'length == 1 and (.[0] | type == "object" and
     all(.closingIssuesReferences[]; type == "object" and
       (.number | type == "number" and . > 0 and floor == .) and
       (.url | type == "string")))' <<< "$metadata" > /dev/null; then
-  emit_result false false false 'Follow-up metadata is invalid; skipping.'
+  emit_result false false false 'フォローアップに必要なメタデータが不正なため、処理をスキップします。'
   exit 0
 fi
 author_login="$(jq -r '.author.login' <<< "$metadata")"
 
 normal_followup_reason() {
-  printf '%s\n' 'Automated Codex follow-up passed the entry gate; successful trusted completion will request re-review by marking the PR ready for review.'
+  printf '%s\n' 'Codexの自動フォローアップは入口条件を満たしました。信頼済みの処理が正常終了すると、PRをReady for reviewにして再レビューを依頼します。'
 }
 
 human_decision_pause_reason() {
-  printf '%s\n' 'Codex follow-up is paused; a human must decide how to proceed.'
+  printf '%s\n' 'Codexフォローアップを停止しました。人間が次の対応を判断してください。'
 }
 
 if [ "$author_login" != "$developer_app_slug" ] \
     && [ "$author_login" != "${developer_app_slug}[bot]" ] \
     && [ "$author_login" != "app/${developer_app_slug}" ]; then
-  emit_result false false false "Ignoring automated follow-up for untrusted PR author: ${author_login}"
+  emit_result false false false "PRの作成者を信頼できないため、自動フォローアップをスキップします: ${author_login}"
   exit 0
 fi
 
 pr_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$metadata")"
 if [ "$pr_paused" = true ]; then
-  emit_result false false false 'Codex follow-up remains paused by the human-review-required label.'
+  emit_result false false false 'human-review-requiredラベルによりCodexフォローアップは停止中です。'
   exit 0
 fi
 
@@ -59,25 +59,25 @@ issue_prefix="https://github.com/${repo}/issues/"
 if ! closing_issues="$(jq -r --arg prefix "$issue_prefix" \
     '.closingIssuesReferences[] | select(.url | startswith($prefix)) | .number' \
     <<< "$metadata")"; then
-  emit_result false false false 'Closing Issue metadata is unavailable; skipping.'
+  emit_result false false false 'closing Issueのメタデータを取得できなかったため、処理をスキップします。'
   exit 0
 fi
 while IFS= read -r issue_number; do
   [ -n "$issue_number" ] || continue
   if ! issue_json="$(gh api "repos/${repo}/issues/${issue_number}")"; then
-    emit_result false false false "Closing Issue #${issue_number} is unavailable; skipping."
+    emit_result false false false "Closing Issue #${issue_number} を取得できなかったため、処理をスキップします。"
     exit 0
   fi
   if ! jq -es 'length == 1 and (.[0] | type == "object" and
       (.labels | type == "array") and
       all(.labels[]; type == "object" and (.name | type == "string")))' \
       <<< "$issue_json" > /dev/null; then
-    emit_result false false false "Closing Issue #${issue_number} metadata is invalid; skipping."
+    emit_result false false false "Closing Issue #${issue_number} のメタデータが不正なため、処理をスキップします。"
     exit 0
   fi
   issue_paused="$(jq -r '.labels | any(.name == "human-review-required")' <<< "$issue_json")"
   if [ "$issue_paused" = true ]; then
-    emit_result false false false "Codex follow-up remains paused by the human-review-required label on Issue #${issue_number}."
+    emit_result false false false "Issueのhuman-review-requiredラベルによりCodexフォローアップは停止中です: Issue #${issue_number}。"
     exit 0
   fi
 done <<< "$closing_issues"
@@ -90,7 +90,7 @@ review_count="$(
 
 if ! grep -Fxq -- '--- BEGIN REVIEW SUMMARY DATA ---' <<< "$review_body" \
     || ! grep -Fxq -- '--- END REVIEW SUMMARY DATA ---' <<< "$review_body"; then
-  emit_result false true false "Could not parse the trusted reviewer summary; refusing automated follow-up. $(human_decision_pause_reason)"
+  emit_result false true false "信頼済みレビュアーの要約を解析できなかったため、自動フォローアップを停止します。 $(human_decision_pause_reason)"
   exit 0
 fi
 review_summary="$(
@@ -110,9 +110,9 @@ while IFS= read -r summary_line || [ -n "$summary_line" ]; do
 done <<< "$review_summary"
 
 if [ "$human_escalation" = true ]; then
-  emit_result false true false "Claude requested a human decision. $(human_decision_pause_reason)"
+  emit_result false true false "Claudeが人間の判断を求めています。 $(human_decision_pause_reason)"
 elif [ "$review_count" -ge 3 ]; then
-  emit_result false true true "Automated review reached ${review_count} change-request rounds. $(human_decision_pause_reason)"
+  emit_result false true true "自動レビューが${review_count}回の変更要求に達しました。 $(human_decision_pause_reason)"
 else
   emit_result true false false "$(normal_followup_reason)"
 fi
