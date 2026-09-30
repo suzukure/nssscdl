@@ -201,6 +201,15 @@ body = """## Scope-out impact and follow-up
 """
 assert m.extract_follow_up_issues(body) == [10, 11]
 assert m.extract_follow_up_issues("## Scope-out impact and follow-up\n\n- Follow-up Issue: none\n") == []
+assert m.extract_follow_up_issues(
+    "## スコープ外影響と後継Issue\n- 後継Issue: #13\n- Follow-up Issue: #98\n"
+    "## Other\n- 後継Issue: #99\n"
+    "## Scope-out impact and follow-up\n- Follow-up Issue: #15\n- 後継Issue: #97\n"
+) == [13, 15]
+assert m.extract_follow_up_issues(
+    "## スコープ外影響と後継Issue（案）\n- 後継Issue: #16\n"
+    "## スコープ外影響と後継Issue\n- 後継Issue: #17 extra\n- 後継Issue #18\n"
+) == []
 assert m.combined_follow_up_issues(
     "## Scope-out impact and follow-up\n- Follow-up Issue: #12\n",
     "## Scope-out impact and follow-up\n- Follow-up Issue: #11\n- Follow-up Issue: #12\n",

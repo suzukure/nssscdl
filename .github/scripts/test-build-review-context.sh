@@ -119,6 +119,26 @@ if [ "$(grep -Fc 'DATA| - Issue: #36' "$test_dir/follow-up-review.md")" -ne 1 ];
   exit 1
 fi
 
+# Both exact language forms may appear in existing PRs and closing Issues.
+MOCK_CASE=conversation
+MOCK_METADATA="$(jq -c '.body = "## スコープ外影響と後継Issue\n- 後継Issue: #86\n- Follow-up Issue: #98\n\n## Other\n- 後継Issue: #99"' <<< "$valid_metadata")"
+MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #87\n- 後継Issue: #97\n## スコープ外影響と後継Issue\n- 後継Issue: #88'
+MOCK_API_LOG="$test_dir/bilingual-api.log"
+export MOCK_CASE MOCK_METADATA MOCK_CLOSING_BODY MOCK_API_LOG
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/bilingual-review.md" 'dev'
+for number in 86 87 88; do
+  [ "$(grep -Fc "DATA| - Issue: #$number" "$test_dir/bilingual-review.md")" -eq 1 ]
+done
+[ "$(sort -n "$MOCK_API_LOG" | uniq | tr '\n' ' ')" = '36 86 87 88 ' ]
+
+# Similar headings and labels must not turn ordinary references into follow-ups.
+MOCK_METADATA="$(jq -c '.body = "## スコープ外影響と後継Issue（案）\n- 後継Issue: #86\n## Other\n- 後継Issue: #87\n## スコープ外影響と後継Issue\n- 後継Issue: #88 extra\n- 後継Issue #89\n本文 - 後継Issue: #90"' <<< "$valid_metadata")"
+MOCK_CLOSING_BODY='requirements'
+MOCK_API_LOG="$test_dir/malformed-api.log"
+export MOCK_METADATA MOCK_CLOSING_BODY MOCK_API_LOG
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/malformed-review.md" 'dev'
+[ "$(cat "$MOCK_API_LOG")" = 36 ]
+
 MOCK_CASE=valid
 MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #86\n- Follow-up Issue: #87\n- Follow-up Issue: #88\n- Follow-up Issue: #89\n- Follow-up Issue: #90\n- Follow-up Issue: #91'
 MOCK_API_LOG="$test_dir/follow-up-limit-api.log"

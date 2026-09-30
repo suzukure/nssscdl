@@ -49,13 +49,17 @@ jq -cn --slurpfile relation "$work_dir/relation.json" \
   def follow_up_numbers:
     split("\n")
     | reduce .[] as $line (
-        {in_scope_out_section: false, numbers: []};
+        {scope_out_language: null, numbers: []};
         if ($line | test("^## Scope-out impact and follow-up[[:space:]]*$")) then
-          .in_scope_out_section = true
+          .scope_out_language = "en"
+        elif ($line | test("^## スコープ外影響と後継Issue[[:space:]]*$")) then
+          .scope_out_language = "ja"
         elif ($line | test("^#{1,2}[[:space:]]")) then
-          .in_scope_out_section = false
-        elif .in_scope_out_section and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
+          .scope_out_language = null
+        elif .scope_out_language == "en" and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
           .numbers += [($line | capture("^- Follow-up Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
+        elif .scope_out_language == "ja" and ($line | test("^- 後継Issue: #[0-9]+[[:space:]]*$")) then
+          .numbers += [($line | capture("^- 後継Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
         else . end
       )
     | .numbers;

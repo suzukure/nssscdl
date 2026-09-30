@@ -203,16 +203,20 @@ def pull_request_snapshot(repo: str, number: int) -> tuple[dict[str, Any], str, 
 
 
 def extract_follow_up_issues(body: str) -> list[int]:
-    in_section = False
+    section_language: str | None = None
     found: list[int] = []
     for line in body.splitlines():
         if re.fullmatch(r"## Scope-out impact and follow-up\s*", line):
-            in_section = True
+            section_language = "en"
             continue
-        if in_section and re.match(r"^#{1,2}\s+", line):
-            break
-        if in_section:
-            match = re.fullmatch(r"- Follow-up Issue: #(\d+)\s*", line)
+        if re.fullmatch(r"## スコープ外影響と後継Issue\s*", line):
+            section_language = "ja"
+            continue
+        if re.match(r"^#{1,2}\s+", line):
+            section_language = None
+        if section_language:
+            label = "Follow-up Issue" if section_language == "en" else "後継Issue"
+            match = re.fullmatch(rf"- {label}: #(\d+)\s*", line)
             if match:
                 number = int(match.group(1))
                 if number not in found:

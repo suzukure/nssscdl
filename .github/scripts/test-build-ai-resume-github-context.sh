@@ -69,6 +69,23 @@ command='{"result":"accepted","actor":"suzukure","action":"follow-up","follow_up
 pr_base="$(jq -cn --arg fingerprint "$fingerprint" '{command:{result:"accepted",actor:"suzukure",action:"follow-up",follow_up_issue:123},target:"pr:37",closing_issue:{number:36,state:"open",body_fingerprint:$fingerprint},pull_request:{number:37,state:"open",base_ref:"main",head_ref:"ai/issue-36",head_sha:"0123456789abcdef0123456789abcdef01234567"},follow_up_issue:{number:123,kind:"issue",state:"open",explicitly_recorded:true}}')"
 assert_result follow-up pr "$pr_base" 37
 
+body=$'## スコープ外影響と後継Issue\n- 後継Issue: #123\n## Other\n- 後継Issue: #999\n'
+export body
+fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
+assert_result japanese-follow-up pr "$(jq -c --arg fingerprint "$fingerprint" '.closing_issue.body_fingerprint = $fingerprint' <<< "$pr_base")" 37
+
+body=$'## スコープ外影響と後継Issue\n- Follow-up Issue: #123\n'
+export body
+fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
+assert_result mismatched-language-follow-up pr "$(jq -c --arg fingerprint "$fingerprint" '.closing_issue.body_fingerprint = $fingerprint | .follow_up_issue.explicitly_recorded = false' <<< "$pr_base")" 37
+
+body=$'## スコープ外影響と後継Issue（案）\n- 後継Issue: #123\n## スコープ外影響と後継Issue\n- 後継Issue: #123 extra\n'
+export body
+fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
+assert_result malformed-japanese-follow-up pr "$(jq -c --arg fingerprint "$fingerprint" '.closing_issue.body_fingerprint = $fingerprint | .follow_up_issue.explicitly_recorded = false' <<< "$pr_base")" 37
+
+body=$'本文\n\n## Scope-out impact and follow-up\n- Follow-up Issue: #123\n\n## Next\n- Follow-up Issue: #999\n\n'
+export body
 MOCK_CASE=follow-up-pr
 export MOCK_CASE
 assert_result follow-up-pr pr "$(jq -c '.follow_up_issue |= (.kind = "pr" | .state = "closed")' <<< "$pr_base")" 37
