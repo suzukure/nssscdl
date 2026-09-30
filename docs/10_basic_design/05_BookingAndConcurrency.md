@@ -4,7 +4,7 @@
 
 本書は、予約・キャンセル・月間再分類等の重要業務Commandについて、D1上でどの状態変更を同一の整合範囲として扱い、競合・監査・通知をどのように整合させるかを定義する。
 
-本論点は `OI-BD-006` で検討する。本書はC4 Level 2の基本設計としてTransaction境界と実行原則を定義する。個別DDL、Index、Trigger、Guard用SQL、CTE、Application Component構造等は詳細設計（Level 3）で具体化する。
+`OI-BD-006` の基本設計論点は確定済みである。本書はC4 Level 2の基本設計としてTransaction境界と実行原則を定義する。個別DDL、Index、Trigger、Guard用SQL、CTE、Application Component構造等は詳細設計（Level 3）で具体化する。
 
 ## 2. 既存の前提
 

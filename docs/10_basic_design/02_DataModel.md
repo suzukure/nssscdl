@@ -460,13 +460,13 @@ Student
 ## 9. 設計判断記録
 
 - `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録する。
-- 予約履歴と現在占有の分離は `OI-BD-001` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
-- Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
-- Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
-- 過去Reservationのclassification自動再計算を行わない境界は `OI-BD-004` で検討し、Lesson開始時刻を確定境界として本書および `04_ReservationModel.md` に確定結果を反映する。
+- 予約履歴と現在占有の分離は `OI-BD-001` で確定し、本書および `04_ReservationModel.md` に反映済みである。
+- Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で確定し、本書および `04_ReservationModel.md` に反映済みである。
+- Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で確定し、本書および `04_ReservationModel.md` に反映済みである。
+- 過去Reservationのclassificationを自動再計算しない境界は `OI-BD-004` でLesson開始時刻として確定し、本書および `04_ReservationModel.md` に反映済みである。
 - 生徒削除等のシステム処理由来の自動取消は、直接確定した設計判断として `StudentReservation.status = system_cancelled` と `SystemCancellationDetail` に分離して表現する。初期 `reason_code` は `student_deleted` とする。
-- Reservation取消日時・取消主体の保持方法は `OI-BD-005` で検討し、取消日時を `StudentReservation.cancelled_at` に共通化、取消種別を `status` から導出、具体ActorをAuditLog等へ分離する方針として確定・反映する。
-- `OI-BD-006` で、永続化済みInvariant違反を追跡する運用Entityとして `IntegrityIncident` を導入する。これは予約・占有の正本ではなく、Command Guard / 定期Scanによる検知、重複集約、保守通知、Repair後の解決判定を支える運用状態である。
+- Reservation取消日時・取消主体の保持方法は `OI-BD-005` で確定済みである。取消日時の `StudentReservation.cancelled_at` への共通化、取消種別の `status` からの導出、具体ActorのAuditLog等への分離を本書および `04_ReservationModel.md` に反映済みである。
+- `OI-BD-006` では、永続化済みInvariant違反を追跡する運用Entity `IntegrityIncident` の導入を確定済みである。これは予約・占有の正本ではなく、Command Guard / 定期Scanによる検知、重複集約、保守通知、Repair後の解決判定を支える運用状態であり、詳細は `05_BookingAndConcurrency.md` §14を正とする。
 
 ## 10. 図
 
@@ -474,6 +474,6 @@ PlantUML source: `docs/diagrams/plantuml/data-model-overview.puml`
 
 Rendered SVG: `docs/diagrams/rendered/data-model-overview.svg`（自動生成）
 
-`data-model-overview` は通常業務の主要論理概念を俯瞰し、§2.1の認証・Account系と予約・占有系の関係を含む。認証・Account系の詳細な意味は§2.1を正とする。
+`data-model-overview` は通常業務の主要論理概念を俯瞰する概要図であり、全Entity一覧ではない。§2.1の認証・Account系と予約・占有系の関係を含み、認証・Account系の詳細な意味は§2.1を正とする。通知の `NotificationIntent` / `NotificationDelivery` とDelivery Attempt等の関係・状態境界は `05_BookingAndConcurrency.md` §13を正とし、概要図には含めない。
 
 `IntegrityIncident` は運用・整合性監視Entityのため概要図に含めず、詳細設計で物理関係を具体化する。Backup Artifact / manifest / Recovery Purge Registry等もBackup / Recovery専用metadataのため概要図に含めない（§2.2）。
