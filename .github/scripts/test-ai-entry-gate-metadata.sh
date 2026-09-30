@@ -123,7 +123,7 @@ MOCK_JQ_EXTRACT_FAIL=true assert_followup_skips 'follow-up relation extraction' 
 
 MOCK_PR_JSON='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"dev[bot]"},"reviews":[],"labels":[],"closingIssuesReferences":[]}'
 export MOCK_PR_JSON
-assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
+assert_stops 'review missing closing Issue' bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
 
 MOCK_API_JSON='{"number":36,"state":"closed","labels":[]}'

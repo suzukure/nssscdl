@@ -27,6 +27,18 @@ if [ "$diff_bytes" -gt 400000 ]; then
 fi
 
 issue_prefix="https://github.com/${repo}/issues/"
+if ! jq -e --arg prefix "$issue_prefix" '
+    (.closingIssuesReferences | type == "array") and
+    all(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string")) and
+    any(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string" and startswith($prefix)))
+  ' "$metadata" > /dev/null; then
+  echo 'No valid same-repository closing Issue; refusing to build review context.' >&2
+  exit 1
+fi
 mapfile -t closing_issues < <(
   jq -r --arg prefix "$issue_prefix" \
     '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' "$metadata" \

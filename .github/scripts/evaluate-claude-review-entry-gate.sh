@@ -80,6 +80,10 @@ if ! closing_issues="$(jq -r --arg prefix "$issue_prefix" \
   echo 'Could not extract closing Issues; refusing Claude review.' >&2
   exit 1
 fi
+if [ -z "$closing_issues" ]; then
+  echo 'No same-repository closing Issue; refusing Claude review.' >&2
+  exit 1
+fi
 
 while IFS= read -r issue_number; do
   [ -n "$issue_number" ] || continue
