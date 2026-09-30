@@ -57,6 +57,15 @@ assert_rejected() {
   fi
 }
 
+assert_diagnostic() {
+  local name="$1" target_kind="$2" expected="$3" number="${4:-36}" output
+  if output="$(printf '%s' "$command" | bash "$helper" owner/repo "$target_kind" "$number" 2>&1)"; then
+    echo "Expected $name to fail closed." >&2
+    exit 1
+  fi
+  grep -Fq "$expected" <<< "$output" || { echo "Unexpected $name diagnostic." >&2; exit 1; }
+}
+
 fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
 base="$(jq -cn --arg fingerprint "$fingerprint" '{command:{result:"accepted",actor:"suzukure",action:"develop"},target:"issue:36",closing_issue:{number:36,state:"open",body_fingerprint:$fingerprint},pull_request:null,follow_up_issue:null}')"
 assert_result issue issue "$base"
@@ -102,6 +111,13 @@ for case_name in closing-api-failure missing-body null-body wrong-body-type malf
 done
 MOCK_CASE=bad-relation
 assert_rejected bad-relation pr 37
+MOCK_CASE=''
+usage_output="$(bash "$helper" owner/repo issue 2>&1 || true)"
+grep -Fq '使い方: build-ai-resume-github-context.sh' <<< "$usage_output"
+MOCK_CASE=bad-relation
+assert_diagnostic bad-relation pr '対象との関連を解決できませんでした' 37
+MOCK_CASE=follow-up-wrong-number
+assert_diagnostic follow-up-wrong-number pr '後継Issueの応答が不正です' 37
 MOCK_CASE=''
 command='{"result":"ignore"}'
 assert_rejected invalid-command issue
