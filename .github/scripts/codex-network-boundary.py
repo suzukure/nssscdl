@@ -50,7 +50,12 @@ def verify_properties(unit):
     result = subprocess.run(["/usr/bin/systemctl", "show", unit, "--no-pager",
                              "--property=IPAddressDeny", "--property=IPAddressAllow"],
                             capture_output=True, text=True, check=True, timeout=5)
-    lines = result.stdout.splitlines()
+    validate_properties(result.stdout)
+
+
+def validate_properties(text):
+    """Also usable for a trusted runner snapshot when service sockets are masked."""
+    lines = text.splitlines()
     require(len(lines) == 2, "network-properties-unavailable")
     values = dict(line.split("=", 1) for line in lines)
     expected = {"IPAddressDeny": {"0.0.0.0/0", "::/0"},
@@ -96,11 +101,11 @@ def explicit_deny(result):
     return result == {"result": "error", "errno": errno.EPERM}
 
 
-def probe(address, port, ipv6_port, unit=None):
+def probe(address, port, ipv6_port, unit=None, verifier=None):
     validate_endpoint(address, port)
     require(type(ipv6_port) is int and 1024 <= ipv6_port <= 65535, "invalid-port")
     if unit is not None:
-        verify_properties(unit)
+        (verifier or verify_properties)(unit)
     # Preserve creation of both families needed by Codex/bubblewrap.
     for family in (socket.AF_UNIX, socket.AF_INET):
         with socket.socket(family, socket.SOCK_STREAM):
