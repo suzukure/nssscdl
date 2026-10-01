@@ -101,7 +101,10 @@ def command(repo, root, unit, record):
     properties = ('Type=exec', 'RuntimeMaxSec=55s', 'TimeoutStopSec=2s',
                   'KillMode=control-group', 'SendSIGKILL=yes', 'User=nobody', 'Group=nogroup',
                   *hardening, *network, 'RootDirectory=' + str(root), 'MountAPIVFS=no',
-                  # Also hide systemd's automatic /run/host/os-release injection.
+                  # Unprefixed InaccessiblePaths (including inherited socket masks)
+                  # are host-root based, not RootDirectory isolation evidence.
+                  # The probe proves staged-directory/host-path non-exposure,
+                  # including /run/host/os-release, with empty/hidden checks.
                   'PrivateDevices=yes', 'InaccessiblePaths=/proc /sys /run /home /root',
                   'WorkingDirectory=/project', 'ReadWritePaths=+/project +/tmp')
     # env -i is applied to systemd-run, so manager/caller credentials are not copied.
