@@ -116,6 +116,10 @@ for failure in ('unsupported', 'timeout', 'invalid-output'):
 with tempfile.TemporaryDirectory(prefix='npm-filesystem-build-test-') as build:
     built = Path(build) / 'root'
     fixture.build_root(repo, built, node, npm, record['token'])
+    cache = built / 'project/cache'
+    assert cache.is_dir() and not cache.is_symlink()
+    assert cache.resolve().is_relative_to((built / 'project').resolve())
+    assert list(cache.iterdir()) == [], 'host cache copied into root'
     boundary = json.loads((built / 'boundary.json').read_text())
     assert boundary['visible_root'] == sorted(entry.name for entry in built.iterdir())
     assert not (built / 'etc').exists()
@@ -347,6 +351,7 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   const fakeCp = {spawnSync(cmd,args,options) {
     calls++;
     assert.equal(cmd,'/runtime/node');
+    assert.deepEqual(args.filter(arg=>arg.startsWith('--cache=')), ['--cache=/project/cache']);
     for (const flag of ['--offline','--ignore-scripts','--package-lock=false']) assert(args.includes(flag));
     assert.equal(options.timeout,5000);
     const control = ['./local','file:./local-control.tgz'].includes(args.at(-1));

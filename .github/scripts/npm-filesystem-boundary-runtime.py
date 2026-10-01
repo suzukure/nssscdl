@@ -59,6 +59,7 @@ def build_root(repo, root, node, npm, token, manifest=None):
     for name in ('project', 'tmp', 'dev', 'run', 'proc', 'sys', 'home', 'root'):
         (root / name).mkdir()
     project = root / 'project'
+    (project / 'cache').mkdir()
     (project / 'package.json').write_text(json.dumps(manifest))
     (project / 'local').mkdir()
     (project / 'local/package.json').write_text('{"name":"local-control","version":"1.0.0"}')
