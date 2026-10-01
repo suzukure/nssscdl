@@ -2,9 +2,11 @@
 
 ## 1. 範囲と前提
 
-`01_StudentReservationApplication.md` の4 EndpointのRepository Adapterを対象とする。wire、分類規則、通知義務は同書、`../10_basic_design/04_ReservationModel.md`、`../10_basic_design/05_BookingAndConcurrency.md` §3〜5・§13を正とする。本書の物理名はlower_snake_case、IDはWorker生成のopaque TEXT、時刻はUTC Unix秒のINTEGER、月は日本時間の暦月を表す`YYYY-MM` TEXTとする。API出力だけをAsia/TokyoのRFC 3339へ変換する。Unix秒は整数として比較し、開始境界は`T < starts_at`で判定する。D1接続ごとに`PRAGMA foreign_keys = ON`を前提とし、無効ならCommandを開始しない。
+`01_StudentReservationApplication.md` の4 EndpointのRepository Adapterを対象とする。wire、分類規則、通知義務は同書、`../10_basic_design/04_ReservationModel.md`、`../10_basic_design/05_BookingAndConcurrency.md` §3〜5・§13を正とする。本書の物理名はlower_snake_case、IDはWorker生成のopaque TEXT、時刻はUTC Unix秒のINTEGER、月は日本時間の暦月を表す`YYYY-MM` TEXTとする。API出力だけをAsia/TokyoのRFC 3339へ変換する。Unix秒は整数として比較し、開始境界は`T < starts_at`で判定する。D1のforeign key enforcementは既定で有効であることを前提とし、通常Query / Migrationを接続ごとの`PRAGMA foreign_keys = ON`設定に依存させない。ApplicationからenforcementをOFFへ切り替えない。FK違反は§3のMigration / integrity validationで検出する。
 
-既存の`Student`、`StudentSecurityAccess`、Student Session / Accountの物理Schemaは認証詳細設計の責務とする。本設計が参照する`students(id)`は基盤Migrationで先に存在し、本人の有効Session、Student role、最新lifecycle / accessをGuard Portが解決する。Confirmの同一Transaction内で、そのGuard Portが使用した正本行の現在値も再照合する。該当物理名を決める認証Migrationとの接続は、予約Migration適用前に確定させる。以下の予約Schemaは認証の物理列名を先取りしない。
+既存の`Student`、`StudentSecurityAccess`、Student Session / Accountの物理Schemaと、Confirmの同一Transaction内で最新Session / role / access / lifecycleを再照合する物理契約は#636で確定する。本設計の`students(id)`は認証基盤への参照契約であり、その他の認証物理列名を先取りしない。Guard Portは本人の有効Session、Student role、最新lifecycle / accessと予約操作可否を解決し、Confirmでは同じ正本をTransaction内で再照合する。#636完了と認証Migrationへの接続確認を、予約Migration適用およびProduction Adapter有効化の必須条件とする。
+
+#608の隔離試験fixtureも同じGuard Port契約を満たし、Session期限・失効、role、本人同一性、最新access / lifecycleと、それらの変更によるTransaction内Guard失敗を検証する。fixtureは隔離DBと試験用Adapterに限定し、Production認可を迂回するEndpoint、設定分岐、常時許可のGuardを導入しない。
 
 ## 2. Table、制約、Index
 
@@ -14,7 +16,8 @@
 CREATE TABLE schedule_months (
   id TEXT PRIMARY KEY, month_key TEXT NOT NULL UNIQUE,
   published_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  CHECK (month_key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]')
+  CHECK (month_key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]' AND
+         substr(month_key, 6, 2) BETWEEN '01' AND '12')
 );
 CREATE TABLE lesson_slots (
   id TEXT PRIMARY KEY, schedule_month_id TEXT NOT NULL REFERENCES schedule_months(id),
@@ -29,7 +32,8 @@ CREATE INDEX ix_slots_month_start ON lesson_slots(schedule_month_id, starts_at, 
 CREATE TABLE student_monthly_lesson_configs (
   student_id TEXT NOT NULL REFERENCES students(id), schedule_month_id TEXT NOT NULL REFERENCES schedule_months(id),
   standard_count INTEGER NOT NULL CHECK (standard_count >= 0),
-  updated_at INTEGER NOT NULL, PRIMARY KEY(student_id, schedule_month_id)
+  updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,
+  PRIMARY KEY(student_id, schedule_month_id)
 );
 CREATE TABLE student_reservations (
   id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id),
@@ -102,13 +106,19 @@ CREATE TABLE command_guards (
 
 `StudentReservation`は同一Slotの取消履歴を複数保持できる。`slot_occupancies.slot_id UNIQUE`だけが現在占有の最終一意Guardであり、`reservation_id`の複合FKがSlot一致を保証する。`confirmed`が現在占有を持つべき未来枠、占有先のstatus、非算入時のNULL分類、`month_key`と日時の一致、AdminHold / GroupLesson詳細の有無は複数行条件なのでCommand GuardとIntegrity Scanで検査する。未実装の管理Commandが詳細行を欠いた占有を作ってよい意味ではない。`created_by`は予約時はGuardが解決したStudent actor ID、管理占有では管理actor IDとする。
 
+`student_monthly_lesson_configs.updated_by`は`04_ReservationModel.md` §12.1の設定更新主体を保持するopaque TEXTの管理者Actor IDとし、認証済み管理者Guardが解決した値を保存する。氏名・emailやClient指定値を用いず、管理者認証物理Schemaが本書の対象外であるためFKは設けない。個別設定行がなければ既定3を導出し、既定値のためだけにActor不明の行を作らない。
+
 `business_audit_logs`は予約Confirmの成功監査を同一Transactionに保存し、失敗の技術Logを混ぜない。`payload_json`は送信に必要な確定事実だけを保持する。予約確認は新規ReservationのID・日時・確定時分類、区分変更は既存ReservationのID・日時・before / afterを持つ。月間回数、料金、email、氏名は含めない。`notification_intents`は論理宛先、`notification_outbox`は初回配送pickupのdurable workであり、実宛先・Provider結果・Delivery Attemptは後続のDelivery詳細設計側へ分離する。
+
+単一予約ConfirmのAuditは1業務Commandにつき1行とし、`target_type = 'student_reservation'`、`target_id = 新規Reservation ID`、`before_json = NULL`とする。`after_json`はversion 1のJSON objectとして`{"version":1,"reservation":{"id":"…","automatic_classification":"standard","classification":"standard"},"derived_changes":[]}`の形で保存する。`derived_changes`には同一Commandで自動分類または実効分類を更新した**全既存Reservation**について、`reservation_id`、`before` / `after`（各objectに`automatic_classification`と`classification`）を含め、Slotの`starts_at, reservation.id`順に固定する。実効分類がOverrideで維持され自動分類だけが変わる場合も含め、変更なしは`[]`とする。§5の検証済みplanから同じbatchへ保存し、予約成立Auditから派生変更の対象・変更前後・因果関係を追跡できるようにする。氏名・email・月間回数・料金を複製しない。
 
 論理→物理の対応は`ScheduleMonth → schedule_months`（`year` / `month`は`month_key`へ一意符号化）、`LessonSlot → lesson_slots`、`StudentMonthlyLessonConfig → student_monthly_lesson_configs`、`StudentReservation → student_reservations`、`SlotOccupancy → slot_occupancies`、3例外Entity → 同名の`reservation_*` Table、`AuditLog → business_audit_logs`、`NotificationIntent → notification_intents`である。`notification_outbox`と`command_guards`は業務Entityではなく配送／Transaction内部の物理補助Tableである。
 
 ## 3. Migration順序
 
 `migrations/`のversioned fileを番号順に一度だけ適用し、適用済みファイルを書き換えない。予約価値単位の導入順は (1) 認証基盤の`students(id)`とGuard Portの正本、(2) `schedule_months`・`lesson_slots`、(3) `student_monthly_lesson_configs`・`student_reservations`・3例外Table、(4) `slot_occupancies`、(5) `business_audit_logs`・`notification_intents`・`notification_outbox`、(6) `command_guards`、(7) 上記Index、(8) FK確認・Integrity Queryの順。各段階を別の単調増加versionにし、依存関係を逆転させない。既存データがある環境ではFK確認、月／日時整合、現在占有一意性、未来confirmedと占有の一致を検証してからAdapterを公開する。違反を自動修復してMigration成功扱いにしない。後続のcancel / admin機能はこのSchemaを拡張し、既存制約を弱めず、移行とCommandを同時に設計する。
+
+§1の#636完了条件を満たすまで予約Migrationを適用せず、Production Adapterを有効化しない。Migration / integrity validationでは`PRAGMA foreign_key_check`が0行であることを確認し、違反または検証不能なら適用完了・Adapter公開へ進まない。月CHECKは`01`〜`12`をDBで保証し、`lesson_date`の所属月およびUTCの`starts_at / ends_at`との多列整合は引き続きCommand Guard / Integrity Queryで検証する。
 
 ## 4. Read setとQuery
 
@@ -131,7 +141,7 @@ Prepared Statementだけからなる**1回の**`session.batch([...])`に次を�
 3. `student_reservations`へ新規confirmed行をINSERT。`student_id`はRequestではなくGuard結果をbindし、分類はplanの新規値、時刻はGuard行のTをSELECTして設定する。
 4. `slot_occupancies`へstudent_reservation占有をINSERT。`slot_id UNIQUE`および複合FK違反は全体Rollback。先行占有を上書きするUPSERTは使用しない。
 5. planに列挙した既存未開始ReservationをIDごとに`UPDATE ... WHERE student_id = ? AND status = 'confirmed' AND automatic_classification = ? AND classification = ? AND (SELECT starts_at FROM lesson_slots WHERE id = lesson_slot_id) > (SELECT captured_at FROM command_guards WHERE id = ?)`で更新する。Overrideは保持し、実効値はplanで計算した結果とする。集合UPDATEまたは固定順のprepared statementsとし、後続Guardでplan中の全IDと最終値を照合する。変更なしなら書き込まない。
-6. `business_audit_logs`を1件INSERTし、Actor、予約対象、確定時刻、最小限のafterを記録する。`notification_intents`へ予約確認を1件、実効分類が両方向のstandard/additional間で変わった既存Reservationごとに区分変更を1件INSERTし、各Intentと同じIDの`notification_outbox`をINSERTする。新規予約に区分変更Intentを作らない。必要件数／payloadをplanから固定し、どのINSERT失敗もbatch全体をRollbackする。
+6. `business_audit_logs`を1件INSERTし、Actor、予約対象、確定時刻、§2の新規予約と`derived_changes`を含む`after_json`を記録する。`notification_intents`へ予約確認を1件、実効分類が両方向のstandard/additional間で変わった既存Reservationごとに区分変更を1件INSERTし、各Intentと同じIDの`notification_outbox`をINSERTする。新規予約に区分変更Intentを作らない。必要件数／payloadをplanから固定し、どのINSERT失敗もbatch全体をRollbackする。
 7. 最終Guardを`UPDATE command_guards SET ok = CASE WHEN ... THEN 1 ELSE 0 END`で実行する。検査対象は、対象Slotがまだ同じ占有を指すこと、plan中の各Reservationの最終分類、事前生成したIDによるAudit 1件・Intentとoutbox必要件数、最新本人権限、`CAST(strftime('%s','now') AS INTEGER) <`対象Slotとplan中で未開始扱いした各Slotの`starts_at`。最終時刻検査でLesson開始境界を越えたbatchはRollbackする。`T`は同一Commandの全保存時刻・分類基準として維持する。
 8. Guard行をDELETEしてbatchを正常終了する。D1のatomic batch成功だけを`201`とする。`201`のViewは確定済みplanから生成し、曖昧なbatch応答では再実行せずPrimaryを再読込する。
 
@@ -151,6 +161,8 @@ Guardのread-set不一致、最終時刻Guard、`slot_occupancies.slot_id UNIQUE
 | --- | --- | --- |
 | §2〜4 Slot / Preview / 履歴 | REQ-001 / 002 / 003 / 005、BR-015 / 017 / 050〜059 / 066〜068、AC-001 / 002 / 003 / 005 | 公開・占有View、本人月間分類、取消履歴と安定Page |
 | §5 原子的Confirm | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
+| §2 設定主体・派生変更監査 | BR-056 / 058 / 132、REQ-940、AC-940-001〜002、`04_ReservationModel.md` §12.1、`05_BookingAndConcurrency.md` §12.2 | `updated_by` mapping、予約成立Auditから全再分類before / afterを追跡 |
+| §1・§3・§5 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | #636完了後に有効化、同一Transactionで最新認証状態を再照合 |
 | §2・§5〜6 通知 | REQ-101 / 104 / 914、BR-112 / 115 / 133、AC-101-001〜002 / AC-104-001〜003 / AC-914-004〜005 | 必須Intent同一Commit、配送分離、安全なError |
 
 既存のPOL→BR→REQ→AC→TCは変更しない。要求ベース試験は`../40_test/02_FunctionalTestSpecification.md`、`03_NonFunctionalTestSpecification.md`と`04_RequirementsTestTraceability.md`を参照する。OOS-001 / 002を維持し、料金、管理者代理予約、Bulk / cancel / admin Commandの物理詳細を導入しない。

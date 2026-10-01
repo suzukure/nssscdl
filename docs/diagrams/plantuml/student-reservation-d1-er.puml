@@ -22,6 +22,8 @@ entity student_monthly_lesson_configs {
   * student_id : TEXT PK, FK
   * schedule_month_id : TEXT PK, FK
   * standard_count : INTEGER
+  * updated_at : INTEGER
+  * updated_by : TEXT (Admin Actor ID)
 }
 entity student_reservations {
   * id : TEXT PK
@@ -79,5 +81,10 @@ notification_intents ||--o| notification_outbox
 note bottom of business_audit_logs
   Actor / target IDs reference a polymorphic audit subject.
   Confirm inserts one success row in the same batch.
+  after_json includes the new reservation and all derived_changes.
+  Each change records reservation_id and before / after classifications.
+end note
+note bottom of student_monthly_lesson_configs
+  updated_by is the resolved Admin Actor ID, without a speculative FK.
 end note
 @enduml
