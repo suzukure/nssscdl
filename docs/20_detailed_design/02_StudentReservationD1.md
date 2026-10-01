@@ -4,9 +4,9 @@
 
 `01_StudentReservationApplication.md` の4 EndpointのRepository Adapterを対象とする。wire、分類規則、通知義務は同書、`../10_basic_design/04_ReservationModel.md`、`../10_basic_design/05_BookingAndConcurrency.md` §3〜5・§13を正とする。本書の物理名はlower_snake_case、IDはWorker生成のopaque TEXT、時刻はUTC Unix秒のINTEGER、月は日本時間の暦月を表す`YYYY-MM` TEXTとする。API出力だけをAsia/TokyoのRFC 3339へ変換する。Unix秒は整数として比較し、開始境界は`T < starts_at`で判定する。D1のforeign key enforcementは既定で有効であることを前提とし、通常Query / Migrationを接続ごとの`PRAGMA foreign_keys = ON`設定に依存させない。ApplicationからenforcementをOFFへ切り替えない。FK違反は§3のMigration / integrity validationで検出する。
 
-既存の`Student`、`StudentSecurityAccess`、Student Session / Accountの物理Schemaと、Confirmの同一Transaction内で最新Session / role / access / lifecycleを再照合する物理契約は#636で確定する。本設計の`students(id)`は認証基盤への参照契約であり、その他の認証物理列名を先取りしない。Guard Portは本人の有効Session、Student role、最新lifecycle / accessと予約操作可否を解決し、Confirmでは同じ正本をTransaction内で再照合する。#636完了と認証Migrationへの接続確認を、予約Migration適用およびProduction Adapter有効化の必須条件とする。
+既存の`Student`、`StudentSecurityAccess`、Student Session / Accountの物理Schemaと、Confirmの同一Transaction内で最新Session / role / access / lifecycleを再照合する物理契約は#636で確定する。本設計の`students(id)`は認証基盤への参照契約であり、その他の認証物理列名を先取りしない。Guard Portは本人の有効Session、Student role、最新lifecycle / accessと予約操作可否を解決し、Confirmでは同じ正本をTransaction内で再照合する。ProductionおよびProduction相当の共有環境では、#636完了と認証Migrationへの接続確認を、予約Migration適用および予約Adapter有効化の必須条件とする。
 
-#608の隔離試験fixtureも同じGuard Port契約を満たし、Session期限・失効、role、本人同一性、最新access / lifecycleと、それらの変更によるTransaction内Guard失敗を検証する。fixtureは隔離DBと試験用Adapterに限定し、Production認可を迂回するEndpoint、設定分岐、常時許可のGuardを導入しない。
+#608のlocal / isolated test・操作評価では、#636完了前でも、同じGuard Port契約を満たすtest auth fixtureを先行利用し、隔離したEvaluation D1へ予約Schemaを適用してよい。fixtureはSession期限・失効、role、本人同一性、最新access / lifecycleと、それらの変更によるTransaction内Guard失敗を検証する。fixtureはProduction schema / authorizationの代替正本ではなく、隔離DBと試験用Adapterに限定し、Productionへ持ち込める認可迂回Endpoint、設定分岐、常時許可のGuardを導入しない。
 
 ## 2. Table、制約、Index
 
@@ -118,7 +118,7 @@ CREATE TABLE command_guards (
 
 `migrations/`のversioned fileを番号順に一度だけ適用し、適用済みファイルを書き換えない。予約価値単位の導入順は (1) 認証基盤の`students(id)`とGuard Portの正本、(2) `schedule_months`・`lesson_slots`、(3) `student_monthly_lesson_configs`・`student_reservations`・3例外Table、(4) `slot_occupancies`、(5) `business_audit_logs`・`notification_intents`・`notification_outbox`、(6) `command_guards`、(7) 上記Index、(8) FK確認・Integrity Queryの順。各段階を別の単調増加versionにし、依存関係を逆転させない。既存データがある環境ではFK確認、月／日時整合、現在占有一意性、未来confirmedと占有の一致を検証してからAdapterを公開する。違反を自動修復してMigration成功扱いにしない。後続のcancel / admin機能はこのSchemaを拡張し、既存制約を弱めず、移行とCommandを同時に設計する。
 
-§1の#636完了条件を満たすまで予約Migrationを適用せず、Production Adapterを有効化しない。Migration / integrity validationでは`PRAGMA foreign_key_check`が0行であることを確認し、違反または検証不能なら適用完了・Adapter公開へ進まない。月CHECKは`01`〜`12`をDBで保証し、`lesson_date`の所属月およびUTCの`starts_at / ends_at`との多列整合は引き続きCommand Guard / Integrity Queryで検証する。
+ProductionおよびProduction相当の共有環境への予約Migration適用・予約Adapter有効化は§1の#636完了条件に従う。#608のlocal / isolated test・操作評価では、導入順(1)を§1のtest auth fixtureで満たしてから(2)以降を適用できる。Migration / integrity validationでは環境を問わず`PRAGMA foreign_key_check`が0行であることを確認し、違反または検証不能なら適用完了・Adapter公開へ進まない。月CHECKは`01`〜`12`をDBで保証し、`lesson_date`の所属月およびUTCの`starts_at / ends_at`との多列整合は引き続きCommand Guard / Integrity Queryで検証する。
 
 ## 4. Read setとQuery
 
@@ -162,7 +162,7 @@ Guardのread-set不一致、最終時刻Guard、`slot_occupancies.slot_id UNIQUE
 | §2〜4 Slot / Preview / 履歴 | REQ-001 / 002 / 003 / 005、BR-015 / 017 / 050〜059 / 066〜068、AC-001 / 002 / 003 / 005 | 公開・占有View、本人月間分類、取消履歴と安定Page |
 | §5 原子的Confirm | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
 | §2 設定主体・派生変更監査 | BR-056 / 058 / 132、REQ-940、AC-940-001〜002、`04_ReservationModel.md` §12.1、`05_BookingAndConcurrency.md` §12.2 | `updated_by` mapping、予約成立Auditから全再分類before / afterを追跡 |
-| §1・§3・§5 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | #636完了後に有効化、同一Transactionで最新認証状態を再照合 |
+| §1・§3・§5 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | Production・同等共有環境は#636完了・認証Migration接続確認後に有効化。#608の隔離評価は同じGuard Port契約のfixtureで先行可能。いずれも同一Transactionで最新認証状態を再照合 |
 | §2・§5〜6 通知 | REQ-101 / 104 / 914、BR-112 / 115 / 133、AC-101-001〜002 / AC-104-001〜003 / AC-914-004〜005 | 必須Intent同一Commit、配送分離、安全なError |
 
 既存のPOL→BR→REQ→AC→TCは変更しない。要求ベース試験は`../40_test/02_FunctionalTestSpecification.md`、`03_NonFunctionalTestSpecification.md`と`04_RequirementsTestTraceability.md`を参照する。OOS-001 / 002を維持し、料金、管理者代理予約、Bulk / cancel / admin Commandの物理詳細を導入しない。
