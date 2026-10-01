@@ -61,4 +61,20 @@ socket maskでservice内の `systemctl` が使えないため、trusted runner�
 
 制限されたCodex service内ではruntimeを `SKIP` とし、systemd不在の独立GitHub Actions runnerでは失敗する。`SKIP` はregistry到達・実効network境界の実証済みを意味しない。実registry positive proofは独立runnerの結果を確認してから判定する。
 
-production developer / follow-upからはunreachableで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後継の順序は **#649 → #652（package-manager / filesystem source escape）→ #650（initial lock）→ #647（production wiring）**。本fixtureのnetwork proofだけで後継のescape検証やbootstrap完了とは扱わない。
+production developer / follow-upからはunreachableで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後継の順序は **#649 → #652（network source escape）→ #654（filesystem source / lifecycle境界）→ #650（initial lock）→ #647（production wiring）**。本fixtureのnetwork proofだけで後継のescape検証やbootstrap完了とは扱わない。
+
+## npm/git network source escape（#652、dormant）
+
+検証は `bash .github/scripts/test-npm-network-sources.sh`。[`npm-network-source-probe.py`](scripts/npm-network-source-probe.py) は上記#649 runtimeのroot所有source copy、別UID proxy、service hardening、実効property snapshotと#646 primitiveを再利用するfixtureであり、production launcherではない。registry positive proofは#649の固定metadata GETを同じrestricted service内で再利用し、proxyやnetwork境界を再実装しない。
+
+実npmの `view` と実gitの `ls-remote` がproxy指定なしでrunner自身のnon-loopback HTTP endpointへ接続できないことを確認する。同じnpm/git commandの前後のunrestricted control成功、同じsource IP/portへのUDP `EPERM`、restricted service中のlistener accept不存在を組み合わせ、失敗exitやTCP timeoutだけをdeny証拠にしない。direct subprocessの5秒deadline到達はtimeoutとして記録し、process groupを停止する。proxy経由のcommand timeoutは検証失敗で、再実行しない。
+
+arbitrary git HTTPSは実gitの `ls-remote` と実npmの `cache add git+https://...`、remote tarballは実npmの `cache add https://...tgz` で試し、各commandの失敗とproxyの明示 `403` を要求する。宛先はnumeric runner-local IPとfixture portに固定し、外部任意hostへのprobe・DNS lookupを行わない。npm `allow-git` / `allow-remote` は有効にしてnetwork境界を検証し、これらのoptionをsecurity boundaryにしない。
+
+npm/gitへ継承env・credentialは渡さず、空のuser/global npmrc、専用HOME/cache、git設定・prompt無効化を使う。`--ignore-scripts` / `--package-lock=false` を指定し、lock / node_modules不在を確認する。proxy停止後も同じrestricted serviceでdirect拒否とnpm/gitのconnection refusalを要求し、unrestricted fallbackを認めない。boundary preflight不成立時はnpm/gitを起動しない。
+
+control → restricted → control → proxy停止検証を2回実行し、#649のunit / proxy / host socket・resolver不変検証に加え、source listener、subprocess groupとdisposable HOME/cacheをcleanupする。source検証付きserviceの期限は70秒、runner側waitは80秒とし、property観測の10秒期限は変えない。既存AI Workflow Regressionのfixture discoveryだけで実行する。
+
+pure / mock検証は外部通信なし。独立runnerでは実npm/gitのlocal control・proxy拒否・proxy不在を外向きdialなしで先に検証し、その後systemd runtimeで実効direct拒否とregistry到達を検証する。制限されたCodex serviceではsocket/runtimeを `SKIP` とし、実npm/git・実効filter・registry到達の実証済みとは扱わない。独立GitHub Actions runnerのsystemd不在は失敗とする。
+
+Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はなく、production developer / follow-upは未接続。local file / directory / workspace sourceとlifecycle境界は#654、lock生成は#650、production wiringは#647に残す。scopeと後継順序の正本は#652のIssue本文とし、本検証だけで後継の完了とは扱わない。
