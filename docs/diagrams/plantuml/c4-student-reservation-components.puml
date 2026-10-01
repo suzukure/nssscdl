@@ -5,7 +5,7 @@ LAYOUT_WITH_LEGEND()
 title Student Single Reservation - C4 Level 3 Application Worker
 
 Person(student, "Student", "Checks schedule, previews and confirms one reservation, views history.")
-ContainerDb(db, "Main Database", "Cloudflare D1", "Authoritative business state; physical adapter designed later.")
+ContainerDb(db, "Main Database", "Cloudflare D1", "Authoritative business state; single reservation physical adapter in 02_StudentReservationD1.md.")
 
 Container_Boundary(worker, "Application Worker - one Cloudflare Worker deploy unit") {
   Component(ui, "Web/UI Presentation", "Web UI", "Calendar/list, preview confirmation, result and history.")
