@@ -85,10 +85,11 @@ def hardening(repo):
             "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes")
 
 
-def service(repo, staged, address, servers, proxy_port=None, expect_error=False):
+def service(repo, staged, address, servers, proxy_port=None, expect_error=False, source_tools=None):
     boundary = load(staged / "codex-network-boundary.py", "runtime_network_boundary")
     unit = "codex-network-probe-" + uuid.uuid4().hex + ".service"
-    properties = ("Type=exec", "RuntimeMaxSec=45s", "TimeoutStopSec=2s",
+    properties = ("Type=exec", "RuntimeMaxSec=70s" if source_tools is not None else "RuntimeMaxSec=45s",
+                  "TimeoutStopSec=2s",
                   "KillMode=control-group", "SendSIGKILL=yes", "User=nobody", "Group=nogroup",
                   *hardening(repo))
     script = "codex-network-boundary.py"
@@ -104,6 +105,13 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False)
                             if value.startswith("InaccessiblePaths="))]
         # systemd's optional '-' prefix is not part of the filesystem path.
         arguments = [value[1:] if value.startswith("-/run/") else value for value in arguments]
+    if source_tools is not None:
+        script = "npm-network-source-probe.py"
+        arguments += ["--mode", "unavailable" if expect_error else
+                      "restricted" if proxy_port is not None else "control",
+                      "--source-port", str(servers.sources.port)]
+        for name, path in source_tools.items():
+            arguments += ["--" + name, str(path)]
     command = ["sudo", "-n", "/usr/bin/systemd-run", "--quiet", "--wait", "--pipe", "--collect",
                "--unit=" + unit, *["--property=" + value for value in properties],
                "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "LC_ALL=C", "PYTHONDONTWRITEBYTECODE=1",
@@ -151,13 +159,14 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False)
     try:
         if observer:
             observer.start()
-        result = subprocess.run(command, capture_output=True, text=True, timeout=55)
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=80 if source_tools is not None else 55)
         if observer:
             observer.join(12)
             assert not observer.is_alive() and not observer_errors, \
                 (observer_errors, result.returncode, result.stdout, result.stderr)
         evidence = json.loads(result.stdout) if result.stdout else None
-        if expect_error:
+        if expect_error and source_tools is None:
             assert result.returncode != 0 and evidence == {"status": "error", "reason": "proxy-unavailable"}, \
                 (result.returncode, result.stdout, result.stderr)
         else:
@@ -239,7 +248,7 @@ def snapshot(repo):
     return metadata, resolver
 
 
-def runtime(repo):
+def runtime(repo, source_tools=None):
     assert os.getuid() != 0, "independent runtime requires non-root runner UID"
     subprocess.run(["sudo", "-n", "true"], check=True, timeout=5)
     boundary = load(repo / ".github/scripts/codex-network-boundary.py", "runtime_boundary")
@@ -256,26 +265,42 @@ def runtime(repo):
             subprocess.run(["sudo", "-n", "install", "-o", "root", "-g", "root", "-m", "0444",
                             str(repo / ".github/scripts" / name), str(staged / name)],
                            check=True, timeout=5)
+        if source_tools is not None:
+            subprocess.run(["sudo", "-n", "install", "-o", "root", "-g", "root", "-m", "0444",
+                            str(repo / ".github/scripts/npm-network-source-probe.py"),
+                            str(staged / "npm-network-source-probe.py")], check=True, timeout=5)
+            sources = load(staged / "npm-network-source-probe.py", "runtime_source_probe")
         for cycle in range(2):
             started = time.monotonic()
             servers = Servers(addresses[0])
             proxy = None
             try:
+                if source_tools is not None:
+                    servers.sources = sources.SourceEndpoints(addresses[0])
                 proxy, port = start_proxy(staged)
-                service(repo, staged, addresses[0], servers)
+                service(repo, staged, addresses[0], servers, source_tools=source_tools)
                 assert servers.accepted == 1
-                service(repo, staged, addresses[0], servers, port)
+                source_accepts = servers.sources.accepted if source_tools is not None else None
+                service(repo, staged, addresses[0], servers, port, source_tools=source_tools)
                 assert servers.accepted == 1, "restricted direct TCP reached listener"
-                service(repo, staged, addresses[0], servers)
+                if source_tools is not None:
+                    assert servers.sources.accepted == source_accepts, "source bypass reached listener"
+                service(repo, staged, addresses[0], servers, source_tools=source_tools)
                 assert servers.accepted == 2 and servers.thread.is_alive()
+                source_accepts = servers.sources.accepted if source_tools is not None else None
                 stop_proxy(proxy)
                 # Unavailable proxy fails the SAME restricted service, without direct fallback.
-                service(repo, staged, addresses[0], servers, port, expect_error=True)
+                service(repo, staged, addresses[0], servers, port, expect_error=True,
+                        source_tools=source_tools)
                 assert servers.accepted == 2, "fallback reached direct listener"
+                if source_tools is not None:
+                    assert servers.sources.accepted == source_accepts, "source fallback reached listener"
                 verify_proxy_stopped(port)
             finally:
                 if proxy:
                     stop_proxy(proxy)
+                if hasattr(servers, "sources"):
+                    servers.sources.close()
                 servers.close()
             assert all(server.fileno() == -1 for server in servers.sockets)
             print(json.dumps({"cycle": cycle + 1, "elapsed_seconds": round(time.monotonic() - started, 2),
