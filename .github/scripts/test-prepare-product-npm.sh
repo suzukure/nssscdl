@@ -68,18 +68,23 @@ mutations = [
     lambda value: value['packages']['node_modules/example'].update(integrity='   '),
     lambda value: value['packages']['node_modules/example'].update(link=True),
     lambda value: value['packages']['node_modules/example'].update(inBundle=True),
+    lambda value: value['packages']['node_modules/example'].update(bundled=True),
     lambda value: value['packages']['node_modules/example'].update(dependencies={'bad': 'file:/tmp/x'}),
     lambda value: value.update(lockfileVersion=1),
     lambda value: value['packages'].pop('node_modules/example'),
 ]
 for resolved in ('http://registry.npmjs.org/example/-/example-1.2.3.tgz',
-                 'https://example.test/example.tgz', 'file:/tmp/example', 'git+https://example.test/x',
+                 'https://example.test/example.tgz', 'file:/tmp/example', 'file:/tmp/example.tgz',
+                 '../directory', 'git+https://example.test/x',
                  'https://registry.npmjs.org@evil.test/example.tgz',
                  helper.REGISTRY + '../example.tgz', helper.REGISTRY + '%2e%2e/example.tgz',
                  helper.REGISTRY + 'other/-/other-1.2.3.tgz',
                  helper.REGISTRY + 'example/-/example-1.2.3.tgz?token=secret'):
     mutations.append(lambda value, resolved=resolved:
                      value['packages']['node_modules/example'].update(resolved=resolved))
+    mutations.append(lambda value, resolved=resolved: value['packages'].update({
+        'node_modules/example/node_modules/example': {
+            **value['packages']['node_modules/example'], 'resolved': resolved}}))
 for location in ('../outside', '/node_modules/example', 'node_modules/../example',
                  'node_modules/@scope', 'node_modules/example/../../../outside',
                  'node_modules\\example'):
@@ -112,7 +117,6 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
     node, npm = Path('/trusted/bin/node'), Path('/trusted/bin/npm')
     calls = []
     fail = None
-    generated = lock
 
     def fake_run(command, cwd, env, timeout=180):
         calls.append(command)
@@ -121,27 +125,17 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
         if command[-1] == '--version':
             return b'24.0.0\n' if command[0] == str(node) else b'11.0.0\n'
         assert '--ignore-scripts' in command and '--registry=' + helper.REGISTRY in command
-        for source_type in ('git', 'remote', 'file', 'directory'):
-            assert '--allow-' + source_type + '=none' in command
+        assert command[1] == 'ci', 'only locked ci may resolve dependencies'
         assert '--workspaces=false' in command and '--audit=false' in command
         cache = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--cache=')))
         assert cache.is_relative_to(trusted) and cache != Path(env['HOME'])
         assert Path(env['HOME']).is_dir()
         if command[1] == fail:
             raise helper.Rejected('tool-execution-failed')
-        if command[1] == 'install':
-            if fail == 'generated-symlink':
-                (cwd / 'package-lock.json').symlink_to(workspace / 'package.json')
-                return b''
-            (cwd / 'package-lock.json').write_text(json.dumps(generated))
-            (cache / 'warm').write_text('package-lock-only cache')
-        else:
-            if generated is lock and not (workspace / 'package-lock.json').exists():
-                assert (cache / 'warm').exists(), 'bootstrap must reuse the dedicated cache for ci'
-            if fail == 'mutation':
-                (cwd / 'package-lock.json').write_text('{}')
-            (cwd / 'node_modules').mkdir()
-            (cache / 'warm').write_text('ci cache')
+        if fail == 'mutation':
+            (cwd / 'package-lock.json').write_text('{}')
+        (cwd / 'node_modules').mkdir()
+        (cache / 'warm').write_text('ci cache')
         return b''
 
     def exercise(expected, state=None):
@@ -171,33 +165,37 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
     assert result['manifest_hash'] is None and result['lockfile_hash'] is None
     assert all(command[-1] == '--version' for command in calls), 'no registry operation without manifest'
     (workspace / 'package.json').write_text(json.dumps(manifest))
-    first = exercise('prepared', 'bootstrap')
-    second = exercise('prepared', 'bootstrap')
+    calls.clear()
+    result = exercise('bootstrap-required', 'bootstrap-required')
+    assert result['manifest_hash'] == 'sha256:' + hashlib.sha256(
+        (workspace / 'package.json').read_bytes()).hexdigest()
+    assert result['lockfile_hash'] is None
+    assert all(command[-1] == '--version' for command in calls), 'lockless dependency resolution'
+    assert not (workspace / 'package-lock.json').exists()
+    assert not (Path(result['preparation_path']) / 'package-lock.json').exists()
+    assert not list(Path(result['cache_path']).iterdir())
+    for dependency in ('git+https://example.invalid/blocked.git',
+                       'https://example.invalid/blocked.tgz', 'file:/tmp/blocked.tgz',
+                       'file:/tmp/directory', '../directory'):
+        (workspace / 'package.json').write_text(json.dumps(
+            {**manifest, 'dependencies': {'example': dependency}}))
+        calls.clear()
+        exercise('error', 'bootstrap-required')
+        assert not calls, 'invalid manifest must be rejected before npm runs'
+    (workspace / 'package.json').write_text(json.dumps(manifest))
+    (workspace / 'package-lock.json').write_text(json.dumps(lock))
+    calls.clear()
+    first = exercise('prepared', 'locked')
+    assert [command[1] for command in calls] == ['--version', '--version', 'ci']
+    second = exercise('prepared', 'locked')
     assert first['cache_path'] != second['cache_path'], 'invocations must not share persistent cache'
     assert first['manifest_hash'] == second['manifest_hash']
     assert first['lockfile_hash'] == second['lockfile_hash']
-    (workspace / 'package-lock.json').write_text(json.dumps(lock))
-    calls.clear()
-    exercise('prepared', 'locked')
-    assert [command[1] for command in calls] == ['--version', '--version', 'ci']
     fail = 'ci'
     exercise('error', 'locked')
     fail = 'mutation'
     assert exercise('error')['reason'] == 'npm-input-mutated'
-    (workspace / 'package-lock.json').unlink()
-    fail = 'install'
-    exercise('error', 'bootstrap')
-    fail = 'generated-symlink'
-    calls.clear()
-    exercise('error', 'bootstrap')
-    assert not any(command[1] == 'ci' for command in calls)
     fail = None
-    generated = copy.deepcopy(lock)
-    generated['packages']['node_modules/example'].pop('integrity')
-    calls.clear()
-    exercise('error', 'bootstrap')
-    assert not any(command[1] == 'ci' for command in calls)
-    generated = lock
     for mutate in mutations:
         value = copy.deepcopy(lock)
         mutate(value)
@@ -239,7 +237,7 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
         assert helper.prepare(workspace, trusted, node, npm)['status'] == 'error'
 
     # Real installed npm, entirely offline: seed a local tarball into the
-    # dedicated cache, then exercise bootstrap and two ci calls with scripts.
+    # dedicated cache, then exercise locked ci twice with scripts.
     # This checks actual dependency lifecycle suppression, not only flag text.
     actual_node = Path(shutil.which('node'))
     actual_npm = Path(shutil.which('npm'))
@@ -280,75 +278,22 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
         result = helper.prepare(workspace, trusted, actual_node, actual_npm)
     assert result['status'] == 'prepared', result
     assert not marker.exists(), 'root/dependency lifecycle script ran'
-    # Real empty bootstrap cannot need metadata or registry tarballs.
-    original.write_text(json.dumps({'name': 'empty', 'version': '1.0.0', 'scripts': pkg['scripts']}))
+    # Even with real tools, lockless input invokes version probes only.
     (workspace / 'package-lock.json').unlink()
-    with patch.object(helper, 'run', side_effect=offline_run):
+    calls.clear()
+
+    def lockless_run(command, cwd, env, timeout=180):
+        calls.append(command)
+        assert command[-1] == '--version', 'lockless npm dependency command'
+        return real_run(command, cwd, env, timeout)
+
+    with patch.object(helper, 'run', side_effect=lockless_run):
         result = helper.prepare(workspace, trusted, actual_node, actual_npm)
-    assert result['status'] == 'prepared' and result['state'] == 'bootstrap', result
-    assert not marker.exists()
-
-    # Seed registry metadata directly into npm's HTTP cache: bootstrap must
-    # reject non-registry TRANSITIVE sources during resolution, before a lock
-    # exists. Assert npm's policy error, not a cache miss or post-lock rejection.
-    cacache = actual_npm.resolve().parent.parent / 'node_modules/cacache'
-    seed_metadata = r'''
-const [modulePath, cache, url, body] = process.argv.slice(1);
-const metadata = {time: Date.now(), url, options: {compress: true},
-  reqHeaders: {accept: 'application/json'},
-  resHeaders: {'content-type': 'application/json', 'cache-control': 'max-age=3600'}};
-require(modulePath).put(cache, 'make-fetch-happen:request-cache:' + url, body,
-  {metadata}).catch(error => { console.error(error); process.exitCode = 1; });
-'''
-    original.write_text(json.dumps(real_manifest))
-    policy_errors = []
-    transitive = None
-
-    def resolution_run(command, cwd, env, timeout=180):
-        if command[-1] == '--version':
-            return real_run(command, cwd, env, timeout)
-        cache_arg = next(arg for arg in command if arg.startswith('--cache='))
-        cache = Path(cache_arg.split('=', 1)[1])
-        if command[1] == 'install':
-            package = {**pkg, 'dist': {
-                'tarball': real_lock['packages']['node_modules/example']['resolved'],
-                'integrity': real_lock['packages']['node_modules/example']['integrity']}}
-            if transitive is not None:
-                package['dependencies'] = {'blocked': transitive}
-            metadata = {'name': 'example', 'dist-tags': {'latest': '1.2.3'},
-                        'versions': {'1.2.3': package}}
-            real_run([str(actual_node), '-e', seed_metadata, str(cacache), str(cache / '_cacache'),
-                      helper.REGISTRY + 'example', json.dumps(metadata)], cwd, env, timeout)
-        # Also retain the existing real tarball/cache/lifecycle checks.
-        if transitive is None:
-            return offline_run(command, cwd, env, timeout)
-        process = subprocess.run([*command, '--offline'], cwd=cwd, env=env,
-                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
-        assert process.returncode != 0, 'npm resolved a prohibited transitive source'
-        assert ('EALLOW' + policy_errors[-1]).encode() in process.stderr, process.stderr
-        assert not (cwd / 'package-lock.json').exists(), 'rejection happened after lock generation'
-        raise helper.Rejected('tool-execution-failed')
-
-    # Positive control: exact official registry package bootstrap still works.
-    with patch.object(helper, 'run', side_effect=resolution_run):
-        result = helper.prepare(workspace, trusted, actual_node, actual_npm)
-    assert result['status'] == 'prepared' and result['state'] == 'bootstrap', result
-    assert not marker.exists()
-    local_directory = root / 'local-dependency'
-    local_directory.mkdir()
-    (local_directory / 'package.json').write_text(json.dumps({'name': 'blocked', 'version': '1.0.0'}))
-    for source_type, transitive in (
-        ('git', 'git+https://example.invalid/blocked.git'),
-        ('remote', 'https://example.invalid/blocked.tgz'),
-        ('file', 'file:' + str(tarball)),
-        ('directory', 'file:' + str(local_directory)),
-    ):
-        policy_errors.append(source_type.upper())
-        with patch.object(helper, 'run', side_effect=resolution_run):
-            result = helper.prepare(workspace, trusted, actual_node, actual_npm)
-        assert result['status'] == 'error' and result['state'] == 'bootstrap', result
-        assert result['reason'] == 'tool-execution-failed', result
-        assert not marker.exists()
+    assert result['status'] == result['state'] == 'bootstrap-required', result
+    assert not (workspace / 'package-lock.json').exists()
+    assert not (Path(result['preparation_path']) / 'package-lock.json').exists()
+    assert result['lockfile_hash'] is None and not marker.exists()
+    (workspace / 'package-lock.json').write_text(json.dumps(real_lock))
 
     # Process failures and timeout must not become successful preparation.
     for outcome in (subprocess.CompletedProcess([], 1, b'', b'sensitive error'),
@@ -364,6 +309,12 @@ require(modulePath).put(cache, 'make-fetch-happen:request-cache:' + url, body,
            '--node', str(actual_node), '--npm', str(actual_npm)]
     process = subprocess.run(cli, capture_output=True, text=True)
     assert process.returncode == 1 and json.loads(process.stdout)['status'] == 'error'
+    (workspace / 'package-lock.json').unlink()
+    cli[cli.index(str(alias))] = str(workspace)
+    process = subprocess.run(cli, capture_output=True, text=True)
+    result = json.loads(process.stdout)
+    assert process.returncode == 0 and result['status'] == result['state'] == 'bootstrap-required'
+    assert result['lockfile_hash'] is None and not (workspace / 'package-lock.json').exists()
 
 # Dormant helper cannot be reached from any production workflow. The existing
 # regression glob discovers this fixture without adding production wiring.

@@ -197,7 +197,7 @@ def prepare(workspace, run_root, node, npm):
             os.close(workspace_fd)
         evidence.update(manifest_hash=sha(manifest_bytes), lockfile_hash=sha(lock_bytes))
         evidence["state"] = ("no-manifest" if manifest_bytes is None else
-                             "bootstrap" if lock_bytes is None else "locked")
+                             "bootstrap-required" if lock_bytes is None else "locked")
         manifest = None
         if manifest_bytes is not None:
             manifest = parse(manifest_bytes)
@@ -237,28 +237,20 @@ def prepare(workspace, run_root, node, npm):
             evidence[key] = version
         if manifest is None:
             evidence["status"] = "no-manifest"
+        elif lock_bytes is None:
+            # Version probes above never resolve dependencies. Initial lock
+            # generation needs a separately established network boundary.
+            (destination / "package.json").write_bytes(manifest_bytes)
+            evidence["status"] = "bootstrap-required"
         else:
             with tempfile.TemporaryDirectory(prefix="install-", dir=destination) as disposable:
                 project = Path(disposable)
                 (project / "package.json").write_bytes(manifest_bytes)
                 flags = ["--ignore-scripts", "--registry=" + REGISTRY, "--cache=" + str(cache),
-                         "--allow-git=none", "--allow-remote=none",
-                         "--allow-file=none", "--allow-directory=none",
                          "--userconfig=" + str(config), "--globalconfig=" + str(global_config),
                          "--audit=false", "--fund=false", "--update-notifier=false", "--workspaces=false",
                          "--include=dev", "--include=optional", "--include=peer"]
-                if lock_bytes is None:
-                    run([str(npm), "install", "--package-lock-only", *flags], project, env)
-                    project_fd = directory(project)
-                    try:
-                        lock_bytes = read_input(project_fd, "package-lock.json")
-                    finally:
-                        os.close(project_fd)
-                    require(lock_bytes is not None, "generated-lock-missing")
-                    evidence["lockfile_hash"] = sha(lock_bytes)
-                    validate_lock(manifest, parse(lock_bytes))
-                else:
-                    (project / "package-lock.json").write_bytes(lock_bytes)
+                (project / "package-lock.json").write_bytes(lock_bytes)
                 run([str(npm), "ci", *flags], project, env)
                 project_fd = directory(project)
                 try:
