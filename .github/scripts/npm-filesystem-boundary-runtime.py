@@ -132,7 +132,8 @@ def service(repo, root, record):
 
 
 def same_uid_control(node, controls, phase):
-    # Only purpose-built sentinels are required to be readable outside isolation.
+    # Only managed host sentinels must be readable outside isolation; repository
+    # ancestors may be inaccessible to nobody on the regression runner.
     check = ('const fs=require("fs"),assert=require("assert/strict");'
              'assert.equal(process.getuid(),65534);'
              'const f=fs.openSync(process.argv[1],"r");fs.closeSync(f)')
@@ -144,11 +145,30 @@ def same_uid_control(node, controls, phase):
                                         target, result.returncode, result.stdout, result.stderr)
 
 
+def workspace_not_staged(root, workspace, phase):
+    """Trusted-side inventory: reject workspace paths and copied sentinel content."""
+    assert root.is_dir() and not root.is_symlink(), ('invalid inventory root', phase, str(root))
+    workspace = Path(workspace)
+    sentinels = [(workspace / name).read_bytes() for name in ('package.json', 'host-package.tgz')]
+    package_name = json.loads(sentinels[0])['name'].encode()
+    for entry in root.rglob('*'):
+        paths = str(entry.relative_to(root))
+        if entry.is_symlink():
+            paths += ' ' + os.readlink(entry)
+        assert workspace.name not in paths and str(workspace.parent) not in paths, \
+            ('workspace staged path', phase, 'workspace', str(entry))
+        if entry.is_file() and not entry.is_symlink():
+            content = entry.read_bytes()
+            assert package_name not in content and str(workspace.parent).encode() not in content \
+                and content not in sentinels, \
+                ('workspace staged content', phase, 'workspace', str(entry))
+
+
 def runtime(repo, node, npm):
     assert os.getuid() != 0, 'independent runtime requires non-root runner UID'
     staged_paths = []
     # Host packages are real, readable controls; their contents never enter the root.
-    with tempfile.TemporaryDirectory(prefix='npm-host-source-') as host, \
+    with tempfile.TemporaryDirectory(prefix='npm-host-source-', dir='/tmp') as host, \
          tempfile.TemporaryDirectory(prefix='.npm-workspace-source-', dir=repo) as workspace:
         packages = [host, workspace]
         files = []
@@ -156,15 +176,17 @@ def runtime(repo, node, npm):
         for source_class, directory in zip(('host', 'workspace'), packages):
             Path(directory).chmod(0o755)
             manifest = Path(directory) / 'package.json'
-            manifest.write_text('{"name":"host-escape-control","version":"1.0.0"}')
+            manifest.write_text(json.dumps({'name': source_class + '-escape-' + uuid.uuid4().hex,
+                                            'version': '1.0.0'}))
             manifest.chmod(0o644)
             archive = Path(directory) / 'host-package.tgz'
             with tarfile.open(archive, 'w:gz') as output:
                 output.add(manifest, arcname='package/package.json')
             archive.chmod(0o644)
             files.append(str(archive))
-            controls[source_class + '-package'] = str(manifest)
-            controls[source_class + '-tarball'] = str(archive)
+            if source_class == 'host':
+                controls['host-package'] = str(manifest)
+                controls['host-tarball'] = str(archive)
         for cycle in range(2):
             staged = Path(subprocess.check_output(['sudo', '-n', 'mktemp', '-d',
                           '/run/npm-filesystem-fixture-XXXXXXXX'], text=True, timeout=5).strip())
@@ -172,12 +194,16 @@ def runtime(repo, node, npm):
             staged_paths.append(staged)
             token = uuid.uuid4().hex
             record = {'token': token, 'packages': packages, 'files': files,
-                      'hidden': [str(Path(item) / 'package.json') for item in packages] +
-                                files + [str(repo / '.git/HEAD'), '/etc/os-release', str(staged)]}
+                      'hidden': {kind + '-package': str(Path(item) / 'package.json')
+                                 for kind, item in zip(('host', 'workspace'), packages)}}
+            record['hidden'].update({'host-tarball': files[0], 'workspace-tarball': files[1],
+                                     'workspace-root': str(repo), 'repository-head': str(repo / '.git/HEAD'),
+                                     'host-os-release': '/etc/os-release', 'staging-root': str(staged)})
             try:
                 with tempfile.TemporaryDirectory(prefix='npm-root-build-') as build:
                     root = Path(build) / 'root'
                     build_root(repo, root, node, npm, token)
+                    workspace_not_staged(root, workspace, 'build')
                     subprocess.run(['sudo', '-n', 'cp', '-a', str(root), str(staged / 'root')],
                                    check=True, timeout=15)
                 subprocess.run(['sudo', '-n', 'chown', '-R', 'root:root', str(staged)],
@@ -186,6 +212,7 @@ def runtime(repo, node, npm):
                 subprocess.run(['sudo', '-n', 'chown', '-R', 'nobody:nogroup',
                                 str(staged / 'root/project'), str(staged / 'root/tmp')],
                                check=True, timeout=5)
+                workspace_not_staged(staged / 'root', workspace, 'staged')
                 same_uid_control(node, controls, 'pre')
                 print(json.dumps(service(repo, staged / 'root', record)), flush=True)
                 same_uid_control(node, controls, 'post')

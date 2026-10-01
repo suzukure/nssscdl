@@ -123,6 +123,39 @@ with tempfile.TemporaryDirectory(prefix='npm-filesystem-build-test-') as build:
         assert list((built / name).iterdir()) == [], 'host content copied into root'
     assert (built / 'runtime/node').stat().st_mode & 0o022 == 0
     assert (built / 'runtime/npm/bin/npm-cli.js').is_file()
+    workspace = Path(build) / '.npm-workspace-source-inventory'
+    workspace.mkdir()
+    (workspace / 'package.json').write_text('{"name":"workspace-sentinel-unique","version":"1.0.0"}')
+    (workspace / 'host-package.tgz').write_bytes(b'workspace-tarball-sentinel')
+    fixture.workspace_not_staged(built, workspace, 'build')
+    try:
+        fixture.workspace_not_staged(Path(build) / 'missing', workspace, 'staged')
+    except AssertionError as error:
+        assert error.args[0][0:2] == ('invalid inventory root', 'staged')
+    else:
+        raise AssertionError('missing inventory root accepted')
+    # Inventory rejects renamed copies, embedded content/path, and symlink exposure.
+    leak = built / 'runtime/leak'
+    for content in ((workspace / 'package.json').read_bytes(),
+                    (workspace / 'host-package.tgz').read_bytes(),
+                    b'prefix workspace-sentinel-unique suffix', str(workspace).encode()):
+        leak.write_bytes(content)
+        try:
+            fixture.workspace_not_staged(built, workspace, 'staged')
+        except AssertionError as error:
+            assert error.args[0] == ('workspace staged content', 'staged', 'workspace', str(leak))
+        else:
+            raise AssertionError('workspace content staged')
+        leak.unlink()
+    leak.symlink_to(workspace)
+    try:
+        fixture.workspace_not_staged(built, workspace, 'staged')
+    except AssertionError as error:
+        assert error.args[0] == ('workspace staged path', 'staged', 'workspace', str(leak))
+    else:
+        raise AssertionError('workspace symlink staged')
+    leak.unlink()
+    fixture.workspace_not_staged(built, workspace, 'staged')
 assert not built.exists()
 
 # Exercise service-side preflight and npm evidence classification without mounting
@@ -134,7 +167,8 @@ const execute = new Function('require', 'process', 'console',
 for (const mode of ['pass', 'marker-missing', 'marker-wrong', 'host-visible',
   'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock']) {
   let calls = 0, reported, error;
-  const input = {token:'fixture',hidden:['/host/secret'],packages:['/host/pkg','/workspace/pkg'],
+  const input = {token:'fixture',hidden:{'workspace-package':'/workspace/pkg/package.json'},
+    packages:['/host/pkg','/workspace/pkg'],
     files:['/host/pkg.tgz','/workspace/pkg.tgz']};
   const fakeFs = {
     statSync() {return {uid:0,mode:0o644}},
@@ -175,6 +209,10 @@ for (const mode of ['pass', 'marker-missing', 'marker-wrong', 'host-visible',
   } else {
     assert.equal(fakeProcess.exitCode,1,mode);
     assert(error && !reported,mode);
+    if (mode === 'host-visible') assert(error.includes(
+      'phase=hidden source_class=workspace-package path=/workspace/pkg/package.json'));
+    if (['accepted-source','unrelated-error'].includes(mode)) assert(error.includes(
+      'phase=npm source_class=host-directory path=file:/host/pkg'));
     if (['marker-missing','marker-wrong','host-visible','bad-env'].includes(mode)) assert.equal(calls,0);
   }
 }
@@ -211,7 +249,7 @@ assert not local.exists()
 
 # Same-UID controls identify each managed sentinel and preserve failure details.
 controls = {kind: '/fixture/' + kind for kind in
-            ('host-package', 'host-tarball', 'workspace-package', 'workspace-tarball')}
+            ('host-package', 'host-tarball')}
 for phase in ('pre', 'post'):
     for denied in (None, *controls):
         checked = []
@@ -238,14 +276,28 @@ for phase in ('pre', 'post'):
         assert checked == expected, 'failed control continued or skipped a sentinel'
 
 # Two fresh roots and cleanup are required, including a failing second service.
-for failure in (None, 'service', 'pre-host', 'pre-workspace', 'post-host', 'post-workspace'):
+for failure in (None, 'service', 'pre-host', 'post-host', 'inventory-build', 'inventory-staged'):
     roots = [Path('/run/npm-filesystem-fixture-abcdefgh'),
              Path('/run/npm-filesystem-fixture-ijklmnop')]
-    calls, serviced, control_paths = [], [], []
+    calls, serviced, control_paths, inventories, workspace_paths = [], [], [], [], []
+    def inventory(root, workspace, phase):
+        inventories.append(phase)
+        workspace_paths.append(Path(workspace))
+        assert Path(workspace).parent == repo
+        assert all((Path(workspace) / name).is_file() for name in ('package.json', 'host-package.tgz'))
+        # Runner workspace readability is irrelevant to the outside control.
+        Path(workspace).chmod(0o700)
+        if failure == 'inventory-' + phase:
+            raise AssertionError('workspace staged content')
     def simulate_service(repo, root, record):
         serviced.append(root)
         assert len(record['files']) == 2 and all(Path(p).is_file() for p in record['files'])
-        assert str(repo / '.git/HEAD') in record['hidden'] and '/etc/os-release' in record['hidden']
+        assert record['hidden']['workspace-root'] == str(repo)
+        assert record['hidden']['repository-head'] == str(repo / '.git/HEAD')
+        assert record['hidden']['host-os-release'] == '/etc/os-release'
+        assert Path(record['hidden']['workspace-package']).parent == workspace_paths[-1]
+        assert record['hidden']['workspace-tarball'] == record['files'][1]
+        assert inventories[-2:] == ['build', 'staged']
         if failure == 'service' and len(serviced) == 2:
             raise AssertionError('fixture service failed')
         return {'status':'pass'}
@@ -256,14 +308,14 @@ for failure in (None, 'service', 'pre-host', 'pre-workspace', 'post-host', 'post
             control_paths.append(target)
             assert target.is_file() and target.stat().st_mode & 0o777 == 0o644
             assert target.parent.stat().st_mode & 0o777 == 0o755
-            assert target.parent.parent == repo or target.parent.parent == Path(tempfile.gettempdir())
-            phase = 'pre' if (len(control_paths) - 1) % 8 < 4 else 'post'
-            kind = 'workspace' if target.parent.parent == repo else 'host'
-            if failure == phase + '-' + kind:
+            assert target.parent.parent == Path('/tmp'), 'workspace used as positive control'
+            phase = 'pre' if (len(control_paths) - 1) % 4 < 2 else 'post'
+            if failure == phase + '-host':
                 return subprocess.CompletedProcess(command, 1, '', 'EACCES: sentinel unreadable')
         return subprocess.CompletedProcess(command, 0, '', '')
     with patch.object(fixture.os, 'getuid', return_value=1000), \
          patch.object(fixture, 'build_root'), \
+         patch.object(fixture, 'workspace_not_staged', side_effect=inventory), \
          patch.object(fixture, 'service', side_effect=simulate_service), \
          patch.object(fixture.subprocess, 'check_output', side_effect=[str(p)+'\n' for p in roots]), \
          patch.object(fixture.subprocess, 'run', side_effect=simulated_run), \
@@ -274,18 +326,22 @@ for failure in (None, 'service', 'pre-host', 'pre-workspace', 'post-host', 'post
             assert failure is not None
             if failure == 'service':
                 assert str(error) == 'fixture service failed'
+            elif failure.startswith('inventory-'):
+                assert str(error) == 'workspace staged content'
             else:
                 phase, kind = failure.split('-')
                 assert error.args[0][0:3] == ('same-UID control failed', phase, kind + '-package')
         else:
             assert failure is None
     started = roots if failure in (None, 'service') else roots[:1]
-    expected_services = [] if failure and failure.startswith('pre-') else [p / 'root' for p in started]
+    expected_services = [] if failure and failure.startswith(('pre-', 'inventory-')) \
+        else [p / 'root' for p in started]
     assert serviced == expected_services
     assert [cmd[-1] for cmd in calls if 'rm' in cmd] == [str(p) for p in started]
-    assert control_paths and all(not p.parent.exists() for p in control_paths), 'host fixture leaked'
+    assert all(not p.parent.exists() for p in control_paths), 'host fixture leaked'
+    assert workspace_paths and all(not p.exists() for p in workspace_paths), 'workspace fixture leaked'
     if failure is None:
-        assert len(control_paths) == 16
+        assert len(control_paths) == 8
         assert all(control_paths.count(target) == 4 for target in set(control_paths))
 
 for name in ('npm-filesystem-boundary-runtime.py', 'npm-filesystem-source-probe.js',

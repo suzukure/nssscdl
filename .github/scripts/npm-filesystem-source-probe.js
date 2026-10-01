@@ -5,15 +5,16 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const assert = require('node:assert/strict');
 
-function unreadable(target) {
+function unreadable(target, sourceClass = 'system-path') {
+  const context = `phase=hidden source_class=${sourceClass} path=${target}`;
   try {
     const fd = fs.openSync(target, 'r');
     fs.closeSync(fd);
   } catch (error) {
-    assert(['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code), error);
+    assert(['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code), context + ': ' + error);
     return;
   }
-  throw new Error('host source visible: ' + target);
+  throw new Error('host source visible: ' + context);
 }
 
 function probe(input) {
@@ -28,8 +29,10 @@ function probe(input) {
   assert.equal(process.cwd(), '/project');
   assert.equal(fs.statSync('/runtime/node').uid, 0);
   assert.equal(fs.statSync('/runtime/node').mode & 0o022, 0);
-  for (const target of [...input.hidden, '/proc/1/root', '/sys', '/run', '/home',
-    '/root', '/run/host/os-release']) {
+  for (const [sourceClass, target] of Object.entries(input.hidden)) {
+    unreadable(target, sourceClass);
+  }
+  for (const target of ['/proc/1/root', '/sys', '/run', '/home', '/root', '/run/host/os-release']) {
     unreadable(target);
   }
   assert.deepEqual(Object.keys(process.env).sort(), ['HOME', 'LC_ALL', 'PATH']);
@@ -37,22 +40,23 @@ function probe(input) {
     '--package-lock=false', '--audit=false', '--fund=false', '--update-notifier=false',
     '--userconfig=/project/empty.npmrc', '--globalconfig=/project/global.npmrc',
     '--cache=/project/cache'];
-  function add(source, success) {
+  function add(source, success, sourceClass = 'visible-local') {
+    const context = `phase=npm source_class=${sourceClass} path=${source}`;
     const result = cp.spawnSync('/runtime/node', [...npm, 'pack', '--dry-run', '--json', source], {
       cwd: '/project', env: process.env, encoding: 'utf8', timeout: 5000,
       killSignal: 'SIGKILL',
     });
     // Timeout/signal/unrelated npm failure is never filesystem denial evidence.
-    assert(!result.error && result.signal === null, result.error || result.signal);
+    assert(!result.error && result.signal === null, context + ': ' + (result.error || result.signal));
     if (success) {
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, context + ': ' + result.stderr);
       const packed = JSON.parse(result.stdout);
       assert.equal(packed.length, 1);
       assert.equal(packed[0].name, 'local-control');
       assert.equal(packed[0].version, '1.0.0');
     } else {
-      assert(result.status > 0, 'local source accepted: ' + source);
-      assert(/\b(?:ENOENT|EACCES|ENOTDIR)\b/.test(result.stderr), result.stderr);
+      assert(result.status > 0, 'local source accepted: ' + context);
+      assert(/\b(?:ENOENT|EACCES|ENOTDIR)\b/.test(result.stderr), context + ': ' + result.stderr);
     }
     return { source, returncode: result.status };
   }
@@ -61,20 +65,23 @@ function probe(input) {
   add('file:./local-control.tgz', true);
   const failures = [];
   for (const target of [...input.packages, ...input.files]) {
-    failures.push(add('file:' + target, false));
-    failures.push(add(target, false));
+    const sourceClass = input.packages.includes(target) ?
+      (target === input.packages[0] ? 'host-directory' : 'workspace-directory') :
+      (target === input.files[0] ? 'host-tarball' : 'workspace-tarball');
+    failures.push(add('file:' + target, false, sourceClass));
+    failures.push(add(target, false, sourceClass));
   }
-  failures.push(add('../..' + input.packages[0], false));
-  failures.push(add('file:../../' + input.packages[0].slice(1), false));
+  failures.push(add('../..' + input.packages[0], false, 'host-traversal'));
+  failures.push(add('file:../../' + input.packages[0].slice(1), false, 'host-traversal'));
   for (const [name, target] of [['absolute-link', input.packages[0]],
     ['relative-link', '../..' + input.packages[1]]]) {
     fs.symlinkSync(target, '/project/' + name);
-    unreadable('/project/' + name + '/package.json');
-    failures.push(add('./' + name, false));
+    unreadable('/project/' + name + '/package.json', name);
+    failures.push(add('./' + name, false, name));
   }
   fs.symlinkSync(input.files[0], '/project/file-link.tgz');
-  unreadable('/project/file-link.tgz');
-  failures.push(add('file:./file-link.tgz', false));
+  unreadable('/project/file-link.tgz', 'host-tarball-symlink');
+  failures.push(add('file:./file-link.tgz', false, 'host-tarball-symlink'));
   add('./local', true);
   add('file:./local-control.tgz', true);
   function noInstall(directory) {
