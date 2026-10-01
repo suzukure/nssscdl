@@ -2,6 +2,7 @@
 """Independent runner fixture, never a production launcher."""
 
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
@@ -178,6 +179,19 @@ def stop_proxy(process):
         process.stdout.close()
 
 
+def verify_proxy_stopped(port):
+    # TIME_WAIT can prevent rebind after exit; check listener absence instead.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+        client.settimeout(2)
+        try:
+            client.connect(("127.0.0.1", port))
+        except OSError as error:
+            assert error.errno == errno.ECONNREFUSED, \
+                ("proxy listener cleanup unconfirmed", error)
+        else:
+            raise AssertionError("proxy listener still reachable")
+
+
 def start_proxy(staged):
     process = subprocess.Popen(["/usr/bin/python3", "-I", str(staged / "npm-registry-proxy.py"),
                                 "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -245,8 +259,7 @@ def runtime(repo):
                 # Unavailable proxy fails the SAME restricted service, without direct fallback.
                 service(repo, staged, addresses[0], servers, port, expect_error=True)
                 assert servers.accepted == 2, "fallback reached direct listener"
-                with socket.socket() as check:
-                    check.bind(("127.0.0.1", port))
+                verify_proxy_stopped(port)
             finally:
                 if proxy:
                     stop_proxy(proxy)

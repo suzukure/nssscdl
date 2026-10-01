@@ -3,6 +3,7 @@ set -euo pipefail
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root" <<'PY'
 import importlib.util
+import errno
 import io
 import json
 import os
@@ -250,6 +251,24 @@ with patch.object(fixture.subprocess, 'run', side_effect=fake_run), \
     units = [item for command in calls for item in command if item.startswith('--unit=')]
     assert len(set(units)) == 2
 
+# Cleanup requires explicit no-listener evidence, never rebind, timeout, or retry.
+with patch.object(fixture.socket, 'socket') as sockets:
+    client = sockets.return_value.__enter__.return_value
+    for outcome in (ConnectionRefusedError(errno.ECONNREFUSED, 'fixture refused'),
+                    None, TimeoutError('fixture timeout'),
+                    PermissionError(errno.EPERM, 'fixture denied')):
+        client.reset_mock()
+        client.connect.side_effect = outcome
+        try:
+            fixture.verify_proxy_stopped(12347)
+        except AssertionError:
+            assert not isinstance(outcome, ConnectionRefusedError)
+        else:
+            assert isinstance(outcome, ConnectionRefusedError)
+        client.settimeout.assert_called_once_with(2)
+        client.connect.assert_called_once_with(('127.0.0.1', 12347))
+        client.bind.assert_not_called()
+
 # Exercise the property observer and root-owned atomic publication without systemd/sudo.
 class SynchronousThread:
     def __init__(self, target):
@@ -339,6 +358,7 @@ for _ in range(2):
         for upstream in upstreams:
             upstream.close()
     assert not thread.is_alive() and server.socket.fileno() == -1
+    fixture.verify_proxy_stopped(port)
 print('registry boundary: local tunnel/repeat/socket cleanup passed', flush=True)
 if Path('/proc/1/comm').read_text().strip() != 'systemd':
     if os.environ.get('GITHUB_ACTIONS') == 'true':
