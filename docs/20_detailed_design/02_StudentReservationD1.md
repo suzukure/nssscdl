@@ -118,7 +118,7 @@ CREATE TABLE command_guards (
 
 `migrations/`のversioned fileを番号順に一度だけ適用し、適用済みファイルを書き換えない。予約価値単位の導入順は (1) 認証基盤の`students(id)`とGuard Portの正本、(2) `schedule_months`・`lesson_slots`、(3) `student_monthly_lesson_configs`・`student_reservations`・3例外Table、(4) `slot_occupancies`、(5) `business_audit_logs`・`notification_intents`・`notification_outbox`、(6) `command_guards`、(7) 上記Index、(8) FK確認・Integrity Queryの順。各段階を別の単調増加versionにし、依存関係を逆転させない。既存データがある環境ではFK確認、月／日時整合、現在占有一意性、未来confirmedと占有の一致を検証してからAdapterを公開する。違反を自動修復してMigration成功扱いにしない。後続のcancel / admin機能はこのSchemaを拡張し、既存制約を弱めず、移行とCommandを同時に設計する。
 
-ProductionおよびProduction相当の共有環境への予約Migration適用・予約Adapter有効化は§1の#636完了条件に従う。#608のlocal / isolated test・操作評価では、導入順(1)を§1のtest auth fixtureで満たしてから(2)以降を適用できる。Migration / integrity validationでは環境を問わず`PRAGMA foreign_key_check`が0行であることを確認し、違反または検証不能なら適用完了・Adapter公開へ進まない。月CHECKは`01`〜`12`をDBで保証し、`lesson_date`の所属月およびUTCの`starts_at / ends_at`との多列整合は引き続きCommand Guard / Integrity Queryで検証する。
+導入順(1)の認証基盤への接続条件と隔離試験fixtureの境界は§1を正本とする。Migration / integrity validationでは環境を問わず`PRAGMA foreign_key_check`が0行であることを確認し、違反または検証不能なら適用完了・Adapter公開へ進まない。月CHECKは`01`〜`12`をDBで保証し、`lesson_date`の所属月およびUTCの`starts_at / ends_at`との多列整合は引き続きCommand Guard / Integrity Queryで検証する。
 
 ## 4. Read setとQuery
 
@@ -140,7 +140,7 @@ Prepared Statementだけからなる**1回の**`session.batch([...])`に次を�
 2. その行を`UPDATE`し、`ok = CASE WHEN (同一canonical read-set SQLを現在のD1状態とGuard行のTで再実行した結果 = expected_read_set) AND (最新Session/Student access・lifecycleが有効) AND (対象は公開済み・enabled・非占有・T < starts_at) AND (未来Slot Invariantが成立) THEN 1 ELSE 0 END`とする。read-set SQLはPreview用と単一実装とし、JSON配列の行順を明示して正規化する。時刻境界によるplan差異も比較対象に含める。分類planの計算結果は事前read setが一致した場合だけ有効となる。
 3. `student_reservations`へ新規confirmed行をINSERT。`student_id`はRequestではなくGuard結果をbindし、分類はplanの新規値、時刻はGuard行のTをSELECTして設定する。
 4. `slot_occupancies`へstudent_reservation占有をINSERT。`slot_id UNIQUE`および複合FK違反は全体Rollback。先行占有を上書きするUPSERTは使用しない。
-5. planに列挙した既存未開始ReservationをIDごとに`UPDATE ... WHERE student_id = ? AND status = 'confirmed' AND automatic_classification = ? AND classification = ? AND (SELECT starts_at FROM lesson_slots WHERE id = lesson_slot_id) > (SELECT captured_at FROM command_guards WHERE id = ?)`で更新する。Overrideは保持し、実効値はplanで計算した結果とする。集合UPDATEまたは固定順のprepared statementsとし、後続Guardでplan中の全IDと最終値を照合する。変更なしなら書き込まない。
+5. planに列挙した既存未開始ReservationをIDごとに`UPDATE ... WHERE student_id = ? AND status = 'confirmed' AND automatic_classification = ? AND classification IS ? AND (SELECT starts_at FROM lesson_slots WHERE id = lesson_slot_id) > (SELECT captured_at FROM command_guards WHERE id = ?)`で更新する。NULL可の`classification`の変更前値・最終値のGuard比較には`IS ?`によるNULL安全な比較を用い、NOT NULLの`automatic_classification`には通常の`= ?`を用いる。Overrideは保持し、実効値はplanで計算した結果とする。集合UPDATEまたは固定順のprepared statementsとし、後続Guardでplan中の全IDと最終値を照合する。変更なしなら書き込まない。
 6. `business_audit_logs`を1件INSERTし、Actor、予約対象、確定時刻、§2の新規予約と`derived_changes`を含む`after_json`を記録する。`notification_intents`へ予約確認を1件、実効分類が両方向のstandard/additional間で変わった既存Reservationごとに区分変更を1件INSERTし、各Intentと同じIDの`notification_outbox`をINSERTする。新規予約に区分変更Intentを作らない。必要件数／payloadをplanから固定し、どのINSERT失敗もbatch全体をRollbackする。
 7. 最終Guardを`UPDATE command_guards SET ok = CASE WHEN ... THEN 1 ELSE 0 END`で実行する。検査対象は、対象Slotがまだ同じ占有を指すこと、plan中の各Reservationの最終分類、事前生成したIDによるAudit 1件・Intentとoutbox必要件数、最新本人権限、`CAST(strftime('%s','now') AS INTEGER) <`対象Slotとplan中で未開始扱いした各Slotの`starts_at`。最終時刻検査でLesson開始境界を越えたbatchはRollbackする。`T`は同一Commandの全保存時刻・分類基準として維持する。
 8. Guard行をDELETEしてbatchを正常終了する。D1のatomic batch成功だけを`201`とする。`201`のViewは確定済みplanから生成し、曖昧なbatch応答では再実行せずPrimaryを再読込する。
@@ -151,9 +151,11 @@ read-set比較に使うSQLは、対象月行、Slot、Occupancy、本人月間Re
 
 Guardのread-set不一致、最終時刻Guard、`slot_occupancies.slot_id UNIQUE`の既知競合はRollback後のPrimary再読込により、`01_StudentReservationApplication.md` §8の`RESERVATION_STATE_CHANGED`、`RESERVATION_NOT_AVAILABLE`、`RESERVATION_WINDOW_CLOSED`へ安全に変換する。Preview前から不成立なら同書の初期拒否規則を使う。未知のConstraint / FK / CHECK、更新件数不一致、未来Slot invariant異常は競合と決めつけず`INTEGRITY_STATE_UNAVAILABLE`またはD1障害なら`SERVICE_UNAVAILABLE`とする。生SQL、Table名、他生徒情報は公開しない。Rollback後のreadも失敗すれば503とし、409の最新Viewを推測で作らない。
 
-正常Commit後にのみdeliveryをkickする。初回pickup対象は`notification_outbox.due_at <= now`かつleaseなし／期限切れで、対応Intentの`obligation_state = valid`を再検証する。5分周期のRecoveryも同じ索引を使い再発見する。claim時に最新の通知義務と宛先を再検証し、lease / fencing付きの別TransactionでDelivery Attemptをdurableに生成してoutboxを消費する。claim後の再発見はAttempt側のRecovery責務とする。Provider call中はD1 Transactionを保持しない。Provider受理・結果不明・手動再送のAttempt詳細は`05_BookingAndConcurrency.md` §13に従う後続Delivery設計の責務であり、本予約Confirmの成功判定に含めない。
+正常Commit後にのみdeliveryをkickする。初回pickup対象は`notification_outbox.due_at <= now`かつleaseなし／期限切れで、対応Intentの`obligation_state = valid`を再検証する。5分周期のRecoveryも同じ索引を使い再発見する。claim時に最新の通知義務と宛先を再検証し、lease / fencing付きの別TransactionでDelivery Attemptをdurableに生成してoutboxを消費する。claim後の再発見はAttempt側のRecovery責務とする。Provider call中はD1 Transactionを保持しない。Provider受理・結果不明・手動再送のAttempt詳細は`05_BookingAndConcurrency.md` §13に従う後続Delivery詳細設計#637の責務であり、本予約Confirmの成功判定に含めない。
 
-初回pickupは別batchで`UPDATE notification_outbox SET claim_token = ?, claim_until = ? WHERE intent_id = ? AND due_at <= ? AND (claim_until IS NULL OR claim_until < ?)`を実行し、直後に`INSERT INTO command_guards(id,captured_at,expected_read_set,ok) VALUES (?, ?, '', CASE WHEN changes() = 1 THEN 1 ELSE 0 END)`でCHECK違反を強制する。正常終了前にそのGuard行を削除する。同じbatchで最新Intent・宛先をGuardし、安定したAttempt IDを作成してから`DELETE ... WHERE intent_id = ? AND claim_token = ?`する。どれかが不成立ならclaim / Attempt / outbox消費を全Rollbackする。後続Attemptの結果更新ではそのAttemptのfencing tokenを照合し、古いworkerの更新を拒否する。配送物理Schemaが確定するまで、このpickup Adapterを有効化しない。
+初回pickupは別batchで`UPDATE notification_outbox SET claim_token = ?, claim_until = ? WHERE intent_id = ? AND due_at <= ? AND (claim_until IS NULL OR claim_until < ?)`を実行し、直後に`INSERT INTO command_guards(id,captured_at,expected_read_set,ok) VALUES (?, ?, '', CASE WHEN changes() = 1 THEN 1 ELSE 0 END)`でCHECK違反を強制する。正常終了前にそのGuard行を削除する。同じbatchで最新Intent・宛先をGuardし、安定したAttempt IDを作成してから`DELETE ... WHERE intent_id = ? AND claim_token = ?`する。どれかが不成立ならclaim / Attempt / outbox消費を全Rollbackする。後続Attemptの結果更新ではそのAttemptのfencing tokenを照合し、古いworkerの更新を拒否する。#637でDelivery Attempt schema、stable identity、claim / lease / fencing、結果不明・retry・Recovery境界が確定するまで、実Provider Delivery Adapterを実装・Production有効化せず、pickup / Attempt / lease / fencingのProduction有効化も行わない。#608のProvider Stubによる隔離評価は先行可能とする。
+
+Cloudflare D1実環境でのFK enforcement / `PRAGMA foreign_key_check`、Server時刻、`withSession("first-primary").batch()`のGuard失敗時の原子性は未検証であり、#536のD1検証経路で確認する。ローカルSQLiteの結果を正式なD1実環境証跡とせず、予約Applicationの統合検証およびProduction相当環境でのAdapter有効化より前に検証を完了し、失敗時は有効化を停止する。本Issueは詳細設計文書のみを変更し、予約Migration / Production Adapter / 実Provider Deliveryを有効化しないため、#636 / #637 / #536の残存責務と実施順序はIssue #611本文の`Scope-out impact and follow-up`を正本とする。
 
 ## 7. Traceability
 
@@ -162,7 +164,7 @@ Guardのread-set不一致、最終時刻Guard、`slot_occupancies.slot_id UNIQUE
 | §2〜4 Slot / Preview / 履歴 | REQ-001 / 002 / 003 / 005、BR-015 / 017 / 050〜059 / 066〜068、AC-001 / 002 / 003 / 005 | 公開・占有View、本人月間分類、取消履歴と安定Page |
 | §5 原子的Confirm | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
 | §2 設定主体・派生変更監査 | BR-056 / 058 / 132、REQ-940、AC-940-001〜002、`04_ReservationModel.md` §12.1、`05_BookingAndConcurrency.md` §12.2 | `updated_by` mapping、予約成立Auditから全再分類before / afterを追跡 |
-| §1・§3・§5 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | Production・同等共有環境は#636完了・認証Migration接続確認後に有効化。#608の隔離評価は同じGuard Port契約のfixtureで先行可能。いずれも同一Transactionで最新認証状態を再照合 |
+| §1・§3・§5 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | §1の認証Guard接続・隔離試験fixture境界を参照し、同一Transactionで最新認証状態を再照合 |
 | §2・§5〜6 通知 | REQ-101 / 104 / 914、BR-112 / 115 / 133、AC-101-001〜002 / AC-104-001〜003 / AC-914-004〜005 | 必須Intent同一Commit、配送分離、安全なError |
 
 既存のPOL→BR→REQ→AC→TCは変更しない。要求ベース試験は`../40_test/02_FunctionalTestSpecification.md`、`03_NonFunctionalTestSpecification.md`と`04_RequirementsTestTraceability.md`を参照する。OOS-001 / 002を維持し、料金、管理者代理予約、Bulk / cancel / admin Commandの物理詳細を導入しない。
