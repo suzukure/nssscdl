@@ -347,7 +347,7 @@ jobs:
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.156.1
+          codex-version: 0.159.3
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
           allow-bot-users: ${{ steps.dev-token.outputs.app-slug }}
@@ -385,7 +385,7 @@ jobs:
           if (mainPackage.name !== "@openai/codex") {
             throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
-          if (mainPackage.version !== "0.156.1") {
+          if (mainPackage.version !== "0.159.3") {
             throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
@@ -447,7 +447,7 @@ jobs:
               "$native_path" --version
           )"
           test "$launcher_version" = "$native_version"
-          test "$native_version" = 'codex-cli 0.156.1'
+          test "$native_version" = 'codex-cli 0.159.3'
 
           action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
           action_main="$action_root/dist/main.js"
@@ -468,7 +468,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf '信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。\n' \
+          printf '信頼済みCodex 0.159.3ランタイムを%s向けに確認しました（Action blob %s）。\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex developer prompt
@@ -1814,7 +1814,7 @@ jobs:
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.156.1
+          codex-version: 0.159.3
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
@@ -1853,7 +1853,7 @@ jobs:
           if (mainPackage.name !== "@openai/codex") {
             throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
-          if (mainPackage.version !== "0.156.1") {
+          if (mainPackage.version !== "0.159.3") {
             throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
@@ -1915,7 +1915,7 @@ jobs:
               "$native_path" --version
           )"
           test "$launcher_version" = "$native_version"
-          test "$native_version" = 'codex-cli 0.156.1'
+          test "$native_version" = 'codex-cli 0.159.3'
 
           action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
           action_main="$action_root/dist/main.js"
@@ -1936,7 +1936,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf '信頼済みCodex 0.156.1ランタイムを%s向けに確認しました（Action blob %s）。\n' \
+          printf '信頼済みCodex 0.159.3ランタイムを%s向けに確認しました（Action blob %s）。\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex follow-up prompt
