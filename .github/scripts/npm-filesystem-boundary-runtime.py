@@ -131,6 +131,19 @@ def service(repo, root, record):
             ('unit cleanup unconfirmed', state.stdout, state.stderr)
 
 
+def same_uid_control(node, controls, phase):
+    # Only purpose-built sentinels are required to be readable outside isolation.
+    check = ('const fs=require("fs"),assert=require("assert/strict");'
+             'assert.equal(process.getuid(),65534);'
+             'const f=fs.openSync(process.argv[1],"r");fs.closeSync(f)')
+    for source_class, target in controls.items():
+        result = subprocess.run(['sudo', '-n', '-u', 'nobody', '/usr/bin/env', '-i',
+                                 str(node), '-e', check, target],
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0, ('same-UID control failed', phase, source_class,
+                                        target, result.returncode, result.stdout, result.stderr)
+
+
 def runtime(repo, node, npm):
     assert os.getuid() != 0, 'independent runtime requires non-root runner UID'
     staged_paths = []
@@ -139,7 +152,8 @@ def runtime(repo, node, npm):
          tempfile.TemporaryDirectory(prefix='.npm-workspace-source-', dir=repo) as workspace:
         packages = [host, workspace]
         files = []
-        for directory in packages:
+        controls = {}
+        for source_class, directory in zip(('host', 'workspace'), packages):
             Path(directory).chmod(0o755)
             manifest = Path(directory) / 'package.json'
             manifest.write_text('{"name":"host-escape-control","version":"1.0.0"}')
@@ -149,6 +163,8 @@ def runtime(repo, node, npm):
                 output.add(manifest, arcname='package/package.json')
             archive.chmod(0o644)
             files.append(str(archive))
+            controls[source_class + '-package'] = str(manifest)
+            controls[source_class + '-tarball'] = str(archive)
         for cycle in range(2):
             staged = Path(subprocess.check_output(['sudo', '-n', 'mktemp', '-d',
                           '/run/npm-filesystem-fixture-XXXXXXXX'], text=True, timeout=5).strip())
@@ -170,15 +186,9 @@ def runtime(repo, node, npm):
                 subprocess.run(['sudo', '-n', 'chown', '-R', 'nobody:nogroup',
                                 str(staged / 'root/project'), str(staged / 'root/tmp')],
                                check=True, timeout=5)
-                # Same UID control reads all sentinel files, before and after service.
-                controls = record['hidden'][:-1]
-                check = 'const fs=require("fs");for(const p of JSON.parse(process.argv[1])){const f=fs.openSync(p,"r");fs.closeSync(f)}'
-                for before in (True, False):
-                    subprocess.run(['sudo', '-n', '-u', 'nobody', '/usr/bin/env', '-i',
-                                    str(node), '-e', check, json.dumps(controls)], check=True,
-                                   capture_output=True, timeout=5)
-                    if before:
-                        print(json.dumps(service(repo, staged / 'root', record)), flush=True)
+                same_uid_control(node, controls, 'pre')
+                print(json.dumps(service(repo, staged / 'root', record)), flush=True)
+                same_uid_control(node, controls, 'post')
             finally:
                 subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)], check=True, timeout=10)
                 assert not staged.exists(), 'filesystem root cleanup failed'

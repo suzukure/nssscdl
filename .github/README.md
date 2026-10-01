@@ -91,4 +91,6 @@ Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はなく
 
 新しいrootで2回実行し、成功・失敗時のunit停止・collectとroot削除、host fixtureのcleanupを確認する。既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-upからはunreachable。制限されたCodex serviceではpure / mockとruntime copy構築を検証し、実serviceは`SKIP`とする。`SKIP`は実効filesystem隔離の実証済みを意味しない。独立GitHub Actions runnerでsystemdがない場合は失敗する。
 
+same-UID前後controlの必須証拠はfixtureがpermissionを明示固定したhost/workspaceのpackage / tarballだけとし、各pathを個別にopenする。失敗時はpre / post、source class、path、exit codeと元のstdout / stderrを残し、sentinelが隔離外で読めなければfail-closedとする。既存の`.git/HEAD` / `/etc/os-release`は隔離内の補助hidden checkに限定し、runner依存の隔離外readabilityを必須条件にしない。
+
 Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。#649/#652の外部network proofは再実行しない。後継は **#656 → #650 → #647**。#656は同じdisposable rootの構築・service前提を利用してlifecycle script非実行を独立検証し、#650/#647のlock生成・production wiringはその完了を待つ。

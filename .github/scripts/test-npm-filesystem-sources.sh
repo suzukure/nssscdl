@@ -209,19 +209,58 @@ with tempfile.TemporaryDirectory(prefix='npm-local-command-') as directory:
     assert not list(local.rglob('package-lock.json')) and not list(local.rglob('node_modules'))
 assert not local.exists()
 
+# Same-UID controls identify each managed sentinel and preserve failure details.
+controls = {kind: '/fixture/' + kind for kind in
+            ('host-package', 'host-tarball', 'workspace-package', 'workspace-tarball')}
+for phase in ('pre', 'post'):
+    for denied in (None, *controls):
+        checked = []
+        def control_run(command, **kwargs):
+            target = command[-1]
+            checked.append(target)
+            assert command[:7] == ['sudo', '-n', '-u', 'nobody', '/usr/bin/env', '-i', str(node)]
+            assert 'assert.equal(process.getuid(),65534)' in command[-2]
+            assert kwargs == {'capture_output': True, 'text': True, 'timeout': 5}
+            return subprocess.CompletedProcess(command, int(target == controls.get(denied)),
+                                               'control stdout', 'EACCES: sentinel unreadable')
+        with patch.object(fixture.subprocess, 'run', side_effect=control_run):
+            try:
+                fixture.same_uid_control(node, controls, phase)
+            except AssertionError as error:
+                assert denied is not None
+                assert error.args[0] == ('same-UID control failed', phase, denied,
+                    controls[denied], 1, 'control stdout', 'EACCES: sentinel unreadable')
+            else:
+                assert denied is None
+        expected = list(controls.values())
+        if denied:
+            expected = expected[:expected.index(controls[denied]) + 1]
+        assert checked == expected, 'failed control continued or skipped a sentinel'
+
 # Two fresh roots and cleanup are required, including a failing second service.
-for failing in (False, True):
+for failure in (None, 'service', 'pre-host', 'pre-workspace', 'post-host', 'post-workspace'):
     roots = [Path('/run/npm-filesystem-fixture-abcdefgh'),
              Path('/run/npm-filesystem-fixture-ijklmnop')]
-    calls, serviced = [], []
+    calls, serviced, control_paths = [], [], []
     def simulate_service(repo, root, record):
         serviced.append(root)
         assert len(record['files']) == 2 and all(Path(p).is_file() for p in record['files'])
-        if failing and len(serviced) == 2:
+        assert str(repo / '.git/HEAD') in record['hidden'] and '/etc/os-release' in record['hidden']
+        if failure == 'service' and len(serviced) == 2:
             raise AssertionError('fixture service failed')
         return {'status':'pass'}
     def simulated_run(command, **kwargs):
         calls.append(command)
+        if '-e' in command:
+            target = Path(command[-1])
+            control_paths.append(target)
+            assert target.is_file() and target.stat().st_mode & 0o777 == 0o644
+            assert target.parent.stat().st_mode & 0o777 == 0o755
+            assert target.parent.parent == repo or target.parent.parent == Path(tempfile.gettempdir())
+            phase = 'pre' if (len(control_paths) - 1) % 8 < 4 else 'post'
+            kind = 'workspace' if target.parent.parent == repo else 'host'
+            if failure == phase + '-' + kind:
+                return subprocess.CompletedProcess(command, 1, '', 'EACCES: sentinel unreadable')
         return subprocess.CompletedProcess(command, 0, '', '')
     with patch.object(fixture.os, 'getuid', return_value=1000), \
          patch.object(fixture, 'build_root'), \
@@ -232,14 +271,22 @@ for failing in (False, True):
         try:
             fixture.runtime(repo, node, npm)
         except AssertionError as error:
-            assert failing and str(error) == 'fixture service failed'
+            assert failure is not None
+            if failure == 'service':
+                assert str(error) == 'fixture service failed'
+            else:
+                phase, kind = failure.split('-')
+                assert error.args[0][0:3] == ('same-UID control failed', phase, kind + '-package')
         else:
-            assert not failing
-    assert serviced == [p / 'root' for p in roots]
-    assert [cmd[-1] for cmd in calls if 'rm' in cmd] == [str(p) for p in roots]
-    host_files = [Path(p) for cmd in calls if '-e' in cmd for p in json.loads(cmd[-1])
-                  if p.endswith('host-package.tgz')]
-    assert host_files and all(not p.exists() for p in host_files), 'host fixture leaked'
+            assert failure is None
+    started = roots if failure in (None, 'service') else roots[:1]
+    expected_services = [] if failure and failure.startswith('pre-') else [p / 'root' for p in started]
+    assert serviced == expected_services
+    assert [cmd[-1] for cmd in calls if 'rm' in cmd] == [str(p) for p in started]
+    assert control_paths and all(not p.parent.exists() for p in control_paths), 'host fixture leaked'
+    if failure is None:
+        assert len(control_paths) == 16
+        assert all(control_paths.count(target) == 4 for target in set(control_paths))
 
 for name in ('npm-filesystem-boundary-runtime.py', 'npm-filesystem-source-probe.js',
              'test-npm-filesystem-sources.sh'):
