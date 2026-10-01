@@ -114,13 +114,26 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False)
     def observe():
         try:
             deadline = time.monotonic() + 10
+            last_observation = None
             while not done.is_set() and time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 shown = subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "show", unit,
                                         "--no-pager", "--property=IPAddressDeny",
                                         "--property=IPAddressAllow"],
-                                       capture_output=True, text=True, timeout=5)
-                if shown.returncode == 0 and "IPAddressDeny=" in shown.stdout:
-                    boundary.validate_properties(shown.stdout)
+                                       capture_output=True, text=True, timeout=min(5, remaining))
+                last_observation = {"returncode": shown.returncode, "properties": shown.stdout,
+                                    "stderr": shown.stderr, "reason": "property-query-failed"}
+                if shown.returncode == 0:
+                    try:
+                        boundary.validate_properties(shown.stdout)
+                    except (boundary.Rejected, ValueError) as error:
+                        # Startup may expose empty/partial properties. Never publish them.
+                        last_observation["reason"] = str(error)
+                    else:
+                        last_observation["reason"] = "validated"
+                if last_observation["reason"] == "validated" and time.monotonic() < deadline:
                     record = json.dumps({"unit": unit, "properties": shown.stdout})
                     # Atomic root-owned snapshot, never writable by the service or proxy.
                     writer = ("import os,sys; p=sys.argv[1]; "
@@ -129,8 +142,8 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False)
                     subprocess.run(["sudo", "-n", "/usr/bin/python3", "-I", "-c", writer,
                                     str(staged / (unit + ".json")), record], check=True, timeout=5)
                     return
-                done.wait(0.05)
-            raise AssertionError("effective property snapshot unavailable")
+                done.wait(min(0.05, max(0, deadline - time.monotonic())))
+            raise AssertionError(("effective property snapshot unavailable", last_observation))
         except BaseException as error:
             observer_errors.append(error)
 

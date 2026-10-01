@@ -298,6 +298,62 @@ with patch.object(fixture.subprocess, 'run', side_effect=successful_run), \
     fixture.service(repo, scripts, '192.0.2.1', Ports(), 12347)
 assert len(observed) == 5, 'missing observer/publication/unit cleanup'
 
+# Startup snapshots may be incomplete; only a fully validated result is published.
+# A fake clock tests the existing deadline without sleeping or retrying the service.
+empty = 'IPAddressAllow=\nIPAddressDeny=\n'
+partial = 'IPAddressDeny=0.0.0.0/0 ::/0\n'
+mismatch = valid.replace('127.0.0.0/8', '0.0.0.0/0')
+malformed = valid.replace('::1/128', 'invalid-network')
+query_failure = (1, partial, 'fixture property query failed')
+for responses, step, expected_reason in (
+    ([(0, output, '') for output in ('', partial, empty, mismatch, malformed, valid)],
+     0.1, None),
+    ([(0, empty, '')] * 4, 2.5, 'network-properties-mismatch'),
+    ([(0, partial, '')] * 4, 2.5, 'network-properties-unavailable'),
+    ([(0, mismatch, '')] * 4, 2.5, 'network-properties-mismatch'),
+    ([query_failure, (0, valid, '')], 0.1, None),
+    ([query_failure] * 4, 2.5, 'property-query-failed'),
+    ([(0, mismatch, '')] * 3 + [(0, valid, '')], 2.5, 'validated'),
+):
+    observed = []
+    remaining_responses = list(responses)
+    clock = [0]
+    def startup_run(command, **kwargs):
+        if '--property=IPAddressDeny' in command:
+            observed.append(command)
+            assert kwargs['timeout'] == min(5, 10 - clock[0])
+            clock[0] += step
+            return subprocess.CompletedProcess(command, *remaining_responses.pop(0))
+        if command[2] == '/usr/bin/python3':
+            assert not remaining_responses, 'published a partial/mismatched snapshot'
+        if command[2] == '/usr/bin/systemd-run' and expected_reason is not None:
+            observed.append(command)
+            return subprocess.CompletedProcess(command, 1,
+                '{"status":"error","reason":"registry-boundary-unavailable"}', '')
+        return successful_run(command, **kwargs)
+    with patch.object(fixture.subprocess, 'run', side_effect=startup_run), \
+         patch.object(fixture.threading, 'Thread', SynchronousThread), \
+         patch.object(fixture.threading.Event, 'wait', return_value=False), \
+         patch.object(fixture.time, 'monotonic', side_effect=lambda: clock[0]), \
+         patch('builtins.print'):
+        try:
+            fixture.service(repo, scripts, '192.0.2.1', Ports(), 12347)
+        except AssertionError as error:
+            assert expected_reason is not None
+            diagnostic = str(error)
+            assert expected_reason in diagnostic and repr(responses[-1][1]) in diagnostic
+            if responses[-1][2]:
+                assert responses[-1][2] in diagnostic
+            assert 'registry-boundary-unavailable' in diagnostic
+        else:
+            assert expected_reason is None, 'deadline failure accepted'
+    queries = [command for command in observed if '--property=IPAddressDeny' in command]
+    assert len(queries) == len(responses) and len({command[4] for command in queries}) == 1
+    assert len([command for command in observed if command[2] == '/usr/bin/systemd-run']) == 1
+    writers = [command for command in observed if command[2] == '/usr/bin/python3']
+    assert len(writers) == (1 if expected_reason is None else 0)
+    assert observed[-2][3] == 'stop' and '--property=LoadState' in observed[-1]
+
 for ready in ({'status': 'ready', 'target': 'example.invalid:443', 'address': '127.0.0.1', 'port': 12345},
               {'status': 'ready', 'target': proxy.TARGET, 'address': '0.0.0.0', 'port': 12345}):
     process = Mock()
