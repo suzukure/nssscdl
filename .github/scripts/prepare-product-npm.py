@@ -242,6 +242,8 @@ def prepare(workspace, run_root, node, npm):
                 project = Path(disposable)
                 (project / "package.json").write_bytes(manifest_bytes)
                 flags = ["--ignore-scripts", "--registry=" + REGISTRY, "--cache=" + str(cache),
+                         "--allow-git=none", "--allow-remote=none",
+                         "--allow-file=none", "--allow-directory=none",
                          "--userconfig=" + str(config), "--globalconfig=" + str(global_config),
                          "--audit=false", "--fund=false", "--update-notifier=false", "--workspaces=false",
                          "--include=dev", "--include=optional", "--include=peer"]

@@ -121,6 +121,8 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
         if command[-1] == '--version':
             return b'24.0.0\n' if command[0] == str(node) else b'11.0.0\n'
         assert '--ignore-scripts' in command and '--registry=' + helper.REGISTRY in command
+        for source_type in ('git', 'remote', 'file', 'directory'):
+            assert '--allow-' + source_type + '=none' in command
         assert '--workspaces=false' in command and '--audit=false' in command
         cache = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--cache=')))
         assert cache.is_relative_to(trusted) and cache != Path(env['HOME'])
@@ -285,6 +287,68 @@ with tempfile.TemporaryDirectory(prefix='product-npm-fixture-') as temporary:
         result = helper.prepare(workspace, trusted, actual_node, actual_npm)
     assert result['status'] == 'prepared' and result['state'] == 'bootstrap', result
     assert not marker.exists()
+
+    # Seed registry metadata directly into npm's HTTP cache: bootstrap must
+    # reject non-registry TRANSITIVE sources during resolution, before a lock
+    # exists. Assert npm's policy error, not a cache miss or post-lock rejection.
+    cacache = actual_npm.resolve().parent.parent / 'node_modules/cacache'
+    seed_metadata = r'''
+const [modulePath, cache, url, body] = process.argv.slice(1);
+const metadata = {time: Date.now(), url, options: {compress: true},
+  reqHeaders: {accept: 'application/json'},
+  resHeaders: {'content-type': 'application/json', 'cache-control': 'max-age=3600'}};
+require(modulePath).put(cache, 'make-fetch-happen:request-cache:' + url, body,
+  {metadata}).catch(error => { console.error(error); process.exitCode = 1; });
+'''
+    original.write_text(json.dumps(real_manifest))
+    policy_errors = []
+    transitive = None
+
+    def resolution_run(command, cwd, env, timeout=180):
+        if command[-1] == '--version':
+            return real_run(command, cwd, env, timeout)
+        cache_arg = next(arg for arg in command if arg.startswith('--cache='))
+        cache = Path(cache_arg.split('=', 1)[1])
+        if command[1] == 'install':
+            package = {**pkg, 'dist': {
+                'tarball': real_lock['packages']['node_modules/example']['resolved'],
+                'integrity': real_lock['packages']['node_modules/example']['integrity']}}
+            if transitive is not None:
+                package['dependencies'] = {'blocked': transitive}
+            metadata = {'name': 'example', 'dist-tags': {'latest': '1.2.3'},
+                        'versions': {'1.2.3': package}}
+            real_run([str(actual_node), '-e', seed_metadata, str(cacache), str(cache / '_cacache'),
+                      helper.REGISTRY + 'example', json.dumps(metadata)], cwd, env, timeout)
+        # Also retain the existing real tarball/cache/lifecycle checks.
+        if transitive is None:
+            return offline_run(command, cwd, env, timeout)
+        process = subprocess.run([*command, '--offline'], cwd=cwd, env=env,
+                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+        assert process.returncode != 0, 'npm resolved a prohibited transitive source'
+        assert ('EALLOW' + policy_errors[-1]).encode() in process.stderr, process.stderr
+        assert not (cwd / 'package-lock.json').exists(), 'rejection happened after lock generation'
+        raise helper.Rejected('tool-execution-failed')
+
+    # Positive control: exact official registry package bootstrap still works.
+    with patch.object(helper, 'run', side_effect=resolution_run):
+        result = helper.prepare(workspace, trusted, actual_node, actual_npm)
+    assert result['status'] == 'prepared' and result['state'] == 'bootstrap', result
+    assert not marker.exists()
+    local_directory = root / 'local-dependency'
+    local_directory.mkdir()
+    (local_directory / 'package.json').write_text(json.dumps({'name': 'blocked', 'version': '1.0.0'}))
+    for source_type, transitive in (
+        ('git', 'git+https://example.invalid/blocked.git'),
+        ('remote', 'https://example.invalid/blocked.tgz'),
+        ('file', 'file:' + str(tarball)),
+        ('directory', 'file:' + str(local_directory)),
+    ):
+        policy_errors.append(source_type.upper())
+        with patch.object(helper, 'run', side_effect=resolution_run):
+            result = helper.prepare(workspace, trusted, actual_node, actual_npm)
+        assert result['status'] == 'error' and result['state'] == 'bootstrap', result
+        assert result['reason'] == 'tool-execution-failed', result
+        assert not marker.exists()
 
     # Process failures and timeout must not become successful preparation.
     for outcome in (subprocess.CompletedProcess([], 1, b'', b'sensitive error'),
