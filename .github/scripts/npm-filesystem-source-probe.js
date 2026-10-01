@@ -17,6 +17,21 @@ function unreadable(target, sourceClass = 'system-path') {
   throw new Error('host source visible: ' + context);
 }
 
+function emptyDirectory(target) {
+  const context = `phase=hidden source_class=staged-directory path=${target}`;
+  // The staged directory object can be readable without exposing host content.
+  // lstat rejects a replacement symlink, file, or device before enumeration.
+  let entries;
+  try {
+    assert(fs.lstatSync(target).isDirectory(), 'unsafe staged directory type: ' + context);
+    entries = fs.readdirSync(target);
+  } catch (error) {
+    assert(['ENOENT', 'EACCES', 'EPERM'].includes(error.code), context + ': ' + error);
+    return;
+  }
+  assert.equal(entries.length, 0, 'staged directory content visible: ' + context);
+}
+
 function rootInventory(expected) {
   const actual = fs.readdirSync('/');
   for (const name of expected) {
@@ -68,8 +83,11 @@ function probe(input) {
   for (const [sourceClass, target] of Object.entries(input.hidden)) {
     unreadable(target, sourceClass);
   }
-  for (const target of ['/proc/1/root', '/sys', '/run', '/home', '/root', '/run/host/os-release']) {
+  for (const target of ['/proc/1/root', '/run/host/os-release']) {
     unreadable(target);
+  }
+  for (const target of ['/sys', '/run', '/home', '/root', '/proc']) {
+    emptyDirectory(target);
   }
   assert.deepEqual(Object.keys(process.env).sort(), ['HOME', 'LC_ALL', 'PATH']);
   const npm = ['/runtime/npm/bin/npm-cli.js', '--offline', '--ignore-scripts',

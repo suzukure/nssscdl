@@ -170,21 +170,31 @@ const inventoryModes = ['staged-missing', 'staged-file', 'staged-symlink',
   'extra-other-write', 'extra-special', 'extra-writable', 'extra-content',
   'extra-read-error', 'extra-write-error'];
 const passing = ['pass', 'extra-empty', 'extra-denied', 'extra-permission'];
-for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong', 'host-visible',
+const emptyDirectories = ['/sys', '/run', '/home', '/root', '/proc'];
+const emptyModes = ['empty-readable', 'empty-denied', 'empty-permission', 'empty-missing',
+  'empty-content', 'empty-file', 'empty-symlink', 'empty-device', 'empty-read-error',
+  'empty-late-file', 'empty-late-symlink', 'empty-late-device'];
+const modes = [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong', 'host-visible',
   'host-env-visible',
-  'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock']) {
-  let calls = 0, reported, error;
+  'host-os-visible', 'host-run-visible', 'host-proc-visible',
+  'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock'];
+for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
+  ...emptyDirectories.flatMap(target=>emptyModes.map(mode=>[mode, target]))]) {
+  let calls = 0, emptyStats = 0, reported, error;
   const input = {token:'fixture',hidden:{'workspace-package':'/workspace/pkg/package.json',
-    'host-env':'/usr/bin/env'},
+    'host-env':'/usr/bin/env', 'host-os-release':'/etc/os-release'},
     packages:['/host/pkg','/workspace/pkg'],
     files:['/host/pkg.tgz','/workspace/pkg.tgz']};
   const fakeFs = {
     constants: {W_OK:2},
     statSync() {return {uid:0,mode:0o644}},
     lstatSync(p) {
+      if (p === emptyTarget) emptyStats++;
       const extra = p === '/mount-point-fixture';
       const directory = p !== '/boundary.json' &&
         !(extra && ['extra-file','extra-symlink','extra-device'].includes(mode)) &&
+        !(p === emptyTarget && ['empty-file','empty-symlink','empty-device'].includes(mode)) &&
+        !(p === emptyTarget && emptyStats > 1 && mode.startsWith('empty-late-')) &&
         !(p === '/runtime' && ['staged-file','staged-symlink'].includes(mode));
       return {isDirectory:()=>directory,isFile:()=>p === '/boundary.json',
         uid:extra ? (mode === 'extra-owner' ? 65534 : 0) :
@@ -202,10 +212,10 @@ for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong',
     readFileSync() {
       if (mode === 'marker-missing') throw Error('missing boundary');
       return JSON.stringify({token:mode === 'marker-wrong' ? 'wrong' : input.token,
-        visible_root:['runtime','project','tmp','boundary.json']});
+        visible_root:['runtime','project','tmp','boundary.json', ...emptyDirectories.map(p=>p.slice(1))]});
     },
     readdirSync(p) {
-      if (p === '/') return ['runtime','project','tmp','boundary.json']
+      if (p === '/') return ['runtime','project','tmp','boundary.json', ...emptyDirectories.map(p=>p.slice(1))]
         .filter(name=>mode !== 'staged-missing' || name !== 'runtime')
         .concat(mode.startsWith('extra-') ? ['mount-point-fixture'] : []);
       if (p === '/mount-point-fixture') {
@@ -213,10 +223,22 @@ for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong',
         if (code) throw Object.assign(Error('directory check'), {code});
         return mode === 'extra-content' ? ['host-content'] : [];
       }
+      if (emptyDirectories.includes(p)) {
+        if (p === emptyTarget) {
+          const code = {'empty-denied':'EACCES', 'empty-permission':'EPERM',
+            'empty-missing':'ENOENT', 'empty-read-error':'EIO'}[mode];
+          if (code) throw Object.assign(Error('staged directory check'), {code});
+          if (mode === 'empty-content') return ['host-content'];
+        }
+        return [];
+      }
       return mode === 'lock' ? [{name:'package-lock.json',isDirectory:()=>false}] : [];
     },
     openSync(p) {
-      if (mode === 'host-visible' || (mode === 'host-env-visible' && p === '/usr/bin/env')) return 123;
+      // Reproduce the runner: opening a staged empty directory itself succeeds.
+      if (emptyDirectories.includes(p) || mode === 'host-visible' ||
+          ({'host-env-visible':'/usr/bin/env', 'host-os-visible':'/etc/os-release',
+            'host-run-visible':'/run/host/os-release', 'host-proc-visible':'/proc/1/root'}[mode] === p)) return 123;
       throw Object.assign(Error('hidden'), {code:'ENOENT'});
     }, closeSync() {}, symlinkSync() {},
   };
@@ -238,7 +260,7 @@ for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong',
   const modules = {'node:fs':fakeFs,'node:path':require('path'),
     'node:child_process':fakeCp,'node:assert/strict':assert};
   execute(name=>modules[name],fakeProcess,{log:s=>reported=JSON.parse(s),error:s=>error=s});
-  if (passing.includes(mode)) {
+  if (passing.includes(mode) || ['empty-readable','empty-denied','empty-permission','empty-missing'].includes(mode)) {
     assert.equal(reported.status,'pass');
     assert.equal(calls,17);
     assert.equal(reported.failures.length,13);
@@ -249,6 +271,19 @@ for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong',
       'phase=hidden source_class=workspace-package path=/workspace/pkg/package.json'));
     if (mode === 'host-env-visible') assert(error.includes(
       'phase=hidden source_class=host-env path=/usr/bin/env'));
+    for (const [failure, sourceClass, target] of [
+      ['host-os-visible','host-os-release','/etc/os-release'],
+      ['host-run-visible','system-path','/run/host/os-release'],
+      ['host-proc-visible','system-path','/proc/1/root']]) {
+      if (mode === failure) assert(error.includes(
+        `phase=hidden source_class=${sourceClass} path=${target}`),error);
+    }
+    if (mode.startsWith('empty-')) {
+      assert.equal(calls,0,mode);
+      assert(error.includes(['empty-file','empty-symlink','empty-device'].includes(mode) ?
+        `phase=inventory source_class=staged-entry path=${emptyTarget}` :
+        `phase=hidden source_class=staged-directory path=${emptyTarget}`),error);
+    }
     if (inventoryModes.includes(mode)) {
       assert.equal(calls,0,mode);
       assert(error.includes(mode.startsWith('staged-') ?
@@ -257,7 +292,8 @@ for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong',
     }
     if (['accepted-source','unrelated-error'].includes(mode)) assert(error.includes(
       'phase=npm source_class=host-directory path=file:/host/pkg'));
-    if (['marker-missing','marker-wrong','host-visible','host-env-visible','bad-env'].includes(mode)) assert.equal(calls,0);
+    if (['marker-missing','marker-wrong','host-visible','host-env-visible',
+      'host-os-visible','host-run-visible','host-proc-visible','bad-env'].includes(mode)) assert.equal(calls,0);
   }
 }
 '''
