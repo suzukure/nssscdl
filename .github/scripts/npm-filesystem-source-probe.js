@@ -17,6 +17,42 @@ function unreadable(target, sourceClass = 'system-path') {
   throw new Error('host source visible: ' + context);
 }
 
+function rootInventory(expected) {
+  const actual = fs.readdirSync('/');
+  for (const name of expected) {
+    const target = '/' + name;
+    const context = `phase=inventory source_class=staged-entry path=${target}`;
+    assert(actual.includes(name), 'missing staged entry: ' + context);
+    const info = fs.lstatSync(target);
+    assert(name === 'boundary.json' ? info.isFile() : info.isDirectory(), context);
+    assert.equal(info.uid, ['project', 'tmp'].includes(name) ? 65534 : 0, context);
+    assert.equal(info.mode & 0o022, 0, context);
+  }
+  for (const name of actual.filter(name => !expected.includes(name))) {
+    const target = '/' + name;
+    const context = `phase=inventory source_class=runtime-entry path=${target}`;
+    const info = fs.lstatSync(target);
+    // systemd can create mount-point directories; names alone cannot prove safety.
+    assert(info.isDirectory(), 'unsafe runtime entry type: ' + context);
+    assert.equal(info.uid, 0, context);
+    assert.equal(info.mode & 0o7022, 0, context);
+    try {
+      fs.accessSync(target, fs.constants.W_OK);
+      throw new Error('writable runtime entry: ' + context);
+    } catch (error) {
+      assert(['EACCES', 'EPERM', 'EROFS'].includes(error.code), context + ': ' + error);
+    }
+    let entries;
+    try {
+      entries = fs.readdirSync(target);
+    } catch (error) {
+      assert(['EACCES', 'EPERM'].includes(error.code), context + ': ' + error);
+      continue;
+    }
+    assert.equal(entries.length, 0, 'runtime entry content visible: ' + context);
+  }
+}
+
 function probe(input) {
   // A missing/mismatched boundary must fail before any package-manager command.
   const info = fs.statSync('/boundary.json');
@@ -24,8 +60,8 @@ function probe(input) {
   assert.equal(info.mode & 0o022, 0);
   const boundary = JSON.parse(fs.readFileSync('/boundary.json', 'utf8'));
   assert.equal(boundary.token, input.token);
-  assert.deepEqual(fs.readdirSync('/').sort(), boundary.visible_root.sort());
   assert.equal(process.getuid(), 65534);
+  rootInventory(boundary.visible_root);
   assert.equal(process.cwd(), '/project');
   assert.equal(fs.statSync('/runtime/node').uid, 0);
   assert.equal(fs.statSync('/runtime/node').mode & 0o022, 0);

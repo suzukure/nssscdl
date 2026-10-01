@@ -198,7 +198,8 @@ def runtime(repo, node, npm):
                                  for kind, item in zip(('host', 'workspace'), packages)}}
             record['hidden'].update({'host-tarball': files[0], 'workspace-tarball': files[1],
                                      'workspace-root': str(repo), 'repository-head': str(repo / '.git/HEAD'),
-                                     'host-os-release': '/etc/os-release', 'staging-root': str(staged)})
+                                     'host-os-release': '/etc/os-release', 'host-env': '/usr/bin/env',
+                                     'staging-root': str(staged)})
             try:
                 with tempfile.TemporaryDirectory(prefix='npm-root-build-') as build:
                     root = Path(build) / 'root'

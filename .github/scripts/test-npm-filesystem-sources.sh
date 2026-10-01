@@ -164,23 +164,59 @@ javascript = r'''
 const fs = require('fs'), assert = require('assert/strict');
 const execute = new Function('require', 'process', 'console',
   fs.readFileSync(process.argv[1], 'utf8'));
-for (const mode of ['pass', 'marker-missing', 'marker-wrong', 'host-visible',
+const inventoryModes = ['staged-missing', 'staged-file', 'staged-symlink',
+  'staged-owner', 'staged-writable', 'extra-empty', 'extra-denied', 'extra-permission',
+  'extra-file', 'extra-symlink', 'extra-device', 'extra-owner', 'extra-group-write',
+  'extra-other-write', 'extra-special', 'extra-writable', 'extra-content',
+  'extra-read-error', 'extra-write-error'];
+const passing = ['pass', 'extra-empty', 'extra-denied', 'extra-permission'];
+for (const mode of [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong', 'host-visible',
+  'host-env-visible',
   'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock']) {
   let calls = 0, reported, error;
-  const input = {token:'fixture',hidden:{'workspace-package':'/workspace/pkg/package.json'},
+  const input = {token:'fixture',hidden:{'workspace-package':'/workspace/pkg/package.json',
+    'host-env':'/usr/bin/env'},
     packages:['/host/pkg','/workspace/pkg'],
     files:['/host/pkg.tgz','/workspace/pkg.tgz']};
   const fakeFs = {
+    constants: {W_OK:2},
     statSync() {return {uid:0,mode:0o644}},
+    lstatSync(p) {
+      const extra = p === '/mount-point-fixture';
+      const directory = p !== '/boundary.json' &&
+        !(extra && ['extra-file','extra-symlink','extra-device'].includes(mode)) &&
+        !(p === '/runtime' && ['staged-file','staged-symlink'].includes(mode));
+      return {isDirectory:()=>directory,isFile:()=>p === '/boundary.json',
+        uid:extra ? (mode === 'extra-owner' ? 65534 : 0) :
+          p === '/project' || p === '/tmp' || (p === '/runtime' && mode === 'staged-owner') ? 65534 : 0,
+        mode:extra ? ({'extra-group-write':0o775,'extra-other-write':0o757,
+          'extra-special':0o1755}[mode] || 0o755) :
+          p === '/runtime' && mode === 'staged-writable' ? 0o777 : 0o755};
+    },
+    accessSync(p, flag) {
+      assert.equal(p,'/mount-point-fixture');
+      assert.equal(flag,2);
+      if (mode === 'extra-writable') return;
+      throw Object.assign(Error('write check'), {code:mode === 'extra-write-error' ? 'EIO' : 'EACCES'});
+    },
     readFileSync() {
       if (mode === 'marker-missing') throw Error('missing boundary');
       return JSON.stringify({token:mode === 'marker-wrong' ? 'wrong' : input.token,
-        visible_root:['runtime','project','boundary.json']});
+        visible_root:['runtime','project','tmp','boundary.json']});
     },
-    readdirSync(p) {return p === '/' ? ['runtime','project','boundary.json'] :
-      mode === 'lock' ? [{name:'package-lock.json',isDirectory:()=>false}] : []},
-    openSync() {
-      if (mode === 'host-visible') return 123;
+    readdirSync(p) {
+      if (p === '/') return ['runtime','project','tmp','boundary.json']
+        .filter(name=>mode !== 'staged-missing' || name !== 'runtime')
+        .concat(mode.startsWith('extra-') ? ['mount-point-fixture'] : []);
+      if (p === '/mount-point-fixture') {
+        const code = {'extra-denied':'EACCES','extra-permission':'EPERM','extra-read-error':'EIO'}[mode];
+        if (code) throw Object.assign(Error('directory check'), {code});
+        return mode === 'extra-content' ? ['host-content'] : [];
+      }
+      return mode === 'lock' ? [{name:'package-lock.json',isDirectory:()=>false}] : [];
+    },
+    openSync(p) {
+      if (mode === 'host-visible' || (mode === 'host-env-visible' && p === '/usr/bin/env')) return 123;
       throw Object.assign(Error('hidden'), {code:'ENOENT'});
     }, closeSync() {}, symlinkSync() {},
   };
@@ -202,7 +238,7 @@ for (const mode of ['pass', 'marker-missing', 'marker-wrong', 'host-visible',
   const modules = {'node:fs':fakeFs,'node:path':require('path'),
     'node:child_process':fakeCp,'node:assert/strict':assert};
   execute(name=>modules[name],fakeProcess,{log:s=>reported=JSON.parse(s),error:s=>error=s});
-  if (mode === 'pass') {
+  if (passing.includes(mode)) {
     assert.equal(reported.status,'pass');
     assert.equal(calls,17);
     assert.equal(reported.failures.length,13);
@@ -211,9 +247,17 @@ for (const mode of ['pass', 'marker-missing', 'marker-wrong', 'host-visible',
     assert(error && !reported,mode);
     if (mode === 'host-visible') assert(error.includes(
       'phase=hidden source_class=workspace-package path=/workspace/pkg/package.json'));
+    if (mode === 'host-env-visible') assert(error.includes(
+      'phase=hidden source_class=host-env path=/usr/bin/env'));
+    if (inventoryModes.includes(mode)) {
+      assert.equal(calls,0,mode);
+      assert(error.includes(mode.startsWith('staged-') ?
+        'phase=inventory source_class=staged-entry path=/runtime' :
+        'phase=inventory source_class=runtime-entry path=/mount-point-fixture'),error);
+    }
     if (['accepted-source','unrelated-error'].includes(mode)) assert(error.includes(
       'phase=npm source_class=host-directory path=file:/host/pkg'));
-    if (['marker-missing','marker-wrong','host-visible','bad-env'].includes(mode)) assert.equal(calls,0);
+    if (['marker-missing','marker-wrong','host-visible','host-env-visible','bad-env'].includes(mode)) assert.equal(calls,0);
   }
 }
 '''
@@ -295,6 +339,7 @@ for failure in (None, 'service', 'pre-host', 'post-host', 'inventory-build', 'in
         assert record['hidden']['workspace-root'] == str(repo)
         assert record['hidden']['repository-head'] == str(repo / '.git/HEAD')
         assert record['hidden']['host-os-release'] == '/etc/os-release'
+        assert record['hidden']['host-env'] == '/usr/bin/env' and Path('/usr/bin/env').is_file()
         assert Path(record['hidden']['workspace-package']).parent == workspace_paths[-1]
         assert record['hidden']['workspace-tarball'] == record['files'][1]
         assert inventories[-2:] == ['build', 'staged']
