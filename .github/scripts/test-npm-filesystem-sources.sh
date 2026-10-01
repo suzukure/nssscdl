@@ -180,13 +180,21 @@ const diagnosticEntries = [
 const emptyModes = ['empty-readable', 'empty-denied', 'empty-permission', 'empty-missing',
   'empty-content', 'empty-file', 'empty-symlink', 'empty-device', 'empty-read-error',
   'empty-late-file', 'empty-late-symlink', 'empty-late-device'];
+const nestedModes = ['nested-content', 'nested-empty', 'nested-denied', 'nested-permission',
+  'nested-missing', 'nested-symlink', 'nested-file', 'nested-other', 'nested-other-parent'];
 const modes = [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong', 'host-visible',
   'host-env-visible',
   'host-os-visible', 'host-run-visible', 'host-proc-visible',
   'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock'];
 for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
-  ...emptyDirectories.flatMap(target=>emptyModes.map(mode=>[mode, target]))]) {
+  ...emptyDirectories.flatMap(target=>emptyModes.map(mode=>[mode, target])),
+  ...nestedModes.map(mode=>[mode, mode === 'nested-other-parent' ? '/sys' : '/run'])]) {
   let calls = 0, emptyStats = 0, reported, error;
+  const nested = nestedModes.includes(mode);
+  const parentEntry = {entry_name:mode === 'nested-other' ? 'unexpected' : 'systemd',
+    type:mode === 'nested-symlink' ? 'symlink' : mode === 'nested-file' ? 'file' : 'directory',
+    uid:0,mode:mode === 'nested-symlink' ? 0o120777 : mode === 'nested-file' ? 0o100644 : 0o40755};
+  const directoryReads = [];
   const input = {token:'fixture',hidden:{'workspace-package':'/workspace/pkg/package.json',
     'host-env':'/usr/bin/env', 'host-os-release':'/etc/os-release'},
     packages:['/host/pkg','/workspace/pkg'],
@@ -196,7 +204,9 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
     statSync() {return {uid:0,mode:0o644}},
     lstatSync(p) {
       const parent = mode === 'extra-content' ? '/mount-point-fixture' : emptyTarget;
-      const entry = diagnosticEntries.find(e=>p === parent + '/' + e.entry_name);
+      const entry = nested ? (p === emptyTarget + '/' + parentEntry.entry_name ? parentEntry :
+        diagnosticEntries.find(e=>p === '/run/systemd/' + e.entry_name)) :
+        diagnosticEntries.find(e=>p === parent + '/' + e.entry_name);
       if (entry) return {uid:entry.uid,mode:entry.mode,
         isDirectory:()=>entry.type === 'directory',isFile:()=>entry.type === 'file',
         isSymbolicLink:()=>entry.type === 'symlink'};
@@ -227,6 +237,19 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
         visible_root:['runtime','project','tmp','boundary.json', ...emptyDirectories.map(p=>p.slice(1))]});
     },
     readdirSync(p) {
+      if (nested) {
+        directoryReads.push(p);
+        assert(['/', '/sys', '/run', '/run/systemd'].includes(p),
+          'nested diagnostics must not recurse or enumerate unrelated children');
+        if (p === '/run/systemd') {
+          assert(!['nested-symlink','nested-file','nested-other','nested-other-parent'].includes(mode),
+            'only /run/systemd directory may receive nested diagnostics');
+          const code = {'nested-denied':'EACCES', 'nested-permission':'EPERM',
+            'nested-missing':'ENOENT'}[mode];
+          if (code) throw Object.assign(Error('nested directory check'), {code});
+          return mode === 'nested-content' ? diagnosticEntries.map(e=>e.entry_name).reverse() : [];
+        }
+      }
       if (p === '/') return ['runtime','project','tmp','boundary.json', ...emptyDirectories.map(p=>p.slice(1))]
         .filter(name=>mode !== 'staged-missing' || name !== 'runtime')
         .concat(mode.startsWith('extra-') ? ['mount-point-fixture'] : []);
@@ -237,6 +260,7 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
       }
       if (emptyDirectories.includes(p)) {
         if (p === emptyTarget) {
+          if (nested) return [parentEntry.entry_name];
           const code = {'empty-denied':'EACCES', 'empty-permission':'EPERM',
             'empty-missing':'ENOENT', 'empty-read-error':'EIO'}[mode];
           if (code) throw Object.assign(Error('staged directory check'), {code});
@@ -257,7 +281,7 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   const fakeProcess = {argv:['node','probe',JSON.stringify(input)],getuid:()=>65534,
     cwd:()=>'/project',env:{HOME:'/project',PATH:'/runtime',LC_ALL:'C'}};
   if (mode === 'bad-env') fakeProcess.env.GITHUB_TOKEN = 'fixture-only';
-  if (['empty-content','extra-content'].includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
+  if (nested || ['empty-content','extra-content'].includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
   const fakeCp = {spawnSync(cmd,args,options) {
     calls++;
     assert.equal(cmd,'/runtime/node');
@@ -280,6 +304,18 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   } else {
     assert.equal(fakeProcess.exitCode,1,mode);
     assert(error && !reported,mode);
+    if (nested) {
+      assert.equal(calls,0,'non-empty /run must fail before npm even when /run/systemd is empty or hidden');
+      assert(error.includes('staged directory content visible: ' +
+        `phase=hidden source_class=staged-directory path=${emptyTarget}`),error);
+      const expected = [{parent_path:emptyTarget,...parentEntry}];
+      if (mode === 'nested-content') expected.push(...diagnosticEntries.map(e=>({parent_path:'/run/systemd',...e})));
+      // Exact objects enforce the five fixed fields and exclude target/body/env data.
+      assert.deepEqual(JSON.parse(error.split(' entries=')[1]),expected);
+      assert(!error.includes('fixture-only'), 'environment value leaked');
+      const shouldRead = !['nested-symlink','nested-file','nested-other','nested-other-parent'].includes(mode);
+      assert.equal(directoryReads.filter(p=>p === '/run/systemd').length,shouldRead ? 1 : 0);
+    }
     if (['empty-content','extra-content'].includes(mode)) {
       assert.equal(calls,0,'non-empty directory must fail before npm');
       const parent = mode === 'extra-content' ? '/mount-point-fixture' : emptyTarget;

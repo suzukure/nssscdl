@@ -17,16 +17,32 @@ function unreadable(target, sourceClass = 'system-path') {
   throw new Error('host source visible: ' + context);
 }
 
-function assertEmptyDirectory(target, entries, message) {
-  if (entries.length === 0) return;
+function directoryMetadata(target, entries) {
   // Metadata only: never follow symlinks or read entry contents/configuration.
-  const metadata = entries.slice().sort().map(name => {
+  return entries.slice().sort().map(name => {
     const info = fs.lstatSync(path.join(target, name));
     return { parent_path: target, entry_name: name,
       type: info.isDirectory() ? 'directory' : info.isFile() ? 'file' :
         info.isSymbolicLink() ? 'symlink' : 'other',
       uid: info.uid, mode: info.mode };
   });
+}
+
+function assertEmptyDirectory(target, entries, message) {
+  if (entries.length === 0) return;
+  const metadata = directoryMetadata(target, entries);
+  // Diagnose only this observed directory, one level deep; never recurse.
+  if (target === '/run' && metadata.some(entry =>
+    entry.entry_name === 'systemd' && entry.type === 'directory')) {
+    let children = [];
+    try {
+      children = fs.readdirSync('/run/systemd');
+    } catch (error) {
+      // An inaccessible child cannot erase the parent's non-empty failure.
+      assert(['ENOENT', 'EACCES', 'EPERM'].includes(error.code), message);
+    }
+    metadata.push(...directoryMetadata('/run/systemd', children));
+  }
   assert.fail(message + ' entries=' + JSON.stringify(metadata));
 }
 
