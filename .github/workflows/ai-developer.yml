@@ -802,6 +802,38 @@ jobs:
               )
               raise SystemExit(49)
 
+          # Linux native x64/arm64 syscall numbers; invalid arguments must
+          # still hit the filter, rather than kernel EINVAL/EBADF validation.
+          import ctypes
+          import platform
+          import subprocess
+
+          if platform.machine() not in ("x86_64", "aarch64"):
+              raise SystemExit("io_uring検査の未対応architectureです。")
+          libc = ctypes.CDLL(None, use_errno=True)
+          libc.syscall.restype = ctypes.c_long
+          for name, number in (("io_uring_setup", 425), ("io_uring_enter", 426),
+                               ("io_uring_register", 427)):
+              ctypes.set_errno(0)
+              result = libc.syscall(ctypes.c_long(number), ctypes.c_long(-1),
+                                    ctypes.c_void_p(), ctypes.c_long(0),
+                                    ctypes.c_long(0), ctypes.c_void_p(), ctypes.c_long(0))
+              error = ctypes.get_errno()
+              print(f"IO_URING_DENY {name} result={result} errno={error}", flush=True)
+              if result != -1 or error != errno.EPERM:
+                  raise SystemExit("io_uring syscallのEPERM拒否が不成立です。")
+
+          for command in (("node", "--version"), ("npm", "--version")):
+              try:
+                  completed = subprocess.run(command, capture_output=True, text=True,
+                                             timeout=20, cwd="/", env=os.environ.copy())
+              except (OSError, subprocess.TimeoutExpired):
+                  raise SystemExit("Node/npmのversion commandを実行できません。")
+              print(f"NODE_TOOLING {command[0]} rc={completed.returncode} "
+                    f"version={completed.stdout.strip()}", flush=True)
+              if completed.returncode != 0:
+                  raise SystemExit("Node/npmのversion commandが失敗しました。")
+
           print(
               "Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
           )
@@ -889,7 +921,7 @@ jobs:
                 --property=NoNewPrivileges=yes \
                 --property="InaccessiblePaths=$inaccessible_paths" \
                 --property=SystemCallArchitectures=native \
-                --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" \
+                --property="SystemCallFilter=~io_uring_setup:EPERM io_uring_enter:EPERM io_uring_register:EPERM" \
                 /usr/bin/setpriv \
                   --reuid="$uid" \
                   --regid="$nobody_gid" \
@@ -2281,6 +2313,38 @@ jobs:
               )
               raise SystemExit(49)
 
+          # Linux native x64/arm64 syscall numbers; invalid arguments must
+          # still hit the filter, rather than kernel EINVAL/EBADF validation.
+          import ctypes
+          import platform
+          import subprocess
+
+          if platform.machine() not in ("x86_64", "aarch64"):
+              raise SystemExit("io_uring検査の未対応architectureです。")
+          libc = ctypes.CDLL(None, use_errno=True)
+          libc.syscall.restype = ctypes.c_long
+          for name, number in (("io_uring_setup", 425), ("io_uring_enter", 426),
+                               ("io_uring_register", 427)):
+              ctypes.set_errno(0)
+              result = libc.syscall(ctypes.c_long(number), ctypes.c_long(-1),
+                                    ctypes.c_void_p(), ctypes.c_long(0),
+                                    ctypes.c_long(0), ctypes.c_void_p(), ctypes.c_long(0))
+              error = ctypes.get_errno()
+              print(f"IO_URING_DENY {name} result={result} errno={error}", flush=True)
+              if result != -1 or error != errno.EPERM:
+                  raise SystemExit("io_uring syscallのEPERM拒否が不成立です。")
+
+          for command in (("node", "--version"), ("npm", "--version")):
+              try:
+                  completed = subprocess.run(command, capture_output=True, text=True,
+                                             timeout=20, cwd="/", env=os.environ.copy())
+              except (OSError, subprocess.TimeoutExpired):
+                  raise SystemExit("Node/npmのversion commandを実行できません。")
+              print(f"NODE_TOOLING {command[0]} rc={completed.returncode} "
+                    f"version={completed.stdout.strip()}", flush=True)
+              if completed.returncode != 0:
+                  raise SystemExit("Node/npmのversion commandが失敗しました。")
+
           print(
               "Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."
           )
@@ -2377,7 +2441,7 @@ jobs:
                 --property=NoNewPrivileges=yes \
                 --property="InaccessiblePaths=$inaccessible_paths" \
                 --property=SystemCallArchitectures=native \
-                --property="SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register" \
+                --property="SystemCallFilter=~io_uring_setup:EPERM io_uring_enter:EPERM io_uring_register:EPERM" \
                 /usr/bin/setpriv \
                   --reuid="$uid" \
                   --regid="$nobody_gid" \
