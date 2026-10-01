@@ -41,4 +41,24 @@ fixtureはtrusted側でIPv4 localhost・non-loopbackの同一portとIPv6 localho
 
 unsupported property、property読取不能、実効filter不在、local address不足、localhost失敗、deny判定不能はfail-closed。外部internet endpoint、registry、paid AIを使わず、productionのNoNewPrivileges / capability除去 / protected UNIX socket / io_uring EPERM denyを変更しない。fixture自身のserviceも非root UID・NoNewPrivileges・capability除去で実行し、各unit・server socketを成功/失敗時にcleanupする。既存AI Workflow Regressionがfixtureを検出する。制限されたCodex service内、またはローカルのsystemd不在環境ではruntimeの`SKIP`理由を表示し、実証済みと扱わない。独立GitHub Actions runnerではsystemd不在を失敗にする。
 
-後継#649はregistry-only bootstrap境界への再利用、#647はdeveloper / follow-upへのproduction配線を担当する。両Issueが未完了でも本helperからproduction behaviorは変わらない。
+registry-only bootstrap境界での再利用は下記#649、developer / follow-upへのproduction配線は#647の責務とする。production wiring完了までは本helperからproduction behaviorは変わらない。
+
+## npm registry-only network boundary（#649、dormant）
+
+[`npm-registry-proxy.py`](scripts/npm-registry-proxy.py) はtrusted runner側のlocalhost-only CONNECT forwarderである。`serve [--port <1024..65535>]` は `127.0.0.1` にのみlistenし、省略時は空きportを選び、stdoutへ単一のready JSON（address / port / exact target）を返す。許可するrequestは `CONNECT registry.npmjs.org:443 HTTP/1.1` と同じexact `Host` の組合せだけで、arbitrary CONNECT / HTTP request、別port、userinfo、suffix、IP literal、重複header、body指定、credential headerを `403` で拒否する。通常HTTP forwardingは提供しない。外向きdialは固定hostnameのDNS結果のうちpublic address・port `443` だけに限定し、private addressを含む回答全体を拒否する。upstream不在は `502`、接続後の失敗はtunnelを閉じ、direct internetへのfallbackはしない。DNS/TLS/registryの成功保証は設けない。
+
+proxyはTLSを終端せず、opaque streamをforwardする。client側がofficial registryのhostnameとcertificateを検証する。認証tokenは不要で、proxyはrequest / header / body / package payloadをlogへ出さない。header size / deadline、同時tunnel数、tunnel lifetimeを束縛する。呼出側はtrusted base由来sourceをroot所有・非writableなdirectoryへ固定し、proxyとrestricted serviceを別UIDで実行して、Secrets / GitHub write tokenを渡さずに最小envで起動する。runner UID所有のmode `0700` directoryだけを保護境界にしない。
+
+```bash
+bash .github/scripts/test-npm-registry-boundary.sh
+```
+
+既存AI Workflow Regressionの `test-*.sh` discoveryだけで検出する。pure / mock検証は外部通信を行わない。独立systemd runnerでのruntime fixture [`npm-registry-boundary-runtime.py`](scripts/npm-registry-boundary-runtime.py) はroot所有のrun専用source copy、runner UIDのproxy、`nobody` UIDのtransient serviceを使用する。両processへ継承env・credentialを渡さない。serviceでは#646の `IPAddressDeny=any` / `IPAddressAllow=localhost` に、productionから読み取る固定13 socket maskとio_uring EPERM filter、NoNewPrivileges / capability除去を併用する。同一serviceでAF_UNIX/AF_INET作成、保護socket拒否、io_uring EPERM、trusted source書込不能、別proxy UIDを確認する。
+
+socket maskでservice内の `systemctl` が使えないため、trusted runnerが実unitのnetwork propertyを取得・検証し、root所有の読取専用snapshotにunit名とともに固定する。observerは同一unitを既存の10秒期限内だけ再観測し、一時的なempty / partial / 不一致表示では公開せず、`validate_properties` が完全一致した場合だけatomic publishする。期限までに一致しなければfail-closedとし、最後のproperty出力・validation reasonを診断に残す。この再観測はservice実行のretryではない。serviceはsnapshotの所有者・permission・unit identityを確認し、#646 helperの共通 `validate_properties` と `probe(..., verifier=...)` を利用する。snapshot不在・不一致は停止し、property表示だけでは合格にしない。localhost成功、runner-local non-loopback TCP不成立、同じIP/portへのUDP `EPERM`、前後のcontrol成功とlistener側accept不存在を必須にする。
+
+同じrunnerでofficial registryのTLS経由 `GET /is-number/7.0.0`（固定metadata、最大64 KiB、redirectなし）とarbitrary target / Host不一致の `403` を検証する。package選定・取得・npm/git実行・lock生成は行わない。proxy停止後のrestricted serviceが `proxy-unavailable` で失敗することも確認する。control → restricted → controlとproxy不在検証を2回実行し、各cycleのelapsed time、service / proxy process / socket / root所有fixture directoryのcleanupとhost socket / resolver不変を確認する。proxy cleanupはprocess終了とtrusted runnerから同じ `127.0.0.1:port` への接続が `ECONNREFUSED` となることで確認し、TIME_WAITの影響を受けるbare rebindは使わない。接続成功・timeout・その他のerrorはcleanup成功にしない。失敗やtimeoutはretryせず、systemdの元error textを検証失敗に残す。
+
+制限されたCodex service内ではruntimeを `SKIP` とし、systemd不在の独立GitHub Actions runnerでは失敗する。`SKIP` はregistry到達・実効network境界の実証済みを意味しない。実registry positive proofは独立runnerの結果を確認してから判定する。
+
+production developer / follow-upからはunreachableで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後継の順序は **#649 → #652（package-manager / filesystem source escape）→ #650（initial lock）→ #647（production wiring）**。本fixtureのnetwork proofだけで後継のescape検証やbootstrap完了とは扱わない。
