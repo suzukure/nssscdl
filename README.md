@@ -20,6 +20,12 @@ Net Shogi School向けのスケジュールシステムです。
 - `config/` — プロジェクト設定
 - `.github/` — CI/CDおよびGitHub関連設定
 
+## 本体の開発基盤
+
+技術選定とbootstrapの実装状況は [config/README.md](config/README.md) を正本とする。
+Node.js 24はbuild / test tooling hostであり、ApplicationのRuntimeはCloudflare Workersである。
+現在は最小Worker entrypointのみで、再現可能なnpm install / build / test基盤は未完了。
+
 ## 文書のライフサイクル
 
 ChatGPTやローカルワークスペースは作業領域として利用できるが、このリポジトリへCommitされた内容をプロジェクトの正式な記録とする。
