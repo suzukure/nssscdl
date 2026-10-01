@@ -46,6 +46,7 @@ gh() {
       ;;
     'label create')
       if [ "${MOCK_LABEL_CREATE_FAIL:-false}" = true ]; then return 1; fi
+      [[ "$*" == *'人間の判断を待つため自動処理を停止中'* ]] || return 1
       printf 'label-create\n' >> "$TEST_DIR/events"
       ;;
     'issue edit')
@@ -127,6 +128,19 @@ jq -e '.result == "already_active" and .pause_id == "103"' \
   <<< "$(create validation_failed '検証ログの判断が必要')" > /dev/null
 [ "$(grep -c '^notify$' "$test_dir/events")" -eq 2 ]
 unset MOCK_DISCORD_FAIL
+
+# GitHub detail can be localized while preserving the existing Discord body.
+printf '[]\n' > "$test_dir/comments.json"
+jq -e '.result == "created"' <<< "$(create claude_execution_failed 'GitHub向けの説明' \
+  --paused-head "$head_sha" --notification-detail 'Existing Discord detail.')" > /dev/null
+jq -e '.[0].body | split("\n")[1] | fromjson | .payload.detail == "GitHub向けの説明"' \
+  "$test_dir/comments.json" > /dev/null
+jq -e '.content | contains("Existing Discord detail.") and (contains("GitHub向けの説明") | not)' \
+  "$test_dir/notification.json" > /dev/null
+assert_rejected create claude_execution_failed '説明' --paused-head "$head_sha" \
+  --notification-detail ''
+assert_rejected create claude_execution_failed '説明' --paused-head "$head_sha" \
+  --notification-detail one --notification-detail two
 
 # An unknown or machine-only reason cannot create a record or notification.
 if create ai-followup-in-progress '機械状態' > /dev/null 2>&1; then

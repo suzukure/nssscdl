@@ -159,4 +159,6 @@ done
 run_case failure >/dev/null
 [ "$(wc -l < "$work/pauses")" -eq 1 ]
 grep -Fq 'claude_execution_failed' "$work/pauses"
+grep -Fq 'Claude自動再レビューが正常完了しませんでした。' "$work/pauses"
+grep -Fq 'Claude auto-rereview execution did not complete.' "$work/pauses"
 echo 'Claude auto-rereview independent failure fixtures passed.'

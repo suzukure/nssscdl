@@ -46,7 +46,7 @@ jobs:
             --arg author_association "$COMMENT_ASSOCIATION" '{body:$body,actor:$actor,author_association:$author_association}' |
             bash .github/scripts/parse-ai-resume-command.sh)"
           if ! jq -e '.result == "accepted" and (.action == "develop" or .action == "review")' <<< "$command" >/dev/null; then
-            echo 'Resume command rejected or ignored.' >&2
+            echo 'resumeコマンドを拒否または無視しました。' >&2
             exit 1
           fi
           action="$(jq -r .action <<< "$command")"
@@ -71,21 +71,21 @@ jobs:
               .dispatch.prepared_head == .dispatch.paused_head
             else true end)
           ' <<< "$result" >/dev/null; then
-            echo 'Resume PREPARE rejected; active pause remains.' >&2
+            echo 'resumeのPREPAREを拒否しました。現在の停止状態を維持します。' >&2
             exit 1
           fi
           reason="$(jq -r .dispatch.reason <<< "$result")"
           target="$(jq -r .dispatch.target <<< "$result")"
-          echo "Resume dispatch run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} target=${target} action=${action} reason=${reason}"
+          echo "resume dispatch実行 run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT} target=${target} action=${action} reason=${reason}"
           jq -cn --argjson payload "$(jq -c .dispatch <<< "$result")" \
             --arg event_type "ai-resume-$action" \
             '{event_type:$event_type,client_payload:{version:1,dispatch:$payload}}' > "$RUNNER_TEMP/resume-dispatch.json"
           if ! gh api -X POST "repos/$GITHUB_REPOSITORY/dispatches" \
             --input "$RUNNER_TEMP/resume-dispatch.json" >/dev/null 2>&1; then
-            echo 'Resume dispatch API failed or response was lost; outcome unknown, no producer retry.' >&2
+            echo 'resume dispatch APIが失敗したか応答を受け取れませんでした。結果は不明です。producerから再試行しません。' >&2
             exit 1
           fi
-          echo 'Resume dispatch API accepted the request; consumer owns acceptance.'
+          echo 'resume dispatch APIが要求を受け付けました。受理判定はconsumerが行います。'
 
   gate-issue-entry:
     name: Gate Issue entry
@@ -273,11 +273,11 @@ jobs:
             test "$(git rev-parse --verify "refs/remotes/origin/${branch}^{commit}")" = "$PRE_WRITE_REMOTE_HEAD"
             git checkout -B "$branch" "origin/$branch"
             if ! git merge-base --is-ancestor "$base_sha" HEAD; then
-              echo "AI branch $branch does not contain current main $base_sha; stop before Codex." >&2
+              echo "AI branch $branch に現在のmain $base_sha が含まれていないため、Codex実行前に停止します。" >&2
               exit 1
             fi
           else
-            echo 'Pre-write remote branch HEAD is missing or malformed.' >&2
+            echo '書き込み前のremote branch HEADが存在しないか不正です。' >&2
             exit 1
           fi
           echo "AI_BRANCH=$branch" >> "$GITHUB_ENV"
@@ -328,7 +328,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
-            echo 'CODEX_MODEL repository variable must contain a non-whitespace value.' >&2
+            echo 'repository変数CODEX_MODELには空白以外の値が必要です。' >&2
             exit 1
           fi
 
@@ -347,7 +347,7 @@ jobs:
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.156.1
+          codex-version: 0.159.3
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
           allow-bot-users: ${{ steps.dev-token.outputs.app-slug }}
@@ -383,10 +383,10 @@ jobs:
             fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
           );
           if (mainPackage.name !== "@openai/codex") {
-            throw new Error(`unexpected package name: ${mainPackage.name}`);
+            throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
-          if (mainPackage.version !== "0.156.1") {
-            throw new Error(`unexpected package version: ${mainPackage.version}`);
+          if (mainPackage.version !== "0.159.3") {
+            throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
           let platformPackage;
@@ -399,7 +399,7 @@ jobs:
             targetTriple = "aarch64-unknown-linux-musl";
           } else {
             throw new Error(
-              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+              `未対応のCodex実行環境: ${process.platform}/${process.arch}`,
             );
           }
 
@@ -416,7 +416,7 @@ jobs:
           );
           const nativeStat = fs.statSync(nativePath);
           if (!nativeStat.isFile()) {
-            throw new Error("native codex is not a regular file");
+            throw new Error("Codexのネイティブ実行ファイルは通常ファイルではありません。");
           }
           fs.accessSync(nativePath, fs.constants.X_OK);
 
@@ -447,7 +447,7 @@ jobs:
               "$native_path" --version
           )"
           test "$launcher_version" = "$native_version"
-          test "$native_version" = 'codex-cli 0.156.1'
+          test "$native_version" = 'codex-cli 0.159.3'
 
           action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
           action_main="$action_root/dist/main.js"
@@ -468,7 +468,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
+          printf '信頼済みCodex 0.159.3ランタイムを%s向けに確認しました（Action blob %s）。\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex developer prompt
@@ -481,6 +481,7 @@ jobs:
           cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
           Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
           Implement the Issue in this working tree.
+          Write the final report for humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
           Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
           Do not commit, push, open a pull request, merge, or contact external services; the workflow handles GitHub writes after you finish.
@@ -511,6 +512,7 @@ jobs:
           printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
           printf 'captured=true\n' >> "$GITHUB_OUTPUT"
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+          echo 'ホストの保護対象socket、名前解決サービス、DNSの事前確認が完了しました。'
 
       - name: Run Codex developer
         id: codex
@@ -550,21 +552,21 @@ jobs:
           unexpected = sorted(set(config) - allowed_top_level)
           if unexpected:
               raise SystemExit(
-                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+                  f"setup専用ランタイムのCodex設定に予期しないキーがあります: {unexpected}"
               )
 
           provider_name = config.get("model_provider")
           if provider_name != "codex-action-responses-proxy":
-              raise SystemExit("unexpected Codex model_provider")
+              raise SystemExit("Codexのmodel_providerが想定外です")
 
           providers = config.get("model_providers")
           if not isinstance(providers, dict) or set(providers) != {provider_name}:
-              raise SystemExit("unexpected Codex model_providers shape")
+              raise SystemExit("Codexのmodel_providers形式が想定外です")
           provider = providers[provider_name]
           if not isinstance(provider, dict):
-              raise SystemExit("unexpected Codex provider config")
+              raise SystemExit("Codexのprovider設定が想定外です")
           if provider.get("wire_api") != "responses":
-              raise SystemExit("Codex proxy provider must use responses wire API")
+              raise SystemExit("Codex proxy providerのwire_apiはresponsesである必要があります")
 
           parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
           if (
@@ -579,13 +581,13 @@ jobs:
               or parsed.username is not None
               or parsed.password is not None
           ):
-              raise SystemExit("Codex proxy provider must be loopback http /v1")
+              raise SystemExit("Codex proxy providerはloopbackのhttp /v1を使用する必要があります")
           PY
 
           case "$CODEX_RUNTIME_MAX_SEC" in
             700|1780) ;;
             *)
-              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              echo 'Codex RuntimeMaxSecが想定外です。' >&2
               exit 1
               ;;
           esac
@@ -604,7 +606,7 @@ jobs:
           nobody_gid="$(id -g nobody)"
           case "$nobody_gid" in
             ''|*[!0-9]*|0)
-              echo 'Could not resolve a safe nobody gid.' >&2
+              echo '安全なnobody gidを取得できませんでした。' >&2
               exit 1
               ;;
           esac
@@ -618,47 +620,47 @@ jobs:
           #!/bin/sh
           set -eu
 
-          expected_uid="${1:?expected uid is required}"
-          expected_gid="${2:?expected gid is required}"
+          expected_uid="${1:?期待するuidが必要です}"
+          expected_gid="${2:?期待するgidが必要です}"
 
           actual_uid="$(/usr/bin/id -u)"
           if [ "$actual_uid" != "$expected_uid" ]; then
-            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            echo "サービス内の保護設定の事前確認でUIDが不一致です: 期待値 $expected_uid、実際値 $actual_uid。" >&2
             exit 41
           fi
 
           actual_gid="$(/usr/bin/id -g)"
           if [ "$actual_gid" != "$expected_gid" ]; then
-            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            echo "サービス内の保護設定の事前確認でGIDが不一致です: 期待値 $expected_gid、実際値 $actual_gid。" >&2
             exit 42
           fi
 
           groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
           if [ -n "$groups_status" ]; then
-            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            echo "サービス内の保護設定の事前確認で補助グループが残っています: $groups_status。" >&2
             exit 43
           fi
 
           no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
           if [ "$no_new_privs" != 1 ]; then
-            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            echo "サービス内の保護設定の事前確認でNoNewPrivsが不一致です: 実際値 ${no_new_privs:-未取得}。" >&2
             exit 44
           fi
 
           for field in CapInh CapPrm CapEff CapBnd CapAmb; do
             value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
             if [ "$value" != 0000000000000000 ]; then
-              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              echo "サービス内の保護設定の事前確認でcapabilityがゼロではありません: $field=${value:-未取得}。" >&2
               exit 45
             fi
           done
 
           if [ ! -x /usr/bin/sudo ]; then
-            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            echo 'サービス内の保護設定の事前確認でsudoの拒否を検証できません: /usr/bin/sudoを使用できません。' >&2
             exit 39
           fi
           if /usr/bin/sudo -n true >/dev/null 2>&1; then
-            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            echo 'サービス内の保護設定の事前確認でsudo権限が残っています。' >&2
             exit 40
           fi
 
@@ -676,7 +678,7 @@ jobs:
               or any(not path.startswith("/run/") for path in protected_paths)
           ):
               print(
-                  "Service-local hardening preflight protected socket allowlist is malformed.",
+                  "サービス内の保護設定の事前確認で保護対象socketの許可リストが不正です。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -685,7 +687,7 @@ jobs:
               sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_UNIX required by Codex sandbox: {exc}",
+                  f"サービス内の保護設定の事前確認でCodex sandboxに必要なAF_UNIXが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(46)
@@ -696,7 +698,7 @@ jobs:
               sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  f"サービス内の保護設定の事前確認でAF_INETが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(47)
@@ -715,13 +717,13 @@ jobs:
                       host_ids[path] = (dev, ino)
               except (TypeError, ValueError):
                   print(
-                      "Service-local hardening preflight protected socket host baseline is malformed.",
+                      "サービス内の保護設定の事前確認で保護対象socketのホスト基準値が不正です。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
           if any(path not in protected_paths for path in host_ids):
               print(
-                  "Service-local hardening preflight protected socket host baseline has an unexpected path.",
+                  "サービス内の保護設定の事前確認で保護対象socketのホスト基準値に想定外のパスがあります。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -733,14 +735,14 @@ jobs:
                   continue
               except OSError as exc:
                   print(
-                      f"Service-local hardening preflight cannot inspect protected socket {path}: {exc}",
+                      f"サービス内の保護設定の事前確認で保護対象socket {path}を調査できません: {exc}",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
 
               if path not in host_ids:
                   print(
-                      f"Service-local hardening preflight protected socket appeared after host baseline: {path}.",
+                      f"サービス内の保護設定の事前確認でホスト基準値取得後に保護対象socketが出現しました: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -754,7 +756,7 @@ jobs:
                   or (st.st_dev, st.st_ino) == host_ids[path]
               ):
                   print(
-                      f"Service-local hardening preflight protected socket mask is ineffective: {path}.",
+                      f"サービス内の保護設定の事前確認で保護対象socketの遮断が効いていません: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -786,7 +788,7 @@ jobs:
                           residual.append(path)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight failed while scanning /run: {exc}",
+                  f"サービス内の保護設定の事前確認で/runの走査に失敗しました: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(49)
@@ -794,7 +796,7 @@ jobs:
           if residual:
               rendered = ", ".join(sorted(set(residual))[:20])
               print(
-                  "Service-local hardening preflight found writable root-owned UNIX socket(s): "
+                  "サービス内の保護設定の事前確認で書き込み可能なroot所有のUNIX socketが見つかりました: "
                   + rendered,
                   file=sys.stderr,
               )
@@ -854,19 +856,19 @@ jobs:
                 inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
                 if [ -e "$path" ]; then
                   if [ ! -S "$path" ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path is not a socket." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathはsocketではありません。" >&2
                     exit 50
                   fi
                   if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat owner for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者を確認できません。" >&2
                     exit 50
                   fi
                   if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat dev:inode for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathのdev:inodeを確認できません。" >&2
                     exit 50
                   fi
                   if [ "$host_owner" != 0 ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path owner=$host_owner." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者=$host_owner。" >&2
                     exit 50
                   fi
                   protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
@@ -935,10 +937,11 @@ jobs:
                 journal_rc=$?
                 set -e
                 if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
-                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  echo "サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。" >&2
                   exit 51
                 fi
                 printf "%s\n" "$expected_preflight_marker"
+                echo "サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。"
               fi
               exit "$rc"
             ' codex-developer \
@@ -992,6 +995,7 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+          echo 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。'
 
       - name: Restore trusted post-Codex helpers
         env:
@@ -1006,18 +1010,18 @@ jobs:
           set -euo pipefail
 
           restore_base_blob() {
-            local source_path="${1:?source path is required}"
-            local destination="${2:?destination is required}"
-            local expected_blob="${3:?expected blob is required}"
+            local source_path="${1:?復元元のパスが必要です}"
+            local destination="${2:?復元先が必要です}"
+            local expected_blob="${3:?期待するblobが必要です}"
             if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "Invalid trusted helper blob identity for $source_path." >&2
+              echo "信頼済みhelperのblob identityが不正です: $source_path。" >&2
               exit 1
             fi
             rm -f -- "$destination"
             git show "${BASE_SHA}:${source_path}" > "$destination"
             actual_blob="$(git hash-object --no-filters "$destination")"
             if [ "$actual_blob" != "$expected_blob" ]; then
-              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              echo "Codex実行中に信頼済みhelperのblobが変化しました: $source_path" >&2
               exit 1
             fi
           }
@@ -1057,6 +1061,7 @@ jobs:
             (.max_new_files | type == "number" and . > 0 and floor == .)
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
           echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
+          echo '信頼済みhelperをベースのblobから復元し、差分上限の契約を再生成しました。'
 
       - name: Gate requirement changes
         id: development-gate
@@ -1111,7 +1116,7 @@ jobs:
             echo 'continue=false' >> "$GITHUB_OUTPUT"
           }
           if [ ! -s "$CODEX_FINAL" ]; then
-            pause_for_human developer_execution_failed 'Codex final response is missing; automated development is paused pending a human decision.'
+            pause_for_human developer_execution_failed 'Codexの最終報告がありません。人間の判断があるまで自動開発を停止します。'
             exit 0
           fi
           set +e
@@ -1119,10 +1124,10 @@ jobs:
           marker_status=$?
           set -e
           if [ "$marker_status" -gt 1 ]; then
-            pause_for_human developer_execution_failed 'Requirements-change marker helper failed; automated development is paused pending a human decision.'
+            pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。'
             exit 0
           elif [ "$marker_status" -eq 0 ]; then
-            pause_for_human requirements_change 'Codex detected that a requirements change is required. Automated development is paused for a human decision.'
+            pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
           else
             echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
@@ -1149,7 +1154,7 @@ jobs:
             (.max_changed_lines | type == "number" and . > 0 and floor == .) and
             (.max_new_files | type == "number" and . > 0 and floor == .)
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null; then
-            echo 'Trusted diff guard contract is unavailable or malformed.' >&2
+            echo '信頼済みdiff guard契約を取得できないか、形式が不正です。' >&2
             exit 1
           fi
           max_changed_files="$(jq -r .max_changed_files "$RUNNER_TEMP/codex-diff-guard-contract.json")"
@@ -1195,29 +1200,29 @@ jobs:
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]; then
             echo 'continue=true' >> "$GITHUB_OUTPUT"
             {
-              echo '### AI Developer diff guard'
+              echo '### AI Developerのdiff guard'
               echo
-              echo '- Result: pass'
-              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / ${max_changed_files}"
-              echo "- Additions: $(jq -r .additions <<< "$result_json")"
-              echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
-              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / ${max_changed_lines}"
-              echo "- New files: $(jq -r .new_files <<< "$result_json") / ${max_new_files}"
+              echo '- 結果: pass'
+              echo "- 変更ファイル数: $(jq -r .changed_files <<< "$result_json") / ${max_changed_files}"
+              echo "- 追加行数: $(jq -r .additions <<< "$result_json")"
+              echo "- 削除行数: $(jq -r .deletions <<< "$result_json")"
+              echo "- 変更行数合計: $(jq -r .total_changed_lines <<< "$result_json") / ${max_changed_lines}"
+              echo "- 新規ファイル数: $(jq -r .new_files <<< "$result_json") / ${max_new_files}"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          reason='Trusted diff guard failed closed before repository write.'
+          reason='信頼済みdiff guardがリポジトリへの書き込み前に停止しました。'
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]; then
-            reason='Trusted diff guard stopped an oversized repository change before commit/push/PR write.'
+            reason='信頼済みdiff guardが上限超過を検出し、commit・push・PR書き込み前に停止しました。'
           elif [ "$parsed" = true ] && [ "$result" = error ]; then
-            reason='Trusted diff guard could not safely measure the staged change; automated development is paused.'
+            reason='信頼済みdiff guardがステージ済み変更を安全に計測できなかったため、自動開発を停止しました。'
           elif [ "$parsed" = true ]; then
-            reason="Trusted diff guard returned unexpected result '${result}'; automated development is paused."
+            reason="信頼済みdiff guardが予期しない結果 '${result}' を返したため、自動開発を停止しました。"
           elif [ "$helper_status" -ne 0 ]; then
-            reason='Trusted diff guard helper failed without a valid machine-readable result; automated development is paused.'
+            reason='信頼済みdiff guardのヘルパーが有効な機械可読結果を返さず失敗したため、自動開発を停止しました。'
           else
-            reason='Trusted diff guard output could not be parsed; automated development is paused.'
+            reason='信頼済みdiff guardの出力を解析できなかったため、自動開発を停止しました。'
           fi
 
           [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
@@ -1259,7 +1264,7 @@ jobs:
 
           diagnostics="$reason"
           if [ "$parsed" = true ]; then
-            diagnostics+=$'\n\n'"Result: ${result}."
+            diagnostics+=$'\n\n'"結果: ${result}."
             if [ "$result" = stop ]; then
               for field in changed_files additions deletions total_changed_lines new_files; do
                 value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
@@ -1269,25 +1274,25 @@ jobs:
               if [ "$result" = error ]; then
                 error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
                 if [ -n "$error_code" ]; then
-                  diagnostics+=$'\n'"error: ${error_code}"
+                  diagnostics+=$'\n'"エラーコード: ${error_code}"
                 fi
                 if [ -n "$offending_json" ]; then
-                  diagnostics+=$'\n'"offending staged paths (JSON):"$'\n'"    ${offending_json}"
+                  diagnostics+=$'\n'"対象のステージ済みパス (JSON):"$'\n'"    ${offending_json}"
                 fi
               fi
-              diagnostics+=$'\n'"Metrics: unavailable"
+              diagnostics+=$'\n'"計測値: unavailable"
             fi
           else
-            diagnostics+=$'\n\n'"Result: unavailable."
-            diagnostics+=$'\n'"Metrics: unavailable"
+            diagnostics+=$'\n\n'"結果: unavailable."
+            diagnostics+=$'\n'"計測値: unavailable"
           fi
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$diagnostics"
 
           {
-            echo '### AI Developer diff guard'
+            echo '### AI Developerのdiff guard'
             echo
-            echo "- Result: ${result:-unavailable}"
-            echo "- Thresholds: ${max_changed_files} changed files / ${max_changed_lines} total changed lines / ${max_new_files} new files"
+            echo "- 結果: ${result:-unavailable}"
+            echo "- 上限: ${max_changed_files} 変更ファイル / ${max_changed_lines} 変更行 / ${max_new_files} 新規ファイル"
             if [ "$parsed" = true ] && [ "$result" = stop ]; then
               for field in changed_files additions deletions total_changed_lines new_files; do
                 value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
@@ -1297,16 +1302,16 @@ jobs:
               if [ "$parsed" = true ] && [ "$result" = error ]; then
                 error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
                 if [ -n "$error_code" ]; then
-                  echo "- error: ${error_code}"
+                  echo "- エラーコード: ${error_code}"
                 fi
                 if [ -n "$offending_json" ]; then
-                  echo '- Offending staged paths (JSON):'
+                  echo '- 対象のステージ済みパス (JSON):'
                   echo "    ${offending_json}"
                 fi
               fi
-              echo '- Metrics: unavailable'
+              echo '- 計測値: unavailable'
             fi
-            echo '- Decision: repository write blocked'
+            echo '- 判断: リポジトリへの書き込みを停止'
           } >> "$GITHUB_STEP_SUMMARY"
           echo 'continue=false' >> "$GITHUB_OUTPUT"
 
@@ -1328,25 +1333,25 @@ jobs:
 
           if git diff --cached --quiet; then
             gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --body 'No repository change was produced by this AI Developer run. No commit or push was performed. Human confirmation is required.'
+              --body 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。人間の確認が必要です。'
             exit 0
           fi
 
-          git commit -m "Implement #${ISSUE_NUMBER} with Codex"
+          git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"
           pushed_commit="$(git rev-parse HEAD)"
           git push --set-upstream origin "$AI_BRANCH"
 
           report_file="$(mktemp)"
           {
-            echo '### Validation provenance'
+            echo '### 検証結果の出所'
             echo
-            echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
-            echo "- Pushed commit: ${pushed_commit}"
-            echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+            echo '- 以下のCodex報告に記載された検証結果はCodexの自己申告であり、正式なGitHub Actionsの証拠ではありません。'
+            echo "- pushしたcommit: ${pushed_commit}"
+            echo '- 現在のHEADに対する正式な検証はGitHub Actions/checksに別途記録されます。このAI Developer投稿は、その状態や結果を証明しません。'
             echo
-            echo '### Codex report'
+            echo '### Codexの報告'
             echo
-            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex completed without a final summary.'; fi
+            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codexは最終報告を出さずに終了しました。'; fi
           } > "$report_file"
 
           pr_list="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$AI_BRANCH" --state open --json number,headRefName,isCrossRepository --limit 100)"
@@ -1373,22 +1378,22 @@ jobs:
             {
               echo "Closes #${ISSUE_NUMBER}"
               echo
-              echo '## AI development result'
+              echo '## AI開発の結果'
               echo
               cat "$report_file"
               echo
-              echo '## Review readiness'
+              echo '## レビュー準備'
               echo
-              echo '- [ ] Related references, terminology, traceability, and diagrams for this decision are updated together within the Issue scope.'
-              echo '- [ ] Codex-reported validation has been reviewed as self-reported evidence, and applicable GitHub Actions/checks for the current head have been reviewed separately; failures, unrun validation, and remaining uncertainty are recorded.'
-              echo '- [ ] Remaining impacts and follow-up decisions are recorded in the closing Issue.'
-              echo '- [ ] A human has checked the complete change and confirmed it is ready for Claude review.'
+              echo '- [ ] この決定に関係する参照、用語、トレーサビリティ、図をIssueの範囲内でまとめて更新した。'
+              echo '- [ ] Codexの検証報告を自己申告として確認し、現在のHEADに対する該当GitHub Actions/checksを別途確認した。失敗、未実施の検証、残る不確実性を記録した。'
+              echo '- [ ] 残る影響とフォローアップの判断をclosing Issueに記録した。'
+              echo '- [ ] 人間が変更全体を確認し、Claudeレビューに進める状態であると判断した。'
               echo
-              echo 'This PR starts as Draft. Keep related corrections here, then have a human mark it Ready for review. Draft updates do not run Claude review. Follow docs/30_operations/ai-development-workflow.md for readiness checks and paused-review recovery.'
+              echo 'このPRはDraftで作成されます。関連する修正はこのPRにまとめ、人間が確認後にReady for reviewへ変更してください。Draftの更新ではClaudeレビューは実行されません。レビュー準備の確認と停止したレビューの再開はdocs/30_operations/ai-development-workflow.mdに従ってください。'
             } > "$body_file"
             pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$AI_BRANCH" --draft --title "$issue_title" --body-file "$body_file")"
             rm -f "$body_file"
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codex opened ${pr_url} as Draft. Check related corrections and validation, then mark it Ready for review to request Claude review."
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Codexが${pr_url}をDraftで作成しました。関連する修正と検証を確認し、Claudeレビューを依頼する際にReady for reviewへ変更してください。"
           else
             gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
           fi
@@ -1510,7 +1515,7 @@ jobs:
               options+=(--repair-active)
             fi
           fi
-          detail="Issue developer job result: ${JOB_RESULT}; pre-write remote HEAD: ${PRE_HEAD:-missing}; current remote HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          detail="Issue起点Developerのjob結果: ${JOB_RESULT}; 書き込み前のremote HEAD: ${PRE_HEAD:-missing}; 現在のremote HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           bash .github/scripts/create-human-pause.sh create \
             "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$pr_number" "$app_id" \
             "$reason" "$detail" "${options[@]}"
@@ -1546,7 +1551,7 @@ jobs:
           if [ "$ACTUAL_LOGIN" = "$EXPECTED_LOGIN" ] || [ "$ACTUAL_LOGIN" = "$expected_slug" ]; then
             echo 'trusted=true' >> "$GITHUB_OUTPUT"
           else
-            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN"
+            echo "信頼できないレビュアーからの変更要求を無視します: $ACTUAL_LOGIN"
             echo 'trusted=false' >> "$GITHUB_OUTPUT"
           fi
 
@@ -1577,7 +1582,7 @@ jobs:
           target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
           if [ "$target" != current ]; then
-            echo 'Draft target changed; skipping.'
+            echo 'Draft対象が変わったため、処理をスキップします。'
             exit 0
           fi
           if [ "$is_draft" = false ]; then
@@ -1618,7 +1623,7 @@ jobs:
           if [ "$ACTUAL_LOGIN" = "$EXPECTED_LOGIN" ] || [ "$ACTUAL_LOGIN" = "$expected_slug" ]; then
             echo 'trusted=true' >> "$GITHUB_OUTPUT"
           else
-            echo "Ignoring change request from untrusted reviewer: $ACTUAL_LOGIN"
+            echo "信頼できないレビュアーからの変更要求を無視します: $ACTUAL_LOGIN"
             echo 'trusted=false' >> "$GITHUB_OUTPUT"
           fi
 
@@ -1659,7 +1664,7 @@ jobs:
           target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
           if [ "$target" != current ]; then
-            echo 'Stale or unverifiable Claude review target; skipping follow-up.'
+            echo 'Claudeレビュー対象が古いか検証できないため、フォローアップをスキップします。'
             echo 'continue=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -1674,7 +1679,7 @@ jobs:
             target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
               "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
             if [ "$target" != current ]; then
-              echo 'Escalation target changed; skipping target write.'
+              echo 'エスカレーション対象が変わったため、書き込みをスキップします。'
               echo 'continue=false' >> "$GITHUB_OUTPUT"
               echo 'notify=false' >> "$GITHUB_OUTPUT"
               exit 0
@@ -1720,7 +1725,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$(git rev-parse HEAD)" != "$REVIEW_COMMIT" ]; then
-            echo 'Checked-out HEAD differs from the reviewed commit; skipping follow-up.'
+            echo 'checkoutしたHEADがレビュー対象のcommitと異なるため、フォローアップをスキップします。'
             echo 'continue=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -1788,7 +1793,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
-            echo 'CODEX_MODEL repository variable must contain a non-whitespace value.' >&2
+            echo 'repository変数CODEX_MODELには空白以外の値が必要です。' >&2
             exit 1
           fi
 
@@ -1809,7 +1814,7 @@ jobs:
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          codex-version: 0.156.1
+          codex-version: 0.159.3
           codex-home: ${{ runner.temp }}/codex-home
           safety-strategy: unsafe
           allow-bot-users: ${{ steps.review-token.outputs.app-slug }}
@@ -1846,10 +1851,10 @@ jobs:
             fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
           );
           if (mainPackage.name !== "@openai/codex") {
-            throw new Error(`unexpected package name: ${mainPackage.name}`);
+            throw new Error(`予期しないCodexパッケージ名: ${mainPackage.name}`);
           }
-          if (mainPackage.version !== "0.156.1") {
-            throw new Error(`unexpected package version: ${mainPackage.version}`);
+          if (mainPackage.version !== "0.159.3") {
+            throw new Error(`予期しないCodexパッケージのバージョン: ${mainPackage.version}`);
           }
 
           let platformPackage;
@@ -1862,7 +1867,7 @@ jobs:
             targetTriple = "aarch64-unknown-linux-musl";
           } else {
             throw new Error(
-              `unsupported Codex platform: ${process.platform}/${process.arch}`,
+              `未対応のCodex実行環境: ${process.platform}/${process.arch}`,
             );
           }
 
@@ -1879,7 +1884,7 @@ jobs:
           );
           const nativeStat = fs.statSync(nativePath);
           if (!nativeStat.isFile()) {
-            throw new Error("native codex is not a regular file");
+            throw new Error("Codexのネイティブ実行ファイルは通常ファイルではありません。");
           }
           fs.accessSync(nativePath, fs.constants.X_OK);
 
@@ -1910,7 +1915,7 @@ jobs:
               "$native_path" --version
           )"
           test "$launcher_version" = "$native_version"
-          test "$native_version" = 'codex-cli 0.156.1'
+          test "$native_version" = 'codex-cli 0.159.3'
 
           action_root="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
           action_main="$action_root/dist/main.js"
@@ -1931,7 +1936,7 @@ jobs:
           printf 'package_root=%s\n' "$package_root" >> "$GITHUB_OUTPUT"
           printf 'action_main=%s\n' "$action_main" >> "$GITHUB_OUTPUT"
           printf 'runner_credentials=%s\n' "$credentials" >> "$GITHUB_OUTPUT"
-          printf 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).\n' \
+          printf '信頼済みCodex 0.159.3ランタイムを%s向けに確認しました（Action blob %s）。\n' \
             "$target_triple" "$actual_blob"
 
       - name: Prepare fixed Codex follow-up prompt
@@ -1945,6 +1950,7 @@ jobs:
           cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
           Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
           Address every blocking Claude finding in this working tree.
+          Write the final report for humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
           Before editing, inspect every blocking finding against repository and supplied Issue evidence. If any finding requires a human requirement or upstream-phase decision, leave the entire working tree unchanged, do not mix in fixes for other findings, and follow the exact standalone [REQUIREMENTS_CHANGE_REQUIRED] marker contract in AGENTS.base.md.
           Otherwise, correct every valid in-scope finding and all directly affected authoritative artifacts; validate the result. Explain any finding not implemented with concrete repository or Issue evidence. Do not silently change requirements to satisfy a finding.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
@@ -1978,6 +1984,7 @@ jobs:
           printf 'resolved=%s\n' "$resolved_before" >> "$GITHUB_OUTPUT"
           printf 'captured=true\n' >> "$GITHUB_OUTPUT"
           printf 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok\n'
+          echo 'ホストの保護対象socket、名前解決サービス、DNSの事前確認が完了しました。'
 
       - name: Run Codex follow-up
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
@@ -2024,21 +2031,21 @@ jobs:
           unexpected = sorted(set(config) - allowed_top_level)
           if unexpected:
               raise SystemExit(
-                  f"unexpected Codex config keys in setup-only runtime: {unexpected}"
+                  f"setup専用ランタイムのCodex設定に予期しないキーがあります: {unexpected}"
               )
 
           provider_name = config.get("model_provider")
           if provider_name != "codex-action-responses-proxy":
-              raise SystemExit("unexpected Codex model_provider")
+              raise SystemExit("Codexのmodel_providerが想定外です")
 
           providers = config.get("model_providers")
           if not isinstance(providers, dict) or set(providers) != {provider_name}:
-              raise SystemExit("unexpected Codex model_providers shape")
+              raise SystemExit("Codexのmodel_providers形式が想定外です")
           provider = providers[provider_name]
           if not isinstance(provider, dict):
-              raise SystemExit("unexpected Codex provider config")
+              raise SystemExit("Codexのprovider設定が想定外です")
           if provider.get("wire_api") != "responses":
-              raise SystemExit("Codex proxy provider must use responses wire API")
+              raise SystemExit("Codex proxy providerのwire_apiはresponsesである必要があります")
 
           parsed = urllib.parse.urlparse(str(provider.get("base_url", "")))
           if (
@@ -2053,13 +2060,13 @@ jobs:
               or parsed.username is not None
               or parsed.password is not None
           ):
-              raise SystemExit("Codex proxy provider must be loopback http /v1")
+              raise SystemExit("Codex proxy providerはloopbackのhttp /v1を使用する必要があります")
           PY
 
           case "$CODEX_RUNTIME_MAX_SEC" in
             700) ;;
             *)
-              echo 'Unexpected Codex RuntimeMaxSec.' >&2
+              echo 'Codex RuntimeMaxSecが想定外です。' >&2
               exit 1
               ;;
           esac
@@ -2078,7 +2085,7 @@ jobs:
           nobody_gid="$(id -g nobody)"
           case "$nobody_gid" in
             ''|*[!0-9]*|0)
-              echo 'Could not resolve a safe nobody gid.' >&2
+              echo '安全なnobody gidを取得できませんでした。' >&2
               exit 1
               ;;
           esac
@@ -2092,47 +2099,47 @@ jobs:
           #!/bin/sh
           set -eu
 
-          expected_uid="${1:?expected uid is required}"
-          expected_gid="${2:?expected gid is required}"
+          expected_uid="${1:?期待するuidが必要です}"
+          expected_gid="${2:?期待するgidが必要です}"
 
           actual_uid="$(/usr/bin/id -u)"
           if [ "$actual_uid" != "$expected_uid" ]; then
-            echo "Service-local hardening preflight UID mismatch: expected $expected_uid, got $actual_uid." >&2
+            echo "サービス内の保護設定の事前確認でUIDが不一致です: 期待値 $expected_uid、実際値 $actual_uid。" >&2
             exit 41
           fi
 
           actual_gid="$(/usr/bin/id -g)"
           if [ "$actual_gid" != "$expected_gid" ]; then
-            echo "Service-local hardening preflight GID mismatch: expected $expected_gid, got $actual_gid." >&2
+            echo "サービス内の保護設定の事前確認でGIDが不一致です: 期待値 $expected_gid、実際値 $actual_gid。" >&2
             exit 42
           fi
 
           groups_status="$(/usr/bin/awk '/^Groups:/ { $1=""; sub(/^[[:space:]]+/, ""); print }' /proc/self/status)"
           if [ -n "$groups_status" ]; then
-            echo "Service-local hardening preflight retained supplementary groups: $groups_status." >&2
+            echo "サービス内の保護設定の事前確認で補助グループが残っています: $groups_status。" >&2
             exit 43
           fi
 
           no_new_privs="$(/usr/bin/awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status)"
           if [ "$no_new_privs" != 1 ]; then
-            echo "Service-local hardening preflight NoNewPrivs mismatch: got ${no_new_privs:-missing}." >&2
+            echo "サービス内の保護設定の事前確認でNoNewPrivsが不一致です: 実際値 ${no_new_privs:-未取得}。" >&2
             exit 44
           fi
 
           for field in CapInh CapPrm CapEff CapBnd CapAmb; do
             value="$(/usr/bin/awk -v field="$field" '$1 == field ":" { print $2 }' /proc/self/status)"
             if [ "$value" != 0000000000000000 ]; then
-              echo "Service-local hardening preflight capability is nonzero: $field=${value:-missing}." >&2
+              echo "サービス内の保護設定の事前確認でcapabilityがゼロではありません: $field=${value:-未取得}。" >&2
               exit 45
             fi
           done
 
           if [ ! -x /usr/bin/sudo ]; then
-            echo 'Service-local hardening preflight cannot verify sudo rejection: /usr/bin/sudo is unavailable.' >&2
+            echo 'サービス内の保護設定の事前確認でsudoの拒否を検証できません: /usr/bin/sudoを使用できません。' >&2
             exit 39
           fi
           if /usr/bin/sudo -n true >/dev/null 2>&1; then
-            echo 'Service-local hardening preflight unexpectedly retained sudo.' >&2
+            echo 'サービス内の保護設定の事前確認でsudo権限が残っています。' >&2
             exit 40
           fi
 
@@ -2150,7 +2157,7 @@ jobs:
               or any(not path.startswith("/run/") for path in protected_paths)
           ):
               print(
-                  "Service-local hardening preflight protected socket allowlist is malformed.",
+                  "サービス内の保護設定の事前確認で保護対象socketの許可リストが不正です。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -2159,7 +2166,7 @@ jobs:
               sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_UNIX required by Codex sandbox: {exc}",
+                  f"サービス内の保護設定の事前確認でCodex sandboxに必要なAF_UNIXが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(46)
@@ -2170,7 +2177,7 @@ jobs:
               sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight blocks AF_INET: {exc}",
+                  f"サービス内の保護設定の事前確認でAF_INETが遮断されています: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(47)
@@ -2189,13 +2196,13 @@ jobs:
                       host_ids[path] = (dev, ino)
               except (TypeError, ValueError):
                   print(
-                      "Service-local hardening preflight protected socket host baseline is malformed.",
+                      "サービス内の保護設定の事前確認で保護対象socketのホスト基準値が不正です。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
           if any(path not in protected_paths for path in host_ids):
               print(
-                  "Service-local hardening preflight protected socket host baseline has an unexpected path.",
+                  "サービス内の保護設定の事前確認で保護対象socketのホスト基準値に想定外のパスがあります。",
                   file=sys.stderr,
               )
               raise SystemExit(48)
@@ -2207,14 +2214,14 @@ jobs:
                   continue
               except OSError as exc:
                   print(
-                      f"Service-local hardening preflight cannot inspect protected socket {path}: {exc}",
+                      f"サービス内の保護設定の事前確認で保護対象socket {path}を調査できません: {exc}",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
 
               if path not in host_ids:
                   print(
-                      f"Service-local hardening preflight protected socket appeared after host baseline: {path}.",
+                      f"サービス内の保護設定の事前確認でホスト基準値取得後に保護対象socketが出現しました: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -2228,7 +2235,7 @@ jobs:
                   or (st.st_dev, st.st_ino) == host_ids[path]
               ):
                   print(
-                      f"Service-local hardening preflight protected socket mask is ineffective: {path}.",
+                      f"サービス内の保護設定の事前確認で保護対象socketの遮断が効いていません: {path}。",
                       file=sys.stderr,
                   )
                   raise SystemExit(48)
@@ -2260,7 +2267,7 @@ jobs:
                           residual.append(path)
           except OSError as exc:
               print(
-                  f"Service-local hardening preflight failed while scanning /run: {exc}",
+                  f"サービス内の保護設定の事前確認で/runの走査に失敗しました: {exc}",
                   file=sys.stderr,
               )
               raise SystemExit(49)
@@ -2268,7 +2275,7 @@ jobs:
           if residual:
               rendered = ", ".join(sorted(set(residual))[:20])
               print(
-                  "Service-local hardening preflight found writable root-owned UNIX socket(s): "
+                  "サービス内の保護設定の事前確認で書き込み可能なroot所有のUNIX socketが見つかりました: "
                   + rendered,
                   file=sys.stderr,
               )
@@ -2303,7 +2310,7 @@ jobs:
           target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
           if [ "$(git rev-parse HEAD)" != "$REVIEW_COMMIT" ] || [ "$target" != current ]; then
-            echo 'Follow-up target changed before paid Codex invocation; skipping.'
+            echo '有料のCodex実行前にフォローアップ対象が変わったため、処理をスキップします。'
             echo 'continue=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -2337,19 +2344,19 @@ jobs:
                 inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
                 if [ -e "$path" ]; then
                   if [ ! -S "$path" ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path is not a socket." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathはsocketではありません。" >&2
                     exit 50
                   fi
                   if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat owner for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者を確認できません。" >&2
                     exit 50
                   fi
                   if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: could not stat dev:inode for $path." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathのdev:inodeを確認できません。" >&2
                     exit 50
                   fi
                   if [ "$host_owner" != 0 ]; then
-                    echo "Service-local hardening root preflight protected UNIX socket baseline failed: $path owner=$host_owner." >&2
+                    echo "root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: $pathの所有者=$host_owner。" >&2
                     exit 50
                   fi
                   protected_unix_socket_host_ids="${protected_unix_socket_host_ids}${protected_unix_socket_host_ids:+;}${path}=${host_devino}"
@@ -2418,10 +2425,11 @@ jobs:
                 journal_rc=$?
                 set -e
                 if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then
-                  echo "Service-local hardening preflight success marker unavailable from unit journal." >&2
+                  echo "サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。" >&2
                   exit 51
                 fi
                 printf "%s\n" "$expected_preflight_marker"
+                echo "サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。"
               fi
               exit "$rc"
             ' codex-followup \
@@ -2475,6 +2483,7 @@ jobs:
           getent ahosts github.com >/dev/null
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
+          echo 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。'
 
       - name: Restore trusted post-Codex helpers
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true'
@@ -2490,18 +2499,18 @@ jobs:
           set -euo pipefail
 
           restore_base_blob() {
-            local source_path="${1:?source path is required}"
-            local destination="${2:?destination is required}"
-            local expected_blob="${3:?expected blob is required}"
+            local source_path="${1:?復元元のパスが必要です}"
+            local destination="${2:?復元先が必要です}"
+            local expected_blob="${3:?期待するblobが必要です}"
             if [[ ! "$expected_blob" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "Invalid trusted helper blob identity for $source_path." >&2
+              echo "信頼済みhelperのblob identityが不正です: $source_path。" >&2
               exit 1
             fi
             rm -f -- "$destination"
             git show "${BASE_SHA}:${source_path}" > "$destination"
             actual_blob="$(git hash-object --no-filters "$destination")"
             if [ "$actual_blob" != "$expected_blob" ]; then
-              echo "Trusted helper blob changed across Codex execution: $source_path" >&2
+              echo "Codex実行中に信頼済みhelperのblobが変化しました: $source_path" >&2
               exit 1
             fi
           }
@@ -2527,6 +2536,7 @@ jobs:
             (.max_new_files | type == "number" and . > 0 and floor == .)
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null
           echo 'TRUSTED_POST_CODEX_HELPERS restored base blobs and regenerated diff guard contract.'
+          echo '信頼済みhelperをベースのblobから復元し、差分上限の契約を再生成しました。'
 
       - name: Gate Codex follow-up requirement changes
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true'
@@ -2548,7 +2558,7 @@ jobs:
             target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
               "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
             if [ "$target" != current ]; then
-              echo 'Escalation target changed; skipping target write.'
+              echo 'エスカレーション対象が変わったため、書き込みをスキップします。'
               echo 'continue=false' >> "$GITHUB_OUTPUT"
               echo 'notify=false' >> "$GITHUB_OUTPUT"
               exit 0
@@ -2565,7 +2575,7 @@ jobs:
             echo 'notify=true' >> "$GITHUB_OUTPUT"
           }
           if [ ! -s "$CODEX_FINAL" ]; then
-            pause_for_human 'Codex final response is missing; automated follow-up is paused pending a human decision.'
+            pause_for_human 'Codexの最終報告がありません。人間の判断があるまで自動フォローアップを停止します。'
             exit 0
           fi
           set +e
@@ -2573,10 +2583,10 @@ jobs:
           marker_status=$?
           set -e
           if [ "$marker_status" -gt 1 ]; then
-            pause_for_human 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.'
+            pause_for_human '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動フォローアップを停止します。'
             exit 0
           elif [ "$marker_status" -eq 0 ]; then
-            pause_for_human 'Codex detected that a requirements change is required. Automated follow-up is paused for a human decision.'
+            pause_for_human 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動フォローアップを停止します。'
           else
             echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
@@ -2587,7 +2597,7 @@ jobs:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         run: >-
           bash "$RUNNER_TEMP/notify-human.sh"
-          "Requirements change requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+          "要件変更について人間の判断が必要です: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Evaluate trusted follow-up diff guard
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'
@@ -2613,7 +2623,7 @@ jobs:
             (.max_changed_lines | type == "number" and . > 0 and floor == .) and
             (.max_new_files | type == "number" and . > 0 and floor == .)
           ' "$RUNNER_TEMP/codex-diff-guard-contract.json" > /dev/null; then
-            echo 'Trusted follow-up diff guard contract is unavailable or malformed.' >&2
+            echo '信頼済みフォローアップdiff guard契約を取得できないか、形式が不正です。' >&2
             exit 1
           fi
           max_changed_files="$(jq -r .max_changed_files "$RUNNER_TEMP/codex-diff-guard-contract.json")"
@@ -2659,29 +2669,29 @@ jobs:
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = pass ]; then
             echo 'continue=true' >> "$GITHUB_OUTPUT"
             {
-              echo '### AI Developer follow-up diff guard'
+              echo '### AI Developerフォローアップのdiff guard'
               echo
-              echo '- Result: pass'
-              echo "- Changed files: $(jq -r .changed_files <<< "$result_json") / ${max_changed_files}"
-              echo "- Additions: $(jq -r .additions <<< "$result_json")"
-              echo "- Deletions: $(jq -r .deletions <<< "$result_json")"
-              echo "- Total changed lines: $(jq -r .total_changed_lines <<< "$result_json") / ${max_changed_lines}"
-              echo "- New files: $(jq -r .new_files <<< "$result_json") / ${max_new_files}"
+              echo '- 結果: pass'
+              echo "- 変更ファイル数: $(jq -r .changed_files <<< "$result_json") / ${max_changed_files}"
+              echo "- 追加行数: $(jq -r .additions <<< "$result_json")"
+              echo "- 削除行数: $(jq -r .deletions <<< "$result_json")"
+              echo "- 変更行数合計: $(jq -r .total_changed_lines <<< "$result_json") / ${max_changed_lines}"
+              echo "- 新規ファイル数: $(jq -r .new_files <<< "$result_json") / ${max_new_files}"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          reason='Trusted follow-up diff guard failed closed before repository write.'
+          reason='信頼済みフォローアップdiff guardがリポジトリへの書き込み前に停止しました。'
           if [ "$helper_status" -eq 0 ] && [ "$parsed" = true ] && [ "$result" = stop ]; then
-            reason='Trusted follow-up diff guard stopped an oversized repository change before commit/push/PR write.'
+            reason='信頼済みフォローアップdiff guardが上限超過を検出し、commit・push・PR書き込み前に停止しました。'
           elif [ "$parsed" = true ] && [ "$result" = error ]; then
-            reason='Trusted follow-up diff guard could not safely measure the staged change; automated follow-up is paused.'
+            reason='信頼済みフォローアップdiff guardがステージ済み変更を安全に計測できなかったため、自動フォローアップを停止しました。'
           elif [ "$parsed" = true ]; then
-            reason="Trusted follow-up diff guard returned unexpected result '${result}'; automated follow-up is paused."
+            reason="信頼済みフォローアップdiff guardが予期しない結果 '${result}' を返したため、自動フォローアップを停止しました。"
           elif [ "$helper_status" -ne 0 ]; then
-            reason='Trusted follow-up diff guard helper failed without a valid machine-readable result; automated follow-up is paused.'
+            reason='信頼済みフォローアップdiff guardのヘルパーが有効な機械可読結果を返さず失敗したため、自動フォローアップを停止しました。'
           else
-            reason='Trusted follow-up diff guard output could not be parsed; automated follow-up is paused.'
+            reason='信頼済みフォローアップdiff guardの出力を解析できなかったため、自動フォローアップを停止しました。'
           fi
 
           if [[ "$HEAD_REF" =~ ^ai/issue-([0-9]+)$ ]]; then
@@ -2692,7 +2702,7 @@ jobs:
           target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
           if [ "$target" != current ]; then
-            echo 'Diff guard escalation target changed; skipping target write.'
+            echo 'diff guardのエスカレーション対象が変わったため、書き込みをスキップします。'
             echo 'continue=false' >> "$GITHUB_OUTPUT"
             echo 'notify=false' >> "$GITHUB_OUTPUT"
             exit 0
@@ -2702,7 +2712,7 @@ jobs:
 
           diagnostics="$reason"
           if [ "$parsed" = true ]; then
-            diagnostics+=$'\n\n'"Result: ${result}."
+            diagnostics+=$'\n\n'"結果: ${result}."
             if [ "$result" = stop ]; then
               for field in changed_files additions deletions total_changed_lines new_files; do
                 value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
@@ -2712,25 +2722,25 @@ jobs:
               if [ "$result" = error ]; then
                 error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
                 if [ -n "$error_code" ]; then
-                  diagnostics+=$'\n'"error: ${error_code}"
+                  diagnostics+=$'\n'"エラーコード: ${error_code}"
                 fi
                 if [ -n "$offending_json" ]; then
-                  diagnostics+=$'\n'"offending staged paths (JSON):"$'\n'"    ${offending_json}"
+                  diagnostics+=$'\n'"対象のステージ済みパス (JSON):"$'\n'"    ${offending_json}"
                 fi
               fi
-              diagnostics+=$'\n'"Metrics: unavailable"
+              diagnostics+=$'\n'"計測値: unavailable"
             fi
           else
-            diagnostics+=$'\n\n'"Result: unavailable."
-            diagnostics+=$'\n'"Metrics: unavailable"
+            diagnostics+=$'\n\n'"結果: unavailable."
+            diagnostics+=$'\n'"計測値: unavailable"
           fi
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$diagnostics"
 
           {
-            echo '### AI Developer follow-up diff guard'
+            echo '### AI Developerフォローアップのdiff guard'
             echo
-            echo "- Result: ${result:-unavailable}"
-            echo "- Thresholds: ${max_changed_files} changed files / ${max_changed_lines} total changed lines / ${max_new_files} new files"
+            echo "- 結果: ${result:-unavailable}"
+            echo "- 上限: ${max_changed_files} 変更ファイル / ${max_changed_lines} 変更行 / ${max_new_files} 新規ファイル"
             if [ "$parsed" = true ] && [ "$result" = stop ]; then
               for field in changed_files additions deletions total_changed_lines new_files; do
                 value="$(jq -r --arg field "$field" '.[$field]' <<< "$result_json")"
@@ -2740,16 +2750,16 @@ jobs:
               if [ "$parsed" = true ] && [ "$result" = error ]; then
                 error_code="$(jq -r 'if (.error | type) == "string" then .error else empty end' <<< "$result_json")"
                 if [ -n "$error_code" ]; then
-                  echo "- error: ${error_code}"
+                  echo "- エラーコード: ${error_code}"
                 fi
                 if [ -n "$offending_json" ]; then
-                  echo '- Offending staged paths (JSON):'
+                  echo '- 対象のステージ済みパス (JSON):'
                   echo "    ${offending_json}"
                 fi
               fi
-              echo '- Metrics: unavailable'
+              echo '- 計測値: unavailable'
             fi
-            echo '- Decision: repository write blocked'
+            echo '- 判断: リポジトリへの書き込みを停止'
           } >> "$GITHUB_STEP_SUMMARY"
           echo 'continue=false' >> "$GITHUB_OUTPUT"
           echo 'notify=true' >> "$GITHUB_OUTPUT"
@@ -2760,7 +2770,7 @@ jobs:
           NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
         run: >-
           bash "$RUNNER_TEMP/notify-human.sh"
-          "AI Developer follow-up diff guard requires a human decision: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
+          "AI Developerのフォローアップdiff guardについて人間の判断が必要です: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${{ github.event.pull_request.number }}"
 
       - name: Commit and answer review
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true' && steps.followup-diff-guard.outputs.continue == 'true'
@@ -2780,7 +2790,7 @@ jobs:
           target="$(bash "$RUNNER_TEMP/check-claude-followup-target.sh" \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEW_ID" "$REVIEW_COMMIT" "$REVIEWER_APP_SLUG" "$HEAD_REF")"
           if [ "$target" != current ]; then
-            echo 'Follow-up target changed before repository write; skipping.'
+            echo 'リポジトリへの書き込み前にフォローアップ対象が変わったため、処理をスキップします。'
             exit 0
           fi
           bot_login="${APP_SLUG}[bot]"
@@ -2791,22 +2801,22 @@ jobs:
           if git diff --cached --quiet; then
             report_file="$(mktemp)"
             {
-              echo '### Validation provenance'
+              echo '### 検証結果の出所'
               echo
-              echo '- No repository change was produced by this AI Developer run.'
-              echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
-              echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+              echo '- このAI Developer実行ではリポジトリの変更はありませんでした。'
+              echo '- 以下のCodex報告に記載された検証結果はCodexの自己申告であり、正式なGitHub Actionsの証拠ではありません。'
+              echo '- 現在のHEADに対する正式な検証はGitHub Actions/checksに別途記録されます。このAI Developer投稿は、その状態や結果を証明しません。'
               echo
-              echo '### Codex report'
+              echo '### Codexの報告'
               echo
-              if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex found no repository change and produced no final summary.'; fi
+              if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codexはリポジトリの変更を行わず、最終報告も出しませんでした。'; fi
             } > "$report_file"
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
             rm -f "$report_file"
             exit 0
           fi
 
-          git commit -m "Address Claude review for PR #${PR_NUMBER}"
+          git commit -m "PR #${PR_NUMBER}のClaudeレビュー指摘に対応"
           git push origin "HEAD:${HEAD_REF}"
           expected_head="$(git rev-parse HEAD)"
           for attempt in 1 2 3 4 5; do
@@ -2816,26 +2826,26 @@ jobs:
               break
             fi
             if [ "$current_head" != "$EVENT_HEAD" ]; then
-              echo "PR #${PR_NUMBER} head changed unexpectedly: expected ${expected_head}, observed ${current_head}." >&2
+              echo "PR #${PR_NUMBER} のHEADが予期せず変わりました。期待値: ${expected_head}、確認値: ${current_head}。" >&2
               exit 1
             fi
             if [ "$attempt" = 5 ]; then
-              echo "PR #${PR_NUMBER} head did not reach pushed commit ${expected_head}." >&2
+              echo "PR #${PR_NUMBER} のHEADがpushしたcommit ${expected_head} に到達しませんでした。" >&2
               exit 1
             fi
             sleep 2
           done
           report_file="$(mktemp)"
           {
-            echo '### Validation provenance'
+            echo '### 検証結果の出所'
             echo
-            echo '- The validation statements in the Codex report below are Codex-reported results. They are not formal GitHub Actions evidence.'
-            echo "- Pushed commit: ${expected_head}"
-            echo '- Formal current-head validation is recorded separately by GitHub Actions/checks. This AI Developer message does not attest their status or result.'
+            echo '- 以下のCodex報告に記載された検証結果はCodexの自己申告であり、正式なGitHub Actionsの証拠ではありません。'
+            echo "- pushしたcommit: ${expected_head}"
+            echo '- 現在のHEADに対する正式な検証はGitHub Actions/checksに別途記録されます。このAI Developer投稿は、その状態や結果を証明しません。'
             echo
-            echo '### Codex report'
+            echo '### Codexの報告'
             echo
-            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codex updated the branch without a final summary.'; fi
+            if [ -s "$CODEX_FINAL" ]; then cat "$CODEX_FINAL"; else echo 'Codexはbranchを更新しましたが、最終報告を出しませんでした。'; fi
           } > "$report_file"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$report_file"
           rm -f "$report_file"
@@ -2899,7 +2909,8 @@ jobs:
             options=(--paused-head "$current_head" --failed-action fix
               --repair-active --repair-head "$current_head")
           fi
-          detail="Claude follow-up failure; draft job: ${DRAFT_RESULT}; follow-up job: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; current PR HEAD: ${current_head}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          detail="Claudeフォローアップ失敗。Draft jobの結果: ${DRAFT_RESULT}; フォローアップjobの結果: ${FOLLOWUP_RESULT}; event時のHEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          notification_detail="Claudeフォローアップ失敗。Draft job: ${DRAFT_RESULT}; フォローアップjob: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           bash .github/scripts/create-human-pause.sh create \
             "$GITHUB_REPOSITORY" '-' "$PR_NUMBER" "$app_id" \
-            "$reason" "$detail" "${options[@]}"
+            "$reason" "$detail" "${options[@]}" --notification-detail "$notification_detail"

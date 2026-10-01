@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Pure policy boundary for one final PREPARE context. No GitHub writes or reads.
 fail_closed() {
-  echo "prepare-ai-resume: invalid PREPARE context" >&2
+  echo "prepare-ai-resume: PREPARE文脈が不正です" >&2
   exit 1
 }
 
@@ -21,7 +21,7 @@ jq -cse '
                             "paused_head", "source_pause_id", "payload"));
   if length != 1 or (.[0] | keys_are(["closing_issue","command","follow_up_issue",
                                       "pause","pull_request","target"]) | not) then
-    error("invalid snapshot envelope")
+    error("snapshotの外枠が不正です")
   else .[0] as $s
     | $s.command as $c | $s.pause as $p | $s.closing_issue as $issue
     | $s.pull_request as $pr | $s.follow_up_issue as $follow
@@ -55,7 +55,7 @@ jq -cse '
                                  or ($follow.kind | IN("issue","pr") | not)
                                  or ($follow.state | IN("open","closed") | not)
                                  or ($follow.explicitly_recorded | type) != "boolean"))
-      then error("invalid snapshot shape")
+      then error("snapshotの形式が不正です")
       elif $p.result == "no_active_pause" then reject("no_active_pause")
       elif $p.result == "state_inconsistent" then reject("state_inconsistent")
       elif ($p.pause_id | pause_id | not)

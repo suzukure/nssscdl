@@ -48,7 +48,7 @@ jobs:
           case "$SOURCE_WORKFLOW_NAME" in
             'Claude Review') handler=handle-claude-review-failure.sh ;;
             'Claude Auto Rereview') handler=handle-claude-auto-rereview-failure.sh ;;
-            *) echo 'Unknown source workflow' >&2; exit 1 ;;
+            *) echo '不明な起点workflowです。' >&2; exit 1 ;;
           esac
           bash ".github/scripts/$handler" \
             "$GITHUB_REPOSITORY" "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" "$REVIEW_APP_SLUG"

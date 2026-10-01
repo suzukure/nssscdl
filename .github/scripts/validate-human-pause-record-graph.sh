@@ -11,7 +11,7 @@ fail_closed() {
   exit 1
 }
 
-input="$(cat)" || fail_closed 'could not read input'
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 # The listing helper owns trust, schema, and target validation.  This boundary
 # only requires the envelope fields needed to resolve graph edges.  A record
@@ -42,7 +42,7 @@ jq -ce '
   . as $graph
   | [inputs] as $additional_values
   | if $additional_values != [] then
-      error("expected one JSON value")
+      error("JSON値は1個である必要があります")
     else
       (([.records[].pause_id]) as $ids
       | (source_map) as $sources
@@ -59,6 +59,6 @@ jq -ce '
       and ([.records[] | .record.source_pause_id? // empty]
         | group_by(.) | all(length == 1))
       and (has_cycle($sources) | not)) as $valid
-      | if $valid then $graph else error("record graph is structurally invalid") end
+      | if $valid then $graph else error("記録グラフの構造が不正です") end
     end
-' <<< "$input" || fail_closed 'record graph is structurally invalid'
+' <<< "$input" || fail_closed '記録グラフの構造が不正です'

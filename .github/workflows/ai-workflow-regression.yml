@@ -45,11 +45,11 @@ jobs:
           fixtures=(.github/scripts/test-*.sh)
 
           if [ "${#fixtures[@]}" -eq 0 ]; then
-            echo 'No AI workflow fixtures matched .github/scripts/test-*.sh.' >&2
+            echo '.github/scripts/test-*.sh に一致するAI workflow fixtureがありません。' >&2
             {
               echo '## AI Workflow Regression'
               echo
-              echo 'Result: **FAIL** (no matching fixtures)'
+              echo '結果: **FAIL**（該当fixtureなし）'
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -76,9 +76,9 @@ jobs:
 
           if [ "$failed" -ne 0 ]; then
             echo >> "$GITHUB_STEP_SUMMARY"
-            echo 'Result: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
+            echo '結果: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
           echo >> "$GITHUB_STEP_SUMMARY"
-          echo 'Result: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+          echo '結果: **PASS**' >> "$GITHUB_STEP_SUMMARY"

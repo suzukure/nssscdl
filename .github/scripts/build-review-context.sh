@@ -22,11 +22,23 @@ gh pr view "$pr_number" \
 gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
 diff_bytes="$(wc -c < "$diff_file")"
 if [ "$diff_bytes" -gt 400000 ]; then
-  echo "Pull request diff is ${diff_bytes} bytes; automatic AI review is limited to 400000 bytes." >&2
+  echo "PR差分は${diff_bytes} bytesです。自動AIレビューの上限は400000 bytesです。" >&2
   exit 1
 fi
 
 issue_prefix="https://github.com/${repo}/issues/"
+if ! jq -e --arg prefix "$issue_prefix" '
+    (.closingIssuesReferences | type == "array") and
+    all(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string")) and
+    any(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string" and startswith($prefix)))
+  ' "$metadata" > /dev/null; then
+  echo '同じリポジトリの有効なclosing Issueがないため、レビュー文脈を生成しません。' >&2
+  exit 1
+fi
 mapfile -t closing_issues < <(
   jq -r --arg prefix "$issue_prefix" \
     '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' "$metadata" \
@@ -39,7 +51,7 @@ mapfile -t closing_issues < <(
 for issue_number in "${closing_issues[@]}"; do
   [ -n "$issue_number" ] || continue
   if ! gh api "repos/${repo}/issues/${issue_number}" > "$issue_dir/closing-${issue_number}.json"; then
-    echo "Could not fetch closing Issue #${issue_number}; refusing to build review context." >&2
+    echo "closing Issue #${issue_number}を取得できないため、レビュー文脈を生成しません。" >&2
     exit 1
   fi
 done
@@ -49,13 +61,17 @@ extract_follow_up_issues() {
     def follow_up_numbers:
       split("\n")
       | reduce .[] as $line (
-          { in_scope_out_section: false, numbers: [] };
+          { scope_out_language: null, numbers: [] };
           if ($line | test("^## Scope-out impact and follow-up[[:space:]]*$")) then
-            .in_scope_out_section = true
+            .scope_out_language = "en"
+          elif ($line | test("^## スコープ外影響と後継Issue[[:space:]]*$")) then
+            .scope_out_language = "ja"
           elif ($line | test("^#{1,2}[[:space:]]")) then
-            .in_scope_out_section = false
-          elif .in_scope_out_section and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
+            .scope_out_language = null
+          elif .scope_out_language == "en" and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
             .numbers += [($line | capture("^- Follow-up Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
+          elif .scope_out_language == "ja" and ($line | test("^- 後継Issue: #[0-9]+[[:space:]]*$")) then
+            .numbers += [($line | capture("^- 後継Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
           else . end
         )
       | .numbers[];
@@ -80,14 +96,14 @@ follow_up_candidates="$issue_dir/follow-up-candidates.json"
 
 follow_up_count="$(jq 'length' "$follow_up_candidates")"
 if [ "$follow_up_count" -gt "$follow_up_issue_limit" ]; then
-  echo "More than ${follow_up_issue_limit} explicit follow-up Issues were found; refusing to build incomplete review context." >&2
+  echo "明示された後継Issueが${follow_up_issue_limit}件の上限を超えたため、不完全なレビュー文脈は生成しません。" >&2
   exit 1
 fi
 
 mapfile -t follow_up_issues < <(jq -r '.[]' "$follow_up_candidates")
 for issue_number in "${follow_up_issues[@]}"; do
   if ! gh api "repos/${repo}/issues/${issue_number}" > "$issue_dir/follow-up-${issue_number}.json"; then
-    echo "Could not fetch follow-up Issue #${issue_number}; refusing to build review context." >&2
+    echo "後継Issue #${issue_number}を取得できないため、レビュー文脈を生成しません。" >&2
     exit 1
   fi
 done

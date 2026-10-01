@@ -57,6 +57,15 @@ assert_rejected() {
   fi
 }
 
+assert_diagnostic() {
+  local name="$1" target_kind="$2" expected="$3" number="${4:-36}" output
+  if output="$(printf '%s' "$command" | bash "$helper" owner/repo "$target_kind" "$number" 2>&1)"; then
+    echo "Expected $name to fail closed." >&2
+    exit 1
+  fi
+  grep -Fq "$expected" <<< "$output" || { echo "Unexpected $name diagnostic." >&2; exit 1; }
+}
+
 fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
 base="$(jq -cn --arg fingerprint "$fingerprint" '{command:{result:"accepted",actor:"suzukure",action:"develop"},target:"issue:36",closing_issue:{number:36,state:"open",body_fingerprint:$fingerprint},pull_request:null,follow_up_issue:null}')"
 assert_result issue issue "$base"
@@ -69,6 +78,23 @@ command='{"result":"accepted","actor":"suzukure","action":"follow-up","follow_up
 pr_base="$(jq -cn --arg fingerprint "$fingerprint" '{command:{result:"accepted",actor:"suzukure",action:"follow-up",follow_up_issue:123},target:"pr:37",closing_issue:{number:36,state:"open",body_fingerprint:$fingerprint},pull_request:{number:37,state:"open",base_ref:"main",head_ref:"ai/issue-36",head_sha:"0123456789abcdef0123456789abcdef01234567"},follow_up_issue:{number:123,kind:"issue",state:"open",explicitly_recorded:true}}')"
 assert_result follow-up pr "$pr_base" 37
 
+body=$'## スコープ外影響と後継Issue\n- 後継Issue: #123\n## Other\n- 後継Issue: #999\n'
+export body
+fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
+assert_result japanese-follow-up pr "$(jq -c --arg fingerprint "$fingerprint" '.closing_issue.body_fingerprint = $fingerprint' <<< "$pr_base")" 37
+
+body=$'## スコープ外影響と後継Issue\n- Follow-up Issue: #123\n'
+export body
+fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
+assert_result mismatched-language-follow-up pr "$(jq -c --arg fingerprint "$fingerprint" '.closing_issue.body_fingerprint = $fingerprint | .follow_up_issue.explicitly_recorded = false' <<< "$pr_base")" 37
+
+body=$'## スコープ外影響と後継Issue（案）\n- 後継Issue: #123\n## スコープ外影響と後継Issue\n- 後継Issue: #123 extra\n'
+export body
+fingerprint="sha256:$(printf '%s' "$body" | sha256sum | cut -d ' ' -f 1)"
+assert_result malformed-japanese-follow-up pr "$(jq -c --arg fingerprint "$fingerprint" '.closing_issue.body_fingerprint = $fingerprint | .follow_up_issue.explicitly_recorded = false' <<< "$pr_base")" 37
+
+body=$'本文\n\n## Scope-out impact and follow-up\n- Follow-up Issue: #123\n\n## Next\n- Follow-up Issue: #999\n\n'
+export body
 MOCK_CASE=follow-up-pr
 export MOCK_CASE
 assert_result follow-up-pr pr "$(jq -c '.follow_up_issue |= (.kind = "pr" | .state = "closed")' <<< "$pr_base")" 37
@@ -85,6 +111,13 @@ for case_name in closing-api-failure missing-body null-body wrong-body-type malf
 done
 MOCK_CASE=bad-relation
 assert_rejected bad-relation pr 37
+MOCK_CASE=''
+usage_output="$(bash "$helper" owner/repo issue 2>&1 || true)"
+grep -Fq '使い方: build-ai-resume-github-context.sh' <<< "$usage_output"
+MOCK_CASE=bad-relation
+assert_diagnostic bad-relation pr '対象との関連を解決できませんでした' 37
+MOCK_CASE=follow-up-wrong-number
+assert_diagnostic follow-up-wrong-number pr '後継Issueの応答が不正です' 37
 MOCK_CASE=''
 command='{"result":"ignore"}'
 assert_rejected invalid-command issue

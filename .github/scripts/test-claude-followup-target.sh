@@ -63,13 +63,13 @@ MOCK_REVIEW="$valid_review"$'\n'"$valid_review" assert_skip
 # A late skip must not run the post-Codex gates or writes; the actual call
 # performs its own target check after runtime preparation.
 awk '/      - name: Run Codex follow-up/{on=1} on{print} on && /      - name: Verify Codex follow-up host integrity/{exit}' "$workflow" |
-  grep -F 'Follow-up target changed before paid Codex invocation; skipping.' >/dev/null
+  grep -F '有料のCodex実行前にフォローアップ対象が変わったため、処理をスキップします。' >/dev/null
 grep -Fq 'steps.codex.outputs.continue == '\''true'\''' "$workflow"
 grep -Fq 'steps.followup-checkout.outputs.continue == '\''true'\''' "$workflow"
-grep -Fq 'Checked-out HEAD differs from the reviewed commit; skipping follow-up.' "$workflow"
-grep -Fq 'Draft target changed; skipping.' "$workflow"
-grep -Fq 'Diff guard escalation target changed; skipping target write.' "$workflow"
-grep -Fq 'Follow-up target changed before repository write; skipping.' "$workflow"
+grep -Fq 'checkoutしたHEADがレビュー対象のcommitと異なるため、フォローアップをスキップします。' "$workflow"
+grep -Fq 'Draft対象が変わったため、処理をスキップします。' "$workflow"
+grep -Fq 'diff guardのエスカレーション対象が変わったため、書き込みをスキップします。' "$workflow"
+grep -Fq 'リポジトリへの書き込み前にフォローアップ対象が変わったため、処理をスキップします。' "$workflow"
 grep -Fq 'steps.codex-requirements-gate.outputs.notify == '\''true'\''' "$workflow"
 grep -Fq 'steps.followup-diff-guard.outputs.notify == '\''true'\''' "$workflow"
 

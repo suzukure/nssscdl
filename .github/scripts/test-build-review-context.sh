@@ -75,6 +75,21 @@ grep -Fq 'DATA| - x (+1 / -0)' "$test_dir/review.md"
 grep -Fq -- '--- BEGIN LINKED ISSUE DATA ---' "$test_dir/review.md"
 grep -Fq 'DATA| diff --git a/x b/x' "$test_dir/review.md"
 
+valid_metadata="$(gh pr view 37)"
+MOCK_CASE=conversation
+export MOCK_CASE
+for relation in '[]' '[{"number":36,"url":"https://github.com/other/repo/issues/36"}]' '[{"number":36}]' '[{"number":36,"url":"https://github.com/owner/repo/issues/36"},{"number":99}]'; do
+  MOCK_METADATA="$(jq -c --argjson relation "$relation" '.closingIssuesReferences = $relation' <<< "$valid_metadata")"
+  export MOCK_METADATA
+  rm -f "$test_dir/no-closing-issue.md"
+  if bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/no-closing-issue.md" 'dev'; then
+    echo 'Expected missing or malformed same-repository closing Issue to stop context generation.' >&2
+    exit 1
+  fi
+  [ ! -e "$test_dir/no-closing-issue.md" ]
+done
+MOCK_CASE=valid
+
 # Follow-up Issues are recognized only in the prescribed section and line
 # format. The closing Issue remains the decision record and both its decision
 # and the bounded, de-duplicated follow-up snapshots reach the reviewer.
@@ -103,6 +118,26 @@ if [ "$(grep -Fc 'DATA| - Issue: #36' "$test_dir/follow-up-review.md")" -ne 1 ];
   echo 'The closing Issue was incorrectly included as a follow-up Issue.' >&2
   exit 1
 fi
+
+# Both exact language forms may appear in existing PRs and closing Issues.
+MOCK_CASE=conversation
+MOCK_METADATA="$(jq -c '.body = "## スコープ外影響と後継Issue\n- 後継Issue: #86\n- Follow-up Issue: #98\n\n## Other\n- 後継Issue: #99"' <<< "$valid_metadata")"
+MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #87\n- 後継Issue: #97\n## スコープ外影響と後継Issue\n- 後継Issue: #88'
+MOCK_API_LOG="$test_dir/bilingual-api.log"
+export MOCK_CASE MOCK_METADATA MOCK_CLOSING_BODY MOCK_API_LOG
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/bilingual-review.md" 'dev'
+for number in 86 87 88; do
+  [ "$(grep -Fc "DATA| - Issue: #$number" "$test_dir/bilingual-review.md")" -eq 1 ]
+done
+[ "$(sort -n "$MOCK_API_LOG" | uniq | tr '\n' ' ')" = '36 86 87 88 ' ]
+
+# Similar headings and labels must not turn ordinary references into follow-ups.
+MOCK_METADATA="$(jq -c '.body = "## スコープ外影響と後継Issue（案）\n- 後継Issue: #86\n## Other\n- 後継Issue: #87\n## スコープ外影響と後継Issue\n- 後継Issue: #88 extra\n- 後継Issue #89\n本文 - 後継Issue: #90"' <<< "$valid_metadata")"
+MOCK_CLOSING_BODY='requirements'
+MOCK_API_LOG="$test_dir/malformed-api.log"
+export MOCK_METADATA MOCK_CLOSING_BODY MOCK_API_LOG
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/malformed-review.md" 'dev'
+[ "$(cat "$MOCK_API_LOG")" = 36 ]
 
 MOCK_CASE=valid
 MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #86\n- Follow-up Issue: #87\n- Follow-up Issue: #88\n- Follow-up Issue: #89\n- Follow-up Issue: #90\n- Follow-up Issue: #91'

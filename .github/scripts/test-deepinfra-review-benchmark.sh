@@ -201,6 +201,15 @@ body = """## Scope-out impact and follow-up
 """
 assert m.extract_follow_up_issues(body) == [10, 11]
 assert m.extract_follow_up_issues("## Scope-out impact and follow-up\n\n- Follow-up Issue: none\n") == []
+assert m.extract_follow_up_issues(
+    "## スコープ外影響と後継Issue\n- 後継Issue: #13\n- Follow-up Issue: #98\n"
+    "## Other\n- 後継Issue: #99\n"
+    "## Scope-out impact and follow-up\n- Follow-up Issue: #15\n- 後継Issue: #97\n"
+) == [13, 15]
+assert m.extract_follow_up_issues(
+    "## スコープ外影響と後継Issue（案）\n- 後継Issue: #16\n"
+    "## スコープ外影響と後継Issue\n- 後継Issue: #17 extra\n- 後継Issue #18\n"
+) == []
 assert m.combined_follow_up_issues(
     "## Scope-out impact and follow-up\n- Follow-up Issue: #12\n",
     "## Scope-out impact and follow-up\n- Follow-up Issue: #11\n- Follow-up Issue: #12\n",
@@ -223,6 +232,9 @@ current validation evidence
 ## Review readiness
 initial review blocking fixed
 
+## レビュー準備
+current review blocking fixed
+
 ## Review response
 Claude initial review secret expected finding
 
@@ -235,8 +247,9 @@ assert "safe summary" in filtered
 assert "current validation evidence" in filtered
 assert "Follow-up Issue: #307" in filtered
 assert "initial review blocking fixed" not in filtered
+assert "current review blocking fixed" not in filtered
 assert "Claude initial review secret expected finding" not in filtered
-assert set(excluded) == {"Review readiness", "Review response"}
+assert set(excluded) == {"Review readiness", "レビュー準備", "Review response"}
 
 case_id = "A01-defect"
 case = m.CASES[case_id]
@@ -313,7 +326,7 @@ assert meta["selected_head_sha"] == case["head"]
 assert "diagnostic_a" not in meta
 assert meta["follow_up_issues"] == [307, 999]
 assert meta["excluded_follow_up_issues"] == [342]
-assert set(meta["excluded_pr_body_sections"]) == {"Review readiness", "Review response"}
+assert set(meta["excluded_pr_body_sections"]) == {"Review readiness", "レビュー準備", "Review response"}
 assert "PULL REQUEST METADATA" in context
 assert "historical PR title" in context
 assert "PULL REQUEST BODY" in context

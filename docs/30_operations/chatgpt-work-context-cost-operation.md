@@ -55,10 +55,10 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 ### Actionsログの取得
 
 - Actions失敗時は、最初にrun、job、失敗step、conclusion、head SHAを確認する。
-- Claude review失敗では、Job Summaryの`Claude review result`にある`Reason code`を最初に確認する。usage JSONは費用・利用量の補助証跡であり、失敗原因やverdictの判定には使わない。
+- Claude review失敗では、Job Summaryの`Claudeレビュー結果`にある`理由コード`を最初に確認する。usage JSONは費用・利用量の補助証跡であり、失敗原因やverdictの判定には使わない。
 - ログ全文を最初から取得しない。
 - 成功runで[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md#claude-api消費制御)に定義された利用量項目だけが必要な場合は、Actions Job logs APIで対象jobのlogを取得し、その中の`Record Claude review usage` step区間にある集計済みJSONの1行だけを読む。ほかのstep区間は読まない。
-- `Record Claude review usage` step区間に集計済みJSONがなく固定診断`Claude usage summarization failed.`だけがある場合は、Job Summaryの`Execution usage was unavailable.`で欠落を確認し、execution fileやraw logから再集計しない。
+- `Record Claude review usage` step区間に集計済みJSONがなく固定診断`Claudeの利用量集計に失敗しました。`だけがある場合は、Job Summaryの`実行時の利用量を取得できませんでした。`で欠落を確認し、execution fileやraw logから再集計しない。
 - 失敗stepのログと、その直前の原因判定に必要な範囲だけを取得する。
 - エラーメッセージ、exit code、該当script、入力状態で原因を特定できない場合に限り、取得範囲を段階的に広げる。
 - 既にユーザーが提示したログは再取得せず、現在のrunと一致するかだけ確認する。
@@ -172,7 +172,7 @@ Actions障害は次の順序で調査する。
 1. workflow runのstatus、conclusion、event、head SHAを確認する。
 2. job一覧から失敗jobを特定する。
 3. job step一覧から最初に失敗したstepを特定する。
-4. Claude reviewならJob Summaryの`Claude review result`から`Reason code`を確認する。usage JSONは補助証跡であり、reason codeを置き換えない。
+4. Claude reviewならJob Summaryの`Claudeレビュー結果`から`理由コード`を確認する。usage JSONは補助証跡であり、reason codeを置き換えない。
 5. 失敗stepのログと、必要なら直前stepの末尾を取得する。raw execution fileとraw model/API output（promptおよびraw model出力中のreview本文を含む）は取得・転載しない。
 6. ログが同じ出力を反復している場合は、最初と最後の代表範囲、反復回数または傾向、差分の進展を調べる。
 7. 原因を区別できない場合に限り、関連stepまたはjob全体へ取得範囲を広げる。
@@ -212,7 +212,7 @@ GitHubリポジトリ suzukure/nssscdl のIssue #<番号>を読み取りで確�
 - 最新Actions runのjobと失敗step
 
 ログ全文は取得せず、失敗stepと必要な範囲だけ確認してください。
-成功runでAI開発・ClaudeレビューのGitHub運用に定義された利用量項目だけが必要な場合は、Actions Job logs APIで対象jobのlogを取得し、その中の`Record Claude review usage` step区間にある集計済みJSONの1行だけを読んでください。ほかのstep区間は読まないでください。集計済みJSONがなく固定診断`Claude usage summarization failed.`だけの場合は、Job Summaryの`Execution usage was unavailable.`で欠落を確認し、execution fileやraw logから再集計しないでください。
+成功runでAI開発・ClaudeレビューのGitHub運用に定義された利用量項目だけが必要な場合は、Actions Job logs APIで対象jobのlogを取得し、その中の`Record Claude review usage` step区間にある集計済みJSONの1行だけを読んでください。ほかのstep区間は読まないでください。集計済みJSONがなく固定診断`Claudeの利用量集計に失敗しました。`だけの場合は、Job Summaryの`実行時の利用量を取得できませんでした。`で欠落を確認し、execution fileやraw logから再集計しないでください。
 同じSHA・runについて既存のJob Summary、Claude review usage step log、PR本文に証跡があれば再利用してください。
 現在地点、問題、次の1手を簡潔に報告してください。
 書き込みは行わないでください。

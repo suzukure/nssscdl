@@ -117,7 +117,7 @@ run_case() {
 for mode in valid post_loss issue_loss pr_loss early_failure; do
   run_case "$mode"
   [ "$(cat "$tmp/writes")" = "$(printf 'accepted\nissue\npr')" ]
-  grep -Fq 'normal Review owns' "$tmp/out"
+  grep -Fq '通常Reviewが処理を担当します' "$tmp/out"
   [ "$(bash "$helper" owner/repo 99 36 <<< '{}')" = ignore:stale_or_consumed ]
 done
 for mode in queued decline; do
@@ -143,7 +143,7 @@ if run_case workflow_change; then
   echo 'Changed Review workflow passed the trust check.' >&2
   exit 1
 fi
-grep -Fq 'Review workflow evidence is untrusted' "$tmp/err"
+grep -Fq 'Review workflowの証拠を信頼できません' "$tmp/err"
 [ ! -s "$tmp/writes" ]
 [ "$(cat "$tmp/accepted")" = no ]
 [ "$(cat "$tmp/issue")" = present ]

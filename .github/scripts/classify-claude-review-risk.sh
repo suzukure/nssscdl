@@ -24,7 +24,7 @@ case "$mode" in
     printf '%s\n' "$protected_paths"
     ;;
   *)
-    echo "Unsupported classification mode: ${mode}" >&2
+    echo "未対応の分類モードです: ${mode}" >&2
     exit 1
     ;;
 esac

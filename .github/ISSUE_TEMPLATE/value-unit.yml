@@ -1,50 +1,50 @@
-name: Value unit execution
-description: Record an independently deliverable part of a user business scenario after basic design.
-title: "[Value unit] "
+name: 価値単位の実施
+description: 基本設計後に、利用者の業務シナリオから独立して提供できる単位を記録します。
+title: "[価値単位] "
 labels: []
 body:
   - type: markdown
     attributes:
-      value: "Use this for an execution Issue. For a separate design decision, use Engineering decision. Follow docs/30_operations/ai-development-workflow.md for value-unit selection, safe Issue splitting, and integrated Done."
+      value: "実施Issueにはこのテンプレートを使用してください。別途設計上の決定が必要な場合は「技術上の決定」を使用してください。価値単位の選定、安全なIssue分割、統合後のDone判定は docs/30_operations/ai-development-workflow.md に従ってください。"
   - type: textarea
     id: value
     attributes:
-      label: User, completed business task, and value
-      description: State who completes what, the effect, and why this work has priority. Link the parent value-unit Issue when split.
+      label: 利用者、完了する業務、価値
+      description: 誰が何を完了し、どんな効果があり、なぜ優先するかを記載してください。分割した場合は親の価値単位Issueをリンクしてください。
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
-      label: Target IDs and design
-      description: List applicable POL/BR/REQ/AC/TC/CON/OOS, existing basic design, and detailed design to confirm before implementation. Do not redefine their expected results here.
+      label: 対象IDと設計
+      description: 対象のPOL/BR/REQ/AC/TC/CON/OOS、既存の基本設計、実装前に確認する詳細設計を記載してください。期待結果をここで再定義しないでください。
     validations:
       required: true
   - type: textarea
     id: boundaries
     attributes:
-      label: Dependencies and exclusions
-      description: Identify prerequisites, dependent Issues, out-of-scope work, and conditions for safe standalone merge to main.
+      label: 依存関係と対象外
+      description: 前提条件、依存するIssue、対象外の作業、単独でmainへ安全にマージできる条件を示してください。
     validations:
       required: true
   - type: textarea
     id: work
     attributes:
-      label: Implementation, DB, test, and operations scope
-      description: Describe the applicable UI/API/DB/Job work, migration, tests, and operational work.
+      label: 実装・DB・テスト・運用の範囲
+      description: 該当するUI/API/DB/Job、移行、テスト、運用の作業を記載してください。
     validations:
       required: true
   - type: textarea
     id: verification
     attributes:
-      label: Verification and user operation evaluation
-      description: Map AC to TC and implementation tests; include regression, current-head CI evidence, integrated scenario, user operation observations, and evidence to collect.
+      label: 検証と利用者操作評価
+      description: ACとTC・実装テストの対応、回帰、現在のheadのCI証跡、統合シナリオ、利用者の操作観察、収集する証跡を記載してください。
     validations:
       required: true
   - type: textarea
     id: done
     attributes:
-      label: Done conditions and remaining issues
-      description: State this Issue's completion checks, parent scenario integration checks when applicable, known defects, and decisions or follow-ups still needed.
+      label: 完了条件と残課題
+      description: このIssueの完了確認、必要な場合は親シナリオの統合確認、既知の不具合、残る決定や後継対応を記載してください。
     validations:
       required: true

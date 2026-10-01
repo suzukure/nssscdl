@@ -34,6 +34,7 @@ for shared_rule in \
   grep -Fq "$shared_rule" "$agents"
 done
 grep -Fq 'if its impact cannot be determined safely' "$agents"
+grep -Fq 'Write the final report shown to humans on GitHub in Japanese.' "$agents"
 
 # Keep AGENTS repository-document references valid without duplicating GitHub's
 # heading-anchor normalization algorithm. Fixed document paths must exist, and
@@ -414,6 +415,13 @@ for case in same changed missing malformed uppercase lookup-error malformed-json
       [ "${4-}" = - ] || { echo "Unexpected helper argument 4: ${4-}" >&2; return 1; }
       [ "${5-}" = 37 ] || { echo "Unexpected helper argument 5: ${5-}" >&2; return 1; }
       [ "${6-}" = 123 ] || { echo "Unexpected helper argument 6: ${6-}" >&2; return 1; }
+      local -a args=("$@")
+      local count=${#args[@]}
+      [ "${args[count-2]}" = --notification-detail ] || { echo "Missing notification detail option" >&2; return 1; }
+      [ "${args[count-1]}" = "Claudeフォローアップ失敗。Draft job: ${DRAFT_RESULT}; フォローアップjob: ${FOLLOWUP_RESULT}; event HEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" ] || { echo "Discord notification detail changed" >&2; return 1; }
+      [ "$8" = "Claudeフォローアップ失敗。Draft jobの結果: ${DRAFT_RESULT}; フォローアップjobの結果: ${FOLLOWUP_RESULT}; event時のHEAD: ${EVENT_HEAD:-missing}; 現在のPR HEAD: ${current_head}。実行: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" ] || { echo "GitHub pause detail changed" >&2; return 1; }
+      unset 'args[count-1]' 'args[count-2]'
+      set -- "${args[@]}"
       printf "%s %s\n" "$7" "${*:9}"
     }
     source "$1"
@@ -434,7 +442,7 @@ grep -Fqx '      pull-requests: write' "$draft_after_changes_workflow"
 grep -Fq "github.event.review.state == 'changes_requested'" "$draft_after_changes_workflow"
 grep -Fq 'github.event.review.commit_id == github.event.pull_request.head.sha' "$draft_after_changes_workflow"
 grep -Fq 'Create reviewer App token for identity verification' "$draft_after_changes_workflow"
-grep -Fq 'Ignoring change request from untrusted reviewer:' "$draft_after_changes_workflow"
+grep -Fq '信頼できないレビュアーからの変更要求を無視します:' "$draft_after_changes_workflow"
 grep -Fq 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --undo' "$draft_after_changes_workflow"
 grep -Fqx '    needs: draft-after-claude-changes' "$workflow"
 grep -Fq "needs.draft-after-claude-changes.result == 'success'" "$workflow"
@@ -447,16 +455,16 @@ awk '
 [ -s "$followup_commit_step" ]
 grep -Fq 'git push origin "HEAD:${HEAD_REF}"' "$followup_commit_step"
 grep -Fq 'expected_head="$(git rev-parse HEAD)"' "$followup_commit_step"
-grep -Fq 'echo "- Pushed commit: ${expected_head}"' "$followup_commit_step"
-grep -Fq 'No repository change was produced by this AI Developer run.' "$followup_commit_step"
+grep -Fq 'echo "- pushしたcommit: ${expected_head}"' "$followup_commit_step"
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。' "$followup_commit_step"
 followup_no_diff_block="$test_dir/followup-no-diff.sh"
 awk '
   /if git diff --cached --quiet; then/ { capture = 1 }
-  capture && /git commit -m "Address Claude review/ { exit }
+  capture && /git commit -m "PR #\$\{PR_NUMBER\}のClaudeレビュー指摘に対応"/ { exit }
   capture { print }
 ' "$followup_commit_step" > "$followup_no_diff_block"
-grep -Fq 'No repository change was produced by this AI Developer run.' "$followup_no_diff_block"
-if grep -Fq 'Pushed commit:' "$followup_no_diff_block"; then
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。' "$followup_no_diff_block"
+if grep -Fq 'pushしたcommit:' "$followup_no_diff_block"; then
   echo 'No-diff follow-up provenance must not invent a pushed commit.' >&2
   exit 1
 fi
@@ -469,7 +477,7 @@ if grep -Fq -- '--undo' "$followup_commit_step"; then
   echo 'Successful Codex follow-up must ready, not draft, the pushed PR.' >&2
   exit 1
 fi
-if ! grep -Fq 'Automated Codex follow-up passed the entry gate' "$repo_root/.github/scripts/evaluate-followup-gate.sh"; then
+if ! grep -Fq 'Codexの自動フォローアップは入口条件を満たしました' "$repo_root/.github/scripts/evaluate-followup-gate.sh"; then
   echo 'Expected the follow-up gate to describe the successful re-review path.' >&2
   exit 1
 fi
@@ -546,7 +554,7 @@ grep -Fq 'rm -f "$CODEX_FINAL"' "$prepare_step"
 
 grep -Fqx '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$setup_step"
 grep -Fqx '          openai-api-key: ${{ secrets.OPENAI_API_KEY }}' "$setup_step"
-grep -Fqx '          codex-version: 0.156.1' "$setup_step"
+grep -Fqx '          codex-version: 0.159.3' "$setup_step"
 grep -Fqx '          codex-home: ${{ runner.temp }}/codex-home' "$setup_step"
 grep -Fqx '          safety-strategy: unsafe' "$setup_step"
 grep -Fqx '          allow-bot-users: ${{ steps.dev-token.outputs.app-slug }}' "$setup_step"
@@ -588,7 +596,7 @@ grep -Fq 'launcher="$(command -v codex)"' "$resolver_step"
 grep -Fq 'test "$(basename "$entry")" = codex.js' "$resolver_step"
 grep -Fq 'test "$(realpath "$package_root/bin/codex.js")" = "$entry"' "$resolver_step"
 grep -Fq 'mainPackage.name !== "@openai/codex"' "$resolver_step"
-grep -Fq 'mainPackage.version !== "0.156.1"' "$resolver_step"
+grep -Fq 'mainPackage.version !== "0.159.3"' "$resolver_step"
 grep -Fq 'platformPackage = "@openai/codex-linux-x64"' "$resolver_step"
 grep -Fq 'targetTriple = "x86_64-unknown-linux-musl"' "$resolver_step"
 grep -Fq 'platformPackage = "@openai/codex-linux-arm64"' "$resolver_step"
@@ -598,7 +606,7 @@ grep -Fq '"vendor",' "$resolver_step"
 grep -Fq '"bin",' "$resolver_step"
 grep -Fq '"codex",' "$resolver_step"
 grep -Fq 'fs.accessSync(nativePath, fs.constants.X_OK);' "$resolver_step"
-grep -Fq "test \"\$native_version\" = 'codex-cli 0.156.1'" "$resolver_step"
+grep -Fq "test \"\$native_version\" = 'codex-cli 0.159.3'" "$resolver_step"
 grep -Fq '_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e' "$resolver_step"
 grep -Fq 'actual_blob="$(git hash-object "$action_main")"' "$resolver_step"
 grep -Fq 'test "$actual_blob" = ce4e94e119abb91b980d23bfb4210688241f3a0a' "$resolver_step"
@@ -607,7 +615,20 @@ grep -Fq "printf 'native_path=%s\\n' \"\$native_path\" >> \"\$GITHUB_OUTPUT\"" "
 grep -Fq "printf 'package_root=%s\\n' \"\$package_root\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 grep -Fq "printf 'action_main=%s\\n' \"\$action_main\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
 grep -Fq "printf 'runner_credentials=%s\\n' \"\$credentials\" >> \"\$GITHUB_OUTPUT\"" "$resolver_step"
-grep -Fq "Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s)." "$resolver_step"
+grep -Fq "信頼済みCodex 0.159.3ランタイムを%s向けに確認しました（Action blob %s）。" "$resolver_step"
+for diagnostic in \
+  '予期しないCodexパッケージ名:' \
+  '予期しないCodexパッケージのバージョン:' \
+  '未対応のCodex実行環境:' \
+  'Codexのネイティブ実行ファイルは通常ファイルではありません。' \
+  '復元元のパスが必要です' \
+  '復元先が必要です' \
+  '期待するblobが必要です'; do
+  [ "$(grep -Fc "$diagnostic" "$workflow")" -eq 2 ] || {
+    echo "Issue起点とClaudeフォローアップの診断が一致しません: $diagnostic" >&2
+    exit 1
+  }
+done
 if grep -Eq 'OPENAI_API_KEY|secrets\.|openai-api-key' "$resolver_step"; then
   echo 'Trusted Codex resolver must not receive repository secrets.' >&2
   exit 1
@@ -618,6 +639,7 @@ grep -Fqx '        timeout-minutes: 3' "$prompt_step"
 grep -Fq "cat > \"\$CODEX_PROMPT_FILE\" <<'CODEX_PROMPT'" "$prompt_step"
 grep -Fq 'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely.' "$prompt_step"
 grep -Fq 'Implement the Issue in this working tree.' "$prompt_step"
+grep -Fq 'Write the final report for humans on GitHub in Japanese.' "$prompt_step"
 grep -Fq 'Keep the proposed repository change within the trusted diff guard contract.' "$prompt_step"
 grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
 if grep -Eq 'blocking Claude finding|finding not implemented|upstream-phase decision' "$prompt_step"; then
@@ -661,6 +683,7 @@ test "$(grep -nF 'getent ahosts api.github.com >/dev/null' "$host_before_step" |
 grep -Fq 'getent ahosts github.com >/dev/null' "$host_before_step"
 grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_before_step"
 grep -Fq 'HOST_INTEGRITY before sockets=captured resolved=active/running dns=ok' "$host_before_step"
+grep -Fq 'ホストの保護対象socket、名前解決サービス、DNSの事前確認が完了しました。' "$host_before_step"
 
 # No captured baseline skips verification; always() still runs it after a
 # completed baseline even if the developer step fails.
@@ -681,6 +704,7 @@ grep -Fq "grep -Fxq 'SubState=running'" "$host_after_step"
 grep -Fq 'getent ahosts github.com >/dev/null' "$host_after_step"
 grep -Fq 'getent ahosts api.github.com >/dev/null' "$host_after_step"
 grep -Fq 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok' "$host_after_step"
+grep -Fq 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。' "$host_after_step"
 
 if grep -Eq '(chmod|chown|chgrp|setfacl|sudoers|deluser|usermod|gpasswd|adduser|systemctl[[:space:]]+(restart|stop|start|kill|reset-failed))' "$host_before_step" "$host_after_step"; then
   echo 'Host integrity observer must remain read-only.' >&2
@@ -734,9 +758,9 @@ grep -Fq 'inaccessible_paths="${inaccessible_paths:+$inaccessible_paths }-$path"
 grep -Fq '[ ! -S "$path" ]' "$developer_step"
 grep -Fq 'if ! host_owner="$(/usr/bin/stat -Lc "%u" "$path")"; then' "$developer_step"
 grep -Fq 'if ! host_devino="$(/usr/bin/stat -Lc "%d:%i" "$path")"; then' "$developer_step"
-grep -Fq 'Service-local hardening root preflight protected UNIX socket baseline failed:' "$developer_step"
-grep -Fq 'could not stat owner for $path.' "$developer_step"
-grep -Fq 'could not stat dev:inode for $path.' "$developer_step"
+grep -Fq 'root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました:' "$developer_step"
+grep -Fq '$pathの所有者を確認できません。' "$developer_step"
+grep -Fq '$pathのdev:inodeを確認できません。' "$developer_step"
 grep -Fq 'exit 50' "$developer_step"
 permission_mutation_lines="$(
   grep -E '(^|[[:space:]/])(chmod|chown|chgrp|setfacl)([[:space:]]|$)' "$developer_step" ||
@@ -774,30 +798,30 @@ grep -Fq -- '--no-new-privs ' "$developer_step"
 grep -Fq -- '--bounding-set=-all ' "$developer_step"
 grep -Fq -- '--inh-caps=-all ' "$developer_step"
 grep -Fq -- '--ambient-caps=-all ' "$developer_step"
-grep -Fq 'expected_uid="${1:?expected uid is required}"' "$developer_step"
-grep -Fq 'expected_gid="${2:?expected gid is required}"' "$developer_step"
+grep -Fq 'expected_uid="${1:?期待するuidが必要です}"' "$developer_step"
+grep -Fq 'expected_gid="${2:?期待するgidが必要です}"' "$developer_step"
 grep -Fq 'actual_uid="$(/usr/bin/id -u)"' "$developer_step"
-grep -Fq 'Service-local hardening preflight UID mismatch:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でUIDが不一致です:' "$developer_step"
 grep -Fq 'exit 41' "$developer_step"
 grep -Fq 'actual_gid="$(/usr/bin/id -g)"' "$developer_step"
-grep -Fq 'Service-local hardening preflight GID mismatch:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でGIDが不一致です:' "$developer_step"
 grep -Fq 'exit 42' "$developer_step"
 grep -Fq "/^Groups:/" "$developer_step"
-grep -Fq 'Service-local hardening preflight retained supplementary groups:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認で補助グループが残っています:' "$developer_step"
 grep -Fq 'exit 43' "$developer_step"
 grep -Fq "/^NoNewPrivs:/" "$developer_step"
-grep -Fq 'Service-local hardening preflight NoNewPrivs mismatch:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でNoNewPrivsが不一致です:' "$developer_step"
 grep -Fq 'exit 44' "$developer_step"
 grep -Fq '/proc/self/status' "$developer_step"
 grep -Fq 'for field in CapInh CapPrm CapEff CapBnd CapAmb; do' "$developer_step"
-grep -Fq 'Service-local hardening preflight capability is nonzero:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でcapabilityがゼロではありません:' "$developer_step"
 grep -Fq 'exit 45' "$developer_step"
 grep -Fq 'if [ ! -x /usr/bin/sudo ]; then' "$developer_step"
 grep -Fq 'exit 39' "$developer_step"
 grep -Fq "/usr/bin/sudo -n true" "$developer_step"
 grep -Fq 'exit 40' "$developer_step"
 grep -Fq 'socket.AF_UNIX' "$developer_step"
-grep -Fq 'Service-local hardening preflight blocks AF_UNIX required by Codex sandbox:' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認でCodex sandboxに必要なAF_UNIXが遮断されています:' "$developer_step"
 grep -Fq 'SystemExit(46)' "$developer_step"
 grep -Fq 'socket.AF_INET' "$developer_step"
 grep -Fq 'SystemExit(47)' "$developer_step"
@@ -806,7 +830,7 @@ grep -Fq 'PROTECTED_UNIX_SOCKET_HOST_IDS' "$developer_step"
 grep -Fq 'raw_host_ids = os.environ.get("PROTECTED_UNIX_SOCKET_HOST_IDS", "")' "$developer_step"
 grep -Fq 'host_ids[path] = (dev, ino)' "$developer_step"
 grep -Fq '(st.st_dev, st.st_ino) == host_ids[path]' "$developer_step"
-grep -Fq 'protected socket appeared after host baseline:' "$developer_step"
+grep -Fq 'ホスト基準値取得後に保護対象socketが出現しました:' "$developer_step"
 grep -Fq 'len(protected_paths) != 13' "$developer_step"
 grep -Fq 'len(set(protected_paths)) != 13' "$developer_step"
 grep -Fq 'not path.startswith("/run/")' "$developer_step"
@@ -825,7 +849,7 @@ if grep -Fq 'errno.ELOOP' "$developer_step"; then
   exit 1
 fi
 grep -Fq 'st.st_uid == 0' "$developer_step"
-grep -Fq 'Service-local hardening preflight found writable root-owned UNIX socket(s):' "$developer_step"
+grep -Fq 'サービス内の保護設定の事前確認で書き込み可能なroot所有のUNIX socketが見つかりました:' "$developer_step"
 grep -Fq 'SystemExit(49)' "$developer_step"
 grep -Fq '/bin/sh "$launcher" "$uid" "$nobody_gid"' "$developer_step"
 grep -Fq '"HOME=$runner_home"' "$developer_step"
@@ -887,6 +911,7 @@ awk '
   in_step { print }
 ' "$followup_workflow" > "$followup_prompt_step"
 [ -s "$followup_prompt_step" ]
+grep -Fq 'Write the final report for humans on GitHub in Japanese.' "$followup_prompt_step"
 for followup_rule in \
   'Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely.' \
   'Before editing, inspect every blocking finding against repository and supplied Issue evidence.' \
@@ -982,10 +1007,10 @@ grep -Fqx '        timeout-minutes: 12' "$followup_step"
 grep -Fqx '          CODEX_RUNTIME_MAX_SEC: 700' "$followup_step"
 grep -Fq '        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12' "$followup_workflow"
 grep -Fq '          safety-strategy: unsafe' "$followup_workflow"
-grep -Fq '          codex-version: 0.156.1' "$followup_workflow"
-grep -Fq 'mainPackage.version !== "0.156.1"' "$followup_workflow"
-grep -Fq "test \"\$native_version\" = 'codex-cli 0.156.1'" "$followup_workflow"
-grep -Fq 'Resolved trusted Codex 0.156.1 runtime for %s (Action blob %s).' "$followup_workflow"
+grep -Fq '          codex-version: 0.159.3' "$followup_workflow"
+grep -Fq 'mainPackage.version !== "0.159.3"' "$followup_workflow"
+grep -Fq "test \"\$native_version\" = 'codex-cli 0.159.3'" "$followup_workflow"
+grep -Fq '信頼済みCodex 0.159.3ランタイムを%s向けに確認しました（Action blob %s）。' "$followup_workflow"
 grep -Fq '          allow-bot-users: ${{ steps.review-token.outputs.app-slug }}' "$followup_workflow"
 grep -Fq '          CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}' "$followup_step"
 
@@ -997,7 +1022,7 @@ for restore_rule in \
   'rm -f -- "$destination"' \
   'git show "${BASE_SHA}:${source_path}" > "$destination"' \
   'actual_blob="$(git hash-object --no-filters "$destination")"' \
-  'Trusted helper blob changed across Codex execution:' \
+  'Codex実行中に信頼済みhelperのblobが変化しました:' \
   "restore_base_blob '.github/scripts/notify-human.sh'" \
   "restore_base_blob '.github/scripts/apply-human-pause.sh'" \
   "restore_base_blob '.github/scripts/has-requirements-change-marker.sh'" \
@@ -1009,6 +1034,7 @@ for restore_rule in \
     exit 1
   fi
 done
+test "$(grep -Fc '信頼済みhelperをベースのblobから復元し、差分上限の契約を再生成しました。' "$workflow")" -eq 2
 grep -Fqx '          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}' "$workflow"
 grep -Fqx '          NOTIFY_HUMAN_BLOB: ${{ steps.issue_context.outputs.notify_human_blob }}' "$workflow"
 grep -Fqx '          BASE_SHA: ${{ github.event.pull_request.base.sha }}' "$followup_workflow"
@@ -1067,6 +1093,18 @@ assert_hardened_codex_runtime() {
   local marker_block="$test_dir/${runtime_name// /-}-preflight-marker.sh"
   local mutation_lines actual_paths
 
+  for diagnostic in \
+    'Codex RuntimeMaxSecが想定外です。' \
+    '安全なnobody gidを取得できませんでした。' \
+    'サービス内の保護設定の事前確認でUIDが不一致です:' \
+    'サービス内の保護設定の事前確認でGIDが不一致です:' \
+    'サービス内の保護設定の事前確認で保護対象socketのホスト基準値が不正です。' \
+    'root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました:' \
+    'サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。' \
+    'サービス内のAF_UNIX/AF_INETと保護対象UNIX socketの境界を確認しました。'; do
+    grep -Fq "$diagnostic" "$runtime_step"
+  done
+
   if grep -Fq 'sudo -n -E' "$runtime_step"; then
     echo "$runtime_name root phase must not preserve the whole step environment." >&2
     exit 1
@@ -1113,7 +1151,7 @@ assert_hardened_codex_runtime() {
   grep -Fq 'preflight_journal="$(' "$marker_block"
   grep -Fq 'journal_rc=$?' "$marker_block"
   grep -Fq 'if [ "$journal_rc" -ne 0 ] || ! printf "%s\n" "$preflight_journal" | grep -Fxq "$expected_preflight_marker"; then' "$marker_block"
-  grep -Fq 'Service-local hardening preflight success marker unavailable from unit journal.' "$marker_block"
+  grep -Fq 'サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。' "$marker_block"
   grep -Fq 'exit 51' "$marker_block"
   grep -Fq 'printf "%s\n" "$expected_preflight_marker"' "$marker_block"
   if grep -Fq -- '--grep=' "$marker_block" || grep -Fq -- '--lines=1' "$marker_block"; then
@@ -1176,7 +1214,34 @@ assert_hardened_codex_runtime() {
     echo "$runtime_name run body must not interpolate GitHub expressions." >&2
     exit 1
   fi
+
+  # Parse the outer command and check the actual argument passed to /bin/sh -c.
+  # Checking the run body with bash -n alone misses quote breaks inside -c.
+  local root_command="$test_dir/${runtime_name// /-}-root-command.sh"
+  awk '
+    /^          exec sudo -n -- \\$/ { in_command = 1 }
+    in_command { line = $0; sub(/^          /, "", line); print line }
+    in_command && /^            "\$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"$/ { exit }
+  ' "$runtime_run" > "$root_command"
+  test -s "$root_command"
+  local expected_sh_arg0=codex-developer
+  if [ "$runtime_name" = 'Codex follow-up' ]; then
+    expected_sh_arg0=codex-followup
+  fi
+  EXPECTED_SH_ARG0="$expected_sh_arg0" \
+    PATH="$test_dir:$PATH" bash "$root_command"
 }
+
+cat > "$test_dir/sudo" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ] && [ "$1" != /bin/sh ]; do shift; done
+if [ "$#" -lt 4 ] || [ "$2" != -c ] || [ "$4" != "$EXPECTED_SH_ARG0" ]; then
+  echo '内部の /bin/sh -c 引数が不正です。' >&2
+  exit 1
+fi
+printf '%s\n' "$3" | /bin/sh -n
+SH
+chmod 700 "$test_dir/sudo"
 
 assert_hardened_codex_runtime 'Codex developer' "$developer_step"
 assert_hardened_codex_runtime 'Codex follow-up' "$followup_step"
@@ -1264,8 +1329,8 @@ fi
 
 # Both Codex requirement-change gates must fail closed for helper and final
 # response failures, and only their successful gates may reach repository write.
-grep -Fq 'Requirements-change marker helper failed; automated development is paused pending a human decision.' "$workflow"
-grep -Fq 'Requirements-change marker helper failed; automated follow-up is paused pending a human decision.' "$workflow"
+grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。' "$workflow"
+grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動フォローアップを停止します。' "$workflow"
 if [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 2 ]; then
   echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
   exit 1
@@ -1274,8 +1339,8 @@ if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$workflow")" -ne 2 ]; then
   echo 'Both Codex requirement-change gates must fail closed when the final response is missing or empty.' >&2
   exit 1
 fi
-grep -Fq 'Codex final response is missing; automated development is paused pending a human decision.' "$workflow"
-grep -Fq 'Codex final response is missing; automated follow-up is paused pending a human decision.' "$workflow"
+grep -Fq 'Codexの最終報告がありません。人間の判断があるまで自動開発を停止します。' "$workflow"
+grep -Fq 'Codexの最終報告がありません。人間の判断があるまで自動フォローアップを停止します。' "$workflow"
 grep -Fq "if: steps.development-gate.outputs.continue == 'true'" "$workflow"
 grep -Fq "steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true' && steps.codex-requirements-gate.outputs.continue == 'true'" "$workflow"
 
@@ -1450,7 +1515,7 @@ unset FOLLOWUP_FIXTURE_BASE_ROOT
 
 for fixture in valid app-author; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Automated Codex follow-up passed the entry gate"))' <<< "$followup" > /dev/null
+  jq -e '.continue == true and .escalate == false and .notify == false and (.reason | contains("Codexの自動フォローアップは入口条件を満たしました"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-label bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
@@ -1458,7 +1523,7 @@ followup="$(MOCK_CASE=valid MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scri
 jq -e '.continue == false and .escalate == false and (.reason | contains("Issue #36"))' <<< "$followup" > /dev/null
 for fixture in three-reviews app-three-reviews; do
   followup="$(MOCK_CASE="$fixture" bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
-  jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codex follow-up is paused"))' <<< "$followup" > /dev/null
+  jq -e '.continue == false and .escalate == true and .notify == true and (.reason | contains("Codexフォローアップを停止しました"))' <<< "$followup" > /dev/null
 done
 followup="$(MOCK_CASE=human-author bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false' <<< "$followup" > /dev/null
@@ -1472,7 +1537,7 @@ indented_marker_body=$'**Verdict:** REQUEST_CHANGES\n--- BEGIN REVIEW SUMMARY DA
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$indented_marker_body")"
 jq -e '.continue == true and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev '**Verdict:** REQUEST_CHANGES')"
-jq -e '.continue == false and .escalate == true and (.reason | contains("parse"))' <<< "$followup" > /dev/null
+jq -e '.continue == false and .escalate == true and (.reason | contains("解析できなかった"))' <<< "$followup" > /dev/null
 followup="$(MOCK_CASE=valid MOCK_API_FAIL=true bash "$repo_root/.github/scripts/evaluate-followup-gate.sh" owner/repo 37 review dev "$review_body")"
 jq -e '.continue == false and .escalate == false and .notify == false' <<< "$followup" > /dev/null
 
@@ -1524,8 +1589,8 @@ if grep -Fq '.[0]' "$publish_step"; then
   exit 1
 fi
 grep -Fq 'pushed_commit="$(git rev-parse HEAD)"' "$publish_step"
-grep -Fq 'echo "- Pushed commit: ${pushed_commit}"' "$publish_step"
-grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$publish_step"
+grep -Fq 'echo "- pushしたcommit: ${pushed_commit}"' "$publish_step"
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$publish_step"
 if grep -Eqi '(gh (run|pr checks)|/check-runs|/actions/runs|CODEX_FINAL.*(grep|jq)|((grep|jq).*CODEX_FINAL))' "$publish_step" "$followup_commit_step"; then
   echo 'AI Developer provenance must not query formal CI or parse Codex-reported validation.' >&2
   exit 1
@@ -1544,12 +1609,12 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
     case "$PUBLISH_CASE" in
       commit-a-regression)
         publish_script="$case_dir/publish-with-commit-a.sh"
-        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -a -m "Implement #${ISSUE_NUMBER} with Codex"/' \
+        sed 's/git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"/git commit -a -m "CodexでIssue #${ISSUE_NUMBER}を実装"/' \
           "$publish_step" > "$publish_script"
         ;;
       commit-am-regression)
         publish_script="$case_dir/publish-with-commit-am.sh"
-        sed 's/git commit -m "Implement #${ISSUE_NUMBER} with Codex"/git commit -am "Implement #${ISSUE_NUMBER} with Codex"/' \
+        sed 's/git commit -m "CodexでIssue #${ISSUE_NUMBER}を実装"/git commit -am "CodexでIssue #${ISSUE_NUMBER}を実装"/' \
           "$publish_step" > "$publish_script"
         ;;
     esac
@@ -1558,7 +1623,7 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
       case "$1" in
         config) return 0 ;;
         commit)
-          if [ "$#" -ne 3 ] || [ "$2" != '-m' ] || [ "$3" != 'Implement #36 with Codex' ]; then
+          if [ "$#" -ne 3 ] || [ "$2" != '-m' ] || [ "$3" != 'CodexでIssue #36を実装' ]; then
             echo 'Publish must not commit unguarded worktree changes.' >&2
             return 2
           fi
@@ -1637,24 +1702,24 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
         grep -Fq 'gh pr create ' "$PUBLISH_LOG"
         grep -Fq -- '--draft' "$PUBLISH_LOG"
         grep -Fq 'Closes #36' "$PUBLISH_BODY"
-        grep -Fq '### Validation provenance' "$PUBLISH_BODY"
-        grep -Fq '### Codex report' "$PUBLISH_BODY"
-        grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_BODY"
-        grep -Fq '## Review readiness' "$PUBLISH_BODY"
-        grep -Fq 'Remaining impacts and follow-up decisions are recorded in the closing Issue.' "$PUBLISH_BODY"
+        grep -Fq '### 検証結果の出所' "$PUBLISH_BODY"
+        grep -Fq '### Codexの報告' "$PUBLISH_BODY"
+        grep -Fq 'pushしたcommit: 0000000000000000000000000000000000000392' "$PUBLISH_BODY"
+        grep -Fq '## レビュー準備' "$PUBLISH_BODY"
+        grep -Fq '残る影響とフォローアップの判断をclosing Issueに記録した。' "$PUBLISH_BODY"
         grep -Fq 'Ready for review' "$PUBLISH_BODY"
-        grep -Fq 'as Draft.' "$PUBLISH_LOG"
+        grep -Fq 'をDraftで作成しました。' "$PUBLISH_LOG"
         ;;
       existing-*|cross-and-existing)
         grep -Fq 'git push ' "$PUBLISH_LOG"
         grep -Fq 'gh pr comment 37 ' "$PUBLISH_LOG"
-        grep -Fq '### Validation provenance' "$PUBLISH_COMMENT"
-        grep -Fq '### Codex report' "$PUBLISH_COMMENT"
-        grep -Fq 'Pushed commit: 0000000000000000000000000000000000000392' "$PUBLISH_COMMENT"
+        grep -Fq '### 検証結果の出所' "$PUBLISH_COMMENT"
+        grep -Fq '### Codexの報告' "$PUBLISH_COMMENT"
+        grep -Fq 'pushしたcommit: 0000000000000000000000000000000000000392' "$PUBLISH_COMMENT"
         assert_no_publish_call 'gh pr create '
         ;;
       no-diff)
-        grep -Fq 'No repository change was produced by this AI Developer run. No commit or push was performed.' "$PUBLISH_LOG"
+        grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$PUBLISH_LOG"
         assert_no_publish_call 'git (commit|push)|gh pr create'
         ;;
       push-failure|list-failure)
@@ -1727,9 +1792,9 @@ for gate in "$issue_requirements" "$issue_diff_guard"; do
     exit 1
   fi
 done
-grep -Fq "pause_for_human developer_execution_failed 'Codex final response is missing" "$issue_requirements"
-grep -Fq "pause_for_human developer_execution_failed 'Requirements-change marker helper failed" "$issue_requirements"
-grep -Fq "pause_for_human requirements_change 'Codex detected" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed 'Codexの最終報告がありません" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました" "$issue_requirements"
+grep -Fq "pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました" "$issue_requirements"
 grep -Fq 'local options=(--failed-action develop)' "$issue_requirements"
 grep -Fq "[ \"\$marker_status\" -gt 1 ]" "$issue_requirements"
 grep -Fq "[ \"\$marker_status\" -eq 0 ]" "$issue_requirements"
