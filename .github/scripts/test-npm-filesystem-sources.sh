@@ -86,7 +86,8 @@ for failure in ('unsupported', 'timeout', 'invalid-output'):
             assert '--property=RootDirectory=' + str(root) in command
             assert '--property=MountAPIVFS=no' in command
             assert '--property=User=nobody' in command
-            assert '--property=ReadWritePaths=/project /tmp' in command
+            assert [value for value in command if value.startswith('--property=ReadWritePaths=')] \
+                == ['--property=ReadWritePaths=+/project +/tmp']
             assert '--property=CapabilityBoundingSet=' in command
             assert '--property=IPAddressDeny=any' in command
             assert command[command.index('/runtime/env') + 1] == '-i'
@@ -195,16 +196,29 @@ const artifactModes = ['artifact-eacces', 'artifact-eperm', 'artifact-run-siblin
 passing.push('artifact-eacces', 'artifact-eperm');
 const runtimePaths = ['/run/systemd/notify', '/run/systemd/journal/socket',
   '/run/systemd/journal/stdout', '/run/systemd/userdb/io.systemd.DynamicUser'];
+const writeTarget = '/project/cache/filesystem-write-control';
+const writeModes = ['cache-missing', 'cache-file', 'cache-symlink', 'cache-residual',
+  ...['mkdir','rmdir','cleanup'].flatMap(operation=>['EACCES','EPERM','EROFS','ENOENT','EIO','UNKNOWN']
+    .filter(code=>operation !== 'cleanup' || code !== 'ENOENT')
+    .map(code=>`cache-${operation}-${code}`))];
 const modes = [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong', 'host-visible',
   'host-env-visible',
   'host-os-visible', 'host-run-visible', 'host-proc-visible',
-  'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock'];
+  'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock', ...writeModes];
 for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   ...emptyDirectories.flatMap(target=>emptyModes.map(mode=>[mode, target])),
   ...nestedModes.map(mode=>[mode, mode === 'nested-other-parent' ? '/sys' : '/run']),
   ...artifactModes.map(mode=>[mode, '/run']),
   ...runtimePaths.map(target=>['runtime-path-visible', target])]) {
   let calls = 0, emptyStats = 0, reported, error;
+  const writeChecks = [];
+  let writeCreated = false;
+  const writeError = operation => {
+    if (mode.startsWith(`cache-${operation}-`)) {
+      throw Object.assign(Error('fixture-only content/Secret must not appear'),
+        {code:mode.endsWith('-UNKNOWN') ? undefined : mode.split('-').at(-1)});
+    }
+  };
   const nested = nestedModes.includes(mode);
   const artifact = artifactModes.includes(mode);
   const artifactChecks = [];
@@ -247,6 +261,17 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
       return {uid:0,mode:0o644};
     },
     lstatSync(p) {
+      if (p === '/project/cache') {
+        writeChecks.push('directory');
+        if (mode === 'cache-missing') throw Object.assign(Error('fixture-only'), {code:'ENOENT'});
+        return {isDirectory:()=>!['cache-file','cache-symlink'].includes(mode)};
+      }
+      if (p === writeTarget) {
+        writeChecks.push('cleanup');
+        writeError('cleanup');
+        if (writeCreated || mode === 'cache-residual') return {isDirectory:()=>true};
+        throw Object.assign(Error('removed control'), {code:'ENOENT'});
+      }
       if (artifact) {
         assert(!p.startsWith('/run/systemd/incoming/'), 'must not inspect incoming contents');
         const entry = artifactEntries.find(e=>p === e.parent_path + '/' + e.entry_name) ||
@@ -342,6 +367,21 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
             'host-run-visible':'/run/host/os-release', 'host-proc-visible':'/proc/1/root'}[mode] === p)) return 123;
       throw Object.assign(Error('hidden'), {code:'ENOENT'});
     }, closeSync() {}, symlinkSync() {},
+    mkdirSync(p, options) {
+      assert.equal(p,writeTarget,'no host cache fallback');
+      assert.deepEqual(options,{mode:0o700});
+      writeChecks.push('mkdir');
+      writeError('mkdir');
+      assert(!writeCreated);
+      writeCreated = true;
+    },
+    rmdirSync(p) {
+      assert.equal(p,writeTarget,'cleanup must use the same isolated path');
+      writeChecks.push('rmdir');
+      writeError('rmdir');
+      assert(writeCreated);
+      writeCreated = false;
+    },
   };
   const fakeProcess = {argv:['node','probe',JSON.stringify(input)],getuid:()=>65534,
     cwd:()=>'/project',env:{HOME:'/project',PATH:'/runtime',LC_ALL:'C'}};
@@ -349,6 +389,8 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   if (nested || ['empty-content','extra-content'].includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
   if (artifact && !passing.includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
   const fakeCp = {spawnSync(cmd,args,options) {
+    assert.deepEqual(writeChecks,['directory','mkdir','rmdir','cleanup'], 'write proof must precede npm');
+    assert(!writeCreated,'write control must be cleaned before npm');
     calls++;
     assert.equal(cmd,'/runtime/node');
     assert.deepEqual(args.filter(arg=>arg.startsWith('--cache=')), ['--cache=/project/cache']);
@@ -372,6 +414,18 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   } else {
     assert.equal(fakeProcess.exitCode,1,mode);
     assert(error && !reported,mode);
+    if (writeModes.includes(mode)) {
+      assert.equal(calls,0,'write control failure must prevent npm');
+      const operation = mode.split('-')[1];
+      const errno = {'missing':'ENOENT','file':'ENOTDIR','symlink':'ENOTDIR','residual':'EEXIST'}[operation] ||
+        mode.split('-').at(-1);
+      const target = ['missing','file','symlink'].includes(operation) ? '/project/cache' : writeTarget;
+      assert.equal(error,`Error: cache write control failed: phase=cache-write path=${target} errno=${errno}`);
+      const last = ['missing','file','symlink'].includes(operation) ? 'directory' :
+        operation === 'residual' ? 'cleanup' : operation;
+      assert.deepEqual(writeChecks,['directory','mkdir','rmdir','cleanup'].slice(0,
+        ['directory','mkdir','rmdir','cleanup'].indexOf(last) + 1));
+    }
     if (artifact) {
       assert.equal(calls,0,'artifact drift/access success must fail before npm');
       assert(!error.includes('fixture-only'), 'body/environment value leaked');

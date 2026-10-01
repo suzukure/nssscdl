@@ -103,7 +103,7 @@ def command(repo, root, unit, record):
                   *hardening, *network, 'RootDirectory=' + str(root), 'MountAPIVFS=no',
                   # Also hide systemd's automatic /run/host/os-release injection.
                   'PrivateDevices=yes', 'InaccessiblePaths=/proc /sys /run /home /root',
-                  'WorkingDirectory=/project', 'ReadWritePaths=/project /tmp')
+                  'WorkingDirectory=/project', 'ReadWritePaths=+/project +/tmp')
     # env -i is applied to systemd-run, so manager/caller credentials are not copied.
     return ['sudo', '-n', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'LC_ALL=C',
             '/usr/bin/systemd-run', '--quiet', '--wait', '--pipe', '--collect',

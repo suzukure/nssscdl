@@ -126,6 +126,28 @@ function rootInventory(expected) {
   }
 }
 
+function cacheWriteControl() {
+  let target = '/project/cache';
+  try {
+    if (!fs.lstatSync(target).isDirectory()) {
+      throw Object.assign(new Error(), { code: 'ENOTDIR' });
+    }
+    target += '/filesystem-write-control';
+    fs.mkdirSync(target, { mode: 0o700 });
+    fs.rmdirSync(target);
+    try {
+      fs.lstatSync(target);
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+    throw Object.assign(new Error(), { code: 'EEXIST' });
+  } catch (error) {
+    // Never include error messages, file contents, or inherited configuration.
+    throw new Error(`cache write control failed: phase=cache-write path=${target} errno=${error.code || 'UNKNOWN'}`);
+  }
+}
+
 function probe(input) {
   // A missing/mismatched boundary must fail before any package-manager command.
   const info = fs.statSync('/boundary.json');
@@ -150,6 +172,7 @@ function probe(input) {
     emptyDirectory(target);
   }
   assert.deepEqual(Object.keys(process.env).sort(), ['HOME', 'LC_ALL', 'PATH']);
+  cacheWriteControl();
   const npm = ['/runtime/npm/bin/npm-cli.js', '--offline', '--ignore-scripts',
     '--package-lock=false', '--audit=false', '--fund=false', '--update-notifier=false',
     '--userconfig=/project/empty.npmrc', '--globalconfig=/project/global.npmrc',
