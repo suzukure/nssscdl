@@ -70,8 +70,38 @@ for outcome, output, reason in (
 ):
     with patch.object(network, 'validate_endpoint'), patch.object(network, 'udp', return_value=denied), \
          patch.object(source.os, 'access', return_value=False), \
-         patch.object(source, 'execute', side_effect=[({'result':'timeout'}, '')] * 2 + [(outcome, output)]):
+         patch.object(source, 'execute', side_effect=[({'result':'timeout'}, '', '')] * 2 + [(outcome, '', output)]):
         rejected(lambda: source.sources(args, proxy), reason)
+
+# Preserve semantic stdout separately from diagnostic stderr at the subprocess boundary.
+process = Mock(pid=12345, returncode=0)
+process.communicate.return_value = ('1.0.0\n', 'npm warn fixture diagnostic\n')
+with patch.object(source.subprocess, 'Popen', return_value=process), \
+     patch.object(source.os, 'killpg'):
+    assert source.execute(['fixture'], scripts, {'LC_ALL':'C'}) == (
+        {'result':'exited', 'returncode':0}, '1.0.0\n', 'npm warn fixture diagnostic\n')
+
+# Warning-bearing controls pass only with exit 0 and the exact stdout version.
+args.mode = 'control'
+for code, stdout, stderr, reason in (
+    (0, '1.0.0\n', 'npm warn fixture diagnostic\n', None),
+    (0, '1.0.0\nextra\n', '', 'npm-control-mismatch'),
+    (0, '11.0.0\n', '', 'npm-control-mismatch'),
+    (0, '', '1.0.0\n', 'npm-control-mismatch'),
+    (1, '1.0.0\n', 'npm warn fixture diagnostic\n', 'npm_direct-unexpected-result'),
+):
+    with patch.object(network, 'validate_endpoint'), \
+         patch.object(network, 'udp', return_value={'result':'received'}), \
+         patch.object(source.os, 'access', return_value=False), \
+         patch.object(source, 'execute', side_effect=[
+             ({'result':'exited', 'returncode':code}, stdout, stderr),
+             ({'result':'exited', 'returncode':0}, '', '')]) as commands:
+        if reason is None:
+            assert source.sources(args, proxy)['npm_direct']['returncode'] == 0
+            assert commands.call_count == 2
+        else:
+            rejected(lambda: source.sources(args, proxy), reason)
+            assert commands.call_count == 1
 
 # A timed-out npm/git tree is killed; proxy timeouts are errors, never retried.
 process = Mock(pid=12345)
@@ -134,11 +164,13 @@ for mode in ('control', 'restricted', 'unavailable', 'restricted'):
             assert len(set(configs)) == 2 and all(Path(path).read_text() == '' for path in configs)
         if len(seen) <= 2:
             assert not any('proxy' in key.lower() for key in env)
-            return ({'result':'exited', 'returncode':0}, '1.0.0') if mode == 'control' else (
-                    {'result':'timeout'}, '')
+            return ({'result':'exited', 'returncode':0}, '1.0.0', 'npm warn fixture diagnostic') if mode == 'control' else (
+                    {'result':'timeout'}, '', '')
         output = ('ECONNREFUSED Failed to connect to 127.0.0.1 git ls-remote' if mode == 'unavailable'
                   else 'CONNECT tunnel failed, response 403 git ls-remote')
-        return {'result':'exited', 'returncode':1}, output
+        # Exercise diagnostics in both streams across repeated modes.
+        return ({'result':'exited', 'returncode':1}, output, '') if mode == 'restricted' else (
+                {'result':'exited', 'returncode':1}, '', output)
     with patch.object(network, 'validate_endpoint'), \
          patch.object(network, 'udp', return_value={'result':'received'} if mode == 'control' else denied), \
          patch.object(source.os, 'access', return_value=False), \
@@ -225,7 +257,7 @@ for cycle in range(2):
             def direct_denied(command, cwd, env, direct=False):
                 if direct:
                     assert not any('proxy' in key.lower() for key in env)
-                    return {'result':'timeout'}, ''
+                    return {'result':'timeout'}, '', ''
                 assert set(env) == {'PATH','HOME','LC_ALL','GIT_CONFIG_NOSYSTEM',
                     'GIT_CONFIG_GLOBAL','GIT_TERMINAL_PROMPT','HTTPS_PROXY','https_proxy',
                     'HTTP_PROXY','http_proxy','GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0'}

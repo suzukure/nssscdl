@@ -116,7 +116,7 @@ def execute(command, cwd, env, direct=False):
         os.killpg(process.pid, signal.SIGKILL)
         process.communicate(timeout=3)
         if direct:
-            return {"result": "timeout", "timeout_seconds": 5}, ""
+            return {"result": "timeout", "timeout_seconds": 5}, "", ""
         raise
     finally:
         # Remove any subprocess still in the group after its parent exits.
@@ -124,7 +124,7 @@ def execute(command, cwd, env, direct=False):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    return {"result": "exited", "returncode": process.returncode}, stdout + stderr
+    return {"result": "exited", "returncode": process.returncode}, stdout, stderr
 
 
 def failed(result):
@@ -164,11 +164,11 @@ def sources(args, proxy):
                             "version", "--registry=" + local]),
             ("git_direct", [*git, "-c", "http.proxy=", "ls-remote", local + "/repo.git"]),
         ):
-            result, output = execute(command, root, env, direct=restricted)
+            result, stdout, stderr = execute(command, root, env, direct=restricted)
             require(failed(result) if restricted else result.get("returncode") == 0,
                     name + "-unexpected-result")
             if not restricted and name == "npm_direct":
-                require(output.strip() == "1.0.0", "npm-control-mismatch")
+                require(stdout.strip() == "1.0.0", "npm-control-mismatch")
             evidence[name] = result
         if restricted:
             endpoint = f"http://127.0.0.1:{args.proxy_port}"
@@ -185,7 +185,8 @@ def sources(args, proxy):
                 ("npm_remote_tarball", [*npm, "--proxy=" + endpoint, "--https-proxy=" + endpoint,
                                         "cache", "add", remote + "/escape-fixture.tgz"]),
             ):
-                result, output = execute(command, root, proxied_env)
+                result, stdout, stderr = execute(command, root, proxied_env)
+                output = stdout + stderr
                 require(result.get("returncode", 0) > 0, name + "-accepted")
                 if name == "npm_git_https":
                     require("git" in output and "ls-remote" in output,
