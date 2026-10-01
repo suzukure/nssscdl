@@ -182,15 +182,49 @@ const emptyModes = ['empty-readable', 'empty-denied', 'empty-permission', 'empty
   'empty-late-file', 'empty-late-symlink', 'empty-late-device'];
 const nestedModes = ['nested-content', 'nested-empty', 'nested-denied', 'nested-permission',
   'nested-missing', 'nested-symlink', 'nested-file', 'nested-other', 'nested-other-parent'];
+const artifactModes = ['artifact-eacces', 'artifact-eperm', 'artifact-run-sibling',
+  'artifact-systemd-sibling', 'artifact-incoming-missing',
+  ...['systemd','incoming'].flatMap(entry=>['file','symlink','other','uid','mode','special']
+    .map(drift=>`artifact-${entry}-${drift}`)),
+  ...['open','list','traverse'].flatMap(operation=>['success','enoent','eio']
+    .map(result=>`artifact-${operation}-${result}`))];
+passing.push('artifact-eacces', 'artifact-eperm');
+const runtimePaths = ['/run/systemd/notify', '/run/systemd/journal/socket',
+  '/run/systemd/journal/stdout', '/run/systemd/userdb/io.systemd.DynamicUser'];
 const modes = [...inventoryModes, 'pass', 'marker-missing', 'marker-wrong', 'host-visible',
   'host-env-visible',
   'host-os-visible', 'host-run-visible', 'host-proc-visible',
   'bad-env', 'accepted-source', 'unrelated-error', 'timeout', 'broken-control', 'lock'];
 for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   ...emptyDirectories.flatMap(target=>emptyModes.map(mode=>[mode, target])),
-  ...nestedModes.map(mode=>[mode, mode === 'nested-other-parent' ? '/sys' : '/run'])]) {
+  ...nestedModes.map(mode=>[mode, mode === 'nested-other-parent' ? '/sys' : '/run']),
+  ...artifactModes.map(mode=>[mode, '/run']),
+  ...runtimePaths.map(target=>['runtime-path-visible', target])]) {
   let calls = 0, emptyStats = 0, reported, error;
   const nested = nestedModes.includes(mode);
+  const artifact = artifactModes.includes(mode);
+  const artifactChecks = [];
+  const artifactEntries = [
+    {parent_path:'/run',entry_name:'systemd',type:'directory',uid:0,mode:0o40755},
+    {parent_path:'/run/systemd',entry_name:'incoming',type:'directory',uid:0,mode:0o40600},
+  ];
+  for (const entry of artifactEntries) {
+    const prefix = `artifact-${entry.entry_name}-`;
+    if (!mode.startsWith(prefix)) continue;
+    const drift = mode.slice(prefix.length);
+    if (['file','symlink','other'].includes(drift)) entry.type = drift;
+    if (drift === 'uid') entry.uid = 65534;
+    if (drift === 'mode') entry.mode ^= 0o001;
+    if (drift === 'special') entry.mode |= 0o1000;
+  }
+  const denial = operation => {
+    artifactChecks.push(operation);
+    if (mode === `artifact-${operation}-success`) return;
+    const code = mode === `artifact-${operation}-enoent` ? 'ENOENT' :
+      mode === `artifact-${operation}-eio` ? 'EIO' :
+      mode === 'artifact-eperm' ? 'EPERM' : 'EACCES';
+    throw Object.assign(Error('fixture-only body must not appear'), {code});
+  };
   const parentEntry = {entry_name:mode === 'nested-other' ? 'unexpected' : 'systemd',
     type:mode === 'nested-symlink' ? 'symlink' : mode === 'nested-file' ? 'file' : 'directory',
     uid:0,mode:mode === 'nested-symlink' ? 0o120777 : mode === 'nested-file' ? 0o100644 : 0o40755};
@@ -201,8 +235,22 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
     files:['/host/pkg.tgz','/workspace/pkg.tgz']};
   const fakeFs = {
     constants: {W_OK:2},
-    statSync() {return {uid:0,mode:0o644}},
+    statSync(p) {
+      if (p.startsWith('/run/systemd/incoming/')) {
+        assert.equal(p,'/run/systemd/incoming/filesystem-probe-synthetic-child');
+        return denial('traverse');
+      }
+      return {uid:0,mode:0o644};
+    },
     lstatSync(p) {
+      if (artifact) {
+        assert(!p.startsWith('/run/systemd/incoming/'), 'must not inspect incoming contents');
+        const entry = artifactEntries.find(e=>p === e.parent_path + '/' + e.entry_name) ||
+          (p.endsWith('/unexpected') ? {type:'directory',uid:0,mode:0o40755} : null);
+        if (entry) return {uid:entry.uid,mode:entry.mode,
+          isDirectory:()=>entry.type === 'directory',isFile:()=>entry.type === 'file',
+          isSymbolicLink:()=>entry.type === 'symlink'};
+      }
       const parent = mode === 'extra-content' ? '/mount-point-fixture' : emptyTarget;
       const entry = nested ? (p === emptyTarget + '/' + parentEntry.entry_name ? parentEntry :
         diagnosticEntries.find(e=>p === '/run/systemd/' + e.entry_name)) :
@@ -237,6 +285,17 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
         visible_root:['runtime','project','tmp','boundary.json', ...emptyDirectories.map(p=>p.slice(1))]});
     },
     readdirSync(p) {
+      if (artifact) {
+        directoryReads.push(p);
+        assert(!p.startsWith('/run/systemd/incoming/'), 'must not recurse');
+        if (p === '/run/systemd/incoming') return denial('list');
+        if (p === '/run') return mode === 'artifact-run-sibling' ? ['systemd','unexpected'] : ['systemd'];
+        if (p === '/run/systemd') {
+          assert.equal(artifactEntries[0].type,'directory', 'must not follow replacement symlink/file');
+          return mode === 'artifact-incoming-missing' ? [] :
+            mode === 'artifact-systemd-sibling' ? ['incoming','unexpected'] : ['incoming'];
+        }
+      }
       if (nested) {
         directoryReads.push(p);
         assert(['/', '/sys', '/run', '/run/systemd'].includes(p),
@@ -271,6 +330,8 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
       return mode === 'lock' ? [{name:'package-lock.json',isDirectory:()=>false}] : [];
     },
     openSync(p) {
+      if (artifact && p === '/run/systemd/incoming') return denial('open');
+      if (mode === 'runtime-path-visible' && p === emptyTarget) return 123;
       // Reproduce the runner: opening a staged empty directory itself succeeds.
       if (emptyDirectories.includes(p) || mode === 'host-visible' ||
           ({'host-env-visible':'/usr/bin/env', 'host-os-visible':'/etc/os-release',
@@ -282,6 +343,7 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
     cwd:()=>'/project',env:{HOME:'/project',PATH:'/runtime',LC_ALL:'C'}};
   if (mode === 'bad-env') fakeProcess.env.GITHUB_TOKEN = 'fixture-only';
   if (nested || ['empty-content','extra-content'].includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
+  if (artifact && !passing.includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
   const fakeCp = {spawnSync(cmd,args,options) {
     calls++;
     assert.equal(cmd,'/runtime/node');
@@ -301,9 +363,33 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
     assert.equal(reported.status,'pass');
     assert.equal(calls,17);
     assert.equal(reported.failures.length,13);
+    if (artifact) assert.deepEqual(artifactChecks,['open','list','traverse']);
   } else {
     assert.equal(fakeProcess.exitCode,1,mode);
     assert(error && !reported,mode);
+    if (artifact) {
+      assert.equal(calls,0,'artifact drift/access success must fail before npm');
+      assert(!error.includes('fixture-only'), 'body/environment value leaked');
+      if (error.includes(' entries=')) {
+        for (const entry of JSON.parse(error.split(' entries=')[1])) {
+          assert.deepEqual(Object.keys(entry).sort(),['entry_name','mode','parent_path','type','uid']);
+        }
+      }
+      if (mode === 'artifact-run-sibling' || mode === 'artifact-systemd-sibling' ||
+          mode === 'artifact-incoming-missing' || artifactEntries.some(e=>
+            e.type !== 'directory' || e.uid !== 0 || e.mode !== (e.entry_name === 'systemd' ? 0o40755 : 0o40600))) {
+        assert.deepEqual(artifactChecks,[], 'invalid artifact must not be probed');
+      } else {
+        const operation = mode.split('-')[1];
+        assert(error.includes('operation=' + operation),error);
+        assert.deepEqual(artifactChecks,['open','list','traverse'].slice(0,
+          ['open','list','traverse'].indexOf(operation) + 1));
+      }
+    }
+    if (mode === 'runtime-path-visible') {
+      assert.equal(calls,0);
+      assert(error.includes(`phase=hidden source_class=system-path path=${emptyTarget}`),error);
+    }
     if (nested) {
       assert.equal(calls,0,'non-empty /run must fail before npm even when /run/systemd is empty or hidden');
       assert(error.includes('staged directory content visible: ' +

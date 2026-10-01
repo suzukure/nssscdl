@@ -41,7 +41,36 @@ function assertEmptyDirectory(target, entries, message) {
       // An inaccessible child cannot erase the parent's non-empty failure.
       assert(['ENOENT', 'EACCES', 'EPERM'].includes(error.code), message);
     }
-    metadata.push(...directoryMetadata('/run/systemd', children));
+    const childMetadata = directoryMetadata('/run/systemd', children);
+    metadata.push(...childMetadata);
+    // Only the artifact observed on the formal runner is eligible. Never
+    // enumerate incoming's contents or accept siblings/type/owner/mode drift.
+    const exact = (items, name, mode) => items.length === 1 &&
+      items[0].entry_name === name && items[0].type === 'directory' &&
+      items[0].uid === 0 && items[0].mode === mode;
+    if (exact(metadata.slice(0, entries.length), 'systemd', 0o40755) &&
+        exact(childMetadata, 'incoming', 0o40600)) {
+      assert.equal(process.getuid(), 65534, 'runtime artifact requires service UID=nobody');
+      const incoming = '/run/systemd/incoming';
+      const checks = {
+        open: () => { const fd = fs.openSync(incoming, 'r'); fs.closeSync(fd); },
+        list: () => fs.readdirSync(incoming),
+        traverse: () => fs.statSync(incoming + '/filesystem-probe-synthetic-child'),
+      };
+      for (const [operation, check] of Object.entries(checks)) {
+        const context = `phase=hidden source_class=runtime-artifact path=${incoming} operation=${operation}`;
+        let denied = false;
+        try {
+          check();
+        } catch (error) {
+          // ENOENT does not prove traversal denial; require explicit refusal.
+          assert(['EACCES', 'EPERM'].includes(error.code), 'unconfirmed artifact denial: ' + context);
+          denied = true;
+        }
+        assert(denied, 'runtime artifact accessible: ' + context);
+      }
+      return;
+    }
   }
   assert.fail(message + ' entries=' + JSON.stringify(metadata));
 }
@@ -112,7 +141,9 @@ function probe(input) {
   for (const [sourceClass, target] of Object.entries(input.hidden)) {
     unreadable(target, sourceClass);
   }
-  for (const target of ['/proc/1/root', '/run/host/os-release']) {
+  for (const target of ['/proc/1/root', '/run/host/os-release', '/run/systemd/notify',
+    '/run/systemd/journal/socket', '/run/systemd/journal/stdout',
+    '/run/systemd/userdb/io.systemd.DynamicUser']) {
     unreadable(target);
   }
   for (const target of ['/sys', '/run', '/home', '/root', '/proc']) {
