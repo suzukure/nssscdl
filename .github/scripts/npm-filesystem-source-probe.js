@@ -17,6 +17,19 @@ function unreadable(target, sourceClass = 'system-path') {
   throw new Error('host source visible: ' + context);
 }
 
+function assertEmptyDirectory(target, entries, message) {
+  if (entries.length === 0) return;
+  // Metadata only: never follow symlinks or read entry contents/configuration.
+  const metadata = entries.slice().sort().map(name => {
+    const info = fs.lstatSync(path.join(target, name));
+    return { parent_path: target, entry_name: name,
+      type: info.isDirectory() ? 'directory' : info.isFile() ? 'file' :
+        info.isSymbolicLink() ? 'symlink' : 'other',
+      uid: info.uid, mode: info.mode };
+  });
+  assert.fail(message + ' entries=' + JSON.stringify(metadata));
+}
+
 function emptyDirectory(target) {
   const context = `phase=hidden source_class=staged-directory path=${target}`;
   // The staged directory object can be readable without exposing host content.
@@ -29,7 +42,7 @@ function emptyDirectory(target) {
     assert(['ENOENT', 'EACCES', 'EPERM'].includes(error.code), context + ': ' + error);
     return;
   }
-  assert.equal(entries.length, 0, 'staged directory content visible: ' + context);
+  assertEmptyDirectory(target, entries, 'staged directory content visible: ' + context);
 }
 
 function rootInventory(expected) {
@@ -64,7 +77,7 @@ function rootInventory(expected) {
       assert(['EACCES', 'EPERM'].includes(error.code), context + ': ' + error);
       continue;
     }
-    assert.equal(entries.length, 0, 'runtime entry content visible: ' + context);
+    assertEmptyDirectory(target, entries, 'runtime entry content visible: ' + context);
   }
 }
 

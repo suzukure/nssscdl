@@ -171,6 +171,12 @@ const inventoryModes = ['staged-missing', 'staged-file', 'staged-symlink',
   'extra-read-error', 'extra-write-error'];
 const passing = ['pass', 'extra-empty', 'extra-denied', 'extra-permission'];
 const emptyDirectories = ['/sys', '/run', '/home', '/root', '/proc'];
+const diagnosticEntries = [
+  {entry_name:'visible-directory',type:'directory',uid:0,mode:0o40755},
+  {entry_name:'visible-file',type:'file',uid:123,mode:0o100644},
+  {entry_name:'visible-other',type:'other',uid:456,mode:0o20600},
+  {entry_name:'visible-symlink',type:'symlink',uid:65534,mode:0o120777},
+];
 const emptyModes = ['empty-readable', 'empty-denied', 'empty-permission', 'empty-missing',
   'empty-content', 'empty-file', 'empty-symlink', 'empty-device', 'empty-read-error',
   'empty-late-file', 'empty-late-symlink', 'empty-late-device'];
@@ -189,6 +195,11 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
     constants: {W_OK:2},
     statSync() {return {uid:0,mode:0o644}},
     lstatSync(p) {
+      const parent = mode === 'extra-content' ? '/mount-point-fixture' : emptyTarget;
+      const entry = diagnosticEntries.find(e=>p === parent + '/' + e.entry_name);
+      if (entry) return {uid:entry.uid,mode:entry.mode,
+        isDirectory:()=>entry.type === 'directory',isFile:()=>entry.type === 'file',
+        isSymbolicLink:()=>entry.type === 'symlink'};
       if (p === emptyTarget) emptyStats++;
       const extra = p === '/mount-point-fixture';
       const directory = p !== '/boundary.json' &&
@@ -209,7 +220,8 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
       if (mode === 'extra-writable') return;
       throw Object.assign(Error('write check'), {code:mode === 'extra-write-error' ? 'EIO' : 'EACCES'});
     },
-    readFileSync() {
+    readFileSync(p) {
+      assert.equal(p,'/boundary.json','diagnostics must not read file contents');
       if (mode === 'marker-missing') throw Error('missing boundary');
       return JSON.stringify({token:mode === 'marker-wrong' ? 'wrong' : input.token,
         visible_root:['runtime','project','tmp','boundary.json', ...emptyDirectories.map(p=>p.slice(1))]});
@@ -221,14 +233,14 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
       if (p === '/mount-point-fixture') {
         const code = {'extra-denied':'EACCES','extra-permission':'EPERM','extra-read-error':'EIO'}[mode];
         if (code) throw Object.assign(Error('directory check'), {code});
-        return mode === 'extra-content' ? ['host-content'] : [];
+        return mode === 'extra-content' ? diagnosticEntries.map(e=>e.entry_name).reverse() : [];
       }
       if (emptyDirectories.includes(p)) {
         if (p === emptyTarget) {
           const code = {'empty-denied':'EACCES', 'empty-permission':'EPERM',
             'empty-missing':'ENOENT', 'empty-read-error':'EIO'}[mode];
           if (code) throw Object.assign(Error('staged directory check'), {code});
-          if (mode === 'empty-content') return ['host-content'];
+          if (mode === 'empty-content') return diagnosticEntries.map(e=>e.entry_name).reverse();
         }
         return [];
       }
@@ -245,6 +257,7 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   const fakeProcess = {argv:['node','probe',JSON.stringify(input)],getuid:()=>65534,
     cwd:()=>'/project',env:{HOME:'/project',PATH:'/runtime',LC_ALL:'C'}};
   if (mode === 'bad-env') fakeProcess.env.GITHUB_TOKEN = 'fixture-only';
+  if (['empty-content','extra-content'].includes(mode)) fakeProcess.env.DIAGNOSTIC_SECRET = 'fixture-only';
   const fakeCp = {spawnSync(cmd,args,options) {
     calls++;
     assert.equal(cmd,'/runtime/node');
@@ -267,6 +280,15 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   } else {
     assert.equal(fakeProcess.exitCode,1,mode);
     assert(error && !reported,mode);
+    if (['empty-content','extra-content'].includes(mode)) {
+      assert.equal(calls,0,'non-empty directory must fail before npm');
+      const parent = mode === 'extra-content' ? '/mount-point-fixture' : emptyTarget;
+      assert(error.includes((mode === 'extra-content' ? 'runtime entry' : 'staged directory') +
+        ' content visible: '),error);
+      assert.deepEqual(JSON.parse(error.split(' entries=')[1]),
+        diagnosticEntries.map(e=>({parent_path:parent,...e})));
+      assert(!error.includes('fixture-only'), 'environment value leaked');
+    }
     if (mode === 'host-visible') assert(error.includes(
       'phase=hidden source_class=workspace-package path=/workspace/pkg/package.json'));
     if (mode === 'host-env-visible') assert(error.includes(
