@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dormant #661 integration fixture; no production bootstrap/handoff."""
+"""Dormant #661/#662 generation and trusted validation; no production wiring."""
 import hashlib
 import errno
 import json
@@ -203,16 +203,189 @@ def workspace_state(repo):
         ['git', 'diff', '--binary'], ['git', 'diff', '--cached', '--binary']))
 
 
+def contract_identities(repo):
+    # Trusted base sources, never the restricted runtime copies. Source hashes
+    # identify the exact contracts without forking their policy/command logic.
+    sources = {
+        'canonical_validator': 'prepare-product-npm.py',
+        'bootstrap_command': 'npm-initial-lock-probe.js',
+        'lifecycle_proof': 'npm-initial-lock-runtime.py',
+        'registry': 'npm-registry-proxy.py',
+        'network': 'npm-registry-boundary-runtime.py',
+        'network_primitive': 'codex-network-boundary.py',
+        'network_sources': 'npm-network-source-probe.py',
+        'filesystem': 'npm-filesystem-boundary-runtime.py',
+        'filesystem_probe': 'npm-filesystem-source-probe.js',
+        'lifecycle_boundary': 'npm-lifecycle-boundary-runtime.py',
+        'lifecycle_probe': 'npm-lifecycle-script-probe.js',
+        'generation_probe': 'npm-registry-lock-probe.js',
+        'registry_adapter': 'npm-registry-lock-adapter.js',
+        'runtime': 'npm-registry-lock-runtime.py',
+    }
+    return {key: {'source': name, 'sha256': hashlib.sha256(
+        (repo / '.github/scripts' / name).read_bytes()).hexdigest()}
+        for key, name in sources.items()}
+
+
+def command_contract(repo, node, command):
+    """Evaluate #660's command constructor only; never spawn npm or bootstrap."""
+    assert isinstance(command, list) and all(isinstance(arg, str) for arg in command)
+    ports = [arg for arg in command if arg.startswith('--registry=')]
+    assert len(ports) == 1
+    match = re.fullmatch(r'--registry=http://127\.0\.0\.1:(\d+)/', ports[0])
+    assert match, 'unknown bootstrap registry contract'
+    assert initial_command(repo, node, int(match[1])) == command, 'bootstrap command mismatch'
+    return command
+
+
+def initial_command(repo, node, port):
+    # Execute the trusted #660 constructor, not a copied command definition.
+    javascript = """const fs = require('node:fs'), m = {exports:{}};
+new Function('require','module',fs.readFileSync(process.argv[1],'utf8'))(
+  name => name === './filesystem-probe.js' ? {} : require(name), m);
+console.log(JSON.stringify(m.exports.command('lock', Number(process.argv[2]))));
+"""
+    result = subprocess.run([str(node), '-e', javascript,
+        str(repo / '.github/scripts/npm-initial-lock-probe.js'), str(port)],
+        check=True, capture_output=True, text=True, timeout=10, cwd='/', env=ENV)
+    return json.loads(result.stdout)
+
+
+def read_pair(validator, manifest_directory, project):
+    def read(path, name):
+        fd = validator.directory(path)
+        try:
+            data = validator.read_input(fd, name)
+            validator.require(data is not None, 'missing-generated-input')
+            return data
+        finally:
+            os.close(fd)
+    snapshot = read(manifest_directory, 'manifest.json')
+    validator.require(read(project, 'package.json') == snapshot, 'manifest-mutated')
+    return snapshot, read(project, 'package-lock.json')
+
+
+def verify_handoff(validator, artifact, expected):
+    """Only the trusted in-memory expectation can authorize a handoff."""
+    fd = validator.directory(artifact)
+    try:
+        info = os.fstat(fd)
+        validator.require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0,
+                          'unsafe-handoff-directory')
+        assert_no_acl(artifact)
+        validator.require(set(os.listdir(fd)) == {'package.json', 'package-lock.json', 'provenance.json'},
+                          'unexpected-handoff-artifact')
+        values = {}
+        for name in ('package.json', 'package-lock.json', 'provenance.json'):
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            validator.require(info.st_uid == os.getuid() and info.st_mode & 0o022 == 0,
+                              'unsafe-handoff-file')
+            assert_no_acl(artifact / name)
+            values[name] = validator.read_input(fd, name)
+        record = validator.parse(values['provenance.json'])
+        validator.require(record == expected, 'provenance-mismatch')
+        validator.require(record['artifact_path'] == str(artifact) and record['artifact_id'] == artifact.name
+                          and record['schema_version'] == 1 and record['status'] == 'validated'
+                          and record['validation'] == 'pass', 'invalid-handoff-identity')
+        validator.require(hashlib.sha256(values['package.json']).hexdigest() == record['manifest_sha256']
+                          and hashlib.sha256(values['package-lock.json']).hexdigest() == record['lock_sha256'],
+                          'handoff-hash-mismatch')
+        validator.validate_lock(validator.parse(values['package.json']),
+                                validator.parse(values['package-lock.json']))
+        # Re-read after canonical validation; never authorize changed bytes.
+        validator.require(all(validator.read_input(fd, name) == data for name, data in values.items()),
+                          'handoff-mutated')
+        return record
+    finally:
+        os.close(fd)
+
+
+def freeze_candidate(repo, root, run_root, manifest_snapshot, trusted, evidence):
+    """Caller must have stopped/collected the service and verified post snapshot.
+
+    trusted is retained in orchestration memory before workload start. Workload
+    evidence is a claim to cross-check, never the source of manifest/runtime trust.
+    run_root is private to the distinct trusted UID, outside RootDirectory/workspace.
+    """
+    validator = load(repo, 'prepare-product-npm')
+    validator.require(os.getuid() != SERVICE_UID, 'workload-handoff-owner')
+    validator.require(set(trusted) == {'manifest_sha256', 'runtime_source', 'staged_runtime_hashes',
+                      'generation_id', 'generation_root', 'run_id', 'contracts'}, 'missing-trusted-evidence')
+    validator.require(re.fullmatch(r'[0-9a-f]{32}', trusted['generation_id']) is not None
+                      and trusted['generation_root'] == str(root.parent)
+                      and trusted['run_id'] == run_root.name, 'generation-identity-mismatch')
+    validator.require(trusted['contracts'] == contract_identities(repo), 'unknown-contract-identity')
+    digest = hashlib.sha256(manifest_snapshot).hexdigest()
+    validator.require(digest == trusted['manifest_sha256'], 'trusted-manifest-mismatch')
+    source = trusted['runtime_source']
+    hashes = trusted['staged_runtime_hashes']
+    validator.require(all(hashes[key] == source[key] for key in ('node_sha256', 'npm_cli_sha256')),
+                      'runtime-hash-mismatch')
+    validator.require(evidence['status'] == 'pass' and evidence['candidate'] == 'package-lock.json'
+                      and evidence['manifest_hash'] == digest
+                      and evidence['node'] == source['node_version'] and evidence['npm'] == source['npm_version']
+                      and evidence['markers'] == [] and evidence['node_modules'] is False
+                      and evidence['metadata_requests'] > 0 and evidence['tarball_requests'] == 0
+                      and evidence['dependency_execution_path'] == 'not-entered', 'generation-evidence-mismatch')
+    command_contract(repo, Path(source['node_source']), evidence['command'])
+    manifest_bytes, lock_bytes = read_pair(validator, root / 'runtime', root / 'project')
+    lock_hash = hashlib.sha256(lock_bytes).hexdigest()
+    validator.require(manifest_bytes == manifest_snapshot and lock_hash == evidence['lock_hash'],
+                      'generation-hash-mismatch')
+    # Freeze bytes in trusted memory before validation. The canonical parser also
+    # rejects duplicate keys; the validator owns all source/integrity/manifest rules.
+    validator.validate_lock(validator.parse(manifest_bytes), validator.parse(lock_bytes))
+    validator.require(read_pair(validator, root / 'runtime', root / 'project') == (manifest_bytes, lock_bytes),
+                      'candidate-mutated')
+    fd = validator.directory(run_root)
+    artifact = None
+    try:
+        info = os.fstat(fd)
+        validator.require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0,
+                          'unsafe-run-root')
+        assert_no_acl(run_root)
+        validator.require(not any(run_root == path or run_root in path.parents or path in run_root.parents
+                          for path in (repo, root)), 'overlapping-handoff-path')
+        artifact = Path(tempfile.mkdtemp(prefix='validated-lock-', dir=f'/proc/self/fd/{fd}'))
+        artifact = run_root / artifact.name
+        current = run_root.stat()
+        validator.require((current.st_dev, current.st_ino) == (info.st_dev, info.st_ino), 'run-root-changed')
+        expected = {**trusted, 'schema_version': 1, 'status': 'validated', 'validation': 'pass',
+                    'lock_sha256': lock_hash, 'generated_lock_sha256': lock_hash,
+                    'bootstrap_command': evidence['command'],
+                    'lifecycle_result': 'dependency-execution-path-not-entered',
+                    'artifact_path': str(artifact), 'artifact_id': artifact.name}
+        for name, data in (('package.json', manifest_bytes), ('package-lock.json', lock_bytes),
+                           ('provenance.json', (json.dumps(expected, sort_keys=True) + '\n').encode())):
+            target = artifact / name
+            target.write_bytes(data)
+            target.chmod(0o400)
+        verify_handoff(validator, artifact, expected)
+        validator.require(read_pair(validator, root / 'runtime', root / 'project') == (manifest_bytes, lock_bytes),
+                          'candidate-mutated')
+        return artifact, expected
+    except BaseException:
+        if artifact is not None:
+            shutil.rmtree(artifact)
+        raise
+    finally:
+        os.close(fd)
+
+
 def run_fixture(repo, node, npm, registry, network, servers, port, provenance, unavailable=False):
     boundary = load(repo, 'npm-filesystem-boundary-runtime')
     staged = Path(subprocess.check_output(['sudo', '-n', 'mktemp', '-d',
                   '/run/npm-filesystem-fixture-XXXXXXXX'], text=True, timeout=5, env=ENV).strip())
     assert re.fullmatch(r'/run/npm-filesystem-fixture-[A-Za-z0-9]{8}', str(staged))
     token = uuid.uuid4().hex
+    trusted_run = None
+    artifact = expected = None
     try:
+        trusted_run = tempfile.TemporaryDirectory(prefix='npm-validated-handoff-')
         with tempfile.TemporaryDirectory(prefix='npm-registry-lock-build-') as build:
             root = Path(build) / 'root'
             digest = build_root(repo, root, node, npm, token)
+            manifest_snapshot = (root / 'runtime/manifest.json').read_bytes()
             copied = runtime_hashes(root / 'runtime/node', root / 'runtime/npm/bin/npm-cli.js')
             assert all(copied[key] == provenance[key] for key in copied), 'runtime copy hash mismatch'
             subprocess.run(['sudo', '-n', 'cp', '-a', str(root), str(staged / 'root')],
@@ -225,6 +398,11 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
         subprocess.run(['sudo', '-n', 'chown', '-R', 'nobody:nogroup',
                         str(root / 'project'), str(root / 'tmp')], check=True, timeout=5, env=ENV)
         staged_hashes = staged_snapshot(root, token, digest, provenance)
+        # Retain trusted inputs in parent memory, never in workload-writable files.
+        trusted = {'manifest_sha256': digest, 'runtime_source': dict(provenance),
+                   'staged_runtime_hashes': dict(staged_hashes), 'generation_id': token,
+                   'generation_root': str(staged), 'run_id': Path(trusted_run.name).name,
+                   'contracts': contract_identities(repo)}
         record = {'token': token, 'manifest_hash': digest, 'proxy_port': port, 'proxy_uid': os.getuid(),
                   'address': servers.address, 'direct_port': servers.port,
                   'expect_unavailable': unavailable, 'hidden': {
@@ -244,11 +422,22 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
             assert evidence['candidate'] == 'package-lock.json' and evidence['manifest_hash'] == digest
             assert evidence['metadata_requests'] > 0 and evidence['tarball_requests'] == 0
             assert evidence['markers'] == [] and evidence['node_modules'] is False
+            artifact, expected = freeze_candidate(repo, root, Path(trusted_run.name),
+                                                  manifest_snapshot, trusted, evidence)
         print(json.dumps({**evidence, 'runtime_source': provenance, 'staged_runtime_hashes': staged_hashes}), flush=True)
         return str(staged)
     finally:
-        subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)], check=True, timeout=10, env=ENV)
-        assert not staged.exists(), 'registry lock root cleanup failed'
+        try:
+            subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)], check=True, timeout=10, env=ENV)
+            assert not staged.exists(), 'registry lock root cleanup failed'
+            if artifact is not None:
+                # This is the #645 acceptance handoff, after generation cleanup.
+                validator = load(repo, 'prepare-product-npm')
+                print(json.dumps(verify_handoff(validator, artifact, expected), sort_keys=True), flush=True)
+        finally:
+            if trusted_run is not None:
+                trusted_run.cleanup()
+                assert not Path(trusted_run.name).exists(), 'handoff cleanup failed'
 
 
 def runtime(repo):
