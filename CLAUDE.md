@@ -18,6 +18,7 @@ Read `.ai-context/review.md`, the complete diff, the linked Issues, and the affe
 - Confirmed upstream changes have a documented downstream impact assessment.
 - Security, privacy, concurrency, failure handling, and migration impacts are addressed where relevant.
 - Validation evidence is sufficient and no failure is concealed.
+- Apply [Work Admission Control](docs/30_operations/ai-development-workflow.md#work-admission-control) to newly discovered findings and scope decisions, including the boundary between blocking findings and non-blocking improvement candidates. Use that canonical contract without autonomously expanding the current PR's Done conditions.
 - When a PR records a scope-out impact, verify that the closing Issue body—not only a comment or the PR—records the remaining impact, safe-to-merge rationale, follow-up Issue number, scope, completion condition, and intended timing/order. Verify that deferral does not compromise safety, correctness, or requirements consistency.
 - Check every follow-up Issue snapshot supplied in the review context. If an explicitly recorded follow-up was unavailable, do not infer that it is absent; return `request_changes` or the applicable human-decision marker.
 
