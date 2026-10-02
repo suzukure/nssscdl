@@ -132,6 +132,35 @@ for name, (kind, filename, trigger) in m.WORKFLOWS.items():
         assert record['usage_availability'] == 'complete' and 'requests' not in record
         assert g.consume() == 'already_recorded' and len(g.writes) == 1
 
+# Investigator ordinary-comment gate skips (and other producer skips) never
+# read the ledger/artifacts or write, even if an artifact is unexpectedly listed.
+for name, (kind, filename, trigger) in m.WORKFLOWS.items():
+    source = copy.deepcopy(event)
+    source['workflow_run'].update(name=name, event=trigger, conclusion='skipped')
+    for artifacts in ([], [artifact]):
+        g = Github(source, artifacts=artifacts)
+        assert g.consume() == 'skipped_run_ignored' and not g.writes
+        assert g.reads == ['/repos/owner/repo/actions/runs/123/attempts/2',
+                           '/repos/owner/repo/actions/workflows/7']
+    # A failure after entry, including checkout/model/credential failure before
+    # the paid step, remains unknown rather than being silently discarded.
+    source['workflow_run']['conclusion'] = 'failure'
+    g = Github(source, artifacts=[])
+    assert g.consume() == 'recorded_unavailable'
+    assert g.record()['telemetry_reason_code'] == 'artifact_missing'
+    assert all(g.record()[key] is None for key in m.FIELDS)
+
+# Skip does not bypass exact-attempt or repository validation.
+g = Github()
+g.source['workflow_run']['conclusion'] = 'skipped'
+g.run = {**g.run, 'conclusion': 'success'}
+fails(g.consume, 'run_identity_mismatch')
+assert not g.writes
+g = Github()
+g.run.update(conclusion='skipped', head_repository={**repository, 'id': 12})
+fails(g.consume, 'repository_mismatch')
+assert not g.reads and not g.writes
+
 for usage, expected in ((partial, 'partial'), (unavailable, 'unavailable'), (missing_usage, 'unavailable')):
     g = Github(raw=archive(usage))
     assert g.consume() == 'recorded_valid'
@@ -243,7 +272,9 @@ for workflow in (root / '.github/workflows').glob('*.yml'):
 assert paid_names == set(m.WORKFLOWS)
 assert 'workflows: [' + ', '.join(m.WORKFLOWS) + ']' in consumer
 assert 'types: [completed]' in consumer and '  workflow_run:' in consumer
-assert '  group: deepinfra-usage-ledger-665\n  cancel-in-progress: false' in consumer
+assert '\nconcurrency:' not in consumer, 'skipped events must not enter workflow-level writer concurrency'
+assert "    if: github.event.workflow_run.conclusion != 'skipped'\n" in consumer
+assert '    concurrency:\n      group: deepinfra-usage-ledger-665\n      cancel-in-progress: false' in consumer
 assert '  actions: read\n  contents: read\n  issues: write' in consumer
 assert 'ref: ${{ github.sha }}' in consumer and 'persist-credentials: false' in consumer
 assert 'secrets.' not in consumer and 'vars.' not in consumer and 'DEEPINFRA_API_KEY' not in consumer

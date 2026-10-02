@@ -10,14 +10,14 @@ permissions:
   contents: read
   issues: write
 
-# One writer for the entire append-only stream, including consumer re-runs.
-concurrency:
-  group: deepinfra-usage-ledger-665
-  cancel-in-progress: false
-
 jobs:
   record:
     name: Record usage in Issue 665
+    # Gate-skipped runs must never occupy or replace a pending ledger writer.
+    if: github.event.workflow_run.conclusion != 'skipped'
+    concurrency:
+      group: deepinfra-usage-ledger-665
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

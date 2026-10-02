@@ -259,6 +259,9 @@ def consume(event, repo):
     require(fresh == record and run.get("workflow_id") == event["workflow_run"]["workflow_id"], "run_identity_mismatch")
     workflow = api(f"/repos/{repo}/actions/workflows/{run['workflow_id']}")
     require(workflow.get("path") == ".github/workflows/" + WORKFLOWS[record["workflow_name"]][1], "workflow_identity_mismatch")
+    # Entry-gate skips are not paid attempts; keep identity validation fail-closed.
+    if record["run_conclusion"] == "skipped":
+        return "skipped_run_ignored"
     if existing(repo, record):
         return "already_recorded"
     name = f"deepinfra-usage-{record['usage_kind']}-{run_id}-{attempt}"
@@ -295,7 +298,7 @@ def consume(event, repo):
     record.update(telemetry, telemetry_status=status, telemetry_reason_code=reason,
                   recorded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
     body = marker(record) + "\n" + json.dumps(record, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
-    # Recheck the whole stream immediately before writing, within workflow concurrency.
+    # Recheck the whole stream immediately before writing, within record-job concurrency.
     if existing(repo, record):
         return "already_recorded"
     try:
