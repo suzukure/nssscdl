@@ -207,6 +207,16 @@ workflow権限はcontents/issues read-onlyとし、モデルへtoolやrepository
 
 Stage Aで許可するcase/model集合、固定SHA、context上限、単一run cost guardの正本は `.github/scripts/deepinfra-review-benchmark.py` とする。価格表は評価時点のDeepInfra公表価格をtrusted configurationとして固定し、paid run開始前に現行価格を再確認する。Issue #342で承認されたDeepInfra評価費用は全体で$10をhard ceiling、Stage Aは$2を目標上限とし、runnerは累積費用を自動で増やすfan-outを持たない。各runのprompt/completion token、provider/local estimated cost、duration、context hashを成果物へ記録する。Stage A paid execution、Stage B/C、shadow運用、production Claude Review provider変更はrunner実装Issueとは別Issueで扱う。
 
+### DeepInfra共通usage telemetry
+
+Investigator / Review Benchmark / Diagnostic A / Diagnostic Bは、paid stepだけに固定 `DEEPINFRA_USAGE_PATH=${{ runner.temp }}/deepinfra-usage.json` と `DEEPINFRA_USAGE_KIND`（`investigator` / `review_benchmark` / `diagnostic_a` / `diagnostic_b`）を渡す。共通producerとschemaの正本は `.github/scripts/deepinfra-investigator.py` の `UsageSidecar` / `deepinfra_request()` とする。request開始前とresponseのusage取得直後にatomic replaceで保存し、callerのprotocol / structured-output / analysis検証、budget終端、result artifact生成の失敗から独立させる。保存不能ならfail-closedとし、paid callのretryやfallbackは追加しない。
+
+schema version 1はkind、trusted requestのmodel、request / response count、3種token数、`provider_estimated_cost_usd`、`usage_availability`、`missing_usage_response_count`、`request_error_count`、request単位の`requests`を持つ。各requestは連番、response受領有無、同じ4種usage field、固定 `error_reason_code`（`http_error` / `network_error` / `invalid_json` / `invalid_response` / `response_read_error` または `null`）だけを持つ。response countはHTTP errorを除く受領数で、不正JSONや本文読取失敗も受領後なら数える。欠落数は4種fieldのいずれかが取得不能なresponse数とする。tokenは非負整数、costは非負の有限数のみ採用し、booleanや文字列は数値に変換しない。
+
+runのusage fieldは取得できた値だけの累積であり、全requestの確定総額とは限らない。未取得fieldは `null` とし、providerの明示的な0だけを0として保存する。全requestでresponseと4種fieldを取得しerrorもなければ `complete`、一部だけ取得済みなら `partial`、全field未取得なら `unavailable` とする。中断中のrequestも連番と未取得値を残し、error理由を推測しない。prompt、request payload、response本文、tool result、secret、header、raw provider errorは含めない。
+
+4 workflowはpaid step後の `if: always()` でこのsidecarだけを `deepinfra-usage-<usage_kind>-<run_id>-<run_attempt>` artifactへ7日保持でuploadする。既存result artifactと分離した短期handoffであり、永続台帳へのwriteや横断集計は親Issue #665の後続consumerで扱う。API callへ到達しない場合はsidecarがなく、uploadはwarningとなる。runner loss等でupload stepが実行できない場合の回収を保証するものではない。検証は `test-deepinfra-usage.sh` と既存DeepInfra / AI Workflow Regressionのsecretless fixtureで行い、integration evidenceは自然な次回runで確認する。
+
 ## GitHub Apps
 
 developer Appとreviewer Appを分離し、対象リポジトリだけへインストールする。
