@@ -27,10 +27,10 @@ function command(operation, port) {
     '--cache=/project/cache', ...operations[operation]];
 }
 
-function runNpm(operation, port, args = command(operation, port), env = { ...npmEnv }) {
+function validateInvocation(args, expected, env) {
   // Missing/overridden disable flags, alternate configs, credentials, npm env,
   // proxies and unknown arguments all fail BEFORE spawn; no retry/fallback.
-  assert.deepEqual(args, command(operation, port), 'unsafe initial-lock command contract');
+  assert.deepEqual(args, expected, 'unsafe npm command contract');
   assert.deepEqual(env, npmEnv, 'unsafe initial-lock environment contract');
   for (const target of ['/project/empty.npmrc', '/project/global.npmrc',
     '/runtime/npm/npmrc']) {
@@ -44,6 +44,10 @@ function runNpm(operation, port, args = command(operation, port), env = { ...npm
   } catch (error) {
     assert.equal(error.code, 'ENOENT', 'unsafe project npmrc');
   }
+}
+
+function runNpm(operation, port, args = command(operation, port), env = { ...npmEnv }) {
+  validateInvocation(args, command(operation, port), env);
   const result = cp.spawnSync('/runtime/node', args, {
     cwd: '/project', env, encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL',
   });
@@ -123,7 +127,7 @@ function probe(input) {
     operations: ['config', 'lock'] };
 }
 
-module.exports = { command, runNpm, npmEnv, probe, scripts, inventory };
+module.exports = { command, runNpm, npmEnv, probe, scripts, inventory, validateInvocation, checkManifests };
 if (require.main === module) {
   try {
     console.log(JSON.stringify(probe(JSON.parse(process.argv[2]))));

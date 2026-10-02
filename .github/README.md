@@ -181,3 +181,31 @@ provenance schema `1` / status `validated` / validation `pass` は、manifest SH
 検証は `bash .github/scripts/test-npm-registry-lock.sh` に統合する。外部通信なしのpure/mockは不正lock、生成後/validation中/handoff前のmutation、provenance欠落・identity/hash不一致、#645受入、only snapshots、generation root削除後のhandoff、workspace不変・cleanupを確認する。同じinputでcontract/content hashの安定とfresh artifact/generation/run identityの差を区別する。正式runnerでは既存#661の2 fresh成功runsからfreezeし、generation root削除後にhandoffを再検証してからtrusted artifactも破棄する。失敗時も両rootをcleanupする。制限されたCodex環境のsystemd runtimeは`SKIP`であり、official candidateを使う統合証拠は自然に走るAI Workflow Regressionで確認する。追加のpaid diagnosticやworkflow配線は行わない。
 
 Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。#645のcache warm / persistent cache / production callerは未接続。merge後の親#650完了判定と#647のlatest main fresh scope評価は人間・既存workflowの責務とする。
+
+## npm production candidate offline ci lifecycle proof（#677、dormant）
+
+検証は `bash .github/scripts/test-npm-offline-ci.sh`。[`npm-offline-ci-runtime.py`](scripts/npm-offline-ci-runtime.py) / [`npm-offline-ci-probe.js`](scripts/npm-offline-ci-probe.js) は#647のproduction配線前の独立fixtureである。exact production candidate commandの正本はprobeの`command('ci')`とし、引数の順序・個数、cwd `/project`、env `PATH=/runtime` / `HOME=/project` / `LC_ALL=C`を完全一致で固定する。
+
+```bash
+/runtime/node /runtime/npm/bin/npm-cli.js \
+  --offline --ignore-scripts --package-lock=true \
+  --audit=false --fund=false --update-notifier=false --workspaces=false \
+  --include=dev --include=optional --include=peer \
+  --fetch-retries=0 --fetch-timeout=5000 --registry=https://registry.npmjs.org/ \
+  --userconfig=/project/empty.npmrc --globalconfig=/project/global.npmrc \
+  --cache=/project/cache ci --json
+```
+
+#650/#660の`validateInvocation()`を共有し、CLI/env一致、空のuser/global/built-in npmrc、dangling symlinkを含むproject `.npmrc`不在をnpm起動前に要求する。config確認とciは各1回だけ実行する。effective `ignore-scripts=true`不成立、flag欠落・重複・上書き、alternate config、credential/npm/proxy env、timeout・signal・unsupported resultはfail-closedで、retryやhost npmへのfallbackはない。共通検査の抽出は#660のcommand/env/config契約を変更しない。
+
+入力は#660のexact manifest（rootとdependencyに4 lifecycle events）とPythonで直接作ったdeterministic tarball、official resolved URL / SRI付きlockである。#645の`parse()` / `validate_lock()` / `prepare()`を使用する。外部通信を行わないfixture transportとして、`prepare()`のfresh専用cacheへローカルtarballを`npm cache add --offline --ignore-scripts`でseedし、準備ciに`--offline`だけを追加して実行する。validator・source policy・準備helper本体は変更しない。このtransportはofficial registry取得の実証ではない。成功した準備結果のcacheをdisposable `/project/cache`へcopyし、cache miss fixtureではそのcopyを空にする。persistent cacheやworkspaceへの書戻しはない。
+
+実ci成功時はdependencyが1件展開され、installed manifest/scripts/writerがfixtureとbytes一致することを要求する。dependency content経路へ実際に入るため、#660の`dependency_execution_path:not-entered`は流用しない。rootとdependencyのmarker writerはproject markerとhost sentinelを試みる既存#660実装で、trusted側のmarker 0件・host side effect 0件を成功証拠とする。host sentinelは隔離外の同service UIDで前後に書込可能なことをcontrolで確認する。marker writerの各event・host `ENOENT`時にもprojectへ書く性質はmockで検証し、scripts-enabled npmは起動しない。`--ignore-scripts`単独を一般security proofと扱わない。
+
+cache欠落時は同じexact ciが`ENOTCACHED`で失敗し、dependency content・markerがないことを要求する。成功/失敗の両経路でmanifest/lockのtrusted memory bytesとread-only runtime snapshotへの一致、canonical再validation、cache/node_modules以外のinventory不変、symlink/特殊file拒否を確認する。成功時のnode_modulesもfixture contentとhidden lockのexact closureに限定し、未知のnpm behaviorを受理しない。
+
+正式runnerは#661のNode 24選択・source/staged hash・ACL正規化・`staged_snapshot()`、#654のroot構築・`isolationPreflight`・exact service command・hardening・unit cleanupを再利用する。#649のproperty observerは#646の`validate_properties()`で実効`IPAddressDeny=any` / `IPAddressAllow=localhost`を検証してroot所有snapshotへ固定する。同service内で#661の`snapshot()` / `directDeny()`を再利用し、runner-local non-loopback TCP拒否・UDP `EPERM`、trusted listener accept不存在、隔離外の前後TCP/UDP成功を要求する。registryを含むnon-loopback宛先を許可せず、external endpointへのdial/DNSやproxyは起動しない。IPv4/IPv6 localhost TCPとAF_UNIX IPCも同service内で成功させ、Responses用のsocket familyを維持する。protected socket・io_uring・filesystem境界を弱めない。
+
+2 cyclesのそれぞれで成功用とcache miss用のfresh rootを分け、計4 rootsを実行する。unit・root・host sentinel・準備directory・listener/thread/socketを成功/失敗時ともcleanupし、host socket/resolverとworkspaceの不変を要求する。pure/mockはunsafe contract、lifecycle/manifest/lock/artifact mutation、境界・staging・service・証拠・cleanup失敗とretry不存在を検証する。local real npmは#656同様のPython subprocessでcanonical JS constructor由来commandを実行し、actual Node/writerを参照するscriptsを持つ4 fresh rootsでcache-only/`ENOTCACHED`を確認する。local operationはsystemd/network隔離の正式証拠とは区別する。
+
+既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-up / #645からunreachable。制限されたCodex service内では独立runtimeを`SKIP`とし、正式実証済みと扱わない。独立GitHub Actions runnerではsystemd不在も失敗とする。#677のDone判定には自然に走る正式runnerの成功証拠を確認する。#645/#646/#650/#656関連回帰を維持する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はなく、production wiringは#647の責務である。
