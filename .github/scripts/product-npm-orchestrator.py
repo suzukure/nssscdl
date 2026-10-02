@@ -154,11 +154,12 @@ def offline_ready(project, cache, node, npm):
 
 class Handoff:
     """Run-local expectation held by the trusted parent, never restored from JSON."""
-    def __init__(self, workspace, pair, record, artifact=None):
+    def __init__(self, workspace, pair, record, artifact=None, bootstrap_handle=None):
         self._workspace = workspace
         self._pair = pair
         self._expected = json.dumps(record, sort_keys=True).encode()
         self._artifact = artifact
+        self._bootstrap = bootstrap_handle
         self._active = True
 
     def record(self):
@@ -167,10 +168,15 @@ class Handoff:
     def verify(self, claim=None):
         require(self._active, 'expired-handoff')
         expected = self.record()
+        workspace_pair = self._pair
+        if self._bootstrap is not None:
+            require(self._bootstrap.verify() == expected['bootstrap_provenance'],
+                    'bootstrap-provenance-mismatch')
+            workspace_pair = self._bootstrap._input._pair
         require(claim is None or (isinstance(claim, dict)
                 and json.dumps(claim, sort_keys=True).encode() == self._expected),
                 'handoff-field-mismatch')
-        require(read_pair(self._workspace) == self._pair, 'workspace-input-mutated')
+        require(read_pair(self._workspace) == workspace_pair, 'workspace-input-mutated')
         if self._pair[0] is not None:
             check_lock(self._pair)
         if self._artifact is not None:
@@ -195,7 +201,7 @@ class Handoff:
                 os.close(fd)
             require(cache_identity(Path(expected['cache']['path'])) == expected['cache'],
                     'cache-identity-mismatch')
-        require(read_pair(self._workspace) == self._pair, 'workspace-input-mutated')
+        require(read_pair(self._workspace) == workspace_pair, 'workspace-input-mutated')
         return expected
 
 
@@ -321,7 +327,7 @@ def bootstrap(input_handle, run_root):
     """Explicit #691 composition of an active #682 bootstrap-required Handoff.
 
     Serialized claims cannot start generation. #650 selects the trusted runtime;
-    output stays #662's validated artifact, never sent to locked preparation.
+    Output stays #662's validated artifact; prepare_bootstrap() composes #682.
     """
     require(type(input_handle) is Handoff, 'trusted-bootstrap-handle-required')
     record = input_handle.verify()
@@ -352,3 +358,61 @@ def bootstrap(input_handle, run_root):
             if handle is not None:
                 handle._active = False
     require(not output_root.exists(), 'cleanup-residual')
+
+
+@contextmanager
+def prepare_bootstrap(validated, run_root, node, npm):
+    """Consume an active #691 handle into #682's shared prepared handoff.
+
+    Only reverified bytes enter fresh private inputs. The original workspace
+    remains manifest-only; locked handoff fields describe the prepared snapshots.
+    All handles/artifacts expire on exit, including failed composition attempts.
+    """
+    require(type(validated) is ValidatedBootstrap, 'trusted-validated-handle-required')
+    require(validated._active, 'expired-handoff')
+    handle = None
+    try:
+        provenance = validated.verify()  # Includes #662 verify_handoff().
+        pair = read_pair(validated._artifact)
+        require(pair[0] == validated._input._pair[0]
+                and hashlib.sha256(pair[0]).hexdigest() == provenance['manifest_sha256']
+                and hashlib.sha256(pair[1]).hexdigest() == provenance['lock_sha256']
+                == provenance['generated_lock_sha256'], 'validated-snapshot-mismatch')
+        require(validated.verify() == provenance, 'bootstrap-provenance-mismatch')
+        root_identity = private_directory(run_root)
+        excluded = [validated._input._workspace, Path(__file__).absolute().parents[2]]
+        if os.environ.get('RUNNER_TEMP'):
+            excluded.append(Path(os.environ['RUNNER_TEMP']).resolve())
+        require(not any(run_root == path or run_root in path.parents or path in run_root.parents
+                        for path in excluded)
+                and run_root != validated._artifact and validated._artifact not in run_root.parents,
+                'overlapping-trusted-root')
+        with tempfile.TemporaryDirectory(prefix='bootstrap-composition-', dir=run_root) as temporary:
+            composition = Path(temporary)
+            require(private_directory(run_root) == root_identity, 'run-root-changed')
+            private_directory(composition)
+            frozen, locked_root = composition / 'inputs', composition / 'locked'
+            for path in (frozen, locked_root):
+                path.mkdir(mode=0o700)
+                private_directory(path)
+            for name, data in zip(INPUTS, pair):
+                (frozen / name).write_bytes(data)
+                (frozen / name).chmod(0o400)
+            with prepare(frozen, locked_root, node, npm) as inner:
+                record = inner.verify()
+                require(validated.verify() == provenance, 'bootstrap-provenance-mismatch')
+                record['bootstrap_provenance'] = provenance
+                handle = Handoff(validated._input._workspace, pair, record,
+                                 inner._artifact, bootstrap_handle=validated)
+                target = inner._artifact / 'handoff.json'
+                target.chmod(0o600)
+                target.write_bytes(handle._expected)
+                target.chmod(0o400)
+                handle.verify()
+                yield handle
+    finally:
+        if handle is not None:
+            handle._active = False
+        validated._active = False
+        shutil.rmtree(validated._artifact)
+        require(not validated._artifact.exists(), 'cleanup-residual')
