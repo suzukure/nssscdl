@@ -33,6 +33,69 @@ Claude Reviewのreview contextでは、reviewer Appによる最新のformal revi
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
 
+## Work Admission Control
+
+問題・改善点は無制限に発見してよい。発見（Discovery）と着手（Execution）を分離し、現在Issueを完了するために必要でないものは現在scopeへ取り込まず、同一の自律実行チェーンから新たに着手しない。AI Developer、Claude Review、ChatGPT上の開発補助、横断監査等に共通して本節を適用する。
+
+本節は新しい仕事をActiveへ入れるかを判断する上流の運用契約である。admissionしたIssueには、既存の[Issueの分割単位](#issueの分割単位)と、AI開発環境Issueの場合は #549 由来の[semantic/runtime scope確認](#ai開発環境issueのruntime-scope確認)を適用する。これらの分割基準を置き換えない。
+
+### findingの分類とBlocking判定
+
+作業中に新しいfindingを発見したら、現在契約と未対応の影響を照合し、少なくとも次のQ1〜Q3を確認する。
+
+- **Q1**: 対応しないと、現在Issueの既存Acceptance Criteria / Done / current implementation contractを満たせないか。
+- **Q2**: 対応せず現在PRをmainへ反映すると、安全性・正確性・要求／設計整合性が壊れるか。
+- **Q3**: 現在Issueを成立させるために新たに判明した必須前提か。
+
+| 分類 | 境界 | 現在作業での扱い |
+|---|---|---|
+| In-scope required | 現在Issueの既存Acceptance Criteria / Done / current implementation contractを満たすために不可欠で、元Issueの責務と不可分。 | 現Issue内で対応し、同じ判断に不可分な関連修正・検証を揃える。 |
+| Blocker | 現Issueとは独立した責務だが、未解決のままmainへ反映すると安全性・正確性・要求／設計整合性を維持できない、または現在Issue成立の必須前提が欠ける。 | 現Issueを停止し、「Issueの分割単位」と既存の人間判断・停止／再開契約に従って扱う。 |
+| Follow-up | 対応価値はあるが、未対応でも現在Issueを安全かつ整合した状態で完了・main反映できる。 | 現在scopeへ取り込まず、[スコープ外影響と後継Issue](#スコープ外影響と後継issue)の契約に従って記録し、現在Issueへ復帰する。 |
+| Idea / Improvement | 将来改善の可能性はあるが、問題・scope・Doneが独立Issueとして十分具体化していない。 | 現Issueへ取り込まず、既存のIssue / review等へ必要最小限の記録に留める。発見時点で独立Issueを必ず生成する必要はない。 |
+
+Q1のみが該当し、責務が元Issueに不可分ならIn-scope requiredとする。Q2またはQ3が該当し、独立責務として分離可能ならBlocker候補とする。すべて該当しないfindingは現在scopeへ取り込まず、Follow-upまたはIdea / Improvementへ送る。重要性、改善効果、将来の堅牢性向上だけを理由にBlockingへ昇格させない。
+
+Q2 / Q3の影響を、後継Issueの存在やIdeaという名称で回避してはならない。不可分な関連修正は既存契約内で揃え、分類・責務境界を確定できない場合や現在契約の変更が必要な場合は人間判断へ送る。要求変更または未決の上流判断が必要なら既存の要求変更エスカレーションに従い、推測した変更を残さない。
+
+### current implementation contractとDoDの維持
+
+`/codex develop` 投入時点の[current implementation contract](#issue本文におけるcurrent-implementation-contract)を作業scopeの基準とする。AIは実装中に発見した改善候補を理由として、新しいAcceptance Criteria / Done条件 / 検証義務を自律的に追加しない。既存契約を満たすために必要な修正・検証と、新しい完了条件の追加を区別する。
+
+現在契約そのものを変更する必要が判明した場合は、要求変更・scope変更・人間判断等の既存契約に従って停止し、人間の必要な判断をIssue本文へ反映してから再開する。本節は #219 の人間判断待ち・pause/resume状態モデルを再設計せず、新しい停止reasonや自動再開経路を追加しない。
+
+### 記録、Active work、次のadmission
+
+findingを独立Issueへ昇格するのは、少なくとも次を満たす場合を基本とする。
+
+- 問題または変更目的が具体化している。
+- 独立したscopeを説明できる。
+- Doneを定義できる。
+- 実施候補として追跡する合理的な価値がある。
+
+低確度の可能性、一般的改善案、将来あると便利というだけの項目は、直ちにIssue化する必要はない。ただし、後継対応へ分離するスコープ外影響の人間による安全判断・closing Issue本文とPRへの記録・後継Issue確認は「スコープ外影響と後継Issue」に従い、本節によって省略しない。AI Developer自身のGitHub書込み禁止等、各担当の責務境界も維持する。
+
+Follow-up Issueの作成・記録は次の着手許可を意味しない。そのIssueを同一の自律実行チェーンから自動で `/codex develop` しない。原則フローは次のとおりとする。
+
+```text
+現在Issue -> finding発見 -> 分類 -> Follow-upなら記録 -> 現在Issueへ復帰
+         -> Done / review / merge -> 次の着手判断
+```
+
+Blockerのみ、現在Issueを停止した上で例外的に先行対応できる。これは既存の人間判断・scope確定・停止／再開契約を迂回する自動着手許可ではない。
+
+プロジェクト全体を機械的にWIP=1とはしない。同一の目的・価値単位・依存チェーンについては、原則として現在完了へ向けて進めるActive開発チェーンを1本に保つ。レビュー待ちや明示的Blocker等で独立作業を進める場合も、新しいIssueを発見したことだけを理由にActive workを枝分かれさせない。
+
+Follow-upやIdeaは発見時点で優先順位を深掘りせず、現在Issueの完了へ復帰する。現在のIssue / 価値単位 / milestone等の区切りで、未着手候補の必要性・価値・依存・scope・Doneをfresh評価し、次にadmissionする対象を選ぶ。発見順、Issue番号順、Claude / Astra等の指摘順を着手順の根拠にしない。
+
+### Claude Reviewと横断監査への適用
+
+Claudeの `blocking_findings` は現PRのmerge gateであり、既存契約どおり対応する。対応の責務境界は本節の分類で確認し、独立したBlockerを無断で現Issueへ取り込まない。`non_blocking_findings` は現PRのDoneへ自動追加せず、Follow-up / Idea候補として人間判断または既存契約に従って扱う。非Blockingという理由だけで必ずIssue化せず、指摘されたことを同じPRで直す自動拡張の根拠にしない。承認後の延期判断・記録・再レビュー条件は[承認後の非Blocking改善](#承認後の非blocking改善)を維持する。
+
+横断監査では、少なくとも意味上、現在の監査対象の完了条件を満たさず次工程へ進めない **Gate finding** と、現在の完了条件を満たしたまま後続へ送れる **System improvement finding** を区別する。System improvement findingが存在するだけでは現在のGateを閉じず、現在scopeへ自動追加しない。監査の目的を「問題ゼロになるまで改善」へ暗黙に変更しない。
+
+本契約は運用規約として導入する。GitHub Project列・label体系・新state machine・workflow/runtime behavior・Secrets / Variables / permissions・paid AI pathは追加または変更しない。実運用で逸脱や誤分類が観測された場合にのみ、後続Issueでfixture / lint / machine gateの必要性を判断する。自動化の導入は別Issueでsecurity / trust boundary、fail-closed、cost、retry、observability、human escalationをfresh評価する。
+
 ## Issueの分割単位
 
 Issueは、独立して判断・実施・検証・完了判定でき、単独でmainへ反映しても安全性・正確性・要求および設計の整合性を維持できる「意味のある最小単位」とする。Issue作成時だけでなく、検討・実装・reviewによって責務境界が明らかになった時点でも、この単位を維持しているか再評価する。
@@ -53,6 +116,8 @@ Issueは、独立して判断・実施・検証・完了判定でき、単独で
 作業開始後に独立したスコープ外責務が判明した場合も、本節の基準で分割可否を再評価する。後継Issueへ分離する場合は「スコープ外影響と後継Issue」の契約に従い、後続Issueが未実施であることを理由に不完全または不整合な状態をmainへ反映してはならない。
 
 ### AI開発環境Issueのruntime scope確認
+
+[Work Admission Control](#work-admission-control)で着手対象を判断した後に、本節のruntime scope確認を行う。
 
 AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記の「意味のある最小単位」を満たす候補について、inner `RuntimeMaxSec=700s` 内に実装・検証・報告まで収まるscopeかを見積もる。これはIssue境界の下位に置く事前確認であり、責務数や差分量を理由に、安全性・正確性・要求／設計整合性に不可分な変更を機械的に分割しない。
 
@@ -109,6 +174,8 @@ Issueを確定する際は、対象ファイル・節・IDに加え、同じ判�
 
 ### Issue本文におけるcurrent implementation contract
 
+[Work Admission Control](#work-admission-control)に従い、投入後のDoD拡張と新規findingの着手を制御する。
+
 Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時点で有効な実装契約、すなわちscope、責務境界、入出力interface、完了条件および検証範囲を表していることを確認する。trusted conversationでこれらの実装判断が更新され、本文の記述が古くなった場合は、実行前にcurrent contractをIssue本文へ同期する。
 
 本文と矛盾する過去のtrusted commentの技術契約は履歴として残してよいが、削除ではなく、Issue本文からcurrent contractが一意に判断でき、過去契約が置き換えられたことが分かる状態にする。本文と矛盾しない補足説明や進捗コメントまで機械的に複製する必要はない。
@@ -145,6 +212,8 @@ Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはre
 
 ### 承認後の非Blocking改善
 
+[Work Admission Control](#work-admission-control)でFollow-up / Idea候補を扱い、後継対応へ分離する場合は次の契約を適用する。
+
 承認後の非Blocking改善は、先行マージが安全性・正確性・要求整合性を損なわないことを人間が確認した場合だけ、次の関連保守Issueへまとめてよい。closing Issue本文へ残る影響、先行マージ可能な理由、後継Issue、範囲・完了条件・時期または順序を記録し、PR本文へ要約とリンクを反映する。詳細は「スコープ外影響と後継Issue」を正本とする。非Blockingという分類だけで延期せず、要求や判断を実質的に変更した場合は古い承認を流用せず再レビューする。不要な微修正pushで承認済みheadを変更しない。
 
 ## ChatGPT Workのコンテキスト・コスト管理
@@ -154,6 +223,8 @@ ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位
 Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、チャット終了時と再開の正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定仕様はGitHub main上の正本文書、未決事項・検討状態はIssueを正本とし、チャットだけに決定を残さない。
 
 ## スコープ外影響と後継Issue
+
+[Work Admission Control](#work-admission-control)で新規findingを分類し、本節は後継対応へ分離する影響の安全判断・記録・確認を定める。
 
 Codexはスコープ外影響を発見した場合、その安全性・正確性・要求整合性への影響を調査して報告する。Claudeは、対応を後継Issueへ分離する妥当性と、その後継Issueを確認する。後継Issueの存在だけでblockingを解除してはならない。
 
