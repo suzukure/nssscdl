@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -166,6 +167,16 @@ for failure in (None, 'build', 'copy', 'pre-snapshot', 'source-copy', 'proxy', '
         staged, workspace, trusted = (base / name for name in ('staged', 'workspace', 'trusted'))
         for directory in (staged, workspace, trusted):
             directory.mkdir(mode=0o700)
+        host = base / 'host-runtime'
+        host.mkdir()
+        for name, mode in (('npmrc', 0o666), ('executable', 0o6777)):
+            (host / name).write_bytes(b'host runtime')
+            (host / name).chmod(mode)
+        def host_state():
+            return [(path.name, path.read_bytes(), path.stat().st_mode,
+                     {name: os.getxattr(path, name) for name in os.listxattr(path)})
+                    for path in sorted(host.iterdir())]
+        original_host = host_state()
         for name, data in zip(orchestrator.INPUTS, inputs):
             (workspace / name).write_bytes(data)
         servers = SimpleNamespace(port=12345, ipv6_port=12346, accepted=0, close=lambda: None)
@@ -174,10 +185,26 @@ for failure in (None, 'build', 'copy', 'pre-snapshot', 'source-copy', 'proxy', '
             assert failure != 'build', 'build unavailable'
             for name in ('project', 'tmp', 'runtime/npm/bin'):
                 (root / name).mkdir(parents=True, exist_ok=True)
+            for path in host.iterdir():
+                shutil.copy2(path, root / 'runtime/npm' / path.name)
+            (root / 'runtime/npm').chmod(0o777)
+            (root / 'runtime/npm/host-link').symlink_to(host, target_is_directory=True)
         def run(command, **kwargs):
             if 'cp' in command:
                 assert failure != 'copy', 'copy failed'
-                shutil.copytree(command[-2], command[-1])
+                root = Path(command[-2])
+                assert (root / 'runtime/npm/npmrc').read_bytes() == b''
+                assert helper.pair(root / 'runtime/inputs') == inputs
+                for name, mode in (('runtime/npm', 0o755), ('runtime/npm/npmrc', 0o644),
+                                   ('runtime/npm/executable', 0o755), ('project/preparation', 0o755)):
+                    assert stat.S_IMODE((root / name).stat().st_mode) == mode, ('unsafe build mode', name)
+                assert (root / 'runtime/npm/host-link').is_symlink()
+                for path in root.rglob('*'):
+                    if not path.is_symlink():
+                        expected = 0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644
+                        assert stat.S_IMODE(path.stat().st_mode) == expected, ('unnormalized build mode', path)
+                assert host_state() == original_host, 'host runtime permission/ACL/content changed'
+                shutil.copytree(command[-2], command[-1], symlinks=True)
             elif 'rm' in command:
                 cleanup.append(command)
                 shutil.rmtree(staged)
@@ -256,6 +283,7 @@ for failure in (None, 'build', 'copy', 'pre-snapshot', 'source-copy', 'proxy', '
         assert len(cleanup) == 1 and not staged.exists() and not list(trusted.iterdir())
         assert len(service_calls) <= 1, 'restricted preparation retried'
         assert orchestrator.read_pair(workspace) == inputs
+        assert host_state() == original_host, 'host runtime changed'
 print('locked preparation: parent staging/service/source/input/export/cleanup failure and workspace mocks passed')
 
 for name in ('npm-locked-preparation', 'product-npm-orchestrator'):

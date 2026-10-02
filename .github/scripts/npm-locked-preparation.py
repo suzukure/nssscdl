@@ -161,6 +161,10 @@ def prepare(workspace, run_root, node, npm):
                 (frozen / name).write_bytes(data)
             (root / 'runtime/manifest.json').write_bytes(inputs[0])
             (root / 'runtime/npm/npmrc').write_bytes(b'')
+            # #661 fresh build mode contract, after every mutation; never chmod host/link targets.
+            for entry in root.rglob('*'):
+                if not entry.is_symlink():
+                    entry.chmod(0o755 if entry.is_dir() or entry.stat().st_mode & 0o111 else 0o644)
             provenance = integration.runtime_hashes(node, npm)
             validator.require(integration.runtime_hashes(root / 'runtime/node',
                               root / 'runtime/npm/bin/npm-cli.js') == provenance, 'runtime-copy-mismatch')
