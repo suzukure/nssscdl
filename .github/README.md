@@ -4,6 +4,18 @@ GitHub Actions workflows、Issue Forms、Pull Request template、およびAI開�
 
 運用手順は [`docs/30_operations/ai-development-workflow.md`](../docs/30_operations/ai-development-workflow.md) を参照する。
 
+## Failure evidence packet（#686、dormant）
+
+[`build-failure-evidence-packet.py`](scripts/build-failure-evidence-packet.py) の `build(data)` は `failure-evidence-packet:v1` のpure builderである。入力schema・必須key・source locator・provenance区分と許容値はscriptを正本とし、fixtureが最小呼出例を示す。成功時は `status:complete`、`packet`、keyをsortしたcanonical `serialized` を返す。最終serialization自身のchars / UTF-8 bytesをintegrityに記録し、**32768 bytes以下**だけをcompleteとする。unknown field、不正schema、mandatory欠落は `incomplete`、source identity矛盾は `conflict`、SHA不一致は `stale`、mandatory evidence過大は `oversized` とし、拒否時の `packet` / `serialized` は `null`、reasonは入力値を含まない固定codeとなる。
+
+trusted callerが取得済みのIssue各節・Product impact、checkpoint選択結果、job step metadata/log、diff file / numstat、code rangeをmemoryで渡す。locatorはrepo/ref/SHA/path/line rangeとIssue/PR/run/attempt/job/stepをbindする。Issue locatorのmain SHAは取得時のcheckout snapshotとの対応であり、Issue本文の不変性を保証しない。Issue本文・comment由来textは `untrusted_issue`、checkpointは `trusted_selector`、logは `trusted_collector`、code/diffは `trusted_repository` に限定し、model outputを正本にしない。provenance区分は入力宣言の検証であり、取得元を認証するcollectorではない。checkpoint選択は既存 [`build-development-context.py`](scripts/build-development-context.py) が正本で、本builderはmode / boundary / fallback reasonを保持するだけで再選択しない。Issue textからmodel routingやsecurity policyを選ばない。
+
+jobのstep番号順でfirst failureと直前のsuccess 1件を選ぶ。logは4096 bytesに束縛し、過大logでは最初のlexical error/assertionの2行前からverbatim excerptを保持する（matchなしは先頭）。passは1024 bytes、各code rangeは2048 bytesのverbatim UTF-8 prefixとする。cap超過時もこれらだけを決定的に縮め、identity・locator・Issue contract・diff summaryは削らない。切断時は `truncated:true`、original locator / chars / bytesを保持する。upstreamの切断も同情報を必須とし、非切断宣言と原文countsの不一致を拒否する。locator/countsの真偽とjob step集合の完全性はtrusted callerの責務である。assertion / error / errno / syscall / pathは保持したfailure excerptのlexical matchだけを抽出し、未観測項目は `null` とmissing一覧へ残す。root cause、safe/unsafe、allowlist、修正案は判断しない。
+
+GitHub API / LLM / network / env読込 / repository write / credentialは使用せず、production workflowから到達しない。入力全体で既知token形式・Bearer・private key header・credential代入形を検出すると本文を返さず拒否する。全secret形式の検出保証ではなく、collectorはcredential-free evidenceを渡す責務を持つ。
+
+検証は `bash .github/scripts/test-failure-evidence-packet.sh`。既存AI Workflow Regressionの `test-*.sh` discoveryだけを使い、workflowは変更しない。[#654 replay fixture](scripts/fixtures/failure-evidence-654.json) は供給Issueと既存診断に基づく7分岐のsynthetic reconstructionで、実Actions log・run identity・正式runner証拠ではない。現在の `ReadWritePaths=+/project +/tmp` と異なるhistorical `ReadWritePaths=/project /tmp` も観測textとして保持し、正誤を決めない。parentは#658、read-only `workflow_run` collector / artifact integrationは後続で扱う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ## Product npm trusted preparation（#645、dormant）
 
 共通helper [`prepare-product-npm.py`](scripts/prepare-product-npm.py) はtrusted setup用の準備済み実装である。production developer / follow-upからは呼び出さず、Product要求・実装と現在のAI Developer behaviorを変更しない。親#644のnetwork boundaryとproduction wiringは後続で扱う。

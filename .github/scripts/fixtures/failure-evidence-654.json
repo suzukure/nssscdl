@@ -1,0 +1,47 @@
+{
+  "provenance": "Synthetic replay of Issue #654 branches from supplied Issue #686 and repository diagnostics; not a downloaded Actions log or formal runner proof.",
+  "cases": [
+    {
+      "name": "run-non-empty",
+      "log": "AssertionError: staged directory content visible: phase=hidden source_class=staged-directory path=/run entries=[{\"parent_path\":\"/run\",\"entry_name\":\"systemd\",\"type\":\"directory\",\"uid\":0,\"mode\":16877}]",
+      "paths": ["/run"]
+    },
+    {
+      "name": "systemd-metadata",
+      "log": "AssertionError: staged directory content visible: phase=hidden source_class=staged-directory path=/run entries=[{\"parent_path\":\"/run\",\"entry_name\":\"systemd\",\"type\":\"directory\",\"uid\":0,\"mode\":16877}]",
+      "paths": ["/run"],
+      "metadata": {"parent_path": "/run", "entry_name": "systemd", "type": "directory", "uid": 0, "mode": 16877}
+    },
+    {
+      "name": "incoming-metadata",
+      "log": "AssertionError: staged directory content visible: phase=hidden source_class=staged-directory path=/run entries=[{\"parent_path\":\"/run\",\"entry_name\":\"systemd\",\"type\":\"directory\",\"uid\":0,\"mode\":16877},{\"parent_path\":\"/run/systemd\",\"entry_name\":\"incoming\",\"type\":\"directory\",\"uid\":0,\"mode\":16768}]",
+      "paths": ["/run"],
+      "metadata": {"parent_path": "/run/systemd", "entry_name": "incoming", "type": "directory", "uid": 0, "mode": 16768}
+    },
+    {
+      "name": "before-exact-invariant-decision",
+      "log": "AssertionError: staged directory content visible: phase=hidden source_class=staged-directory path=/run entries=[{\"parent_path\":\"/run\",\"entry_name\":\"systemd\",\"type\":\"directory\",\"uid\":0,\"mode\":16877},{\"parent_path\":\"/run/systemd\",\"entry_name\":\"incoming\",\"type\":\"directory\",\"uid\":0,\"mode\":16768}]\nNo open/list/traverse denial result was supplied.",
+      "paths": ["/run"]
+    },
+    {
+      "name": "cache-enoent",
+      "log": "Error: ENOENT: no such file or directory, stat '/project/cache'\nsyscall stat\npath /project/cache",
+      "paths": ["/project/cache"],
+      "errno": "ENOENT",
+      "syscall": "stat"
+    },
+    {
+      "name": "cacache-enoent",
+      "log": "npm error code ENOENT\nnpm error syscall mkdir\nnpm error path /project/cache/_cacache\nnpm error ENOENT: no such file or directory, mkdir '/project/cache/_cacache'",
+      "paths": ["/project/cache/_cacache"],
+      "errno": "ENOENT",
+      "syscall": "mkdir"
+    },
+    {
+      "name": "readwritepaths-evidence",
+      "log": "ReadWritePaths=/project /tmp\nError: ENOENT: no such file or directory, stat '/project/cache'",
+      "paths": ["/project", "/tmp", "/project/cache"],
+      "errno": "ENOENT"
+    }
+  ]
+}
