@@ -40,10 +40,11 @@ def stage_fixture(project, token):
     installed.mkdir(parents=True)
     shutil.copy2(project / 'lifecycle-package/package.json', installed / 'package.json')
     (project / 'lifecycle-marker.js').write_text(
-        "'use strict';const fs=require('node:fs'),assert=require('node:assert/strict');"
+        "'use strict';const fs=require('node:fs'),path=require('node:path'),"
+        "assert=require('node:assert/strict');"
         "const name=process.argv[2];assert(/^[0-9a-f]{32}-(project|dependency)-"
         "(preinstall|install|postinstall|prepare|prepack|postpack)$/.test(name));"
-        "fs.writeFileSync('/project/markers/'+name,'executed',{flag:'wx'});\n")
+        "fs.writeFileSync(path.join(__dirname,'markers',name),'executed',{flag:'wx'});\n")
 
 
 def build_root(repo, root, node, npm, token):

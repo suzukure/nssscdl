@@ -46,18 +46,20 @@ const [source, project, token] = process.argv.slice(1);
 // Validate the deterministic marker writer with a mocked filesystem only.
 const markerCode = fs.readFileSync(path.join(project,'lifecycle-marker.js'),'utf8');
 let markerWrites = [];
-const markerRequire = name => name === 'node:assert/strict' ? assert : {
+const markerRequire = name => name === 'node:assert/strict' ? assert : name === 'node:path' ? path : {
   writeFileSync(target,content,options) { markerWrites.push({target,content,options}); },
 };
 for (const kind of ['project','dependency']) {
   for (const event of ['preinstall','install','postinstall','prepare','prepack','postpack']) {
     const name = `${token}-${kind}-${event}`;
-    new Function('require','process',markerCode)(markerRequire,{argv:['node','marker',name]});
-    assert.deepEqual(markerWrites.pop(),{target:'/project/markers/'+name,content:'executed',options:{flag:'wx'}});
+    for (const directory of ['/project', project]) {
+      new Function('require','process','__dirname',markerCode)(markerRequire,{argv:['node','marker',name]},directory);
+      assert.deepEqual(markerWrites.pop(),{target:path.join(directory,'markers',name),content:'executed',options:{flag:'wx'}});
+    }
   }
 }
 for (const invalid of ['../../host','wrong-token-project-install',token+'-project-unknown']) {
-  assert.throws(()=>new Function('require','process',markerCode)(markerRequire,{argv:['node','marker',invalid]}));
+  assert.throws(()=>new Function('require','process','__dirname',markerCode)(markerRequire,{argv:['node','marker',invalid]},project));
 }
 assert.equal(markerWrites.length,0);
 let calls = [], preflightCalls = 0, isolationFailure = false, configMode = 'safe';
@@ -181,6 +183,19 @@ for mode in ('mock', 'real', 'real'):
                 directory, token], check=True, timeout=15,
                 env={'PATH':str(node.parent),'HOME':directory,'LC_ALL':'C'})
         else:
+            # Scripts must be executable in this fresh local fixture as well:
+            # a missing /runtime/node must not make suppression look successful.
+            # Only mock execution above exercises the marker writer itself.
+            local_scripts = {}
+            for kind, target in (('project', project), ('dependency', project/'lifecycle-package'),
+                                 ('dependency', project/'node_modules/lifecycle-dependency')):
+                manifest = json.loads((target/'package.json').read_text())
+                local_scripts[kind] = {event: value.replace('/runtime/node', str(node)).replace(
+                    '/project/lifecycle-marker.js', str(project/'lifecycle-marker.js'))
+                    for event, value in fixture.scripts(token, kind).items()}
+                manifest['scripts'] = local_scripts[kind]
+                (target/'package.json').write_text(json.dumps(manifest))
+            assert node.is_file() and (project/'lifecycle-marker.js').is_file()
             # Local npm operation proof is independent of systemd isolation.
             # This Python subprocess control is not a service fallback.
             flags = ['--offline','--ignore-scripts','--package-lock=false','--audit=false',
@@ -202,7 +217,7 @@ for mode in ('mock', 'real', 'real'):
                 else:
                     assert result.stdout.strip() == 'rebuilt dependencies successfully'
                     installed = json.loads((project/'node_modules/lifecycle-dependency/package.json').read_text())
-                    assert installed['scripts'] == fixture.scripts(token,'dependency')
+                    assert installed['scripts'] == local_scripts['dependency']
                 assert not list((project/'markers').iterdir()), 'lifecycle side effect detected'
         assert not list(project.rglob('package-lock.json'))
         assert not list(project.rglob('npm-shrinkwrap.json'))
