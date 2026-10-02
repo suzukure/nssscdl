@@ -12,7 +12,7 @@ if grep -Eq 'pull_request.head.sha|workflow_run.head_sha|gh run rerun|workflow_d
 fi
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
-export TEST_DIR="$test_dir" GH_TOKEN=fixture REVIEW_APP_TOKEN=fixture
+export TEST_DIR="$test_dir" GH_TOKEN=workflow-fixture REVIEW_APP_TOKEN=reviewer-fixture
 export NOTIFICATION_WEBHOOK_URL='https://discord.invalid/webhook'
 head_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 export HEAD_SHA="$head_sha"
@@ -22,7 +22,11 @@ printf '[]\n' > "$test_dir/comments.json"
 : > "$test_dir/edits"
 
 gh() {
-  local endpoint="${*: -1}" body='' arg id
+  local endpoint="${*: -1}" body='' arg id expected_token=workflow-fixture
+  if [ "$2" = /apps/reviewer ] || [ "$1" != api ] || [ "$2" = -X ] || [[ "$endpoint" == */comments ]]; then
+    expected_token=reviewer-fixture
+  fi
+  [ "${GH_TOKEN:-}" = "$expected_token" ] || { echo 'Incorrect token boundary.' >&2; return 2; }
   case "$1 $2" in
     'api -X')
       for arg in "$@"; do case "$arg" in body=*) body="${arg#body=}" ;; esac; done
@@ -108,7 +112,21 @@ gh() {
       if [ "${MOCK_CASE:-}" = legacy ]; then
         echo '{"content":"bGVnYWN5"}'
       else jq -Rs '{content:.}' "$TEST_DIR/workflow.b64"; fi ;;
-    'api /apps/reviewer') echo 99 ;;
+    'api /apps/reviewer')
+      case "${MOCK_CASE:-}" in
+        app_403) echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; return 1 ;;
+        app_malformed) echo '{raw-app-response' ;;
+        app_empty) : ;;
+        app_multiple) printf '%s\n' '{"slug":"reviewer","id":99}' '{"slug":"reviewer","id":99}' ;;
+        app_slug) echo '{"slug":"other","id":99,"fixture":"raw-app-response"}' ;;
+        app_no_slug) echo '{"id":99}' ;;
+        app_string) echo '{"slug":"reviewer","id":"99"}' ;;
+        app_null) echo '{"slug":"reviewer","id":null}' ;;
+        app_zero) echo '{"slug":"reviewer","id":0}' ;;
+        app_negative) echo '{"slug":"reviewer","id":-1}' ;;
+        app_fraction) echo '{"slug":"reviewer","id":1.5}' ;;
+        *) echo '{"slug":"reviewer","id":99}' ;;
+      esac ;;
     'pr view') echo '{"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}' ;;
     'label create') : ;;
     'issue edit') echo "$3" >> "$TEST_DIR/edits" ;;
@@ -148,6 +166,19 @@ for bad_case in missing_review duplicate_review unknown; do
 done
 if run_case newer_unassociated > /dev/null 2>&1; then echo 'Unassociated newer run was ignored.' >&2; exit 1; fi
 if run_case incomplete > /dev/null 2>&1; then echo 'Incomplete classification was trusted.' >&2; exit 1; fi
+
+for bad_case in app_403 app_malformed app_empty app_multiple app_slug app_no_slug \
+  app_string app_null app_zero app_negative app_fraction; do
+  if run_case "$bad_case" > "$test_dir/app-error" 2>&1; then
+    echo "$bad_case was trusted." >&2; exit 1
+  fi
+  grep -Fq 'reviewer App' "$test_dir/app-error"
+  if grep -Eq 'raw-app-response|workflow-fixture|reviewer-fixture' "$test_dir/app-error"; then
+    echo 'App lookup leaked response or credentials.' >&2; exit 1
+  fi
+  [ "$(jq 'length' "$test_dir/comments.json")" -eq 0 ]
+  [ ! -s "$test_dir/events" ] && [ ! -s "$test_dir/edits" ]
+done
 
 for case_name in failure cancelled timed_out interrupted; do
   printf '[]\n' > "$test_dir/comments.json"; : > "$test_dir/events"
