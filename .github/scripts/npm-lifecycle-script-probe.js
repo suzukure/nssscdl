@@ -14,9 +14,21 @@ const flags = Object.freeze(['/runtime/npm/bin/npm-cli.js', '--offline', '--igno
   '--cache=/project/cache']);
 const operations = Object.freeze({
   config: ['config', 'get', 'ignore-scripts'],
-  pack: ['pack', '--json', './lifecycle-package'],
+  pack: ['pack', '--json'],
   rebuild: ['rebuild', '--json', 'lifecycle-dependency'],
 });
+const packFilename = 'lifecycle-project-1.0.0.tgz';
+const packArtifact = '/project/' + packFilename;
+
+function noPackArtifact() {
+  try {
+    fs.lstatSync(packArtifact);
+  } catch (error) {
+    assert.equal(error.code, 'ENOENT', 'pack artifact absence unconfirmed');
+    return;
+  }
+  assert.fail('pack artifact cleanup failed');
+}
 
 function command(operation) {
   assert(Object.hasOwn(operations, operation), 'unsupported lifecycle command');
@@ -80,14 +92,20 @@ function probe(input) {
   checkPackage('/project/lifecycle-package/package.json', input.token, 'dependency');
   checkPackage('/project/node_modules/lifecycle-dependency/package.json', input.token, 'dependency');
   noSideEffects();
+  noPackArtifact();
   // Require the effective npm setting, then successful real pack and rebuild.
   // No enabled-script control or fallback ever runs on the trusted host.
   assert.equal(runNpm('config').trim(), 'true', 'scripts disabled setting unsupported');
   noSideEffects();
   const packed = JSON.parse(runNpm('pack'));
+  assert(Array.isArray(packed), 'unexpected pack result');
   assert.equal(packed.length, 1);
-  assert.equal(packed[0].filename, 'lifecycle-dependency-1.0.0.tgz');
+  assert.equal(packed[0].filename, packFilename);
   noSideEffects();
+  assert(fs.lstatSync(packArtifact).isFile(), 'unsafe pack artifact type');
+  fs.unlinkSync(packArtifact);
+  noPackArtifact();
+  // Non-link rebuild covers install events; project pack covers prepare.
   assert.equal(runNpm('rebuild').trim(), 'rebuilt dependencies successfully', 'unexpected rebuild result');
   checkPackage('/project/node_modules/lifecycle-dependency/package.json', input.token, 'dependency');
   noSideEffects();

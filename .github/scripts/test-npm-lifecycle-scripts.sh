@@ -63,11 +63,17 @@ for (const invalid of ['../../host','wrong-token-project-install',token+'-projec
 }
 assert.equal(markerWrites.length,0);
 let calls = [], preflightCalls = 0, isolationFailure = false, configMode = 'safe';
-let effect = false, lock = false, missingScripts = false;
+let effect = false, lock = false, missingScript = null, cleanupMode = 'safe';
+const packFilename = 'lifecycle-project-1.0.0.tgz';
+const packArtifact = '/project/' + packFilename;
 const localPath = p => p.startsWith('/project') ? project + p.slice(8) : p;
 const fakeFs = {
   ...fs,
   lstatSync(p) {
+    if (p === packArtifact && fs.existsSync(localPath(p))) {
+      if (cleanupMode === 'type') return {isFile:()=>false};
+      if (cleanupMode === 'stat-error') throw Object.assign(Error(),{code:'EACCES'});
+    }
     if (configMode === 'missing' && p === '/project/empty.npmrc') throw Object.assign(Error(),{code:'ENOENT'});
     if (configMode === 'symlink' && p === '/project/empty.npmrc') return {isFile:()=>false};
     return fs.lstatSync(localPath(p));
@@ -77,8 +83,17 @@ const fakeFs = {
   },
   readFileSync(p, options) {
     if (configMode === 'nonempty' && p === '/project/global.npmrc') return 'ignore-scripts=false';
-    if (missingScripts && p === '/project/package.json') return '{"name":"lifecycle-project","version":"1.0.0","scripts":{}}';
+    if (missingScript && p === missingScript.target) {
+      const manifest = JSON.parse(fs.readFileSync(localPath(p),'utf8'));
+      delete manifest.scripts[missingScript.event];
+      return JSON.stringify(manifest);
+    }
     return fs.readFileSync(localPath(p), options);
+  },
+  unlinkSync(p) {
+    assert.equal(p,packArtifact,'cleanup must stay inside fixture');
+    if (cleanupMode === 'unlink-error') throw Object.assign(Error(),{code:'EACCES'});
+    if (cleanupMode !== 'residual') fs.unlinkSync(localPath(p));
   },
   readdirSync(p, options) {
     if (effect && p === '/project/markers') return ['unexpected-marker'];
@@ -102,8 +117,12 @@ const fakeCp = {spawnSync(cmd,args,options) {
   if (outcome === 'side-effect') effect = true;
   if (outcome === 'lock') lock = true;
   if (outcome === 'malformed') return {signal:null,status:0,stdout:'not-json'};
+  if (operation === 'pack' && cleanupMode !== 'missing') fs.writeFileSync(localPath(packArtifact),'fixture');
   const stdout = operation === 'config' ? (outcome === 'enabled' ? 'false\n' : 'true\n') :
-    operation === 'pack' ? '[{"filename":"lifecycle-dependency-1.0.0.tgz"}]' : 'rebuilt dependencies successfully';
+    operation === 'pack' ? JSON.stringify(outcome === 'wrong-filename' ? [{filename:'../unexpected.tgz'}] :
+      outcome === 'multiple' ? [{filename:packFilename},{filename:packFilename}] :
+      outcome === 'not-array' ? {filename:packFilename} : [{filename:packFilename}]) :
+      'rebuilt dependencies successfully';
   return {signal:null,status:0,stdout};
 }};
 const fixtureModule = {exports:{}};
@@ -115,6 +134,8 @@ const fixtureRequire = name => ({'node:fs':fakeFs,'node:path':path,'node:child_p
   }}}[name]);
 new Function('require','module',fs.readFileSync(source,'utf8'))(fixtureRequire,fixtureModule);
 const probe = fixtureModule.exports;
+assert.deepEqual(probe.command('pack').slice(10),['pack','--json']);
+assert.deepEqual(probe.command('rebuild').slice(10),['rebuild','--json','lifecycle-dependency']);
 {
   const good = probe.command('rebuild');
   const invalid = [good.filter(a=>a !== '--ignore-scripts'),
@@ -124,6 +145,7 @@ const probe = fixtureModule.exports;
     good.map(a=>a.startsWith('--globalconfig=') ? '--globalconfig=/etc/npmrc' : a),
     good.filter(a=>a !== '--offline'),[...good,'run','prepare'],null,'install'];
   for (const args of invalid) assert.throws(()=>probe.runNpm('rebuild',args));
+  assert.throws(()=>probe.runNpm('pack',[...probe.command('pack'),'./lifecycle-package']));
   for (const operation of ['unknown','run','__proto__',null]) assert.throws(()=>probe.runNpm(operation));
   const inherited = {GITHUB_TOKEN:'fixture-only',GH_TOKEN:'fixture-only',NODE_AUTH_TOKEN:'fixture-only',
     NPM_TOKEN:'fixture-only',AWS_SECRET_ACCESS_KEY:'fixture-only',NODE_OPTIONS:'--require=/host/unsafe',
@@ -141,22 +163,45 @@ const probe = fixtureModule.exports;
   isolationFailure = true;
   assert.throws(()=>probe.probe({token}));
   isolationFailure = false;
-  missingScripts = true;
-  assert.throws(()=>probe.probe({token}));
-  missingScripts = false;
+  for (const [target,events] of [
+    ['/project/package.json',['prepack','prepare','postpack']],
+    ['/project/node_modules/lifecycle-dependency/package.json',['preinstall','install','postinstall']],
+  ]) {
+    for (const event of events) {
+      missingScript = {target,event};
+      assert.throws(()=>probe.probe({token}));
+    }
+  }
+  missingScript = null;
   assert.equal(calls.length,0,'missing fixture scripts reached npm');
   for (const [index,operation] of ['config','pack','rebuild'].entries()) {
     failureOperation = operation;
     const failures = ['timeout','error','throw','side-effect','lock','malformed'];
     if (operation === 'config') failures.push('enabled');
+    if (operation === 'pack') failures.push('wrong-filename','multiple','not-array');
     for (const value of failures) {
       spawnMode = value;
       calls = [];
       assert.throws(()=>probe.probe({token}));
       assert.equal(calls.length,index + 1,'failed proof continued to another npm operation');
       effect = lock = false;
+      fs.rmSync(localPath(packArtifact),{force:true});
     }
   }
+  spawnMode = 'pass';
+  for (const mode of ['missing','type','stat-error','unlink-error','residual']) {
+    cleanupMode = mode;
+    calls = [];
+    assert.throws(()=>probe.probe({token}));
+    assert.equal(calls.length,2,'pack cleanup failure reached rebuild');
+    fs.rmSync(localPath(packArtifact),{force:true});
+  }
+  cleanupMode = 'safe';
+  fs.writeFileSync(localPath(packArtifact),'stale');
+  calls = [];
+  assert.throws(()=>probe.probe({token}));
+  assert.equal(calls.length,0,'stale pack artifact reached npm');
+  fs.unlinkSync(localPath(packArtifact));
   // Caller credentials are not copied: npm receives only the bounded literal.
   Object.assign(process.env,inherited);
   spawnMode = 'pass';
@@ -165,6 +210,7 @@ calls = [];
 assert.deepEqual(probe.probe({token}),{status:'pass',scripts:'disabled',markers:[],
   operations:['config','pack','rebuild']});
 assert.equal(calls.length,3);
+assert(!fs.existsSync(localPath(packArtifact)),'pack artifact leaked');
 assert(preflightCalls > 0);
 assert.deepEqual(fs.readdirSync(path.join(project,'markers')),[]);
 '''
@@ -204,7 +250,7 @@ for mode in ('mock', 'real', 'real'):
                      '--globalconfig='+str(project/'global.npmrc'),
                      '--cache='+str(project/'cache')]
             for operation in (['config','get','ignore-scripts'],
-                              ['pack','--json','./lifecycle-package'],
+                              ['pack','--json'],
                               ['rebuild','--json','lifecycle-dependency']):
                 result = subprocess.run([str(node),str(npm),*flags,*operation],
                     cwd=project,env={'PATH':str(node.parent),'HOME':directory,'LC_ALL':'C'},
@@ -213,7 +259,12 @@ for mode in ('mock', 'real', 'real'):
                 if operation[0] == 'config':
                     assert result.stdout.strip() == 'true'
                 elif operation[0] == 'pack':
-                    assert json.loads(result.stdout)[0]['filename'] == 'lifecycle-dependency-1.0.0.tgz'
+                    packed = json.loads(result.stdout)
+                    assert len(packed) == 1 and packed[0]['filename'] == 'lifecycle-project-1.0.0.tgz'
+                    artifact = project / packed[0]['filename']
+                    assert artifact.is_file() and not artifact.is_symlink()
+                    artifact.unlink()
+                    assert not artifact.exists(), 'pack artifact cleanup failed'
                 else:
                     assert result.stdout.strip() == 'rebuilt dependencies successfully'
                     installed = json.loads((project/'node_modules/lifecycle-dependency/package.json').read_text())
@@ -222,6 +273,7 @@ for mode in ('mock', 'real', 'real'):
         assert not list(project.rglob('package-lock.json'))
         assert not list(project.rglob('npm-shrinkwrap.json'))
         assert not list(project.rglob('.package-lock.json'))
+        assert not (project/'lifecycle-project-1.0.0.tgz').exists()
         local_paths.append(project)
     assert not project.exists(), 'local fixture cleanup failed'
 assert len(set(local_paths)) == 3
