@@ -105,6 +105,17 @@ with tempfile.TemporaryDirectory(prefix='locked-worker-mock-') as temporary:
         assert evidence['diagnostic'] == {**helper.diagnostic(), 'stage': 'prepared',
             **dict.fromkeys(helper.PROGRESS_FLAGS, True), 'service_result': 'pass'}
         assert helper.pair(frozen) == inputs
+        # Real #645 preflight rejects a broadened run_root before any tool call.
+        calls.clear()
+        root.chmod(0o755)
+        progress = helper.diagnostic()
+        try:
+            reject(lambda: helper.worker(args, progress))
+            assert progress['stage'] == 'preflight'
+            assert progress['canonical_reason'] == 'unsafe-run-root'
+            assert calls == [], 'unsafe run_root reached version probe/npm ci'
+        finally:
+            root.chmod(0o700)
         for reason in ('proxy-unavailable', 'allowlist-mismatch', 'explicit-deny-missing',
                        'network-properties-mismatch'):
             calls.clear()
@@ -346,15 +357,20 @@ for failure in (None, 'build', 'copy', 'pre-snapshot', 'source-copy', 'proxy', '
                 assert (root / 'runtime/npm/npmrc').read_bytes() == b''
                 assert helper.pair(root / 'runtime/inputs') == inputs
                 for name, mode in (('runtime/npm', 0o755), ('runtime/npm/npmrc', 0o644),
-                                   ('runtime/npm/executable', 0o755), ('project/preparation', 0o755)):
+                                   ('runtime/npm/executable', 0o755), ('project/preparation', 0o700)):
                     assert stat.S_IMODE((root / name).stat().st_mode) == mode, ('unsafe build mode', name)
                 assert (root / 'runtime/npm/host-link').is_symlink()
                 for path in root.rglob('*'):
                     if not path.is_symlink():
                         expected = 0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644
+                        if path == root / 'project/preparation':
+                            expected = 0o700
                         assert stat.S_IMODE(path.stat().st_mode) == expected, ('unnormalized build mode', path)
                 assert host_state() == original_host, 'host runtime permission/ACL/content changed'
                 shutil.copytree(command[-2], command[-1], symlinks=True)
+            elif 'chown' in command and 'nobody:nogroup' in command:
+                assert command[-2:] == [str(staged / 'root/project'), str(staged / 'root/tmp')]
+                assert stat.S_IMODE((staged / 'root/project/preparation').stat().st_mode) == 0o700
             elif 'rm' in command:
                 cleanup.append(command)
                 shutil.rmtree(staged)
@@ -484,8 +500,20 @@ try:
         for name, data in zip(orchestrator.INPUTS, inputs):
             (workspace / name).write_bytes(data)
         records = []
+        real_service = registry.service
+        def private_service(*args, **kwargs):
+            info = kwargs['preparation_tools']['run-root'].lstat()
+            assert stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+            assert info.st_uid == integration.SERVICE_UID and info.st_gid == integration.SERVICE_GID
+            integration.assert_no_acl(kwargs['preparation_tools']['run-root'])
+            return real_service(*args, **kwargs)
+        original_load = orchestrator.locked.load
+        def locked_load(name):
+            return registry if name == 'npm-registry-boundary-runtime' else original_load(name)
         for cycle in range(2):
-            with orchestrator.prepare(workspace, trusted, node, npm) as handoff:
+            with patch.object(orchestrator.locked, 'load', side_effect=locked_load), \
+                 patch.object(registry, 'service', side_effect=private_service), \
+                 orchestrator.prepare(workspace, trusted, node, npm) as handoff:
                 record = handoff.verify()
                 boundary = record['preparation_source_contract']['boundary']
                 assert record['status'] == 'prepared' and boundary['proxy_target'] == proxy.TARGET

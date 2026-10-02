@@ -212,6 +212,8 @@ def prepare(workspace, run_root, node, npm):
             for entry in root.rglob('*'):
                 if not entry.is_symlink():
                     entry.chmod(0o755 if entry.is_dir() or entry.stat().st_mode & 0o111 else 0o644)
+            # #645 run_root is private; retain #661 modes for the remaining tree.
+            (root / 'project/preparation').chmod(0o700)
             provenance = integration.runtime_hashes(node, npm)
             validator.require(integration.runtime_hashes(root / 'runtime/node',
                               root / 'runtime/npm/bin/npm-cli.js') == provenance, 'runtime-copy-mismatch')
