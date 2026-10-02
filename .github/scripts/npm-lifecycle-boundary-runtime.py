@@ -12,7 +12,7 @@ import tempfile
 import uuid
 
 ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
-EVENTS = ('preinstall', 'install', 'postinstall', 'prepare', 'prepack', 'postpack')
+EVENTS = ('preinstall', 'install', 'postinstall', 'prepare')
 
 
 def filesystem(repo):
@@ -32,18 +32,13 @@ def scripts(token, kind):
 def stage_fixture(project, token):
     # Fixture sources only; this does not relax #645 Product manifest policy.
     (project / 'markers').mkdir()
-    (project / 'lifecycle-package').mkdir()
-    for kind, target in (('project', project), ('dependency', project / 'lifecycle-package')):
-        (target / 'package.json').write_text(json.dumps({
-            'name': 'lifecycle-' + kind, 'version': '1.0.0', 'scripts': scripts(token, kind)}))
-    installed = project / 'node_modules/lifecycle-dependency'
-    installed.mkdir(parents=True)
-    shutil.copy2(project / 'lifecycle-package/package.json', installed / 'package.json')
+    (project / 'package.json').write_text(json.dumps({
+        'name': 'lifecycle-project', 'version': '1.0.0', 'scripts': scripts(token, 'project')}))
     (project / 'lifecycle-marker.js').write_text(
         "'use strict';const fs=require('node:fs'),path=require('node:path'),"
         "assert=require('node:assert/strict');"
         "const name=process.argv[2];assert(/^[0-9a-f]{32}-(project|dependency)-"
-        "(preinstall|install|postinstall|prepare|prepack|postpack)$/.test(name));"
+        "(preinstall|install|postinstall|prepare)$/.test(name));"
         "fs.writeFileSync(path.join(__dirname,'markers',name),'executed',{flag:'wx'});\n")
 
 
@@ -87,7 +82,7 @@ def runtime(repo, node, npm):
             # Reuse the exact #654 command, root validation, hardening and unit cleanup.
             evidence = boundary.service(repo, staged / 'root', record)
             assert evidence == {'status': 'pass', 'scripts': 'disabled', 'markers': [],
-                                'operations': ['config', 'pack', 'rebuild']}, 'invalid lifecycle evidence'
+                                'operations': ['config', 'install']}, 'invalid lifecycle evidence'
             print(json.dumps(evidence), flush=True)
         finally:
             subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)],

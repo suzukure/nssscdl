@@ -33,9 +33,7 @@ with tempfile.TemporaryDirectory(prefix='npm-lifecycle-copy-') as build:
     assert boundary['visible_root'] == sorted(entry.name for entry in root.iterdir())
     for name in ('home', 'root', 'run', 'proc', 'sys'):
         assert not list((root / name).iterdir())
-    for kind, target in (('project', root / 'project'),
-                         ('dependency', root / 'project/lifecycle-package')):
-        assert json.loads((target / 'package.json').read_text())['scripts'] == fixture.scripts(token, kind)
+    assert json.loads((root / 'project/package.json').read_text())['scripts'] == fixture.scripts(token, 'project')
     assert not list((root / 'project/markers').iterdir())
 assert not root.exists()
 
@@ -50,7 +48,7 @@ const markerRequire = name => name === 'node:assert/strict' ? assert : name === 
   writeFileSync(target,content,options) { markerWrites.push({target,content,options}); },
 };
 for (const kind of ['project','dependency']) {
-  for (const event of ['preinstall','install','postinstall','prepare','prepack','postpack']) {
+  for (const event of ['preinstall','install','postinstall','prepare']) {
     const name = `${token}-${kind}-${event}`;
     for (const directory of ['/project', project]) {
       new Function('require','process','__dirname',markerCode)(markerRequire,{argv:['node','marker',name]},directory);
@@ -63,19 +61,17 @@ for (const invalid of ['../../host','wrong-token-project-install',token+'-projec
 }
 assert.equal(markerWrites.length,0);
 let calls = [], preflightCalls = 0, isolationFailure = false, configMode = 'safe';
-let effect = false, lock = false, missingScript = null, cleanupMode = 'safe';
-const packFilename = 'lifecycle-project-1.0.0.tgz';
-const packArtifact = '/project/' + packFilename;
+let effect = false, lock = false, missingScript = null, artifact = false, artifactMode = 'file';
 const localPath = p => p.startsWith('/project') ? project + p.slice(8) : p;
 const fakeFs = {
   ...fs,
   lstatSync(p) {
-    if (p === packArtifact && fs.existsSync(localPath(p))) {
-      if (cleanupMode === 'type') return {isFile:()=>false};
-      if (cleanupMode === 'stat-error') throw Object.assign(Error(),{code:'EACCES'});
-    }
     if (configMode === 'missing' && p === '/project/empty.npmrc') throw Object.assign(Error(),{code:'ENOENT'});
     if (configMode === 'symlink' && p === '/project/empty.npmrc') return {isFile:()=>false};
+    if (p === '/project/unexpected.tgz') {
+      if (artifactMode === 'error') throw Object.assign(Error(),{code:'EACCES'});
+      return {isFile:()=>artifactMode === 'file',isDirectory:()=>false};
+    }
     return fs.lstatSync(localPath(p));
   },
   existsSync(p) {
@@ -90,14 +86,10 @@ const fakeFs = {
     }
     return fs.readFileSync(localPath(p), options);
   },
-  unlinkSync(p) {
-    assert.equal(p,packArtifact,'cleanup must stay inside fixture');
-    if (cleanupMode === 'unlink-error') throw Object.assign(Error(),{code:'EACCES'});
-    if (cleanupMode !== 'residual') fs.unlinkSync(localPath(p));
-  },
   readdirSync(p, options) {
     if (effect && p === '/project/markers') return ['unexpected-marker'];
-    if (lock && options) return [{name:'.package-lock.json',isDirectory:()=>false}];
+    if (lock && p === '/project') return ['.package-lock.json'];
+    if (artifact && p === '/project') return [...fs.readdirSync(localPath(p)), 'unexpected.tgz'];
     return fs.readdirSync(localPath(p), options);
   },
 };
@@ -117,12 +109,10 @@ const fakeCp = {spawnSync(cmd,args,options) {
   if (outcome === 'side-effect') effect = true;
   if (outcome === 'lock') lock = true;
   if (outcome === 'malformed') return {signal:null,status:0,stdout:'not-json'};
-  if (operation === 'pack' && cleanupMode !== 'missing') fs.writeFileSync(localPath(packArtifact),'fixture');
+  if (outcome === 'artifact') artifact = true;
   const stdout = operation === 'config' ? (outcome === 'enabled' ? 'false\n' : 'true\n') :
-    operation === 'pack' ? JSON.stringify(outcome === 'wrong-filename' ? [{filename:'../unexpected.tgz'}] :
-      outcome === 'multiple' ? [{filename:packFilename},{filename:packFilename}] :
-      outcome === 'not-array' ? {filename:packFilename} : [{filename:packFilename}]) :
-      'rebuilt dependencies successfully';
+    JSON.stringify(outcome === 'not-object' ? [] : outcome === 'reported-error' ? {error:{}} :
+      {added:outcome === 'unexpected-add' ? 1 : 0,removed:0,changed:0});
   return {signal:null,status:0,stdout};
 }};
 const fixtureModule = {exports:{}};
@@ -134,29 +124,29 @@ const fixtureRequire = name => ({'node:fs':fakeFs,'node:path':path,'node:child_p
   }}}[name]);
 new Function('require','module',fs.readFileSync(source,'utf8'))(fixtureRequire,fixtureModule);
 const probe = fixtureModule.exports;
-assert.deepEqual(probe.command('pack').slice(10),['pack','--json']);
-assert.deepEqual(probe.command('rebuild').slice(10),['rebuild','--json','lifecycle-dependency']);
+assert.deepEqual(probe.command('install').slice(10),['install','--json']);
 {
-  const good = probe.command('rebuild');
+  const good = probe.command('install');
   const invalid = [good.filter(a=>a !== '--ignore-scripts'),
     [...good,'--ignore-scripts=false'],[...good,'--ignore-scripts=true'],
     good.map(a=>a === '--ignore-scripts' ? '--no-ignore-scripts' : a),
     good.map(a=>a.startsWith('--userconfig=') ? '--userconfig=/root/.npmrc' : a),
     good.map(a=>a.startsWith('--globalconfig=') ? '--globalconfig=/etc/npmrc' : a),
-    good.filter(a=>a !== '--offline'),[...good,'run','prepare'],null,'install'];
-  for (const args of invalid) assert.throws(()=>probe.runNpm('rebuild',args));
-  assert.throws(()=>probe.runNpm('pack',[...probe.command('pack'),'./lifecycle-package']));
-  for (const operation of ['unknown','run','__proto__',null]) assert.throws(()=>probe.runNpm(operation));
+    good.filter(a=>a !== '--offline'),good.filter(a=>a !== '--package-lock=false'),
+    [...good,'--package-lock=true'],[...good,'run','prepare'],null,'install'];
+  for (const args of invalid) assert.throws(()=>probe.runNpm('install',args));
+  assert.throws(()=>probe.runNpm('install',[...probe.command('install'),'./lifecycle-package']));
+  for (const operation of ['unknown','pack','rebuild','run','__proto__',null]) assert.throws(()=>probe.runNpm(operation));
   const inherited = {GITHUB_TOKEN:'fixture-only',GH_TOKEN:'fixture-only',NODE_AUTH_TOKEN:'fixture-only',
     NPM_TOKEN:'fixture-only',AWS_SECRET_ACCESS_KEY:'fixture-only',NODE_OPTIONS:'--require=/host/unsafe',
     npm_config_ignore_scripts:'false',NPM_CONFIG_USERCONFIG:'/host/config',HTTPS_PROXY:'fixture-only'};
   for (const [name,value] of Object.entries(inherited)) {
-    assert.throws(()=>probe.runNpm('rebuild',good,{...probe.npmEnv,[name]:value}));
+    assert.throws(()=>probe.runNpm('install',good,{...probe.npmEnv,[name]:value}));
   }
-  assert.throws(()=>probe.runNpm('rebuild',good,{PATH:'/runtime',HOME:'/host',LC_ALL:'C'}));
+  assert.throws(()=>probe.runNpm('install',good,{PATH:'/runtime',HOME:'/host',LC_ALL:'C'}));
   for (const value of ['missing','symlink','nonempty','project']) {
     configMode = value;
-    assert.throws(()=>probe.runNpm('rebuild'));
+    assert.throws(()=>probe.runNpm('install'));
   }
   configMode = 'safe';
   assert.equal(calls.length,0,'preflight failure reached npm');
@@ -164,8 +154,7 @@ assert.deepEqual(probe.command('rebuild').slice(10),['rebuild','--json','lifecyc
   assert.throws(()=>probe.probe({token}));
   isolationFailure = false;
   for (const [target,events] of [
-    ['/project/package.json',['prepack','prepare','postpack']],
-    ['/project/node_modules/lifecycle-dependency/package.json',['preinstall','install','postinstall']],
+    ['/project/package.json',['preinstall','install','postinstall','prepare']],
   ]) {
     for (const event of events) {
       missingScript = {target,event};
@@ -174,43 +163,44 @@ assert.deepEqual(probe.command('rebuild').slice(10),['rebuild','--json','lifecyc
   }
   missingScript = null;
   assert.equal(calls.length,0,'missing fixture scripts reached npm');
-  for (const [index,operation] of ['config','pack','rebuild'].entries()) {
+  for (const [index,operation] of ['config','install'].entries()) {
     failureOperation = operation;
-    const failures = ['timeout','error','throw','side-effect','lock','malformed'];
+    const failures = ['timeout','error','throw','side-effect','lock','artifact','malformed'];
     if (operation === 'config') failures.push('enabled');
-    if (operation === 'pack') failures.push('wrong-filename','multiple','not-array');
+    if (operation === 'install') failures.push('not-object','reported-error','unexpected-add');
     for (const value of failures) {
       spawnMode = value;
       calls = [];
       assert.throws(()=>probe.probe({token}));
       assert.equal(calls.length,index + 1,'failed proof continued to another npm operation');
-      effect = lock = false;
-      fs.rmSync(localPath(packArtifact),{force:true});
+      effect = lock = artifact = false;
     }
   }
   spawnMode = 'pass';
-  for (const mode of ['missing','type','stat-error','unlink-error','residual']) {
-    cleanupMode = mode;
+  for (const mode of ['symlink','special','error']) {
+    artifactMode = mode;
+    artifact = true;
     calls = [];
     assert.throws(()=>probe.probe({token}));
-    assert.equal(calls.length,2,'pack cleanup failure reached rebuild');
-    fs.rmSync(localPath(packArtifact),{force:true});
+    assert.equal(calls.length,0,'unsafe artifact reached npm');
+    // Unsafe artifacts appearing after npm are rejected as well.
+    artifact = false;
+    failureOperation = 'install';
+    spawnMode = 'artifact';
+    calls = [];
+    assert.throws(()=>probe.probe({token}));
+    assert.equal(calls.length,2);
+    artifact = false;
   }
-  cleanupMode = 'safe';
-  fs.writeFileSync(localPath(packArtifact),'stale');
-  calls = [];
-  assert.throws(()=>probe.probe({token}));
-  assert.equal(calls.length,0,'stale pack artifact reached npm');
-  fs.unlinkSync(localPath(packArtifact));
+  artifactMode = 'file';
   // Caller credentials are not copied: npm receives only the bounded literal.
   Object.assign(process.env,inherited);
   spawnMode = 'pass';
 }
 calls = [];
 assert.deepEqual(probe.probe({token}),{status:'pass',scripts:'disabled',markers:[],
-  operations:['config','pack','rebuild']});
-assert.equal(calls.length,3);
-assert(!fs.existsSync(localPath(packArtifact)),'pack artifact leaked');
+  operations:['config','install']});
+assert.equal(calls.length,2);
 assert(preflightCalls > 0);
 assert.deepEqual(fs.readdirSync(path.join(project,'markers')),[]);
 '''
@@ -232,15 +222,14 @@ for mode in ('mock', 'real', 'real'):
             # Scripts must be executable in this fresh local fixture as well:
             # a missing /runtime/node must not make suppression look successful.
             # Only mock execution above exercises the marker writer itself.
-            local_scripts = {}
-            for kind, target in (('project', project), ('dependency', project/'lifecycle-package'),
-                                 ('dependency', project/'node_modules/lifecycle-dependency')):
-                manifest = json.loads((target/'package.json').read_text())
-                local_scripts[kind] = {event: value.replace('/runtime/node', str(node)).replace(
-                    '/project/lifecycle-marker.js', str(project/'lifecycle-marker.js'))
-                    for event, value in fixture.scripts(token, kind).items()}
-                manifest['scripts'] = local_scripts[kind]
-                (target/'package.json').write_text(json.dumps(manifest))
+            manifest = json.loads((project/'package.json').read_text())
+            local_scripts = {event: value.replace('/runtime/node', str(node)).replace(
+                '/project/lifecycle-marker.js', str(project/'lifecycle-marker.js'))
+                for event, value in fixture.scripts(token, 'project').items()}
+            manifest['scripts'] = local_scripts
+            (project/'package.json').write_text(json.dumps(manifest))
+            (project/'cache').mkdir()
+            inventory = sorted(str(entry.relative_to(project)) for entry in project.rglob('*'))
             assert node.is_file() and (project/'lifecycle-marker.js').is_file()
             # Local npm operation proof is independent of systemd isolation.
             # This Python subprocess control is not a service fallback.
@@ -250,30 +239,25 @@ for mode in ('mock', 'real', 'real'):
                      '--globalconfig='+str(project/'global.npmrc'),
                      '--cache='+str(project/'cache')]
             for operation in (['config','get','ignore-scripts'],
-                              ['pack','--json'],
-                              ['rebuild','--json','lifecycle-dependency']):
+                              ['install','--json']):
                 result = subprocess.run([str(node),str(npm),*flags,*operation],
                     cwd=project,env={'PATH':str(node.parent),'HOME':directory,'LC_ALL':'C'},
                     capture_output=True,text=True,timeout=10)
                 assert result.returncode == 0, (operation[0],result.returncode,result.stderr)
                 if operation[0] == 'config':
                     assert result.stdout.strip() == 'true'
-                elif operation[0] == 'pack':
-                    packed = json.loads(result.stdout)
-                    assert len(packed) == 1 and packed[0]['filename'] == 'lifecycle-project-1.0.0.tgz'
-                    artifact = project / packed[0]['filename']
-                    assert artifact.is_file() and not artifact.is_symlink()
-                    artifact.unlink()
-                    assert not artifact.exists(), 'pack artifact cleanup failed'
                 else:
-                    assert result.stdout.strip() == 'rebuilt dependencies successfully'
-                    installed = json.loads((project/'node_modules/lifecycle-dependency/package.json').read_text())
-                    assert installed['scripts'] == local_scripts['dependency']
+                    installed = json.loads(result.stdout)
+                    assert isinstance(installed, dict) and 'error' not in installed
+                    assert all(installed[key] == 0 for key in ('added', 'removed', 'changed'))
+                    assert json.loads((project/'package.json').read_text()) == manifest
+                actual = sorted(str(entry.relative_to(project)) for entry in project.rglob('*')
+                                if not entry.is_relative_to(project/'cache') or entry == project/'cache')
+                assert actual == inventory, 'unexpected fixture artifact'
                 assert not list((project/'markers').iterdir()), 'lifecycle side effect detected'
         assert not list(project.rglob('package-lock.json'))
         assert not list(project.rglob('npm-shrinkwrap.json'))
         assert not list(project.rglob('.package-lock.json'))
-        assert not (project/'lifecycle-project-1.0.0.tgz').exists()
         local_paths.append(project)
     assert not project.exists(), 'local fixture cleanup failed'
 assert len(set(local_paths)) == 3
@@ -304,7 +288,7 @@ with patch.object(helper, 'directory', return_value=123), \
 
 # Both successful cycles and failure during build/staging/service must discard
 # roots. Failure does not retry or launch npm outside the isolated service.
-for failure in (None, 'build', 'copy', 'service', 'evidence'):
+for failure in (None, 'build', 'copy', 'service', 'evidence', 'cleanup-error', 'cleanup-residual'):
     roots = [Path('/run/npm-filesystem-fixture-abcdefgh'), Path('/run/npm-filesystem-fixture-ijklmnop')]
     calls, serviced, builds = [], [], []
     def build(repo, root, node, npm, token):
@@ -317,11 +301,11 @@ for failure in (None, 'build', 'copy', 'service', 'evidence'):
         if failure == 'service' and len(serviced) == 2:
             raise AssertionError('service failure')
         return {} if failure == 'evidence' else {'status':'pass','scripts':'disabled',
-            'markers':[],'operations':['config','pack','rebuild']}
+            'markers':[],'operations':['config','install']}
     def run(command, **kwargs):
         calls.append(command)
         assert kwargs['env'] == fixture.ENV
-        if failure == 'copy' and 'cp' in command:
+        if (failure == 'copy' and 'cp' in command) or (failure == 'cleanup-error' and 'rm' in command):
             raise subprocess.CalledProcessError(1, command)
         return subprocess.CompletedProcess(command,0,'','')
     with patch.object(fixture.os, 'getuid', return_value=1000), \
@@ -330,7 +314,8 @@ for failure in (None, 'build', 'copy', 'service', 'evidence'):
          patch.object(fixture, 'filesystem', return_value=boundary), \
          patch.object(fixture.subprocess, 'check_output', side_effect=[str(p)+'\n' for p in roots]) as mktemp, \
          patch.object(fixture.subprocess, 'run', side_effect=run), \
-         patch.object(Path, 'exists', return_value=False), patch('builtins.print'):
+         patch.object(Path, 'exists', autospec=True, side_effect=lambda path: failure == 'cleanup-residual' and path in roots), \
+         patch('builtins.print'):
         try:
             fixture.runtime(repo,node,npm)
         except (AssertionError,subprocess.CalledProcessError):
