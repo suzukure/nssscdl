@@ -286,7 +286,7 @@ schema version 1はkind、trusted requestのmodel、request / response count、3
 
 runのusage fieldは取得できた値だけの累積であり、全requestの確定総額とは限らない。未取得fieldは `null` とし、providerの明示的な0だけを0として保存する。全requestでresponseと4種fieldを取得しerrorもなければ `complete`、一部だけ取得済みなら `partial`、全field未取得なら `unavailable` とする。中断中のrequestも連番と未取得値を残し、error理由を推測しない。prompt、request payload、response本文、tool result、secret、header、raw provider errorは含めない。
 
-4 workflowはpaid step後の `if: always()` でこのsidecarだけを `deepinfra-usage-<usage_kind>-<run_id>-<run_attempt>` artifactへ7日保持でuploadする。既存result artifactと分離した短期handoffであり、永続台帳へのwriteは下記consumer、横断集計は親Issue #665の後続作業で扱う。API callへ到達しない場合はsidecarがなく、uploadはwarningとなる。runner loss等でupload stepが実行できない場合の回収を保証するものではない。検証は `test-deepinfra-usage.sh` と既存DeepInfra / AI Workflow Regressionのsecretless fixtureで行い、integration evidenceは自然な次回runで確認する。
+4 workflowはpaid step後の `if: always()` でこのsidecarだけを `deepinfra-usage-<usage_kind>-<run_id>-<run_attempt>` artifactへ7日保持でuploadする。既存result artifactと分離した短期handoffであり、永続台帳へのwriteは下記consumer、横断集計は下記「DeepInfra台帳のread-only集計」で扱う。API callへ到達しない場合はsidecarがなく、uploadはwarningとなる。runner loss等でupload stepが実行できない場合の回収を保証するものではない。検証は `test-deepinfra-usage.sh` と既存DeepInfra / AI Workflow Regressionのsecretless fixtureで行い、integration evidenceは自然な次回runで確認する。
 
 ### DeepInfra永続usage台帳
 
@@ -297,6 +297,26 @@ paid対象外の判定基準はsource runの `conclusion == 'skipped'` とする
 台帳正本はParent Issue #665のcomment streamとする。各commentは `deepinfra-usage-ledger:v1 / <run_id> / <run_attempt>` の単独行と、その後の単一JSON objectだけで構成する。helperのrecord schemaはrun identity / URL / conclusion / HEAD、usage集計、`telemetry_status` / `telemetry_reason_code`、UTC `recorded_at`を保持し、request配列は保存しない。validでもusage欠落は `partial` / `unavailable` のまま残す。artifact不在・期限切れは `unavailable`、不正schema / 内容・サイズは `invalid` とし、未検証の金額・token・model・countは `null` とする。run conclusionとtelemetry statusは独立であり、失敗runの取得済みusageも保存する。
 
 identityは `run_id + run_attempt`。台帳全体の固定concurrencyでcheck-then-writeを直列化し、write直前まで#665 commentsを全ページ列挙して、`github-actions[bot]` のexact markerとrecord identityを確認する。人間の引用はrecordとして扱わず、既存recordは編集・上書きしない。POST応答喪失時は再取得で成立を確認し、確認不能なら固定reason codeをJob Summaryへ残してfail-closed停止する。API / metadata / identity異常でもwriteせず、paid runの結論変更・paid retry・自動再送を行わない。人間は原因解消後に元のconsumerだけを再実行する。Actions concurrencyはrunning 1件 / pending 1件であり、`cancel-in-progress: false` でもpending置換は起こり得る。cancel・runner loss・retention経過を含め自動回収を保証せず、未記録のsource run / attemptを照合してconsumerを手動再実行する。append済みの欠落recordは後から上書きしない。`test-deepinfra-usage-ledger.sh` がproducer追加時の接続漏れ、入力境界、重複抑止、権限・concurrencyをsecretless検証する。自然な次回runでdefault branch event / artifact取得 / #665投稿のintegration evidenceを確認し、検証目的のpaid callは追加しない。
+
+### DeepInfra台帳のread-only集計
+
+#668の `.github/scripts/summarize-deepinfra-usage.py` は#665 commentsだけを一次入力とする手動helperである。record schemaの検証はconsumerの `validate_record()` を共有し、exact marker、JSON identity、workflow / usage kind、model、repositoryに対応するrun URL、数値、実在するUTC日時、availability整合も確認する。`github-actions[bot]` / `Bot` の単独行exact markerだけを候補にし、人間の引用・checkpoint・その他commentは無視する。LLM、provider credential、Issue write、artifact / log取得、paid call、定期実行、通知、cost guardは追加しない。GitHubからの取得は明示的な `--fetch` だけで、既存 `gh api` の全ページGETを使い、権限は `issues: read` / `contents: read` で足りる。新しいsecretを要求しない。
+
+```bash
+python3 .github/scripts/summarize-deepinfra-usage.py --repo owner/repo --fetch \
+  --since 2026-10-02T00:00:00Z --until 2026-11-01T00:00:00Z \
+  --markdown /tmp/deepinfra-usage.md > /tmp/deepinfra-usage.json
+```
+
+外部取得を行わず再計算する場合は `--fetch` の代わりに `--comments /path/to/comments.json` を指定する。入力は全ページを連結したREST comments配列（各commentの `user.login` / `user.type` / `body` を保持）で、同じsnapshotとfilterから同じJSON / Markdownを生成する。snapshotには人間のcommentも入り得るため、共有する際はusage record以外の内容を確認する。MarkdownはJSON正本と同じ全項目の表示であり、再parseしない。`--workflow` / `--usage-kind` / `--model` / `--run-conclusion` / `--usage-availability` を組み合わせて絞り込める。
+
+期間はrun開始時刻ではなく台帳の `recorded_at` とし、`--since` は含む、`--until` は含まない。UTCの秒精度ISO日時（`Z` / `+00:00`）を受け、結果にはfilterと実際の最初・最後の記録時刻を保持する。対象は#667 activation後に記録されたrun / attemptだけで、未記録run数や台帳の完全性は推測しない。historical paid rerunやbackfillは行わない。
+
+`run_id + run_attempt` の重複判定はfilter前の全候補に適用し、不正候補を含む同一identityの全件を集計から除外する。JSONには全体のinvalid理由別件数とduplicate identity / comment件数、除外identityを診断として残す。schema-validな `telemetry_status: invalid` recordは未検証usageがnullの取得不能recordであり、不正commentとは区別する。run conclusionとusage availabilityも別々に集計する。summaryとworkflow / kind / model / conclusion / availability別groupは件数と4種usage合計を持ち、model未取得はnull groupとする。対象run ID / attempt / URLもidentity昇順で示す。
+
+各fieldの `known_sum` は取得済み値だけの合計で、取得済み0件ならnullとする。`known_records` / `unknown_records`（fieldがnullの件数）と、取得済み値を持つ `partial_records` を併記し、partialの累積を確定総額と扱わない。complete / partial / unavailable件数も併記する。provider costは保存された数値の10進表現を丸めず加算し、JSONでは精度を保つ10進文字列（USD）として出す。providerが明示した0だけを0とする。
+
+検証は `bash .github/scripts/test-summarize-deepinfra-usage.sh`。producer / consumer実出力との互換性、filter、重複、不正schema / 数値 / 日時、unknown / partial、小数加算、順序、JSON / Markdown、GET paginationをsecretless fixtureで確認する。既存AI Workflow Regressionの `test-*.sh` discovery以外のworkflow配線は変更せず、POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。実recordとの照合は自然run発生後に行い、検証目的のpaid callは追加しない。
 
 ## GitHub Apps
 
