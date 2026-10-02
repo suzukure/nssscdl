@@ -1,0 +1,41 @@
+name: Failure Evidence Collector
+
+on:
+  workflow_run:
+    workflows: [AI Workflow Regression]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  collect:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Collect validated read-only evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+          EVIDENCE_OUTPUT_DIR: ${{ runner.temp }}/failure-evidence-packet
+        shell: bash
+        run: python3 .github/scripts/collect-failure-evidence.py
+
+      - name: Upload single packet or refusal status
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failure-evidence-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/failure-evidence-packet/failure-evidence-packet.json
+          if-no-files-found: error
+          retention-days: 3
