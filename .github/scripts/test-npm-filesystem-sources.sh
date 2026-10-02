@@ -167,7 +167,7 @@ assert not built.exists()
 # anything or invoking npm: malformed isolation cannot reach spawnSync.
 javascript = r'''
 const fs = require('fs'), assert = require('assert/strict');
-const execute = new Function('require', 'process', 'console',
+const execute = new Function('require', 'process', 'console', 'module',
   fs.readFileSync(process.argv[1], 'utf8'));
 const inventoryModes = ['staged-missing', 'staged-file', 'staged-symlink',
   'staged-owner', 'staged-writable', 'extra-empty', 'extra-denied', 'extra-permission',
@@ -405,7 +405,10 @@ for (const [mode, emptyTarget] of [...modes.map(mode=>[mode, null]),
   }};
   const modules = {'node:fs':fakeFs,'node:path':require('path'),
     'node:child_process':fakeCp,'node:assert/strict':assert};
-  execute(name=>modules[name],fakeProcess,{log:s=>reported=JSON.parse(s),error:s=>error=s});
+  const fixtureModule = {exports:{}};
+  const fixtureRequire = name=>modules[name];
+  fixtureRequire.main = fixtureModule;
+  execute(fixtureRequire,fakeProcess,{log:s=>reported=JSON.parse(s),error:s=>error=s},fixtureModule);
   if (passing.includes(mode) || ['empty-readable','empty-denied','empty-permission','empty-missing'].includes(mode)) {
     assert.equal(reported.status,'pass');
     assert.equal(calls,17);
