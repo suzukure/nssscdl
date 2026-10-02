@@ -180,177 +180,167 @@ with tempfile.TemporaryDirectory(prefix='registry-lock-test-') as directory:
                    check=True, timeout=30, env=fixture.ENV)
 assert not root.exists()
 
-# Source provenance rejects owner/parent write-boundary and external npm symlinks.
-original = Path.lstat
-def trusted_info(path):
-    actual = original(path)
-    return SimpleNamespace(st_uid=0, st_gid=0, st_mode=actual.st_mode & ~0o022)
-with patch.object(Path, 'lstat', side_effect=trusted_info, autospec=True), \
-     patch.object(fixture.os, 'getxattr', side_effect=OSError(errno.ENODATA, 'no ACL')):
-    provenance = fixture.runtime_provenance(node, npm)
-assert len(provenance['node_sha256']) == len(provenance['npm_cli_sha256']) == 64
-for fault in ('owner','write','parent'):
-    def info(path):
-        actual = trusted_info(path)
-        target = node.resolve() if fault != 'parent' else node.resolve().parent
-        if path == target:
-            return SimpleNamespace(st_uid=123456 if fault=='owner' else actual.st_uid, st_gid=0,
-                                   st_mode=actual.st_mode | (0o022 if fault!='owner' else 0))
-        return actual
-    with patch.object(Path, 'lstat', side_effect=info, autospec=True), \
-         patch.object(fixture.os, 'getxattr', side_effect=OSError(errno.ENODATA, 'no ACL')):
+# Source provenance accepts hosted ancestors such as /opt mode 0777. These
+# are trusted setup inputs, never the runtime isolation boundary or a PATH fallback.
+prefix = Path('/opt/hostedtoolcache/node/24.2.0/x64')
+binary, launcher = prefix / 'bin/node', prefix / 'bin/npm'
+distribution = prefix / 'lib/node_modules/npm'
+cli = distribution / 'bin/npm-cli.js'
+accepted = ('', 'host-writable', 'source-writable', 'multiple')
+for fault in (*accepted, 'missing', 'bad-version', 'node-pair', 'npm-pair',
+              'npm-name', 'npm-bin', 'npm-version', 'node-version', 'cli-version',
+              'version-failure', 'link-outside', 'npm-escape', 'npm-hop-escape',
+              'link-loop', 'dangling', 'special', 'hash-read', 'metadata-read'):
+    tree, links, inspected, commands = {}, {}, [], []
+    def entry(path, mode):
+        tree[path] = SimpleNamespace(st_uid=1000, st_gid=1000, st_mode=mode)
+        for parent in path.parents:
+            tree.setdefault(parent, SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o755))
+    def link(path, target):
+        entry(path, stat.S_IFLNK | 0o777)
+        links[path] = str(target)
+    entry(binary, stat.S_IFREG | 0o755)
+    entry(cli, stat.S_IFREG | 0o644)
+    entry(distribution / 'package.json', stat.S_IFREG | 0o644)
+    entry(distribution / 'bin/real.js', stat.S_IFREG | 0o644)
+    link(launcher, '../lib/node_modules/npm/bin/npm-cli.js')
+    link(distribution / 'bin/internal.js', 'real.js')
+    # Unsafe PATH head is not even inspected.
+    if fault == 'host-writable':
+        tree[Path('/opt')].st_mode |= 0o022
+    if fault == 'source-writable':
+        for info in tree.values():
+            if not stat.S_ISLNK(info.st_mode):info.st_mode |= 0o022
+    if fault == 'node-pair':
+        link(binary, prefix / 'bin/other-node')
+        entry(prefix / 'bin/other-node', stat.S_IFREG | 0o755)
+    if fault == 'npm-pair':
+        other = prefix / 'other/npm/bin/npm-cli.js'
+        entry(other, stat.S_IFREG | 0o644)
+        links[launcher] = str(other)
+    if fault == 'link-outside':links[launcher] = '/usr/local/bin/npm'
+    if fault in ('npm-escape', 'npm-hop-escape'):
+        outside = prefix / 'lib/outside.js'
+        entry(outside, stat.S_IFREG | 0o644)
+        if fault == 'npm-hop-escape':link(outside, cli)
+        links[distribution / 'bin/internal.js'] = str(outside)
+    if fault == 'link-loop':links[launcher] = str(launcher)
+    if fault == 'dangling':links[launcher] = str(prefix / 'missing')
+    if fault == 'special':tree[binary].st_mode = stat.S_IFIFO | 0o644
+    def metadata(path):
+        inspected.append(path)
+        if path not in tree:raise FileNotFoundError(str(path))
+        return tree[path]
+    def contents(path):
+        if (fault == 'hash-read' and path == binary) or (fault == 'metadata-read' and path.name == 'package.json'):
+            raise PermissionError('source read failed')
+        if path.name == 'package.json':
+            return json.dumps({'name':'other' if fault=='npm-name' else 'npm',
+                'version':'invalid' if fault=='npm-version' else '11.0.0',
+                'bin':{'npm':'other.js' if fault=='npm-bin' else 'bin/npm-cli.js'}}).encode()
+        return b'fixed runtime'
+    def version(command, **kwargs):
+        commands.append(command)
+        assert kwargs == dict(check=True, capture_output=True, text=True, timeout=10, cwd='/', env=fixture.ENV)
+        assert command in ([str(binary),'--version'],[str(binary),str(launcher),'--version'])
+        if fault == 'version-failure':raise subprocess.CalledProcessError(1, command)
+        output = 'v25.0.0' if fault == 'node-version' else 'v24.2.0' if len(command)==2 else \
+            '10.0.0' if fault == 'cli-version' else '11.0.0'
+        return subprocess.CompletedProcess(command, 0, output+'\n', '')
+    with patch.object(Path, 'lstat', side_effect=metadata, autospec=True), \
+         patch.object(Path, 'rglob', return_value=[path for path in tree if path.is_relative_to(distribution)]), \
+         patch.object(Path, 'read_bytes', side_effect=contents, autospec=True), \
+         patch.object(Path, 'glob', return_value=[] if fault=='missing' else
+                      [fixture.TOOLCACHE_ROOT / '24.1.0/x64', prefix] if fault=='multiple' else
+                      [fixture.TOOLCACHE_ROOT / '24.invalid/x64'] if fault=='bad-version' else [prefix]), \
+         patch.object(fixture.subprocess, 'run', side_effect=version), \
+         patch.object(fixture.os, 'environ', {'PATH':'/usr/local/bin'}), \
+         patch.object(fixture.os, 'readlink', side_effect=lambda path:links[path]), \
+         patch.object(fixture.os, 'getxattr', side_effect=AssertionError('source ACL is not a boundary')):
         try:
-            fixture.runtime_provenance(node,npm)
-        except AssertionError:
-            pass
+            selected_node, selected_npm, result = fixture.select_runtime()
+        except (AssertionError, OSError, subprocess.CalledProcessError):
+            assert fault not in accepted, fault
         else:
-            raise AssertionError('unsafe runtime provenance accepted')
+            assert fault in accepted, fault
+            assert (selected_node, selected_npm) == (binary, launcher)
+            assert result['node_source'] == str(binary) and result['npm_source'] == str(cli)
+            assert result['node_version'] == 'v24.2.0' and result['npm_version'] == '11.0.0'
+            assert len(result['node_sha256']) == 64
+            assert commands == [[str(binary),'--version'],[str(binary),str(launcher),'--version']]
+    assert Path('/usr/local/bin') not in inspected
+    if fault not in (*accepted, 'node-version', 'cli-version', 'version-failure'):
+        assert commands == [], ('unverified source executed', fault)
 
-# Model /usr/local launchers, hosted toolcache, and npm internal symlink chains.
-# The failure context supplies the path, not its mode: cover root/caller 0755
-# and trusted-group 0775 layouts without assuming an actual runner image mode.
-for layout in ('local', 'toolcache', 'selection'):
-    prefix = Path('/usr/local' if layout == 'local' else '/opt/hostedtoolcache/node/24.0.0/x64')
-    binary = prefix / 'bin/node'
-    distribution = prefix / 'lib/node_modules/npm'
-    cli = distribution / 'bin/npm-cli.js'
-    alias_node, alias_npm = Path('/usr/local/bin/node'), Path('/usr/local/bin/npm')
-    faults = ('', 'trusted-group', 'caller-owned', 'owner', 'workload-owner',
-                  'other-write', 'workload-group', 'unknown-group', 'parent-owner',
-                  'parent-write', 'alias-parent-write', 'link-owner', 'link-outside',
-                  'link-loop', 'dangling', 'npm-escape', 'npm-hop-escape',
-                  'intermediate-owner', 'directory-alias', 'directory-link-owner',
-                  'acl-write', 'acl-error', 'special')
-    if layout == 'selection':
-        faults = ('', 'trusted-group', 'caller-owned', 'owner', 'workload-owner',
-                  'parent-owner', 'parent-write', 'root-write', 'root-acl', 'metadata-owner', 'other-write',
-                  'workload-group', 'unknown-group', 'acl-write', 'acl-error',
-                  'link-owner', 'link-outside', 'npm-escape', 'npm-hop-escape', 'special',
-                  'missing', 'multiple', 'bad-version', 'node-pair', 'npm-pair',
-                  'npm-name', 'npm-bin', 'npm-version', 'node-version', 'cli-version', 'version-failure')
+# Selection uses the same descending path rule as Node hardening, even with
+# several installed distributions. A broken selected pair cannot fall back.
+newer = fixture.TOOLCACHE_ROOT / '24.3.0/x64'
+with patch.object(Path, 'glob', return_value=[prefix, newer]), \
+     patch.object(fixture, 'runtime_provenance', side_effect=AssertionError('selected pair invalid')) as selected:
+    try:
+        fixture.select_runtime()
+    except AssertionError as error:
+        assert str(error) == 'selected pair invalid'
+    else:
+        raise AssertionError('broken pair fallback')
+    selected.assert_called_once_with(newer / 'bin/node', newer / 'bin/npm', scope=newer)
+
+# Real copied tree: only ownership/ACL are modeled because local setup is not
+# root. Inject violations on the staged side, including ELF closure and marker.
+original = Path.lstat
+with tempfile.TemporaryDirectory(prefix='registry-snapshot-test-') as directory:
+    root = Path(directory) / 'root'
+    digest = fixture.build_root(repo, root, node, npm, token)
+    provenance = fixture.runtime_hashes(node, npm)
+    faults = ('', 'internal-link', 'parent-owner', 'parent-mode', 'root-mode', 'runtime-owner', 'runtime-mode',
+              'marker-owner', 'manifest-owner', 'library-mode', 'acl', 'acl-error',
+              'marker-content', 'manifest-content', 'node-hash', 'cli-hash', 'symlink-escape',
+              'link-owner', 'absolute-link', 'link-loop', 'dangling-link', 'special')
+    library = next(path for path in root.rglob('*') if path.is_file() and path.parts[len(root.parts)] in ('lib','lib64','usr'))
+    baseline = {path:path.read_bytes() for path in (root / 'boundary.json', root / 'runtime/manifest.json',
+                root / 'runtime/node', root / 'runtime/npm/bin/npm-cli.js')}
     for fault in faults:
-        tree, links, inspected = {}, {}, []
-        def entry(path, mode, uid=0, gid=0):
-            tree[path] = SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=mode)
-            for parent in path.parents:
-                tree.setdefault(parent, SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o755))
-        entry(binary, stat.S_IFREG | 0o755)
-        entry(cli, stat.S_IFREG | 0o644)
-        entry(distribution / 'package.json', stat.S_IFREG | 0o644)
-        entry(distribution / 'bin/real.js', stat.S_IFREG | 0o644)
-        def link(path, target):
-            entry(path, stat.S_IFLNK | 0o777)
-            links[path] = str(target)
-        if layout in ('toolcache', 'selection'):
-            link(alias_node, binary)
-        link(alias_npm, distribution / 'bin/cli-link.js')
-        link(distribution / 'bin/cli-link.js', 'npm-cli.js')
-        link(distribution / 'bin/internal.js', 'real.js')
-        target = binary if fault not in ('parent-owner', 'parent-write', 'alias-parent-write') else \
-            alias_npm.parent if fault == 'alias-parent-write' else binary.parent
-        if fault in ('trusted-group', 'caller-owned'):
-            for metadata in tree.values():
-                if not stat.S_ISLNK(metadata.st_mode):
-                    metadata.st_gid = 1000
-                    metadata.st_mode |= 0o020
-                    if fault == 'caller-owned':metadata.st_uid = 1000
-        if fault in ('owner', 'parent-owner'):tree[target].st_uid = 123456
-        if fault == 'workload-owner':tree[target].st_uid = 65534
-        if fault in ('other-write', 'parent-write', 'alias-parent-write'):tree[target].st_mode |= 0o002
-        if fault in ('workload-group', 'unknown-group'):
-            tree[target].st_mode |= 0o020
-            tree[target].st_gid = 65534 if fault == 'workload-group' else 123456
-        if fault == 'link-owner':tree[alias_npm].st_uid = 123456
-        if fault == 'link-outside':links[alias_npm] = '/tmp/npm/bin/npm-cli.js'
-        if fault == 'link-loop':links[alias_npm] = str(alias_npm)
-        if fault == 'dangling':links[alias_npm] = str(prefix / 'missing')
-        if fault in ('npm-escape', 'npm-hop-escape'):
-            outside = prefix / 'lib/outside.js'
-            entry(outside, stat.S_IFREG | 0o644)
-            if fault == 'npm-hop-escape':link(outside, cli)
-            links[distribution / 'bin/internal.js'] = str(outside)
-        if fault == 'intermediate-owner':tree[distribution / 'bin/cli-link.js'].st_uid = 123456
-        if fault in ('directory-alias', 'directory-link-owner'):
-            link(distribution / 'launcher', 'bin')
-            links[alias_npm] = str(distribution / 'launcher/cli-link.js')
-            if fault == 'directory-link-owner':tree[distribution / 'launcher'].st_uid = 123456
-        if fault == 'special':tree[binary].st_mode = stat.S_IFIFO | 0o644
-        commands = []
-        if layout == 'selection':
-            # Reproduce the reported unsafe PATH head. It must never be used,
-            # even when candidate discovery, provenance or pairing fails.
-            tree[alias_node.parent].st_mode |= 0o022
-            if fault == 'root-write':tree[fixture.TOOLCACHE_ROOT].st_mode |= 0o002
-            if fault == 'metadata-owner':tree[distribution / 'package.json'].st_uid = 65534
-            if fault == 'link-owner':tree[prefix / 'bin/npm'] = SimpleNamespace(
-                st_uid=123456, st_gid=0, st_mode=stat.S_IFLNK | 0o777)
-            else:link(prefix / 'bin/npm', '../lib/node_modules/npm/bin/npm-cli.js')
-            if fault == 'link-outside':links[prefix / 'bin/npm'] = str(alias_npm)
-            if fault == 'node-pair':
-                link(binary, prefix / 'bin/other-node')
-                entry(prefix / 'bin/other-node', stat.S_IFREG | 0o755)
-            if fault == 'npm-pair':
-                other = prefix / 'other/npm/bin/npm-cli.js'
-                entry(other, stat.S_IFREG | 0o644)
-                links[prefix / 'bin/npm'] = str(other)
-        def contents(path):
-            if path.name == 'package.json':
-                return json.dumps({'name':'other' if fault=='npm-name' else 'npm',
-                    'version':'invalid' if fault=='npm-version' else '11.0.0',
-                    'bin':{'npm':'other.js' if fault=='npm-bin' else 'bin/npm-cli.js'}}).encode()
-            return b'fixed runtime'
-        def version(command, **kwargs):
-            commands.append(command)
-            assert kwargs == dict(check=True, capture_output=True, text=True, timeout=10, cwd='/', env=fixture.ENV)
-            assert command in ([str(binary),'--version'],[str(binary),str(prefix / 'bin/npm'),'--version'])
-            if fault == 'version-failure':raise subprocess.CalledProcessError(1, command)
-            output = 'v25.0.0' if fault == 'node-version' else 'v24.0.0' if len(command)==2 else \
-                '10.0.0' if fault == 'cli-version' else '11.0.0'
-            return subprocess.CompletedProcess(command, 0, output+'\n', '')
-        def metadata(path):
-            inspected.append(path)
-            if path not in tree:raise FileNotFoundError(str(path))
-            return tree[path]
-        def acl(path, name, **kwargs):
-            assert name == 'system.posix_acl_access' and kwargs == {'follow_symlinks':False}
-            if (path == binary and fault == 'acl-write') or \
-               (path == fixture.TOOLCACHE_ROOT and fault == 'root-acl'):return b'untrusted ACL'
-            raise OSError(errno.EACCES if path == binary and fault == 'acl-error' else errno.ENODATA, 'ACL fixture')
-        with patch.object(Path, 'lstat', side_effect=metadata, autospec=True), \
-             patch.object(Path, 'rglob', return_value=[path for path in tree if path.is_relative_to(distribution)]), \
-             patch.object(Path, 'read_bytes', side_effect=contents, autospec=True), \
-             patch.object(Path, 'glob', return_value=[] if fault=='missing' else
-                          [prefix, fixture.TOOLCACHE_ROOT / '24.1.0/x64'] if fault=='multiple' else
-                          [fixture.TOOLCACHE_ROOT / '24.invalid/x64'] if fault=='bad-version' else [prefix]), \
-             patch.object(fixture.subprocess, 'run', side_effect=version), \
-             patch.object(fixture.os, 'environ', {'PATH':'/usr/local/bin'}), \
-             patch.object(fixture.os, 'readlink', side_effect=lambda path:links[path]), \
-             patch.object(fixture.os, 'getxattr', side_effect=acl), \
-             patch.object(fixture.os, 'getuid', return_value=1000), \
-             patch.object(fixture.os, 'getgid', return_value=1000), \
-             patch.object(fixture.os, 'getgroups', return_value=[1000, 65534]):
-            try:
-                if layout == 'selection':
-                    selected_node, selected_npm, result = fixture.select_runtime()
-                    assert (selected_node, selected_npm) == (binary, prefix / 'bin/npm')
+        def info(path):
+            actual = original(path)
+            writable = path in (root / 'project', root / 'tmp') or path.is_relative_to(root / 'project') or path.is_relative_to(root / 'tmp')
+            owner = 65534 if writable else 0
+            mode = actual.st_mode & ~0o7022
+            if path == root.parent and fault == 'parent-owner' or path == root / 'runtime/node' and fault == 'runtime-owner' or \
+               path == root / 'boundary.json' and fault == 'marker-owner' or path == root / 'runtime/manifest.json' and fault == 'manifest-owner' or path == escape and fault == 'link-owner':owner=1000
+            if path == root.parent and fault == 'parent-mode' or path == root and fault == 'root-mode' or \
+               path == root / 'runtime/npm' and fault == 'runtime-mode' or path == library and fault == 'library-mode':mode |= 0o022
+            if path == root / 'runtime/node' and fault == 'special':mode=stat.S_IFIFO | 0o644
+            return SimpleNamespace(st_uid=owner, st_gid=owner, st_mode=mode)
+        def acl(path, *args, **kwargs):
+            if path == root / 'runtime/node' and fault == 'acl':return b'ACL'
+            raise OSError(errno.EACCES if fault == 'acl-error' else errno.ENODATA, 'ACL fixture')
+        if fault == 'marker-content':(root / 'boundary.json').write_text('{"token":"wrong"}')
+        if fault == 'manifest-content':(root / 'runtime/manifest.json').write_bytes(b'{}')
+        if fault == 'node-hash':(root / 'runtime/node').write_bytes(b'changed')
+        if fault == 'cli-hash':(root / 'runtime/npm/bin/npm-cli.js').write_bytes(b'changed')
+        escape = root / 'runtime/npm/escape'
+        link_faults = {'internal-link':'bin/npm-cli.js', 'link-owner':'bin/npm-cli.js',
+                       'absolute-link':str(root / 'runtime/npm/bin/npm-cli.js'),
+                       'link-loop':'escape', 'dangling-link':'missing', 'symlink-escape':'../../project'}
+        if fault in link_faults:escape.symlink_to(link_faults[fault])
+        try:
+            with patch.object(fixture.re, 'fullmatch', return_value=True), \
+                 patch.object(Path, 'lstat', side_effect=info, autospec=True), \
+                 patch.object(fixture.os, 'getxattr', side_effect=acl):
+                try:
+                    hashes = fixture.staged_snapshot(root, token, digest, provenance)
+                except (AssertionError, OSError):
+                    assert fault not in ('', 'internal-link'), ('valid staged snapshot rejected', fault)
                 else:
-                    result = fixture.runtime_provenance(alias_node, alias_npm)
-            except (AssertionError, FileNotFoundError, subprocess.CalledProcessError):
-                assert fault not in ('', 'trusted-group', 'caller-owned', 'directory-alias'), (layout, fault)
-            else:
-                assert fault in ('', 'trusted-group', 'caller-owned', 'directory-alias'), (layout, fault)
-                if layout != 'selection':
-                    assert {alias_node, alias_npm, binary, cli, distribution / 'bin/cli-link.js'} <= set(inspected)
-                    assert alias_npm.parent in inspected
-                else:
-                    assert commands == [[str(binary),'--version'],[str(binary),str(prefix / 'bin/npm'),'--version']]
-                    assert fixture.TOOLCACHE_ROOT in inspected and Path('/') in inspected
-                assert binary.parent in inspected
-                assert len(result['node_sha256']) == 64
-        if layout == 'selection':
-            assert alias_node not in inspected and alias_node.parent not in inspected
-            if fault not in ('', 'trusted-group', 'caller-owned', 'node-version', 'cli-version', 'version-failure'):
-                assert commands == [], ('unverified source executed', fault)
+                    assert fault in ('', 'internal-link'), ('unsafe staged snapshot accepted', fault)
+                    assert hashes == provenance
+        finally:
+            if fault in link_faults:escape.unlink()
+            changed = {'marker-content':'boundary.json', 'manifest-content':'runtime/manifest.json',
+                       'node-hash':'runtime/node', 'cli-hash':'runtime/npm/bin/npm-cli.js'}
+            if fault in changed:
+                target = root / changed[fault]
+                target.write_bytes(baseline[target])
 
 # Source rejection must precede all staging, service/proxy construction or fallback.
 with patch.object(fixture.os, 'getuid', return_value=1000), \
@@ -372,9 +362,16 @@ with patch.object(fixture.os, 'getuid', return_value=1000), \
 registry = fixture.load(repo,'npm-registry-boundary-runtime')
 network = fixture.load(repo,'codex-network-boundary')
 boundary = fixture.load(repo,'npm-filesystem-boundary-runtime')
-for failure in (None,'build','copy','service','evidence','cleanup'):
+for failure in (None,'build','build-hash','copy','snapshot','post-hash','service','evidence','cleanup'):
     staged = Path('/run/npm-filesystem-fixture-abcdefgh')
     calls=[]
+    snapshots=[]
+    def snapshot(root, token, digest, provenance):
+        snapshots.append(root)
+        assert any('chown' in command for command in calls), 'snapshot before ownership establishment'
+        if failure=='snapshot' or failure=='post-hash' and len(snapshots)==2:
+            raise AssertionError('snapshot mismatch')
+        return provenance
     def build(repo, root, node, npm, token):
         if failure=='build':raise AssertionError('build failed')
         (root/'runtime/npm/bin').mkdir(parents=True)
@@ -397,7 +394,8 @@ for failure in (None,'build','copy','service','evidence','cleanup'):
                 'markers':[],'node_modules':False}
     with patch.object(fixture,'load',return_value=boundary), \
          patch.object(fixture,'build_root',side_effect=build), \
-         patch.object(boundary,'service',side_effect=service), \
+         patch.object(fixture,'staged_snapshot',side_effect=snapshot), \
+         patch.object(boundary,'service',side_effect=service) as service_call, \
          patch.object(fixture.subprocess,'check_output',return_value=str(staged)+'\n'), \
          patch.object(fixture.subprocess,'run',side_effect=run), \
          patch.object(fixture.os,'getuid',return_value=1000), \
@@ -406,6 +404,7 @@ for failure in (None,'build','copy','service','evidence','cleanup'):
          patch.object(Path,'exists',return_value=False), patch('builtins.print'):
         fake_provenance={'node_sha256':hashlib.sha256(b'{}').hexdigest(),
                          'npm_cli_sha256':hashlib.sha256(b'{}').hexdigest()}
+        if failure=='build-hash':fake_provenance['node_sha256']='wrong'
         try:
             fixture.run_fixture(repo,node,npm,registry,network,
                 SimpleNamespace(address='192.0.2.1',port=12345,accepted=1),12346,fake_provenance)
@@ -413,6 +412,8 @@ for failure in (None,'build','copy','service','evidence','cleanup'):
             assert failure is not None
         else:
             assert failure is None
+    if failure=='build-hash':assert not any('cp' in command for command in calls)
+    assert service_call.call_count == (0 if failure in ('build','build-hash','copy','snapshot') else 1)
     assert [command[-1] for command in calls if 'rm' in command]==[str(staged)]
 
 # Two success roots plus two unavailable roots; every outer failure cleans proxy/listeners.

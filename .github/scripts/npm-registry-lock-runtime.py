@@ -14,7 +14,6 @@ import uuid
 import importlib.util
 
 ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
-RUNTIME_ROOTS = (Path('/usr'), Path('/opt/hostedtoolcache/node'))
 TOOLCACHE_ROOT = Path('/opt/hostedtoolcache/node')
 SERVICE_UID = SERVICE_GID = 65534
 
@@ -26,41 +25,20 @@ def load(repo, name):
     return value
 
 
-def runtime_provenance(node, npm, scope=None):
-    """Check launcher paths, every link hop and ancestors before copying/executing.
+def runtime_hashes(node, npm):
+    return {'node_sha256': hashlib.sha256(node.read_bytes()).hexdigest(),
+            'npm_cli_sha256': hashlib.sha256(npm.read_bytes()).hexdigest()}
 
-    Trusted setup may write its own runtime; the nobody workload must not. Link
-    mode 0777 is not a write grant: link replacement is governed by its parent.
-    This is a pre-workload check, not protection from concurrent trusted setup.
+
+def runtime_provenance(node, npm, scope):
+    """Source identity/containment only; trusted setup is the source trust root.
+
+    Host ancestor modes are not workload isolation. That boundary is established
+    separately on the root-owned staged snapshot before any workload starts.
     """
-    owners = {0, os.getuid()}
-    groups = {0, os.getgid(), *os.getgroups()} - {SERVICE_GID}
-    assert SERVICE_UID not in owners, 'setup identity overlaps workload'
-    entries = {}
-
-    def inspect(path):
-        assert any(path.is_relative_to(root) or root.is_relative_to(path)
-                   for root in RUNTIME_ROOTS), ('runtime path outside trusted roots', str(path))
-        info = path.lstat()
-        assert info.st_uid in owners, ('unsafe runtime source/parent owner', str(path), info.st_uid)
-        if not stat.S_ISLNK(info.st_mode):
-            assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), 'unsafe runtime source type'
-            assert info.st_mode & 0o002 == 0 and (info.st_mode & 0o020 == 0 or info.st_gid in groups), \
-                ('unsafe runtime source/parent write boundary', str(path), info.st_gid, stat.S_IMODE(info.st_mode))
-            # Mode bits alone do not exclude a named-user/group ACL write grant.
-            try:
-                os.getxattr(path, 'system.posix_acl_access', follow_symlinks=False)
-            except OSError as error:
-                assert error.errno == errno.ENODATA, ('runtime ACL inspection failed', str(path), error.errno)
-            else:
-                raise AssertionError(('runtime access ACL unsupported', str(path)))
-        entries[str(path)] = info.st_uid
-        return info
-
-    def resolve(selected, scope=None):
+    def resolve(selected, containment):
         assert selected.is_absolute() and '..' not in selected.parts, 'unsafe runtime input path'
         pending, current, hops = list(selected.parts[1:]), Path('/'), 0
-        inspect(current)
         while pending:
             part = pending.pop(0)
             if part == '..':
@@ -69,47 +47,86 @@ def runtime_provenance(node, npm, scope=None):
             if part == '.':
                 continue
             candidate = current / part
-            info = inspect(candidate)
+            info = candidate.lstat()
             if stat.S_ISLNK(info.st_mode):
                 hops += 1
                 assert hops <= 40, 'runtime symlink loop'
                 target = Path(os.readlink(candidate))
                 target = target if target.is_absolute() else current / target
-                if scope:
-                    assert Path(os.path.abspath(target)).is_relative_to(scope), 'npm runtime symlink escape'
+                assert Path(os.path.abspath(target)).is_relative_to(containment), 'runtime symlink escape'
                 pending = list(target.parts[1:]) + pending
                 current = Path('/')
             else:
+                assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), 'unsafe runtime source type'
                 assert not pending or stat.S_ISDIR(info.st_mode), 'non-directory runtime ancestor'
                 current = candidate
-        assert any(current.is_relative_to(root) for root in RUNTIME_ROOTS), 'runtime source outside trusted roots'
-        if scope:
-            assert current.is_relative_to(scope), 'npm runtime symlink escape'
+        assert current.is_relative_to(containment), 'runtime source outside selected distribution'
         return current
 
     node_source, npm_source = resolve(node, scope), resolve(npm, scope)
-    assert all(stat.S_ISREG(inspect(path).st_mode) for path in (node_source, npm_source)), \
+    assert all(stat.S_ISREG(path.lstat().st_mode) for path in (node_source, npm_source)), \
         'runtime entry must be a regular file'
     npm_root = npm_source.parent.parent
     assert npm_root.name == 'npm' and npm_source.name == 'npm-cli.js'
     for selected in npm_root.rglob('*'):
         resolve(selected, npm_root)
-    return {'node_sha256': hashlib.sha256(node.read_bytes()).hexdigest(),
-            'npm_cli_sha256': hashlib.sha256(npm.read_bytes()).hexdigest(),
-            'node_source': str(node_source), 'npm_source': str(npm_source),
-            'source_owners': sorted(set(entries.values())),
-            'write_boundary': 'trusted-setup-before-workload; nobody UID/GID excluded; root-owned service copy'}
+    return {**runtime_hashes(node, npm), 'node_source': str(node_source), 'npm_source': str(npm_source)}
+
+
+def staged_snapshot(root, token, manifest_hash, provenance):
+    """Verify the workload boundary, including ELF closure, before/after service."""
+    assert re.fullmatch(r'/run/npm-filesystem-fixture-[A-Za-z0-9]{8}/root', str(root)), 'unsafe staging path'
+    def inspect(path):
+        info = path.lstat()
+        assert info.st_uid == info.st_gid == 0, ('unsafe staged owner', str(path))
+        if stat.S_ISLNK(info.st_mode):
+            npm_root = root / 'runtime/npm'
+            assert path.is_relative_to(npm_root), 'unexpected staged symlink'
+            # Check every hop, even an escape which eventually returns inside.
+            current, seen = path, set()
+            while current.is_symlink():
+                assert current not in seen, 'staged symlink loop'
+                seen.add(current)
+                target = Path(os.readlink(current))
+                assert not target.is_absolute(), 'absolute staged symlink'
+                current = Path(os.path.abspath(current.parent / target))
+                assert current.is_relative_to(npm_root), 'staged symlink escape'
+            assert current.resolve(strict=True).is_relative_to(npm_root), 'staged symlink escape'
+        else:
+            assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), 'unsafe staged type'
+            assert info.st_mode & 0o7022 == 0, ('unsafe staged mode', str(path))
+            try:
+                os.getxattr(path, 'system.posix_acl_access', follow_symlinks=False)
+            except OSError as error:
+                assert error.errno == errno.ENODATA, ('staged ACL inspection failed', str(path), error.errno)
+            else:
+                raise AssertionError(('staged access ACL unsupported', str(path)))
+    for path in (*reversed(root.parents), root):
+        inspect(path)
+        assert path.is_dir() and not path.is_symlink(), 'unsafe staged parent'
+    for entry in root.rglob('*'):
+        if any(entry.is_relative_to(root / name) for name in ('project', 'tmp')):
+            continue
+        inspect(entry)
+    for name in ('project', 'tmp'):
+        info = (root / name).lstat()
+        assert stat.S_ISDIR(info.st_mode) and info.st_uid == SERVICE_UID and info.st_gid == SERVICE_GID
+    assert json.loads((root / 'boundary.json').read_bytes())['token'] == token, 'boundary marker mismatch'
+    snapshot = (root / 'runtime/manifest.json').read_bytes()
+    assert hashlib.sha256(snapshot).hexdigest() == manifest_hash, 'manifest snapshot mismatch'
+    assert (root / 'project/package.json').read_bytes() == snapshot, 'manifest changed'
+    hashes = runtime_hashes(root / 'runtime/node', root / 'runtime/npm/bin/npm-cli.js')
+    assert all(hashes[key] == provenance[key] for key in hashes), 'staged runtime hash mismatch'
+    return hashes
 
 
 def select_runtime():
-    """Explicit installed Node 24/x64 identity, matching the Node hardening fixture.
+    """Match Node hardening's descending installed Node 24/x64 path selection.
 
-    PATH is never a source candidate. Ambiguity is an error, not permission to
-    select the latest version or fall back to a host launcher. Validate all source
-    hops/ancestors and the npm tree before executing even a version command.
+    PATH is never a source candidate; an invalid selected pair fails closed.
     """
-    candidates = list(TOOLCACHE_ROOT.glob('24.*/x64'))
-    assert len(candidates) == 1, ('trusted runtime candidate not unique', len(candidates))
+    candidates = sorted(TOOLCACHE_ROOT.glob('24.*/x64'), reverse=True)
+    assert candidates, 'trusted Node 24 runtime unavailable'
     prefix = candidates[0]
     assert re.fullmatch(r'24\.\d+\.\d+', prefix.parent.name), 'unsupported toolcache version'
     node, npm = prefix / 'bin/node', prefix / 'bin/npm'
@@ -174,6 +191,8 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
         with tempfile.TemporaryDirectory(prefix='npm-registry-lock-build-') as build:
             root = Path(build) / 'root'
             digest = build_root(repo, root, node, npm, token)
+            copied = runtime_hashes(root / 'runtime/node', root / 'runtime/npm/bin/npm-cli.js')
+            assert all(copied[key] == provenance[key] for key in copied), 'runtime copy hash mismatch'
             subprocess.run(['sudo', '-n', 'cp', '-a', str(root), str(staged / 'root')],
                            check=True, timeout=15, env=ENV)
         subprocess.run(['sudo', '-n', 'chown', '-R', 'root:root', str(staged)],
@@ -182,11 +201,7 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
         root = staged / 'root'
         subprocess.run(['sudo', '-n', 'chown', '-R', 'nobody:nogroup',
                         str(root / 'project'), str(root / 'tmp')], check=True, timeout=5, env=ENV)
-        for entry in (root / 'runtime').rglob('*'):
-            info = entry.lstat()
-            assert info.st_uid == 0 and (entry.is_symlink() or info.st_mode & 0o022 == 0)
-        assert hashlib.sha256((root / 'runtime/node').read_bytes()).hexdigest() == provenance['node_sha256']
-        assert hashlib.sha256((root / 'runtime/npm/bin/npm-cli.js').read_bytes()).hexdigest() == provenance['npm_cli_sha256']
+        staged_hashes = staged_snapshot(root, token, digest, provenance)
         record = {'token': token, 'manifest_hash': digest, 'proxy_port': port, 'proxy_uid': os.getuid(),
                   'address': servers.address, 'direct_port': servers.port,
                   'expect_unavailable': unavailable, 'hidden': {
@@ -196,6 +211,7 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
         accepts = servers.accepted
         evidence = boundary.service(repo, root, record, observer=lambda unit, done:
             registry.observe_properties(unit, root / 'runtime', network, done))
+        assert staged_snapshot(root, token, digest, provenance) == staged_hashes
         assert servers.accepted == accepts, 'direct/fallback reached trusted listener'
         assert (root / 'project/package.json').read_bytes() == (root / 'runtime/manifest.json').read_bytes()
         if unavailable:
@@ -205,7 +221,7 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
             assert evidence['candidate'] == 'package-lock.json' and evidence['manifest_hash'] == digest
             assert evidence['metadata_requests'] > 0 and evidence['tarball_requests'] == 0
             assert evidence['markers'] == [] and evidence['node_modules'] is False
-        print(json.dumps({**evidence, 'runtime_source': provenance}), flush=True)
+        print(json.dumps({**evidence, 'runtime_source': provenance, 'staged_runtime_hashes': staged_hashes}), flush=True)
         return str(staged)
     finally:
         subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)], check=True, timeout=10, env=ENV)
