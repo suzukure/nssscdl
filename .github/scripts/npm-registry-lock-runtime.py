@@ -15,6 +15,7 @@ import importlib.util
 
 ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
 RUNTIME_ROOTS = (Path('/usr'), Path('/opt/hostedtoolcache/node'))
+TOOLCACHE_ROOT = Path('/opt/hostedtoolcache/node')
 SERVICE_UID = SERVICE_GID = 65534
 
 
@@ -25,7 +26,7 @@ def load(repo, name):
     return value
 
 
-def runtime_provenance(node, npm):
+def runtime_provenance(node, npm, scope=None):
     """Check launcher paths, every link hop and ancestors before copying/executing.
 
     Trusted setup may write its own runtime; the nobody workload must not. Link
@@ -86,7 +87,7 @@ def runtime_provenance(node, npm):
             assert current.is_relative_to(scope), 'npm runtime symlink escape'
         return current
 
-    node_source, npm_source = resolve(node), resolve(npm)
+    node_source, npm_source = resolve(node, scope), resolve(npm, scope)
     assert all(stat.S_ISREG(inspect(path).st_mode) for path in (node_source, npm_source)), \
         'runtime entry must be a regular file'
     npm_root = npm_source.parent.parent
@@ -95,8 +96,38 @@ def runtime_provenance(node, npm):
         resolve(selected, npm_root)
     return {'node_sha256': hashlib.sha256(node.read_bytes()).hexdigest(),
             'npm_cli_sha256': hashlib.sha256(npm.read_bytes()).hexdigest(),
+            'node_source': str(node_source), 'npm_source': str(npm_source),
             'source_owners': sorted(set(entries.values())),
             'write_boundary': 'trusted-setup-before-workload; nobody UID/GID excluded; root-owned service copy'}
+
+
+def select_runtime():
+    """Explicit installed Node 24/x64 identity, matching the Node hardening fixture.
+
+    PATH is never a source candidate. Ambiguity is an error, not permission to
+    select the latest version or fall back to a host launcher. Validate all source
+    hops/ancestors and the npm tree before executing even a version command.
+    """
+    candidates = list(TOOLCACHE_ROOT.glob('24.*/x64'))
+    assert len(candidates) == 1, ('trusted runtime candidate not unique', len(candidates))
+    prefix = candidates[0]
+    assert re.fullmatch(r'24\.\d+\.\d+', prefix.parent.name), 'unsupported toolcache version'
+    node, npm = prefix / 'bin/node', prefix / 'bin/npm'
+    provenance = runtime_provenance(node, npm, scope=prefix)
+    cli = prefix / 'lib/node_modules/npm/bin/npm-cli.js'
+    assert provenance['node_source'] == str(node), 'Node identity outside selected distribution'
+    assert provenance['npm_source'] == str(cli), 'npm identity outside selected distribution'
+    metadata = json.loads((cli.parent.parent / 'package.json').read_bytes())
+    assert metadata['name'] == 'npm' and metadata['bin']['npm'] == 'bin/npm-cli.js', 'npm pairing mismatch'
+    assert re.fullmatch(r'\d+\.\d+\.\d+', metadata['version']), 'unsupported npm identity'
+    versions = []
+    for args in ([str(node), '--version'], [str(node), str(npm), '--version']):
+        result = subprocess.run(args, check=True, capture_output=True, text=True,
+                                timeout=10, cwd='/', env=ENV)
+        versions.append(result.stdout.strip())
+    assert versions == ['v' + prefix.parent.name, metadata['version']], 'Node/npm version pairing mismatch'
+    return node, npm, {**provenance, 'selected_root': str(prefix),
+                       'node_version': versions[0], 'npm_version': versions[1]}
 
 
 def build_root(repo, root, node, npm, token):
@@ -181,9 +212,9 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
         assert not staged.exists(), 'registry lock root cleanup failed'
 
 
-def runtime(repo, node, npm):
+def runtime(repo):
     assert os.getuid() != 0, 'independent runtime requires non-root runner UID'
-    provenance = runtime_provenance(node, npm)
+    node, npm, provenance = select_runtime()
     registry = load(repo, 'npm-registry-boundary-runtime')
     network = load(repo, 'codex-network-boundary')
     addresses = sorted(network.local_addresses())
