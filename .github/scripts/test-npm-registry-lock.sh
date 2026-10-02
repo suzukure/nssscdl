@@ -285,6 +285,56 @@ with patch.object(Path, 'glob', return_value=[prefix, newer]), \
         raise AssertionError('broken pair fallback')
     selected.assert_called_once_with(newer / 'bin/node', newer / 'bin/npm', scope=newer)
 
+# Real inherited access/default ACLs survive copy2/copytree and cp -a. Normalize
+# only the fresh copy, including writable directories; never follow npm symlinks.
+with tempfile.TemporaryDirectory(prefix='registry-acl-test-') as directory:
+    source, staged = Path(directory) / 'source', Path(directory) / 'staged'
+    (source / 'root/runtime/npm').mkdir(parents=True)
+    for name in ('project', 'tmp'):(source / 'root' / name).mkdir()
+    targets = [source / 'root/runtime/npm/npmrc', source / 'root/runtime/manifest.json',
+               source / 'root/boundary.json', Path(directory) / 'outside']
+    for target in targets:target.write_bytes(b'unchanged snapshot')
+    # Use the mapped caller UID so this real ACL test also runs in Codex's user namespace.
+    subprocess.run(['/usr/bin/setfacl', '-m', f'u:{os.getuid()}:rw-', *map(str, targets)], check=True, env=fixture.ENV)
+    directories = [source, *[p for p in source.rglob('*') if p.is_dir()]]
+    subprocess.run(['/usr/bin/setfacl', '-m', f'u:{os.getuid()}:rwx,d:u:{os.getuid()}:rwx',
+                    *map(str, directories)], check=True, env=fixture.ENV)
+    (source / 'root/runtime/npm/internal').symlink_to('npmrc')
+    # A malicious external link must not mutate its target during normalization;
+    # staged_snapshot separately rejects it before service launch.
+    (source / 'root/runtime/npm/external').symlink_to(targets[-1])
+    original_acls = {(p, attribute):os.getxattr(p, attribute, follow_symlinks=False)
+                     for p in (*directories, *targets)
+                     for attribute in ('system.posix_acl_access', 'system.posix_acl_default')
+                     if attribute == 'system.posix_acl_access' or p.is_dir()}
+    build = Path(directory) / 'build'
+    shutil.copytree(source, build, symlinks=True)
+    subprocess.run(['/bin/cp', '-a', str(build), str(staged)], check=True, env=fixture.ENV)
+    assert os.getxattr(staged / 'root/runtime/npm/npmrc', 'system.posix_acl_access')
+    assert os.getxattr(staged / 'root/runtime/npm', 'system.posix_acl_default')
+    before = {p:p.read_bytes() for p in staged.rglob('*') if p.is_file() and not p.is_symlink()}
+    local_run = subprocess.run
+    def normalize(command, **kwargs):
+        assert command[:3] == ['sudo', '-n', '/usr/bin/setfacl']
+        assert command[-1] == str(staged) and kwargs['check'] and kwargs['env'] == fixture.ENV
+        return local_run(command[2:], **kwargs)
+    with patch.object(fixture.re, 'fullmatch', return_value=True), \
+         patch.object(fixture.subprocess, 'run', side_effect=normalize):
+        fixture.normalize_staging_acls(staged)
+    for path in (staged, *staged.rglob('*')):
+        if not path.is_symlink():fixture.assert_no_acl(path)
+    assert all(p.read_bytes() == content for p, content in before.items())
+    assert all(os.getxattr(p, attribute, follow_symlinks=False) == content
+               for (p, attribute), content in original_acls.items()), 'source/host ACL mutated'
+    assert (staged / 'root/runtime/npm/internal').is_symlink()
+
+for path in ('/opt', '/run', '/run/npm-filesystem-fixture-abcdefgh/root'):
+    with patch.object(fixture.subprocess, 'run') as command:
+        try:fixture.normalize_staging_acls(Path(path))
+        except AssertionError:pass
+        else:raise AssertionError('ACL removal outside fresh staging allowed')
+        command.assert_not_called()
+
 # Real copied tree: only ownership/ACL are modeled because local setup is not
 # root. Inject violations on the staged side, including ELF closure and marker.
 original = Path.lstat
@@ -293,7 +343,8 @@ with tempfile.TemporaryDirectory(prefix='registry-snapshot-test-') as directory:
     digest = fixture.build_root(repo, root, node, npm, token)
     provenance = fixture.runtime_hashes(node, npm)
     faults = ('', 'internal-link', 'parent-owner', 'parent-mode', 'root-mode', 'runtime-owner', 'runtime-mode',
-              'marker-owner', 'manifest-owner', 'library-mode', 'acl', 'acl-error',
+              'marker-owner', 'manifest-owner', 'library-mode', 'acl', 'default-acl', 'project-acl',
+              'tmp-default-acl', 'marker-acl', 'manifest-acl', 'acl-error',
               'marker-content', 'manifest-content', 'node-hash', 'cli-hash', 'symlink-escape',
               'link-owner', 'absolute-link', 'link-loop', 'dangling-link', 'special')
     library = next(path for path in root.rglob('*') if path.is_file() and path.parts[len(root.parts)] in ('lib','lib64','usr'))
@@ -311,8 +362,11 @@ with tempfile.TemporaryDirectory(prefix='registry-snapshot-test-') as directory:
                path == root / 'runtime/npm' and fault == 'runtime-mode' or path == library and fault == 'library-mode':mode |= 0o022
             if path == root / 'runtime/node' and fault == 'special':mode=stat.S_IFIFO | 0o644
             return SimpleNamespace(st_uid=owner, st_gid=owner, st_mode=mode)
-        def acl(path, *args, **kwargs):
-            if path == root / 'runtime/node' and fault == 'acl':return b'ACL'
+        def acl(path, attribute, **kwargs):
+            target = {'acl':('runtime/node', 'access'), 'default-acl':('runtime/npm', 'default'),
+                      'project-acl':('project', 'access'), 'tmp-default-acl':('tmp', 'default'),
+                      'marker-acl':('boundary.json', 'access'), 'manifest-acl':('runtime/manifest.json', 'access')}
+            if fault in target and path == root / target[fault][0] and attribute.endswith(target[fault][1]):return b'ACL'
             raise OSError(errno.EACCES if fault == 'acl-error' else errno.ENODATA, 'ACL fixture')
         if fault == 'marker-content':(root / 'boundary.json').write_text('{"token":"wrong"}')
         if fault == 'manifest-content':(root / 'runtime/manifest.json').write_bytes(b'{}')
@@ -362,13 +416,14 @@ with patch.object(fixture.os, 'getuid', return_value=1000), \
 registry = fixture.load(repo,'npm-registry-boundary-runtime')
 network = fixture.load(repo,'codex-network-boundary')
 boundary = fixture.load(repo,'npm-filesystem-boundary-runtime')
-for failure in (None,'build','build-hash','copy','snapshot','post-hash','service','evidence','cleanup'):
+for failure in (None,'build','build-hash','copy','acl-removal','acl-tooling','snapshot','post-hash','service','evidence','cleanup'):
     staged = Path('/run/npm-filesystem-fixture-abcdefgh')
     calls=[]
     snapshots=[]
     def snapshot(root, token, digest, provenance):
         snapshots.append(root)
         assert any('chown' in command for command in calls), 'snapshot before ownership establishment'
+        assert any('/usr/bin/setfacl' in command for command in calls), 'snapshot before ACL normalization'
         if failure=='snapshot' or failure=='post-hash' and len(snapshots)==2:
             raise AssertionError('snapshot mismatch')
         return provenance
@@ -385,8 +440,13 @@ for failure in (None,'build','build-hash','copy','snapshot','post-hash','service
         assert kwargs['env']==fixture.ENV
         if (failure=='copy' and 'cp' in command) or (failure=='cleanup' and 'rm' in command):
             raise subprocess.CalledProcessError(1,command)
+        if '/usr/bin/setfacl' in command:
+            assert command[-1] == str(staged), 'ACL normalization touched host source'
+            if failure=='acl-removal':raise subprocess.CalledProcessError(1,command)
+            if failure=='acl-tooling':raise FileNotFoundError('setfacl unavailable')
         return subprocess.CompletedProcess(command,0,'','')
     def service(repo,root,record,observer):
+        assert len(snapshots) == 1, 'service before snapshot verification'
         assert callable(observer) and record['proxy_uid']==1000
         if failure=='service':raise AssertionError('service failed')
         return {'candidate':'wrong' if failure=='evidence' else 'package-lock.json',
@@ -408,12 +468,12 @@ for failure in (None,'build','build-hash','copy','snapshot','post-hash','service
         try:
             fixture.run_fixture(repo,node,npm,registry,network,
                 SimpleNamespace(address='192.0.2.1',port=12345,accepted=1),12346,fake_provenance)
-        except (AssertionError,subprocess.CalledProcessError):
+        except (AssertionError,OSError,subprocess.CalledProcessError):
             assert failure is not None
         else:
             assert failure is None
     if failure=='build-hash':assert not any('cp' in command for command in calls)
-    assert service_call.call_count == (0 if failure in ('build','build-hash','copy','snapshot') else 1)
+    assert service_call.call_count == (0 if failure in ('build','build-hash','copy','acl-removal','acl-tooling','snapshot') else 1)
     assert [command[-1] for command in calls if 'rm' in command]==[str(staged)]
 
 # Two success roots plus two unavailable roots; every outer failure cleans proxy/listeners.

@@ -73,6 +73,28 @@ def runtime_provenance(node, npm, scope):
     return {**runtime_hashes(node, npm), 'node_source': str(node_source), 'npm_source': str(npm_source)}
 
 
+def normalize_staging_acls(staged):
+    """Trusted setup only: remove inherited ACLs from the fresh copy, never sources.
+
+    Physical traversal leaves symlink targets untouched. Missing tooling or any
+    removal error stops setup; staged_snapshot independently verifies the result.
+    """
+    assert re.fullmatch(r'/run/npm-filesystem-fixture-[A-Za-z0-9]{8}', str(staged)), 'unsafe ACL normalization path'
+    subprocess.run(['sudo', '-n', '/usr/bin/setfacl', '--remove-all', '--remove-default',
+                    '--recursive', '--physical', '--', str(staged)],
+                   check=True, timeout=15, env=ENV)
+
+
+def assert_no_acl(path):
+    for attribute in ('system.posix_acl_access', 'system.posix_acl_default'):
+        try:
+            os.getxattr(path, attribute, follow_symlinks=False)
+        except OSError as error:
+            assert error.errno == errno.ENODATA, ('staged ACL inspection failed', str(path), attribute, error.errno)
+        else:
+            raise AssertionError(('unexpected staged ACL', str(path), attribute))
+
+
 def staged_snapshot(root, token, manifest_hash, provenance):
     """Verify the workload boundary, including ELF closure, before/after service."""
     assert re.fullmatch(r'/run/npm-filesystem-fixture-[A-Za-z0-9]{8}/root', str(root)), 'unsafe staging path'
@@ -95,12 +117,7 @@ def staged_snapshot(root, token, manifest_hash, provenance):
         else:
             assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), 'unsafe staged type'
             assert info.st_mode & 0o7022 == 0, ('unsafe staged mode', str(path))
-            try:
-                os.getxattr(path, 'system.posix_acl_access', follow_symlinks=False)
-            except OSError as error:
-                assert error.errno == errno.ENODATA, ('staged ACL inspection failed', str(path), error.errno)
-            else:
-                raise AssertionError(('staged access ACL unsupported', str(path)))
+            assert_no_acl(path)
     for path in (*reversed(root.parents), root):
         inspect(path)
         assert path.is_dir() and not path.is_symlink(), 'unsafe staged parent'
@@ -109,8 +126,13 @@ def staged_snapshot(root, token, manifest_hash, provenance):
             continue
         inspect(entry)
     for name in ('project', 'tmp'):
-        info = (root / name).lstat()
+        directory = root / name
+        info = directory.lstat()
         assert stat.S_ISDIR(info.st_mode) and info.st_uid == SERVICE_UID and info.st_gid == SERVICE_GID
+        assert info.st_mode & 0o7022 == 0, 'unsafe workload directory mode'
+        for path in (directory, *directory.rglob('*')):
+            assert not path.is_symlink(), 'unexpected workload symlink'
+            assert_no_acl(path)
     assert json.loads((root / 'boundary.json').read_bytes())['token'] == token, 'boundary marker mismatch'
     snapshot = (root / 'runtime/manifest.json').read_bytes()
     assert hashlib.sha256(snapshot).hexdigest() == manifest_hash, 'manifest snapshot mismatch'
@@ -197,6 +219,7 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
                            check=True, timeout=15, env=ENV)
         subprocess.run(['sudo', '-n', 'chown', '-R', 'root:root', str(staged)],
                        check=True, timeout=10, env=ENV)
+        normalize_staging_acls(staged)
         subprocess.run(['sudo', '-n', 'chmod', '0755', str(staged)], check=True, timeout=5, env=ENV)
         root = staged / 'root'
         subprocess.run(['sudo', '-n', 'chown', '-R', 'nobody:nogroup',
