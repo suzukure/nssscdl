@@ -61,7 +61,7 @@ socket maskでservice内の `systemctl` が使えないため、trusted runner�
 
 制限されたCodex service内ではruntimeを `SKIP` とし、systemd不在の独立GitHub Actions runnerでは失敗する。`SKIP` はregistry到達・実効network境界の実証済みを意味しない。実registry positive proofは独立runnerの結果を確認してから判定する。
 
-production developer / follow-upからはunreachableで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後継の順序は **#649 → #652（network source escape）→ #654（filesystem source / lifecycle境界）→ #650（initial lock）→ #647（production wiring）**。本fixtureのnetwork proofだけで後継のescape検証やbootstrap完了とは扱わない。
+production developer / follow-upからはunreachableで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後継の順序は **#649 → #652（network source escape）→ #654（filesystem source境界）→ #656（lifecycle script境界）→ #650（initial lock）→ #647（production wiring）**。本fixtureのnetwork proofだけで後継のescape検証やbootstrap完了とは扱わない。
 
 ## npm/git network source escape（#652、dormant）
 
@@ -79,4 +79,28 @@ control → restricted → control → proxy停止検証を2回実行し、#649�
 
 pure / mock検証は外部通信なし。独立runnerでは実npm/gitのlocal control・proxy拒否・proxy不在を外向きdialなしで先に検証し、その後systemd runtimeで実効direct拒否とregistry到達を検証する。制限されたCodex serviceではsocket/runtimeを `SKIP` とし、実npm/git・実効filter・registry到達の実証済みとは扱わない。独立GitHub Actions runnerのsystemd不在は失敗とする。
 
-Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はなく、production developer / follow-upは未接続。local file / directory / workspace sourceとlifecycle境界は#654、lock生成は#650、production wiringは#647に残す。scopeと後継順序の正本は#652のIssue本文とし、本検証だけで後継の完了とは扱わない。
+Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はなく、production developer / follow-upは未接続。local file / directory / workspace sourceは#654、lifecycle script境界は#656、lock生成は#650、production wiringは#647に残す。scopeと後継順序は各Issue本文を正本とし、本検証だけで後継の完了とは扱わない。
+
+## npm local filesystem source escape（#654、dormant）
+
+検証は `bash .github/scripts/test-npm-filesystem-sources.sh`。[`npm-filesystem-boundary-runtime.py`](scripts/npm-filesystem-boundary-runtime.py) は外部通信のない独立fixtureで、production launcherではない。既存#645の`manifest_dependencies`を再利用し、全top-level dependency sectionの`file:` / relative・absolute directory / traversal / symlink sourceとworkspaces等をnpm開始前に拒否する。この文字列policy単独をsecurity boundaryにしない。
+
+`ProtectSystem=strict`の書込例外は`ReadWritePaths=+/project +/tmp`で`RootDirectory`内に限定する。npm開始前に同じservice UIDで`/project/cache`のdirectory型を確認し、固定名の空directoryを1回作成・削除して残存がないことを確認する。失敗はphase / path / errnoだけを診断に残してnpm未起動で停止し、host cacheへのfallbackは行わない。mockでexact property、作成・削除・残存確認、書込拒否と予期しないerror時のfail-closedを検証する。
+
+実効境界はroot所有のrun専用`RootDirectory`である。Node binary、ELF loader/library closure、npm distribution、trusted probeだけをcopyし、hostの`/usr` / `/lib`全体やProduct workspaceをbindしない。npm runtimeの領域外symlinkは準備時に拒否する。visible source rootは`/project`に固定し、ここにdisposable manifest / HOME / cacheと空のnpmrcを置く。`nobody` serviceは#649のcapability除去・NoNewPrivileges・io_uring filter・socket mask・network propertiesを再利用する。`/proc` / `/sys` / `/run` / `/home` / `/root`はdisposable root内へ空directoryとしてstageし、service内のhost content非公開性は下記probeのempty / hidden checksとexact runtime-artifact invariantで実証する。`+` prefixのない`InaccessiblePaths=/proc /sys /run /home /root`と継承したsocket maskはhost-root基準であり、`RootDirectory`内のpathを直接maskする説明や非公開性の根拠には用いない。`/run/host/os-release`の不可視性もexplicit hidden checkで実証する。host由来のPrivateTmp mountは使わず、disposable root内の空の`/tmp`を使う。callerとnpmのenvをそれぞれ`env -i`で固定し、Secrets / GitHub write tokenを渡さない。隔離起動失敗、rootの所有者・permission・marker不一致、host source可視、command timeoutは停止し、host filesystemへのfallbackやretryを行わない。
+
+[`npm-filesystem-source-probe.js`](scripts/npm-filesystem-source-probe.js) は同一service内でroot inventory・marker・UID・host sentinel非公開を確認してから実npmを起動する。arbitrary host directoryに作るreadable package / tarballの同一UID controlを前後に置き、workspace sourceも含め、policyを迂回した`npm pack --dry-run --json --offline`でも`file:` / absolute directory / relative traversal / absolute・relative symlink経由の参照が`ENOENT` / `EACCES` / `ENOTDIR`で失敗することを要求する。visible local packageへの前後の成功controlが壊れたnpmによる偽陽性を防ぐ。このlocal packageはfixture control専用で、top-level policyの許可対象ではない。lock / node_modulesを生成せず、`--ignore-scripts`の指定はlifecycle非実行の実証と扱わない。
+
+root inventoryは`boundary.visible_root`の全staged entryの存在・型（symlink不可）・所有者・group/other書込不可を必須にする。systemd起動時の追加entryは名前をallowlistせず、root所有・書込不可・特殊permissionなしのdirectoryだけに限定し、service UIDから列挙できる場合は空、`EACCES` / `EPERM`の場合は不可視を要求する。追加file / symlink / device、可視content、予期しない検査errorはnpm開始前にfail-closedとし、phase・source class・pathを診断に残す。既存host contentの補助hidden checkに、runtime構築で使用する`/usr/bin/env`も含める。
+
+意図的に空directoryとしてstagingする`/sys` / `/run` / `/home` / `/root` / `/proc`は、directory object自体のopen成功をhost content露出と扱わない。root inventoryの型・所有者・permission検証を維持した上で、service UIDから列挙できれば空であることを要求し、`EACCES` / `EPERM` / `ENOENT`はnon-exposureとして扱う。file / symlink / deviceへの型変化、下記exact invariant以外の可視entry、予期しない検査errorはnpm開始前に拒否する。具体的なhost content path（sentinel、actual workspace、`/usr/bin/env`、`/etc/os-release`、`/run/host/os-release`、`/proc/1/root`）には従来のaccess失敗を引き続き要求する。
+
+staged / runtime-added directoryがnon-emptyで失敗する場合、既存のphase・source class・pathに加え、各entryの`parent_path` / `entry_name` / `type`（directory / file / symlink / other）/ `uid` / `mode`（lstatの数値）だけを固定JSONで診断へ残す。symlink target、file内容、env、Secrets、tokenは出力しない。下記exact invariant以外のnon-emptyは引き続きfail-closedとする。mock fixtureで診断項目とnpm開始前の拒否を検証する。
+
+Issue #654のformal runner evidenceに基づき、通常空の`/run`に限り、直下がexactly `systemd` 1件（directory / uid=0 / mode=0755）、その直下がexactly `incoming` 1件（directory / uid=0 / mode=0600）の場合だけsystemd namespace artifactとして扱う。service UID=nobodyで`incoming`のopen、readdir、synthetic childのstatを行い、すべて`EACCES` / `EPERM`で明示拒否されることを要求する。成功や`ENOENT`等の判定不能はfail-closedとし、内部を再帰探索・信用しない。兄弟entry、型・uid・modeの差異も拒否し、`/run/systemd`全般を許可しない。`/run/systemd/notify`、`/run/systemd/journal/socket`、`/run/systemd/journal/stdout`、`/run/systemd/userdb/io.systemd.DynamicUser`にも既存のhidden checkを要求する。mockでexact invariantと両denial、兄弟entry・属性差異・各操作成功／予期しないerrorの拒否、診断の固定項目・内容非出力を検証する。
+
+新しいrootで2回実行し、成功・失敗時のunit停止・collectとroot削除、host fixtureのcleanupを確認する。既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-upからはunreachable。制限されたCodex serviceではpure / mockとruntime copy構築を検証し、実serviceは`SKIP`とする。`SKIP`は実効filesystem隔離の実証済みを意味しない。独立GitHub Actions runnerでsystemdがない場合は失敗する。
+
+same-UID前後controlの必須証拠は`/tmp`直下のfixture directoryとpackage / tarballのpermissionを明示固定したarbitrary-host sentinelだけとし、各pathを個別にopenする。失敗時はpre / post、source class、path、exit codeと元のstdout / stderrを残し、host sentinelが隔離外で読めなければfail-closedとする。repository workspace内のsentinelはrunnerのancestor permissionに依存する隔離外readabilityを要求しない。trusted側はworkspace sentinelの存在と、構築時・staging後の全root inventoryにworkspace path / sentinel contentがないことを確認する。service内ではactual workspace path / sentinelへのaccessとnpmによる参照が失敗することを要求し、hidden / npm検証の失敗にもphase・source class・pathを残す。workspaceをbind/copyせず、sentinelは成功・失敗時ともcleanupする。既存の`.git/HEAD` / `/etc/os-release`は隔離内の補助hidden checkに限定し、runner依存の隔離外readabilityを必須条件にしない。
+
+Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。#649/#652の外部network proofは再実行しない。後継は **#656 → #650 → #647**。#656は同じdisposable rootの構築・service前提を利用してlifecycle script非実行を独立検証し、#650/#647のlock生成・production wiringはその完了を待つ。
