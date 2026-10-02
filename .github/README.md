@@ -24,11 +24,24 @@ collectorはfresh APIでrepository ID/name、workflow ID/name/path、completed f
 
 failed jobは1件だけを許可し、そのstep番号順のfirst failureを選ぶ。step番号・名前の重複は拒否し、`gh run view --attempt --job --log` のjob/step prefixでphysical line rangeをbindする。source logの秘密値らしいtextを検査した後、4096 bytesのfailure excerptと直前successの1024 bytesだけをbuilderへ渡す。raw full logは短命tempfileに限定し、artifactへ保存しない。API responseは2 MiB、source log取得は16 MiBを上限とし、超過は `oversized` とする。source artifactは取得・展開しない。
 
-Issue contractはscriptのexact heading対応表にある6節と、明示Product impact行から取得し、欠落・重複を拒否する。本文・log内の命令文字列は実行しない。commentsのtrusted checkpoint選択は既存selectorを再利用する。PR filesを全page取得し、`changed_files`件数との一致を確認してfile / additions / deletionsだけを保存する。full diffは保存しない。failure excerptにある `.github/scripts/<path>:<line>` / Python traceback locatorから最大3件・各9行のcode rangeをsource SHAで取得し、各2048 bytesに束縛する。未観測code locatorはbuilderのmissing fieldsへ残し、symbolや原因を推測しない。
+Issue contractは以下のexact `## <heading>` 対応表にある6節から取得する（scriptの `HEADINGS` が機械正本）。case変更・別headingや本文からのsection inferenceは行わない。
+
+| packet key | 受理するheading |
+| --- | --- |
+| `goal` | `目的` / `Goal` / `利用者、完了する業務、価値` |
+| `scope` | `対象` / `Scope` / `実装・DB・テスト・運用の範囲` / `対象IDと設計` |
+| `security` | `Security` / `Security boundary` / `Permissions` / `セキュリティ境界` |
+| `non_goals` | `Non-goals` / `対象外` / `依存関係と対象外` |
+| `done` | `完了条件` / `Done` / `完了条件と残課題` |
+| `product_impact` | `Product impact` / `Product impact / traceability` / `Product影響` |
+
+`product_impact` はheadingの代わりに、行頭の `Product POL / BR / REQ / AC / TC / CON / OOS impact: <value>` / `Product POL / BR / REQ / AC / TC / CON / OOS 影響: <value>`、または上表の `done` 節内だけの `Product影響: <value>` を受理する。各行は任意の `- ` prefixを許可し、#654で報告された `- Product影響: none。` を原文・行番号付きで保持する。valueは空白以外を必須とし意味を推測しない。fenced code block内のheading / inline行は契約宣言にしない。delimiterの種類・長さを照合し、未閉鎖blockは `incomplete` とする。headingとinlineの併記を含む重複は、同値でも `conflict`、欠落・空値は `incomplete` とする。
+
+本文・log内の命令文字列は実行しない。commentsのtrusted checkpoint選択は既存selectorを再利用する。PR filesを全page取得し、`changed_files`件数との一致を確認してfile / additions / deletionsだけを保存する。full diffは保存しない。failure excerptにある `.github/scripts/<path>:<line>` / Python traceback locatorから最大3件・各9行のcode rangeをsource SHAで取得し、各2048 bytesに束縛する。未観測code locatorはbuilderのmissing fieldsへ残し、symbolや原因を推測しない。
 
 artifact名は `failure-evidence-<source run_id>-<run_attempt>`、retentionは3日、対象fileは `failure-evidence-packet.json` 1件だけとする。complete時はbuilderのcanonical `failure-evidence-packet:v1` JSON、拒否時は同schemaの `status / reason / packet:null` recordを保存する。拒否recordはcomplete packetではなく、source本文や未検証identityを含めない。どちらも32768 bytes以下とし、Job Summaryには固定status文だけを記録する。拒否時はconsumerを失敗終了するが、artifact uploadは `always()` で試みる。source runの結果は変更しない。
 
-検証は `bash .github/scripts/test-failure-evidence-collector.sh` とbuilder回帰。既存AI Workflow Regressionのfixture discoveryで到達し、source workflow自体は変更しない。#654形式の7件は引き続きsynthetic evidenceであり、naturalな次回failureのartifact取得はdefault branch反映後に確認する。packet-first diagnosisは親#658の後続、AI Developer / Claude Reviewの収集は対象外。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+検証は `bash .github/scripts/test-failure-evidence-collector.sh` とbuilder回帰。既存AI Workflow Regressionのfixture discoveryで到達し、source workflow自体は変更しない。[#654本文相当fixture](scripts/fixtures/failure-evidence-654-issue.md) は供給された#687修正要件とrepositoryの#654仕様に基づく再構成であり、実Issue本文の取得copyではない。7つのsynthetic log分岐すべてでこのDone内inline contractを使い、exact heading aliases・原文locator・重複/欠落/空値/fenced textの拒否を確認する。実Actions identity・logとの統合証拠はnaturalな次回failureのartifactでdefault branch反映後に確認する。packet-first diagnosisは親#658の後続、AI Developer / Claude Reviewの収集は対象外。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ## Product npm trusted preparation（#645、dormant）
 

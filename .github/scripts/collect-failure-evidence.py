@@ -175,13 +175,28 @@ def issue_contract(body, ident):
     require(type(body) is str and not builder.SECRET.search(body), 'issue_body_invalid')
     lines = body.splitlines(keepends=True)
     sections = []
-    fenced = False
+    impacts = []
+    fence = None
+    heading = None
     for index, line in enumerate(lines):
-        if re.match(r'^\s*(```|~~~)', line):
-            fenced = not fenced
-        match = re.match(r'^## (.+?)\s*$', line) if not fenced else None
+        marker = re.fullmatch(r'\s*(`{3,}|~{3,})(.*)', line.rstrip('\r\n'))
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = None
+            continue
+        if marker:
+            fence = marker[1]
+            continue
+        match = re.match(r'^## (.+?)\s*$', line)
         if match:
-            sections.append((index, match[1]))
+            heading = match[1]
+            sections.append((index, heading))
+        impact = re.fullmatch(
+            r'(?:- )?(Product POL / BR / REQ / AC / TC / CON / OOS (?:impact|影響)'
+            r'|Product影響):[ \t]*(.*?)[ \t]*', line.rstrip('\r\n'))
+        if impact and (impact[1] != 'Product影響' or heading in HEADINGS['done']):
+            impacts.append((index, line, impact[2]))
+    require(fence is None, 'issue_body_invalid')
     found = {}
     for pos, (start, heading) in enumerate(sections):
         end = sections[pos + 1][0] if pos + 1 < len(sections) else len(lines)
@@ -191,13 +206,12 @@ def issue_contract(body, ident):
                 require(any(line.strip() for line in lines[start + 1:end]), 'issue_section_missing')
                 found[key] = evidence(''.join(lines[start:end]), 'issue', ident,
                                       f"issue/{ident['issue_number']}/body", start + 1)
-    # Existing AI Issues also state Product impact on a single explicit line.
-    if 'product_impact' not in found:
-        matches = [(i, line) for i, line in enumerate(lines)
-                   if re.match(r'^(?:- )?Product POL / BR / REQ / AC / TC / CON / OOS (?:impact|影響):\s*\S', line)]
-        require(len(matches) != 0, 'issue_section_missing')
-        require(len(matches) == 1, 'issue_section_ambiguous', 'conflict')
-        start, line = matches[0]
+    # Count all explicit declarations, including heading + inline duplicates.
+    require(len(impacts) + ('product_impact' in found) <= 1,
+            'issue_section_ambiguous', 'conflict')
+    if impacts:
+        start, line, value = impacts[0]
+        require(bool(value.strip()), 'issue_section_missing')
         found['product_impact'] = evidence(line, 'issue', ident,
                                           f"issue/{ident['issue_number']}/body", start + 1)
     require(set(found) == builder.SECTIONS, 'issue_section_missing')
