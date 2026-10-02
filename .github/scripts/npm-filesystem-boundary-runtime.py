@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import uuid
 
 
@@ -115,17 +116,34 @@ def command(repo, root, unit, record):
             '/runtime/node', '/runtime/probe.js', json.dumps(record)]
 
 
-def service(repo, root, record):
+def service(repo, root, record, observer=None):
     unit = 'npm-filesystem-probe-' + uuid.uuid4().hex + '.service'
+    if observer:
+        record = {**record, 'unit': unit}
     launch = command(repo, root, unit, record)
+    done, errors = threading.Event(), []
+    def observe():
+        try:
+            observer(unit, done)
+        except BaseException as error:
+            errors.append(error)
+    thread = threading.Thread(target=observe) if observer else None
     try:
+        if thread:
+            thread.start()
         result = subprocess.run(launch, capture_output=True, text=True, timeout=65,
                                 env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+        if thread:
+            thread.join(12)
+            assert not thread.is_alive() and not errors, (errors, result.stderr)
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         evidence = json.loads(result.stdout)
         assert evidence['status'] == 'pass', evidence
         return evidence
     finally:
+        done.set()
+        if thread:
+            thread.join(12)
         subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'stop', unit],
                        capture_output=True, timeout=10)
         state = subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'show', unit,
@@ -133,6 +151,8 @@ def service(repo, root, record):
                                capture_output=True, text=True, timeout=10)
         assert state.returncode in (0, 1) and state.stdout.strip() == 'not-found', \
             ('unit cleanup unconfirmed', state.stdout, state.stderr)
+        if thread:
+            assert not thread.is_alive(), 'property observer cleanup failed'
 
 
 def same_uid_control(node, controls, phase):

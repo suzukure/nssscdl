@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-export WORK="$work" GH_TOKEN=fixture REVIEW_APP_TOKEN=fixture
+export WORK="$work" GH_TOKEN=workflow-fixture REVIEW_APP_TOKEN=reviewer-fixture
 head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 base=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 export head base
@@ -18,7 +18,9 @@ cp "$work/paid-start.json" "$work/accepted.json"
 : > "$work/cleanups"
 
 gh() {
-  local endpoint="${*: -1}"
+  local endpoint="${*: -1}" expected_token=workflow-fixture
+  if [ "$2" = /apps/reviewer ] || [ "$1 $2" = 'issue edit' ]; then expected_token=reviewer-fixture; fi
+  [ "${GH_TOKEN:-}" = "$expected_token" ] || { echo 'Incorrect token boundary.' >&2; return 2; }
   case "$1 $2" in
     'api --paginate')
       case "$endpoint" in
@@ -95,7 +97,21 @@ gh() {
       [ "${CASE:-}" = no_paid ] && labels='[{"name":"ai-followup-in-progress"}]'
       jq -cn --arg head "$current" --argjson labels "$labels" '{number:37,state:"open",draft:false,labels:$labels,
         head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}}}' ;;
-    'api /apps/reviewer') echo 99 ;;
+    'api /apps/reviewer')
+      case "${CASE:-}" in
+        app_403) echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; return 1 ;;
+        app_malformed) echo '{raw-app-response' ;;
+        app_empty) : ;;
+        app_multiple) printf '%s\n' '{"slug":"reviewer","id":99}' '{"slug":"reviewer","id":99}' ;;
+        app_slug) echo '{"slug":"other","id":99,"fixture":"raw-app-response"}' ;;
+        app_no_slug) echo '{"id":99}' ;;
+        app_string) echo '{"slug":"reviewer","id":"99"}' ;;
+        app_null) echo '{"slug":"reviewer","id":null}' ;;
+        app_zero) echo '{"slug":"reviewer","id":0}' ;;
+        app_negative) echo '{"slug":"reviewer","id":-1}' ;;
+        app_fraction) echo '{"slug":"reviewer","id":1.5}' ;;
+        *) echo '{"slug":"reviewer","id":99}' ;;
+      esac ;;
     'pr view')
       if [ "${CASE:-}" = ambiguous_relation ]; then echo '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","closingIssuesReferences":[]}' ; return; fi
       jq -cn --arg head "$head" '{headRefOid:$head,
@@ -106,11 +122,13 @@ gh() {
 }
 bash() {
   if [[ "$1" == */create-human-pause.sh ]]; then
+    [ "${GH_TOKEN:-}" = reviewer-fixture ] && [ "$6" = 99 ] || return 2
     if [ "$2" = inspect ]; then echo '{"result":"already_active","pause_id":"101"}'; return; fi
     if [ -s "$WORK/pauses" ]; then echo '{"result":"already_active","pause_id":"101"}'; return; fi
     echo "$*" >> "$WORK/pauses"
     echo '{"result":"created","pause_id":"101"}'
   elif [[ "$1" == */list-human-pause-records.sh ]]; then
+    [ "${GH_TOKEN:-}" = reviewer-fixture ] && [ "$5" = 99 ] || return 2
     echo '{}'
   elif [[ "$1" == */reconcile-human-pause-active-pause.sh ]]; then
     cat >/dev/null
@@ -148,6 +166,17 @@ done
 if run_case wrong_source >/dev/null 2>&1; then
   echo 'Untrusted source workflow was accepted.' >&2; exit 1
 fi
+for bad_case in app_403 app_malformed app_empty app_multiple app_slug app_no_slug \
+  app_string app_null app_zero app_negative app_fraction; do
+  if run_case "$bad_case" > "$work/app-error" 2>&1; then
+    echo "$bad_case was trusted." >&2; exit 1
+  fi
+  grep -Fq 'reviewer App' "$work/app-error"
+  if grep -Eq 'raw-app-response|workflow-fixture|reviewer-fixture' "$work/app-error"; then
+    echo 'App lookup leaked response or credentials.' >&2; exit 1
+  fi
+  [ ! -s "$work/pauses" ] && [ ! -s "$work/cleanups" ]
+done
 for case_name in failure timeout cancel classified normal_skipped label_lost; do
   : > "$work/pauses"; : > "$work/cleanups"
   run_case "$case_name" >/dev/null

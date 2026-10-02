@@ -55,6 +55,8 @@ jobs:
         id: benchmark
         env:
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+          DEEPINFRA_USAGE_PATH: ${{ runner.temp }}/deepinfra-usage.json
+          DEEPINFRA_USAGE_KIND: review_benchmark
           GH_TOKEN: ${{ github.token }}
           CASE_ID: ${{ inputs.case_id }}
           MODEL_ID: ${{ inputs.model_id }}
@@ -75,6 +77,15 @@ jobs:
           test -s "$RESULT_MD"
           cat "$RESULT_MD" >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+
+      - name: Upload DeepInfra usage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deepinfra-usage-review_benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deepinfra-usage.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload benchmark result
         if: always()

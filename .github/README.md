@@ -119,7 +119,7 @@ pure / mockでcontract改変時のnpm未起動、config / install各operationの
 
 ## npm initial lock lifecycle proof（#660、dormant）
 
-検証は `bash .github/scripts/test-npm-initial-lock.sh`。[`npm-initial-lock-runtime.py`](scripts/npm-initial-lock-runtime.py) と [`npm-initial-lock-probe.js`](scripts/npm-initial-lock-probe.js) は#650の分割fixtureであり、production launcherではない。#645の`manifest_dependencies`を再利用し、disposable rootのtop-level dependencyは`initial-lock-dependency:1.0.0`だけとする。Product package/versionの選定やpolicy変更は行わない。#654のroot construction / `isolationPreflight` / exact service command / hardening / unit cleanupを再利用するが、registry-only/network/filesystem境界との統合は#661に残す。
+検証は `bash .github/scripts/test-npm-initial-lock.sh`。[`npm-initial-lock-runtime.py`](scripts/npm-initial-lock-runtime.py) と [`npm-initial-lock-probe.js`](scripts/npm-initial-lock-probe.js) は#650の分割fixtureであり、production launcherではない。#645の`manifest_dependencies`を再利用し、disposable rootのtop-level dependencyは`initial-lock-dependency:1.0.0`だけとする。Product package/versionの選定やpolicy変更は行わない。#654のroot construction / `isolationPreflight` / exact service command / hardening / unit cleanupを再利用するが、registry-only/network/filesystem境界との統合は下記#661の独立fixtureで扱う。
 
 initial-lock生成commandの正本はprobeの`command('lock', port)`で、引数の順序・個数も完全一致を要求する。`port`はtrusted local fixtureの整数`1024..65535`だけとし、hostname解決・外部network・upstream forwardingは行わない。
 
@@ -141,4 +141,29 @@ local registryはdependencyのexact metadata（scripts / tarball URL / integrity
 
 空cache・lockなしから開始し、candidate以外のlock、`node_modules`、symlink/特殊file、専用cache以外のpath・bytes変更を拒否する。candidateの存在とfixture identityを確認するだけで、generated lockの最終validation/provenanceは#662の責務とする。local real npmと独立restricted serviceのそれぞれで2 fresh fixturesを実行し、成功・失敗時ともroot / host sentinel / registry thread・socketをcleanupする。unit停止・collectは#654を正本とする。
 
-既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-up / #645 preparationからはunreachable。制限されたCodex環境でsocketが`EPERM`ならlocal real npmを`SKIP`とし、継承service境界では独立systemd runtimeも`SKIP`にする。これらは実command成功・lifecycle非実行のformal evidenceではない。独立runnerではlocal operationとsystemd runtimeを必須にし、systemd不在も失敗とする。#660のDone判定には独立runnerの成功証拠を確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後続は#661（境界統合）/ #662（lock validation/provenance）、production wiringは#647に残す。
+既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-up / #645 preparationからはunreachable。制限されたCodex環境でsocketが`EPERM`ならlocal real npmを`SKIP`とし、継承service境界では独立systemd runtimeも`SKIP`にする。これらは実command成功・lifecycle非実行のformal evidenceではない。独立runnerではlocal operationとsystemd runtimeを必須にし、systemd不在も失敗とする。#660のDone判定には独立runnerの成功証拠を確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。境界統合は下記#661、後続のlock validation/provenanceは#662、production wiringは#647の責務とする。
+
+
+## npm registry-only initial lock integration（#661、dormant）
+
+検証は `bash .github/scripts/test-npm-registry-lock.sh`。[`npm-registry-lock-runtime.py`](scripts/npm-registry-lock-runtime.py) / [`npm-registry-lock-probe.js`](scripts/npm-registry-lock-probe.js) は固定official fixture `is-number:7.0.0` 専用で、Product dependency選定やproduction launcherではない。#645のmanifest policy、#654のRootDirectory構築・`isolationPreflight`・service command・hardening・unit cleanup、#649の別UID CONNECT proxyと実効property observerを再利用する。observerは共通関数へ抽出し、10秒期限・完全一致検証・root所有snapshotのatomic publishを維持する。追加observerなしの既存filesystem/lifecycle serviceは従来のcommandを使用する。
+
+exact manifest bytesをdisposable `/project/package.json` とroot所有の読取専用 `/runtime/manifest.json` に固定し、trusted側でSHA-256を記録する。同じservice内でsnapshotとのbytes/hash一致とfixture manifest全体（rootの4 lifecycle eventsを含む）をnpm開始前・完了後に確認する。dependency sourceやProduct workspaceをstageしない。これはfixtureの入力・runtime確認であり、#662の最終provenance形式を定義しない。
+
+source provenanceとruntime isolation boundaryを分離する。sourceの正本は`select_runtime()` / `runtime_provenance()`で、既存Node hardening fixtureと同じ固定root `/opt/hostedtoolcache/node` のinstalled Node 24/x64 candidateをpath降順に並べ、先頭を選択する。新規download/installやPATH fallbackは行わない。選択したversion directoryは `24.<整数>.<整数>`、Node実fileは同prefixの `bin/node`、npm launcher解決先は同prefixの `lib/node_modules/npm/bin/npm-cli.js` と完全一致させる。symlink全hopは選択distribution内、npm treeのlinkはnpm distribution内に限定し、loop・dangling link・特殊fileを拒否する。npm package metadataのname/bin/versionと選択Nodeで起動する両version commandの結果を照合し、source path / selected root / Node/npm version / Node・npm CLIのSHA-256をrun evidenceへ記録する。candidateなし・layout/pairing不一致・read/hash/version確認失敗はstaging/proxy/service開始前に停止し、別candidateへfallbackしない。
+
+host source全ancestorのowner/mode/ACLをworkload isolationの合否条件にはしない。`/usr/local` / `/opt` 等を個別allowlistせず、host-global chmod/chownも行わない。trusted workflow/base/helper/runner imageをsetup側のtrust rootとし、このfixtureでrunner image自体の改竄耐性を証明するとは扱わない。sourceから必要runtimeだけをdisposable build rootへcopyし、そのNode/npm CLI hashがsource選択時と一致した後に `/run` 配下のfresh stagingへroot権限でcopyする。
+
+実行時security boundaryの正本は`staged_snapshot()`が検証するroot-owned staged runtime snapshotである。restricted service起動前にstaging parent（rootから `/run` を含む）/ RootDirectory / runtime tree / ELF closure / boundary marker / manifest snapshotのroot UID/GID・group/other非書換・特殊permission不在・型を確認する。access ACLは拒否し、検査errorも `ENODATA` 以外はfail-closed。npm tree内の相対symlinkだけをcontainment検証して受理し、その他のsymlinkを拒否する。project/tmpだけを`nobody:nogroup`所有にし、marker token / manifest hash・bytes / sourceとstaged Node/npm hashの一致を検証完了してから既存serviceを起動する。service内のruntime/manifest書込不能と既存`ProtectSystem=strict`も維持する。service完了後もsnapshot・manifest・Node/npm hashを再検証し、sourceとstaged hashの対応をrun evidenceへ含める。
+
+mockはmode `0777` のhost ancestorを含むsource選択成功、複数installed candidateの降順選択、unsafe PATH先頭非参照、source/pairing/symlink/read失敗時の停止、staged parent/runtime/library/marker/manifestのowner・mode・ACL違反とhash不一致時のservice未起動、完了後の不一致拒否を固定する。正式な実配置の受理・official candidate生成・2 fresh runs・proxy unavailable fail-closedは自然に走るAI Workflow Regressionで確認する。
+
+#660の `command('lock', port)` / `runNpm` / npm env / config検査を変更せず使用する。[`npm-registry-lock-adapter.js`](scripts/npm-registry-lock-adapter.js) は同じrestricted service内の別Node processで、既存proxyにexact `CONNECT registry.npmjs.org:443` を行い、official hostname/certificateを検証したTLS socketで固定 `GET /is-number/7.0.0` だけを取得する。DNSやdirect dial、redirect、retryは行わず、5秒・64 KiB・HTTP 200・fixture identityを要求する。そのmetadataのversion entryを変更せず単一versionのpackumentへ包み、localhostの `GET /is-number` だけに返す。他method/path、tarball requestは403で拒否する。一般HTTP forwarderではなく、#649 proxyのCONNECT allowlistとpublic-address制限を変更しない。npm commandのlocalhost portはこのadapterを指す。
+
+serviceはnpm開始前に自身のunit identityに対応したroot所有のvalidated property snapshotを確認する。同じrunner-local IP/portへのUDP `EPERM`、TCP `EPERM`またはtimeout、trusted listenerのaccept不存在と隔離外の前後TCP/UDP成功controlを要求する。arbitrary git / remote tarballとlocal file / directory / workspace sourceの独立証拠は既存#652/#654回帰を正本とし、再実装しない。envは既存固定値だけを使い、Secrets / GitHub write tokenを継承しない。host-global firewall/socket/mountを変更しない。
+
+空cache・lockなしからconfig確認とexact lock commandを各1回実行し、#660 inventoryでmarkerなし・node_modulesなし・cache/candidate以外の変更なしを要求する。candidate存在とfixture version/official tarball URLだけを確認し、最終source/integrity検証は#662へ残す。adapterの観測でmetadata requestが1件以上、content/unsupported requestが0件を要求し、dependency execution経路を`not-entered`と記録する。adapter/process/socket、service/unit、root、proxyを成功・失敗時ともcleanupする。
+
+独立runnerでは2 fresh成功runsに加え、各cycleでproxyを停止して別のfresh rootを起動し、npm未起動・candidateなしのfail-closedを確認する。root再利用、workspace差分、host socket/resolver変更、cleanup不成立は拒否する。pure/mockは外部通信なしでmetadata異常・proxy障害・manifest/runtime/property不一致・direct deny不成立・npm失敗・marker/unexpected artifact・cleanup失敗を確認する。制限されたCodex serviceでは実runtimeを`SKIP`とし、official registry到達・candidate生成・実効境界の正式証拠と扱わない。独立GitHub Actions runnerではsystemd不在も失敗とし、自然に走るAI Workflow Regressionの結果で実証を確認する。
+
+既存`test-*.sh` discovery以外のworkflow配線を追加せず、production developer / follow-up / #645からunreachableを維持する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。後続は#662（candidateの最終validation / provenance / #645 handoff）、production wiringは#647に残す。
