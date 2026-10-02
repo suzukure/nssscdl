@@ -206,7 +206,13 @@ jq -e --arg repo "$repo" --arg head "$head_sha" --argjson issue "$issue_number" 
 ' <<< "$relation" >/dev/null || fail 'closing Issueの関連付けが変化したか曖昧です'
 
 # A pause write may have succeeded even when the job lost its response.
-app_id="$(gh api "/apps/$app_slug" --jq .id)" || fail 'reviewer App IDを取得できません'
+# Only App identity lookup switches from the workflow token to the reviewer token.
+GH_TOKEN="${REVIEW_APP_TOKEN:?reviewer App token required}" \
+  gh api "/apps/$app_slug" > "$tmp/app.json" 2>/dev/null || fail 'reviewer App IDを取得できません'
+app_id="$(jq -ser --arg slug "$app_slug" '
+  select(length == 1) | .[0] | select(type == "object" and .slug == $slug)
+  | .id | select(type == "number" and floor == . and . > 0)
+' "$tmp/app.json" 2>/dev/null)" || fail 'reviewer Appの識別情報が不正です'
 positive "$app_id" || fail 'reviewer App IDが不正です'
 active="$(
   GH_TOKEN="${REVIEW_APP_TOKEN:?reviewer App token required}" \
