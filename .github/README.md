@@ -116,3 +116,29 @@ npm spawn前にCLI / operation / envの完全一致と空のdisposable user/glob
 pure / mockでcontract改変時のnpm未起動、config / install各operationの失敗時停止、env非継承、marker / lock / unexpected artifact検出とcleanup失敗時の拒否を検証する。独立したlocal real npmの2 fresh fixtureでもservice probeと同じoperation shapeでbare project install成功、marker / lock不在、専用cache以外のinventory不変を確認する。local fixtureのscriptには実在するNodeとfixture内のmarker writerを指定し、writerは自身のdirectory配下の`markers`だけへ書き込む。service用の絶対pathがlocalでは存在しないことを非実行の根拠にせず、writerの書込先はmockで両配置について検証する。これはservice隔離の実証とは区別する。独立systemd runnerでは同じrestricted serviceで2 fresh rootsを実行し、成功・失敗時ともunit / root / fixtureをcleanupする。制限されたCodex service内では独立runtimeを`SKIP`とし、実効service境界の実証済みと扱わない。独立GitHub Actions runnerでsystemdがない場合は失敗する。
 
 既存AI Workflow Regressionの`test-*.sh` discoveryだけで検出され、production developer / follow-upからはunreachable。外部network proof、paid diagnostic、initial lock生成、production wiringは追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。#650は本Issueと#654の独立runner evidenceを確認し、merge後のlatest mainでfresh scope評価してinitial lock生成へ進む。production wiringは#647に残す。
+
+## npm initial lock lifecycle proof（#660、dormant）
+
+検証は `bash .github/scripts/test-npm-initial-lock.sh`。[`npm-initial-lock-runtime.py`](scripts/npm-initial-lock-runtime.py) と [`npm-initial-lock-probe.js`](scripts/npm-initial-lock-probe.js) は#650の分割fixtureであり、production launcherではない。#645の`manifest_dependencies`を再利用し、disposable rootのtop-level dependencyは`initial-lock-dependency:1.0.0`だけとする。Product package/versionの選定やpolicy変更は行わない。#654のroot construction / `isolationPreflight` / exact service command / hardening / unit cleanupを再利用するが、registry-only/network/filesystem境界との統合は#661に残す。
+
+initial-lock生成commandの正本はprobeの`command('lock', port)`で、引数の順序・個数も完全一致を要求する。`port`はtrusted local fixtureの整数`1024..65535`だけとし、hostname解決・外部network・upstream forwardingは行わない。
+
+```bash
+/runtime/node /runtime/npm/bin/npm-cli.js \
+  --ignore-scripts --package-lock=true --lockfile-version=3 \
+  --audit=false --fund=false --update-notifier=false --workspaces=false \
+  --include=dev --include=optional --include=peer \
+  --fetch-retries=0 --fetch-timeout=5000 --registry=http://127.0.0.1:<port>/ \
+  --userconfig=/project/empty.npmrc --globalconfig=/project/global.npmrc \
+  --cache=/project/cache install --package-lock-only --json
+```
+
+cwdは`/project`、npm envは`PATH=/runtime` / `HOME=/project` / `LC_ALL=C`だけに固定する。user/global/built-in npmrcはdisposable copyで空とし、project `.npmrc`はdangling symlinkも含め不在を要求する。npm起動前にCLI / env / configを検証し、disable flagの欠落・重複・上書き、alternate config、credential-like env、npm config env、proxy、unsupported operationを拒否する。同じflag setによる`config get ignore-scripts`が`true`となった後に固定commandを1回だけ実行する。timeout・npm failure・unsupported result・marker・unexpected artifactはfail-closedで、scripts-enabled、別command、host-global npmへのfallback/retryはない。
+
+root projectとdependency fixtureの`preinstall` / `install` / `postinstall` / `prepare`は実在するNodeとmarker writerを参照し、npm開始前にmanifest全体を完全一致で検証する。fixture tarballはPythonで直接生成し、`npm pack`を使用しない。writerはproject markerとmanaged host sentinelへの書込を試み、host sentinelがRootDirectory内で`ENOENT`でもproject markerは生成する。host sentinelは隔離外ではservice UIDから書込可能なfixtureとし、trusted側で空のままであることを要求する。writerの両書込・`ENOENT`時のproject書込はmockのみで検証し、scripts-enabled controlは実行しない。
+
+local registryはdependencyのexact metadata（scripts / tarball URL / integrityを含む）だけを返し、tarballやその他requestは拒否する。trusted側の観測でmetadata requestが1件以上、tarball/unsupported requestが0件であることを要求する。成功証拠はNode/npm version、exact command、candidate `package-lock.json`、project marker 0件、`host_side_effects:0`、`tarball_requests:0`、`dependency_execution_path:not-entered`を含む。このcommandではdependency package content/script execution経路へ入らないことを証拠とし、「dependency scriptを抑止した」とは扱わない。#656のbare install proofや、formal runnerで観測した`npm pack --ignore-scripts`による`prepare`起動を全npm経路の非実行証明へ拡張しない。
+
+空cache・lockなしから開始し、candidate以外のlock、`node_modules`、symlink/特殊file、専用cache以外のpath・bytes変更を拒否する。candidateの存在とfixture identityを確認するだけで、generated lockの最終validation/provenanceは#662の責務とする。local real npmと独立restricted serviceのそれぞれで2 fresh fixturesを実行し、成功・失敗時ともroot / host sentinel / registry thread・socketをcleanupする。unit停止・collectは#654を正本とする。
+
+既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-up / #645 preparationからはunreachable。制限されたCodex環境でsocketが`EPERM`ならlocal real npmを`SKIP`とし、継承service境界では独立systemd runtimeも`SKIP`にする。これらは実command成功・lifecycle非実行のformal evidenceではない。独立runnerではlocal operationとsystemd runtimeを必須にし、systemd不在も失敗とする。#660のDone判定には独立runnerの成功証拠を確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの変更はない。後続は#661（境界統合）/ #662（lock validation/provenance）、production wiringは#647に残す。
