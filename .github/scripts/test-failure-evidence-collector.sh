@@ -47,8 +47,13 @@ prefix = f'/repos/{repo}'
 fixtures = json.loads((repo_root / '.github/scripts/fixtures/failure-evidence-654.json').read_text())
 
 
-def logtext(text):
-    return ('Fixtures\tCheckout\t2026-10-01T00:00:00Z checkout passed\n' + ''.join(
+def logtext(text, credential='***'):
+    # Actions checkout input echo, reconstructed in gh run view --log format.
+    checkout = ['##[group]Run actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803',
+                'with:', '  repository: fixture/repository', '  token: ' + credential,
+                '  persist-credentials: false', '##[endgroup]', 'checkout passed']
+    return (''.join('Fixtures\tCheckout\t2026-10-01T00:00:00Z ' + line + '\n'
+                   for line in checkout) + ''.join(
         'Fixtures\tRun AI workflow fixtures\t2026-10-01T00:00:01Z ' + line + '\n'
         for line in text.splitlines())).encode()
 
@@ -131,6 +136,33 @@ for case in fixtures['cases']:
     assert impact['locator']['line_start'] == impact['locator']['line_end'] == start
     assert impact['provenance'] == 'untrusted_issue' and not impact['truncated']
     assert impact_line in packet['contract']['issue']['done']['text']
+
+# Mask displays survive both selected failure and preceding pass builder scans.
+packet = accepted(snapshot('Authorization: Bearer ***\n' + fixtures['cases'][0]['log']))
+assert 'Bearer ***' in packet['failure']['first_failing_step']['log']['text']
+assert 'with:' in packet['failure']['preceding_pass'][0]['log']['text']
+assert 'token: ***' in packet['failure']['preceding_pass'][0]['log']['text']
+values = snapshot()
+values[prefix + '/issues/654']['body'] = body.replace(goal_text, goal_text + '\ntoken: ***\n')
+values[prefix + '/contents/' + code_path + '?ref=' + 'b' * 40]['content'] = base64.b64encode(
+    b'// token: ***\nthrow new Error("observed");\n').decode()
+packet = accepted(values)
+assert 'token: ***' in packet['contract']['issue']['goal']['text']
+assert 'token: ***' in packet['repository']['code'][0]['text']
+for value in ['fixture-sensitive-value', '**', '****', '***suffix', 'prefix***',
+              '"***"', 'ghp_' + 'Z' * 30, 'sk-' + 'Z' * 30,
+              'Bearer fixture-sensitive-value', '-----BEGIN PRIVATE KEY-----']:
+    values = snapshot()
+    values['log'] = logtext(fixtures['cases'][0]['log'], credential=value)
+    result, _ = refused(values, 'incomplete')
+    assert result['reason'] == 'secret_like_evidence'
+    assert value not in json.dumps(result)
+# Full-source scanning still rejects values beyond the retained failure window.
+for assignment in ['token: fixture-sensitive-value', 'Bearer fixture-sensitive-value',
+                   'token: ***suffix', 'Bearer ****']:
+    values = snapshot('Error: observed\n' + 'safe\n' * 10000 + assignment)
+    result, _ = refused(values, 'incomplete')
+    assert result['reason'] == 'secret_like_evidence'
 
 # Every trusted run attribute is fresh-checked. Delayed attempts cannot use newer logs.
 for key, value in [('name', 'Other'), ('path', '.github/workflows/other.yml'), ('run_attempt', 2),
@@ -371,5 +403,5 @@ assert 'retention-days: 3' in workflow and 'if-no-files-found: error' in workflo
 assert 'failure-evidence-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}' in workflow
 assert 'if: always()' in workflow and workflow.count('uses: actions/upload-artifact@') == 1
 assert 'workflow_run.head_sha' not in workflow and 'download-artifact' not in workflow
-print('failure evidence collector: 7 synthetic #654 packets with body-equivalent Done inline contract; exact aliases, locators, fail-closed ambiguity, identity, stale, bounded logs, cap, inert evidence, read-only wiring passed')
+print('failure evidence collector: 7 synthetic #654 packets with body-equivalent Done inline contract; Actions masked checkout/Bearer accepted, real/partial credentials rejected; exact aliases, locators, fail-closed ambiguity, identity, stale, bounded logs, cap, inert evidence, read-only wiring passed')
 PY

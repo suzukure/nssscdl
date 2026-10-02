@@ -265,21 +265,45 @@ for path in [('steps', 0, 'log'), ('repository', 'code', 0), ('contract', 'issue
     entry['provenance'] = 'model_output'
     refused(data, 'incomplete', 'untrusted_source')
 
+# Exact mask displays are observed text across every evidence scan.
+for masked in ['token: ***', 'token=***', 'password: ***', 'SECRET = ***',
+               'api_key: ***', 'api-key=***', 'Authorization: Bearer ***',
+               'token:   ***  \nBearer\t***\n', 'Bearer    ***', 'token: ***,', 'token: ***}']:
+    data = sample(masked)
+    data['steps'][1]['log'] = source(masked, 'log', 1)
+    data['contract']['issue']['goal'] = issue_source('goal', masked)
+    data['repository']['code'] = [source(masked, 'code')]
+    data['steps'].append(dict(number=3, name='unused', conclusion='skipped', fixture=None,
+                             log=source(masked, 'log', 3)))
+    packet = accepted(data)['packet']
+    assert packet['failure']['first_failing_step']['log']['text'] == masked
+    assert packet['failure']['preceding_pass'][0]['log']['text'] == masked
+
 # Secret-like values in selected OR unselected evidence are never emitted.
 for secret in ['ghp_' + 'Z' * 30, 'github_pat_' + 'Z' * 30, 'sk-' + 'Z' * 30,
                'token=fixture-sensitive-value', 'Authorization: Bearer fixture-sensitive-value',
-               '-----BEGIN PRIVATE KEY-----']:
-    for position in ('log', 'issue', 'unused'):
+               '-----BEGIN PRIVATE KEY-----'] + [prefix + value
+               for prefix in ['token: ', 'token=   ', 'password: ', 'secret=',
+                              'api_key: ', 'api-key=', 'Bearer ', 'Bearer\t']
+               for value in ['*', '**', '****', '*****', '***suffix', 'prefix***',
+                             '"***"', "'***'", '***;']]:
+    for position in ('log', 'issue', 'unused', 'pass', 'code'):
         data = sample()
         if position == 'issue':
             data['contract']['issue']['goal'] = issue_source('goal', secret)
         elif position == 'log':
             data['steps'][0]['log'] = source('x' * 5000 + '\n' + secret, 'log', 2)
+        elif position == 'pass':
+            data['steps'][1]['log'] = source(secret, 'log', 1)
+        elif position == 'code':
+            data['repository']['code'] = [source(secret, 'code')]
         else:
             data['steps'].append(dict(number=3, name='unused', conclusion='skipped', fixture=None,
                                      log=source(secret, 'log', 3)))
         rejected = refused(data, 'incomplete', 'secret_like_evidence')
         assert secret not in builder.canonical(rejected)
+for secret in ['Bearer ***,', 'Bearer ***}']:
+    refused(sample(secret), 'incomplete', 'secret_like_evidence')
 
 # Non-PR identity is accepted explicitly, never inferred; stale main rejected.
 data = sample()
