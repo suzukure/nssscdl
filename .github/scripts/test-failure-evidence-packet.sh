@@ -298,7 +298,7 @@ accepted(data)
 data['identity']['current_main_sha'] = 'c' * 40
 refused(data, 'stale')
 
-# Pure computation: no environment, writes, sockets, subprocesses, or collector.
+# Pure computation: no environment, writes, sockets, or subprocesses.
 tree = ast.parse(script.read_text())
 imports = {node.names[0].name for node in ast.walk(tree) if isinstance(node, ast.Import)}
 assert imports == {'copy', 'datetime', 'json', 're'}
@@ -311,7 +311,7 @@ for workflow in (repo / '.github/workflows').glob('*.yml'):
 assert 'fixtures=(.github/scripts/test-*.sh)' in (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
 references = [p for p in (repo / '.github/scripts').glob('*') if p.is_file()
               and script.name in p.read_text()]
-assert {p.name for p in references} == {'test-failure-evidence-packet.sh'}, references
+assert {p.name for p in references} == {'test-failure-evidence-packet.sh', 'collect-failure-evidence.py'}, references
 assert not {'root_cause', 'safe', 'unsafe', 'allowlist', 'fix', 'model', 'policy'} & set(accepted(sample())['packet'])
-print(f'failure evidence packet: 7 synthetic #654 replays complete ({min(sizes)}..{max(sizes)} UTF-8 bytes); exact 32768 cap/identity/truncation/fail-closed/purity/dormant passed')
+print(f'failure evidence packet: 7 synthetic #654 replays complete ({min(sizes)}..{max(sizes)} UTF-8 bytes); exact 32768 cap/identity/truncation/fail-closed/purity passed')
 PY

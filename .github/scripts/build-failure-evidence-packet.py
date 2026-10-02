@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dormant #686 pure builder. No collector, CLI, model, or filesystem access."""
+"""#686 pure builder. No collector, CLI, model, or filesystem access."""
 
 import copy
 import datetime as dt
