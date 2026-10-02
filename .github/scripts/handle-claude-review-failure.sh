@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Handles one completed Claude Review run. All API reads use the workflow token;
-# only the existing pause producer receives the reviewer App installation token.
+# Handles one completed Claude Review run. Ordinary reads use the workflow token;
+# App identity lookup and the pause producer use the reviewer installation token.
 repo="${1:?repository required}"
 run_id="${2:?run ID required}"
 event_attempt="${3:?run attempt required}"
@@ -171,7 +171,12 @@ gh api "/repos/$repo/pulls/$pr_number" > "$tmp/pr-now.json" || fail 'PRの最新
 jq -e --arg repo "$repo" --arg head "$source_head" '
   .state == "open" and .draft == false and .head.repo.full_name == $repo and .head.sha == $head
 ' "$tmp/pr-now.json" > /dev/null || { echo '{"result":"stale_pr"}'; exit 0; }
-app_id="$(gh api "/apps/$app_slug" --jq '.id')" || fail 'reviewer App IDを取得できません'
+GH_TOKEN="${REVIEW_APP_TOKEN:?reviewer App token required}" \
+  gh api "/apps/$app_slug" > "$tmp/app.json" 2>/dev/null || fail 'reviewer App IDを取得できません'
+app_id="$(jq -ser --arg slug "$app_slug" '
+  select(length == 1) | .[0] | select(type == "object" and .slug == $slug)
+  | .id | select(type == "number" and floor == . and . > 0)
+' "$tmp/app.json" 2>/dev/null)" || fail 'reviewer Appの識別情報が不正です'
 positive "$app_id" || fail 'reviewer App IDが不正です'
 GH_TOKEN="${REVIEW_APP_TOKEN:?reviewer App token required}" \
   bash "$script_dir/create-human-pause.sh" create "$repo" - "$pr_number" "$app_id" \
