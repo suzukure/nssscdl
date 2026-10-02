@@ -148,7 +148,7 @@ function cacheWriteControl() {
   }
 }
 
-function probe(input) {
+function isolationPreflight(input) {
   // A missing/mismatched boundary must fail before any package-manager command.
   const info = fs.statSync('/boundary.json');
   assert.equal(info.uid, 0);
@@ -173,6 +173,10 @@ function probe(input) {
   }
   assert.deepEqual(Object.keys(process.env).sort(), ['HOME', 'LC_ALL', 'PATH']);
   cacheWriteControl();
+}
+
+function probe(input) {
+  isolationPreflight(input);
   const npm = ['/runtime/npm/bin/npm-cli.js', '--offline', '--ignore-scripts',
     '--package-lock=false', '--audit=false', '--fund=false', '--update-notifier=false',
     '--userconfig=/project/empty.npmrc', '--globalconfig=/project/global.npmrc',
@@ -231,10 +235,13 @@ function probe(input) {
   return { status: 'pass', visible_source_root: '/project', host_sources: 'hidden', failures };
 }
 
+module.exports = { isolationPreflight };
+if (require.main === module) {
 try {
   console.log(JSON.stringify(probe(JSON.parse(process.argv[2]))));
 } catch (error) {
   // Fixture input contains local paths only; never print inherited configuration.
   console.error(String(error));
   process.exitCode = 1;
+}
 }
