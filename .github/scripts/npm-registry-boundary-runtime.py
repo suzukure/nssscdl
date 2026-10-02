@@ -123,6 +123,8 @@ def observe_properties(unit, staged, boundary, done):
 def service(repo, staged, address, servers, proxy_port=None, expect_error=False, source_tools=None,
             preparation_tools=None):
     boundary = load(staged / "codex-network-boundary.py", "runtime_network_boundary")
+    preparation_adapter = (load(staged / 'npm-locked-preparation.py', 'preparation_diagnostics')
+                           if preparation_tools is not None else None)
     unit = "codex-network-probe-" + uuid.uuid4().hex + ".service"
     properties = ("Type=exec", "RuntimeMaxSec=240s" if preparation_tools is not None else
                   "RuntimeMaxSec=70s" if source_tools is not None else "RuntimeMaxSec=45s",
@@ -172,13 +174,43 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False,
     try:
         if observer:
             observer.start()
-        result = subprocess.run(command, capture_output=True, text=True,
-                                timeout=250 if preparation_tools is not None else
-                                80 if source_tools is not None else 55)
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=250 if preparation_tools is not None else
+                                    80 if source_tools is not None else 55)
+        except (OSError, subprocess.SubprocessError) as error:
+            if preparation_adapter is None:
+                raise
+            category = 'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'launch-error'
+            print(json.dumps({'service_result': category, 'diagnostic': None}), flush=True)
+            raise AssertionError('restricted-preparation-service-failed') from None
+        if preparation_adapter is not None:
+            # Failure stdout/stderr and exception text are never diagnostic evidence.
+            try:
+                evidence = json.loads(result.stdout)
+                progress = preparation_adapter.validate_diagnostic(evidence['diagnostic'])
+                passed = evidence['status'] == 'pass'
+                assert progress['service_result'] == ('pass' if passed else 'error')
+                assert passed or (set(evidence) == {'status', 'reason', 'diagnostic'}
+                                  and evidence['status'] == 'error'
+                                  and evidence['reason'] == 'restricted-preparation-failed')
+            except Exception:
+                print(json.dumps({'service_result': 'invalid-evidence', 'diagnostic': None}), flush=True)
+                raise AssertionError('invalid-preparation-evidence') from None
+            print(json.dumps({'service_result': 'pass' if result.returncode == 0 and passed
+                              else 'worker-error', 'diagnostic': progress}, sort_keys=True), flush=True)
         if observer:
             observer.join(12)
+            if preparation_adapter is not None:
+                if observer.is_alive() or observer_errors:
+                    print(json.dumps({'service_result': 'observer-error', 'diagnostic': progress},
+                                     sort_keys=True), flush=True)
+                    raise AssertionError('preparation-observer-failed')
             assert not observer.is_alive() and not observer_errors, \
                 (observer_errors, result.returncode, result.stdout, result.stderr)
+        if preparation_adapter is not None:
+            assert result.returncode == 0 and passed, 'restricted-preparation-service-failed'
+            return evidence
         evidence = json.loads(result.stdout) if result.stdout else None
         if expect_error and source_tools is None and preparation_tools is None:
             assert result.returncode != 0 and evidence == {"status": "error", "reason": "proxy-unavailable"}, \

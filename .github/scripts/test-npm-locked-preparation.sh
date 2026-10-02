@@ -3,8 +3,10 @@ set -euo pipefail
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root" <<'PY'
 import base64
+import ast
 from contextlib import ExitStack
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -48,6 +50,19 @@ def reject(call):
     raise AssertionError('unsafe restricted preparation accepted')
 
 source_hashes = {name: validator.sha((scripts / name).read_bytes()) for name in helper.SOURCES}
+# The diagnostic allowlist cannot silently diverge from existing #645 reasons.
+canonical_tree = ast.parse((scripts / 'prepare-product-npm.py').read_text())
+canonical_reasons = set()
+for expression in ast.walk(canonical_tree):
+    if isinstance(expression, ast.Call):
+        if isinstance(expression.func, ast.Name) and expression.func.id in ('require', 'Rejected'):
+            argument = expression.args[-1]
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                canonical_reasons.add(argument.value)
+    if isinstance(expression, ast.Constant) and expression.value in (
+            'invalid-input-or-filesystem', 'provenance-write-failed'):
+        canonical_reasons.add(expression.value)
+assert helper.CANONICAL_REASONS == canonical_reasons
 
 with tempfile.TemporaryDirectory(prefix='locked-worker-mock-') as temporary:
     staged = Path(temporary)
@@ -87,6 +102,8 @@ with tempfile.TemporaryDirectory(prefix='locked-worker-mock-') as temporary:
         evidence = helper.worker(args)
         assert boundary.call_count == 1 and len(calls) == 3
         assert evidence['status'] == 'pass' and evidence['proxy_target'] == proxy.TARGET
+        assert evidence['diagnostic'] == {**helper.diagnostic(), 'stage': 'prepared',
+            **dict.fromkeys(helper.PROGRESS_FLAGS, True), 'service_result': 'pass'}
         assert helper.pair(frozen) == inputs
         for reason in ('proxy-unavailable', 'allowlist-mismatch', 'explicit-deny-missing',
                        'network-properties-mismatch'):
@@ -97,6 +114,64 @@ with tempfile.TemporaryDirectory(prefix='locked-worker-mock-') as temporary:
         with patch.object(validator, 'run', side_effect=validator.Rejected('partial-cache')):
             reject(lambda: helper.worker(args))
         assert validator.run is original_runner, 'canonical runner patch leaked'
+        # Run the real canonical helper for each failure stage; no npm/network.
+        for stage in helper.STAGES[:-1]:
+            progress = helper.diagnostic()
+            def fail_at_stage(command, cwd, env, timeout=180):
+                if progress['stage'] == stage:
+                    if stage == 'npm-ci':
+                        cache = Path(next(arg.split('=', 1)[1] for arg in command
+                                          if arg.startswith('--cache=')))
+                        (cache / 'partial').write_bytes(b'partial')
+                    raise validator.Rejected('tool-execution-failed')
+                output = run(command, cwd, env, timeout)
+                if stage == 'post-validate' and progress['stage'] == 'npm-ci':
+                    (cwd / 'package-lock.json').write_bytes(b'{}')
+                return output
+            with patch.object(validator, 'run', side_effect=fail_at_stage), \
+                 patch.object(proxy, 'verify_boundary', side_effect=AssertionError('private exception')
+                              if stage == 'preflight' else None,
+                              return_value={'mode': 'restricted'}):
+                reject(lambda: helper.worker(args, progress))
+            assert helper.validate_diagnostic(progress)['stage'] == stage
+            assert progress['node_version_probe_completed'] == (stage in ('npm-version', 'npm-ci', 'post-validate'))
+            assert progress['npm_version_probe_completed'] == (stage in ('npm-ci', 'post-validate'))
+            assert progress['npm_ci_entered'] == (stage in ('npm-ci', 'post-validate'))
+            assert progress['npm_ci_completed'] == (stage == 'post-validate')
+            assert progress['canonical_reason'] == (None if stage == 'preflight' else
+                'npm-input-mutated' if stage == 'post-validate' else 'tool-execution-failed')
+            assert validator.run is original_runner
+        # Unknown canonical reason and arbitrary exceptions cannot be serialized.
+        for failure in (validator.Rejected('secret token URL'), RuntimeError('secret token URL')):
+            progress = helper.diagnostic()
+            with patch.object(validator, 'run', side_effect=failure):
+                reject_failure = False
+                try:
+                    helper.worker(args, progress)
+                except Exception:
+                    reject_failure = True
+                assert reject_failure and progress['canonical_reason'] is None
+                assert 'secret' not in json.dumps(progress)
+        # A successful subprocess with invalid version bytes is distinguishable
+        # from a failed probe, while canonical #645 still rejects the version.
+        for stage in ('node-version', 'npm-version'):
+            progress = helper.diagnostic()
+            def invalid_version(command, cwd, env, timeout=180):
+                return b'invalid-version\n' if progress['stage'] == stage else run(command, cwd, env, timeout)
+            with patch.object(validator, 'run', side_effect=invalid_version):
+                reject(lambda: helper.worker(args, progress))
+            assert progress['stage'] == stage and progress['canonical_reason'] == 'invalid-tool-version'
+            flag = stage.replace('-', '_') + '_probe_completed'
+            assert progress[flag] is True and progress['npm_ci_entered'] is False
+        # CLI publishes the exact tracked failure, never a partial-cache claim.
+        with patch.object(helper.argparse.ArgumentParser, 'parse_args', return_value=args), \
+             patch.object(validator, 'run', side_effect=validator.Rejected('tool-execution-failed')), \
+             patch.object(sys, 'stdout', new_callable=io.StringIO) as output:
+            assert helper.main() == 1
+            record = json.loads(output.getvalue())
+            assert set(record) == {'status', 'reason', 'diagnostic'}
+            assert record['diagnostic']['stage'] == 'node-version'
+            assert record['diagnostic']['canonical_reason'] == 'tool-execution-failed'
     # Export only after collection; input/path/unsafe cache mismatch stops copy.
     result = evidence['preparation']
     trusted = staged / 'trusted'
@@ -113,6 +188,26 @@ with tempfile.TemporaryDirectory(prefix='locked-worker-mock-') as temporary:
     for mutation in ({'cache_path': '/tmp/cache'}, {'manifest_hash': 'wrong'},
                      {'preparation_path': '/tmp/product-npm-escape'}):
         reject(lambda: helper.export({**result, **mutation}, staged, trusted, inputs))
+
+for key in helper.diagnostic():
+    reject(lambda: helper.validate_diagnostic({k:v for k,v in helper.diagnostic().items() if k != key}))
+for mutation in ({'stage':'secret URL'}, {'canonical_reason':'secret token'}, {'extra':'secret'},
+                 {'schema_version':True}, {'npm_ci_completed':1}, {'service_result':'secret'},
+                 {'canonical_reason':[]}, {'stage':[]}):
+    reject(lambda: helper.validate_diagnostic({**helper.diagnostic(), **mutation}))
+for reason in helper.CANONICAL_REASONS:
+    helper.validate_diagnostic({**helper.diagnostic(), 'canonical_reason':reason})
+# Exercise CLI failure output too: exception text/stdout/stderr/env stay private.
+cli = ['probe', '--address', '192.0.2.1', '--unit', 'fixture', '--port', '12345',
+       '--ipv6-port', '12346', '--proxy-port', '12347', '--proxy-uid', '1000',
+       '--properties-file', '/fixed', '--workspace', '/fixed', '--run-root', '/fixed',
+       '--node', '/fixed', '--npm', '/fixed', '--protected-paths', '/fixed']
+with patch.object(sys, 'argv', ['npm-locked-preparation.py', *cli]), \
+     patch.object(helper, 'worker', side_effect=RuntimeError('secret URL token')), \
+     patch.object(sys, 'stdout', new_callable=io.StringIO) as output:
+    assert helper.main() == 1
+    assert json.loads(output.getvalue()) == {'status':'error', 'reason':'restricted-preparation-failed',
+                                           'diagnostic':helper.diagnostic()}
 
 # The shared helper cannot execute canonical preparation in its trusted parent.
 with tempfile.TemporaryDirectory(prefix='locked-unavailable-') as temporary:
@@ -134,13 +229,16 @@ commands, stopped = [], []
 def launch(command, **kwargs):
     commands.append(command)
     if '/usr/bin/systemd-run' in command:
-        return SimpleNamespace(returncode=0, stdout=json.dumps({'status':'pass'}), stderr='')
+        return SimpleNamespace(returncode=0, stdout=json.dumps(evidence), stderr='')
     stopped.append(command)
     return SimpleNamespace(returncode=0, stdout='not-found\n', stderr='')
 staged = Path('/run/npm-filesystem-fixture-AbCd1234')
 tools = {'workspace': staged / 'root/runtime/inputs', 'run-root': staged / 'root/project/preparation',
          'node': staged / 'root/runtime/node', 'npm': staged / 'root/runtime/npm/bin/npm-cli.js'}
-with patch.object(registry, 'load', return_value=network), \
+def service_load(path, name):
+    return helper if path.name == 'npm-locked-preparation.py' else network
+
+with patch.object(registry, 'load', side_effect=service_load), \
      patch.object(registry, 'observe_properties') as observe, \
      patch.object(registry.subprocess, 'run', side_effect=launch), patch('builtins.print'):
     registry.service(repo, staged, '192.0.2.1', SimpleNamespace(port=12345, ipv6_port=12346),
@@ -157,6 +255,58 @@ with patch.object(registry, 'load', return_value=network), \
      patch.object(registry.subprocess, 'run', side_effect=AssertionError('direct service started')):
     reject(lambda: registry.service(repo, staged, '192.0.2.1',
            SimpleNamespace(port=12345, ipv6_port=12346), preparation_tools=tools))
+
+# Parent logs bounded worker diagnostics before rejecting, never raw streams.
+failure_evidence = {'status':'error', 'reason':'restricted-preparation-failed', 'diagnostic':{
+    **helper.diagnostic(), 'stage':'npm-ci', 'canonical_reason':'tool-execution-failed',
+    'node_version_probe_completed':True, 'npm_version_probe_completed':True, 'npm_ci_entered':True}}
+for outcome, category in (
+    (SimpleNamespace(returncode=1, stdout=json.dumps(failure_evidence), stderr='secret stderr'), 'worker-error'),
+    (SimpleNamespace(returncode=1, stdout='secret stdout', stderr='secret stderr'), 'invalid-evidence'),
+    (SimpleNamespace(returncode=1, stdout=json.dumps({**failure_evidence,
+        'diagnostic':{**helper.diagnostic(), 'canonical_reason':'secret'}}), stderr='secret'), 'invalid-evidence'),
+    (SimpleNamespace(returncode=1, stdout=json.dumps({**failure_evidence, 'extra':'secret'}), stderr=''), 'invalid-evidence'),
+    (subprocess.TimeoutExpired(['secret command'], 250, output='secret', stderr='secret'), 'timeout'),
+    (OSError('secret exception'), 'launch-error'),
+):
+    commands.clear()
+    def failing_service(command, **kwargs):
+        if '/usr/bin/systemd-run' in command:
+            commands.append(command)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return launch(command, **kwargs)
+    with patch.object(registry, 'load', side_effect=service_load), \
+         patch.object(registry, 'observe_properties'), \
+         patch.object(registry.subprocess, 'run', side_effect=failing_service), \
+         patch.object(sys, 'stdout', new_callable=io.StringIO) as output:
+        try:
+            registry.service(repo, staged, '192.0.2.1', SimpleNamespace(port=12345, ipv6_port=12346),
+                             12347, preparation_tools=tools)
+        except AssertionError as error:
+            assert 'secret' not in str(error)
+        else:
+            raise AssertionError('failed preparation accepted')
+        record = json.loads(output.getvalue())
+        assert record['service_result'] == category and 'secret' not in output.getvalue()
+        assert record['diagnostic'] == (failure_evidence['diagnostic'] if category == 'worker-error' else None)
+        assert len([command for command in commands if '/usr/bin/systemd-run' in command]) == 1
+        assert any('stop' in command for command in commands) and any('show' in command for command in commands)
+with patch.object(registry, 'load', side_effect=service_load), \
+     patch.object(registry, 'observe_properties', side_effect=RuntimeError('secret observer')), \
+     patch.object(registry.subprocess, 'run', side_effect=launch), \
+     patch.object(sys, 'stdout', new_callable=io.StringIO) as output:
+    try:
+        registry.service(repo, staged, '192.0.2.1', SimpleNamespace(port=12345, ipv6_port=12346),
+                         12347, preparation_tools=tools)
+    except AssertionError as error:
+        assert str(error) == 'preparation-observer-failed'
+    else:
+        raise AssertionError('observer failure accepted')
+    records = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert records[-1]['service_result'] == 'observer-error' and 'secret' not in output.getvalue()
+print('locked preparation: fixed stages/reasons/flags/service categories/private failure evidence passed')
 
 # Run the actual parent adapter/control flow with local staging doubles. Each
 # failure must clean the same staged root and never execute parent-side npm.

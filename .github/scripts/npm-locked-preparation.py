@@ -16,6 +16,38 @@ import uuid
 ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
 SOURCES = ('npm-locked-preparation.py', 'prepare-product-npm.py',
            'npm-registry-proxy.py', 'codex-network-boundary.py')
+STAGES = ('preflight', 'node-version', 'npm-version', 'npm-ci', 'post-validate', 'prepared')
+# Diagnostic vocabulary only; validation remains exclusively in #645.
+CANONICAL_REASONS = frozenset('''unsafe-path unsafe-input input-too-large duplicate-json-key
+invalid-json invalid-json-object unsupported-manifest-mechanism invalid-dependencies
+non-exact-dependency dependency-conflict unsafe-lock-path invalid-locked-version
+unsupported-lock-entry locked-name-mismatch non-registry-source missing-integrity
+invalid-integrity invalid-locked-dependencies non-registry-dependency manifest-lock-mismatch
+unsupported-lock-version missing-lock-root invalid-legacy-lock tool-execution-failed
+unsafe-run-root overlapping-paths run-root-changed unsafe-tool-path invalid-tool-version
+npm-input-mutated invalid-input-or-filesystem provenance-write-failed'''.split())
+PROGRESS_FLAGS = ('npm_ci_entered', 'npm_ci_completed',
+                  'node_version_probe_completed', 'npm_version_probe_completed')
+
+
+def diagnostic():
+    return {'schema_version': 1, 'stage': 'preflight', 'canonical_reason': None,
+            **dict.fromkeys(PROGRESS_FLAGS, False), 'service_result': 'error'}
+
+
+def validate_diagnostic(value):
+    """Accept only a closed, non-secret schema, including on service failures."""
+    validator.require(isinstance(value, dict) and set(value) == set(diagnostic()),
+                      'invalid-preparation-diagnostic')
+    validator.require(type(value['schema_version']) is int and value['schema_version'] == 1
+                      and isinstance(value['stage'], str) and value['stage'] in STAGES
+                      and (value['canonical_reason'] is None or
+                           isinstance(value['canonical_reason'], str)
+                           and value['canonical_reason'] in CANONICAL_REASONS)
+                      and all(type(value[key]) is bool for key in PROGRESS_FLAGS)
+                      and value['service_result'] in ('pass', 'error'),
+                      'invalid-preparation-diagnostic')
+    return value
 
 
 def load(name):
@@ -50,8 +82,10 @@ def source_snapshot(staged):
     return result
 
 
-def worker(args):
+def worker(args, progress=None):
     """Only the root-owned service copy may execute online preparation."""
+    if progress is None:
+        progress = diagnostic()
     proxy = load('npm-registry-proxy')
     network = proxy.verify_boundary(args)  # #649 preflight, snapshot, direct deny, 403s.
     directory = Path(__file__).absolute().parent
@@ -71,27 +105,40 @@ def worker(args):
     def through_proxy(command, cwd, env, timeout=180):
         # Reuse every canonical #645 flag/operation. Only transport is adapted.
         if command == [str(args.node), '--version']:
-            return original_run(command, cwd, env, timeout)
+            progress['stage'] = 'node-version'
+            output = original_run(command, cwd, env, timeout)
+            progress['node_version_probe_completed'] = True
+            return output
         if command == [str(args.npm), '--version']:
-            return original_run([str(args.node), *command], cwd, env, timeout)
+            progress['stage'] = 'npm-version'
+            output = original_run([str(args.node), *command], cwd, env, timeout)
+            progress['npm_version_probe_completed'] = True
+            return output
         validator.require(command[:2] == [str(args.npm), 'ci'], 'unexpected-preparation-command')
         endpoint = 'http://127.0.0.1:' + str(args.proxy_port)
         validator.require(not any(arg.startswith(('--proxy', '--https-proxy', '--noproxy',
                           '--fetch-', '--strict-ssl')) for arg in command), 'transport-override')
-        return original_run([str(args.node), *command, '--proxy=' + endpoint,
-                             '--https-proxy=' + endpoint, '--noproxy=', '--strict-ssl=true',
-                             '--fetch-retries=0', '--fetch-timeout=10000'], cwd, env, timeout)
+        progress.update(stage='npm-ci', npm_ci_entered=True)
+        output = original_run([str(args.node), *command, '--proxy=' + endpoint,
+                              '--https-proxy=' + endpoint, '--noproxy=', '--strict-ssl=true',
+                              '--fetch-retries=0', '--fetch-timeout=10000'], cwd, env, timeout)
+        progress.update(stage='post-validate', npm_ci_completed=True)
+        return output
 
     validator.run = through_proxy
     try:
         result = validator.prepare(args.workspace, args.run_root, args.node, args.npm)
     finally:
         validator.run = original_run
+    reason = result.get('reason')
+    progress['canonical_reason'] = reason if isinstance(reason, str) and reason in CANONICAL_REASONS else None
     validator.require(result['status'] == 'prepared' and result['state'] == 'locked',
                       'restricted-preparation-failed')
     validator.require(pair(args.workspace) == inputs, 'frozen-input-mutated')
+    progress.update(stage='prepared', service_result='pass')
     return {'status': 'pass', 'preparation': result, 'network': network,
-            'proxy_target': proxy.TARGET, 'unit': args.unit}
+            'proxy_target': proxy.TARGET, 'unit': args.unit,
+            'diagnostic': validate_diagnostic(progress)}
 
 
 def export(result, staged, run_root, inputs):
@@ -237,11 +284,13 @@ def main():
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--protected-paths', required=True, nargs='+')
     args = parser.parse_args()
+    progress = diagnostic()
     try:
-        result = worker(args)
+        result = worker(args, progress)
     except Exception:
         # Never disclose config, package payloads, or inherited credentials.
-        print(json.dumps({'status': 'error', 'reason': 'restricted-preparation-failed'}))
+        print(json.dumps({'status': 'error', 'reason': 'restricted-preparation-failed',
+                          'diagnostic': validate_diagnostic(progress)}, sort_keys=True))
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0
