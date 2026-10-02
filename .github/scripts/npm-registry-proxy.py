@@ -256,7 +256,7 @@ def preflight(args):
                 raise Rejected("protected-socket-accessible")
 
 
-def probe(args):
+def verify_boundary(args):
     preflight(args)
     # Verify the real filter and direct deny BEFORE trying the registry tunnel.
     network = primitive().probe(args.address, args.port, args.ipv6_port, args.unit,
@@ -271,6 +271,11 @@ def probe(args):
         except OSError:
             raise Rejected("proxy-unavailable") from None
         require(reply == b"HTTP/1.1 403 Rejected", "proxy-deny-missing")
+    return network
+
+
+def probe(args):
+    network = verify_boundary(args)
     evidence = registry_get(args.proxy_port)
     return {"status": "pass", "network": network, "proxy": evidence,
             "arbitrary_connect": 403, "arbitrary_http": 403, "allowlist_mismatch": 403,
