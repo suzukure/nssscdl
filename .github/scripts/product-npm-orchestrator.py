@@ -2,7 +2,7 @@
 """Dormant trusted parent API. Never load from a workload-modified copy.
 
 The parent retains the returned handle in memory; serialized copies are claims.
-No CLI, bootstrap invocation, production wiring, or persistent cache.
+No CLI, production wiring, or persistent cache. Bootstrap is an explicit API.
 """
 import base64
 from contextlib import contextmanager
@@ -283,3 +283,72 @@ def prepare(workspace, run_root, node, npm):
         if artifact is not None:
             shutil.rmtree(artifact)
             require(not artifact.exists(), 'cleanup-residual')
+
+
+class ValidatedBootstrap:
+    """#662 expectation retained by the parent, separate from #682 locked setup."""
+    def __init__(self, input_handle, artifact, expected, runtime):
+        self._input = input_handle
+        self._artifact = artifact
+        self._expected = json.dumps(expected, sort_keys=True).encode()
+        self._runtime = runtime
+        self._identity = private_directory(artifact)
+        self._contracts = contracts()
+        self._active = True
+
+    def record(self):
+        return validator.parse(self._expected)
+
+    def verify(self, claim=None):
+        require(self._active, 'expired-handoff')
+        self._input.verify()
+        require(claim is None or isinstance(claim, dict)
+                and json.dumps(claim, sort_keys=True).encode() == self._expected,
+                'handoff-field-mismatch')
+        require(contracts() == self._contracts
+                and self._runtime.contract_identities(Path(__file__).absolute().parents[2])
+                == self.record()['contracts'], 'source-identity-mismatch')
+        require(private_directory(self._artifact) == self._identity, 'artifact-identity-mismatch')
+        record = self._runtime.verify_handoff(validator, self._artifact, self.record())
+        require(record['manifest_sha256'] == hashlib.sha256(self._input._pair[0]).hexdigest()
+                and read_pair(self._artifact)[0] == self._input._pair[0], 'trusted-manifest-mismatch')
+        self._input.verify()
+        return record
+
+
+@contextmanager
+def bootstrap(input_handle, run_root):
+    """Explicit #691 composition of an active #682 bootstrap-required Handoff.
+
+    Serialized claims cannot start generation. #650 selects the trusted runtime;
+    output stays #662's validated artifact, never sent to locked preparation.
+    """
+    require(type(input_handle) is Handoff, 'trusted-bootstrap-handle-required')
+    record = input_handle.verify()
+    require(record['state'] == record['status'] == 'bootstrap-required', 'bootstrap-input-required')
+    snapshot = input_handle._pair[0]
+    require(record['manifest_hash'] == validator.sha(snapshot)
+            and base64.b64decode(record['manifest_snapshot'], validate=True) == snapshot,
+            'trusted-manifest-mismatch')
+    root_identity = private_directory(run_root)
+    excluded = [input_handle._workspace, Path(__file__).absolute().parents[2]]
+    if os.environ.get('RUNNER_TEMP'):
+        excluded.append(Path(os.environ['RUNNER_TEMP']).resolve())
+    require(not any(run_root == path or run_root in path.parents or path in run_root.parents
+                    for path in excluded), 'overlapping-trusted-root')
+    runtime = load('npm-registry-lock-runtime')
+    handle = None
+    with tempfile.TemporaryDirectory(prefix='bootstrap-run-', dir=run_root) as temporary:
+        output_root = Path(temporary)
+        require(private_directory(run_root) == root_identity, 'run-root-changed')
+        artifact, expected = runtime.generate_validated(Path(__file__).absolute().parents[2],
+                                                       snapshot, output_root)
+        require(artifact.parent == output_root, 'artifact-path-mismatch')
+        try:
+            handle = ValidatedBootstrap(input_handle, artifact, expected, runtime)
+            handle.verify()
+            yield handle
+        finally:
+            if handle is not None:
+                handle._active = False
+    require(not output_root.exists(), 'cleanup-residual')

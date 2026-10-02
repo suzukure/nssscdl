@@ -13,8 +13,10 @@ function manifest(input) {
   const bytes = fs.readFileSync('/project/package.json');
   assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), input.manifest_hash);
   assert.deepEqual(bytes, fs.readFileSync('/runtime/manifest.json'));
-  assert.deepEqual(JSON.parse(bytes), { name: 'registry-lock-project', version: '1.0.0',
-    dependencies: { 'is-number': '7.0.0' }, scripts: initial.scripts(input.token, 'project') });
+  if (input.bootstrap !== true) {
+    assert.deepEqual(JSON.parse(bytes), { name: 'registry-lock-project', version: '1.0.0',
+      dependencies: { 'is-number': '7.0.0' }, scripts: initial.scripts(input.token, 'project') });
+  }
 }
 
 async function snapshot(input) {
@@ -103,7 +105,9 @@ async function probe(input) {
   assert.deepEqual(fs.readdirSync('/project/cache'), []);
   const before = initial.inventory();
   await snapshot(input); await directDeny(input);
-  const child = cp.fork('/runtime/npm-registry-lock-adapter.js', [String(input.proxy_port)], {
+  const adapterArgs = [String(input.proxy_port)];
+  if (input.bootstrap === true) adapterArgs.push(JSON.stringify(input.bootstrap_dependencies));
+  const child = cp.fork('/runtime/npm-registry-lock-adapter.js', adapterArgs, {
     execPath: '/runtime/node', execArgv: [], env: initial.npmEnv, stdio: ['ignore','ignore','ignore','ipc'],
   });
   let counts, port, candidateBytes;
@@ -126,14 +130,18 @@ async function probe(input) {
     candidateBytes = fs.readFileSync('/project/package-lock.json');
     const lock = JSON.parse(candidateBytes);
     assert.equal(lock.lockfileVersion, 3);
-    assert.equal(lock.packages['node_modules/is-number'].version, '7.0.0');
-    assert.equal(lock.packages['node_modules/is-number'].resolved,
-      'https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz');
+    if (input.bootstrap !== true) {
+      assert.equal(lock.packages['node_modules/is-number'].version, '7.0.0');
+      assert.equal(lock.packages['node_modules/is-number'].resolved,
+        'https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz');
+    }
   } finally {
     counts = await stopWorker(child);
     if (port !== undefined) await verifyClosed(port);
   }
-  assert(counts && counts.metadata > 0 && counts.denied === 0, 'content/unsupported request detected');
+  assert(counts && (counts.metadata > 0 || input.bootstrap === true &&
+    Object.keys(input.bootstrap_dependencies).length === 0 && counts.metadata === 0) &&
+    counts.denied === 0, 'content/unsupported request detected');
   assert.deepEqual(fs.readFileSync('/project/package-lock.json'), candidateBytes, 'generated candidate mutated');
   return { status: 'pass', candidate: 'package-lock.json', manifest_hash: input.manifest_hash,
     lock_hash: crypto.createHash('sha256').update(candidateBytes).digest('hex'),

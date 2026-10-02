@@ -122,7 +122,8 @@ async function integrationTests() {
     }
     return {status:0,signal:null,stdout:config?'true':'{"added":0,"removed":0,"changed":0}'};
   },fork(script,args,options){
-    workers++;assert.equal(script,'/runtime/npm-registry-lock-adapter.js');assert.deepEqual(args,['12345']);
+    workers++;assert.equal(script,'/runtime/npm-registry-lock-adapter.js');
+    assert.deepEqual(args,input.bootstrap===true?['12345',JSON.stringify(input.bootstrap_dependencies)]:['12345']);
     assert.equal(options.execPath,'/runtime/node');assert.deepEqual(options.execArgv,[]);
     assert.deepEqual(options.env,{PATH:'/runtime',HOME:'/project',LC_ALL:'C'});
     const child=new EventEmitter();child.exitCode=null;child.signalCode=null;
@@ -167,6 +168,22 @@ async function integrationTests() {
   fault='unavailable';calls=[];
   assert.deepEqual(await probe.probe({...input,expect_unavailable:true}),{
     status:'pass',fail_closed:'official-registry-unavailable',npm_started:false});assert.equal(calls.length,0);
+  // #691 receives arbitrary exact snapshot bytes, retaining #660 invocation/inventory.
+  fault='';calls=[];
+  const original=fs.readFileSync(project+'/package.json');
+  const changed=Buffer.from(JSON.stringify({...JSON.parse(original),name:'bootstrap-caller'}));
+  fs.writeFileSync(project+'/package.json',changed);fs.writeFileSync(root+'/runtime/manifest.json',changed);
+  input.bootstrap=true;input.bootstrap_dependencies={'is-number':'7.0.0'};
+  input.manifest_hash=crypto.createHash('sha256').update(changed).digest('hex');
+  try {
+    const evidence=await probe.probe(input);
+    assert.equal(evidence.manifest_hash,input.manifest_hash);
+    assert.deepEqual(evidence.command,initial.command('lock',23456));
+    assert.equal(calls.length,2);assert.equal(evidence.tarball_requests,0);
+  } finally {
+    fs.writeFileSync(project+'/package.json',original);fs.writeFileSync(root+'/runtime/manifest.json',original);
+    fs.rmSync(project+'/package-lock.json',{force:true});
+  }
 }
 (async()=>{await adapterTests();await integrationTests();})().catch(e=>{console.error(e);process.exitCode=1;});
 '''
