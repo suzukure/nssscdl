@@ -196,6 +196,43 @@ def marker(record):
     return f"deepinfra-usage-ledger:v1 / {record['run_id']} / {record['run_attempt']}"
 
 
+def validate_record(saved):
+    """Shared durable record schema; producer remains the usage schema authority."""
+    require(type(saved) is dict, "existing_record_invalid")
+    keys = {"schema_version", "run_id", "run_attempt", "workflow_name", "usage_kind", "run_url",
+            "run_conclusion", "head_sha", "model", "request_count", "response_count",
+            "missing_usage_response_count", "request_error_count", "usage_availability", *FIELDS,
+            "telemetry_status", "telemetry_reason_code", "recorded_at"}
+    require(set(saved) == keys and type(saved["schema_version"]) is int
+            and integer(saved["run_id"], 1) and integer(saved["run_attempt"], 1), "existing_record_invalid")
+    allowed = {"valid": {"usage_complete", "usage_partial", "usage_unavailable"},
+               "unavailable": {"artifact_missing", "artifact_expired"},
+               "invalid": {"telemetry_invalid", "telemetry_identity_mismatch", "telemetry_oversized", "archive_invalid"}}
+    require(type(saved["telemetry_status"]) is str and saved["telemetry_status"] in allowed
+            and type(saved["telemetry_reason_code"]) is str
+            and saved["telemetry_reason_code"] in allowed[saved["telemetry_status"]], "existing_record_invalid")
+    require(type(saved["recorded_at"]) is str and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", saved["recorded_at"]), "existing_record_invalid")
+    if saved["telemetry_status"] != "valid":
+        require(saved["usage_availability"] == "unavailable" and all(saved[key] is None for key in
+                ("model", "request_count", "response_count", "missing_usage_response_count", "request_error_count", *FIELDS)), "existing_record_invalid")
+    else:
+        require(type(saved["model"]) is str and saved["model"] in producer.USAGE_MODELS
+                and type(saved["usage_availability"]) is str and saved["usage_availability"] in
+                {"complete", "partial", "unavailable"} and saved["telemetry_reason_code"] ==
+                "usage_" + saved["usage_availability"], "existing_record_invalid")
+        for key in ("request_count", "response_count", "missing_usage_response_count", "request_error_count"):
+            require(integer(saved[key]), "existing_record_invalid")
+        require(1 <= saved["request_count"] <= 512 and saved["response_count"] <= saved["request_count"]
+                and saved["missing_usage_response_count"] <= saved["response_count"]
+                and saved["request_error_count"] <= saved["request_count"], "existing_record_invalid")
+        for key in FIELDS:
+            value = saved[key]
+            require(value is None or integer(value) or key == "provider_estimated_cost_usd" and
+                    type(value) is float and value >= 0 and math.isfinite(value), "existing_record_invalid")
+    return saved
+
+
 def existing(repo, record):
     matches = []
     prefix = marker(record) + "\n"
@@ -211,37 +248,7 @@ def existing(repo, record):
         require(type(saved) is dict and saved.get("schema_version") == 1
                 and all(saved.get(key) == record[key] for key in
                         ("run_id", "run_attempt", "workflow_name", "usage_kind", "run_url", "run_conclusion", "head_sha")), "existing_record_invalid")
-        keys = {"schema_version", "run_id", "run_attempt", "workflow_name", "usage_kind", "run_url",
-                "run_conclusion", "head_sha", "model", "request_count", "response_count",
-                "missing_usage_response_count", "request_error_count", "usage_availability", *FIELDS,
-                "telemetry_status", "telemetry_reason_code", "recorded_at"}
-        require(set(saved) == keys and type(saved["schema_version"]) is int
-                and integer(saved["run_id"], 1) and integer(saved["run_attempt"], 1), "existing_record_invalid")
-        allowed = {"valid": {"usage_complete", "usage_partial", "usage_unavailable"},
-                   "unavailable": {"artifact_missing", "artifact_expired"},
-                   "invalid": {"telemetry_invalid", "telemetry_identity_mismatch", "telemetry_oversized", "archive_invalid"}}
-        require(type(saved["telemetry_status"]) is str and saved["telemetry_status"] in allowed
-                and type(saved["telemetry_reason_code"]) is str
-                and saved["telemetry_reason_code"] in allowed[saved["telemetry_status"]], "existing_record_invalid")
-        require(type(saved["recorded_at"]) is str and re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", saved["recorded_at"]), "existing_record_invalid")
-        if saved["telemetry_status"] != "valid":
-            require(saved["usage_availability"] == "unavailable" and all(saved[key] is None for key in
-                    ("model", "request_count", "response_count", "missing_usage_response_count", "request_error_count", *FIELDS)), "existing_record_invalid")
-        else:
-            require(type(saved["model"]) is str and saved["model"] in producer.USAGE_MODELS
-                    and type(saved["usage_availability"]) is str and saved["usage_availability"] in
-                    {"complete", "partial", "unavailable"} and saved["telemetry_reason_code"] ==
-                    "usage_" + saved["usage_availability"], "existing_record_invalid")
-            for key in ("request_count", "response_count", "missing_usage_response_count", "request_error_count"):
-                require(integer(saved[key]), "existing_record_invalid")
-            require(1 <= saved["request_count"] <= 512 and saved["response_count"] <= saved["request_count"]
-                    and saved["missing_usage_response_count"] <= saved["response_count"]
-                    and saved["request_error_count"] <= saved["request_count"], "existing_record_invalid")
-            for key in FIELDS:
-                value = saved[key]
-                require(value is None or integer(value) or key == "provider_estimated_cost_usd" and
-                        type(value) is float and value >= 0 and math.isfinite(value), "existing_record_invalid")
+        validate_record(saved)
         require(integer(comment.get("id"), 1), "existing_record_invalid")
         matches.append(comment["id"])
     require(len(matches) <= 1, "duplicate_existing_records")
