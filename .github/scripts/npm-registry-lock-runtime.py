@@ -169,14 +169,16 @@ def select_runtime():
                        'node_version': versions[0], 'npm_version': versions[1]}
 
 
-def build_root(repo, root, node, npm, token):
+def build_root(repo, root, node, npm, token, manifest_snapshot=None):
     lifecycle = load(repo, 'npm-lifecycle-boundary-runtime')
     lifecycle.build_root(repo, root, node, npm, token)
     value = {'name': 'registry-lock-project', 'version': '1.0.0',
              'dependencies': {'is-number': '7.0.0'}, 'scripts': lifecycle.scripts(token, 'project')}
     lifecycle.filesystem(repo).validate_manifest(repo, value)
-    # Only exact fixture manifest input; no Product workspace or dependency source copy.
-    snapshot = json.dumps(value, sort_keys=True).encode()
+    # Exact caller snapshot or fixture input; no workspace/dependency source copy.
+    snapshot = json.dumps(value, sort_keys=True).encode() if manifest_snapshot is None else manifest_snapshot
+    validator = load(repo, 'prepare-product-npm')
+    validator.manifest_dependencies(validator.parse(snapshot))
     (root / 'project/package.json').write_bytes(snapshot)
     (root / 'runtime/manifest.json').write_bytes(snapshot)
     shutil.rmtree(root / 'project/local')
@@ -325,7 +327,9 @@ def freeze_candidate(repo, root, run_root, manifest_snapshot, trusted, evidence)
                       and evidence['manifest_hash'] == digest
                       and evidence['node'] == source['node_version'] and evidence['npm'] == source['npm_version']
                       and evidence['markers'] == [] and evidence['node_modules'] is False
-                      and evidence['metadata_requests'] > 0 and evidence['tarball_requests'] == 0
+                      and (evidence['metadata_requests'] > 0 or
+                           evidence['metadata_requests'] == 0 and not validator.manifest_dependencies(
+                               validator.parse(manifest_snapshot))) and evidence['tarball_requests'] == 0
                       and evidence['dependency_execution_path'] == 'not-entered', 'generation-evidence-mismatch')
     command_contract(repo, Path(source['node_source']), evidence['command'])
     manifest_bytes, lock_bytes = read_pair(validator, root / 'runtime', root / 'project')
@@ -372,7 +376,8 @@ def freeze_candidate(repo, root, run_root, manifest_snapshot, trusted, evidence)
         os.close(fd)
 
 
-def run_fixture(repo, node, npm, registry, network, servers, port, provenance, unavailable=False):
+def run_fixture(repo, node, npm, registry, network, servers, port, provenance, unavailable=False,
+                manifest_snapshot=None, run_root=None):
     boundary = load(repo, 'npm-filesystem-boundary-runtime')
     staged = Path(subprocess.check_output(['sudo', '-n', 'mktemp', '-d',
                   '/run/npm-filesystem-fixture-XXXXXXXX'], text=True, timeout=5, env=ENV).strip())
@@ -381,11 +386,18 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
     trusted_run = None
     artifact = expected = None
     try:
-        trusted_run = tempfile.TemporaryDirectory(prefix='npm-validated-handoff-')
+        if run_root is None:
+            trusted_run = tempfile.TemporaryDirectory(prefix='npm-validated-handoff-')
+            run_root = Path(trusted_run.name)
         with tempfile.TemporaryDirectory(prefix='npm-registry-lock-build-') as build:
             root = Path(build) / 'root'
-            digest = build_root(repo, root, node, npm, token)
-            manifest_snapshot = (root / 'runtime/manifest.json').read_bytes()
+            if manifest_snapshot is None:
+                digest = build_root(repo, root, node, npm, token)
+                manifest_snapshot = (root / 'runtime/manifest.json').read_bytes()
+                bootstrap = False
+            else:
+                digest = build_root(repo, root, node, npm, token, manifest_snapshot)
+                bootstrap = True
             copied = runtime_hashes(root / 'runtime/node', root / 'runtime/npm/bin/npm-cli.js')
             assert all(copied[key] == provenance[key] for key in copied), 'runtime copy hash mismatch'
             subprocess.run(['sudo', '-n', 'cp', '-a', str(root), str(staged / 'root')],
@@ -401,7 +413,7 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
         # Retain trusted inputs in parent memory, never in workload-writable files.
         trusted = {'manifest_sha256': digest, 'runtime_source': dict(provenance),
                    'staged_runtime_hashes': dict(staged_hashes), 'generation_id': token,
-                   'generation_root': str(staged), 'run_id': Path(trusted_run.name).name,
+                   'generation_root': str(staged), 'run_id': run_root.name,
                    'contracts': contract_identities(repo)}
         record = {'token': token, 'manifest_hash': digest, 'proxy_port': port, 'proxy_uid': os.getuid(),
                   'address': servers.address, 'direct_port': servers.port,
@@ -409,6 +421,10 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
                       'workspace-root': str(repo), 'repository-head': str(repo / '.git/HEAD'),
                       'host-env': '/usr/bin/env', 'host-os-release': '/etc/os-release',
                       'staging-root': str(staged)}}
+        if bootstrap:
+            validator = load(repo, 'prepare-product-npm')
+            record['bootstrap'] = True
+            record['bootstrap_dependencies'] = validator.manifest_dependencies(validator.parse(manifest_snapshot))
         accepts = servers.accepted
         evidence = boundary.service(repo, root, record, observer=lambda unit, done:
             registry.observe_properties(unit, root / 'runtime', network, done))
@@ -420,12 +436,14 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
             assert not (root / 'project/package-lock.json').exists()
         else:
             assert evidence['candidate'] == 'package-lock.json' and evidence['manifest_hash'] == digest
-            assert evidence['metadata_requests'] > 0 and evidence['tarball_requests'] == 0
+            assert (evidence['metadata_requests'] > 0 or bootstrap and
+                    not record['bootstrap_dependencies'] and evidence['metadata_requests'] == 0)
+            assert evidence['tarball_requests'] == 0
             assert evidence['markers'] == [] and evidence['node_modules'] is False
-            artifact, expected = freeze_candidate(repo, root, Path(trusted_run.name),
+            artifact, expected = freeze_candidate(repo, root, run_root,
                                                   manifest_snapshot, trusted, evidence)
         print(json.dumps({**evidence, 'runtime_source': provenance, 'staged_runtime_hashes': staged_hashes}), flush=True)
-        return str(staged)
+        return (artifact, expected) if bootstrap else str(staged)
     finally:
         try:
             subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)], check=True, timeout=10, env=ENV)
@@ -434,10 +452,70 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
                 # This is the #645 acceptance handoff, after generation cleanup.
                 validator = load(repo, 'prepare-product-npm')
                 print(json.dumps(verify_handoff(validator, artifact, expected), sort_keys=True), flush=True)
+        except BaseException:
+            if artifact is not None:
+                shutil.rmtree(artifact)
+            raise
         finally:
             if trusted_run is not None:
                 trusted_run.cleanup()
                 assert not Path(trusted_run.name).exists(), 'handoff cleanup failed'
+
+
+def generate_validated(repo, manifest_snapshot, run_root):
+    """#691 explicit dormant entry: exact bytes, existing generation/freeze only.
+
+    Caller owns a private, run-local output root. No candidate bytes are returned;
+    generation, proxy and listener cleanup must finish before handoff succeeds.
+    """
+    validator = load(repo, 'prepare-product-npm')
+    validator.require(os.getuid() not in (0, SERVICE_UID), 'unsafe-parent-identity')
+    validator.require(type(manifest_snapshot) is bytes and len(manifest_snapshot) <= validator.MAX_INPUT,
+                      'invalid-bootstrap-snapshot')
+    validator.manifest_dependencies(validator.parse(manifest_snapshot))
+    node, npm, provenance = select_runtime()
+    registry = load(repo, 'npm-registry-boundary-runtime')
+    network = load(repo, 'codex-network-boundary')
+    addresses = sorted(network.local_addresses())
+    validator.require(bool(addresses), 'boundary-address-unavailable')
+    before, workspace = registry.snapshot(repo), workspace_state(repo)
+    staged = Path(subprocess.check_output(['sudo', '-n', 'mktemp', '-d',
+                  '/run/npm-registry-fixture-XXXXXXXX'], text=True, timeout=5, env=ENV).strip())
+    assert re.fullmatch(r'/run/npm-registry-fixture-[A-Za-z0-9]{8}', str(staged))
+    servers = proxy = None
+    port = None
+    try:
+        subprocess.run(['sudo', '-n', 'chmod', '0755', str(staged)], check=True, timeout=5, env=ENV)
+        for name in ('npm-registry-proxy.py', 'codex-network-boundary.py'):
+            subprocess.run(['sudo', '-n', 'install', '-o', 'root', '-g', 'root', '-m', '0444',
+                            str(repo / '.github/scripts' / name), str(staged / name)],
+                           check=True, timeout=5, env=ENV)
+        servers = registry.Servers(addresses[0])
+        servers.address = addresses[0]
+        assert network.tcp(addresses[0], servers.port) == {'result': 'connected'}
+        assert network.udp(addresses[0], servers.port) == {'result': 'received'}
+        proxy, port = registry.start_proxy(staged)
+        result = run_fixture(repo, node, npm, registry, network, servers, port, provenance,
+                             manifest_snapshot=manifest_snapshot, run_root=run_root)
+        assert network.tcp(addresses[0], servers.port) == {'result': 'connected'}
+        assert network.udp(addresses[0], servers.port) == {'result': 'received'}
+    finally:
+        try:
+            if proxy is not None:
+                registry.stop_proxy(proxy)
+                registry.verify_proxy_stopped(port)
+        finally:
+            try:
+                if servers is not None:
+                    servers.close()
+            finally:
+                subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)],
+                               check=True, timeout=10, env=ENV)
+                assert not staged.exists(), 'trusted proxy source cleanup failed'
+    assert registry.snapshot(repo) == before, 'host socket/resolver integrity changed'
+    assert workspace_state(repo) == workspace, 'workspace changed'
+    verify_handoff(validator, *result)
+    return result
 
 
 def runtime(repo):
