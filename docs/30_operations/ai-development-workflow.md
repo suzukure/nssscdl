@@ -33,6 +33,69 @@ Claude Reviewのreview contextでは、reviewer Appによる最新のformal revi
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
 
+## Work Admission Control
+
+問題・改善点は無制限に発見してよい。発見（Discovery）と着手（Execution）を分離し、現在Issueを完了するために必要でないものは現在scopeへ取り込まず、同一の自律実行チェーンから新たに着手しない。AI Developer、Claude Review、ChatGPT上の開発補助、横断監査等に共通して本節を適用する。
+
+本節は新しい仕事をActiveへ入れるかを判断する上流の運用契約である。admissionしたIssueには、既存の[Issueの分割単位](#issueの分割単位)と、AI開発環境Issueの場合は #549 由来の[semantic/runtime scope確認](#ai開発環境issueのruntime-scope確認)を適用する。これらの分割基準を置き換えない。
+
+### findingの分類とBlocking判定
+
+作業中に新しいfindingを発見したら、現在契約と未対応の影響を照合し、少なくとも次のQ1〜Q3を確認する。
+
+- **Q1**: 対応しないと、現在Issueの既存Acceptance Criteria / Done / current implementation contractを満たせないか。
+- **Q2**: 対応せず現在PRをmainへ反映すると、安全性・正確性・要求／設計整合性が壊れるか。
+- **Q3**: 現在Issueを成立させるために新たに判明した必須前提か。
+
+| 分類 | 境界 | 現在作業での扱い |
+|---|---|---|
+| In-scope required | 現在Issueの既存Acceptance Criteria / Done / current implementation contractを満たすために不可欠で、元Issueの責務と不可分。 | 現Issue内で対応し、同じ判断に不可分な関連修正・検証を揃える。 |
+| Blocker | 現Issueとは独立した責務だが、未解決のままmainへ反映すると安全性・正確性・要求／設計整合性を維持できない、または現在Issue成立の必須前提が欠ける。 | 現Issueを停止し、「Issueの分割単位」と既存の人間判断・停止／再開契約に従って扱う。 |
+| Follow-up | 対応価値はあるが、未対応でも現在Issueを安全かつ整合した状態で完了・main反映できる。 | 現在scopeへ取り込まず、[スコープ外影響と後継Issue](#スコープ外影響と後継issue)の契約に従って記録し、現在Issueへ復帰する。 |
+| Idea / Improvement | 将来改善の可能性はあるが、問題・scope・Doneが独立Issueとして十分具体化していない。 | 現Issueへ取り込まず、既存のIssue / review等へ必要最小限の記録に留める。発見時点で独立Issueを必ず生成する必要はない。 |
+
+Q1のみが該当し、責務が元Issueに不可分ならIn-scope requiredとする。Q2またはQ3が該当し、独立責務として分離可能ならBlocker候補とする。すべて該当しないfindingは現在scopeへ取り込まず、Follow-upまたはIdea / Improvementへ送る。重要性、改善効果、将来の堅牢性向上だけを理由にBlockingへ昇格させない。
+
+Q2 / Q3の影響を、後継Issueの存在やIdeaという名称で回避してはならない。不可分な関連修正は既存契約内で揃え、分類・責務境界を確定できない場合や現在契約の変更が必要な場合は人間判断へ送る。要求変更または未決の上流判断が必要なら既存の要求変更エスカレーションに従い、推測した変更を残さない。
+
+### current implementation contractとDoDの維持
+
+`/codex develop` 投入時点の[current implementation contract](#issue本文におけるcurrent-implementation-contract)を作業scopeの基準とする。AIは実装中に発見した改善候補を理由として、新しいAcceptance Criteria / Done条件 / 検証義務を自律的に追加しない。既存契約を満たすために必要な修正・検証と、新しい完了条件の追加を区別する。
+
+現在契約そのものを変更する必要が判明した場合は、要求変更・scope変更・人間判断等の既存契約に従って停止し、人間の必要な判断をIssue本文へ反映してから再開する。本節は #219 の人間判断待ち・pause/resume状態モデルを再設計せず、新しい停止reasonや自動再開経路を追加しない。
+
+### 記録、Active work、次のadmission
+
+findingを独立Issueへ昇格するのは、少なくとも次を満たす場合を基本とする。
+
+- 問題または変更目的が具体化している。
+- 独立したscopeを説明できる。
+- Doneを定義できる。
+- 実施候補として追跡する合理的な価値がある。
+
+低確度の可能性、一般的改善案、将来あると便利というだけの項目は、直ちにIssue化する必要はない。ただし、後継対応へ分離するスコープ外影響の人間による安全判断・closing Issue本文とPRへの記録・後継Issue確認は「スコープ外影響と後継Issue」に従い、本節によって省略しない。AI Developer自身のGitHub書込み禁止等、各担当の責務境界も維持する。
+
+Follow-up Issueの作成・記録は次の着手許可を意味しない。そのIssueを同一の自律実行チェーンから自動で `/codex develop` しない。原則フローは次のとおりとする。
+
+```text
+現在Issue -> finding発見 -> 分類 -> Follow-upなら記録 -> 現在Issueへ復帰
+         -> Done / review / merge -> 次の着手判断
+```
+
+Blockerのみ、現在Issueを停止した上で例外的に先行対応できる。これは既存の人間判断・scope確定・停止／再開契約を迂回する自動着手許可ではない。
+
+プロジェクト全体を機械的にWIP=1とはしない。同一の目的・価値単位・依存チェーンについては、原則として現在完了へ向けて進めるActive開発チェーンを1本に保つ。レビュー待ちや明示的Blocker等で独立作業を進める場合も、新しいIssueを発見したことだけを理由にActive workを枝分かれさせない。
+
+Follow-upやIdeaは発見時点で優先順位を深掘りせず、現在Issueの完了へ復帰する。現在のIssue / 価値単位 / milestone等の区切りで、未着手候補の必要性・価値・依存・scope・Doneをfresh評価し、次にadmissionする対象を選ぶ。発見順、Issue番号順、Claude / Astra等の指摘順を着手順の根拠にしない。
+
+### Claude Reviewと横断監査への適用
+
+Claudeの `blocking_findings` は現PRのmerge gateであり、既存契約どおり対応する。対応の責務境界は本節の分類で確認し、独立したBlockerを無断で現Issueへ取り込まない。`non_blocking_findings` は現PRのDoneへ自動追加せず、Follow-up / Idea候補として人間判断または既存契約に従って扱う。非Blockingという理由だけで必ずIssue化せず、指摘されたことを同じPRで直す自動拡張の根拠にしない。承認後の延期判断・記録・再レビュー条件は[承認後の非Blocking改善](#承認後の非blocking改善)を維持する。
+
+横断監査では、少なくとも意味上、現在の監査対象の完了条件を満たさず次工程へ進めない **Gate finding** と、現在の完了条件を満たしたまま後続へ送れる **System improvement finding** を区別する。System improvement findingが存在するだけでは現在のGateを閉じず、現在scopeへ自動追加しない。監査の目的を「問題ゼロになるまで改善」へ暗黙に変更しない。
+
+本契約は運用規約として導入する。GitHub Project列・label体系・新state machine・workflow/runtime behavior・Secrets / Variables / permissions・paid AI pathは追加または変更しない。実運用で逸脱や誤分類が観測された場合にのみ、後続Issueでfixture / lint / machine gateの必要性を判断する。自動化の導入は別Issueでsecurity / trust boundary、fail-closed、cost、retry、observability、human escalationをfresh評価する。
+
 ## Issueの分割単位
 
 Issueは、独立して判断・実施・検証・完了判定でき、単独でmainへ反映しても安全性・正確性・要求および設計の整合性を維持できる「意味のある最小単位」とする。Issue作成時だけでなく、検討・実装・reviewによって責務境界が明らかになった時点でも、この単位を維持しているか再評価する。
@@ -53,6 +116,8 @@ Issueは、独立して判断・実施・検証・完了判定でき、単独で
 作業開始後に独立したスコープ外責務が判明した場合も、本節の基準で分割可否を再評価する。後継Issueへ分離する場合は「スコープ外影響と後継Issue」の契約に従い、後続Issueが未実施であることを理由に不完全または不整合な状態をmainへ反映してはならない。
 
 ### AI開発環境Issueのruntime scope確認
+
+[Work Admission Control](#work-admission-control)で着手対象を判断した後に、本節のruntime scope確認を行う。
 
 AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記の「意味のある最小単位」を満たす候補について、inner `RuntimeMaxSec=700s` 内に実装・検証・報告まで収まるscopeかを見積もる。これはIssue境界の下位に置く事前確認であり、責務数や差分量を理由に、安全性・正確性・要求／設計整合性に不可分な変更を機械的に分割しない。
 
@@ -109,6 +174,8 @@ Issueを確定する際は、対象ファイル・節・IDに加え、同じ判�
 
 ### Issue本文におけるcurrent implementation contract
 
+[Work Admission Control](#work-admission-control)に従い、投入後のDoD拡張と新規findingの着手を制御する。
+
 Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時点で有効な実装契約、すなわちscope、責務境界、入出力interface、完了条件および検証範囲を表していることを確認する。trusted conversationでこれらの実装判断が更新され、本文の記述が古くなった場合は、実行前にcurrent contractをIssue本文へ同期する。
 
 本文と矛盾する過去のtrusted commentの技術契約は履歴として残してよいが、削除ではなく、Issue本文からcurrent contractが一意に判断でき、過去契約が置き換えられたことが分かる状態にする。本文と矛盾しない補足説明や進捗コメントまで機械的に複製する必要はない。
@@ -145,6 +212,8 @@ Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはre
 
 ### 承認後の非Blocking改善
 
+[Work Admission Control](#work-admission-control)でFollow-up / Idea候補を扱い、後継対応へ分離する場合は次の契約を適用する。
+
 承認後の非Blocking改善は、先行マージが安全性・正確性・要求整合性を損なわないことを人間が確認した場合だけ、次の関連保守Issueへまとめてよい。closing Issue本文へ残る影響、先行マージ可能な理由、後継Issue、範囲・完了条件・時期または順序を記録し、PR本文へ要約とリンクを反映する。詳細は「スコープ外影響と後継Issue」を正本とする。非Blockingという分類だけで延期せず、要求や判断を実質的に変更した場合は古い承認を流用せず再レビューする。不要な微修正pushで承認済みheadを変更しない。
 
 ## ChatGPT Workのコンテキスト・コスト管理
@@ -154,6 +223,8 @@ ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位
 Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、チャット終了時と再開の正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定仕様はGitHub main上の正本文書、未決事項・検討状態はIssueを正本とし、チャットだけに決定を残さない。
 
 ## スコープ外影響と後継Issue
+
+[Work Admission Control](#work-admission-control)で新規findingを分類し、本節は後継対応へ分離する影響の安全判断・記録・確認を定める。
 
 Codexはスコープ外影響を発見した場合、その安全性・正確性・要求整合性への影響を調査して報告する。Claudeは、対応を後継Issueへ分離する妥当性と、その後継Issueを確認する。後継Issueの存在だけでblockingを解除してはならない。
 
@@ -215,7 +286,37 @@ schema version 1はkind、trusted requestのmodel、request / response count、3
 
 runのusage fieldは取得できた値だけの累積であり、全requestの確定総額とは限らない。未取得fieldは `null` とし、providerの明示的な0だけを0として保存する。全requestでresponseと4種fieldを取得しerrorもなければ `complete`、一部だけ取得済みなら `partial`、全field未取得なら `unavailable` とする。中断中のrequestも連番と未取得値を残し、error理由を推測しない。prompt、request payload、response本文、tool result、secret、header、raw provider errorは含めない。
 
-4 workflowはpaid step後の `if: always()` でこのsidecarだけを `deepinfra-usage-<usage_kind>-<run_id>-<run_attempt>` artifactへ7日保持でuploadする。既存result artifactと分離した短期handoffであり、永続台帳へのwriteや横断集計は親Issue #665の後続consumerで扱う。API callへ到達しない場合はsidecarがなく、uploadはwarningとなる。runner loss等でupload stepが実行できない場合の回収を保証するものではない。検証は `test-deepinfra-usage.sh` と既存DeepInfra / AI Workflow Regressionのsecretless fixtureで行い、integration evidenceは自然な次回runで確認する。
+4 workflowはpaid step後の `if: always()` でこのsidecarだけを `deepinfra-usage-<usage_kind>-<run_id>-<run_attempt>` artifactへ7日保持でuploadする。既存result artifactと分離した短期handoffであり、永続台帳へのwriteは下記consumer、横断集計は下記「DeepInfra台帳のread-only集計」で扱う。API callへ到達しない場合はsidecarがなく、uploadはwarningとなる。runner loss等でupload stepが実行できない場合の回収を保証するものではない。検証は `test-deepinfra-usage.sh` と既存DeepInfra / AI Workflow Regressionのsecretless fixtureで行い、integration evidenceは自然な次回runで確認する。
+
+### DeepInfra永続usage台帳
+
+#667の独立 `DeepInfra Usage Ledger` は4 producerの `workflow_run.completed` を受け、既定ブランチcommitの `.github/scripts/deepinfra-usage-ledger.py` だけを実行する。consumerの権限は `actions: read` / `contents: read` / `issues: write` とし、provider credentialは渡さない。same-repository、既定ブランチ、workflow name / path / event、eventと再取得したexact run / attempt / conclusion / HEADを照合し、artifact名とrepository / run / HEADが一致するusage artifactだけを読む。ZIPを展開・実行せず、単一 `deepinfra-usage.json` のサイズ、重複JSON key、unexpected field、model / reason allowlist、数値型・非負・有限性、requestと集計値の整合を検証する。schemaは共通producerを正本とし、consumerの厳密な入力境界・サイズ上限はhelperを正本とする。result、prompt、response、tool trace、raw errorは取得・保存しない。
+
+paid対象外の判定基準はsource runの `conclusion == 'skipped'` とする。通常コメント等によるInvestigatorのgate skipを含め、record jobの `if` で除外し、台帳全体の固定concurrencyはworkflowではなくこのjobだけに置く。これによりskip runはwriterのpendingを置換せず、#665へ欠落recordも投稿しない。helperを直接実行した場合もexact run / attempt / workflow identity照合後に `skipped_run_ignored` で終了し、comments / artifactを読まない。gateを通過してpaid stepへ到達する前に失敗したrunは除外せず、artifactがなければ従来どおり `unavailable` / `artifact_missing` とする。non-skipped runの課金有無をconclusionだけから推測しない。
+
+台帳正本はParent Issue #665のcomment streamとする。各commentは `deepinfra-usage-ledger:v1 / <run_id> / <run_attempt>` の単独行と、その後の単一JSON objectだけで構成する。helperのrecord schemaはrun identity / URL / conclusion / HEAD、usage集計、`telemetry_status` / `telemetry_reason_code`、UTC `recorded_at`を保持し、request配列は保存しない。validでもusage欠落は `partial` / `unavailable` のまま残す。artifact不在・期限切れは `unavailable`、不正schema / 内容・サイズは `invalid` とし、未検証の金額・token・model・countは `null` とする。run conclusionとtelemetry statusは独立であり、失敗runの取得済みusageも保存する。
+
+identityは `run_id + run_attempt`。台帳全体の固定concurrencyでcheck-then-writeを直列化し、write直前まで#665 commentsを全ページ列挙して、`github-actions[bot]` のexact markerとrecord identityを確認する。人間の引用はrecordとして扱わず、既存recordは編集・上書きしない。POST応答喪失時は再取得で成立を確認し、確認不能なら固定reason codeをJob Summaryへ残してfail-closed停止する。API / metadata / identity異常でもwriteせず、paid runの結論変更・paid retry・自動再送を行わない。人間は原因解消後に元のconsumerだけを再実行する。Actions concurrencyはrunning 1件 / pending 1件であり、`cancel-in-progress: false` でもpending置換は起こり得る。cancel・runner loss・retention経過を含め自動回収を保証せず、未記録のsource run / attemptを照合してconsumerを手動再実行する。append済みの欠落recordは後から上書きしない。`test-deepinfra-usage-ledger.sh` がproducer追加時の接続漏れ、入力境界、重複抑止、権限・concurrencyをsecretless検証する。自然な次回runでdefault branch event / artifact取得 / #665投稿のintegration evidenceを確認し、検証目的のpaid callは追加しない。
+
+### DeepInfra台帳のread-only集計
+
+#668の `.github/scripts/summarize-deepinfra-usage.py` は#665 commentsだけを一次入力とする手動helperである。record schemaの検証はconsumerの `validate_record()` を共有し、exact marker、JSON identity、workflow / usage kind、model、repositoryに対応するrun URL、数値、実在するUTC日時、availability整合も確認する。`github-actions[bot]` / `Bot` の単独行exact markerだけを候補にし、人間の引用・checkpoint・その他commentは無視する。LLM、provider credential、Issue write、artifact / log取得、paid call、定期実行、通知、cost guardは追加しない。GitHubからの取得は明示的な `--fetch` だけで、既存 `gh api` の全ページGETを使い、権限は `issues: read` / `contents: read` で足りる。新しいsecretを要求しない。
+
+```bash
+python3 .github/scripts/summarize-deepinfra-usage.py --repo owner/repo --fetch \
+  --since 2026-10-02T00:00:00Z --until 2026-11-01T00:00:00Z \
+  --markdown /tmp/deepinfra-usage.md > /tmp/deepinfra-usage.json
+```
+
+外部取得を行わず再計算する場合は `--fetch` の代わりに `--comments /path/to/comments.json` を指定する。入力は全ページを連結したREST comments配列（各commentの `user.login` / `user.type` / `body` を保持）で、同じsnapshotとfilterから同じJSON / Markdownを生成する。snapshotには人間のcommentも入り得るため、共有する際はusage record以外の内容を確認する。MarkdownはJSON正本と同じ全項目の表示であり、再parseしない。`--workflow` / `--usage-kind` / `--model` / `--run-conclusion` / `--usage-availability` を組み合わせて絞り込める。
+
+期間はrun開始時刻ではなく台帳の `recorded_at` とし、`--since` は含む、`--until` は含まない。UTCの秒精度ISO日時（`Z` / `+00:00`）を受け、結果にはfilterと実際の最初・最後の記録時刻を保持する。対象は#667 activation後に記録されたrun / attemptだけで、未記録run数や台帳の完全性は推測しない。historical paid rerunやbackfillは行わない。
+
+`run_id + run_attempt` の重複判定はfilter前の全候補に適用し、不正候補を含む同一identityの全件を集計から除外する。JSONには全体のinvalid理由別件数とduplicate identity / comment件数、除外identityを診断として残す。schema-validな `telemetry_status: invalid` recordは未検証usageがnullの取得不能recordであり、不正commentとは区別する。run conclusionとusage availabilityも別々に集計する。summaryとworkflow / kind / model / conclusion / availability別groupは件数と4種usage合計を持ち、model未取得はnull groupとする。対象run ID / attempt / URLもidentity昇順で示す。
+
+各fieldの `known_sum` は取得済み値だけの合計で、取得済み0件ならnullとする。`known_records` / `unknown_records`（fieldがnullの件数）と、取得済み値を持つ `partial_records` を併記し、partialの累積を確定総額と扱わない。complete / partial / unavailable件数も併記する。provider costは保存された数値の10進表現を丸めず加算し、JSONでは精度を保つ10進文字列（USD）として出す。providerが明示した0だけを0とする。
+
+検証は `bash .github/scripts/test-summarize-deepinfra-usage.sh`。producer / consumer実出力との互換性、filter、重複、不正schema / 数値 / 日時、unknown / partial、小数加算、順序、JSON / Markdown、GET paginationをsecretless fixtureで確認する。既存AI Workflow Regressionの `test-*.sh` discovery以外のworkflow配線は変更せず、POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。実recordとの照合は自然run発生後に行い、検証目的のpaid callは追加しない。
 
 ## GitHub Apps
 

@@ -93,6 +93,8 @@ Where one document is the authoritative source, prefer references to that source
 
 ## Scope-out impacts and follow-up Issues
 
+For newly discovered findings, read and apply [Work Admission Control](docs/30_operations/ai-development-workflow.md#work-admission-control) before deciding whether work belongs in the current scope. That section is the canonical contract for finding classification, preserving the current implementation contract, and admission of subsequent work; it does not grant GitHub write authority.
+
 When an out-of-scope impact is discovered, investigate its effect on safety, correctness, and requirements consistency and report it for review. A follow-up Issue never by itself makes the current change acceptable: it may be deferred only when merging the current PR first is safe on all three grounds.
 
 Do not silently defer correctness or requirements defects to reduce review cost. For a safe deferral, a human records the decision in the closing Issue body and PR. Read [the AI development workflow](docs/30_operations/ai-development-workflow.md#スコープ外影響と後継issue) and its trusted helper for the exact scope-out and follow-up contract when needed. If an explicitly recorded follow-up cannot be verified in supplied review context, report it as unverifiable.
