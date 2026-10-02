@@ -22,6 +22,13 @@ spec = importlib.util.spec_from_file_location('orchestrator', source)
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 validator = helper.validator
+
+
+def fixture_preparation(*args):
+    # Fixture-only local transport; never a shared helper success path.
+    return {**validator.prepare(*args), 'boundary': {'fixture': 'local-only'}}
+
+
 node, npm = Path(shutil.which('node')), Path(shutil.which('npm'))
 manifest = {'name': 'fixture', 'version': '1.0.0', 'dependencies': {'example': '1.2.3'}}
 lock = {'name': 'fixture', 'version': '1.0.0', 'lockfileVersion': 3, 'packages': {
@@ -66,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
         write(manifest_value, lock_value)
         before = inventory()
         with (patch.object(validator, 'run', side_effect=AssertionError('tool started')),
-              patch.object(validator, 'prepare', side_effect=AssertionError('preparation started')),
+              patch.object(helper.locked, 'prepare', side_effect=AssertionError('preparation started')),
               patch.object(helper, 'offline_ready', side_effect=AssertionError('offline started'))):
             with helper.prepare(workspace, Path('/nonexistent'), Path('node'), Path('npm')) as handoff:
                 record = handoff.verify()
@@ -95,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
         value = copy.deepcopy(lock)
         mutation(value)
         invalid.append((manifest, value))
-    with patch.object(validator, 'prepare', side_effect=AssertionError('preparation started')):
+    with patch.object(helper.locked, 'prepare', side_effect=AssertionError('preparation started')):
         for values in invalid:
             write(*values)
             rejected(attempt)
@@ -142,7 +149,8 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
     write()
     before = inventory()
     previous = None
-    with patch.object(validator, 'run', side_effect=mock_run), \
+    with patch.object(helper.locked, 'prepare', side_effect=fixture_preparation), \
+         patch.object(validator, 'run', side_effect=mock_run), \
          patch.object(helper, 'offline_ready', side_effect=mock_offline), \
          patch.dict(os.environ, {'NODE_OPTIONS': 'secret', 'NPM_TOKEN': 'secret', 'HTTPS_PROXY': 'secret'}):
         for cycle in range(2):
@@ -153,6 +161,9 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
                 assert [call[1] for call in calls] == ['--version', '--version', 'ci']
                 assert record['offline_install_identity']['source'] == helper.contracts()['npm-offline-ci-probe.js']
                 assert record['preparation_source_contract']['source'] == helper.contracts()['prepare-product-npm.py']
+                changed = copy.deepcopy(record)
+                changed['preparation_source_contract']['boundary'] = {'proxy_target': 'wrong'}
+                rejected(lambda: handoff.verify(changed))
                 assert record['expected_post_workload_hashes'] == dict(zip(helper.INPUTS, map(validator.sha, helper.read_pair(workspace))))
                 for field in record:
                     bad = copy.deepcopy(record)
@@ -231,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
     assert inventory() == before
 
     # Unsafe roots/input types rejected without tools; RUNNER_TEMP is not evidence.
-    with patch.object(validator, 'prepare', side_effect=AssertionError('preparation started')):
+    with patch.object(helper.locked, 'prepare', side_effect=AssertionError('preparation started')):
         for path in (workspace, workspace / 'nested', root, Path('relative')):
             rejected(lambda: helper.prepare(workspace, path, node, npm).__enter__())
         trusted.chmod(0o777)
@@ -293,7 +304,8 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
         assert '--offline' in command and command[-2:] == ['ci', '--json']
         return original_run(command, cwd, env, timeout)
 
-    with patch.object(validator, 'run', side_effect=local_transport):
+    with patch.object(helper.locked, 'prepare', side_effect=fixture_preparation), \
+         patch.object(validator, 'run', side_effect=local_transport):
         for cycle in range(2):
             with helper.prepare(workspace, trusted, node, npm) as handoff:
                 record = handoff.verify()
@@ -310,7 +322,8 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
 
     # Cleanup errors propagate; never turn failed cleanup into successful return.
     write()
-    with patch.object(validator, 'run', side_effect=mock_run), \
+    with patch.object(helper.locked, 'prepare', side_effect=fixture_preparation), \
+         patch.object(validator, 'run', side_effect=mock_run), \
          patch.object(helper, 'offline_ready', side_effect=mock_offline), \
          patch.object(helper.shutil, 'rmtree', side_effect=OSError('cleanup failed')):
         rejected(attempt)

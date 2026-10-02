@@ -18,7 +18,10 @@ import tempfile
 
 SOURCES = ('product-npm-orchestrator.py', 'prepare-product-npm.py',
            'npm-offline-ci-runtime.py', 'npm-offline-ci-probe.js',
-           'npm-initial-lock-probe.js')
+           'npm-initial-lock-probe.js', 'npm-locked-preparation.py',
+           'npm-registry-proxy.py', 'npm-registry-boundary-runtime.py',
+           'codex-network-boundary.py', 'npm-filesystem-boundary-runtime.py',
+           'npm-registry-lock-runtime.py')
 INPUTS = ('package.json', 'package-lock.json')
 
 
@@ -32,6 +35,7 @@ def load(name):
 
 validator = load('prepare-product-npm')
 offline = load('npm-offline-ci-runtime')
+locked = load('npm-locked-preparation')
 require = validator.require
 
 
@@ -201,7 +205,7 @@ def prepare(workspace, run_root, node, npm):
 
     Caller supplies trusted absolute Node/npm paths and a private run root outside
     workspace/RUNNER_TEMP. Memory remains with the trusted parent, not workload.
-    #645 owns registry preparation; there is no alternate transport/fallback API.
+    #645 preparation runs only inside #649's mandatory registry-only service.
     """
     pair = read_pair(workspace)
     state = 'no-manifest' if pair[0] is None else 'bootstrap-required' if pair[1] is None else 'locked'
@@ -239,7 +243,7 @@ def prepare(workspace, run_root, node, npm):
                 frozen = Path(temporary)
                 for name, data in zip(INPUTS, pair):
                     (frozen / name).write_bytes(data)
-                result = validator.prepare(frozen, preparation, node, npm)
+                result = locked.prepare(frozen, preparation, node, npm)
             require(result['status'] == 'prepared' and result['state'] == 'locked',
                     'locked-preparation-failed')
             destination = Path(result['preparation_path'])
@@ -249,6 +253,7 @@ def prepare(workspace, run_root, node, npm):
             require(read_pair(destination) == pair and read_pair(artifact) == pair
                     and result['manifest_hash'] == validator.sha(pair[0])
                     and result['lockfile_hash'] == validator.sha(pair[1]), 'preparation-input-mismatch')
+            cache_identity(cache)  # Reject unsafe exported cache before offline npm.
             with tempfile.TemporaryDirectory(prefix='offline-readiness-', dir=artifact) as temporary:
                 project = Path(temporary)
                 for name, data in zip(INPUTS, pair):
@@ -261,7 +266,8 @@ def prepare(workspace, run_root, node, npm):
                           cache=cache_identity(cache), contracts=source,
                           preparation_source_contract={'registry': result['registry'],
                                                        'contract': result['source_contract'],
-                                                       'source': source['prepare-product-npm.py']},
+                                                       'source': source['prepare-product-npm.py'],
+                                                       'boundary': result['boundary']},
                           offline_install_identity={'source': source['npm-offline-ci-probe.js'],
                                                     'export': "command('ci')"},
                           artifact_path=str(artifact), artifact_identity=private_directory(artifact))

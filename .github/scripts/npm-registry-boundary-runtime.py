@@ -120,10 +120,12 @@ def observe_properties(unit, staged, boundary, done):
     raise AssertionError(("effective property snapshot unavailable", last_observation))
 
 
-def service(repo, staged, address, servers, proxy_port=None, expect_error=False, source_tools=None):
+def service(repo, staged, address, servers, proxy_port=None, expect_error=False, source_tools=None,
+            preparation_tools=None):
     boundary = load(staged / "codex-network-boundary.py", "runtime_network_boundary")
     unit = "codex-network-probe-" + uuid.uuid4().hex + ".service"
-    properties = ("Type=exec", "RuntimeMaxSec=70s" if source_tools is not None else "RuntimeMaxSec=45s",
+    properties = ("Type=exec", "RuntimeMaxSec=240s" if preparation_tools is not None else
+                  "RuntimeMaxSec=70s" if source_tools is not None else "RuntimeMaxSec=45s",
                   "TimeoutStopSec=2s",
                   "KillMode=control-group", "SendSIGKILL=yes", "User=nobody", "Group=nogroup",
                   *hardening(repo))
@@ -147,6 +149,12 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False,
                       "--source-port", str(servers.sources.port)]
         for name, path in source_tools.items():
             arguments += ["--" + name, str(path)]
+    if preparation_tools is not None:
+        assert proxy_port is not None and source_tools is None, 'preparation-boundary-required'
+        properties += ('ReadWritePaths=' + str(staged / 'root/project'),)
+        script = 'npm-locked-preparation.py'
+        for name, path in preparation_tools.items():
+            arguments += ['--' + name, str(path)]
     command = ["sudo", "-n", "/usr/bin/systemd-run", "--quiet", "--wait", "--pipe", "--collect",
                "--unit=" + unit, *["--property=" + value for value in properties],
                "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "LC_ALL=C", "PYTHONDONTWRITEBYTECODE=1",
@@ -165,13 +173,14 @@ def service(repo, staged, address, servers, proxy_port=None, expect_error=False,
         if observer:
             observer.start()
         result = subprocess.run(command, capture_output=True, text=True,
-                                timeout=80 if source_tools is not None else 55)
+                                timeout=250 if preparation_tools is not None else
+                                80 if source_tools is not None else 55)
         if observer:
             observer.join(12)
             assert not observer.is_alive() and not observer_errors, \
                 (observer_errors, result.returncode, result.stdout, result.stderr)
         evidence = json.loads(result.stdout) if result.stdout else None
-        if expect_error and source_tools is None:
+        if expect_error and source_tools is None and preparation_tools is None:
             assert result.returncode != 0 and evidence == {"status": "error", "reason": "proxy-unavailable"}, \
                 (result.returncode, result.stdout, result.stderr)
         else:
