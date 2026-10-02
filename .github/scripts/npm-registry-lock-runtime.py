@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dormant #661 integration fixture; no production bootstrap/handoff."""
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,8 @@ import uuid
 import importlib.util
 
 ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
+RUNTIME_ROOTS = (Path('/usr'), Path('/opt/hostedtoolcache/node'))
+SERVICE_UID = SERVICE_GID = 65534
 
 
 def load(repo, name):
@@ -23,25 +26,77 @@ def load(repo, name):
 
 
 def runtime_provenance(node, npm):
-    """Trusted setup source ownership/ancestors; service receives root-owned copies."""
+    """Check launcher paths, every link hop and ancestors before copying/executing.
+
+    Trusted setup may write its own runtime; the nobody workload must not. Link
+    mode 0777 is not a write grant: link replacement is governed by its parent.
+    This is a pre-workload check, not protection from concurrent trusted setup.
+    """
     owners = {0, os.getuid()}
+    groups = {0, os.getgid(), *os.getgroups()} - {SERVICE_GID}
+    assert SERVICE_UID not in owners, 'setup identity overlaps workload'
     entries = {}
-    npm_root = npm.resolve().parent.parent
-    assert npm_root.name == 'npm' and npm.resolve().name == 'npm-cli.js'
-    for selected in (node, npm, *npm_root.rglob('*')):
-        source = selected.resolve(strict=True)
-        if selected.is_symlink():
-            assert source.is_relative_to(npm_root), 'npm runtime symlink escape'
-        for path in (source, *source.parents):
-            info = path.lstat()
-            assert info.st_uid in owners and info.st_mode & 0o022 == 0, \
-                ('unsafe runtime source/parent', str(path))
+
+    def inspect(path):
+        assert any(path.is_relative_to(root) or root.is_relative_to(path)
+                   for root in RUNTIME_ROOTS), ('runtime path outside trusted roots', str(path))
+        info = path.lstat()
+        assert info.st_uid in owners, ('unsafe runtime source/parent owner', str(path), info.st_uid)
+        if not stat.S_ISLNK(info.st_mode):
             assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), 'unsafe runtime source type'
-            entries[str(path)] = info.st_uid
+            assert info.st_mode & 0o002 == 0 and (info.st_mode & 0o020 == 0 or info.st_gid in groups), \
+                ('unsafe runtime source/parent write boundary', str(path), info.st_gid, stat.S_IMODE(info.st_mode))
+            # Mode bits alone do not exclude a named-user/group ACL write grant.
+            try:
+                os.getxattr(path, 'system.posix_acl_access', follow_symlinks=False)
+            except OSError as error:
+                assert error.errno == errno.ENODATA, ('runtime ACL inspection failed', str(path), error.errno)
+            else:
+                raise AssertionError(('runtime access ACL unsupported', str(path)))
+        entries[str(path)] = info.st_uid
+        return info
+
+    def resolve(selected, scope=None):
+        assert selected.is_absolute() and '..' not in selected.parts, 'unsafe runtime input path'
+        pending, current, hops = list(selected.parts[1:]), Path('/'), 0
+        inspect(current)
+        while pending:
+            part = pending.pop(0)
+            if part == '..':
+                current = current.parent
+                continue
+            if part == '.':
+                continue
+            candidate = current / part
+            info = inspect(candidate)
+            if stat.S_ISLNK(info.st_mode):
+                hops += 1
+                assert hops <= 40, 'runtime symlink loop'
+                target = Path(os.readlink(candidate))
+                target = target if target.is_absolute() else current / target
+                if scope:
+                    assert Path(os.path.abspath(target)).is_relative_to(scope), 'npm runtime symlink escape'
+                pending = list(target.parts[1:]) + pending
+                current = Path('/')
+            else:
+                assert not pending or stat.S_ISDIR(info.st_mode), 'non-directory runtime ancestor'
+                current = candidate
+        assert any(current.is_relative_to(root) for root in RUNTIME_ROOTS), 'runtime source outside trusted roots'
+        if scope:
+            assert current.is_relative_to(scope), 'npm runtime symlink escape'
+        return current
+
+    node_source, npm_source = resolve(node), resolve(npm)
+    assert all(stat.S_ISREG(inspect(path).st_mode) for path in (node_source, npm_source)), \
+        'runtime entry must be a regular file'
+    npm_root = npm_source.parent.parent
+    assert npm_root.name == 'npm' and npm_source.name == 'npm-cli.js'
+    for selected in npm_root.rglob('*'):
+        resolve(selected, npm_root)
     return {'node_sha256': hashlib.sha256(node.read_bytes()).hexdigest(),
             'npm_cli_sha256': hashlib.sha256(npm.read_bytes()).hexdigest(),
             'source_owners': sorted(set(entries.values())),
-            'write_boundary': 'trusted-setup-before-workload; root-owned service copy'}
+            'write_boundary': 'trusted-setup-before-workload; nobody UID/GID excluded; root-owned service copy'}
 
 
 def build_root(repo, root, node, npm, token):

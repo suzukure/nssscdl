@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
+import errno
 import subprocess
 import sys
 import tempfile
@@ -19,7 +21,8 @@ scripts = repo / '.github/scripts'
 spec = importlib.util.spec_from_file_location('registry_lock', scripts / 'npm-registry-lock-runtime.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
-node, npm = Path(shutil.which('node')).resolve(), Path(shutil.which('npm')).resolve()
+# Keep the selected launcher aliases so provenance can check their link chains.
+node, npm = Path(shutil.which('node')), Path(shutil.which('npm'))
 token = 'a' * 32
 javascript = r'''
 const fs = require('node:fs'), assert = require('node:assert/strict'), crypto = require('node:crypto');
@@ -175,25 +178,129 @@ assert not root.exists()
 original = Path.lstat
 def trusted_info(path):
     actual = original(path)
-    return SimpleNamespace(st_uid=0, st_mode=actual.st_mode & ~0o022)
-with patch.object(Path, 'lstat', side_effect=trusted_info, autospec=True):
+    return SimpleNamespace(st_uid=0, st_gid=0, st_mode=actual.st_mode & ~0o022)
+with patch.object(Path, 'lstat', side_effect=trusted_info, autospec=True), \
+     patch.object(fixture.os, 'getxattr', side_effect=OSError(errno.ENODATA, 'no ACL')):
     provenance = fixture.runtime_provenance(node, npm)
 assert len(provenance['node_sha256']) == len(provenance['npm_cli_sha256']) == 64
 for fault in ('owner','write','parent'):
     def info(path):
         actual = trusted_info(path)
-        target = node if fault != 'parent' else node.parent
+        target = node.resolve() if fault != 'parent' else node.resolve().parent
         if path == target:
-            return SimpleNamespace(st_uid=123456 if fault=='owner' else actual.st_uid,
+            return SimpleNamespace(st_uid=123456 if fault=='owner' else actual.st_uid, st_gid=0,
                                    st_mode=actual.st_mode | (0o022 if fault!='owner' else 0))
         return actual
-    with patch.object(Path, 'lstat', side_effect=info, autospec=True):
+    with patch.object(Path, 'lstat', side_effect=info, autospec=True), \
+         patch.object(fixture.os, 'getxattr', side_effect=OSError(errno.ENODATA, 'no ACL')):
         try:
             fixture.runtime_provenance(node,npm)
         except AssertionError:
             pass
         else:
             raise AssertionError('unsafe runtime provenance accepted')
+
+# Model /usr/local launchers, hosted toolcache, and npm internal symlink chains.
+# The failure context supplies the path, not its mode: cover root/caller 0755
+# and trusted-group 0775 layouts without assuming an actual runner image mode.
+for layout in ('local', 'toolcache'):
+    prefix = Path('/usr/local' if layout == 'local' else '/opt/hostedtoolcache/node/24.0.0/x64')
+    binary = prefix / 'bin/node'
+    distribution = prefix / 'lib/node_modules/npm'
+    cli = distribution / 'bin/npm-cli.js'
+    alias_node, alias_npm = Path('/usr/local/bin/node'), Path('/usr/local/bin/npm')
+    for fault in ('', 'trusted-group', 'caller-owned', 'owner', 'workload-owner',
+                  'other-write', 'workload-group', 'unknown-group', 'parent-owner',
+                  'parent-write', 'alias-parent-write', 'link-owner', 'link-outside',
+                  'link-loop', 'dangling', 'npm-escape', 'npm-hop-escape',
+                  'intermediate-owner', 'directory-alias', 'directory-link-owner',
+                  'acl-write', 'acl-error', 'special'):
+        tree, links, inspected = {}, {}, []
+        def entry(path, mode, uid=0, gid=0):
+            tree[path] = SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=mode)
+            for parent in path.parents:
+                tree.setdefault(parent, SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o755))
+        entry(binary, stat.S_IFREG | 0o755)
+        entry(cli, stat.S_IFREG | 0o644)
+        entry(distribution / 'bin/real.js', stat.S_IFREG | 0o644)
+        def link(path, target):
+            entry(path, stat.S_IFLNK | 0o777)
+            links[path] = str(target)
+        if layout == 'toolcache':
+            link(alias_node, binary)
+        link(alias_npm, distribution / 'bin/cli-link.js')
+        link(distribution / 'bin/cli-link.js', 'npm-cli.js')
+        link(distribution / 'bin/internal.js', 'real.js')
+        target = binary if fault not in ('parent-owner', 'parent-write', 'alias-parent-write') else \
+            alias_npm.parent if fault == 'alias-parent-write' else binary.parent
+        if fault in ('trusted-group', 'caller-owned'):
+            for metadata in tree.values():
+                if not stat.S_ISLNK(metadata.st_mode):
+                    metadata.st_gid = 1000
+                    metadata.st_mode |= 0o020
+                    if fault == 'caller-owned':metadata.st_uid = 1000
+        if fault in ('owner', 'parent-owner'):tree[target].st_uid = 123456
+        if fault == 'workload-owner':tree[target].st_uid = 65534
+        if fault in ('other-write', 'parent-write', 'alias-parent-write'):tree[target].st_mode |= 0o002
+        if fault in ('workload-group', 'unknown-group'):
+            tree[target].st_mode |= 0o020
+            tree[target].st_gid = 65534 if fault == 'workload-group' else 123456
+        if fault == 'link-owner':tree[alias_npm].st_uid = 123456
+        if fault == 'link-outside':links[alias_npm] = '/tmp/npm/bin/npm-cli.js'
+        if fault == 'link-loop':links[alias_npm] = str(alias_npm)
+        if fault == 'dangling':links[alias_npm] = str(prefix / 'missing')
+        if fault in ('npm-escape', 'npm-hop-escape'):
+            outside = prefix / 'lib/outside.js'
+            entry(outside, stat.S_IFREG | 0o644)
+            if fault == 'npm-hop-escape':link(outside, cli)
+            links[distribution / 'bin/internal.js'] = str(outside)
+        if fault == 'intermediate-owner':tree[distribution / 'bin/cli-link.js'].st_uid = 123456
+        if fault in ('directory-alias', 'directory-link-owner'):
+            link(distribution / 'launcher', 'bin')
+            links[alias_npm] = str(distribution / 'launcher/cli-link.js')
+            if fault == 'directory-link-owner':tree[distribution / 'launcher'].st_uid = 123456
+        if fault == 'special':tree[binary].st_mode = stat.S_IFIFO | 0o644
+        def metadata(path):
+            inspected.append(path)
+            if path not in tree:raise FileNotFoundError(str(path))
+            return tree[path]
+        def acl(path, name, **kwargs):
+            assert name == 'system.posix_acl_access' and kwargs == {'follow_symlinks':False}
+            if path == binary and fault == 'acl-write':return b'untrusted ACL'
+            raise OSError(errno.EACCES if path == binary and fault == 'acl-error' else errno.ENODATA, 'ACL fixture')
+        with patch.object(Path, 'lstat', side_effect=metadata, autospec=True), \
+             patch.object(Path, 'rglob', return_value=[path for path in tree if path.is_relative_to(distribution)]), \
+             patch.object(Path, 'read_bytes', return_value=b'fixed runtime'), \
+             patch.object(fixture.os, 'readlink', side_effect=lambda path:links[path]), \
+             patch.object(fixture.os, 'getxattr', side_effect=acl), \
+             patch.object(fixture.os, 'getuid', return_value=1000), \
+             patch.object(fixture.os, 'getgid', return_value=1000), \
+             patch.object(fixture.os, 'getgroups', return_value=[1000, 65534]):
+            try:
+                result = fixture.runtime_provenance(alias_node, alias_npm)
+            except (AssertionError, FileNotFoundError):
+                assert fault not in ('', 'trusted-group', 'caller-owned', 'directory-alias'), (layout, fault)
+            else:
+                assert fault in ('', 'trusted-group', 'caller-owned', 'directory-alias'), (layout, fault)
+                assert {alias_node, alias_npm, binary, cli, distribution / 'bin/cli-link.js'} <= set(inspected)
+                assert binary.parent in inspected and alias_npm.parent in inspected
+                assert len(result['node_sha256']) == 64
+
+# Source rejection must precede all staging, service/proxy construction or fallback.
+with patch.object(fixture.os, 'getuid', return_value=1000), \
+     patch.object(fixture, 'runtime_provenance', side_effect=AssertionError('untrusted source')), \
+     patch.object(fixture, 'load') as loaded, \
+     patch.object(fixture.subprocess, 'check_output') as output, \
+     patch.object(fixture.subprocess, 'run') as launched:
+    try:
+        fixture.runtime(repo, node, npm)
+    except AssertionError as error:
+        assert str(error) == 'untrusted source'
+    else:
+        raise AssertionError('source rejection ignored')
+    loaded.assert_not_called()
+    output.assert_not_called()
+    launched.assert_not_called()
 
 # Integration launcher reuses service/observer; no direct launch fallback on failure.
 registry = fixture.load(repo,'npm-registry-boundary-runtime')
