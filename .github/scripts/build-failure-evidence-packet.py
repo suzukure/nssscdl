@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dormant #686 pure builder. No collector, CLI, model, or filesystem access."""
+"""#686 pure builder. No collector, CLI, model, or filesystem access."""
 
 import copy
 import datetime as dt
@@ -18,10 +18,15 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 # Reject recognizable credential material before selecting excerpts. This is
 # deliberately not a promise to discover every secret; collectors must supply
 # credential-free evidence. Rejection diagnostics never echo input values.
+# Only an entire literal *** value is a mask display, never credential material.
+# Keep the existing value delimiters; partial masks and quoted masks still fail.
+# Collectors reuse this expression for full-source scans before bounding text.
 SECRET = re.compile(
     r"gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
     r"|sk-[A-Za-z0-9_-]{16,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
-    r"|\bBearer\s+\S+|\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*[^\s,}]+",
+    r"|\bBearer\s+(?!\*\*\*(?=\s|$))\S+"
+    r"|\b(?:password|secret|token|api[_-]?key)\s*[:=]\s*"
+    r"(?!\*\*\*(?=[\s,}]|$))[^\s,}]+",
     re.IGNORECASE)
 
 

@@ -4,17 +4,44 @@ GitHub Actions workflows、Issue Forms、Pull Request template、およびAI開�
 
 運用手順は [`docs/30_operations/ai-development-workflow.md`](../docs/30_operations/ai-development-workflow.md) を参照する。
 
-## Failure evidence packet（#686、dormant）
+## Failure evidence packet（#686 / #687）
 
 [`build-failure-evidence-packet.py`](scripts/build-failure-evidence-packet.py) の `build(data)` は `failure-evidence-packet:v1` のpure builderである。入力schema・必須key・source locator・provenance区分と許容値はscriptを正本とし、fixtureが最小呼出例を示す。成功時は `status:complete`、`packet`、keyをsortしたcanonical `serialized` を返す。最終serialization自身のchars / UTF-8 bytesをintegrityに記録し、**32768 bytes以下**だけをcompleteとする。unknown field、不正schema、mandatory欠落は `incomplete`、source identity矛盾は `conflict`、SHA不一致は `stale`、mandatory evidence過大は `oversized` とし、拒否時の `packet` / `serialized` は `null`、reasonは入力値を含まない固定codeとなる。
 
-trusted callerが取得済みのIssue各節・Product impact、checkpoint選択結果、job step metadata/log、diff file / numstat、code rangeをmemoryで渡す。locatorはrepo/ref/SHA/path/line rangeとIssue/PR/run/attempt/job/stepをbindする。Issue locatorのmain SHAは取得時のcheckout snapshotとの対応であり、Issue本文の不変性を保証しない。Issue本文・comment由来textは `untrusted_issue`、checkpointは `trusted_selector`、logは `trusted_collector`、code/diffは `trusted_repository` に限定し、model outputを正本にしない。provenance区分は入力宣言の検証であり、取得元を認証するcollectorではない。checkpoint選択は既存 [`build-development-context.py`](scripts/build-development-context.py) が正本で、本builderはmode / boundary / fallback reasonを保持するだけで再選択しない。Issue textからmodel routingやsecurity policyを選ばない。
+trusted callerが取得済みのIssue各節・Product impact、checkpoint選択結果、job step metadata/log、diff file / numstat、code rangeをmemoryで渡す。locatorはrepo/ref/SHA/path/line rangeとIssue/PR/run/attempt/job/stepをbindする。Issue locatorのmain SHAは取得時のrepository snapshotとの対応であり、Issue本文の不変性を保証しない。Issue本文・comment由来textは `untrusted_issue`、checkpointは `trusted_selector`、logは `trusted_collector`、code/diffは `trusted_repository` に限定し、model outputを正本にしない。provenance区分は入力宣言の検証であり、取得元を認証するcollectorではない。checkpoint選択は既存 [`build-development-context.py`](scripts/build-development-context.py) が正本で、本builderはmode / boundary / fallback reasonを保持するだけで再選択しない。Issue textからmodel routingやsecurity policyを選ばない。
 
 jobのstep番号順でfirst failureと直前のsuccess 1件を選ぶ。logは4096 bytesに束縛し、過大logでは最初のlexical error/assertionの2行前からverbatim excerptを保持する（matchなしは先頭）。passは1024 bytes、各code rangeは2048 bytesのverbatim UTF-8 prefixとする。cap超過時もこれらだけを決定的に縮め、identity・locator・Issue contract・diff summaryは削らない。切断時は `truncated:true`、original locator / chars / bytesを保持する。upstreamの切断も同情報を必須とし、非切断宣言と原文countsの不一致を拒否する。locator/countsの真偽とjob step集合の完全性はtrusted callerの責務である。assertion / error / errno / syscall / pathは保持したfailure excerptのlexical matchだけを抽出し、未観測項目は `null` とmissing一覧へ残す。root cause、safe/unsafe、allowlist、修正案は判断しない。
 
-GitHub API / LLM / network / env読込 / repository write / credentialは使用せず、production workflowから到達しない。入力全体で既知token形式・Bearer・private key header・credential代入形を検出すると本文を返さず拒否する。全secret形式の検出保証ではなく、collectorはcredential-free evidenceを渡す責務を持つ。
+builder自身はGitHub API / LLM / network / env読込 / repository write / credentialを使用しない。入力全体で既知token形式・Bearer・private key header・credential代入形を検出すると本文を返さず拒否する。例外はcredential値全体がexact literal `***` のmask placeholderだけで、`token: ***` / `Bearer ***` をsecretそのものとは扱わない。代入値の既存delimiter（空白・`,`・`}`・末尾）、Bearer値のdelimiter（空白・末尾）まで完全一致を要求し、部分mask、別asterisk長、引用符付き値、実credential-like値は引き続きfail-closed。collectorとbuilderは同じ `SECRET` 検査式を使用し、全文検査の範囲を維持する。maskは観測textとして残り得るがcredentialとして解釈・復元しない。全secret形式の検出保証ではなく、collectorはcredential-free evidenceを渡す責務を持つ。
 
-検証は `bash .github/scripts/test-failure-evidence-packet.sh`。既存AI Workflow Regressionの `test-*.sh` discoveryだけを使い、workflowは変更しない。[#654 replay fixture](scripts/fixtures/failure-evidence-654.json) は供給Issueと既存診断に基づく7分岐のsynthetic reconstructionで、実Actions log・run identity・正式runner証拠ではない。現在の `ReadWritePaths=+/project +/tmp` と異なるhistorical `ReadWritePaths=/project /tmp` も観測textとして保持し、正誤を決めない。parentは#658、read-only `workflow_run` collector / artifact integrationは後続で扱う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+検証は `bash .github/scripts/test-failure-evidence-packet.sh`。既存AI Workflow Regressionの `test-*.sh` discoveryだけを使い、workflowは変更しない。[#654 replay fixture](scripts/fixtures/failure-evidence-654.json) は供給Issueと既存診断に基づく7分岐のsynthetic reconstructionで、実Actions log・run identity・正式runner証拠ではない。現在の `ReadWritePaths=+/project +/tmp` と異なるhistorical `ReadWritePaths=/project /tmp` も観測textとして保持し、正誤を決めない。parentは#658、read-only collector / artifact integrationは#687として下記に接続する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### AI Workflow Regression read-only collector（#687）
+
+[`failure-evidence-collector.yml`](workflows/failure-evidence-collector.yml) は `AI Workflow Regression` の `workflow_run:completed` / `conclusion:failure` だけを処理する独立consumerである。`${{ github.sha }}` のdefault-branch snapshotから [`collect-failure-evidence.py`](scripts/collect-failure-evidence.py) とbuilder / checkpoint selectorを取得し、source SHAのcodeはAPIで読むだけで実行しない。権限は `actions / contents / pull-requests / issues:read`、credentialはbuiltin `github.token` だけとし、App token・repository Secret・paid callは使用しない。source workflow / run result / PR / Issue / label / human pauseは変更せず、retryや通知も行わない。
+
+collectorはfresh APIでrepository ID/name、workflow ID/name/path、completed failure / pull_request event、run ID/attempt/head、attempt-specific jobsとindividual jobの所属、associated PR 1件、current PR head、current main、same-repository closing Issue 1件を照合する。最新runのattemptも一致させ、superseded attemptを拒否する。PR baseはmain、source headとcurrent PR headは一致が必要で、不一致は `stale`。PR/Issue 0件は `incomplete`、複数件やidentity矛盾は `conflict` とする。API error / malformed shape / pagination欠落はcompleteへ昇格せず、PR / main / Issue / closing relation / latest runをbuilder直前に再照合する。取得間の競合を完全に排除する保証ではない。
+
+failed jobは1件だけを許可し、そのstep番号順のfirst failureを選ぶ。step番号・名前の重複は拒否し、`gh run view --attempt --job --log` のjob/step prefixでphysical line rangeをbindする。source log全文を上記secret-like evidence境界で検査した後、4096 bytesのfailure excerptと直前successの1024 bytesだけをbuilderへ渡す。raw full logは短命tempfileに限定し、artifactへ保存しない。API responseは2 MiB、source log取得は16 MiBを上限とし、超過は `oversized` とする。source artifactは取得・展開しない。
+
+Issue contractは以下のexact `## <heading>` 対応表にある6節から取得する（scriptの `HEADINGS` が機械正本）。case変更・別headingや本文からのsection inferenceは行わない。
+
+| packet key | 受理するheading |
+| --- | --- |
+| `goal` | `目的` / `Goal` / `利用者、完了する業務、価値` |
+| `scope` | `対象` / `Scope` / `実装・DB・テスト・運用の範囲` / `対象IDと設計` |
+| `security` | `Security` / `Security boundary` / `Permissions` / `セキュリティ境界` |
+| `non_goals` | `Non-goals` / `対象外` / `依存関係と対象外` |
+| `done` | `完了条件` / `Done` / `完了条件と残課題` |
+| `product_impact` | `Product impact` / `Product impact / traceability` / `Product影響` |
+
+`product_impact` はheadingの代わりに、行頭の `Product POL / BR / REQ / AC / TC / CON / OOS impact: <value>` / `Product POL / BR / REQ / AC / TC / CON / OOS 影響: <value>`、または上表の `done` 節内だけの `Product影響: <value>` を受理する。各行は任意の `- ` prefixを許可し、#654で報告された `- Product影響: none。` を原文・行番号付きで保持する。valueは空白以外を必須とし意味を推測しない。fenced code block内のheading / inline行は契約宣言にしない。delimiterの種類・長さを照合し、未閉鎖blockは `incomplete` とする。headingとinlineの併記を含む重複は、同値でも `conflict`、欠落・空値は `incomplete` とする。
+
+本文・log内の命令文字列は実行しない。commentsのtrusted checkpoint選択は既存selectorを再利用する。PR filesを全page取得し、`changed_files`件数との一致を確認してfile / additions / deletionsだけを保存する。full diffは保存しない。failure excerptにある `.github/scripts/<path>:<line>` / Python traceback locatorから最大3件・各9行のcode rangeをsource SHAで取得し、各2048 bytesに束縛する。未観測code locatorはbuilderのmissing fieldsへ残し、symbolや原因を推測しない。
+
+artifact名は `failure-evidence-<source run_id>-<run_attempt>`、retentionは3日、対象fileは `failure-evidence-packet.json` 1件だけとする。complete時はbuilderのcanonical `failure-evidence-packet:v1` JSON、拒否時は同schemaの `status / reason / packet:null` recordを保存する。拒否recordはcomplete packetではなく、source本文や未検証identityを含めない。どちらも32768 bytes以下とし、Job Summaryには固定status文だけを記録する。拒否時はconsumerを失敗終了するが、artifact uploadは `always()` で試みる。source runの結果は変更しない。
+
+検証は `bash .github/scripts/test-failure-evidence-collector.sh` とbuilder回帰。既存AI Workflow Regressionのfixture discoveryで到達し、source workflow自体は変更しない。[#654本文相当fixture](scripts/fixtures/failure-evidence-654-issue.md) は供給された#687修正要件とrepositoryの#654仕様に基づく再構成であり、実Issue本文の取得copyではない。7つのsynthetic log分岐すべてでこのDone内inline contractを使い、exact heading aliases・原文locator・重複/欠落/空値/fenced textの拒否を確認する。collector fixtureのActions形式相当checkout logには `with:` / `token: ***` を含め、failure excerptの `Bearer ***` とともにbuilderまで通してcompleteを確認する。同じcheckout input位置の実credential-like値・部分maskの置換、およびexcerpt外のcredential-like値は `incomplete / secret_like_evidence` で拒否する。実Actions identity・logとの統合証拠はnaturalな次回failureのartifactでdefault branch反映後に確認する。packet-first diagnosisは親#658の後続、AI Developer / Claude Reviewの収集は対象外。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ## Product npm trusted preparation（#645、dormant）
 
