@@ -127,9 +127,10 @@ async function integrationTests() {
     assert.deepEqual(options.env,{PATH:'/runtime',HOME:'/project',LC_ALL:'C'});
     const child=new EventEmitter();child.exitCode=null;child.signalCode=null;
     child.kill=()=>assert.fail('unexpected force kill');
-    child.send=message=>{
+      child.send=message=>{
       assert.equal(message,'stop');process.nextTick(()=>{
         child.emit('message',{metadata:1,denied:fault==='content'?1:0});
+        if(fault==='post-generation')fs.appendFileSync(project+'/package-lock.json',' ');
         child.exitCode=0;child.emit('exit',0,null);
       });
     };
@@ -149,11 +150,12 @@ async function integrationTests() {
       process.nextTick(()=>s.emit('error',Object.assign(Error(),{code:options.host==='127.0.0.1'?'ECONNREFUSED':'EPERM'})));return s;}}},
     {...process,getuid:()=>65534});
   for (fault of ['boundary','runtime-owner','runtime-mode','runtime-writable','manifest',
-    'snapshot-owner','snapshot-unit','direct','unavailable','config','lock','marker','mutation','content','']) {
+    'snapshot-owner','snapshot-unit','direct','unavailable','config','lock','marker','mutation','content','post-generation','']) {
     calls=[];workers=udpCalls=0;
     try{
       if(fault)await assert.rejects(probe.probe(input));
       else{const evidence=await probe.probe(input);assert.equal(evidence.candidate,'package-lock.json');
+        assert.equal(evidence.lock_hash,crypto.createHash('sha256').update(fs.readFileSync(project+'/package-lock.json')).digest('hex'));
         assert.deepEqual(evidence.command,initial.command('lock',23456));assert.equal(evidence.tarball_requests,0);}
       const early=['boundary','runtime-owner','runtime-mode','runtime-writable','manifest','snapshot-owner','snapshot-unit','direct'];
       assert.equal(workers,early.includes(fault)?0:1);
@@ -416,7 +418,7 @@ with patch.object(fixture.os, 'getuid', return_value=1000), \
 registry = fixture.load(repo,'npm-registry-boundary-runtime')
 network = fixture.load(repo,'codex-network-boundary')
 boundary = fixture.load(repo,'npm-filesystem-boundary-runtime')
-for failure in (None,'build','build-hash','copy','acl-removal','acl-tooling','snapshot','post-hash','service','evidence','cleanup'):
+for failure in (None,'build','build-hash','copy','acl-removal','acl-tooling','snapshot','post-hash','service','evidence','validation','handoff','cleanup'):
     staged = Path('/run/npm-filesystem-fixture-abcdefgh')
     calls=[]
     snapshots=[]
@@ -452,7 +454,20 @@ for failure in (None,'build','build-hash','copy','acl-removal','acl-tooling','sn
         return {'candidate':'wrong' if failure=='evidence' else 'package-lock.json',
                 'manifest_hash':'fixture-hash','metadata_requests':1,'tarball_requests':0,
                 'markers':[],'node_modules':False}
+    def freeze_result(repo, root, run_root, manifest, trusted, evidence):
+        assert len(snapshots) == 2, 'freeze before post-service snapshot'
+        assert manifest == b'{}' and trusted['manifest_sha256'] == 'fixture-hash'
+        assert trusted['generation_root'] == str(staged) and trusted['run_id'] == run_root.name
+        if failure == 'validation':raise AssertionError('candidate rejected')
+        return run_root / 'validated-lock-fixture', {'status':'validated'}
+    def accept(helper, artifact, expected):
+        assert any('rm' in command for command in calls), 'handoff before generation cleanup'
+        if failure == 'handoff':raise AssertionError('handoff mutated')
+        return expected
     with patch.object(fixture,'load',return_value=boundary), \
+         patch.object(fixture,'contract_identities',return_value={}), \
+         patch.object(fixture,'freeze_candidate',side_effect=freeze_result) as freeze, \
+         patch.object(fixture,'verify_handoff',side_effect=accept) as handoff, \
          patch.object(fixture,'build_root',side_effect=build), \
          patch.object(fixture,'staged_snapshot',side_effect=snapshot), \
          patch.object(boundary,'service',side_effect=service) as service_call, \
@@ -474,6 +489,8 @@ for failure in (None,'build','build-hash','copy','acl-removal','acl-tooling','sn
             assert failure is None
     if failure=='build-hash':assert not any('cp' in command for command in calls)
     assert service_call.call_count == (0 if failure in ('build','build-hash','copy','acl-removal','acl-tooling','snapshot') else 1)
+    assert freeze.call_count == (1 if failure in (None,'validation','handoff','cleanup') else 0)
+    assert handoff.call_count == (1 if failure in (None,'handoff') else 0)
     assert [command[-1] for command in calls if 'rm' in command]==[str(staged)]
 
 # Two success roots plus two unavailable roots; every outer failure cleans proxy/listeners.
@@ -552,6 +569,198 @@ for name in ('npm-registry-lock-runtime.py','npm-registry-lock-probe.js',
         assert name not in workflow.read_text(), ('production wiring',str(workflow))
 assert 'npm-registry-lock' not in (scripts/'prepare-product-npm.py').read_text()
 assert 'fixtures=(.github/scripts/test-*.sh)' in (repo/'.github/workflows/ai-workflow-regression.yml').read_text()
+
+# #662 trusted validation is local-only, including the real #660 constructor.
+# Retain expectations in parent memory, not in files a workload can edit.
+import base64
+import copy
+validator = fixture.load(repo, 'prepare-product-npm')
+command = fixture.initial_command(repo, node, 23456)
+fixture.command_contract(repo, node, command)
+for unsafe in (command + ['--ignore-scripts=false'], command[:-1],
+               [arg for arg in command if arg != '--ignore-scripts']):
+    try:fixture.command_contract(repo, node, unsafe)
+    except AssertionError:pass
+    else:raise AssertionError('unknown command accepted')
+
+def fail_closed(operation):
+    try:operation()
+    except (validator.Rejected, AssertionError, OSError, KeyError, TypeError, ValueError):return
+    raise AssertionError('invalid generated lock/handoff accepted')
+
+with tempfile.TemporaryDirectory(prefix='generated-lock-test-') as directory:
+    base = Path(directory)
+    root, run_root = base / 'generation/root', base / 'trusted-run'
+    (root / 'runtime').mkdir(parents=True)
+    (root / 'project/cache').mkdir(parents=True)
+    (root / 'project/cache/temporary').write_bytes(b'never handed off')
+    (root / 'project/node_modules').mkdir()
+    run_root.mkdir(mode=0o700)
+    manifest = {'name':'registry-lock-project', 'version':'1.0.0',
+                'dependencies':{'is-number':'7.0.0'}}
+    snapshot = json.dumps(manifest, sort_keys=True).encode()
+    lock = {'name':manifest['name'], 'version':manifest['version'], 'lockfileVersion':3,
+            'packages':{'':manifest, 'node_modules/is-number':{'version':'7.0.0',
+                'resolved':'https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz',
+                'integrity':'sha512-' + base64.b64encode(bytes(64)).decode()}}}
+    lock_bytes = json.dumps(lock, sort_keys=True).encode()
+    runtime = {'node_source':str(node), 'npm_source':str(npm),
+               'node_version':'v24.2.0', 'npm_version':'11.0.0',
+               'node_sha256':'1'*64, 'npm_cli_sha256':'2'*64}
+    trusted = {'manifest_sha256':hashlib.sha256(snapshot).hexdigest(), 'runtime_source':runtime,
+               'staged_runtime_hashes':{key:runtime[key] for key in ('node_sha256','npm_cli_sha256')},
+               'generation_id':'a'*32, 'generation_root':str(root.parent),
+               'run_id':run_root.name, 'contracts':fixture.contract_identities(repo)}
+    evidence = {'status':'pass', 'candidate':'package-lock.json',
+                'manifest_hash':trusted['manifest_sha256'], 'lock_hash':hashlib.sha256(lock_bytes).hexdigest(),
+                'node':runtime['node_version'], 'npm':runtime['npm_version'], 'command':command,
+                'markers':[], 'node_modules':False, 'metadata_requests':1, 'tarball_requests':0,
+                'dependency_execution_path':'not-entered'}
+    manifest_path = root / 'runtime/manifest.json'
+    candidate = root / 'project/package-lock.json'
+    def restore():
+        manifest_path.write_bytes(snapshot)
+        (root / 'project/package.json').write_bytes(snapshot)
+        if candidate.is_symlink():candidate.unlink()
+        candidate.write_bytes(lock_bytes)
+    def freeze(value=trusted, claims=evidence):
+        # Same canonical module instance lets faults target validation itself.
+        with patch.object(fixture, 'load', return_value=validator):
+            return fixture.freeze_candidate(repo, root, run_root, snapshot, value, claims)
+    restore()
+    workspace = fixture.workspace_state(repo)
+    with patch.object(fixture.os, 'getuid', return_value=fixture.SERVICE_UID):
+        fail_closed(freeze)
+    run_root.chmod(0o777)
+    fail_closed(freeze)
+    run_root.chmod(0o700)
+    first, expected = freeze()
+    validator.validate_lock(validator.parse((first/'package.json').read_bytes()),
+                            validator.parse((first/'package-lock.json').read_bytes()))
+    assert fixture.verify_handoff(validator, first, expected) == expected
+    assert sorted(path.name for path in first.iterdir()) == ['package-lock.json','package.json','provenance.json']
+    second, repeated = freeze()
+    assert first != second and expected['artifact_id'] != repeated['artifact_id']
+    for key in ('manifest_sha256','lock_sha256','generated_lock_sha256','contracts','bootstrap_command'):
+        assert expected[key] == repeated[key], ('unstable contract',key)
+    other_run = base / 'other-trusted-run'
+    other_run.mkdir(mode=0o700)
+    another = {**trusted, 'run_id':other_run.name, 'generation_id':'b'*32}
+    with patch.object(fixture, 'load', return_value=validator):
+        third, other = fixture.freeze_candidate(repo, root, other_run, snapshot, another, evidence)
+    assert other['run_id'] != expected['run_id'] and other['generation_id'] != expected['generation_id']
+    assert other['lock_sha256'] == expected['lock_sha256']
+    for key in trusted:
+        incomplete = copy.deepcopy(trusted)
+        incomplete.pop(key)
+        fail_closed(lambda:freeze(incomplete))
+    for key in evidence:
+        incomplete = copy.deepcopy(evidence)
+        incomplete.pop(key)
+        fail_closed(lambda:freeze(claims=incomplete))
+    for key in trusted['contracts']:
+        unknown = copy.deepcopy(trusted)
+        unknown['contracts'][key]['sha256'] = '0'*64
+        fail_closed(lambda:freeze(unknown))
+    for field in ('node_sha256','npm_cli_sha256'):
+        unknown = copy.deepcopy(trusted)
+        unknown['staged_runtime_hashes'][field] = '0'*64
+        fail_closed(lambda:freeze(unknown))
+    for field in ('manifest_hash','lock_hash','node','npm','dependency_execution_path'):
+        fail_closed(lambda:freeze(claims={**evidence, field:'wrong'}))
+    for payload in (b'{broken', b'[]', b'{"packages":{},"packages":{}}'):
+        candidate.write_bytes(payload)
+        fail_closed(lambda:freeze(claims={**evidence,'lock_hash':hashlib.sha256(payload).hexdigest()}))
+    for mutate in (
+        lambda value:value.update(name='mismatch'),
+        lambda value:value['packages'][''].update(name='root-mismatch'),
+        lambda value:value['packages']['node_modules/is-number'].update(version='8.0.0'),
+        lambda value:value['packages']['node_modules/is-number'].update(resolved='file:/tmp/package.tgz'),
+        lambda value:value['packages']['node_modules/is-number'].update(resolved='https://example.invalid/package.tgz'),
+        lambda value:value['packages']['node_modules/is-number'].pop('integrity'),
+        lambda value:value['packages']['node_modules/is-number'].update(integrity='sha512-invalid'),
+    ):
+        changed = copy.deepcopy(lock)
+        mutate(changed)
+        payload = json.dumps(changed).encode()
+        candidate.write_bytes(payload)
+        fail_closed(lambda:freeze(claims={**evidence,'lock_hash':hashlib.sha256(payload).hexdigest()}))
+    restore()
+    # Generation claim alone cannot authorize changed bytes, even valid JSON.
+    candidate.write_bytes(lock_bytes + b' ')
+    fail_closed(freeze)
+    restore()
+    manifest_path.write_bytes(snapshot + b' ')
+    fail_closed(freeze)
+    restore()
+    (root/'project/package.json').write_bytes(b'{}')
+    fail_closed(freeze)
+    restore()
+    candidate.unlink()
+    candidate.symlink_to(first/'package-lock.json')
+    fail_closed(freeze)
+    restore()
+    original_validation = validator.validate_lock
+    def mutate_during_validation(manifest_value, lock_value):
+        original_validation(manifest_value, lock_value)
+        candidate.write_bytes(lock_bytes + b' ')
+    with patch.object(validator, 'validate_lock', side_effect=mutate_during_validation):
+        fail_closed(freeze)
+    restore()
+    before = set(run_root.iterdir())
+    def fail_after_output(helper, artifact, record):
+        candidate.write_bytes(lock_bytes + b' ')
+        return record
+    with patch.object(fixture, 'verify_handoff', side_effect=fail_after_output):
+        fail_closed(freeze)
+    assert set(run_root.iterdir()) == before, 'failed freeze left artifact'
+    restore()
+    # Provenance is compared with the trusted record, including every identity.
+    provenance_file = first/'provenance.json'
+    def rewrite(path, data):
+        path.chmod(0o600)
+        path.write_bytes(data)
+        path.chmod(0o400)
+    for field in expected:
+        changed = copy.deepcopy(expected)
+        changed.pop(field)
+        rewrite(provenance_file, json.dumps(changed).encode())
+        fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    for field in ('manifest_sha256','lock_sha256','generated_lock_sha256','artifact_path','run_id','generation_id','validation','status'):
+        rewrite(provenance_file, json.dumps({**expected, field:'wrong'}).encode())
+        fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    for key in expected['contracts']:
+        changed = copy.deepcopy(expected)
+        changed['contracts'][key]['sha256'] = '0'*64
+        rewrite(provenance_file, json.dumps(changed).encode())
+        fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    rewrite(provenance_file, json.dumps(expected).encode())
+    rewrite(first/'package-lock.json', lock_bytes + b' ')
+    fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    changed_hash = hashlib.sha256(lock_bytes + b' ').hexdigest()
+    rewrite(provenance_file, json.dumps({**expected, 'lock_sha256':changed_hash,
+                                       'generated_lock_sha256':changed_hash}).encode())
+    fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    rewrite(provenance_file, json.dumps(expected).encode())
+    rewrite(first/'package-lock.json', lock_bytes)
+    first.chmod(0o777)
+    fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    first.chmod(0o700)
+    (first/'node_modules').mkdir()
+    fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    (first/'node_modules').rmdir()
+    def handoff_mutation(manifest_value, lock_value):
+        original_validation(manifest_value, lock_value)
+        rewrite(first/'package-lock.json', lock_bytes + b' ')
+    with patch.object(validator, 'validate_lock', side_effect=handoff_mutation):
+        fail_closed(lambda:fixture.verify_handoff(validator, first, expected))
+    rewrite(first/'package-lock.json', lock_bytes)
+    # Generation artifacts are gone; only validated snapshots/provenance survive.
+    shutil.rmtree(root.parent)
+    assert fixture.verify_handoff(validator, first, expected) == expected
+    assert fixture.workspace_state(repo) == workspace, 'validation wrote workspace'
+assert not base.exists(), 'trusted fixture cleanup failed'
+print('generated lock: canonical validation/freeze/mutation/provenance/only snapshots/repeat/workspace/cleanup passed', flush=True)
 print('registry lock: exact command/manifest snapshot/runtime provenance/adapter fail-closed/isolation/cleanup/dormant mocks passed',flush=True)
 if 'codex-' in Path('/proc/self/cgroup').read_text():
     print('SKIP registry lock runtime: inherited Codex boundary; independent systemd runner required')

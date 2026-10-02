@@ -106,7 +106,7 @@ async function probe(input) {
   const child = cp.fork('/runtime/npm-registry-lock-adapter.js', [String(input.proxy_port)], {
     execPath: '/runtime/node', execArgv: [], env: initial.npmEnv, stdio: ['ignore','ignore','ignore','ipc'],
   });
-  let counts, port;
+  let counts, port, candidateBytes;
   try {
     try { port = await workerReady(child); }
     catch (error) {
@@ -123,7 +123,8 @@ async function probe(input) {
     for (const name of ['added','removed','changed']) assert.equal(result[name], 0);
     assert.deepEqual(initial.inventory(true), before);
     manifest(input);
-    const lock = JSON.parse(fs.readFileSync('/project/package-lock.json', 'utf8'));
+    candidateBytes = fs.readFileSync('/project/package-lock.json');
+    const lock = JSON.parse(candidateBytes);
     assert.equal(lock.lockfileVersion, 3);
     assert.equal(lock.packages['node_modules/is-number'].version, '7.0.0');
     assert.equal(lock.packages['node_modules/is-number'].resolved,
@@ -133,7 +134,9 @@ async function probe(input) {
     if (port !== undefined) await verifyClosed(port);
   }
   assert(counts && counts.metadata > 0 && counts.denied === 0, 'content/unsupported request detected');
+  assert.deepEqual(fs.readFileSync('/project/package-lock.json'), candidateBytes, 'generated candidate mutated');
   return { status: 'pass', candidate: 'package-lock.json', manifest_hash: input.manifest_hash,
+    lock_hash: crypto.createHash('sha256').update(candidateBytes).digest('hex'),
     command: initial.command('lock', port), node: process.version,
     npm: JSON.parse(fs.readFileSync('/runtime/npm/package.json')).version,
     markers: [], node_modules: false, metadata_requests: counts.metadata,
