@@ -88,7 +88,15 @@ for name in ('create-human-pause', 'human-pause-record', 'list-human-pause-recor
              'reconcile-human-pause-active-pause', 'apply-human-pause',
              'format-human-pause-notification', 'notify-human'):
     selected([prefix + name + '.sh'], pause_suites)
-selected(['.github/workflows/claude-review.yml'], pause_suites | {'deepinfra'})
+# Workflow changes must include the suites whose dormant guards scan all workflows.
+workflow_suites = pause_suites | {'deepinfra', 'product-npm', 'failure-evidence'}
+assert selected(['.github/workflows/claude-review.yml'], workflow_suites)['fixtures'] == actual
+assert selected(['.github/workflows/claude-review.yml', prefix + 'prepare-product-npm.py'],
+                workflow_suites)['fixtures'] == actual
+for workflow in (repo / '.github/workflows').glob('*.yml'):
+    result = selector.select(repo, encode([workflow.relative_to(repo).as_posix()]))
+    check_record(result)
+    assert result['fixtures'] == actual, ('workflow guard omitted', workflow, result)
 paths = [prefix + 'deepinfra-usage-ledger.py', prefix + 'prepare-product-npm.py',
          prefix + 'codex-network-boundary.py']
 expected = selected(paths, {'deepinfra', 'product-npm', 'ai-developer-codex'})

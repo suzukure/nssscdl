@@ -10,6 +10,8 @@ GitHub Actions workflows、Issue Forms、Pull Request template、およびAI開�
 
 stdoutは単一のcanonical JSONで、`schema:ai-workflow-fixture-selection` / `version:1`、`mode:selected|full`、入力本文を含まない固定 `reason`、sort/deduplicateした `suites` / `fixtures` を返す。明示inventoryとexact path mappingの機械正本はscriptで、#695基準commit `275f4ba6f875969ea267ef55d77d5cc209e370b2` の68件（Product npm 11 / resume-human-pause 26 / Claude 11 / DeepInfra 9 / AI Developer-Codex 7 / failure evidence 2 / common 2）を保持する。現在checkoutの#692追加fixtureと本selector fixtureも明示登録し、計70件を検証する。局所変更には対象suite全件とcommonを選び、shared helperには利用suiteのunionを選ぶ。登録済みchanged fixture自身も必ず含める。
 
+workflow変更では、全workflowを走査するproduction未接続guardを持つsuiteを必ず含める。`.github/workflows/claude-review.yml` はProduct npm / failure evidenceも共有境界としてmappingし、commonを含む全7 suite・70 fixtureを `selected / known_paths` で返す。他のworkflow pathは下記のfull fallbackに従う。
+
 selector自身・そのfixture・regression workflow変更は `global_boundary`、未知path（未mapping script、docs / AGENTS / CLAUDE / .codex / .claude / .mcp.json等を含む）は `unmapped_path`、UTF-8 / 絶対path / traversal / 非canonical path / NUL framing不正は `malformed_input`、空入力は `empty_selection`、mapping矛盾は `mapping_conflict`、repositoryの `test-*.sh` 集合との不一致・新規未登録fixture・不正file型は `inventory_mismatch`、想定外例外は `selector_error` としてfullへ戻す。fullではrepository上の全 `.github/scripts/test-*.sh` を返す。探索不能は `full / inventory_unavailable` と空fixture集合を返し、CLIはexit `1`で停止する。通常のselected/full決定はexit `0`、CLI構文不正は入力を反射せずexit `2`となる。
 
 検証は `bash .github/scripts/test-select-ai-workflow-fixtures.sh`。production workflowからselectorへの呼出しはなく、既存全件discoveryによるfixture実行を維持する。network / GitHub API / repository write / Secrets / env-driven policy / paid AIを使用しない。production wiring・parallel executionは後続scopeであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。

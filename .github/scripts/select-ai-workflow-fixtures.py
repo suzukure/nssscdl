@@ -122,8 +122,10 @@ PATH_SUITES = (
           "format-human-pause-notification", "notify-human",
       )),
     # Future wiring contract only: this module is not invoked by any workflow.
+    # Product npm and failure-evidence dormant guards scan every workflow too.
     (".github/workflows/claude-review.yml",
-     ("claude", "resume-human-pause", "deepinfra", "ai-developer-codex")),
+     ("claude", "resume-human-pause", "deepinfra", "ai-developer-codex",
+      "product-npm", "failure-evidence")),
 )
 FULL_PATHS = frozenset((SELF, SELF_TEST, ".github/workflows/ai-workflow-regression.yml"))
 
