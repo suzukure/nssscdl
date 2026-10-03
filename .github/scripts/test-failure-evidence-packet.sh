@@ -330,12 +330,87 @@ assert not any(isinstance(node, ast.ImportFrom) for node in ast.walk(tree))
 with patch('builtins.open', side_effect=AssertionError('filesystem access')), \
      patch.dict(os.environ, {'GITHUB_TOKEN': 'ghp_' + 'Z' * 30}, clear=True):
     accepted(sample())
+needle = "build-failure-evidence-packet.py"
+suite = "failure-evidence"
+mapped_name = "build-failure-evidence-packet.py"
+
+
+def assert_no_caller(name, text):
+    if needle not in text:
+        return
+    # #696 permits only exact declarative inventory/mapping literals in the
+    # dormant selector and its mapping test. Filename alone is no exemption.
+    assert name in ('select-ai-workflow-fixtures.py', 'test-select-ai-workflow-fixtures.sh'), (
+        'unexpected caller', name)
+    is_fixture = name.startswith('test-')
+    declaration = 'cases' if is_fixture else 'PATH_SUITES'
+    expected = ast.parse(
+        f"({mapped_name!r}, {{{suite!r}}})" if is_fixture else
+        f"(SCRIPTS + {mapped_name!r}, ({suite!r},))", mode='eval').body
+    if is_fixture:
+        shell_prefix, start, body = text.partition("<<'PY'\n")
+        text, end, shell_suffix = body.rpartition('\nPY')
+        assert start and end and needle not in shell_prefix + shell_suffix
+    tree = ast.parse(text)
+    allowed = []
+    declarations = set()
+    for statement in tree.body:
+        if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)):
+            continue
+        target = statement.targets[0].id
+        if target != declaration:
+            continue
+        assert target not in declarations, ('duplicate declaration', target)
+        declarations.add(target)
+        assert isinstance(statement.value, ast.Tuple)
+        for row in statement.value.elts:
+            if ast.dump(row) == ast.dump(expected):
+                allowed.extend(n for n in ast.walk(row)
+                               if isinstance(n, ast.Constant) and n.value == mapped_name)
+    assert len(allowed) == 1, 'missing/duplicate inventory reference'
+    # Mask only the accepted literal spans; executable/unknown references remain.
+    lines = text.encode().splitlines(keepends=True)
+    for node in sorted(allowed, key=lambda n: (n.lineno, n.col_offset), reverse=True):
+        assert node.lineno == node.end_lineno
+        line = lines[node.lineno - 1]
+        lines[node.lineno - 1] = line[:node.col_offset] + line[node.end_col_offset:]
+    assert needle.encode() not in b''.join(lines), 'non-inventory selector reference'
+
+
+selector_source = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read_text()
+assert_no_caller('select-ai-workflow-fixtures.py', selector_source)
+selector_fixture = (repo / '.github/scripts/test-select-ai-workflow-fixtures.sh').read_text()
+assert_no_caller('test-select-ai-workflow-fixtures.sh', selector_fixture)
+# Exercise the same guard used by the repository scan, without writing callers.
+for name, text in (
+        ('unknown-caller.py', f'run({mapped_name!r})'),
+        ('unknown-inventory.py', selector_source),
+        ('test-select-ai-workflow-fixtures.sh',
+         selector_fixture.replace('\nPY', f'\nrun({mapped_name!r})\nPY')),
+        ('select-ai-workflow-fixtures.py', selector_source + f'\nrun({mapped_name!r})\n'),
+        ('select-ai-workflow-fixtures.py',
+         selector_source.replace(repr(mapped_name).replace("'", '"'),
+                                 f'run({mapped_name!r})'))):
+    try:
+        assert_no_caller(name, text)
+    except (AssertionError, ValueError, SyntaxError):
+        pass
+    else:
+        raise AssertionError(('unexpected caller accepted', name))
+
 for workflow in (repo / '.github/workflows').glob('*.yml'):
     assert script.name not in workflow.read_text(), ('production wiring', workflow)
 assert 'fixtures=(.github/scripts/test-*.sh)' in (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
 references = [p for p in (repo / '.github/scripts').glob('*') if p.is_file()
               and script.name in p.read_text()]
-assert {p.name for p in references} == {'test-failure-evidence-packet.sh', 'collect-failure-evidence.py'}, references
+callers = []
+for reference in references:
+    if reference.name in ('select-ai-workflow-fixtures.py', 'test-select-ai-workflow-fixtures.sh'):
+        assert_no_caller(reference.name, reference.read_text())
+    else:
+        callers.append(reference.name)
+assert set(callers) == {'test-failure-evidence-packet.sh', 'collect-failure-evidence.py'}, references
 assert not {'root_cause', 'safe', 'unsafe', 'allowlist', 'fix', 'model', 'policy'} & set(accepted(sample())['packet'])
 print(f'failure evidence packet: 7 synthetic #654 replays complete ({min(sizes)}..{max(sizes)} UTF-8 bytes); exact 32768 cap/identity/truncation/fail-closed/purity passed')
 PY

@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
+import ast
 import copy
 import importlib.util
 import json
@@ -205,7 +206,38 @@ unavailable = subprocess.run(command[:-1] + [str(repo / 'absent')], input=b'', c
 assert unavailable.returncode == 1
 assert json.loads(unavailable.stdout)['reason'] == 'inventory_unavailable'
 
-# Only this fixture imports the helper. No production source calls the selector.
+# Inventory references cannot become callers through dynamic execution either.
+def assert_dormant(text):
+    tree = ast.parse(text)
+    imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    assert {ast.unparse(n) for n in imports} == {
+        'import json', 'import os', 'from pathlib import Path', 'import sys'}
+    allowed_calls = {
+        'BASELINE.items', 'BASELINE_COUNTS.items', 'EXTENSIONS.get', 'INVENTORY.items',
+        'Path', 'all', 'any', 'data.endswith', 'data[:-1].decode',
+        "data[:-1].decode('utf-8', 'strict').split", 'dict', 'entry.is_file',
+        'entry.name.endswith', 'entry.name.startswith', 'fixtures.update', 'frozenset',
+        'full', 'isinstance', 'json.dumps', 'len', 'main', 'mappings', 'os.scandir',
+        'parse_paths', 'path.encode', 'path.endswith', 'path.split', 'path.startswith',
+        'print', 'record', 'select', 'set', 'sorted', 'suites.update', 'sys.exit',
+        'sys.stdin.buffer.read', 'tuple', 'valid_path',
+    }
+    assert all(ast.unparse(n.func) in allowed_calls for n in ast.walk(tree)
+               if isinstance(n, ast.Call)), 'selector must not execute inventory paths'
+
+
+selector_text = source.read_text()
+assert_dormant(selector_text)
+for executable in ('os.system(PATH_SUITES[0][0])', 'eval(INVENTORY["product-npm"][0])',
+                   '__import__("subprocess").run([PATH_SUITES[0][0]])'):
+    try:
+        assert_dormant(selector_text + '\n' + executable + '\n')
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('executable selector accepted')
+
+# No production source calls the selector; target fixtures may parse its AST.
 for workflow in (repo / '.github/workflows').glob('*.yml'):
     assert source.name not in workflow.read_text(), workflow
 for script in (repo / '.github/scripts').iterdir():

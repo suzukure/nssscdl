@@ -2,6 +2,7 @@
 set -euo pipefail
 repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$repo_root" <<'PY'
+import ast
 import base64
 import copy
 import hashlib
@@ -331,11 +332,77 @@ with tempfile.TemporaryDirectory(prefix='product-orchestrator-fixture-') as temp
     for path in trusted.iterdir():
         shutil.rmtree(path)
 
+needle = "product-npm-orchestrator"
+suite = "product-npm"
+baseline_name = "product-npm-orchestrator"
+mapped_name = "product-npm-orchestrator.py"
+
+
+def assert_no_caller(name, text):
+    if needle not in text:
+        return
+    # #696 permits only exact declarative inventory/mapping literals in the
+    # dormant selector. The filename alone is never an exemption.
+    assert name == 'select-ai-workflow-fixtures.py', ('unexpected caller', name)
+    tree = ast.parse(text)
+    allowed = []
+    declarations = set()
+    for statement in tree.body:
+        if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)):
+            continue
+        target = statement.targets[0].id
+        if target not in ('BASELINE', 'PATH_SUITES'):
+            continue
+        assert target not in declarations, ('duplicate declaration', target)
+        declarations.add(target)
+        if target == 'BASELINE' and baseline_name is not None:
+            assert isinstance(statement.value, ast.Dict)
+            ast.literal_eval(statement.value)  # Literal data only, no call/expression.
+            for key, value in zip(statement.value.keys, statement.value.values):
+                if isinstance(key, ast.Constant) and key.value == suite:
+                    allowed.extend(n for n in ast.walk(value)
+                                   if isinstance(n, ast.Constant) and n.value == baseline_name)
+        elif target == 'PATH_SUITES':
+            assert isinstance(statement.value, ast.Tuple)
+            expected = ast.parse(
+                f"(SCRIPTS + {mapped_name!r}, ({suite!r},))", mode='eval').body
+            for row in statement.value.elts:
+                if ast.dump(row) == ast.dump(expected):
+                    allowed.extend(n for n in ast.walk(row)
+                                   if isinstance(n, ast.Constant) and n.value == mapped_name)
+    assert len(allowed) == (2 if baseline_name else 1), 'missing/duplicate inventory reference'
+    # Mask only the accepted literal spans; executable/unknown references remain.
+    lines = text.encode().splitlines(keepends=True)
+    for node in sorted(allowed, key=lambda n: (n.lineno, n.col_offset), reverse=True):
+        assert node.lineno == node.end_lineno
+        line = lines[node.lineno - 1]
+        lines[node.lineno - 1] = line[:node.col_offset] + line[node.end_col_offset:]
+    assert needle.encode() not in b''.join(lines), 'non-inventory selector reference'
+
+
+selector_source = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read_text()
+assert_no_caller('select-ai-workflow-fixtures.py', selector_source)
+# Exercise the same guard used by the repository scan, without writing callers.
+for name, text in (
+        ('unknown-caller.py', f'run({mapped_name!r})'),
+        ('unknown-inventory.py', selector_source),
+        ('select-ai-workflow-fixtures.py', selector_source + f'\nrun({mapped_name!r})\n'),
+        ('select-ai-workflow-fixtures.py',
+         selector_source.replace(repr(mapped_name).replace("'", '"'),
+                                 f'run({mapped_name!r})'))):
+    try:
+        assert_no_caller(name, text)
+    except (AssertionError, ValueError, SyntaxError):
+        pass
+    else:
+        raise AssertionError(('unexpected caller accepted', name))
+
 for workflow in (repo / '.github/workflows').glob('*.yml'):
     assert 'product-npm-orchestrator' not in workflow.read_text(), workflow
 for script in (repo / '.github/scripts').iterdir():
     if script.is_file() and not script.name.startswith('test-') and script != source:
-        assert 'product-npm-orchestrator' not in script.read_text(), script
+        assert_no_caller(script.name, script.read_text())
 assert 'fixtures=(.github/scripts/test-*.sh)' in (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
 print('product orchestrator: state/stop/validation/field/hash/source/cache rejection/workspace/cleanup/production unreachable passed')
 PY
