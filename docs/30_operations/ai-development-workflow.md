@@ -119,9 +119,11 @@ Issueは、独立して判断・実施・検証・完了判定でき、単独で
 
 [Work Admission Control](#work-admission-control)で着手対象を判断した後に、本節のruntime scope確認を行う。
 
+#719で確定したstatic admissionの再校正に基づき、#549由来のheavy runtime responsibility（R）に、Consumed Contract readiness（C）、Proof topology readiness（P）、Boundary span（B）を組み合わせる。本節はpre-developmentの事前判定を正本とする。AI Develop中のnew Contract discoveryに伴うdynamic pause / re-evaluationは #718 の別責務であり、本節ではmarker / reason / resume契約やworkflow/runtime behaviorを追加・変更しない。
+
 AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記の「意味のある最小単位」を満たす候補について、inner `RuntimeMaxSec=700s` 内に実装・検証・報告まで収まるscopeかを見積もる。これはIssue境界の下位に置く事前確認であり、責務数や差分量を理由に、安全性・正確性・要求／設計整合性に不可分な変更を機械的に分割しない。
 
-次のproduction runtime責務を各1つのheavy responsibilityとして数える。
+**R — Heavy runtime responsibility**: 次のproduction runtime責務を各1つのheavy responsibilityとして数える。
 
 1. 新しいproduction event、`repository_dispatch`、workflow entryの接続。
 2. accepted record、label、machine state、Ready/Draft等の不可逆または外部状態遷移。
@@ -132,26 +134,67 @@ AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記�
 7. App tokenまたはtrust boundaryを跨ぐ新しい権限境界。
 8. 既存normal pathを維持した新path追加に伴う対称性・重複抑止。
 
-単なるfixture追加、既存helperへの局所的なpure判定追加、docs同期は原則として数えない。ただしproduction ownershipやstate transitionを実際に変更する場合は数える。見積もった数を次の事前scope riskに当てはめる。
+単なるfixture追加、既存helperへの局所的なpure判定追加、docs同期は原則として数えない。ただしproduction ownershipやstate transitionを実際に変更する場合は数える。
 
-| Risk | Heavy responsibility数 | 投入前の判断 |
-|---|---:|---|
-| Green | 0〜3 | 通常投入可。 |
-| Yellow | 4〜5 | 分割を優先検討し、少なくともprepared/helperとproduction wiringを分離できないか確認する。 |
-| Red | 6以上 | 原則として投入前に分割する。 |
+**C — Consumed Contract readiness**: 評価対象はIssue自身が新規定義するContractではなく、そのIssueがprerequisiteとして消費するcritical cross-boundary Contractとする。
 
-次の組合せは個数にかかわらず強制分割候補とする。
+| 区分 | 消費するprerequisite Contractの状態 |
+|---|---|
+| C0 | same target mode / same trust boundaryでlatest main上formal proof済み。 |
+| C1 | pure / dormant / synthetic / prepared等のnarrower modeではproof済みだが、target modeでは未実証。 |
+| C2 | prerequisite Contract自体が未定義、または着手前に新しいcontract decisionが必要。 |
+
+Issue自身がContractだけを定義/proofする独立単位は、その新規Contractを理由にC2扱いにしない。消費するcritical cross-boundary prerequisite Contractがなければ、Green条件上はC0相当とする。そのContractを同じIssueで即downstream consumerまで消費する場合は、下記の強制分割候補として扱う。
+
+**P — Proof topology readiness**: Doneを証明するformal proofの構成を確認する。
+
+| 区分 | Proof topologyの状態 |
+|---|---|
+| P0 | current formal proof topologyでDoneを証明可能。 |
+| P1 | existing formal workflowへのfixture/assertion追加だけで証明可能。 |
+| P2 | new runner / runtime supply / staging / observer / handoff等、proof infrastructure自体を先に成立させる必要がある。 |
+
+P2 infrastructureそのものをdormant/preparedに作る独立Issueはadmit可能であり、P2だけで自動的にRed扱いにしない。他のriskと安全な独立単位の条件も確認する。P2 infrastructureと、そのproof対象integrationを同じIssueで完成させる場合はsplit-firstとする。
+
+**B — Boundary span**: 次のcross-boundary categoryのうち、Issue内で新規導入またはmaterially変更するものだけを各1つ数える。
+
+1. trusted source identity
+2. runtime / staging
+3. service / isolation
+4. workspace / cache handoff
+5. paid AI boundary
+6. post gate / validation ownership
+7. repository write / external machine state
+8. workflow-to-workflow handoff
+
+加算条件は、少なくともownershipを跨ぐ、trusted/untrusted authorityを跨ぐ、activation/reachabilityを開く、failure/cleanup ownershipを移す、durable identity/stateを境界越しに受け渡す場合を含む。既存main上の確定Contractをcallerがそのまま利用するだけならBへ加算しない。
+
+R/C/P/Bを次の事前scope riskへ統合する。Red条件と強制分割候補を先に確認し、YellowはRed条件がない場合に限る。
+
+| Risk | 条件 | 投入前の判断 |
+|---|---|---|
+| Green | R <= 3、C0、P0 / P1、B <= 3、既存/追加の強制分割条件なしを全て満たす。 | 通常投入可。 |
+| Yellow | Red条件なしで、R = 4–5、C1だがdormant/proof-only、B = 4のいずれか。 | 分割を優先検討し、pure/prepared/proofとdownstream integration（prepared/helperとproduction wiringを含む）を分離できないかfresh確認する。 |
+| Red / split-first | R >= 6、B >= 5、B = 4 + C1、B = 4 + R >= 4、または下記の強制分割候補のいずれか。 | 原則として投入前に分割する。 |
+
+次の組合せはR/Bの個数にかかわらず強制分割候補とする。#549由来の既存4条件を維持し、#719のContract / Proof / Boundary条件を追加する。
 
 - 新しいproduction pathと独立runner-loss recoveryを同じIssueで初めて実装する。
 - producerとconsumerを同時に初めてproduction接続する。
 - paid AI boundary、accepted/state lifecycle、独立failure recoveryを同時に実装する。
 - 新しいproduction workflowを2本以上追加する。
+- C1 Contractをproduction / paid / repository-write targetへ初めて昇格させながらconsumer wiringも行う。
+- C2 prerequisiteを決めながらdownstream consumer/integrationも同じIssueで閉じる。
+- P2 proof infrastructureを作りながら、そのproof対象integrationも同じIssueで完成させる。
+- new cross-boundary Contractを定義し、その次boundaryのconsumerまで同じIssueで接続する。
 
 強制分割候補は、各段階を安全性・正確性・要求／設計整合性を保つ独立単位へ分けられる場合に分割必須とする。分割自体が正本不整合を生む場合はIssue本文に不可分な理由を明示して人間が判断し、extended-runへ安易に切り替えない。runtime-heavyなworkflow変更は、可能なら (1) pure helper / trusted gate / prepared lifecycle、(2) production wiring / event connection、(3) independent failure recovery / cancellation recovery の順に分ける。各段階は単独でmainへ反映しても安全で、後続未実装の間にproductionが不完全状態へ到達しないことを必須とする。prepared/dormant codeを先行反映する場合は、default production runtimeから到達不能であることをfixtureで固定する。
 
 通常Codex runの実績は次回同種Issueの判断へ反映する。5分以下は粒度が概ね適切、5分超〜8分は次回同種scopeを一段細かく分割することを優先、8分超〜10分は同一Issueへの大きな追加責務を避ける危険域、10分超はsuccessでも分割不足の実績として扱う。700秒上限に到達した場合は同scopeを単純retryせず、「Issue本文におけるcurrent implementation contract」と「Codex timeout・runner異常終了時の診断と再開」で現行契約とfailure categoryを確認し、scope再分割を第一選択にする。timeoutだけでscope過大と断定せず、host/runtime障害、契約矛盾、non-convergence等を切り分けた後に本基準を適用する。
 
-変更行数とファイル数は補助指標であり、Issue境界の主指標にしない。概算のchanged lines（追加＋削除）は400以下を通常、400超〜700を注意、700超を分割優先検討の警告とする。小差分でもheavy responsibilityが多ければtimeoutし得るため責務数を主指標とし、1つの確定判断と整合性維持に不可分な変更を行数だけで分割しない。
+elapsed単独でscope適否を決めず、`time-to-first-result + result category` をセットで扱う。短時間のrequirements/contract pauseはGreen evidenceと解釈せず、10分超のsuccessは引き続きundersplit warningとする。correction/Regression回数は現時点ではadmission thresholdへ使わない。new Contract discovery / proof topology discovery / split decisionはscope feedbackとして記録し、次回のfresh事前判定へ反映する。これはdynamic gateの実装ではない。
+
+変更行数とファイル数は補助指標であり、Issue境界の主指標にしない。概算のchanged lines（追加＋削除）は400以下を通常、400超〜700を注意、700超を分割優先検討の警告とする。小差分でもheavy responsibilityが多ければtimeoutし得るためR/C/P/Bを主指標とし、1つの確定判断と整合性維持に不可分な変更を行数だけで分割しない。
 
 ## 基本設計後の価値単位の開発
 
