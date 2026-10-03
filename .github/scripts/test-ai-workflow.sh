@@ -128,6 +128,9 @@ grep -Fq 'timeout-minutes: 10' "$regression_workflow"
 grep -Fq 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803' "$regression_workflow"
 grep -Fq 'ref: ${{ github.event.pull_request.head.sha }}' "$regression_workflow"
 grep -Fq 'persist-credentials: false' "$regression_workflow"
+grep -Fq 'fetch-depth: 0' "$regression_workflow"
+grep -Fq 'BASE_SHA: ${{ github.event.pull_request.base.sha }}' "$regression_workflow"
+grep -Fq 'HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$regression_workflow"
 grep -Fq 'export LC_ALL=C' "$regression_workflow"
 grep -Fq 'fixtures=(.github/scripts/test-*.sh)' "$regression_workflow"
 grep -Fq 'if [ "${#fixtures[@]}" -eq 0 ]; then' "$regression_workflow"
@@ -149,6 +152,233 @@ if grep -Eq 'github\.token|^[[:space:]]+GH_TOKEN:' "$regression_workflow"; then
   echo 'AI Workflow Regression passes a repository credential.' >&2
   exit 1
 fi
+
+# #528: execute the production run block against synthetic fixtures; mutations
+# must be rejected by observable coverage and exit status, not text presence.
+python3 -B - "$repo_root" <<'PY'
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
+import textwrap
+
+repo = Path(sys.argv[1])
+workflow = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
+run_block = textwrap.dedent(workflow.split('        run: |\n', 1)[1])
+subprocess.run(['bash', '-n'], input=run_block.encode(), check=True)
+source = repo / '.github/scripts/select-ai-workflow-fixtures.py'
+spec = importlib.util.spec_from_file_location('regression_policy', source)
+policy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(policy)
+prefix = '.github/scripts/'
+actual = sorted(prefix + p.name for p in (repo / prefix).glob('test-*.sh'))
+assert actual == sorted(p for fixtures in policy.INVENTORY.values() for p in fixtures)
+assert len(actual) == 72
+common_guard = prefix + 'test-production-unreachable.sh'
+local_path = prefix + 'deepinfra-usage-ledger.py'
+selected = sorted(policy.INVENTORY['deepinfra'] + policy.INVENTORY['common'])
+base, head = 'a' * 40, 'b' * 40
+record = dict(schema='ai-workflow-fixture-selection', version=1, mode='selected',
+              reason='known_paths', suites=['common', 'deepinfra'], fixtures=selected)
+
+
+def encode(paths):
+    return b''.join(p.encode() + b'\0' for p in paths)
+
+
+with tempfile.TemporaryDirectory() as temporary:
+    tmp = Path(temporary)
+    workspace = tmp / 'workspace'
+    scripts = workspace / prefix
+    scripts.mkdir(parents=True)
+    bin_dir = tmp / 'bin'
+    bin_dir.mkdir()
+    trusted = tmp / 'base-selector.py'
+    changed_file, git_log = tmp / 'changed.nul', tmp / 'git.log'
+    summary_file, execution_log = tmp / 'summary', tmp / 'executed'
+    # Head policy is deliberately executable and hostile. It must never run.
+    (scripts / source.name).write_text("raise RuntimeError('HEAD POLICY EXECUTED')\n")
+    mock_git = bin_dir / 'git'
+    mock_git.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+with open(os.environ['GIT_LOG'], 'a') as output:
+    output.write(json.dumps(args) + '\\n')
+base, head = 'a' * 40, 'b' * 40
+if args == ['rev-parse', 'HEAD']:
+    print(os.environ.get('MOCK_HEAD', head))
+elif args == ['rev-parse', '--verify', base + '^{commit}']:
+    if os.environ.get('GIT_FAILURE') == 'base': sys.exit(1)
+    print(os.environ.get('MOCK_BASE', base))
+elif args == ['diff', '--no-renames', '--name-only', '-z', base, head]:
+    if os.environ.get('GIT_FAILURE') == 'diff': sys.exit(1)
+    sys.stdout.buffer.write(pathlib.Path(os.environ['CHANGED_FILE']).read_bytes())
+elif args == ['show', base + ':.github/scripts/select-ai-workflow-fixtures.py']:
+    if os.environ.get('GIT_FAILURE') == 'show': sys.exit(1)
+    sys.stdout.buffer.write(pathlib.Path(os.environ['TRUSTED_SELECTOR']).read_bytes())
+else:
+    sys.exit(90)
+''')
+    mock_git.chmod(0o755)
+    env = {**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+           'BASE_SHA': base, 'HEAD_SHA': head, 'GITHUB_STEP_SUMMARY': str(summary_file),
+           'EXECUTION_LOG': str(execution_log), 'GIT_LOG': str(git_log),
+           'CHANGED_FILE': str(changed_file), 'TRUSTED_SELECTOR': str(trusted)}
+
+    def fixture(path, fail=False):
+        (workspace / path).write_text(
+            f'printf "%s\\0" {shlex.quote(path)} >> "$EXECUTION_LOG"\n'
+            + ('exit 7\n' if fail else 'exit 0\n'))
+
+    def reset():
+        for path in scripts.glob('test-*.sh'):
+            if path.is_dir():
+                path.rmdir()
+            else:
+                path.unlink()
+        for path in actual:
+            fixture(path)
+        trusted.write_bytes(source.read_bytes())
+        changed_file.write_bytes(encode([local_path]))
+
+    def run(expected, mode, reason, status=0, block=run_block, overrides=None):
+        for path in (summary_file, execution_log, git_log):
+            path.unlink(missing_ok=True)
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', block], cwd=workspace,
+                                env={**env, **(overrides or {})}, capture_output=True)
+        executed = (execution_log.read_bytes().split(b'\0')[:-1] if execution_log.exists() else [])
+        executed = [path.decode() for path in executed]
+        summary = summary_file.read_text()
+        assert (result.returncode == 0) == (status == 0), (reason, result.stderr, summary)
+        assert executed == expected, (reason, executed, expected)
+        assert f'- mode: {mode}\n' in summary and f'- reason: {reason}\n' in summary, summary
+        assert f'- full count: {len(list(scripts.glob("test-*.sh")))}\n' in summary
+        assert f'結果: **{"PASS" if status == 0 else "FAIL"}**' in summary
+        assert len(summary) < 1024 and '| Fixture |' not in summary
+        assert not any(path in summary for path in actual)
+        return [json.loads(line) for line in git_log.read_text().splitlines()] if git_log.exists() else []
+
+    reset()
+    calls = run(selected, 'selected', 'known_paths')
+    assert calls == [['rev-parse', 'HEAD'], ['rev-parse', '--verify', base + '^{commit}'],
+                     ['diff', '--no-renames', '--name-only', '-z', base, head],
+                     ['show', base + ':' + prefix + source.name]]
+    assert common_guard in selected and len(selected) < len(actual)
+    # Changed fixture is required independently of the helper mapping.
+    changed_file.write_bytes(encode([prefix + 'test-deepinfra-checkpoint.sh']))
+    run(selected, 'selected', 'known_paths')
+    fixture(selected[0], fail=True)
+    run(selected, 'selected', 'known_paths', status=1)  # includes later fixtures after failure
+    reset()
+    for paths, reason in [(['unknown'], 'unmapped_path'),
+                          ([prefix + source.name], 'global_boundary'),
+                          ([prefix + 'test-select-ai-workflow-fixtures.sh'], 'global_boundary'),
+                          (['.github/workflows/ai-workflow-regression.yml'], 'global_boundary'),
+                          ([local_path, prefix + 'space name\nline.py'], 'unmapped_path'),
+                          # Rename old/new boundary: deleted unknown path cannot be omitted.
+                          (['unknown-old.py', local_path], 'unmapped_path')]:
+        changed_file.write_bytes(encode(paths))
+        run(actual, 'full', reason)
+    # Verify exact bytes at the trusted selector boundary, beyond full fallback.
+    unusual = encode([local_path, prefix + 'space name\nline.py'])
+    changed_file.write_bytes(unusual)
+    trusted.write_text('import sys\nassert sys.stdin.buffer.read() == ' + repr(unusual)
+                       + '\nprint(' + repr(json.dumps(record)) + ')\n')
+    run(selected, 'selected', 'known_paths')
+    reset()
+    changed_file.write_bytes(b'')
+    run(actual, 'full', 'empty_diff')
+    changed_file.write_bytes(b'bad-framing')
+    run(actual, 'full', 'malformed_input')
+    reset()
+    for overrides, reason in [({'BASE_SHA': 'invalid'}, 'sha_invalid'),
+                              ({'HEAD_SHA': head.upper()}, 'sha_invalid'),
+                              ({'MOCK_HEAD': base}, 'head_mismatch'),
+                              ({'MOCK_BASE': head}, 'base_unavailable'),
+                              ({'GIT_FAILURE': 'base'}, 'base_unavailable'),
+                              ({'GIT_FAILURE': 'diff'}, 'diff_failed'),
+                              ({'GIT_FAILURE': 'show'}, 'base_selector_unavailable')]:
+        run(actual, 'full', reason, overrides=overrides)
+    trusted.write_text('raise SystemExit(3)\n')
+    run(actual, 'full', 'selector_failed')
+    # Full caller ignores an otherwise well-formed selector's incomplete full list.
+    full_record = {**record, 'mode': 'full', 'reason': 'unmapped_path', 'fixtures': selected[:1]}
+    trusted.write_text('print(' + repr(json.dumps(full_record)) + ')\n')
+    run(actual, 'full', 'unmapped_path')
+    for key, value in [('schema', 'unknown'), ('version', True), ('mode', 'unknown'),
+                       ('reason', 'untrusted\ntext'), ('suites', ['unknown']),
+                       ('suites', ['common', 'common']), ('fixtures', 'not-list'),
+                       ('fixtures', selected + selected[:1]),
+                       ('fixtures', [prefix + '../test-escape.sh']),
+                       ('fixtures', ['outside/test-escape.sh'])]:
+        broken = {**record, key: value}
+        trusted.write_text('print(' + repr(json.dumps(broken)) + ')\n')
+        run(actual, 'full', 'selector_record_invalid')
+    for payload in ('invalid json', '[]', json.dumps(record) + '\n{}',
+                    json.dumps(record)[:-1] + ',"mode":"selected"}'):
+        trusted.write_text('print(' + repr(payload) + ')\n')
+        run(actual, 'full', 'selector_record_invalid')
+    missing_guard = {**record, 'fixtures': [p for p in selected if p != common_guard]}
+    trusted.write_text('print(' + repr(json.dumps(missing_guard)) + ')\n')
+    run(actual, 'full', 'common_guard_missing')
+    for paths, reason in [([], 'no_fixtures'),
+                          (selected + [prefix + 'test-missing.sh'], 'selected_fixture_missing')]:
+        trusted.write_text('print(' + repr(json.dumps({**record, 'fixtures': paths})) + ')\n')
+        run([], 'full', reason, status=1)
+    reset()
+    changed_file.write_bytes(encode(['unknown']))
+    fixture(actual[-1], fail=True)
+    run(actual, 'full', 'unmapped_path', status=1)
+    reset()
+    unusual_fixture = prefix + 'test-space name\nline.sh'
+    fixture(unusual_fixture)
+    changed_file.write_bytes(encode([unusual_fixture]))
+    run(sorted(actual + [unusual_fixture]), 'full', 'inventory_mismatch')
+    (workspace / unusual_fixture).unlink()
+    reset()
+    extra = prefix + 'test-new.sh'
+    fixture(extra)
+    run(sorted(actual + [extra]), 'full', 'inventory_mismatch')
+    (workspace / extra).unlink()
+    (workspace / actual[0]).unlink()
+    run(actual[1:], 'full', 'inventory_mismatch')
+    reset()
+    for kind in ('directory', 'symlink', 'fifo'):
+        bad = workspace / selected[0]
+        bad.unlink()
+        if kind == 'directory': bad.mkdir()
+        elif kind == 'symlink': bad.symlink_to(workspace / selected[1])
+        else: os.mkfifo(bad)
+        run([], 'full', 'invalid_fixture_type', status=1)
+        reset()
+    for path in actual:
+        (workspace / path).unlink()
+    run([], 'full', 'no_fixtures', status=1)
+    reset()
+    # Each production mutation must cause this same behavior oracle to reject it.
+    for replacement in ('# if bash "$fixture"; then', 'if true; then',
+                        'if bash "$fixture" || true; then'):
+        mutated = run_block.replace('if bash "$fixture"; then', replacement)
+        fixture(selected[0], fail=True)
+        try:
+            run(selected, 'selected', 'known_paths', status=1, block=mutated)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('broken execution/failure propagation accepted')
+    try:
+        run(selected, 'selected', 'known_paths', status=1,
+            block=run_block.replace('failed=1', 'failed=0'))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('swallowed fixture failure accepted')
+print('AI Workflow Regression: trusted-base selected/full behavior and #528 mutations passed.')
+PY
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"
 grep -Fq 'BASE_REF: ${{ steps.review-source.outputs.base_ref }}' "$repo_root/.github/workflows/claude-review.yml"
