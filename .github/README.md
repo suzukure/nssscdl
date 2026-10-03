@@ -18,7 +18,9 @@ selector自身・そのfixture・regression workflow変更は `global_boundary`�
 
 ## Cross-suite production-unreachable common guard（#701）
 
-[`test-production-unreachable.sh`](scripts/test-production-unreachable.sh) はscript / workflowをread-only走査する軽量common fixtureである。`product-npm-orchestrator.py` のproduction workflow接続・未知non-test caller、および `build-failure-evidence-packet.py` のworkflow直接接続・`collect-failure-evidence.py` 以外のproduction callerを拒否する。selectorの `BASELINE` / `PATH_SUITES` とselector fixtureの `cases` では既知のexact宣言的literalだけをASTで許容し、実行参照・追加参照・重複宣言をfail-closedで拒否する。implementation自身と直下の `test-*.sh` / `test-*.py` は構造的に区別し、guardはhelperをimport・実行しない。
+[`test-production-unreachable.sh`](scripts/test-production-unreachable.sh) はscript / workflowをread-only走査する軽量common fixtureである。`product-npm-orchestrator.py` のproduction workflow接続・未知non-test caller、`build-failure-evidence-packet.py` のworkflow直接接続・`collect-failure-evidence.py` 以外のproduction caller、および `verify_post_workload` のworkflow直接参照・orchestrator source自身以外のnon-test script参照を拒否する。selectorの `BASELINE` / `PATH_SUITES` とselector fixtureの `cases` では既知のexact宣言的literalだけをASTで許容し、実行参照・追加参照・重複宣言をfail-closedで拒否する。implementation自身と直下の `test-*.sh` / `test-*.py` は構造的に区別し、guardはhelperをimport・実行しない。
+
+snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked filesだけをNUL-safeに列挙し、working treeのsource bytesを検査する。untracked `__pycache__/*.pyc` 等は対象にしない。列挙失敗・不正path・未解決index stage・tracked symlink / 特殊file・ancestorの不正型・読込失敗・不正UTF-8はsilent skipせずFAILする。
 
 検証は `bash .github/scripts/test-production-unreachable.sh`。synthetic caller / workflow / AST mutationはmemory内だけで構成し、repositoryを書き換えない。selected modeではcommonとともに必ず選択され、無関係なhelper変更で重いProduct npm suiteの常時選択を必要としない。inventory同期には既存#684 fixtureの未登録解消も含む。既存Product npm / failure-evidence fixtureの重複guardは維持する。production workflow / event / permission / stateは変更せず、network / GitHub API / Secrets / paid AIを使用しない。#697のproduction wiringは後続scopeで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
