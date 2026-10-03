@@ -357,8 +357,7 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
 
     def inspect_contract(contract, origin):
         assert set(contract) == {'policy', 'cache_path'}
-        assert dict(contract['policy']) == {'origin': origin,
-                'allow_create_manifest': origin == 'no-manifest', 'allow_generate_lock': False}
+        assert dict(contract['policy']) == dict(helper.state_policy(origin))
         rejected(lambda: contract.__setitem__('cache_path', 'fixture-sensitive'))
         rejected(lambda: contract['policy'].__setitem__('origin', 'locked'))
         assert str(trusted) not in repr(contract), 'trusted evidence exposed'
@@ -640,9 +639,258 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
     assert not list(exports.iterdir()) and not list(trusted.iterdir())
     print('workload session: policies/materialization/cache separation/active lifetime/fail-closed passed')
 
+    # #710 roots: real canonical traversal plus synthetic physical alias/mount
+    # observations. No mount, namespace, subprocess, or external service needed.
+    before = inventory()
+    root = helper.CanonicalRoot(workspace)
+    root.verify()
+    assert root._snapshot[0][-1] == (workspace.stat().st_dev, workspace.stat().st_ino)
+    assert inventory() == before
+    alias = base / 'root-alias'
+    alias.symlink_to(workspace, target_is_directory=True)
+    for path in ('relative', '//' + str(workspace).lstrip('/'),
+                 workspace / '..' / workspace.name, alias,
+                 alias / 'child', base / 'missing', workspace / 'package.json',
+                 str(workspace) + '/', str(workspace) + '/./'):
+        rejected(lambda: helper.CanonicalRoot(path))
+    alias.unlink()
+    child = workspace / 'root-child'
+    child.mkdir()
+    for left, right in ((workspace, workspace), (workspace, child), (child, workspace)):
+        assert helper.CanonicalRoot(left).overlaps(helper.CanonicalRoot(right))
+        rejected(lambda: helper.RootBoundary(left, right))
+    assert not helper.CanonicalRoot(workspace).overlaps(helper.CanonicalRoot(trusted))
+    boundary = helper.RootBoundary(workspace, repo, (trusted,), exports)
+    boundary.verify()
+    saved_workspace = base / 'saved-workspace'
+    workspace.rename(saved_workspace)
+    workspace.mkdir()
+    rejected(root.verify)
+    rejected(boundary.verify)
+    workspace.rmdir()
+    saved_workspace.rename(workspace)
+    root.verify()
+    child.rmdir()
+    original_mounts = helper._mount_table
+    observations = []
+    def replace_during_observation():
+        observations.append(True)
+        if len(observations) == 2:
+            workspace.rename(saved_workspace)
+            workspace.mkdir()
+        return original_mounts()
+    with patch.object(helper, '_mount_table', replace_during_observation):
+        rejected(lambda: helper.CanonicalRoot(workspace))
+    workspace.rmdir()
+    saved_workspace.rename(workspace)
+
+    physical_alias = base / 'physical-alias'
+    physical_alias.mkdir()
+    alias_root = helper.CanonicalRoot(physical_alias)
+    original_observe = helper.CanonicalRoot._observe
+    def same_inode(observed):
+        snapshot = original_observe(observed)
+        if observed.path == physical_alias:
+            return ((*snapshot[0][:-1], root._snapshot[0][-1]), *snapshot[1:])
+        return snapshot
+    with patch.object(helper.CanonicalRoot, '_observe', same_inode):
+        assert helper.CanonicalRoot(physical_alias).overlaps(root)
+        rejected(lambda: helper.RootBoundary(workspace, physical_alias))
+    # A bind mount's device/root coordinate covers hidden ancestry even when
+    # its lexical path and observed ancestor inodes are unrelated to workspace.
+    mounts = helper._mount_table()
+    bind = ('fixture-bind', root._snapshot[2], root._snapshot[3], physical_alias)
+    with patch.object(helper, '_mount_table', return_value=(*mounts, bind)):
+        assert helper.CanonicalRoot(physical_alias).overlaps(root)
+        rejected(lambda: helper.RootBoundary(workspace, repo, (), physical_alias))
+        nested = physical_alias / 'nested'
+        nested.mkdir()
+        assert root.overlaps(helper.CanonicalRoot(nested))
+        assert helper.CanonicalRoot(nested).overlaps(root)
+        nested.rmdir()
+        rejected(alias_root.verify)  # Same inode, changed mount identity.
+    with patch.object(helper, '_mount_table', side_effect=OSError('fixture-sensitive')):
+        rejected(root.verify)  # No silent fallback to lexical comparison.
+    physical_alias.rmdir()
+    print('production roots: canonical/physical ancestry/bind aliases/identity/fail-closed passed')
+
+    for origin in ('no-manifest', 'bootstrap', 'locked'):
+        policy = helper.state_policy(origin)
+        assert policy['allow_create_manifest'] == (origin == 'no-manifest')
+        assert policy['allow_install'] == (origin != 'no-manifest')
+        assert policy['preserve_manifest_lock_bytes'] == (origin != 'no-manifest')
+        assert policy['allow_registry_resolution'] is policy['allow_generate_lock'] is False
+        assert policy['dependency_versions'] == 'canonical-exact-registry'
+        assert 'package.json' in policy['prompt'] and 'package-lock.json' in policy['prompt']
+        serialized = json.dumps(dict(policy))
+        assert all(value not in serialized for value in
+                   (str(trusted), str(repo), 'fixture-sensitive', 'post-workload-fixture', '1.2.3'))
+    for origin in ('bootstrap-required', 'unknown', '', None, {}, True):
+        rejected(lambda: helper.state_policy(origin))
+
+    def production_check(handle, consumer, expected='pass', reason=None):
+        with patch.object(subprocess, 'run', side_effect=AssertionError('runtime invoked')):
+            result = helper.production_session(handle, consumer, exports)
+        assert result['status'] == expected and result['reason'] == reason, result
+        assert result['downstream_write_allowed'] is (expected == 'pass'), result
+        assert set(result) == {'schema_version', 'status', 'origin', 'category', 'reason',
+                               'downstream_write_allowed', 'failure_ownership'}
+        assert all(value not in json.dumps(result) for value in
+                   (str(trusted), str(exports), 'fixture-sensitive'))
+        assert not list(exports.iterdir())
+        return result
+
+    for value in (None, {}, b'{}', handle, handle.record()):
+        production_check(value, lambda contract: True, 'error', 'production-session-failed')
+    for creation in (None, manifest, b'{"dependencies":{"any-package":"1.2.3"}}'):
+        write_pair((None, None))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            before_trusted = tuple(trusted.iterdir())
+            def create(contract):
+                inspect_contract(contract, 'no-manifest')
+                assert contract['cache_path'] is None
+                if creation is not None:
+                    (workspace / 'package.json').write_bytes(creation)
+                return True
+            result = production_check(handle, create)
+            assert result['origin'] == 'no-manifest' and result['failure_ownership'] == 'none'
+            assert tuple(trusted.iterdir()) == before_trusted
+    for bad in (False, None, 1, {'status': 'pass'}, 'exception', 'lock', 'version-range'):
+        write_pair((None, None))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            def failed(contract):
+                if bad == 'exception':
+                    raise RuntimeError('fixture-sensitive')
+                if bad == 'lock':
+                    (workspace / 'package-lock.json').write_bytes(lock)
+                    return True
+                if bad == 'version-range':
+                    (workspace / 'package.json').write_bytes(b'{"dependencies":{"x":"^1.0.0"}}')
+                    return True
+                return bad
+            production_check(handle, failed, 'error', 'workspace-policy-failed'
+                             if bad in ('lock', 'version-range') else 'consumer-failed')
+
+    def production_locked(handle, origin):
+        original = helper.read_pair(workspace)
+        def consume(contract):
+            inspect_contract(contract, origin)
+            assert helper.read_pair(workspace) == handle._pair
+            if origin == 'bootstrap':
+                check(handle, 'lock-presence-mismatch')  # #684 remains strict.
+            return True
+        result = production_check(handle, consume)
+        assert result['origin'] == origin
+        assert result['failure_ownership'] == ('retained' if origin == 'bootstrap' else 'none')
+        write_pair(original)
+        for failure in ('false', 'exception', 'malformed', 'manifest', 'lock',
+                        'replace-lock', 'missing-lock', 'symlink-lock', 'pre-gate'):
+            replacement = base / 'original-lock'
+            def fail(contract):
+                if failure == 'exception':
+                    raise RuntimeError('fixture-sensitive')
+                if failure == 'manifest':
+                    (workspace / 'package.json').write_bytes(manifest + b' ')
+                elif failure == 'lock':
+                    (workspace / 'package-lock.json').write_bytes(lock + b' ')
+                elif failure in ('replace-lock', 'missing-lock', 'symlink-lock'):
+                    (workspace / 'package-lock.json').rename(replacement)
+                    if failure == 'replace-lock':
+                        (workspace / 'package-lock.json').write_bytes(lock)
+                    elif failure == 'symlink-lock':
+                        (workspace / 'package-lock.json').symlink_to(replacement)
+                return {'status': 'pass'} if failure == 'malformed' else False
+            if failure == 'pre-gate':
+                original_gate = helper._WorkloadSession.run
+                called = []
+                def changed_gate(session, consumer):
+                    with patch.object(handle, '_active', False):
+                        return original_gate(session, lambda contract: called.append(contract))
+                with patch.object(helper._WorkloadSession, 'run', changed_gate):
+                    result = production_check(handle, fail, 'error', 'pre-workload-verification-failed')
+                assert not called
+            else:
+                dirty = origin == 'bootstrap' and failure in (
+                    'lock', 'replace-lock', 'missing-lock', 'symlink-lock')
+                result = production_check(handle, fail, 'error',
+                                          'dirty-materialized-lock' if dirty else 'consumer-failed')
+            if origin == 'bootstrap':
+                dirty = failure in ('lock', 'replace-lock', 'missing-lock', 'symlink-lock')
+                assert result['failure_ownership'] == ('dirty' if dirty else 'removed')
+                assert (workspace / 'package-lock.json').exists() is (
+                    dirty and failure != 'missing-lock')
+            else:
+                assert result['failure_ownership'] == 'none'
+            if failure == 'symlink-lock':
+                (workspace / 'package-lock.json').unlink()
+            replacement.unlink(missing_ok=True)
+            write_pair(original)
+        # Successful callback followed by post-gate failure owns the same cleanup.
+        def mutate(contract):
+            (workspace / 'package.json').write_bytes(manifest + b' ')
+            return True
+        result = production_check(handle, mutate, 'error', 'workspace-policy-failed')
+        assert result['failure_ownership'] == ('removed' if origin == 'bootstrap' else 'none')
+        write_pair(original)
+        check(handle)
+
+    with patch.object(helper.locked, 'prepare', side_effect=preparation), \
+         patch.object(helper, 'offline_ready', return_value=None):
+        write_pair((manifest, lock))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            production_locked(handle, 'locked')
+            # Root replacement during the callback fails the post gate.
+            def change_root(contract):
+                workspace.rename(saved_workspace)
+                workspace.mkdir()
+                write_pair((manifest, lock))
+                return True
+            production_check(handle, change_root, 'error', 'workspace-policy-failed')
+            shutil.rmtree(workspace)
+            saved_workspace.rename(workspace)
+        write_pair((manifest, None))
+        with patch.object(helper, 'load', side_effect=lambda name:
+                          runtime if name == 'npm-registry-lock-runtime' else original_load(name)), \
+             patch.object(runtime, 'generate_validated', side_effect=generate):
+            with helper.prepare(workspace, trusted, node, npm) as input_handle:
+                with helper.bootstrap(input_handle, trusted) as validated:
+                    with helper.prepare_bootstrap(validated, trusted, node, npm) as handle:
+                        production_locked(handle, 'bootstrap')
+                        with helper.workload_session(handle, exports) as session:
+                            with patch.object(session, '_materialized_hashes', None):
+                                assert session.cleanup_materialized_lock() == 'dirty'
+                            assert (workspace / 'package-lock.json').read_bytes() == lock
+                        write_pair((manifest, None))
+                        # Unknown entry/materialization failure is dirty; no
+                        # guess about ownership and no downstream write.
+                        with patch.object(helper._WorkloadSession, '_materialize',
+                                          side_effect=OSError('fixture-sensitive')):
+                            result = production_check(handle, lambda contract: True,
+                                                      'error', 'production-session-failed')
+                        assert result['failure_ownership'] == 'dirty'
+                        # Cleanup errors never authorize writes or erase an
+                        # unverified lock; runner destruction is not a fallback.
+                        with helper.workload_session(handle, exports) as session:
+                            with patch.object(os, 'unlink', side_effect=OSError('fixture-sensitive')):
+                                assert session.cleanup_materialized_lock() == 'dirty'
+                            assert (workspace / 'package-lock.json').read_bytes() == lock
+                        write_pair((manifest, None))
+                        with patch.object(shutil, 'rmtree', side_effect=OSError('fixture-sensitive')):
+                            result = helper.production_session(handle, lambda contract: True, exports)
+                        assert result['status'] == 'error' and result['downstream_write_allowed'] is False
+                        assert result['failure_ownership'] == 'dirty'
+                        assert result['reason'] == 'production-session-failed'
+                        assert (workspace / 'package-lock.json').read_bytes() == lock
+                        for residual in exports.iterdir():
+                            shutil.rmtree(residual)
+                        write_pair((manifest, None))
+    assert not list(exports.iterdir()) and not list(trusted.iterdir())
+    print('pure production session: three origins/policy/ownership/post gate/regressions passed')
+
 def assert_no_caller(name, text):
     needle = 'product-npm-orchestrator'
     assert 'verify_post_workload' not in text, ('unexpected verifier caller', name)
+    assert 'production_session' not in text, ('unexpected production session caller', name)
     if needle not in text:
         return
     # #696: only the exact declarative inventory/mapping spans are exempt.
@@ -696,7 +944,8 @@ for name, text in (
             '"product-npm-orchestrator.py"', 'run("product-npm-orchestrator.py")')),
         ('select-ai-workflow-fixtures.py', selector_text + '\nBASELINE = BASELINE'),
         ('select-ai-workflow-fixtures.py', selector_text + '\nPATH_SUITES += ()'),
-        ('select-ai-workflow-fixtures.py', selector_text + '\nverify_post_workload(handoff)')):
+        ('select-ai-workflow-fixtures.py', selector_text + '\nverify_post_workload(handoff)'),
+        ('unknown.py', 'production_session(handoff, consumer)')):
     try:
         assert_no_caller(name, text)
     except (AssertionError, ValueError, SyntaxError):
@@ -707,6 +956,7 @@ for name, text in (
 for workflow in (repo / '.github/workflows').glob('*.yml'):
     assert 'product-npm-orchestrator' not in workflow.read_text(), workflow
     assert 'verify_post_workload' not in workflow.read_text(), workflow
+    assert 'production_session' not in workflow.read_text(), workflow
 for script in (repo / '.github/scripts').iterdir():
     if script.is_file() and not script.name.startswith('test-') and script != source:
         assert_no_caller(script.name, script.read_text())
