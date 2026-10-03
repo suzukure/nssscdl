@@ -23,7 +23,9 @@ SOURCES = ('product-npm-orchestrator.py', 'prepare-product-npm.py',
            'npm-initial-lock-probe.js', 'npm-locked-preparation.py',
            'npm-registry-proxy.py', 'npm-registry-boundary-runtime.py',
            'codex-network-boundary.py', 'npm-filesystem-boundary-runtime.py',
-           'npm-registry-lock-runtime.py')
+           'npm-registry-lock-runtime.py', 'product-npm-session-runtime.py',
+           'product-npm-session-probe.js', 'npm-filesystem-source-probe.js',
+           'npm-registry-lock-probe.js')
 INPUTS = ('package.json', 'package-lock.json')
 
 

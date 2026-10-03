@@ -568,15 +568,18 @@ for observer_failure in (False, True):
         commands.append(command)
         if '--property=LoadState' in command:return subprocess.CompletedProcess(command,0,'not-found\n','')
         return subprocess.CompletedProcess(command,0,'{"status":"pass"}','')
-    with patch.object(boundary,'command',return_value=['isolated-command']), \
+    with patch.object(boundary,'command',return_value=['isolated-command']) as command_factory, \
          patch.object(boundary.subprocess,'run',side_effect=run):
         try:
-            boundary.service(repo,Path('/root'),{'token':token},observer=observe)
+            boundary.service(repo,Path('/root'),{'token':token},observer=observe,
+                             command_factory=command_factory)
         except AssertionError:
             assert observer_failure
         else:
             assert not observer_failure
     assert len(observed)==1
+    command_factory.assert_called_once_with(repo,Path('/root'),observed[0],{'token':token,'unit':observed[0]})
+    assert commands[0]==['isolated-command']
     assert any('stop' in command for command in commands)
     assert any('--property=LoadState' in command for command in commands)
 

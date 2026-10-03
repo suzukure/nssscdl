@@ -890,7 +890,9 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
 def assert_no_caller(name, text):
     needle = 'product-npm-orchestrator'
     assert 'verify_post_workload' not in text, ('unexpected verifier caller', name)
-    assert 'production_session' not in text, ('unexpected production session caller', name)
+    if name != 'product-npm-session-runtime.py':
+        assert 'production_session' not in text, ('unexpected production session caller', name)
+    assert 'workload_session' not in text and '_WorkloadSession' not in text, ('raw session caller', name)
     if needle not in text:
         return
     # #696: only the exact declarative inventory/mapping spans are exempt.
