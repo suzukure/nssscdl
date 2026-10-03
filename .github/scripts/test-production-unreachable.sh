@@ -17,10 +17,15 @@ selector_path = scripts + 'select-ai-workflow-fixtures.py'
 selector_fixture = scripts + 'test-select-ai-workflow-fixtures.sh'
 product = 'product-npm-orchestrator'
 verifier = 'verify_post_workload'
+session_runtime = 'product-npm-session-runtime.py'
+session_probe = 'product-npm-session-probe.js'
+session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
 packet = 'build-' + 'failure-evidence-packet.py'
 contracts = ((product, product + '.py', 'product-npm', product),
+             (session_runtime, session_runtime, 'product-npm', None),
+             (session_probe, session_probe, 'product-npm', None),
              (packet, packet, 'failure-evidence', None))
 
 
@@ -28,7 +33,8 @@ def python_body(text):
     prefix, start, rest = text.partition("<<'PY'\n")
     body, end, suffix = rest.rpartition('\nPY')
     assert start and end, 'missing fixture Python body'
-    assert all(needle not in prefix + suffix for needle in (product, packet, verifier))
+    assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
+                                                           session_runtime, session_probe, *session_symbols))
     return body
 
 
@@ -82,6 +88,7 @@ def assert_declarative(path, text):
     is_fixture = path == selector_fixture
     body = python_body(text) if is_fixture else text
     assert verifier not in body, ('non-inventory verifier reference', path)
+    assert all(symbol not in body for symbol in session_symbols), ('session selector caller', path)
     tree = ast.parse(body)
     rows = declaration(tree, 'cases' if is_fixture else 'PATH_SUITES', ast.Tuple)
     baseline = None
@@ -126,18 +133,32 @@ def assert_unreachable(sources):
         assert_declarative(path, sources[path])
     for path, text in sources.items():
         if path.startswith(workflows):
-            assert all(needle not in text for needle in (product, packet, verifier)), (
+            assert all(needle not in text for needle in (product, packet, verifier,
+                                                        session_runtime, session_probe, *session_symbols)), (
                 'production workflow connection', path)
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
                 continue
             if path != scripts + product + '.py':
                 assert verifier not in text, ('unknown verifier caller', path)
+                for symbol in session_symbols:
+                    if path == scripts + session_runtime and symbol == 'production_session':
+                        continue  # Only the closed callback API, never raw session access.
+                    assert symbol not in text, ('unknown session caller', path)
             for needle, filename, _, _ in contracts:
                 if path == scripts + filename:
                     continue  # Implementation's own source identity is not a caller.
+                if path == scripts + product + '.py' and filename in (session_runtime, session_probe):
+                    tree = ast.parse(text)
+                    inventory = declaration(tree, 'SOURCES', ast.Tuple)
+                    names = [n for n in inventory.elts if isinstance(n, ast.Constant) and n.value == filename]
+                    assert len(names) == 1, 'missing/duplicate source identity'
+                    assert needle.encode() not in mask_literals(text, names), 'executable source identity'
+                    continue
                 if needle == packet and path == scripts + 'collect-failure-evidence.py':
                     continue  # The single existing production caller (#687).
+                if needle == session_probe and path == scripts + session_runtime:
+                    continue  # Exact dormant synthetic launcher; workflows remain forbidden.
                 assert needle not in text, ('unknown production caller', path, filename)
 
 
@@ -175,6 +196,12 @@ def snapshot():
 
 before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
+# Include the proposed new dormant sources before workflow orchestration stages
+# them. After merge they are covered by the tracked snapshot as well.
+for name in (session_runtime, session_probe):
+    path = repo / scripts / name
+    assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
+    sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
 assert_unreachable(sources)
 print('production unreachable: current repository / exact selector literals passed')
 
@@ -206,6 +233,8 @@ for needle, filename, suite, baseline_name in contracts:
     accepted(scripts + 'test-synthetic-caller.sh', call)
     accepted(scripts + filename, sources[scripts + filename])
     rejected(scripts + 'copy-' + filename, sources[scripts + filename] + call)
+    if filename in (session_runtime, session_probe):
+        rejected(scripts + product + '.py', sources[scripts + product + '.py'] + call)
     if needle == packet:
         accepted(scripts + 'collect-failure-evidence.py', call)
         rejected(scripts + 'copy-collect-failure-evidence.py', call)
@@ -237,6 +266,14 @@ for name in ('BASELINE', 'PATH_SUITES'):
     for assignment in (f'{name} = ()', f'{name}: tuple = ()', f'{name} += ()',
                        f'def extra():\n    {name} = ()'):
         rejected(selector_path, original + '\n' + assignment + '\n')
+
+for symbol in session_symbols:
+    for path in (scripts + 'unknown.py', scripts + 'copy-' + session_runtime,
+                 scripts + 'nested/test-caller.sh', selector_path, selector_fixture,
+                 workflows + 'ai-developer.yml', workflows + 'caller.yaml'):
+        rejected(path, sources.get(path, '') + f'\n{symbol}(handoff, consumer)\n')
+    if symbol != 'production_session':
+        rejected(scripts + session_runtime, sources[scripts + session_runtime] + f'\n{symbol}(handoff)\n')
 
 for executable in ('os.system(PATH_SUITES[0][0])', 'eval(INVENTORY["product-npm"][0])',
                    '__import__("subprocess").run([PATH_SUITES[0][0]])'):

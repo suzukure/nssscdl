@@ -116,11 +116,11 @@ def command(repo, root, unit, record):
             '/runtime/node', '/runtime/probe.js', json.dumps(record)]
 
 
-def service(repo, root, record, observer=None):
+def service(repo, root, record, observer=None, command_factory=command):
     unit = 'npm-filesystem-probe-' + uuid.uuid4().hex + '.service'
     if observer:
         record = {**record, 'unit': unit}
-    launch = command(repo, root, unit, record)
+    launch = command_factory(repo, root, unit, record)
     done, errors = threading.Event(), []
     def observe():
         try:
