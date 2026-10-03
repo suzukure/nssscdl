@@ -13,7 +13,7 @@ import sys
 import tempfile
 import uuid
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import importlib.util
 
 repo = Path(sys.argv[1]).resolve()
@@ -29,6 +29,28 @@ node, npm = Path(shutil.which('node')).resolve(), Path(shutil.which('npm')).reso
 independent = Path('/proc/1/comm').read_text().strip() == 'systemd' and 'codex-' not in Path('/proc/self/cgroup').read_text()
 if independent:
     node, npm, _ = integration.select_runtime()
+
+# Default lookup follows a call-time patch; explicit injection takes precedence.
+boundary = helper.load('npm-filesystem-boundary-runtime')
+for explicit in (False, True):
+    with patch.object(boundary, 'command', return_value=['default-launch']) as default, \
+         patch.object(boundary.subprocess, 'run', side_effect=[
+             SimpleNamespace(returncode=0, stdout='{"status":"pass"}'),
+             SimpleNamespace(returncode=0),
+             SimpleNamespace(returncode=0, stdout='not-found', stderr='')]) as run:
+        injected = Mock(return_value=['explicit-launch'])
+        record = {'token': 'fixture'}
+        options = {'command_factory': injected} if explicit else {}
+        assert boundary.service(repo, Path('/synthetic-root'), record, **options) == {'status': 'pass'}
+        selected = injected if explicit else default
+        selected.assert_called_once()
+        assert selected.call_args.args[:2] == (repo, Path('/synthetic-root'))
+        assert selected.call_args.args[3] is record
+        assert run.call_args_list[0].args[0] == ['explicit-launch' if explicit else 'default-launch']
+        assert run.call_args_list[1].args[0][-1] == selected.call_args.args[2]
+        assert run.call_args_list[2].args[0][-3] == selected.call_args.args[2]
+        (default if explicit else injected).assert_not_called()
+print('production session: command factory call-time default / explicit injection passed', flush=True)
 
 # All filesystem artifacts are outside the trusted helper checkout. Only the
 # local tarball transport and generation are synthetic; validators, provenance,
@@ -174,29 +196,72 @@ with tempfile.TemporaryDirectory(prefix='npm-production-session-', dir='/tmp') a
     # Exercise the actual launcher composition locally without sudo/systemd.
     # Only root staging/service are mocked; parent session and source/command
     # checks execute. The service sees aliases, never trusted evidence paths.
-    for failure in ('pass', 'service-fail', 'command-mismatch'):
+    residual_cases = ('exact-residual', 'unknown-residual', 'residual-mode', 'residual-owner',
+                      'residual-type', 'residual-content', 'runtime-metadata', 'runtime-content')
+    for failure in ('pass', 'service-fail', 'command-mismatch', 'cleanup-fail', 'cleanup-residual',
+                    *residual_cases):
         reset('no-manifest')
         with helper.prepare(workspace, trusted, node, npm) as handle, ExitStack() as stack:
             boundary = original_load('npm-filesystem-boundary-runtime')
             staged = Path('/run/npm-filesystem-fixture-abcdefgh')
             calls, launches = [], []
+            post_service = False
+            cleanup_error = RuntimeError('synthetic-cleanup-failure')
+            observed_errors = []
+            runtime_file = staged / 'root/runtime/evidence'
+            residual = {staged / 'root' / name for name in (
+                'etc', 'usr', 'var', 'run/systemd', 'run/systemd/incoming')}
             # Fake filesystem objects are restricted to this staging pathname.
             original_lstat, original_exists = Path.lstat, Path.exists
+            original_read, original_is_file, original_iterdir = Path.read_bytes, Path.is_file, Path.iterdir
             def metadata(path):
-                if path in (staged, staged / 'root'):
-                    return SimpleNamespace(st_uid=0, st_gid=0, st_mode=0o40755, st_dev=1, st_ino=2)
+                if path in (staged, staged / 'root', runtime_file, *residual, staged / 'root/unknown'):
+                    mode = 0o100644 if path == runtime_file else 0o40600 if path.name == 'incoming' else 0o40755
+                    uid, inode = 0, 2
+                    if post_service and path == staged / 'root/etc':
+                        if failure == 'residual-mode':
+                            mode = 0o40777
+                        if failure == 'residual-owner':
+                            uid = 65534
+                        if failure == 'residual-type':
+                            mode = 0o100644
+                    if post_service and path == runtime_file and failure == 'runtime-metadata':
+                        inode = 3
+                    return SimpleNamespace(st_uid=uid, st_gid=0, st_mode=mode, st_dev=1, st_ino=inode)
                 return original_lstat(path)
+            def inventory(path, pattern):
+                assert path == staged / 'root' and pattern == '*'
+                entries = [runtime_file]
+                if post_service and failure in residual_cases:
+                    entries.extend(sorted(residual))
+                    if failure == 'unknown-residual':
+                        entries.append(staged / 'root/unknown')
+                return iter(entries)
+            def children(path):
+                if path == staged / 'root/run/systemd/incoming':
+                    raise AssertionError('incoming contents enumerated')
+                if path == staged / 'root/run/systemd':
+                    return iter([path / 'incoming'])
+                if path in residual:
+                    return iter([path / 'unexpected'] if failure == 'residual-content' and path.name == 'etc' else [])
+                return original_iterdir(path)
+            def checked(args, timeout=15):
+                calls.append(args)
+                if failure == 'cleanup-fail' and args[2] == 'rm':
+                    raise cleanup_error
             def build(repo, root, node, npm, token):
                 for name in ('runtime/npm', 'project', 'tmp'):
                     (root / name).mkdir(parents=True, exist_ok=True)
                 (root / 'project/package.json').write_bytes(b'{}')
             def service(repo, root, record, observer, command_factory):
+                global post_service
                 args = command_factory(repo, root, 'npm-filesystem-probe-' + token + '.service', record)
                 launches.append(args)
                 assert all(str(path) not in json.dumps(record) for path in (trusted, exports, repo))
                 assert 'RootDirectory=' + str(root) in args
                 if failure == 'service-fail':
                     raise AssertionError('synthetic service failure')
+                post_service = True
                 return {'status': 'pass', 'consumer': 'completed', 'offline': False}
             stack.enter_context(patch.object(helper, 'load', side_effect=lambda name:
                 boundary if name == 'npm-filesystem-boundary-runtime' else integration if name == 'npm-registry-lock-runtime'
@@ -207,12 +272,30 @@ with tempfile.TemporaryDirectory(prefix='npm-production-session-', dir='/tmp') a
             stack.enter_context(patch.object(boundary, 'service', side_effect=service))
             stack.enter_context(patch.object(integration, 'normalize_staging_acls'))
             stack.enter_context(patch.object(integration, 'runtime_hashes', return_value={'fixture': 'identity'}))
-            stack.enter_context(patch.object(launcher, 'checked', side_effect=lambda args, timeout=15: calls.append(args)))
+            stack.enter_context(patch.object(launcher, 'checked', side_effect=checked))
             stack.enter_context(patch.object(subprocess, 'check_output', return_value=str(staged) + '\n'))
             stack.enter_context(patch.object(Path, 'lstat', metadata))
             stack.enter_context(patch.object(helper, 'no_acl'))
-            stack.enter_context(patch.object(Path, 'rglob', return_value=iter(())))
-            stack.enter_context(patch.object(Path, 'exists', lambda path: False if path == staged else original_exists(path)))
+            stack.enter_context(patch.object(Path, 'rglob', inventory))
+            stack.enter_context(patch.object(Path, 'iterdir', children))
+            stack.enter_context(patch.object(Path, 'is_file', lambda path:
+                path == runtime_file if path.is_relative_to(staged) else original_is_file(path)))
+            stack.enter_context(patch.object(Path, 'read_bytes', lambda path:
+                (b'changed' if post_service and failure == 'runtime-content' else b'original')
+                if path == runtime_file else original_read(path)))
+            stack.enter_context(patch.object(Path, 'exists', lambda path:
+                failure == 'cleanup-residual' if path == staged else original_exists(path)))
+            if failure in ('cleanup-fail', 'cleanup-residual'):
+                parent_session = helper.production_session
+                def capture_cleanup(handle, consume, export_root):
+                    def checked_consume(contract):
+                        try:
+                            return consume(contract)
+                        except Exception as error:
+                            observed_errors.append(error)
+                            raise
+                    return parent_session(handle, checked_consume, export_root)
+                stack.enter_context(patch.object(helper, 'production_session', side_effect=capture_cleanup))
             if failure == 'command-mismatch':
                 actual = offline.candidate_command(repo, node)
                 # check_output above does not affect the trusted constructor.
@@ -220,11 +303,20 @@ with tempfile.TemporaryDirectory(prefix='npm-production-session-', dir='/tmp') a
             request = {'token': token, 'address': '192.0.2.1', 'direct_port': 12345,
                        'local_port': 12345, 'ipv6_port': 12346, 'missing': False, 'action': 'pass'}
             result = launcher.run_session(helper, handle, workspace, exports, node, npm, request, lambda *args: None)
-            assert result['status'] == ('pass' if failure == 'pass' else 'error'), result
-            assert result['downstream_write_allowed'] is (failure == 'pass')
+            success = failure in ('pass', 'exact-residual')
+            assert result['status'] == ('pass' if success else 'error'), result
+            assert result['downstream_write_allowed'] is success
+            if failure in ('cleanup-fail', 'cleanup-residual'):
+                assert result['category'] == 'consumer' and result['reason'] == 'consumer-failed'
+                assert len(observed_errors) == 1 and not isinstance(observed_errors[0], NameError)
+                if failure == 'cleanup-fail':
+                    assert observed_errors[0] is cleanup_error
+                else:
+                    assert isinstance(observed_errors[0], AssertionError)
+                    assert str(observed_errors[0]) == 'session-root-cleanup-failed'
             assert len(launches) == (0 if failure == 'command-mismatch' else 1)
             assert len([args for args in calls if args[2] == 'rm']) == (0 if failure == 'command-mismatch' else 1)
-    print('production session: launcher aliases / service failure / command identity / bounded cleanup mocks passed', flush=True)
+    print('production session: launcher aliases / command identity / cleanup exceptions / exact residual / mutation rejection passed', flush=True)
 
     if not independent:
         if os.environ.get('GITHUB_ACTIONS') == 'true':

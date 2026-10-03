@@ -176,15 +176,11 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
             return True
         finally:
             try:
-                try:
-                    if changed_owner:
-                        checked(['sudo', '-n', 'chown', '-R', '-P', '--no-dereference',
-                                 f'{os.getuid()}:{os.getgid()}', '--', str(workspace), cache])
-                finally:
-                    checked(['sudo', '-n', 'rm', '-rf', '--', str(staged)])
-                    assert not staged.exists(), 'session-root-cleanup-failed'
-            except Exception:
-                mark('cleanup')
-                raise
+                if changed_owner:
+                    checked(['sudo', '-n', 'chown', '-R', '-P', '--no-dereference',
+                             f'{os.getuid()}:{os.getgid()}', '--', str(workspace), cache])
+            finally:
+                checked(['sudo', '-n', 'rm', '-rf', '--', str(staged)])
+                assert not staged.exists(), 'session-root-cleanup-failed'
 
     return parent_api.production_session(handoff, consume, export_root)
