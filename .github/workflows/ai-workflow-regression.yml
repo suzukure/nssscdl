@@ -124,8 +124,12 @@ jobs:
                   reason = 'base_unavailable'
                   if git('rev-parse', '--verify', base + '^{commit}').decode('ascii').strip() != base:
                       raise ValueError
+                  reason = 'merge_base_failed'
+                  merge_base = git('merge-base', base, head).decode('ascii').strip()
+                  if not re.fullmatch('[0-9a-f]{40}', merge_base):
+                      raise ValueError
                   reason = 'diff_failed'
-                  changed = git('diff', '--no-renames', '--name-only', '-z', base, head)
+                  changed = git('diff', '--no-renames', '--name-only', '-z', merge_base, head)
                   reason = 'empty_diff'
                   if not changed:
                       raise ValueError

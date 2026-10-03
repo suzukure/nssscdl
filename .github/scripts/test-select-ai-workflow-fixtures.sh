@@ -127,12 +127,37 @@ for path in ('.github/workflows/ai-workflow-regression.yml', selector.SELF, sele
     full(encode([path, prefix + 'prepare-product-npm.py']), 'global_boundary')
 for path in (prefix + 'unknown.sh', prefix + 'test-new.sh',
              'docs/00_requirements/01_Introduction.md', 'docs/diagrams/README.md',
-             'docs/30_operations/ai-development-workflow.md', '.github/README.md',
+             'docs/30_operations/ai-development-workflow.md',
              'AGENTS.md', 'nested/AGENTS.override.md', 'CLAUDE.md', 'nested/CLAUDE.local.md',
              '.codex/config.toml', 'nested/.claude/settings.json', 'nested/.mcp.json',
-             '.github/workflows/unknown.yml', 'src/product.py'):
+             '.github/workflows/new.yml', prefix + 'new-helper.py', 'src/CLAUDE.md'):
     full(encode([path]), 'unmapped_path')
     full(encode([prefix + 'prepare-product-npm.py', path]), 'unmapped_path')
+
+# Trigger-excluded paths cannot force a mixed PR to full; an empty domain fails closed.
+# Compose the helper name so the common guard retains its exact inventory-only rule.
+product = selected(['.github/README.md', prefix + 'product-' + 'npm-orchestrator.py',
+                    prefix + 'test-product-npm-post-workload.sh'], {'product-npm'})
+assert len(product['fixtures']) == 17
+selected(['README.md', prefix + 'deepinfra-usage-ledger.py'], {'deepinfra'})
+for path in ('.github/README.md', 'README.md', 'src/product.py',
+             'docs/diagrams/other.md', 'AGENTS.md.bak', 'src/notCLAUDE.md',
+             '.github/scripts-other/helper.py', 'nested/.codex-other/config.toml'):
+    full(encode([path]), 'empty_selection')
+    selected([path, prefix + 'deepinfra-usage-ledger.py'], {'deepinfra'})
+
+# Root and nested forms of every basename/directory pattern are in the domain.
+for name in ('AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', 'CLAUDE.local.md', '.mcp.json'):
+    for path in (name, 'src/nested/' + name):
+        full(encode([path]), 'unmapped_path')
+for name in ('.claude', '.codex'):
+    for path in (name + '/config', 'src/nested/' + name + '/deep/config'):
+        full(encode([path]), 'unmapped_path')
+
+for pattern in ('**/*.py', '.github/*/**', '**/nested/CLAUDE.md', '!README.md',
+                'docs/[ab].md', '**/.codex/*', 'foo+bar', '', None):
+    with patch.object(selector, 'TRIGGER_PATTERNS', selector.TRIGGER_PATTERNS + (pattern,)):
+        full(encode([prefix + 'prepare-product-npm.py']), 'mapping_conflict')
 
 # Framing/UTF-8/path violations never produce selected or echo rejected input.
 for data in (b'\xff\0', b'/absolute\0', b'../outside\0', b'a/../b\0',
@@ -241,6 +266,8 @@ def assert_dormant(text):
         'parse_paths', 'path.encode', 'path.endswith', 'path.split', 'path.startswith',
         'print', 'record', 'select', 'set', 'sorted', 'suites.update', 'sys.exit',
         'sys.stdin.buffer.read', 'tuple', 'valid_path',
+        'pattern.startswith', 'pattern.endswith', 'rules.append', 'trigger_rules',
+        'trigger_match',
     }
     assert all(ast.unparse(n.func) in allowed_calls for n in ast.walk(tree)
                if isinstance(n, ast.Call)), 'selector must not execute inventory paths'
