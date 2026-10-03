@@ -17,36 +17,17 @@ def checked(args, timeout=15):
     return subprocess.run(args, check=True, capture_output=True, timeout=timeout, env=ENV)
 
 
-DIAGNOSTIC_STAGES = frozenset({
-    'source-identity', 'command-identity', 'workspace-root', 'cache-root',
-    'staging-create', 'staging-build', 'staging-normalize', 'runtime-snapshot',
-    'service-isolation', 'service-tmp-empty', 'service-sudo-hidden',
-    'service-input', 'service-property-snapshot', 'service-direct-deny',
-    'service-localhost', 'service-offline', 'service-marker', 'service-unknown',
-    'post-runtime-snapshot', 'post-runtime-systemd-artifact',
-    'post-runtime-inventory', 'post-runtime-content', 'cleanup',
-})
-
-
 def run_session(parent_api, handoff, workspace, export_root, node, npm, record, observer):
     """Retain only the parent API/handle; never expose a raw workload session.
 
     This synthetic launcher consumes prepared #710 contracts. Preparation and
     bootstrap are the caller's existing contexts. No recovery/retry or git write.
-    A failing dormant fixture may expose only a fixed diagnostic stage, never
-    exception text, paths, workload content or trusted evidence.
     """
-    diagnostic = {'stage': 'source-identity', 'inventory': None}
-
-    def mark(stage):
-        assert stage in DIAGNOSTIC_STAGES
-        diagnostic['stage'] = stage
     repo = Path(__file__).absolute().parents[2]
     boundary = parent_api.load('npm-filesystem-boundary-runtime')
     offline = parent_api.offline
     integration = parent_api.load('npm-registry-lock-runtime')
     source_runtime = integration.runtime_hashes(node, npm)
-    mark('command-identity')
     expected_command = offline.candidate_command(repo, node)
     sources = {name: (repo / '.github/scripts' / name).read_bytes() for name in (
         'product-npm-session-runtime.py', 'product-npm-session-probe.js',
@@ -69,7 +50,6 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                    for name, data in sources.items()), 'runtime-source-identity-mismatch'
         assert offline.candidate_command(repo, node) == expected_command, 'command-identity-mismatch'
         assert expected_command[0] == '/runtime/npm/bin/npm-cli.js'
-        mark('workspace-root')
         parent_api.CanonicalRoot(workspace).verify()
         assert workspace == handoff._workspace, 'workspace-identity-mismatch'
         assert re.fullmatch(r'/[A-Za-z0-9_./-]+', str(workspace)), 'unsafe-bind-path'
@@ -79,16 +59,13 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
         else:
             assert contract['policy']['allow_install'] and cache is not None
             # The session has already byte-verified this fresh consumable export.
-            mark('cache-root')
             parent_api.CanonicalRoot(cache).verify()
             assert re.fullmatch(r'/[A-Za-z0-9_./-]+', cache), 'unsafe-bind-path'
-        mark('staging-create')
         staged = Path(subprocess.check_output(['sudo', '-n', 'mktemp', '-d',
                       '/run/npm-filesystem-fixture-XXXXXXXX'], text=True, timeout=5, env=ENV).strip())
         assert re.fullmatch(r'/run/npm-filesystem-fixture-[A-Za-z0-9]{8}', str(staged))
         changed_owner = False
         try:
-            mark('staging-build')
             with tempfile.TemporaryDirectory(prefix='npm-session-build-') as build:
                 root = Path(build) / 'root'
                 boundary.build_root(repo, root, node, npm, record['token'])
@@ -110,7 +87,6 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                         shutil.copy2(workspace / name, root / 'runtime' / name)
                 checked(['sudo', '-n', 'cp', '-a', str(root), str(staged / 'root')])
             root = staged / 'root'
-            mark('staging-normalize')
             checked(['sudo', '-n', 'chown', '-R', 'root:root', str(staged)])
             parent_api.load('npm-registry-lock-runtime').normalize_staging_acls(staged)
             checked(['sudo', '-n', 'chmod', '0755', str(staged)])
@@ -143,7 +119,6 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                 assert integration.runtime_hashes(root / 'runtime/node', root / 'runtime/npm/bin/npm-cli.js') == source_runtime
                 return result
 
-            mark('runtime-snapshot')
             expected_runtime = snapshot()
 
             def launch(repo, root, unit, input_record):
@@ -160,46 +135,37 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                 checked(['sudo', '-n', 'chown', '-R', '-P', '--no-dereference', 'nobody:nogroup', '--', str(workspace), cache])
             input_record = {**record, 'origin': origin,
                             'hidden': {'host-env': '/usr/bin/env', 'host-os-release': '/etc/os-release'}}
-            try:
-                evidence = boundary.service(repo, root, input_record, observer=lambda unit, done:
-                                            observer(unit, root / 'runtime', done), command_factory=launch)
-            except Exception as error:
-                # The staged probe emits exactly one bounded JSON diagnostic on
-                # stderr. Accept only a closed stage allowlist; never reflect
-                # arbitrary exception or subprocess text.
-                match = re.search(r'\{"status":"error","stage":"([a-z-]+)"\}', str(error))
-                stage = 'service-' + match.group(1) if match else 'service-unknown'
-                mark(stage if stage in DIAGNOSTIC_STAGES else 'service-unknown')
-                raise
-            mark('post-runtime-snapshot')
+            evidence = boundary.service(repo, root, input_record, observer=lambda unit, done:
+                                        observer(unit, root / 'runtime', done), command_factory=launch)
             actual_runtime = snapshot()
             if actual_runtime != expected_runtime:
-                def relative_keys(values):
-                    result = set()
-                    for value in values:
-                        path = Path(value)
-                        if path == staged:
-                            result.add('.')
-                        elif path == root:
-                            result.add('root')
-                        elif path.is_relative_to(root):
-                            result.add('root/' + str(path.relative_to(root)))
-                        else:
-                            result.add('other')
-                    return result
-                expected_keys, actual_keys = relative_keys(expected_runtime), relative_keys(actual_runtime)
+                residual = {
+                    root / 'etc',
+                    root / 'usr',
+                    root / 'var',
+                    root / 'run/systemd',
+                    root / 'run/systemd/incoming',
+                }
+                expected_keys, actual_keys = set(expected_runtime), set(actual_runtime)
                 added, removed = actual_keys - expected_keys, expected_keys - actual_keys
-                # Synthetic staged-root relative names only; bounded and never
-                # include absolute paths, file contents or trusted evidence.
-                visible = sorted(added | removed)
-                diagnostic['inventory'] = visible[:12] if len(visible) <= 12 else ['too-many']
-                if not removed and added and added <= {'root/run/systemd', 'root/run/systemd/incoming'}:
-                    mark('post-runtime-systemd-artifact')
-                elif expected_keys != actual_keys:
-                    mark('post-runtime-inventory')
-                else:
-                    mark('post-runtime-content')
-                raise AssertionError('staged-runtime-identity-mismatch')
+                assert not removed and added == residual, 'staged-runtime-identity-mismatch'
+                # systemd's RootDirectory/namespace hardening may leave these
+                # mount-point directories on the GitHub-hosted runner. Accept
+                # only the exact observed shape after trusted-side revalidation.
+                for path in (root / 'etc', root / 'usr', root / 'var', root / 'run/systemd'):
+                    info = path.lstat()
+                    assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_gid == 0
+                    assert info.st_mode & 0o7022 == 0, 'unsafe-systemd-residual'
+                for path in (root / 'etc', root / 'usr', root / 'var'):
+                    assert list(path.iterdir()) == [], 'nonempty-systemd-residual'
+                systemd_children = list((root / 'run/systemd').iterdir())
+                assert systemd_children == [root / 'run/systemd/incoming'], 'unexpected-systemd-residual'
+                incoming = (root / 'run/systemd/incoming').lstat()
+                assert stat.S_ISDIR(incoming.st_mode) and incoming.st_uid == 0 and incoming.st_gid == 0
+                assert stat.S_IMODE(incoming.st_mode) == 0o600, 'unsafe-systemd-incoming'
+                # Existing fixture contract: never enumerate incoming contents.
+                stripped = {key: value for key, value in actual_runtime.items() if Path(key) not in residual}
+                assert stripped == expected_runtime, 'staged-runtime-identity-mismatch'
             assert evidence == {'status': 'pass', 'consumer': 'completed', 'offline': origin != 'no-manifest'}
             return True
         finally:
@@ -215,9 +181,4 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                 mark('cleanup')
                 raise
 
-    result = parent_api.production_session(handoff, consume, export_root)
-    if result['status'] != 'pass':
-        result = {**result, 'diagnostic_stage': diagnostic['stage']}
-        if diagnostic['stage'].startswith('post-runtime-') and diagnostic['inventory'] is not None:
-            result['diagnostic_inventory'] = diagnostic['inventory']
-    return result
+    return parent_api.production_session(handoff, consume, export_root)
