@@ -23,7 +23,8 @@ DIAGNOSTIC_STAGES = frozenset({
     'service-isolation', 'service-tmp-empty', 'service-sudo-hidden',
     'service-input', 'service-property-snapshot', 'service-direct-deny',
     'service-localhost', 'service-offline', 'service-marker', 'service-unknown',
-    'post-runtime-snapshot', 'cleanup',
+    'post-runtime-snapshot', 'post-runtime-systemd-artifact',
+    'post-runtime-inventory', 'post-runtime-content', 'cleanup',
 })
 
 
@@ -171,7 +172,30 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                 mark(stage if stage in DIAGNOSTIC_STAGES else 'service-unknown')
                 raise
             mark('post-runtime-snapshot')
-            assert snapshot() == expected_runtime, 'staged-runtime-identity-mismatch'
+            actual_runtime = snapshot()
+            if actual_runtime != expected_runtime:
+                def relative_keys(values):
+                    result = set()
+                    for value in values:
+                        path = Path(value)
+                        if path == staged:
+                            result.add('.')
+                        elif path == root:
+                            result.add('root')
+                        elif path.is_relative_to(root):
+                            result.add('root/' + str(path.relative_to(root)))
+                        else:
+                            result.add('other')
+                    return result
+                expected_keys, actual_keys = relative_keys(expected_runtime), relative_keys(actual_runtime)
+                added, removed = actual_keys - expected_keys, expected_keys - actual_keys
+                if not removed and added and added <= {'root/run/systemd', 'root/run/systemd/incoming'}:
+                    mark('post-runtime-systemd-artifact')
+                elif expected_keys != actual_keys:
+                    mark('post-runtime-inventory')
+                else:
+                    mark('post-runtime-content')
+                raise AssertionError('staged-runtime-identity-mismatch')
             assert evidence == {'status': 'pass', 'consumer': 'completed', 'offline': origin != 'no-manifest'}
             return True
         finally:
