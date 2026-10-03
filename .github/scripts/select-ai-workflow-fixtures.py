@@ -64,10 +64,10 @@ BASELINE_COUNTS = {
     "product-npm": 11, "resume-human-pause": 26, "claude": 11, "deepinfra": 9,
     "ai-developer-codex": 7, "failure-evidence": 2, "common": 2,
 }
-# Explicit extensions: #692 already present in this checkout, then this fixture.
+# Explicit extensions: #692 / #684, selector, and #701 common guard.
 EXTENSIONS = {
-    "product-npm": ("product-npm-bootstrap-preparation",),
-    "common": ("select-ai-workflow-fixtures",),
+    "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload"),
+    "common": ("select-ai-workflow-fixtures", "production-unreachable"),
 }
 INVENTORY = {
     suite: tuple(SCRIPTS + "test-" + name + ".sh"
