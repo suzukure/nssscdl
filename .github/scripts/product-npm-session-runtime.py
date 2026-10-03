@@ -148,7 +148,8 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                 }
                 expected_keys, actual_keys = set(expected_runtime), set(actual_runtime)
                 added, removed = actual_keys - expected_keys, expected_keys - actual_keys
-                assert not removed and added == residual, 'staged-runtime-identity-mismatch'
+                assert not removed and added == {str(path) for path in residual}, \
+                    'staged-runtime-identity-mismatch'
                 # systemd's RootDirectory/namespace hardening may leave these
                 # mount-point directories on the GitHub-hosted runner. Accept
                 # only the exact observed shape after trusted-side revalidation.
