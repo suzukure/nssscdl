@@ -8,13 +8,21 @@ GitHub Actions workflows、Issue Forms、Pull Request template、およびAI開�
 
 [`select-ai-workflow-fixtures.py`](scripts/select-ai-workflow-fixtures.py) の `select(repo_root, changed_paths_nul)` はrepository rootとexact changed-path集合のNUL-delimited bytesを受け取り、coarse suiteを選ぶread-only helperである。CLIは `python3 -B .github/scripts/select-ai-workflow-fixtures.py --repo-root /absolute/repository < paths.nul`。呼出側は将来 `git diff --no-renames --name-only -z` 相当の取得済みbytesを渡す。helperはgit実行・changed path取得・shell展開・fixture実行を行わない。
 
-stdoutは単一のcanonical JSONで、`schema:ai-workflow-fixture-selection` / `version:1`、`mode:selected|full`、入力本文を含まない固定 `reason`、sort/deduplicateした `suites` / `fixtures` を返す。明示inventoryとexact path mappingの機械正本はscriptで、#695基準commit `275f4ba6f875969ea267ef55d77d5cc209e370b2` の68件（Product npm 11 / resume-human-pause 26 / Claude 11 / DeepInfra 9 / AI Developer-Codex 7 / failure evidence 2 / common 2）を保持する。現在checkoutの#692追加fixtureと本selector fixtureも明示登録し、計70件を検証する。局所変更には対象suite全件とcommonを選び、shared helperには利用suiteのunionを選ぶ。登録済みchanged fixture自身も必ず含める。
+stdoutは単一のcanonical JSONで、`schema:ai-workflow-fixture-selection` / `version:1`、`mode:selected|full`、入力本文を含まない固定 `reason`、sort/deduplicateした `suites` / `fixtures` を返す。明示inventoryとexact path mappingの機械正本はscriptで、#695基準commit `275f4ba6f875969ea267ef55d77d5cc209e370b2` の68件（Product npm 11 / resume-human-pause 26 / Claude 11 / DeepInfra 9 / AI Developer-Codex 7 / failure evidence 2 / common 2）を保持する。現在checkoutの#692 / #684追加fixture、本selector fixture、#701 common guardも明示登録し、計72件を検証する。局所変更には対象suite全件とcommonを選び、shared helperには利用suiteのunionを選ぶ。登録済みchanged fixture自身も必ず含める。
 
-workflow変更では、全workflowを走査するproduction未接続guardを持つsuiteを必ず含める。`.github/workflows/claude-review.yml` はProduct npm / failure evidenceも共有境界としてmappingし、commonを含む全7 suite・70 fixtureを `selected / known_paths` で返す。他のworkflow pathは下記のfull fallbackに従う。
+workflow変更では、全workflowを走査するproduction未接続guardを持つsuiteを必ず含める。`.github/workflows/claude-review.yml` はProduct npm / failure evidenceも共有境界としてmappingし、commonを含む全7 suite・72 fixtureを `selected / known_paths` で返す。他のworkflow pathは下記のfull fallbackに従う。
 
 selector自身・そのfixture・regression workflow変更は `global_boundary`、未知path（未mapping script、docs / AGENTS / CLAUDE / .codex / .claude / .mcp.json等を含む）は `unmapped_path`、UTF-8 / 絶対path / traversal / 非canonical path / NUL framing不正は `malformed_input`、空入力は `empty_selection`、mapping矛盾は `mapping_conflict`、repositoryの `test-*.sh` 集合との不一致・新規未登録fixture・不正file型は `inventory_mismatch`、想定外例外は `selector_error` としてfullへ戻す。fullではrepository上の全 `.github/scripts/test-*.sh` を返す。探索不能は `full / inventory_unavailable` と空fixture集合を返し、CLIはexit `1`で停止する。通常のselected/full決定はexit `0`、CLI構文不正は入力を反射せずexit `2`となる。
 
 検証は `bash .github/scripts/test-select-ai-workflow-fixtures.sh`。production workflowからselectorへの呼出しはなく、既存全件discoveryによるfixture実行を維持する。network / GitHub API / repository write / Secrets / env-driven policy / paid AIを使用しない。production wiring・parallel executionは後続scopeであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+## Cross-suite production-unreachable common guard（#701）
+
+[`test-production-unreachable.sh`](scripts/test-production-unreachable.sh) はscript / workflowをread-only走査する軽量common fixtureである。`product-npm-orchestrator.py` のproduction workflow接続・未知non-test caller、`build-failure-evidence-packet.py` のworkflow直接接続・`collect-failure-evidence.py` 以外のproduction caller、および `verify_post_workload` のworkflow直接参照・orchestrator source自身以外のnon-test script参照を拒否する。selectorの `BASELINE` / `PATH_SUITES` とselector fixtureの `cases` では既知のexact宣言的literalだけをASTで許容し、実行参照・追加参照・重複宣言をfail-closedで拒否する。implementation自身と直下の `test-*.sh` / `test-*.py` は構造的に区別し、guardはhelperをimport・実行しない。
+
+snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked filesだけをNUL-safeに列挙し、working treeのsource bytesを検査する。untracked `__pycache__/*.pyc` 等は対象にしない。列挙失敗・不正path・未解決index stage・tracked symlink / 特殊file・ancestorの不正型・読込失敗・不正UTF-8はsilent skipせずFAILする。
+
+検証は `bash .github/scripts/test-production-unreachable.sh`。synthetic caller / workflow / AST mutationはmemory内だけで構成し、repositoryを書き換えない。selected modeではcommonとともに必ず選択され、無関係なhelper変更で重いProduct npm suiteの常時選択を必要としない。inventory同期には既存#684 fixtureの未登録解消も含む。既存Product npm / failure-evidence fixtureの重複guardは維持する。production workflow / event / permission / stateは変更せず、network / GitHub API / Secrets / paid AIを使用しない。#697のproduction wiringは後続scopeで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ## Failure evidence packet（#686 / #687）
 
