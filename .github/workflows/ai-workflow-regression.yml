@@ -35,50 +35,172 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Run AI workflow fixtures
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -u -o pipefail
+          set -euo pipefail
           export LC_ALL=C
           shopt -s nullglob
           fixtures=(.github/scripts/test-*.sh)
+          regression_tmp="$(mktemp -d)"
+          trap 'rm -rf "$regression_tmp"' EXIT
+          python3 -B - "$regression_tmp" "${fixtures[@]}" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import subprocess
+          import sys
 
+          scratch = Path(sys.argv[1])
+          root = Path.cwd()
+          prefix = '.github/scripts/'
+          suite_names = {'common', 'product-npm', 'resume-human-pause', 'claude',
+                         'deepinfra', 'ai-developer-codex', 'failure-evidence'}
+          full_reasons = {'inventory_unavailable', 'inventory_mismatch', 'malformed_input',
+                          'empty_selection', 'global_boundary', 'unmapped_path',
+                          'mapping_conflict', 'selector_error'}
+          mode, reason, suites = 'full', 'selection_unavailable', sorted(suite_names)
+          actual, chosen = [], []
+
+
+          def summary(result=None):
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+                  output.write('## AI Workflow Regression\n\n')
+                  for label, value in [('mode', mode), ('reason', reason),
+                                       ('selected count', len(chosen)), ('full count', len(actual)),
+                                       ('suites', ', '.join(suites))]:
+                      output.write(f'- {label}: {value}\n')
+                  if result:
+                      output.write(f'\n結果: **{result}**\n')
+
+
+          def git(*args):
+              return subprocess.run(['git', *args], check=True, capture_output=True).stdout
+
+
+          def fixture_path(value):
+              return (isinstance(value, str) and '\0' not in value and '\\' not in value
+                      and value.startswith(prefix + 'test-') and value.endswith('.sh')
+                      and '/' not in value[len(prefix):])
+
+
+          def unique_object(pairs):
+              value = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise ValueError
+                  value[key] = item
+              return value
+
+
+          try:
+              # Enumerate independently of selector output, including invalid file types.
+              actual = sorted(sys.argv[2:])
+              if not actual:
+                  reason = 'no_fixtures'
+                  raise RuntimeError
+              if (not stat.S_ISDIR((root / '.github').lstat().st_mode)
+                      or not stat.S_ISDIR((root / prefix).lstat().st_mode)
+                      or not all(fixture_path(p) and stat.S_ISREG((root / p).lstat().st_mode)
+                                 for p in actual)):
+                  reason = 'invalid_fixture_type'
+                  raise RuntimeError
+              chosen = actual
+              try:
+                  base, head = os.environ.get('BASE_SHA', ''), os.environ.get('HEAD_SHA', '')
+                  reason = 'sha_invalid'
+                  if not all(re.fullmatch('[0-9a-f]{40}', sha) for sha in (base, head)):
+                      raise ValueError
+                  reason = 'head_mismatch'
+                  if git('rev-parse', 'HEAD').decode('ascii').strip() != head:
+                      raise ValueError
+                  reason = 'base_unavailable'
+                  if git('rev-parse', '--verify', base + '^{commit}').decode('ascii').strip() != base:
+                      raise ValueError
+                  reason = 'diff_failed'
+                  changed = git('diff', '--no-renames', '--name-only', '-z', base, head)
+                  reason = 'empty_diff'
+                  if not changed:
+                      raise ValueError
+                  reason = 'base_selector_unavailable'
+                  selector = scratch / 'trusted-selector.py'
+                  selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))
+                  reason = 'selector_failed'
+                  result = subprocess.run([sys.executable, '-B', str(selector), '--repo-root', str(root)],
+                                          input=changed, capture_output=True, check=True)
+                  reason = 'selector_record_invalid'
+                  record = json.loads(result.stdout, object_pairs_hook=unique_object)
+                  if (not isinstance(record, dict)
+                          or set(record) != {'schema', 'version', 'mode', 'reason', 'suites', 'fixtures'}
+                          or record['schema'] != 'ai-workflow-fixture-selection'
+                          or type(record['version']) is not int or record['version'] != 1
+                          or record['mode'] not in ('selected', 'full')
+                          or not isinstance(record['reason'], str)
+                          or not isinstance(record['suites'], list)
+                          or not all(isinstance(s, str) and s in suite_names for s in record['suites'])
+                          or len(set(record['suites'])) != len(record['suites'])
+                          or not isinstance(record['fixtures'], list)
+                          or not all(fixture_path(p) for p in record['fixtures'])
+                          or len(set(record['fixtures'])) != len(record['fixtures'])):
+                      raise ValueError
+                  if record['mode'] == 'selected':
+                      if record['reason'] != 'known_paths' or 'common' not in record['suites']:
+                          raise ValueError
+                      if not record['fixtures']:
+                          reason = 'no_fixtures'
+                          raise RuntimeError
+                      if not set(record['fixtures']) <= set(actual):
+                          reason = 'selected_fixture_missing'
+                          raise RuntimeError
+                      if prefix + 'test-production-unreachable.sh' not in record['fixtures']:
+                          reason = 'common_guard_missing'
+                          raise ValueError
+                      chosen = sorted(record['fixtures'])
+                  elif record['reason'] not in full_reasons:
+                      raise ValueError
+                  mode, reason, suites = record['mode'], record['reason'], sorted(record['suites'])
+              except (ValueError, OSError, UnicodeError, subprocess.SubprocessError):
+                  # Keep the independently discovered full inventory on any selection error.
+                  mode, suites, chosen = 'full', sorted(suite_names), actual
+              (scratch / 'fixtures.nul').write_bytes(b''.join(os.fsencode(p) + b'\0' for p in chosen))
+              summary()
+          except Exception:
+              summary('FAIL')
+              print('AI workflow fixtureの安全な実行集合を確定できませんでした。', file=sys.stderr)
+              sys.exit(1)
+          PY
+          mapfile -d '' -t fixtures < "$regression_tmp/fixtures.nul"
           if [ "${#fixtures[@]}" -eq 0 ]; then
-            echo '.github/scripts/test-*.sh に一致するAI workflow fixtureがありません。' >&2
-            {
-              echo '## AI Workflow Regression'
-              echo
-              echo '結果: **FAIL**（該当fixtureなし）'
-            } >> "$GITHUB_STEP_SUMMARY"
+            echo '結果: **FAIL**（該当fixtureなし）' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-
           failed=0
-          {
-            echo '## AI Workflow Regression'
-            echo
-            echo '| Fixture | Result |'
-            echo '| --- | --- |'
-          } >> "$GITHUB_STEP_SUMMARY"
-
           for fixture in "${fixtures[@]}"; do
-            echo "::group::Fixture: $fixture"
+            printf '::group::Fixture: %q\n' "$fixture"
+            # Recheck immediately before execution, including changes by earlier fixtures.
+            if [ ! -f "$fixture" ] || [ -L "$fixture" ]; then
+              echo 'FAIL（不正fixture）'
+              failed=1
+              echo '::endgroup::'
+              continue
+            fi
             if bash "$fixture"; then
-              result='PASS'
+              echo 'PASS'
             else
-              result='FAIL'
+              echo 'FAIL'
               failed=1
             fi
             echo '::endgroup::'
-            printf '| `%s` | %s |\n' "$fixture" "$result" >> "$GITHUB_STEP_SUMMARY"
           done
-
           if [ "$failed" -ne 0 ]; then
-            echo >> "$GITHUB_STEP_SUMMARY"
             echo '結果: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-
-          echo >> "$GITHUB_STEP_SUMMARY"
           echo '結果: **PASS**' >> "$GITHUB_STEP_SUMMARY"

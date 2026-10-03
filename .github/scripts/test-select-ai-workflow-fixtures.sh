@@ -257,15 +257,18 @@ for executable in ('os.system(PATH_SUITES[0][0])', 'eval(INVENTORY["product-npm"
     else:
         raise AssertionError('executable selector accepted')
 
-# No production source calls the selector; target fixtures may parse its AST.
+# Only regression may materialize the trusted base policy; other callers stay prohibited.
 for workflow in (repo / '.github/workflows').glob('*.yml'):
-    assert source.name not in workflow.read_text(), workflow
+    if workflow.name != 'ai-workflow-regression.yml':
+        assert source.name not in workflow.read_text(), workflow
 for script in (repo / '.github/scripts').iterdir():
     if script.is_file() and script.suffix in ('.py', '.sh', '.js'):
         if script != source and not script.name.startswith('test-'):
             assert source.name not in script.read_text(), script
 regression = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
 assert 'fixtures=(.github/scripts/test-*.sh)' in regression
+assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
+assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
 print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + selector + #701 = 72).')
 PY

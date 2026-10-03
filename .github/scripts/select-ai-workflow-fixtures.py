@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dormant, read-only coarse suite selector. No workflow caller or fixture execution."""
+"""Read-only coarse suite selector. Trusted base policy; no fixture execution."""
 
 import json
 import os
@@ -121,7 +121,7 @@ PATH_SUITES = (
           "reconcile-human-pause-resume-acceptance", "reconcile-human-pause-active-pause",
           "format-human-pause-notification", "notify-human",
       )),
-    # Future wiring contract only: this module is not invoked by any workflow.
+    # Regression caller executes this policy from the trusted event base commit.
     # Product npm and failure-evidence dormant guards scan every workflow too.
     (".github/workflows/claude-review.yml",
      ("claude", "resume-human-pause", "deepinfra", "ai-developer-codex",
