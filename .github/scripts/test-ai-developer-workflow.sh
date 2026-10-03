@@ -1285,17 +1285,33 @@ assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIR
 assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
 assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
 
-# #721 defines only a dormant primitive; production wiring belongs to #722.
+# #721 primitive and #725 classifier remain prepared; wiring belongs to #722.
 python3 -B - "$repo_root" "$test_dir" <<'PY'
 from pathlib import Path
+import os
+import shutil
 import subprocess
 import sys
 
 root, scratch = map(Path, sys.argv[1:])
 scope_helper = root / '.github/scripts/has-scope-decision-marker.sh'
 requirements_helper = root / '.github/scripts/has-requirements-change-marker.sh'
+decision_classifier = root / '.github/scripts/classify-ai-developer-decision-marker.sh'
 scope_marker = '[SCOPE_DECISION_REQUIRED]'
+requirements_marker = '[REQUIREMENTS_CHANGE_REQUIRED]'
 response = scratch / 'scope-marker-response.md'
+
+
+def classify(name, args, expected, helper=decision_classifier, cwd=None):
+    result = subprocess.run(['bash', str(helper), *map(str, args)],
+                            capture_output=True, cwd=cwd, timeout=5)
+    assert result.returncode == (2 if expected is None else 0), (
+        name, result.returncode, result.stderr)
+    assert result.stdout == (b'' if expected is None else (expected + '\n').encode()), (
+        'noncanonical classifier stdout', name, result.stdout)
+    assert bool(result.stderr) == (expected is None), (name, result.stderr)
+
+
 cases = (
     ('exact LF', scope_marker + '\n', 0),
     ('exact CRLF', scope_marker + '\r\n', 0),
@@ -1324,6 +1340,70 @@ for name, content, expected in cases:
     result = subprocess.run(['bash', str(scope_helper), str(response)], capture_output=True)
     assert result.returncode == expected, (name, result.returncode, result.stderr)
     assert not result.stdout, ('unexpected helper output', name)
+    classification = ('requirements_change' if name == 'requirements only' else
+                      'scope_decision' if expected == 0 else 'none')
+    classify(name, [response], classification)
+
+# Preserve each primitive's contract, including the intentional fence asymmetry.
+for name, content, expected in (
+    ('requirements CRLF', requirements_marker + '\r\n', 'requirements_change'),
+    ('requirements no newline', requirements_marker, 'requirements_change'),
+    ('both', requirements_marker + '\n' + scope_marker + '\n', None),
+    ('both reversed CRLF', scope_marker + '\r\n' + requirements_marker + '\r\n', None),
+    ('both fenced', '```\n' + requirements_marker + '\n' + scope_marker + '\n```\n',
+     'requirements_change'),
+    ('fenced requirements plus scope', '~~~\n' + requirements_marker + '\n~~~\n' +
+     scope_marker + '\n', None),
+    ('free text is not a reason', 'requirements_change scope_decision\n', 'none'),
+):
+    response.write_bytes(content.encode())
+    classify(name, [response], expected)
+for text in ('`' + requirements_marker + '`', '  ' + requirements_marker,
+             '\t' + requirements_marker, requirements_marker + ' ',
+             'The marker ' + requirements_marker + ' is explained here.'):
+    response.write_text(text + '\n')
+    classify('requirements exactness', [response], 'none')
+
+for args in ([], [''], [scratch / 'missing-final-response.md'], [scratch],
+             [response, response]):
+    classify('invalid response path/arguments', args, None)
+unreadable = scratch / 'unreadable-final-response.md'
+unreadable.write_text(scope_marker + '\n')
+unreadable.chmod(0)
+try:
+    assert not os.access(unreadable, os.R_OK), 'unreadable fixture must be inaccessible'
+    classify('unreadable response', [unreadable], None)
+finally:
+    unreadable.chmod(0o600)
+fifo = scratch / 'final-response.fifo'
+os.mkfifo(fifo)
+classify('FIFO is invalid', [fifo], None)
+for filename in ('-', '-response.md', 'marker=value', 'response with spaces.md'):
+    (scratch / filename).write_text(scope_marker + '\n')
+    classify('relative awk operand', [filename], 'scope_decision', cwd=scratch)
+
+# Inject primitive exit statuses only into disposable sibling copies. Neither
+# environment overrides nor helper substitution are exposed by the classifier.
+mock_dir = scratch / 'decision-classifier-helpers'
+mock_dir.mkdir()
+mock_classifier = mock_dir / decision_classifier.name
+shutil.copyfile(decision_classifier, mock_classifier)
+for requirements_exit in (0, 1, 2, 7, 127):
+    for scope_exit in (0, 1, 2, 7, 127):
+        for helper, status in ((requirements_helper, requirements_exit),
+                               (scope_helper, scope_exit)):
+            (mock_dir / helper.name).write_text(
+                "printf 'unexpected helper stdout\\n'\nexit " + str(status) + '\n')
+        expected = {(0, 1): 'requirements_change', (1, 0): 'scope_decision',
+                    (1, 1): 'none'}.get((requirements_exit, scope_exit))
+        classify(('primitive exits', requirements_exit, scope_exit),
+                 [response], expected, mock_classifier)
+for helper in (requirements_helper, scope_helper):
+    for primitive in (requirements_helper, scope_helper):
+        shutil.copyfile(primitive, mock_dir / primitive.name)
+    (mock_dir / helper.name).unlink()
+    response.write_text('ordinary response\n')
+    classify('missing primitive', [response], None, mock_classifier)
 
 # Empty is marker-absent (1); missing input is a helper error (>1), matching
 # the existing requirements primitive rather than manufacturing a pause reason.
@@ -1337,18 +1417,21 @@ response.write_bytes((scope_marker + '\n').encode())
 assert subprocess.run(['bash', str(requirements_helper), str(response)], capture_output=True).returncode == 1
 
 # Forbid direct and helper-mediated production callers, including both fixed
-# Codex prompts. Only this fixture and the primitive may reference the signal.
+# Codex prompts. Only fixtures, the primitive, and its prepared classifier may
+# reference the scope signal; no production source may reference the classifier.
 sources = [root / 'AGENTS.md', *sorted((root / '.github/workflows').glob('*')),
            *sorted((root / '.github/scripts').glob('*'))]
 for source in sources:
-    if not source.is_file() or source == scope_helper:
+    if not source.is_file() or source in (scope_helper, decision_classifier):
         continue
     if source.parent.name == 'scripts' and source.name.startswith('test-'):
         continue
     content = source.read_bytes()
     assert scope_helper.name.encode() not in content and scope_marker.encode() not in content, (
         'dormant scope marker reached production/instructions', source)
-print('Dormant scope-decision marker fixtures passed')
+    assert decision_classifier.name.encode() not in content, (
+        'prepared decision classifier reached production/instructions', source)
+print('Prepared decision classifier and dormant scope marker fixtures passed')
 PY
 
 extract_workflow_step() {
