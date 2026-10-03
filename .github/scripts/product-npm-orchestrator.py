@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import tempfile
@@ -38,6 +39,122 @@ validator = load('prepare-product-npm')
 offline = load('npm-offline-ci-runtime')
 locked = load('npm-locked-preparation')
 require = validator.require
+
+
+def _mount_table():
+    """Read Linux mount coordinates, including bind roots; no namespace changes."""
+    rows = []
+    for line in Path('/proc/self/mountinfo').read_text().splitlines():
+        fields = line.split()
+        require(len(fields) >= 10 and '-' in fields[6:], 'invalid-mount-table')
+        def unescape(value):
+            return re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), value)
+        root, point = (Path(unescape(value)) for value in fields[3:5])
+        require(root.is_absolute() and point.is_absolute(), 'invalid-mount-table')
+        rows.append((fields[0], fields[2], root, point))
+    require(rows, 'missing-mount-table')
+    return tuple(rows)
+
+
+class CanonicalRoot:
+    """Read-only root identity/ancestry snapshot, retained in the trusted parent."""
+    def __init__(self, path):
+        require(isinstance(path, (str, Path)), 'invalid-root')
+        self.path = Path(path)
+        require(self.path.is_absolute() and self.path.anchor == '/' and '..' not in self.path.parts
+                and str(self.path) == str(path), 'noncanonical-root')
+        self._snapshot = self._observe()
+        self.verify()
+
+    def _observe(self):
+        mounts = _mount_table()
+        ancestry = []
+        # Descriptor-relative traversal rejects symlinks in every component.
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in (None, *self.path.parts[1:]):
+                if part is not None:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
+                    os.close(fd)
+                    fd = child
+                info = os.fstat(fd)
+                ancestry.append((info.st_dev, info.st_ino))
+            matches = [row for row in mounts if self.path == row[3]
+                       or row[3] in self.path.parents]
+            depth = max(len(row[3].parts) for row in matches)
+            matches = [row for row in matches if len(row[3].parts) == depth]
+            require(len(matches) == 1, 'ambiguous-mount-root')
+            mount_id, device, root, point = matches[0]
+            require(device == f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}',
+                    'mount-device-mismatch')
+            # Bind aliases have different lexical ancestry, but the same
+            # filesystem coordinates. Neither lexical tests nor '..' alone
+            # can establish ancestry across a bind mount's root.
+            physical = root / self.path.relative_to(point)
+            require(_mount_table() == mounts, 'mount-identity-changed')
+            check_fd = validator.directory(self.path)
+            try:
+                check = os.fstat(check_fd)
+                require((check.st_dev, check.st_ino) == ancestry[-1], 'root-identity-changed')
+            finally:
+                os.close(check_fd)
+            return tuple(ancestry), mount_id, device, physical
+        finally:
+            os.close(fd)
+
+    def verify(self):
+        require(self._observe() == self._snapshot, 'root-identity-changed')
+
+    def overlaps(self, other):
+        require(type(other) is CanonicalRoot, 'canonical-root-required')
+        self.verify()
+        other.verify()
+        left, _, device, physical = self._snapshot
+        right, _, other_device, other_physical = other._snapshot
+        return (left[-1] in right or right[-1] in left
+                or device == other_device and (physical == other_physical
+                    or physical in other_physical.parents or other_physical in physical.parents))
+
+
+class RootBoundary:
+    """Disjoint workspace/repository/evidence/consumable groups, no fallback.
+
+    Evidence roots may contain one another; overlap across groups is forbidden.
+    This observes paths, not isolation from another process with the same UID.
+    """
+    def __init__(self, workspace, repository, trusted_roots=(), consumable=None):
+        groups = [[workspace], [repository], list(trusted_roots),
+                  [] if consumable is None else [consumable]]
+        self._groups = tuple(tuple(CanonicalRoot(path) for path in group) for group in groups)
+        self.verify()
+
+    def verify(self):
+        for index, group in enumerate(self._groups):
+            for root in group:
+                root.verify()
+                require(not any(root.overlaps(other)
+                                for later in self._groups[index + 1:] for other in later),
+                        'physical-root-overlap')
+
+
+def state_policy(origin):
+    """Closed machine/prompt policy for an already prepared session origin."""
+    require(type(origin) is str and origin in ('no-manifest', 'bootstrap', 'locked'),
+            'invalid-policy-origin')
+    creating = origin == 'no-manifest'
+    prompt = ('You may create package.json only. Do not generate package-lock.json, '
+              'install dependencies, or resolve packages from a registry. Dependencies '
+              'must use exact registry versions accepted by the canonical validator; '
+              'package names and versions remain subject to review.' if creating else
+              'Use prepared dependencies. Preserve the exact bytes of package.json '
+              'and package-lock.json. Do not regenerate the lock or resolve packages '
+              'from a registry.')
+    return MappingProxyType({'origin': origin, 'allow_create_manifest': creating,
+                             'allow_generate_lock': False, 'allow_install': not creating,
+                             'allow_registry_resolution': False,
+                             'preserve_manifest_lock_bytes': not creating,
+                             'dependency_versions': 'canonical-exact-registry', 'prompt': prompt})
 
 
 def read_pair(path):
@@ -373,6 +490,7 @@ class _WorkloadSession:
         self._started = False
         self._completed = False
         self._failed = False
+        self._roots = None
 
     def _directory_identity(self):
         fd = validator.directory(self._workspace)
@@ -396,6 +514,9 @@ class _WorkloadSession:
             file_fd = os.open('package-lock.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL
                               | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=fd)
             with os.fdopen(file_fd, 'wb') as stream:
+                info = os.fstat(stream.fileno())
+                self._materialized_identity = (info.st_dev, info.st_ino)
+                self._materialized_hashes = (prepared_hash, prepared_hash)
                 stream.write(self._baseline[1])
                 stream.flush()
                 info = os.fstat(stream.fileno())
@@ -414,6 +535,8 @@ class _WorkloadSession:
             os.close(fd)
 
     def _workspace_gate(self):
+        if self._roots is not None:
+            self._roots.verify()
         require(self._active and self._handoff._active
                 and self._handoff._expected == self._expected
                 and self._handoff._workspace == self._workspace
@@ -459,9 +582,7 @@ class _WorkloadSession:
     def run(self, consumer):
         require(self._active and not self._started, 'single-workload-required')
         self._started = True
-        policy = MappingProxyType({'origin': self._origin,
-                                   'allow_create_manifest': self._origin == 'no-manifest',
-                                   'allow_generate_lock': False})
+        policy = state_policy(self._origin)
         # Only a consumable path and closed policy cross the consumer contract.
         contract = MappingProxyType({'policy': policy, 'cache_path': self._cache})
         try:
@@ -485,6 +606,47 @@ class _WorkloadSession:
         return self.verify()
 
 
+    def cleanup_materialized_lock(self):
+        """Explicit failure cleanup: remove only our still-identical exact lock.
+
+        Missing/changed/unknown files are dirty, never successful cleanup. This
+        does not roll back consumer edits or authorize downstream writes.
+        """
+        if self._origin != 'bootstrap':
+            return 'none'
+        try:
+            require(self._active and self._materialized_identity is not None
+                    and self._materialized_hashes == (validator.sha(self._baseline[1]),) * 2,
+                    'unknown-materialization')
+            if self._roots is not None:
+                self._roots.verify()
+            require(self._directory_identity() == self._workspace_identity,
+                    'workspace-identity-mismatch')
+            fd = validator.directory(self._workspace)
+            try:
+                before = os.stat('package-lock.json', dir_fd=fd, follow_symlinks=False)
+                require((before.st_dev, before.st_ino) == self._materialized_identity
+                        and validator.read_input(fd, 'package-lock.json') == self._baseline[1],
+                        'materialized-lock-mismatch')
+                after = os.stat('package-lock.json', dir_fd=fd, follow_symlinks=False)
+                def signature(info):
+                    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                            info.st_uid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                require(signature(before) == signature(after)
+                        and self._directory_identity() == self._workspace_identity,
+                        'materialized-lock-mismatch')
+                os.unlink('package-lock.json', dir_fd=fd)
+                require(validator.read_input(fd, 'package-lock.json') is None,
+                        'cleanup-residual')
+            finally:
+                os.close(fd)
+            self._failed = True
+            return 'removed'
+        except Exception:
+            self._failed = True
+            return 'dirty'
+
+
 @contextmanager
 def workload_session(handoff, export_root=None):
     """Dormant #702 parent lifetime: preparation, one callback, post gate.
@@ -495,14 +657,13 @@ def workload_session(handoff, export_root=None):
     session = _WorkloadSession(handoff)
     export = None
     try:
+        trusted_roots = [] if handoff._trusted_root is None else [handoff._trusted_root]
+        if handoff._bootstrap is not None:
+            trusted_roots.append(handoff._bootstrap._artifact.parent.parent)
+        session._roots = RootBoundary(session._workspace, Path(__file__).absolute().parents[2],
+                                      trusted_roots, export_root)
         if session._origin != 'no-manifest':
             root_identity = private_directory(export_root)
-            excluded = [session._workspace, handoff._trusted_root]
-            if handoff._bootstrap is not None:
-                excluded.append(handoff._bootstrap._artifact.parent.parent)
-            require(not any(export_root == path or export_root in path.parents
-                            or path in export_root.parents for path in excluded),
-                    'overlapping-consumable-root')
             export = Path(tempfile.mkdtemp(prefix='npm-consumable-', dir=export_root))
             require(private_directory(export_root) == root_identity, 'consumable-root-changed')
             private_directory(export)
@@ -527,6 +688,43 @@ def workload_session(handoff, export_root=None):
         if export is not None:
             shutil.rmtree(export)
             require(not export.exists(), 'cleanup-residual')
+
+
+def production_session(handoff, consumer, export_root=None):
+    """Dormant #710 composition over active #702 memory, never a launcher.
+
+    The injected trusted callback must wait for completion and return exact
+    True. Only a pass after context cleanup permits subsequent caller writes.
+    Preparation/bootstrap and runtime isolation remain outside this API.
+    """
+    result = {'schema_version': 1, 'status': 'error', 'origin': 'unknown',
+              'category': 'session', 'reason': 'production-session-failed',
+              'downstream_write_allowed': False, 'failure_ownership': 'none'}
+    try:
+        require(type(handoff) is Handoff and handoff._active is True,
+                'active-trusted-handoff-required')
+        origin = 'bootstrap' if handoff._bootstrap is not None else handoff.record()['state']
+        state_policy(origin)
+        result['origin'] = origin
+        # Entry failures may leave an incompletely materialized file. Without
+        # session identity/hash evidence this remains a dirty hard failure.
+        result['failure_ownership'] = 'dirty' if origin == 'bootstrap' else 'none'
+        with workload_session(handoff, export_root) as session:
+            gate = session.run(consumer)
+            result.update(status=gate['status'], category=gate['category'], reason=gate['reason'])
+            if gate['status'] != 'pass':
+                result['failure_ownership'] = session.cleanup_materialized_lock()
+                if result['failure_ownership'] == 'dirty':
+                    result.update(category='cleanup', reason='dirty-materialized-lock')
+            else:
+                result['failure_ownership'] = 'retained' if origin == 'bootstrap' else 'none'
+        result['downstream_write_allowed'] = result['status'] == 'pass'
+    except Exception:
+        result.update(status='error', category='session', reason='production-session-failed',
+                      downstream_write_allowed=False)
+        if result['failure_ownership'] == 'retained':
+            result['failure_ownership'] = 'dirty'
+    return result
 
 
 @contextmanager
