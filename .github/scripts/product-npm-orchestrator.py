@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
+from types import MappingProxyType
 
 
 SOURCES = ('product-npm-orchestrator.py', 'prepare-product-npm.py',
@@ -89,6 +90,10 @@ def private_directory(path):
 
 
 def cache_identity(path):
+    return _cache_inventory(path)
+
+
+def _cache_inventory(path, content_only=False):
     """Bind every cache byte and reject links/special files, including partial cache."""
     identity = private_directory(path)
     entries = []
@@ -123,6 +128,8 @@ def cache_identity(path):
             os.close(fd)
 
     walk(path)
+    if content_only:
+        return validator.sha(json.dumps([entry[:2] for entry in entries], sort_keys=True).encode())
     return {'path': str(path), 'directory_identity': identity,
             'content_hash': validator.sha(json.dumps(entries, sort_keys=True).encode())}
 
@@ -154,29 +161,43 @@ def offline_ready(project, cache, node, npm):
 
 class Handoff:
     """Run-local expectation held by the trusted parent, never restored from JSON."""
-    def __init__(self, workspace, pair, record, artifact=None, bootstrap_handle=None):
+    def __init__(self, workspace, pair, record, artifact=None, bootstrap_handle=None,
+                 trusted_root=None):
         self._workspace = workspace
         self._pair = pair
         self._expected = json.dumps(record, sort_keys=True).encode()
         self._artifact = artifact
         self._bootstrap = bootstrap_handle
+        self._trusted_root = trusted_root
         self._active = True
 
     def record(self):
         return validator.parse(self._expected)
 
     def verify(self, claim=None):
+        return self._verify(claim)
+
+    def _verify(self, claim=None, workspace_gate=None):
+        # Only the trusted session supplies an alternative workspace gate.
+        # Public verify() always retains the original-workspace contract.
         require(self._active, 'expired-handoff')
         expected = self.record()
         workspace_pair = self._pair
         if self._bootstrap is not None:
-            require(self._bootstrap.verify() == expected['bootstrap_provenance'],
+            require(self._bootstrap._verify(workspace_gate=workspace_gate)
+                    == expected['bootstrap_provenance'],
                     'bootstrap-provenance-mismatch')
             workspace_pair = self._bootstrap._input._pair
         require(claim is None or (isinstance(claim, dict)
                 and json.dumps(claim, sort_keys=True).encode() == self._expected),
                 'handoff-field-mismatch')
-        require(read_pair(self._workspace) == workspace_pair, 'workspace-input-mutated')
+        def check_workspace():
+            if workspace_gate is None:
+                require(read_pair(self._workspace) == workspace_pair, 'workspace-input-mutated')
+            else:
+                workspace_gate()
+
+        check_workspace()
         if self._pair[0] is not None:
             check_lock(self._pair)
         if self._artifact is not None:
@@ -201,7 +222,7 @@ class Handoff:
                 os.close(fd)
             require(cache_identity(Path(expected['cache']['path'])) == expected['cache'],
                     'cache-identity-mismatch')
-        require(read_pair(self._workspace) == workspace_pair, 'workspace-input-mutated')
+        check_workspace()
         return expected
 
 
@@ -255,40 +276,257 @@ def verify_post_workload(handoff, claim=None):
                 result['reason'] = label + '-hash-mismatch'
                 return result
 
-        result.update(category='prepared-evidence', reason='prepared-hash-mismatch',
-                      prepared_evidence_check='fail')
-        if pair[0] is not None:
-            require(expected['expected_post_workload_hashes']
-                    == dict(zip(INPUTS, map(validator.sha, pair)))
-                    and expected['manifest_hash'] == validator.sha(pair[0])
-                    and expected['lockfile_hash'] == validator.sha(pair[1]), 'prepared-hash-mismatch')
-            result['reason'] = 'prepared-snapshot-mismatch'
-            require(base64.b64decode(expected['manifest_snapshot'], validate=True) == pair[0],
-                    'prepared-snapshot-mismatch')
-            if state == 'locked':
-                require(base64.b64decode(expected['lock_snapshot'], validate=True) == pair[1],
-                        'prepared-snapshot-mismatch')
-        if handoff._bootstrap is not None:
-            result['reason'] = 'bootstrap-hash-mismatch'
-            provenance = expected['bootstrap_provenance']
-            require(provenance['manifest_sha256'] == hashlib.sha256(pair[0]).hexdigest()
-                    and provenance['lock_sha256'] == provenance['generated_lock_sha256']
-                    == hashlib.sha256(pair[1]).hexdigest(), 'bootstrap-hash-mismatch')
-
-        # Reuse #682/#691/#692, including #645 validation and #662 provenance.
-        # The complete artifact record binds versions, command/source and cache
-        # identity to parent memory. No tool probes, schema copies or writeback.
-        result['reason'] = 'handoff-verification-failed'
-        handoff.verify(claim)
-        result.update(status='pass', prepared_evidence_check='pass',
-                      provenance_check='pass' if state == 'locked' else 'not-applicable',
-                      preparation_identity_check='pass' if state == 'locked' else 'not-applicable',
-                      category=None, reason=None)
+        _verify_prepared_evidence(handoff, claim, result)
     except Exception:
         # Fail closed even on malformed handles/files or unexpected verifier
         # errors; never serialize arbitrary exception text or workload content.
         pass
     return result
+
+
+def _verify_prepared_evidence(handoff, claim, result, workspace_gate=None):
+    """Shared evidence gate; workspace authorization remains a separate policy."""
+    expected, pair = handoff.record(), handoff._pair
+    state = expected['state']
+    result.update(category='prepared-evidence', reason='prepared-hash-mismatch',
+                  prepared_evidence_check='fail')
+    if pair[0] is not None:
+        require(expected['expected_post_workload_hashes']
+                == dict(zip(INPUTS, map(validator.sha, pair)))
+                and expected['manifest_hash'] == validator.sha(pair[0])
+                and expected['lockfile_hash'] == validator.sha(pair[1]), 'prepared-hash-mismatch')
+        result['reason'] = 'prepared-snapshot-mismatch'
+        require(base64.b64decode(expected['manifest_snapshot'], validate=True) == pair[0],
+                'prepared-snapshot-mismatch')
+        if state == 'locked':
+            require(base64.b64decode(expected['lock_snapshot'], validate=True) == pair[1],
+                    'prepared-snapshot-mismatch')
+    if handoff._bootstrap is not None:
+        result['reason'] = 'bootstrap-hash-mismatch'
+        provenance = expected['bootstrap_provenance']
+        require(provenance['manifest_sha256'] == hashlib.sha256(pair[0]).hexdigest()
+                and provenance['lock_sha256'] == provenance['generated_lock_sha256']
+                == hashlib.sha256(pair[1]).hexdigest(), 'bootstrap-hash-mismatch')
+
+    # Reuse #682/#691/#692, including #645 validation and #662 provenance.
+    # The complete artifact record binds versions, command/source and cache
+    # identity to parent memory. No tool probes, schema copies or writeback.
+    result['reason'] = 'handoff-verification-failed'
+    handoff._verify(claim, workspace_gate)
+    result.update(status='pass', prepared_evidence_check='pass',
+                  provenance_check='pass' if state == 'locked' else 'not-applicable',
+                  preparation_identity_check='pass' if state == 'locked' else 'not-applicable',
+                  category=None, reason=None)
+
+
+def _npm_side_effects(workspace):
+    """Observe npm output locations without following links or reading payloads."""
+    entries = []
+
+    def walk(path):
+        info = path.lstat()
+        entries.append((str(path.relative_to(workspace)), info.st_dev, info.st_ino,
+                        info.st_mode, info.st_nlink, info.st_size,
+                        info.st_mtime_ns, info.st_ctime_ns))
+        if stat.S_ISDIR(info.st_mode):
+            fd = validator.directory(path)
+            try:
+                for name in sorted(os.listdir(fd)):
+                    walk(path / name)
+            finally:
+                os.close(fd)
+
+    fd = validator.directory(workspace)
+    try:
+        for name in sorted(os.listdir(fd)):
+            if (name in ('node_modules', 'npm-shrinkwrap.json', 'cache')
+                    or name.startswith(('.npm', '.package-lock.json', 'npm-debug.log'))):
+                walk(workspace / name)
+    finally:
+        os.close(fd)
+    return tuple(entries)
+
+
+class _WorkloadSession:
+    """One callback in the active trusted parent; never reconstructed from claims."""
+    def __init__(self, handoff):
+        require(verify_post_workload(handoff)['status'] == 'pass', 'invalid-trusted-handoff')
+        self._handoff = handoff
+        self._expected = handoff._expected
+        self._workspace = handoff._workspace
+        self._bootstrap = handoff._bootstrap
+        self._artifact = handoff._artifact
+        self._origin = ('bootstrap' if handoff._bootstrap is not None else
+                        handoff.record()['state'])
+        require(self._origin in ('no-manifest', 'bootstrap', 'locked'),
+                'prepared-session-required')
+        self._baseline = handoff._pair
+        if self._origin == 'no-manifest':
+            require(self._baseline == (None, None), 'no-manifest-lock-present')
+        self._side_effects = (_npm_side_effects(self._workspace)
+                              if self._origin == 'no-manifest' else None)
+        self._workspace_identity = self._directory_identity()
+        self._materialized_hashes = None
+        self._materialized_identity = None
+        self._cache = None
+        self._active = True
+        self._started = False
+        self._completed = False
+        self._failed = False
+
+    def _directory_identity(self):
+        fd = validator.directory(self._workspace)
+        try:
+            info = os.fstat(fd)
+            return (info.st_dev, info.st_ino)
+        finally:
+            os.close(fd)
+
+    def _materialize(self):
+        # Reverify the original manifest-only workspace immediately before the
+        # exclusive descriptor-relative write. A matching preexisting lock fails.
+        handoff = self._handoff
+        require(verify_post_workload(handoff)['status'] == 'pass', 'pre-write-verification-failed')
+        require(self._directory_identity() == self._workspace_identity, 'workspace-identity-mismatch')
+        before = read_pair(self._workspace)
+        require(before == (self._baseline[0], None), 'workspace-input-mutated')
+        prepared_hash = validator.sha(self._baseline[1])
+        fd = validator.directory(self._workspace)
+        try:
+            file_fd = os.open('package-lock.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                              | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=fd)
+            with os.fdopen(file_fd, 'wb') as stream:
+                stream.write(self._baseline[1])
+                stream.flush()
+                info = os.fstat(stream.fileno())
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'unsafe-materialized-lock')
+                identity = (info.st_dev, info.st_ino)
+            after = read_pair(self._workspace)
+            info = os.stat('package-lock.json', dir_fd=fd, follow_symlinks=False)
+            require((info.st_dev, info.st_ino) == identity
+                    and self._directory_identity() == self._workspace_identity
+                    and after == self._baseline, 'materialized-lock-mismatch')
+            self._materialized_hashes = (prepared_hash, validator.sha(after[1]))
+            require(self._materialized_hashes[0] == self._materialized_hashes[1],
+                    'materialized-lock-mismatch')
+            self._materialized_identity = identity
+        finally:
+            os.close(fd)
+
+    def _workspace_gate(self):
+        require(self._active and self._handoff._active
+                and self._handoff._expected == self._expected
+                and self._handoff._workspace == self._workspace
+                and self._handoff._bootstrap is self._bootstrap
+                and self._handoff._artifact == self._artifact
+                and self._handoff._pair == self._baseline, 'expired-or-mutated-session')
+        require(self._directory_identity() == self._workspace_identity, 'workspace-identity-mismatch')
+        actual = read_pair(self._workspace)
+        if self._origin == 'no-manifest':
+            require(actual[1] is None, 'unexpected-lock')
+            if actual[0] is not None:
+                validator.manifest_dependencies(validator.parse(actual[0]))
+            require(_npm_side_effects(self._workspace) == self._side_effects, 'unexpected-npm-side-effect')
+        else:
+            require(actual == self._baseline, 'workspace-baseline-mismatch')
+            if self._origin == 'bootstrap':
+                require(self._materialized_hashes == (validator.sha(self._baseline[1]),) * 2,
+                        'trusted-materialization-required')
+                info = (self._workspace / 'package-lock.json').lstat()
+                require((info.st_dev, info.st_ino) == self._materialized_identity,
+                        'materialized-lock-identity-mismatch')
+        require(read_pair(self._workspace) == actual, 'workspace-input-mutated')
+
+    def verify(self):
+        result = {'schema_version': 1, 'status': 'error', 'origin': self._origin,
+                  'workspace_check': 'not-checked', 'prepared_evidence_check': 'not-checked',
+                  'category': 'session', 'reason': 'active-completed-session-required'}
+        try:
+            require(self._active and self._completed and not self._failed,
+                    'active-completed-session-required')
+            result.update(category='workspace', reason='workspace-policy-failed')
+            self._workspace_gate()
+            result['workspace_check'] = 'pass'
+            evidence = {}
+            _verify_prepared_evidence(self._handoff, None, evidence, self._workspace_gate)
+            require(evidence['status'] == 'pass', 'prepared-evidence-failed')
+            result.update(status='pass', prepared_evidence_check='pass', category=None, reason=None)
+        except Exception:
+            if result['workspace_check'] == 'pass':
+                result.update(category='prepared-evidence', reason='prepared-evidence-failed')
+        return result
+
+    def run(self, consumer):
+        require(self._active and not self._started, 'single-workload-required')
+        self._started = True
+        policy = MappingProxyType({'origin': self._origin,
+                                   'allow_create_manifest': self._origin == 'no-manifest',
+                                   'allow_generate_lock': False})
+        # Only a consumable path and closed policy cross the consumer contract.
+        contract = MappingProxyType({'policy': policy, 'cache_path': self._cache})
+        try:
+            self._workspace_gate()
+            evidence = {}
+            _verify_prepared_evidence(self._handoff, None, evidence, self._workspace_gate)
+            require(evidence['status'] == 'pass', 'prepared-evidence-failed')
+        except Exception:
+            self._failed = True
+            return {'schema_version': 1, 'status': 'error', 'origin': self._origin,
+                    'workspace_check': 'not-checked', 'prepared_evidence_check': 'not-checked',
+                    'category': 'session', 'reason': 'pre-workload-verification-failed'}
+        try:
+            require(consumer(contract) is True, 'consumer-failed')
+            self._completed = True
+        except Exception:
+            self._failed = True
+            return {'schema_version': 1, 'status': 'error', 'origin': self._origin,
+                    'workspace_check': 'not-checked', 'prepared_evidence_check': 'not-checked',
+                    'category': 'consumer', 'reason': 'consumer-failed'}
+        return self.verify()
+
+
+@contextmanager
+def workload_session(handoff, export_root=None):
+    """Dormant #702 parent lifetime: preparation, one callback, post gate.
+
+    export_root is a caller-owned consumable area, separate from all evidence.
+    Filesystem isolation of the trusted roots is the future launcher's duty.
+    """
+    session = _WorkloadSession(handoff)
+    export = None
+    try:
+        if session._origin != 'no-manifest':
+            root_identity = private_directory(export_root)
+            excluded = [session._workspace, handoff._trusted_root]
+            if handoff._bootstrap is not None:
+                excluded.append(handoff._bootstrap._artifact.parent.parent)
+            require(not any(export_root == path or export_root in path.parents
+                            or path in export_root.parents for path in excluded),
+                    'overlapping-consumable-root')
+            export = Path(tempfile.mkdtemp(prefix='npm-consumable-', dir=export_root))
+            require(private_directory(export_root) == root_identity, 'consumable-root-changed')
+            private_directory(export)
+            source = Path(handoff.record()['cache']['path'])
+            cache = export / 'cache'
+            shutil.copytree(source, cache, symlinks=True)
+            # Bind source before/after; compare bytes/types without copied inode
+            # identities. Never re-use the export as post-workload evidence.
+            handoff.verify()
+            require(cache_identity(cache)['directory_identity']
+                    != handoff.record()['cache']['directory_identity']
+                    and _cache_inventory(cache, content_only=True)
+                    == _cache_inventory(source, content_only=True), 'cache-export-mismatch')
+            handoff.verify()
+            session._cache = str(cache)
+        if session._origin == 'bootstrap':
+            session._materialize()
+        session._workspace_gate()
+        yield session
+    finally:
+        session._active = False
+        if export is not None:
+            shutil.rmtree(export)
+            require(not export.exists(), 'cleanup-residual')
 
 
 @contextmanager
@@ -363,7 +601,8 @@ def prepare(workspace, run_root, node, npm):
                           offline_install_identity={'source': source['npm-offline-ci-probe.js'],
                                                     'export': "command('ci')"},
                           artifact_path=str(artifact), artifact_identity=private_directory(artifact))
-        handle = Handoff(workspace, pair, record, artifact)
+        handle = Handoff(workspace, pair, record, artifact,
+                         trusted_root=run_root if artifact is not None else None)
         if artifact is not None:
             (artifact / 'handoff.json').write_bytes(handle._expected)
             (artifact / 'handoff.json').chmod(0o400)
@@ -392,8 +631,11 @@ class ValidatedBootstrap:
         return validator.parse(self._expected)
 
     def verify(self, claim=None):
+        return self._verify(claim)
+
+    def _verify(self, claim=None, workspace_gate=None):
         require(self._active, 'expired-handoff')
-        self._input.verify()
+        self._input._verify(workspace_gate=workspace_gate)
         require(claim is None or isinstance(claim, dict)
                 and json.dumps(claim, sort_keys=True).encode() == self._expected,
                 'handoff-field-mismatch')
@@ -404,7 +646,7 @@ class ValidatedBootstrap:
         record = self._runtime.verify_handoff(validator, self._artifact, self.record())
         require(record['manifest_sha256'] == hashlib.sha256(self._input._pair[0]).hexdigest()
                 and read_pair(self._artifact)[0] == self._input._pair[0], 'trusted-manifest-mismatch')
-        self._input.verify()
+        self._input._verify(workspace_gate=workspace_gate)
         return record
 
 
@@ -489,7 +731,7 @@ def prepare_bootstrap(validated, run_root, node, npm):
                 require(validated.verify() == provenance, 'bootstrap-provenance-mismatch')
                 record['bootstrap_provenance'] = provenance
                 handle = Handoff(validated._input._workspace, pair, record,
-                                 inner._artifact, bootstrap_handle=validated)
+                                 inner._artifact, bootstrap_handle=validated, trusted_root=run_root)
                 target = inner._artifact / 'handoff.json'
                 target.chmod(0o600)
                 target.write_bytes(handle._expected)

@@ -328,6 +328,318 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
         check(handle, 'invalid-trusted-handoff')
     assert helper.read_pair(workspace) == (manifest, None) and not list(trusted.iterdir())
 
+    # #702: same trusted parent, explicit session policy, fresh consumable cache.
+    exports = base / 'exports'
+    exports.mkdir(mode=0o700)
+
+    def rejected(call):
+        try:
+            call()
+        except (validator.Rejected, OSError, TypeError, AttributeError):
+            return
+        raise AssertionError('unsafe session accepted')
+
+    def assert_result(result, status='pass', reason=None):
+        assert result['status'] == status and result['reason'] == reason, result
+        assert set(result) == {'schema_version', 'status', 'origin', 'workspace_check',
+                               'prepared_evidence_check', 'category', 'reason'}
+        assert 'fixture-sensitive' not in json.dumps(result)
+        if status == 'pass':
+            assert result['workspace_check'] == result['prepared_evidence_check'] == 'pass'
+
+    def session_check(session, status='pass', reason=None):
+        before = inventory()
+        with patch.object(subprocess, 'run', side_effect=AssertionError('tool invoked')):
+            result = session.verify()
+            assert session.verify() == result, 'session verification not deterministic'
+        assert inventory() == before, 'session verifier wrote to disk'
+        assert_result(result, status, reason)
+
+    def inspect_contract(contract, origin):
+        assert set(contract) == {'policy', 'cache_path'}
+        assert dict(contract['policy']) == {'origin': origin,
+                'allow_create_manifest': origin == 'no-manifest', 'allow_generate_lock': False}
+        rejected(lambda: contract.__setitem__('cache_path', 'fixture-sensitive'))
+        rejected(lambda: contract['policy'].__setitem__('origin', 'locked'))
+        assert str(trusted) not in repr(contract), 'trusted evidence exposed'
+
+    # No-manifest does no trusted writes, not even to an export directory.
+    for creation in (None, manifest, b'{"dependencies":{"example":"1.2.3"}}'):
+        write_pair((None, None))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            before = inventory()
+            with helper.workload_session(handle) as session:
+                assert inventory() == before
+                session_check(session, 'error', 'active-completed-session-required')
+
+                def create(contract):
+                    inspect_contract(contract, 'no-manifest')
+                    assert contract['cache_path'] is None
+                    if creation is not None:
+                        (workspace / 'package.json').write_bytes(creation)
+                    return True
+
+                assert_result(session.run(create))
+                session_check(session)
+                rejected(lambda: session.run(create))  # Exactly one callback.
+                if creation is not None:
+                    check(handle, 'manifest-presence-mismatch')  # #684 unchanged.
+            session_check(session, 'error', 'active-completed-session-required')
+        assert not list(trusted.iterdir()) and not list(exports.iterdir())
+
+    for bad in (b'not-json', b'[]', b'{"dependencies":{},"dependencies":{}}',
+                b'{"dependencies":{"x":"^1.0.0"}}', b'{"dependencies":{"x":"file:../x"}}',
+                b'{"dependencies":{"x":"npm:y@1.0.0"}}', b'{"workspaces":[]}',
+                b'{"overrides":{}}', b'{"bundledDependencies":[]}'):
+        write_pair((None, None))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            with helper.workload_session(handle) as session:
+                def malformed(contract):
+                    (workspace / 'package.json').write_bytes(bad)
+                    return True
+                assert_result(session.run(malformed), 'error', 'workspace-policy-failed')
+                session_check(session, 'error', 'workspace-policy-failed')
+
+    for name in ('package-lock.json', 'npm-shrinkwrap.json', '.package-lock.json',
+                 '.npmrc', '.npm', 'node_modules', 'cache', 'npm-debug.log.123'):
+        write_pair((None, None))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            with helper.workload_session(handle) as session:
+                target = workspace / name
+                def side_effect(contract):
+                    if name in ('node_modules', '.npm', 'cache'):
+                        target.mkdir()
+                        (target / 'generated').write_bytes(b'fixture-sensitive')
+                    else:
+                        target.write_bytes(lock)
+                    return True
+                assert_result(session.run(side_effect), 'error', 'workspace-policy-failed')
+                session_check(session, 'error', 'workspace-policy-failed')
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+
+    # Unsafe newly-created manifest: regular single-link files only.
+    for kind in ('symlink', 'hardlink', 'fifo', 'directory'):
+        write_pair((None, None))
+        other = base / 'session-other'
+        other.write_bytes(manifest)
+        target = workspace / 'package.json'
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            with helper.workload_session(handle) as session:
+                def unsafe(contract):
+                    if kind == 'symlink':
+                        target.symlink_to(other)
+                    elif kind == 'hardlink':
+                        os.link(other, target)
+                    elif kind == 'fifo':
+                        os.mkfifo(target)
+                    else:
+                        target.mkdir()
+                    return True
+                assert_result(session.run(unsafe), 'error', 'workspace-policy-failed')
+                if kind == 'directory':
+                    target.rmdir()
+                else:
+                    target.unlink()
+        other.unlink()
+
+    for outcome in ('exception', False, None, {'status': 'pass'}, 1):
+        write_pair((None, None))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            with helper.workload_session(handle) as session:
+                def failure(contract):
+                    if outcome == 'exception':
+                        raise RuntimeError('fixture-sensitive')
+                    return outcome
+                assert_result(session.run(failure), 'error', 'consumer-failed')
+                session_check(session, 'error', 'active-completed-session-required')
+
+    # Preparation changes after entry stop before the callback. Cleanup failures
+    # propagate and never turn a successful machine gate into caller success.
+    write_pair((None, None))
+    with helper.prepare(workspace, trusted, node, npm) as handle:
+        with helper.workload_session(handle) as session:
+            called = []
+            with patch.object(handle, '_active', False):
+                assert_result(session.run(lambda contract: called.append(contract)),
+                              'error', 'pre-workload-verification-failed')
+            assert not called
+
+    write_pair((None, lock))
+    with helper.prepare(workspace, trusted, node, npm) as orphan:
+        rejected(lambda: helper.workload_session(orphan).__enter__())
+    write_pair((manifest, None))
+    with helper.prepare(workspace, trusted, node, npm) as unprepared:
+        rejected(lambda: helper.workload_session(unprepared, exports).__enter__())
+    for claim in (None, {}, handle.record(), b'{}'):
+        rejected(lambda: helper.workload_session(claim, exports).__enter__())
+    rejected(lambda: helper.workload_session(handle, exports).__enter__())  # Expired.
+
+    def exercise_locked(handle, origin):
+        original = helper.read_pair(workspace)
+        prepared = handle._pair
+        for overlapping in (workspace, handle._artifact.parent, base):
+            rejected(lambda: helper.workload_session(handle, overlapping).__enter__())
+            assert helper.read_pair(workspace) == original
+        # A corrupt export never reaches a consumer or bootstrap pre-write.
+        original_copy = shutil.copytree
+        def corrupt_export(source_cache, destination, **kwargs):
+            result = original_copy(source_cache, destination, **kwargs)
+            (destination / 'warm').write_bytes(b'fixture-sensitive')
+            return result
+        with patch.object(shutil, 'copytree', side_effect=corrupt_export):
+            rejected(lambda: helper.workload_session(handle, exports).__enter__())
+        assert helper.read_pair(workspace) == original and not list(exports.iterdir())
+        with helper.workload_session(handle, exports) as session:
+            assert helper.read_pair(workspace) == prepared
+            if origin == 'bootstrap':
+                assert session._materialized_hashes == (validator.sha(lock),) * 2
+                check(handle, 'lock-presence-mismatch')  # Original public contract.
+            retained_contract = []
+
+            def consume(contract):
+                inspect_contract(contract, origin)
+                retained_contract.append(contract)
+                cache = Path(contract['cache_path'])
+                source_cache = Path(handle.record()['cache']['path'])
+                assert cache != source_cache and cache.parent.parent == exports
+                assert (cache / 'warm').read_bytes() == (source_cache / 'warm').read_bytes()
+                assert (cache / 'warm').stat().st_ino != (source_cache / 'warm').stat().st_ino
+                # Workload writes are allowed in the consumable export. They never
+                # replace parent expectations or demand trusted cache mutation.
+                (cache / 'warm').write_bytes(b'fixture-sensitive')
+                (cache / 'consumer-new').write_bytes(b'consumed')
+                assert (source_cache / 'warm').read_bytes() == b'fixture-cache'
+                return True
+
+            assert_result(session.run(consume))
+            session_check(session)
+            cache = Path(handle.record()['cache']['path'])
+            saved = (cache / 'warm').read_bytes()
+            (cache / 'warm').write_bytes(b'fixture-sensitive')
+            session_check(session, 'error', 'prepared-evidence-failed')
+            (cache / 'warm').write_bytes(saved)
+            session_check(session)
+            for index in (0, 1):
+                mutated = list(prepared)
+                mutated[index] += b' '
+                write_pair(mutated)
+                session_check(session, 'error', 'workspace-policy-failed')
+                write_pair(prepared)
+            saved_cache = exports / 'saved-trusted-cache'
+            cache.rename(saved_cache)
+            shutil.copytree(saved_cache, cache)
+            session_check(session, 'error', 'prepared-evidence-failed')
+            shutil.rmtree(cache)
+            saved_cache.rename(cache)
+            if origin == 'bootstrap':
+                materialized_lock = workspace / 'package-lock.json'
+                saved_lock = base / 'saved-materialized-lock'
+                materialized_lock.rename(saved_lock)
+                materialized_lock.write_bytes(lock)  # Equal bytes are not the trusted pre-write.
+                session_check(session, 'error', 'workspace-policy-failed')
+                materialized_lock.unlink()
+                saved_lock.rename(materialized_lock)
+                with patch.object(session, '_materialized_hashes', None):
+                    session_check(session, 'error', 'workspace-policy-failed')
+                with patch.object(handle._bootstrap, '_active', False):
+                    session_check(session, 'error', 'prepared-evidence-failed')
+                with patch.object(handle._bootstrap._runtime, 'contract_identities', return_value={}):
+                    session_check(session, 'error', 'prepared-evidence-failed')
+                provenance_path = handle._bootstrap._artifact / 'provenance.json'
+                saved_provenance = provenance_path.read_bytes()
+                provenance_path.chmod(0o600)
+                provenance_path.write_bytes(b'fixture-sensitive')
+                provenance_path.chmod(0o400)
+                session_check(session, 'error', 'prepared-evidence-failed')
+                provenance_path.chmod(0o600)
+                provenance_path.write_bytes(saved_provenance)
+                provenance_path.chmod(0o400)
+                session_check(session)
+            for patches in (
+                    patch.object(helper, 'contracts', return_value={}),
+                    patch.object(handle, '_expected', b'not-json'),
+                    patch.object(handle, '_active', False)):
+                with patches:
+                    assert session.verify()['status'] == 'error'
+            artifact = handle._artifact / 'handoff.json'
+            saved = artifact.read_bytes()
+            artifact.chmod(0o600)
+            artifact.write_bytes(b'fixture-sensitive')
+            artifact.chmod(0o400)
+            session_check(session, 'error', 'prepared-evidence-failed')
+            artifact.chmod(0o600)
+            artifact.write_bytes(saved)
+            artifact.chmod(0o400)
+            session_check(session)
+        session_check(session, 'error', 'active-completed-session-required')
+        assert not Path(retained_contract[0]['cache_path']).exists()
+        assert not list(exports.iterdir())
+        write_pair(original)
+        check(handle)
+
+    with patch.object(helper.locked, 'prepare', side_effect=preparation), \
+         patch.object(helper, 'offline_ready', return_value=None):
+        write_pair((manifest, lock))
+        with helper.prepare(workspace, trusted, node, npm) as handle:
+            exercise_locked(handle, 'locked')
+        write_pair((manifest, lock))
+        with helper.prepare(workspace, trusted, node, npm) as cleanup_handle:
+            cleanup_session = None
+            with patch.object(shutil, 'rmtree', side_effect=OSError('fixture-sensitive')):
+                def cleanup_attempt():
+                    global cleanup_session
+                    with helper.workload_session(cleanup_handle, exports) as cleanup_session:
+                        assert_result(cleanup_session.run(lambda contract: True))
+                rejected(cleanup_attempt)
+            assert cleanup_session._active is False
+            for residual in exports.iterdir():
+                shutil.rmtree(residual)
+        write_pair((manifest, None))
+        with patch.object(helper, 'load', side_effect=lambda name:
+                          runtime if name == 'npm-registry-lock-runtime' else original_load(name)), \
+             patch.object(runtime, 'generate_validated', side_effect=generate):
+            with helper.prepare(workspace, trusted, node, npm) as input_handle:
+                with helper.bootstrap(input_handle, trusted) as validated:
+                    with helper.prepare_bootstrap(validated, trusted, node, npm) as handle:
+                        # Preexisting prepared-equal lock, unsafe lock targets,
+                        # modified manifest, and provenance/source failures reject
+                        # before trusted writing or consumer execution.
+                        for bad in (lock, lock + b' '):
+                            write_pair((manifest, bad))
+                            rejected(lambda: helper.workload_session(handle, exports).__enter__())
+                            assert helper.read_pair(workspace) == (manifest, bad)
+                            write_pair((manifest, None))
+                        write_pair((manifest + b' ', None))
+                        rejected(lambda: helper.workload_session(handle, exports).__enter__())
+                        write_pair((manifest, None))
+                        with patch.object(runtime, 'contract_identities', return_value={}):
+                            rejected(lambda: helper.workload_session(handle, exports).__enter__())
+                        for kind in ('symlink', 'hardlink', 'fifo', 'directory'):
+                            target = workspace / 'package-lock.json'
+                            other = base / 'prewrite-other'
+                            other.write_bytes(lock)
+                            if kind == 'symlink':
+                                target.symlink_to(other)
+                            elif kind == 'hardlink':
+                                os.link(other, target)
+                            elif kind == 'fifo':
+                                os.mkfifo(target)
+                            else:
+                                target.mkdir()
+                            rejected(lambda: helper.workload_session(handle, exports).__enter__())
+                            if kind == 'directory':
+                                target.rmdir()
+                            else:
+                                target.unlink()
+                            other.unlink()
+                        exercise_locked(handle, 'bootstrap')
+                        assert helper.read_pair(workspace) == (manifest, None)
+    assert not list(exports.iterdir()) and not list(trusted.iterdir())
+    print('workload session: policies/materialization/cache separation/active lifetime/fail-closed passed')
+
 def assert_no_caller(name, text):
     needle = 'product-npm-orchestrator'
     assert 'verify_post_workload' not in text, ('unexpected verifier caller', name)
