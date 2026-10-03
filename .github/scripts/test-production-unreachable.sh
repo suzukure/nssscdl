@@ -71,6 +71,8 @@ def assert_selector_dormant(tree):
         'parse_paths', 'path.encode', 'path.endswith', 'path.split', 'path.startswith',
         'print', 'record', 'select', 'set', 'sorted', 'suites.update', 'sys.exit',
         'sys.stdin.buffer.read', 'tuple', 'valid_path',
+        'pattern.startswith', 'pattern.endswith', 'rules.append', 'trigger_rules',
+        'trigger_match',
     }
     assert all(ast.unparse(n.func) in allowed_calls for n in ast.walk(tree)
                if isinstance(n, ast.Call)), 'executable selector reference'

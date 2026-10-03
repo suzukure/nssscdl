@@ -13,6 +13,15 @@ SCRIPTS = ".github/scripts/"
 SELF = SCRIPTS + "select-ai-workflow-fixtures.py"
 SELF_TEST = SCRIPTS + "test-select-ai-workflow-fixtures.sh"
 
+# Trusted base copy of workflow on.pull_request.paths; machine-synced by common fixture.
+TRIGGER_PATTERNS = (
+    ".github/scripts/**", ".github/workflows/**",
+    "**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/CLAUDE.local.md",
+    "**/.claude/**", "**/.codex/**", "**/.mcp.json",
+    "docs/00_requirements/01_Introduction.md", "docs/diagrams/README.md",
+    "docs/30_operations/ai-development-workflow.md",
+)
+
 # #695 checkpoint at 275f4ba: exact 68-fixture primary inventory.
 # Names are literal; selection never infers registration from filename prefixes.
 BASELINE = {
@@ -75,7 +84,7 @@ INVENTORY = {
     for suite, names in BASELINE.items()
 }
 
-# Coarse exact-path mapping. Unlisted paths always require full regression.
+# Coarse exact-path mapping. Unlisted trigger paths require full regression.
 # Tuple rows preserve duplicate-path contradictions for validation.
 PATH_SUITES = (
     (SCRIPTS + "build-failure-evidence-packet.py", ("failure-evidence",)),
@@ -151,6 +160,38 @@ def parse_paths(data):
     return sorted(set(paths))
 
 
+def trigger_rules(patterns):
+    """Support only literal prefix/basename/directory/exact patterns; reject new syntax."""
+    if not isinstance(patterns, (tuple, list)) or not patterns:
+        raise ValueError
+    rules = []
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            raise ValueError
+        if pattern.startswith("**/") and pattern.endswith("/**"):
+            kind, value = "directory", pattern[3:-3]
+        elif pattern.startswith("**/"):
+            kind, value = "basename", pattern[3:]
+        elif pattern.endswith("/**"):
+            kind, value = "prefix", pattern[:-3]
+        else:
+            kind, value = "exact", pattern
+        if (not valid_path(value) or any(char in value for char in "*?[]!+")
+                or (kind in ("directory", "basename") and "/" in value)):
+            raise ValueError
+        rules.append((kind, value))
+    return rules
+
+
+def trigger_match(path, rules):
+    parts = path.split("/")
+    return any((kind == "prefix" and path.startswith(value + "/"))
+               or (kind == "basename" and parts[-1] == value)
+               or (kind == "directory" and value in parts[:-1])
+               or (kind == "exact" and path == value)
+               for kind, value in rules)
+
+
 def mappings():
     """Validate inventory and mapping before any selected result is allowed."""
     if set(BASELINE) != set(BASELINE_COUNTS) or set(INVENTORY) != set(BASELINE):
@@ -211,6 +252,8 @@ def select(repo_root, changed_paths_nul):
             changed = parse_paths(changed_paths_nul)
         except (ValueError, UnicodeError):
             return full("malformed_input")
+        rules = trigger_rules(TRIGGER_PATTERNS)
+        changed = [path for path in changed if trigger_match(path, rules)]
         if not changed:
             return full("empty_selection")
         if any(path in FULL_PATHS for path in changed):

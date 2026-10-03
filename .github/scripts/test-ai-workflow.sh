@@ -160,6 +160,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -174,6 +175,43 @@ source = repo / '.github/scripts/select-ai-workflow-fixtures.py'
 spec = importlib.util.spec_from_file_location('regression_policy', source)
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
+
+
+def check_trigger_contract(text, patterns):
+    # Strictly parse the current literal-list YAML shape, without accepting new syntax.
+    trigger = re.search(r'^on:\n  pull_request:\n    types: \[[^\n]+\]\n    paths:\n'
+                        r'((?:      - [^\n]+\n)+)\n*(?=^\S|\Z)', text, re.MULTILINE)
+    assert trigger, 'unsupported pull_request.paths shape'
+    parsed = []
+    for line in trigger[1].splitlines():
+        item = re.fullmatch(r"      - '([^']+)'", line)
+        assert item, 'unsupported trigger pattern declaration'
+        parsed.append(item[1])
+    assert len(parsed) == len(set(parsed))
+    assert len(patterns) == len(set(patterns))
+    assert set(parsed) == set(patterns), 'workflow/selector trigger drift'
+    policy.trigger_rules(patterns)  # Unsupported matcher syntax must fail even if synced.
+
+
+check_trigger_contract(workflow, policy.TRIGGER_PATTERNS)
+for changed_workflow, patterns in (
+        (workflow.replace("      - '**/CLAUDE.md'\n", ''), policy.TRIGGER_PATTERNS),
+        (workflow.replace("      - '**/CLAUDE.md'", "      - '**/NEW.md'"), policy.TRIGGER_PATTERNS),
+        (workflow.replace("      - '**/CLAUDE.md'", "      - '**/CLAUDE.md'\n      - 'README.md'"),
+         policy.TRIGGER_PATTERNS),
+        (workflow.replace("'**/CLAUDE.md'", "'**/*.py'"),
+         tuple('**/*.py' if p == '**/CLAUDE.md' else p for p in policy.TRIGGER_PATTERNS)),
+        (workflow.replace("      - '**/CLAUDE.md'", '      - "**/CLAUDE.md"'),
+         policy.TRIGGER_PATTERNS),
+        (workflow.replace('\npermissions:', "\n      - 'README.md'\n\npermissions:"),
+         policy.TRIGGER_PATTERNS)):
+    try:
+        check_trigger_contract(changed_workflow, patterns)
+    except (AssertionError, ValueError):
+        pass
+    else:
+        raise AssertionError('trigger drift/unsupported pattern accepted')
+
 prefix = '.github/scripts/'
 actual = sorted(prefix + p.name for p in (repo / prefix).glob('test-*.sh'))
 assert actual == sorted(p for fixtures in policy.INVENTORY.values() for p in fixtures)
@@ -181,7 +219,7 @@ assert len(actual) == 72
 common_guard = prefix + 'test-production-unreachable.sh'
 local_path = prefix + 'deepinfra-usage-ledger.py'
 selected = sorted(policy.INVENTORY['deepinfra'] + policy.INVENTORY['common'])
-base, head = 'a' * 40, 'b' * 40
+base, head, merge = 'a' * 40, 'b' * 40, 'c' * 40
 record = dict(schema='ai-workflow-fixture-selection', version=1, mode='selected',
               reason='known_paths', suites=['common', 'deepinfra'], fixtures=selected)
 
@@ -208,15 +246,22 @@ import json, os, pathlib, sys
 args = sys.argv[1:]
 with open(os.environ['GIT_LOG'], 'a') as output:
     output.write(json.dumps(args) + '\\n')
-base, head = 'a' * 40, 'b' * 40
+base, head, merge = 'a' * 40, 'b' * 40, 'c' * 40
 if args == ['rev-parse', 'HEAD']:
     print(os.environ.get('MOCK_HEAD', head))
 elif args == ['rev-parse', '--verify', base + '^{commit}']:
     if os.environ.get('GIT_FAILURE') == 'base': sys.exit(1)
     print(os.environ.get('MOCK_BASE', base))
-elif args == ['diff', '--no-renames', '--name-only', '-z', base, head]:
+elif args == ['merge-base', base, head]:
+    if os.environ.get('GIT_FAILURE') == 'merge-base': sys.exit(1)
+    print(os.environ.get('MOCK_MERGE_BASE', merge))
+elif args == ['diff', '--no-renames', '--name-only', '-z', merge, head]:
     if os.environ.get('GIT_FAILURE') == 'diff': sys.exit(1)
     sys.stdout.buffer.write(pathlib.Path(os.environ['CHANGED_FILE']).read_bytes())
+elif args == ['diff', '--no-renames', '--name-only', '-z', base, head]:
+    # Diverged base has a trigger-domain unknown path absent from the PR changes.
+    sys.stdout.buffer.write(pathlib.Path(os.environ['CHANGED_FILE']).read_bytes()
+                            + b'.github/scripts/base-only.py\\0')
 elif args == ['show', base + ':.github/scripts/select-ai-workflow-fixtures.py']:
     if os.environ.get('GIT_FAILURE') == 'show': sys.exit(1)
     sys.stdout.buffer.write(pathlib.Path(os.environ['TRUSTED_SELECTOR']).read_bytes())
@@ -265,22 +310,42 @@ else:
     reset()
     calls = run(selected, 'selected', 'known_paths')
     assert calls == [['rev-parse', 'HEAD'], ['rev-parse', '--verify', base + '^{commit}'],
-                     ['diff', '--no-renames', '--name-only', '-z', base, head],
+                     ['merge-base', base, head],
+                     ['diff', '--no-renames', '--name-only', '-z', merge, head],
                      ['show', base + ':' + prefix + source.name]]
     assert common_guard in selected and len(selected) < len(actual)
+    # A regression to two-dot semantics must be caught by the execution oracle.
+    try:
+        run(selected, 'selected', 'known_paths',
+            block=run_block.replace("'-z', merge_base, head)", "'-z', base, head)"))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('base-only impact accepted')
+    changed_file.write_bytes(encode(['README.md', local_path]))
+    run(selected, 'selected', 'known_paths')
+    product_selected = sorted(policy.INVENTORY['product-npm'] + policy.INVENTORY['common'])
+    changed_file.write_bytes(encode(['.github/README.md', prefix + 'product-npm-orchestrator.py',
+                                    prefix + 'test-product-npm-post-workload.sh']))
+    assert len(product_selected) == 17
+    run(product_selected, 'selected', 'known_paths')
     # Changed fixture is required independently of the helper mapping.
     changed_file.write_bytes(encode([prefix + 'test-deepinfra-checkpoint.sh']))
     run(selected, 'selected', 'known_paths')
     fixture(selected[0], fail=True)
     run(selected, 'selected', 'known_paths', status=1)  # includes later fixtures after failure
     reset()
-    for paths, reason in [(['unknown'], 'unmapped_path'),
+    for paths, reason in [(['README.md'], 'empty_selection'),
+                          ([prefix + 'new-helper.py'], 'unmapped_path'),
+                          (['.github/workflows/new.yml'], 'unmapped_path'),
+                          (['src/CLAUDE.md'], 'unmapped_path'),
                           ([prefix + source.name], 'global_boundary'),
                           ([prefix + 'test-select-ai-workflow-fixtures.sh'], 'global_boundary'),
                           (['.github/workflows/ai-workflow-regression.yml'], 'global_boundary'),
                           ([local_path, prefix + 'space name\nline.py'], 'unmapped_path'),
                           # Rename old/new boundary: deleted unknown path cannot be omitted.
-                          (['unknown-old.py', local_path], 'unmapped_path')]:
+                          ([prefix + 'unknown-old.py', local_path], 'unmapped_path'),
+                          ([local_path, prefix + 'unknown-new.py'], 'unmapped_path')]:
         changed_file.write_bytes(encode(paths))
         run(actual, 'full', reason)
     # Verify exact bytes at the trusted selector boundary, beyond full fallback.
@@ -300,6 +365,11 @@ else:
                               ({'MOCK_HEAD': base}, 'head_mismatch'),
                               ({'MOCK_BASE': head}, 'base_unavailable'),
                               ({'GIT_FAILURE': 'base'}, 'base_unavailable'),
+                              ({'GIT_FAILURE': 'merge-base'}, 'merge_base_failed'),
+                              ({'MOCK_MERGE_BASE': ''}, 'merge_base_failed'),
+                              ({'MOCK_MERGE_BASE': 'invalid'}, 'merge_base_failed'),
+                              ({'MOCK_MERGE_BASE': merge.upper()}, 'merge_base_failed'),
+                              ({'MOCK_MERGE_BASE': merge + '\n' + base}, 'merge_base_failed'),
                               ({'GIT_FAILURE': 'diff'}, 'diff_failed'),
                               ({'GIT_FAILURE': 'show'}, 'base_selector_unavailable')]:
         run(actual, 'full', reason, overrides=overrides)
@@ -330,7 +400,7 @@ else:
         trusted.write_text('print(' + repr(json.dumps({**record, 'fixtures': paths})) + ')\n')
         run([], 'full', reason, status=1)
     reset()
-    changed_file.write_bytes(encode(['unknown']))
+    changed_file.write_bytes(encode([prefix + 'unknown.py']))
     fixture(actual[-1], fail=True)
     run(actual, 'full', 'unmapped_path', status=1)
     reset()
