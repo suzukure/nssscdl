@@ -205,6 +205,92 @@ class Handoff:
         return expected
 
 
+def verify_post_workload(handoff, claim=None):
+    """Read-only gate over an active parent-held handle, never a JSON expectation.
+
+    Prepared hashes describe frozen artifacts. Workspace presence/bytes come
+    from the original parent-held pair, including manifest-only bootstrap origin.
+    Only status=pass authorizes success; partial checks never authorize a caller.
+    """
+    result = {'schema_version': 1, 'status': 'error', 'state': 'unknown',
+              'manifest_hash_check': 'not-checked', 'lock_hash_check': 'not-checked',
+              'prepared_evidence_check': 'not-checked', 'provenance_check': 'not-checked',
+              'preparation_identity_check': 'not-checked',
+              'category': 'trusted-handoff', 'reason': 'invalid-trusted-handoff'}
+    try:
+        require(type(handoff) is Handoff and handoff._active is True,
+                'active-trusted-handoff-required')
+        expected = handoff.record()
+        state = expected['state']
+        require(type(expected['schema_version']) is int and expected['schema_version'] == 1
+                and state in ('no-manifest', 'bootstrap-required', 'locked')
+                and expected['status'] == ('prepared' if state == 'locked' else state),
+                'invalid-handoff-state')
+        pair = handoff._pair
+        require(type(pair) is tuple and len(pair) == 2
+                and all(value is None or type(value) is bytes for value in pair)
+                and state == ('no-manifest' if pair[0] is None else
+                              'bootstrap-required' if pair[1] is None else 'locked')
+                and set(expected['input_presence']) == set(INPUTS)
+                and all(type(expected['input_presence'][name]) is bool
+                        and expected['input_presence'][name] == (value is not None)
+                        for name, value in zip(INPUTS, pair))
+                and (handoff._artifact is not None) == (state == 'locked')
+                and (handoff._bootstrap is None or state == 'locked'), 'invalid-handoff-origin')
+        if state == 'bootstrap-required':
+            require(expected['node_version'] is None and expected['npm_version'] is None,
+                    'unobserved-tool-identity-required')
+        result['state'] = state
+        origin = pair if handoff._bootstrap is None else handoff._bootstrap._input._pair
+        result.update(category='workspace', reason='unsafe-workspace-input')
+        actual = read_pair(handoff._workspace)
+        for index, key in enumerate(('manifest_hash_check', 'lock_hash_check')):
+            result[key] = ('pass' if actual[index] == origin[index]
+                           and validator.sha(actual[index]) == validator.sha(origin[index]) else 'fail')
+        for index, label in enumerate(('manifest', 'lock')):
+            if (actual[index] is None) != (origin[index] is None):
+                result['reason'] = label + '-presence-mismatch'
+                return result
+            if actual[index] != origin[index]:
+                result['reason'] = label + '-hash-mismatch'
+                return result
+
+        result.update(category='prepared-evidence', reason='prepared-hash-mismatch',
+                      prepared_evidence_check='fail')
+        if pair[0] is not None:
+            require(expected['expected_post_workload_hashes']
+                    == dict(zip(INPUTS, map(validator.sha, pair)))
+                    and expected['manifest_hash'] == validator.sha(pair[0])
+                    and expected['lockfile_hash'] == validator.sha(pair[1]), 'prepared-hash-mismatch')
+            result['reason'] = 'prepared-snapshot-mismatch'
+            require(base64.b64decode(expected['manifest_snapshot'], validate=True) == pair[0],
+                    'prepared-snapshot-mismatch')
+            if state == 'locked':
+                require(base64.b64decode(expected['lock_snapshot'], validate=True) == pair[1],
+                        'prepared-snapshot-mismatch')
+        if handoff._bootstrap is not None:
+            result['reason'] = 'bootstrap-hash-mismatch'
+            provenance = expected['bootstrap_provenance']
+            require(provenance['manifest_sha256'] == hashlib.sha256(pair[0]).hexdigest()
+                    and provenance['lock_sha256'] == provenance['generated_lock_sha256']
+                    == hashlib.sha256(pair[1]).hexdigest(), 'bootstrap-hash-mismatch')
+
+        # Reuse #682/#691/#692, including #645 validation and #662 provenance.
+        # The complete artifact record binds versions, command/source and cache
+        # identity to parent memory. No tool probes, schema copies or writeback.
+        result['reason'] = 'handoff-verification-failed'
+        handoff.verify(claim)
+        result.update(status='pass', prepared_evidence_check='pass',
+                      provenance_check='pass' if state == 'locked' else 'not-applicable',
+                      preparation_identity_check='pass' if state == 'locked' else 'not-applicable',
+                      category=None, reason=None)
+    except Exception:
+        # Fail closed even on malformed handles/files or unexpected verifier
+        # errors; never serialize arbitrary exception text or workload content.
+        pass
+    return result
+
+
 @contextmanager
 def prepare(workspace, run_root, node, npm):
     """Yield a trusted Handoff; destroy all preparation on success or failure.
