@@ -84,7 +84,12 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                     (root / 'project/package.json').unlink()
                 else:
                     for name in ('package.json', 'package-lock.json', 'lifecycle-marker.js'):
-                        shutil.copy2(workspace / name, root / 'runtime' / name)
+                        destination = root / 'runtime' / name
+                        shutil.copy2(workspace / name, destination)
+                        # Bootstrap's trusted materialized lock is intentionally
+                        # 0600 in the workspace. The staged root-owned evidence
+                        # copy must be readable by User=nobody but never writable.
+                        destination.chmod(0o644)
                 checked(['sudo', '-n', 'cp', '-a', str(root), str(staged / 'root')])
             root = staged / 'root'
             checked(['sudo', '-n', 'chown', '-R', 'root:root', str(staged)])
