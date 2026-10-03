@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dormant, read-only coarse suite selector. No workflow caller or fixture execution."""
+"""Read-only coarse suite selector. Trusted base policy; no fixture execution."""
 
 import json
 import os
@@ -64,10 +64,10 @@ BASELINE_COUNTS = {
     "product-npm": 11, "resume-human-pause": 26, "claude": 11, "deepinfra": 9,
     "ai-developer-codex": 7, "failure-evidence": 2, "common": 2,
 }
-# Explicit extensions: #692 already present in this checkout, then this fixture.
+# Explicit extensions: #692 / #684, selector, and #701 common guard.
 EXTENSIONS = {
-    "product-npm": ("product-npm-bootstrap-preparation",),
-    "common": ("select-ai-workflow-fixtures",),
+    "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload"),
+    "common": ("select-ai-workflow-fixtures", "production-unreachable"),
 }
 INVENTORY = {
     suite: tuple(SCRIPTS + "test-" + name + ".sh"
@@ -121,7 +121,7 @@ PATH_SUITES = (
           "reconcile-human-pause-resume-acceptance", "reconcile-human-pause-active-pause",
           "format-human-pause-notification", "notify-human",
       )),
-    # Future wiring contract only: this module is not invoked by any workflow.
+    # Regression caller executes this policy from the trusted event base commit.
     # Product npm and failure-evidence dormant guards scan every workflow too.
     (".github/workflows/claude-review.yml",
      ("claude", "resume-human-pause", "deepinfra", "ai-developer-codex",

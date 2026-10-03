@@ -328,7 +328,6 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
         check(handle, 'invalid-trusted-handoff')
     assert helper.read_pair(workspace) == (manifest, None) and not list(trusted.iterdir())
 
-
     # #702: same trusted parent, explicit session policy, fresh consumable cache.
     exports = base / 'exports'
     exports.mkdir(mode=0o700)
@@ -641,47 +640,42 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
     assert not list(exports.iterdir()) and not list(trusted.iterdir())
     print('workload session: policies/materialization/cache separation/active lifetime/fail-closed passed')
 
-needle = "product-npm-orchestrator"
-suite = "product-npm"
-baseline_name = "product-npm-orchestrator"
-mapped_name = "product-npm-orchestrator.py"
-
-
 def assert_no_caller(name, text):
+    needle = 'product-npm-orchestrator'
+    assert 'verify_post_workload' not in text, ('unexpected verifier caller', name)
     if needle not in text:
         return
-    # #696 permits only exact declarative inventory/mapping literals in the
-    # dormant selector. The filename alone is never an exemption.
+    # #696: only the exact declarative inventory/mapping spans are exempt.
     assert name == 'select-ai-workflow-fixtures.py', ('unexpected caller', name)
     tree = ast.parse(text)
     allowed = []
-    declarations = set()
-    for statement in tree.body:
-        if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1
-                and isinstance(statement.targets[0], ast.Name)):
-            continue
-        target = statement.targets[0].id
-        if target not in ('BASELINE', 'PATH_SUITES'):
-            continue
-        assert target not in declarations, ('duplicate declaration', target)
-        declarations.add(target)
-        if target == 'BASELINE' and baseline_name is not None:
-            assert isinstance(statement.value, ast.Dict)
-            ast.literal_eval(statement.value)  # Literal data only, no call/expression.
-            for key, value in zip(statement.value.keys, statement.value.values):
-                if isinstance(key, ast.Constant) and key.value == suite:
-                    allowed.extend(n for n in ast.walk(value)
-                                   if isinstance(n, ast.Constant) and n.value == baseline_name)
-        elif target == 'PATH_SUITES':
-            assert isinstance(statement.value, ast.Tuple)
+    for target, kind in (('BASELINE', ast.Dict), ('PATH_SUITES', ast.Tuple)):
+        statements = [n for n in tree.body if isinstance(n, ast.Assign)
+                      and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+                      and n.targets[0].id == target]
+        assert len(statements) == 1, ('missing/duplicate declaration', target)
+        statement = statements[0]
+        writes = [n for n in ast.walk(tree) if isinstance(n, ast.Name)
+                  and n.id == target and isinstance(n.ctx, (ast.Store, ast.Del))]
+        assert writes == [statement.targets[0]], ('non-declarative write', target)
+        assert isinstance(statement.value, kind)
+        if target == 'BASELINE':
+            ast.literal_eval(statement.value)
+            values = [v for k, v in zip(statement.value.keys, statement.value.values)
+                      if isinstance(k, ast.Constant) and k.value == 'product-npm']
+            assert len(values) == 1 and isinstance(values[0], ast.Tuple)
+            matches = [n for n in values[0].elts
+                       if isinstance(n, ast.Constant) and n.value == needle]
+        else:
             expected = ast.parse(
-                f"(SCRIPTS + {mapped_name!r}, ({suite!r},))", mode='eval').body
-            for row in statement.value.elts:
-                if ast.dump(row) == ast.dump(expected):
-                    allowed.extend(n for n in ast.walk(row)
-                                   if isinstance(n, ast.Constant) and n.value == mapped_name)
-    assert len(allowed) == (2 if baseline_name else 1), 'missing/duplicate inventory reference'
-    # Mask only the accepted literal spans; executable/unknown references remain.
+                '(SCRIPTS + "product-npm-orchestrator.py", ("product-npm",))',
+                mode='eval').body
+            rows = [n for n in statement.value.elts if ast.dump(n) == ast.dump(expected)]
+            assert len(rows) == 1, 'missing/duplicate mapping literal'
+            matches = [n for n in ast.walk(rows[0])
+                       if isinstance(n, ast.Constant) and n.value == needle + '.py']
+        assert len(matches) == 1, 'missing/duplicate inventory literal'
+        allowed.extend(matches)
     lines = text.encode().splitlines(keepends=True)
     for node in sorted(allowed, key=lambda n: (n.lineno, n.col_offset), reverse=True):
         assert node.lineno == node.end_lineno
@@ -690,25 +684,29 @@ def assert_no_caller(name, text):
     assert needle.encode() not in b''.join(lines), 'non-inventory selector reference'
 
 
-selector_source = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read_text()
-assert_no_caller('select-ai-workflow-fixtures.py', selector_source)
-# Exercise the same guard used by the repository scan, without writing callers.
+selector_text = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read_text()
+assert_no_caller('select-ai-workflow-fixtures.py', selector_text)
+row = '(SCRIPTS + "product-npm-orchestrator.py", ("product-npm",))'
 for name, text in (
-        ('unknown-caller.py', f'run({mapped_name!r})'),
-        ('unknown-inventory.py', selector_source),
-        ('select-ai-workflow-fixtures.py', selector_source + f'\nrun({mapped_name!r})\n'),
-        ('select-ai-workflow-fixtures.py',
-         selector_source.replace(repr(mapped_name).replace("'", '"'),
-                                 f'run({mapped_name!r})'))):
+        ('unknown.py', 'run("product-npm-orchestrator.py")'),
+        ('unknown-inventory.py', selector_text),
+        ('select-ai-workflow-fixtures.py', selector_text + '\nrun("product-npm-orchestrator.py")'),
+        ('select-ai-workflow-fixtures.py', selector_text.replace(row, row + ', ' + row)),
+        ('select-ai-workflow-fixtures.py', selector_text.replace(
+            '"product-npm-orchestrator.py"', 'run("product-npm-orchestrator.py")')),
+        ('select-ai-workflow-fixtures.py', selector_text + '\nBASELINE = BASELINE'),
+        ('select-ai-workflow-fixtures.py', selector_text + '\nPATH_SUITES += ()'),
+        ('select-ai-workflow-fixtures.py', selector_text + '\nverify_post_workload(handoff)')):
     try:
         assert_no_caller(name, text)
     except (AssertionError, ValueError, SyntaxError):
         pass
     else:
-        raise AssertionError(('unexpected caller accepted', name))
+        raise AssertionError(('unsafe caller accepted', name))
 
 for workflow in (repo / '.github/workflows').glob('*.yml'):
     assert 'product-npm-orchestrator' not in workflow.read_text(), workflow
+    assert 'verify_post_workload' not in workflow.read_text(), workflow
 for script in (repo / '.github/scripts').iterdir():
     if script.is_file() and not script.name.startswith('test-') and script != source:
         assert_no_caller(script.name, script.read_text())

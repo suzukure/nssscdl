@@ -25,11 +25,14 @@ counts = {'product-npm': 11, 'resume-human-pause': 26, 'claude': 11,
           'deepinfra': 9, 'ai-developer-codex': 7, 'failure-evidence': 2, 'common': 2}
 assert {s: len(v) for s, v in selector.BASELINE.items()} == counts
 assert sum(counts.values()) == 68
-assert selector.EXTENSIONS == {'product-npm': ('product-npm-bootstrap-preparation',),
-                               'common': ('select-ai-workflow-fixtures',)}
+assert selector.EXTENSIONS == {
+    'product-npm': ('product-npm-bootstrap-preparation', 'product-npm-post-workload'),
+    'common': ('select-ai-workflow-fixtures', 'production-unreachable')}
 inventory = sorted(p for values in selector.INVENTORY.values() for p in values)
-assert len(inventory) == len(set(inventory)) == 70
+assert len(inventory) == len(set(inventory)) == 72
 assert inventory == actual, 'Every current shell fixture must be registered exactly once'
+common_guard = prefix + 'test-production-unreachable.sh'
+assert common_guard in selector.INVENTORY['common']
 
 
 def encode(paths):
@@ -51,6 +54,7 @@ def selected(paths, suites, root=repo):
     assert result['suites'] == sorted(set(suites) | {'common'}), result
     expected = sorted({p for s in result['suites'] for p in selector.INVENTORY[s]})
     assert result['fixtures'] == expected
+    assert common_guard in result['fixtures'], 'cross-suite guard must always be selected'
     return result
 
 
@@ -81,6 +85,10 @@ cases = (
 )
 for name, suites in cases:
     selected([prefix + name], suites)
+# Unrelated helper changes run the common guard without the heavy Product npm suite.
+light = selected([prefix + 'deepinfra-usage-ledger.py'], {'deepinfra'})
+assert 'product-npm' not in light['suites']
+assert not set(light['fixtures']) & set(selector.INVENTORY['product-npm'])
 pause_suites = {'resume-human-pause', 'ai-developer-codex', 'claude'}
 for name in ('create-human-pause', 'human-pause-record', 'list-human-pause-records',
              'validate-human-pause-record-graph', 'decompose-human-pause-record-graph',
@@ -157,6 +165,10 @@ with tempfile.TemporaryDirectory() as temporary:
     full(encode([prefix + 'prepare-product-npm.py']), 'inventory_mismatch', root)
     (root / missing).unlink()
     (root / missing).touch()
+    (root / common_guard).unlink()
+    full(encode([prefix + 'deepinfra-usage-ledger.py']), 'inventory_mismatch', root,
+         [p for p in actual if p != common_guard])
+    (root / common_guard).touch()
     full(encode([prefix + 'prepare-product-npm.py']), 'inventory_unavailable',
          root / 'absent', [])
     # Shell metacharacters, newline, spaces, and glob are literal path data.
@@ -245,15 +257,18 @@ for executable in ('os.system(PATH_SUITES[0][0])', 'eval(INVENTORY["product-npm"
     else:
         raise AssertionError('executable selector accepted')
 
-# No production source calls the selector; target fixtures may parse its AST.
+# Only regression may materialize the trusted base policy; other callers stay prohibited.
 for workflow in (repo / '.github/workflows').glob('*.yml'):
-    assert source.name not in workflow.read_text(), workflow
+    if workflow.name != 'ai-workflow-regression.yml':
+        assert source.name not in workflow.read_text(), workflow
 for script in (repo / '.github/scripts').iterdir():
     if script.is_file() and script.suffix in ('.py', '.sh', '.js'):
         if script != source and not script.name.startswith('test-'):
             assert source.name not in script.read_text(), script
 regression = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
 assert 'fixtures=(.github/scripts/test-*.sh)' in regression
+assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
+assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
-print('AI workflow fixture selector tests passed (68 baseline + #692 + selector = 70).')
+print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + selector + #701 = 72).')
 PY
