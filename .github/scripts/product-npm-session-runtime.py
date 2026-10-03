@@ -36,7 +36,7 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
     A failing dormant fixture may expose only a fixed diagnostic stage, never
     exception text, paths, workload content or trusted evidence.
     """
-    diagnostic = {'stage': 'source-identity'}
+    diagnostic = {'stage': 'source-identity', 'inventory': None}
 
     def mark(stage):
         assert stage in DIAGNOSTIC_STAGES
@@ -189,6 +189,10 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
                     return result
                 expected_keys, actual_keys = relative_keys(expected_runtime), relative_keys(actual_runtime)
                 added, removed = actual_keys - expected_keys, expected_keys - actual_keys
+                # Synthetic staged-root relative names only; bounded and never
+                # include absolute paths, file contents or trusted evidence.
+                visible = sorted(added | removed)
+                diagnostic['inventory'] = visible[:12] if len(visible) <= 12 else ['too-many']
                 if not removed and added and added <= {'root/run/systemd', 'root/run/systemd/incoming'}:
                     mark('post-runtime-systemd-artifact')
                 elif expected_keys != actual_keys:
@@ -214,4 +218,6 @@ def run_session(parent_api, handoff, workspace, export_root, node, npm, record, 
     result = parent_api.production_session(handoff, consume, export_root)
     if result['status'] != 'pass':
         result = {**result, 'diagnostic_stage': diagnostic['stage']}
+        if diagnostic['stage'].startswith('post-runtime-') and diagnostic['inventory'] is not None:
+            result['diagnostic_inventory'] = diagnostic['inventory']
     return result
