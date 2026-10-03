@@ -1285,6 +1285,72 @@ assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIR
 assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
 assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
 
+# #721 defines only a dormant primitive; production wiring belongs to #722.
+python3 -B - "$repo_root" "$test_dir" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+root, scratch = map(Path, sys.argv[1:])
+scope_helper = root / '.github/scripts/has-scope-decision-marker.sh'
+requirements_helper = root / '.github/scripts/has-requirements-change-marker.sh'
+scope_marker = '[SCOPE_DECISION_REQUIRED]'
+response = scratch / 'scope-marker-response.md'
+cases = (
+    ('exact LF', scope_marker + '\n', 0),
+    ('exact CRLF', scope_marker + '\r\n', 0),
+    ('no terminal newline', scope_marker, 0),
+    ('standalone in prose', 'Before\n' + scope_marker + '\nAfter\n', 0),
+    ('backtick', '`' + scope_marker + '`\n', 1),
+    ('indented', '  ' + scope_marker + '\n', 1),
+    ('leading space', ' ' + scope_marker + '\n', 1),
+    ('leading tab', '\t' + scope_marker + '\n', 1),
+    ('trailing space', scope_marker + ' \n', 1),
+    ('trailing tab CRLF', scope_marker + '\t\r\n', 1),
+    ('inline mention', 'The marker ' + scope_marker + ' is explained here.\n', 1),
+    ('requirements only', '[REQUIREMENTS_CHANGE_REQUIRED]\n', 1),
+    ('empty', '', 1),
+    ('backtick fence', '```text\n' + scope_marker + '\n```\n', 1),
+    ('tilde fence CRLF', '~~~\r\n' + scope_marker + '\r\n~~~\r\n', 1),
+    ('indented fence', '   ```\n' + scope_marker + '\n   ```\n', 1),
+    ('unclosed fence', '```\n' + scope_marker + '\n', 1),
+    ('short closing fence', '````\n```\n' + scope_marker + '\n````\n', 1),
+    ('mismatched fence', '```\n~~~\n' + scope_marker + '\n```\n', 1),
+    ('closing fence with text', '```\n```text\n' + scope_marker + '\n```\n', 1),
+    ('after closing fence', '```\n' + scope_marker + '\n```` \t\n' + scope_marker + '\n', 0),
+)
+for name, content, expected in cases:
+    response.write_bytes(content.encode())
+    result = subprocess.run(['bash', str(scope_helper), str(response)], capture_output=True)
+    assert result.returncode == expected, (name, result.returncode, result.stderr)
+    assert not result.stdout, ('unexpected helper output', name)
+
+# Empty is marker-absent (1); missing input is a helper error (>1), matching
+# the existing requirements primitive rather than manufacturing a pause reason.
+for helper in (scope_helper, requirements_helper):
+    response.write_bytes(b'')
+    assert subprocess.run(['bash', str(helper), str(response)], capture_output=True).returncode == 1
+    assert subprocess.run(['bash', str(helper)], capture_output=True).returncode == 1
+    result = subprocess.run(['bash', str(helper), str(scratch / 'missing-final-response.md')], capture_output=True)
+    assert result.returncode > 1, ('missing response must fail', helper, result.returncode)
+response.write_bytes((scope_marker + '\n').encode())
+assert subprocess.run(['bash', str(requirements_helper), str(response)], capture_output=True).returncode == 1
+
+# Forbid direct and helper-mediated production callers, including both fixed
+# Codex prompts. Only this fixture and the primitive may reference the signal.
+sources = [root / 'AGENTS.md', *sorted((root / '.github/workflows').glob('*')),
+           *sorted((root / '.github/scripts').glob('*'))]
+for source in sources:
+    if not source.is_file() or source == scope_helper:
+        continue
+    if source.parent.name == 'scripts' and source.name.startswith('test-'):
+        continue
+    content = source.read_bytes()
+    assert scope_helper.name.encode() not in content and scope_marker.encode() not in content, (
+        'dormant scope marker reached production/instructions', source)
+print('Dormant scope-decision marker fixtures passed')
+PY
+
 extract_workflow_step() {
   local step_name="${1:?step name is required}"
   local output_path="${2:?output path is required}"
