@@ -185,21 +185,37 @@ spec.loader.exec_module(policy)
 spec = importlib.util.spec_from_file_location('regression_planner', planner_source)
 planner_policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner_policy)
-# Exact serialized topology, secretless worker checkout and bounded terminal.
+# Exact parallel topology, secretless worker checkout and bounded terminal.
 assert list(jobs) == ['fixtures', 'shard_1', 'shard_2', 'regression_result']
 assert not re.search(r'^\s*(strategy|matrix|max-parallel):', workflow, re.MULTILINE)
-assert '    needs: [fixtures]\n' in jobs['shard_1']
-assert '    needs: [fixtures, shard_1]\n' in jobs['shard_2']
-condition = "    if: always() && needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'\n"
+condition = "needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'"
+
+
+def worker_topology(worker):
+    # A normal condition retains Actions' implicit success() cancellation gate.
+    assert re.findall(r'^    needs: (.*)$', worker, re.MULTILINE) == ['[fixtures]']
+    assert re.findall(r'^    if: (.*)$', worker, re.MULTILINE) == [condition]
+
+
 for i in (1, 2):
     worker = jobs[f'shard_{i}']
-    assert condition in worker and f'    name: Fixture shard {i}\n' in worker
+    worker_topology(worker)
+    assert f'    name: Fixture shard {i}\n' in worker
     assert f"          SHARD_ID: '{i}'\n" in worker
     assert '          PRODUCER_RESULT: ${{ needs.fixtures.result }}\n' in worker
     assert '          EXECUTION_PLAN_B64: ${{ needs.fixtures.outputs.execution_plan_b64 }}\n' in worker
     assert '          ref: ${{ github.event.pull_request.head.sha }}\n' in worker
     assert '          persist-credentials: false\n' in worker
     assert '    timeout-minutes: 10\n' in worker
+    for mutated in (worker.replace('needs: [fixtures]', 'needs: [fixtures, shard_1]'),
+                    worker.replace('if: ' + condition, 'if: always() && ' + condition),
+                    worker.replace("needs.fixtures.result == 'success' && ", '')):
+        try:
+            worker_topology(mutated)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('serialization / cancellation / producer gate drift accepted')
 terminal = jobs['regression_result']
 assert '    name: Regression Result\n' in terminal
 assert '    needs: [fixtures, shard_1, shard_2]\n' in terminal and '    if: always()\n' in terminal
@@ -910,7 +926,7 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
         assert consumer(role, full_encoded).returncode != 0
         assert execution_log.read_bytes() == encode([shard[0]] + shard[2:])
     reset()
-print('AI Workflow Regression: selected behavior, serialized full execution, validated consumers, terminal normalization and mutations passed.')
+print('AI Workflow Regression: parallel job topology, selected behavior, full coverage, validated consumers, terminal normalization and mutations passed.')
 PY
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"

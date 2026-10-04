@@ -323,7 +323,7 @@ jobs:
                   # Keep the independently discovered full inventory on any selection error.
                   mode, suites, chosen = 'full', sorted(suite_names), actual
               if mode == 'full':
-                  # Trusted-base planning; full execution belongs to serialized workers.
+                  # Trusted-base planning; full execution belongs to parallel workers.
                   selection_reason = reason
                   reason = 'planner_base_invalid'
                   base = os.environ.get('BASE_SHA', '')
@@ -443,7 +443,7 @@ jobs:
   shard_1:
     name: Fixture shard 1
     needs: [fixtures]
-    if: always() && needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
+    if: needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -494,8 +494,8 @@ jobs:
 
   shard_2:
     name: Fixture shard 2
-    needs: [fixtures, shard_1]
-    if: always() && needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
+    needs: [fixtures]
+    if: needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
