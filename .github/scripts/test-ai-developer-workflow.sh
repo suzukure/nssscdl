@@ -745,7 +745,7 @@ grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex de
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
 grep -Fqx '          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md' "$developer_step"
-grep -Fqx '          CODEX_MODEL: ${{ vars.CODEX_MODEL }}' "$developer_step"
+grep -Fqx '          CODEX_MODEL: ${{ steps.codex_model.outputs.model }}' "$developer_step"
 grep -Fqx '          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action' "$developer_step"
 grep -Fqx '          CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}' "$developer_step"
 grep -Fqx '          CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}' "$developer_step"
@@ -2382,5 +2382,208 @@ if printf '{"body":null}' | python3 "$fingerprint_code" >/dev/null 2>&1; then
   echo 'Malformed Issue body produced a fingerprint.' >&2
   exit 1
 fi
+
+# #759: run the production caller with trusted Git blobs and secretless inputs.
+# Keep this inside the existing Developer fixture: no new inventory/count entry.
+python3 -B - "$repo_root" "$test_dir" <<'PY_MODEL_FIXTURE'
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import yaml
+
+# Earlier shell fixtures export gh functions; isolate this executable stub boundary.
+clean_environment = {k: v for k, v in os.environ.items() if not k.startswith('BASH_FUNC_')}
+repo, temporary = map(Path, sys.argv[1:])
+workflow = yaml.safe_load((repo / '.github/workflows/ai-developer.yml').read_text())
+base = 'a' * 40
+issue = 169
+pr = 37  # Deliberately distinct from Issue identity.
+normal = 'fixture-normal-v1'
+fixture = temporary / 'model-caller'
+fixture.mkdir()
+trusted = fixture / 'trusted'
+trusted.mkdir()
+workspace = fixture / 'pr-worktree'
+(workspace / '.github/scripts').mkdir(parents=True)
+selector_name = 'select-codex-issue-model.py'
+policy_name = 'codex-issue-model-policy.json'
+source = (repo / '.github/scripts' / selector_name).read_text()
+policy = json.loads((repo / '.github/scripts' / policy_name).read_text())
+assert policy['entries'] == []
+# Neither a malicious worktree helper nor a worktree opt-in policy is authority.
+(workspace / '.github/scripts' / selector_name).write_text('raise RuntimeError("worktree-used")\n')
+# Trusted Python must also exclude PR/worktree and inherited module search paths.
+(workspace / 'json.py').write_text('raise RuntimeError("worktree-module-used")\n')
+(workspace / '.github/scripts' / policy_name).write_text(json.dumps({**policy,
+    'entries': [dict(issue=issue, model='gpt-6-luna')]}))
+bin_dir = fixture / 'bin'
+bin_dir.mkdir()
+(bin_dir / 'git').write_text('''#!/usr/bin/env python3
+import hashlib, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+base = 'a' * 40
+mode = os.environ['SUPPLY_CASE']
+def blob(data):
+    return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\\0' + data).hexdigest()
+if args[0] in ('rev-parse', 'show'):
+    assert len(args) == 2 and args[1].startswith(base + ':.github/scripts/')
+    name = args[1].split('/')[-1]
+    assert name in ('select-codex-issue-model.py', 'codex-issue-model-policy.json')
+    if mode == 'missing-' + name or (mode == 'show-failed' and args[0] == 'show'):
+        sys.exit(7)
+    data = (Path(os.environ['TRUSTED_SOURCES']) / name).read_bytes()
+    if args[0] == 'rev-parse':
+        print('invalid' if mode == 'bad-blob' else blob(data))
+    else:
+        sys.stdout.buffer.write(data + (b'\\n# tampered\\n' if mode == 'hash-mismatch' else b''))
+elif args[0] == 'hash-object':
+    assert args[1] == '--no-filters' and len(args) == 3
+    print(blob(Path(args[2]).read_bytes()))
+else:
+    raise AssertionError('untrusted Git operation')
+''')
+(bin_dir / 'git').chmod(0o755)
+followup_if = ("steps.verify-reviewer.outputs.trusted == 'true' && "
+               "steps.followup-gate.outputs.continue == 'true' && "
+               "steps.followup-checkout.outputs.continue == 'true'")
+identity = "${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}"
+callers = {}
+for job, runtime_name in (('develop-from-issue', 'Run Codex developer'),
+                          ('respond-to-claude', 'Run Codex follow-up')):
+    steps = workflow['jobs'][job]['steps']
+    select_index = next(i for i, s in enumerate(steps) if s.get('id') == 'codex_model')
+    caller = steps[select_index]
+    callers[job] = caller['run']
+    assert caller['name'] == 'Select trusted Codex Issue model'
+    assert caller['env']['NORMAL_MODEL'] == '${{ vars.CODEX_MODEL }}'
+    runtime = next(s for s in steps if s.get('name') == runtime_name)
+    assert runtime['env']['CODEX_MODEL'] == '${{ steps.codex_model.outputs.model }}'
+    assert '--model "$CODEX_MODEL"' in runtime['run']
+    assert "--config 'model_reasoning_effort=\"medium\"'" in runtime['run']
+    setup_index = next(i for i, s in enumerate(steps) if s.get('uses', '').startswith('openai/codex-action@'))
+    assert select_index < setup_index
+    if job == 'develop-from-issue':
+        assert caller['env']['ISSUE_NUMBER'] == identity
+        assert caller['env']['BASE_SHA'] == '${{ steps.issue_context.outputs.base_sha }}'
+        for name in ('Revalidate and consume resume inside Issue concurrency',
+                     'Recheck current Issue inside Issue concurrency', 'Prepare branch and Issue context'):
+            assert next(i for i, s in enumerate(steps) if s.get('name') == name) < select_index
+    else:
+        assert caller['if'] == followup_if
+        assert caller['env']['BASE_SHA'] == '${{ github.event.pull_request.base.sha }}'
+        assert caller['env']['HEAD_REF'] == '${{ github.event.pull_request.head.ref }}'
+        assert not any('PR_NUMBER' == key for key in caller['env'])
+        for name in ('Gate automated follow-up', 'Check follow-up checkout target'):
+            assert next(i for i, s in enumerate(steps) if s.get('name') == name) < select_index
+
+runner = fixture / 'runner'
+runner.mkdir()
+output = fixture / 'output'
+script = fixture / 'run.sh'
+def run(job='develop-from-issue', entries=None, supply='valid', model=normal,
+        identity=str(issue), head_ref='ai/issue-169', sha=base, cli=None, want=normal, ok=True):
+    trusted_source = source
+    if cli is not None:
+        # Corrupt only the synthetic trusted CLI; the unchanged pure API remains
+        # the expected-result authority. This tests independent caller validation.
+        trusted_source = source.replace('print(json.dumps(result, sort_keys=True, ensure_ascii=True, separators=(",", ":")))', cli)
+        assert trusted_source != source
+    (trusted / selector_name).write_text(trusted_source)
+    (trusted / policy_name).write_text(json.dumps({**policy, 'entries': entries or []}))
+    output.write_bytes(b'')
+    script.write_text(callers[job])
+    env = dict(clean_environment, PATH=str(bin_dir) + ':' + os.environ['PATH'],
+        SUPPLY_CASE=supply, TRUSTED_SOURCES=str(trusted), RUNNER_TEMP=str(runner),
+        GITHUB_OUTPUT=str(output), GITHUB_REPOSITORY='suzukure/nssscdl',
+        BASE_SHA=sha, ISSUE_NUMBER=identity, HEAD_REF=head_ref, NORMAL_MODEL=model,
+        PYTHONPATH=str(workspace))
+    result = subprocess.run(['bash', str(script)], cwd=workspace, env=env, capture_output=True)
+    assert (result.returncode == 0) == ok, (job, supply, cli, result.stderr)
+    assert output.read_bytes() == (('model=' + want + '\n').encode() if ok else b'')
+    assert not list(runner.iterdir()), 'temporary caller files survived selection'
+    # No new diagnostics disclose selected/normal model IDs or raw marker data.
+    assert normal.encode() not in result.stdout + result.stderr
+    assert b'gpt-6-luna' not in result.stdout + result.stderr
+    assert b'private-marker' not in result.stdout + result.stderr
+    if ok:
+        assert result.stdout == ('モデル選択: ' + ('opt_in' if any(e['issue'] == issue for e in entries or []) else 'default') + '\n').encode()
+    return result
+
+# initial and formal resume use the same gated Issue expression and run block.
+for phase in ('initial', 'resume', 'follow-up'):
+    job = 'respond-to-claude' if phase == 'follow-up' else 'develop-from-issue'
+    run(job)
+    run(job, entries=[dict(issue=issue, model='gpt-6-luna')], want='gpt-6-luna')
+    run(job, entries=[dict(issue=issue, model='gpt-6-luna')], model='fixture-normal-v2', want='gpt-6-luna')
+# A PR-number policy entry must not route the corresponding follow-up Issue.
+run('respond-to-claude', entries=[dict(issue=pr, model='gpt-6-luna')])
+for job in callers:
+    for supply in ('missing-' + selector_name, 'missing-' + policy_name,
+                   'show-failed', 'bad-blob', 'hash-mismatch'):
+        run(job, supply=supply, ok=False)
+    for identity in ('', '0', '0169', '169\nmodel=private-marker', str(2**53), '9'*100):
+        run(job, identity=identity, head_ref='ai/issue-' + identity, ok=False)
+    for sha in ('', 'HEAD', 'b'*40, base + '\n'):
+        run(job, sha=sha, ok=False)
+    for bad in ('', ' ', 'fixture-normal\nmodel=private-marker', 'x'*129, '$(private-marker)'):
+        run(job, model=bad, ok=False)
+    # CLI nonzero, no output, oversized/extra record, canonical shape/type/
+    # identity/selection/model mismatch, duplicate key and newline model injection.
+    for cli in ('return 7', 'return 0', 'print("x" * 4097)',
+                'print("{}")', 'print("null")', 'print("{}\\n{}")',
+                'result["issue"] = 37; print(json.dumps(result))',
+                'result["version"] = True; print(json.dumps(result))',
+                'result["model"] = []; print(json.dumps(result))',
+                'result["model"] = "private-marker\\nmodel=injected"; print(json.dumps(result))',
+                'result["selection"] = "opt_in"; print(json.dumps(result))',
+                'result["extra"] = 0; print(json.dumps(result))',
+                'print(\'{"model":"private-marker","model":"fixture-normal-v1"}\')'):
+        if '; print(json.dumps(result))' in cli:
+            cli = cli.replace('print(json.dumps(result))', 'print(json.dumps(result, sort_keys=True, ensure_ascii=True, separators=(",", ":")))')
+        run(job, cli=cli, ok=False)
+for ref in ('ai/issue-0169', 'ai/issue-169-extra', 'other/169', '', 'ai/issue-37/169'):
+    run('respond-to-claude', head_ref=ref, ok=False)
+# Exercise the existing exact review/head/closing/open/label gate before routing.
+(bin_dir / 'gh').write_text('''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+case = os.environ['TARGET_CASE']
+sha = 'c' * 40
+if args[:2] == ['api', 'repos/suzukure/nssscdl/pulls/37/reviews/99']:
+    value = dict(id=99, state='CHANGES_REQUESTED', commit_id=('d'*40 if case == 'stale-review' else sha),
+                 user=dict(login='reviewer[bot]'))
+elif args[:3] == ['pr', 'view', '37']:
+    value = dict(number=37, state='CLOSED' if case == 'closed-pr' else 'OPEN',
+                 headRefOid='d'*40 if case == 'changed-head' else sha, headRefName='ai/issue-169',
+                 labels=[dict(name='human-review-required')] if case == 'pr-label' else [],
+                 closingIssuesReferences=[dict(number=170 if case == 'closing-mismatch' else 169,
+                     url='https://github.com/suzukure/nssscdl/issues/169')])
+elif args[:2] == ['api', 'repos/suzukure/nssscdl/issues/169']:
+    value = dict(number=169, state='closed' if case == 'closed-issue' else 'open',
+                 labels=[dict(name='human-review-required')] if case == 'issue-label' else [])
+else:
+    raise AssertionError('unexpected API call')
+print(json.dumps(value))
+''')
+(bin_dir / 'gh').chmod(0o755)
+for case in ('current', 'stale-review', 'changed-head', 'closing-mismatch',
+             'closed-pr', 'closed-issue', 'pr-label', 'issue-label'):
+    output.write_bytes(b'')
+    env = dict(clean_environment, PATH=str(bin_dir) + ':' + os.environ['PATH'], TARGET_CASE=case)
+    target = subprocess.run(['bash', str(repo / '.github/scripts/check-claude-followup-target.sh'),
+        'suzukure/nssscdl', str(pr), '99', 'c'*40, 'reviewer', 'ai/issue-169'],
+        env=env, capture_output=True)
+    assert target.returncode == 0
+    assert target.stdout == (b'current\n' if case == 'current' else b'skip\n'), (case, target.stdout, target.stderr)
+    if target.stdout == b'current\n':
+        run('respond-to-claude', entries=[dict(issue=issue, model='gpt-6-luna')], want='gpt-6-luna')
+    else:
+        assert not output.read_bytes()  # Selection/paid caller is unreachable.
+print('Trusted Issue model caller: default / opt-in / initial-resume-follow-up / provenance / bounded fail-closed PASS')
+PY_MODEL_FIXTURE
 
 printf '%s\n' 'AI Developer workflow fixture tests passed'
