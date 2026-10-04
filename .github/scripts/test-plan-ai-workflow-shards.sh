@@ -25,6 +25,7 @@ spec.loader.exec_module(planner)
 actual = sorted(prefix + path.name for path in (repo / prefix).glob('test-*.sh'))
 previous = [path for path in actual if path != prefix + 'test-plan-ai-workflow-shards.sh']
 assert len(previous) == 78 and len(actual) == 79
+assert set(planner.RUNTIME_HINTS) <= set(actual), 'runtime hint absent from current inventory'
 
 
 def encode(paths):
@@ -168,8 +169,12 @@ allowed_calls = {
 assert all(ast.unparse(node.func) in allowed_calls for node in ast.walk(tree)
            if isinstance(node, ast.Call)), 'planner is no longer pure'
 
-# Only fixture callers and exact selector data registration are allowed.
-def dormant(path, text):
+# Only the validation-only Regression caller and selector data are allowed.
+def caller_boundary(path, text):
+    if path == '.github/workflows/ai-workflow-regression.yml':
+        extraction = "planner.write_bytes(git('show', base + ':' + prefix + 'plan-ai-workflow-shards.py'))"
+        assert text.count(extraction) == 1
+        text = text.replace(extraction, '')
     if path == prefix + 'select-ai-workflow-fixtures.py':
         mapping = '(SCRIPTS + "plan-ai-workflow-shards.py", ("common",))'
         assert text.count(mapping) == 1
@@ -178,21 +183,21 @@ def dormant(path, text):
 
 
 for workflow in (repo / '.github/workflows').glob('*.yml'):
-    dormant(workflow.relative_to(repo).as_posix(), workflow.read_text())
+    caller_boundary(workflow.relative_to(repo).as_posix(), workflow.read_text())
 for script in (repo / prefix).iterdir():
     if (script.is_file() and script.suffix in ('.py', '.sh', '.js')
             and script != source and not script.name.startswith('test-')):
-        dormant(script.relative_to(repo).as_posix(), script.read_text())
+        caller_boundary(script.relative_to(repo).as_posix(), script.read_text())
 for path, text in (('.github/workflows/ai-workflow-regression.yml', 'python3 ' + source.name),
                    (prefix + 'consumer.py', 'import plan-ai-workflow-shards'),
                    (prefix + 'select-ai-workflow-fixtures.py',
                     (repo / prefix / 'select-ai-workflow-fixtures.py').read_text()
                     + '\nrun("plan-ai-workflow-shards.py")\n')):
     try:
-        dormant(path, text)
+        caller_boundary(path, text)
     except AssertionError:
         pass
     else:
         raise AssertionError('production planner caller accepted')
-print('AI workflow shard planner: 78/79 inventory, exact coverage, balance, canonical, fail-closed, pure/dormant PASS')
+print('AI workflow shard planner: 78/79 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
 PY

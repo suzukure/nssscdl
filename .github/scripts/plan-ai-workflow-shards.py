@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#756 pure/dormant full-inventory planner; no discovery or fixture execution.
+"""#756 pure full-inventory planner; no discovery or fixture execution.
 
 CLI: python3 -B plan-ai-workflow-shards.py < fixtures.nul
 Input is strict UTF-8, one canonical .github/scripts/test-*.sh path per NUL,
@@ -11,7 +11,8 @@ with schema ai-workflow-shard-plan, version 1, policy observed-lpt-v1,
 shard_count 2, and shards [{id: 1, fixtures: [...]}, {id: 2, fixtures: [...]}].
 Both lists are nonempty, sorted, disjoint, and cover every input exactly once.
 This is a planning record, not execution/trust permission or worker handoff.
-Worker naming and production integration remain outside this helper.
+The #763 full Regression caller validates a trusted-base plan without using it
+for execution. Worker naming and handoff remain outside this helper.
 
 Policy: descending integer weight, then path; assign to the smallest total,
 then fewest fixtures, then lowest shard id. #756 / PR #742 / Regression #487
