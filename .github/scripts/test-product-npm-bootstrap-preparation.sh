@@ -320,6 +320,11 @@ mapped_name = "product-npm-orchestrator.py"
 
 
 def assert_no_caller(name, text):
+    if name == 'trusted-main-runtime-supply-proof.py':
+        # #747 reuses only the existing root API, never the Product consumer.
+        expression = "load('product-npm-orchestrator').CanonicalRoot"
+        assert text.count(expression) == 1
+        text = text.replace(expression, 'ROOT_API', 1)
     if needle not in text:
         return
     # #696 permits only exact declarative inventory/mapping literals in the
@@ -366,6 +371,13 @@ selector_source = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read
 assert_no_caller('select-ai-workflow-fixtures.py', selector_source)
 # Exercise the same guard used by the repository scan, without writing callers.
 for name, text in (
+        ('trusted-main-runtime-supply-proof.py', 'ROOT_API'),
+        ('trusted-main-runtime-supply-proof.py',
+         "load('product-npm-orchestrator').CanonicalRoot\n" * 2),
+        *[('trusted-main-runtime-supply-proof.py',
+           "load('product-npm-orchestrator').CanonicalRoot\n"
+           + f"load('product-npm-orchestrator').{api}()\n")
+          for api in ('bootstrap', 'prepare', 'production_session')],
         ('unknown-caller.py', f'run({mapped_name!r})'),
         ('unknown-inventory.py', selector_source),
         ('select-ai-workflow-fixtures.py', selector_source + f'\nrun({mapped_name!r})\n'),

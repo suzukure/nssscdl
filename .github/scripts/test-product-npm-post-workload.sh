@@ -888,6 +888,10 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
     print('pure production session: three origins/policy/ownership/post gate/regressions passed')
 
 def assert_no_caller(name, text):
+    if name == 'trusted-main-runtime-supply-proof.py':
+        expression = "load('product-npm-orchestrator').CanonicalRoot"
+        assert text.count(expression) == 1
+        text = text.replace(expression, 'ROOT_API', 1)
     needle = 'product-npm-orchestrator'
     assert 'verify_post_workload' not in text, ('unexpected verifier caller', name)
     if name != 'product-npm-session-runtime.py':
