@@ -28,6 +28,7 @@ supply_proof = 'runtime-supply-proof.py'
 model_selector = 'select-codex-issue-model.py'
 model_policy = 'codex-issue-model-policy.json'
 exec_usage = 'extract-codex-exec-usage.py'
+stream_supervisor = 'supervise-codex-exec-stream.py'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
@@ -43,6 +44,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (packet, packet, 'failure-evidence', None),
              (model_selector[:-3], model_selector, 'ai-developer-codex', None),
              (exec_usage[:-3], exec_usage, 'ai-developer-codex', None),
+             (stream_supervisor[:-3], stream_supervisor, 'ai-developer-codex', None),
              (model_policy, model_policy, 'ai-developer-codex', None))
 
 
@@ -53,7 +55,7 @@ def python_body(text):
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
                                                            session_runtime, session_probe, runtime_staging,
                                                            *session_symbols, model_selector[:-3], model_policy,
-                                                           exec_usage[:-3]))
+                                                           exec_usage[:-3], stream_supervisor[:-3]))
     return body
 
 
@@ -126,7 +128,7 @@ def assert_declarative(path, text):
         for row in matches:
             allowed.extend(n for n in ast.walk(row)
                            if isinstance(n, ast.Constant) and n.value == filename)
-        if filename in (model_selector, exec_usage) and not is_fixture:
+        if filename in (model_selector, exec_usage, stream_supervisor) and not is_fixture:
             # Exact fixture registration is data, never an executable reference.
             extension = declaration(tree, 'EXTENSIONS', ast.Dict)
             ast.literal_eval(extension)
@@ -216,6 +218,7 @@ def assert_unreachable(sources):
             assert model_selector[:-3] not in model_text and model_policy not in model_text, (
                 'unknown model selection production connection', path)
             assert exec_usage[:-3] not in text, ('exec usage production connection', path)
+            assert stream_supervisor[:-3] not in text, ('stream supervisor production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -251,6 +254,16 @@ def assert_unreachable(sources):
                         continue  # Only the closed callback API, never raw session access.
                     assert symbol not in text, ('unknown session caller', path)
             for needle, filename, _, _ in contracts:
+                if path == scripts + stream_supervisor and filename == exec_usage:
+                    # Only #761's exact prepared loader/CLI/API source is allowed.
+                    # This static exception proves no runtime source provenance.
+                    assert hashlib.sha256(text.encode()).hexdigest() == (
+                        'b035818833808d9a129f84501dfe4ed8206f78ba74a5de9f14012125897c5f15')
+                    tree = ast.parse(text)
+                    identity = declaration(tree, 'EXTRACTOR_NAME', ast.Constant)
+                    assert identity.value == filename
+                    assert needle.encode() not in mask_literals(text, [identity])
+                    continue
                 if path == scripts + trusted_proof:
                     if filename in (runtime_staging, runtime_supply):
                         # Exactly one closed module load; no caller inventory input.
@@ -321,7 +334,7 @@ sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
 for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
-             model_selector, model_policy, exec_usage):
+             model_selector, model_policy, exec_usage, stream_supervisor):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -370,7 +383,8 @@ for mutation in (
             '        run: &model_caller |\n          set -euo pipefail\n          [[ "$BASE_SHA"', 1),
         original_model_workflow + '\n# unauthorized ' + model_selector,
         original_model_workflow + '\n# unauthorized ' + model_policy,
-        original_model_workflow + '\n# unauthorized ' + exec_usage):
+        original_model_workflow + '\n# unauthorized ' + exec_usage,
+        original_model_workflow + '\n# unauthorized ' + stream_supervisor):
     assert mutation != original_model_workflow
     rejected(model_workflow, mutation)
 
@@ -429,7 +443,7 @@ for name in ('BASELINE', 'PATH_SUITES'):
 
 # The new extension exception admits only one declarative fixture identity.
 original = sources[selector_path]
-for filename in (model_selector, exec_usage):
+for filename in (model_selector, exec_usage, stream_supervisor):
     literal = '"' + filename[:-3] + '"'
     for replacement in ('"other"', literal + ', ' + literal,
                         f'run({filename[:-3]!r})'):
@@ -437,6 +451,22 @@ for filename in (model_selector, exec_usage):
 for assignment in ('EXTENSIONS = {}', 'EXTENSIONS += {}',
                    'def extra():\n    EXTENSIONS = {}'):
     rejected(selector_path, original + '\n' + assignment + '\n')
+
+# The only new prepared caller exception is exact source, never a filename-wide
+# permission. Copies, extra loads, changed source/API and workflow callers fail.
+prepared_source = sources[scripts + stream_supervisor]
+accepted(scripts + stream_supervisor, prepared_source)
+for mutation in (prepared_source + '\nload_extractor(EXTRACTOR_NAME)\n',
+                 prepared_source.replace('spec.loader.exec_module(module)',
+                                         'spec.loader.exec_module(module)\n    spec.loader.exec_module(module)'),
+                 prepared_source.replace('"prepared_exec_usage", source_path',
+                                         '"prepared_exec_usage", EXTRACTOR_NAME'),
+                 prepared_source.replace('shell=False', 'shell=True'),
+                 prepared_source.replace('return module', 'return load_extractor(source_path)')):
+    assert mutation != prepared_source
+    rejected(scripts + stream_supervisor, mutation)
+rejected(scripts + 'copy-' + stream_supervisor, prepared_source)
+rejected(scripts + 'unknown-loader.py', prepared_source)
 
 for symbol in session_symbols:
     for path in (scripts + 'unknown.py', scripts + 'copy-' + session_runtime,

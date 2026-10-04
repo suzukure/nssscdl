@@ -50,6 +50,7 @@ def check(events=normal, c=context, want=None, raw=None, raw_context=None):
     want = expected() if want is None else want
     assert type(result) is bytes and json.loads(result) == want
     assert result == encoded_canonical(want)
+    assert helper.validate_result(result) == want
     assert len(result) <= 1024 and b'\n' not in result
     assert canary.encode() not in result
     return result
@@ -235,7 +236,8 @@ assert {ast.unparse(n) for n in ast.walk(tree) if isinstance(n, (ast.Import, ast
 pure_calls = {'ValueError', 'require', 'unique_object', 'reject_constant', 'int',
               'json.loads', 'json.dumps', 'fields', 'set', 'usage.items',
               'type', 'len', 'all', 'any', 'dict', 'parse', 'validate_usage', '_extract',
-              'data.decode', 'data.split', 'line.strip', 'event.get', 'usage.values'}
+              'data.decode', 'data.split', 'line.strip', 'event.get', 'usage.values',
+              "result['usage'].values"}
 # ast.unparse uses single-quoted strings; compare the encode call structurally.
 pure = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name != 'main']
 for function in pure:
@@ -245,6 +247,25 @@ for function in pure:
             assert ast.unparse(call.func.value.func) == 'json.dumps'
         else:
             assert ast.unparse(call.func) in pure_calls, ast.unparse(call.func)
+
+# Result validation shares schema and usage checks, and rejects reflected data.
+for value in (None, {}, bytearray(check()), b'{}', check() + b'\n',
+              encoded_canonical({**expected(), 'extra': canary}),
+              encoded_canonical({**expected(), 'version': True}),
+              encoded_canonical({**expected(), 'usage': zero}),
+              encoded_canonical({**expected(), 'usage': {**usage, 'input_tokens': True}}),
+              encoded_canonical({**expected(), 'reason': canary}),
+              encoded_canonical({**expected('missing_terminal'), 'usage': usage}),
+              encoded_canonical({**expected('missing_terminal'), 'reason': canary}),
+              encoded_canonical({**expected(), 'source': canary}),
+              encoded_canonical({**expected(), 'schema': canary}),
+              encoded_canonical({**expected(), 'availability': canary})):
+    try:
+        helper.validate_result(value)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('invalid parser result accepted')
 
 # Raw synthetic JSONL stays in fixture memory/stdin, never a saved artifact.
 with tempfile.TemporaryDirectory() as temporary:
