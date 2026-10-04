@@ -77,7 +77,7 @@ BASELINE_COUNTS = {
 EXTENSIONS = {
     "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload",
                     "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply"),
-    "ai-developer-codex": ("select-codex-issue-model",),
+    "ai-developer-codex": ("select-codex-issue-model", "extract-codex-exec-usage"),
     "common": ("select-ai-workflow-fixtures", "production-unreachable"),
 }
 INVENTORY = {
@@ -122,6 +122,7 @@ PATH_SUITES = (
     (SCRIPTS + "evaluate-codex-diff-gate.sh", ("ai-developer-codex", "claude")),
     (SCRIPTS + "classify-ai-developer-decision-marker.sh", ("ai-developer-codex",)),
     (SCRIPTS + "select-codex-issue-model.py", ("ai-developer-codex",)),
+    (SCRIPTS + "extract-codex-exec-usage.py", ("ai-developer-codex",)),
     (SCRIPTS + "codex-issue-model-policy.json", ("ai-developer-codex",)),
     (SCRIPTS + "parse-ai-resume-command.sh", ("resume-human-pause",)),
     (SCRIPTS + "classify-claude-human-escalation.sh", ("claude",)),
