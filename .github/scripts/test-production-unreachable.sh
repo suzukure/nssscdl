@@ -22,7 +22,6 @@ session_probe = 'product-npm-session-probe.js'
 runtime_staging = 'product-runtime-staging.py'
 runtime_supply = 'trusted-runtime-supply.py'
 supply_proof = 'runtime-supply-proof.py'
-regression = workflows + 'ai-workflow-regression.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -32,7 +31,6 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (session_probe, session_probe, 'product-npm', None),
              (runtime_staging, runtime_staging, 'product-npm', None),
              (runtime_supply, runtime_supply, 'product-npm', None),
-             (supply_proof, supply_proof, 'product-npm', None),
              (packet, packet, 'failure-evidence', None))
 
 
@@ -146,9 +144,7 @@ def assert_unreachable(sources):
                                                         *session_symbols)), (
                 'production workflow connection', path)
             assert runtime_supply[:-3] not in text, ('supply production connection', path)
-            if supply_proof[:-3] in text:
-                assert path == regression and text.count(supply_proof[:-3]) == 1, 'unknown proof workflow'
-                assert '            .github/scripts/' + supply_proof + ' \\\n' in text, 'unknown proof call'
+            assert supply_proof[:-3] not in text, ('removed proof workflow connection', path)
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
                 continue
@@ -172,11 +168,6 @@ def assert_unreachable(sources):
                     continue  # The single existing production caller (#687).
                 if needle == session_probe and path == scripts + session_runtime:
                     continue  # Exact dormant synthetic launcher; workflows remain forbidden.
-                if filename in (runtime_staging, runtime_supply) and path == scripts + supply_proof:
-                    continue  # #741 exact proof-only caller, never production.
-                if filename == product + '.py' and path == scripts + supply_proof:
-                    assert text.count(needle) == 1 and "load('" + product + "').CanonicalRoot" in text
-                    continue  # Existing physical-coordinate API only.
                 assert needle not in text, ('unknown production caller', path, filename)
                 if filename in (runtime_staging, runtime_supply, supply_proof):
                     assert filename[:-3] not in text, ('unknown extensionless runtime caller', path, filename)
@@ -186,7 +177,7 @@ def snapshot():
     # Index discovery excludes untracked bytecode/runtime artifacts. Inspect
     # working-tree bytes, not index blobs, so proposed source changes are tested.
     listed = subprocess.run(
-        ['git', 'ls-files', '--stage', '-z', '--', scripts, workflows],
+        ['git', 'ls-files', '--stage', '-z', '--', scripts, workflows, ':!' + scripts + supply_proof],
         cwd=repo, capture_output=True, check=True).stdout
     assert listed and listed.endswith(b'\0'), 'invalid tracked inventory framing'
     result = {}
@@ -214,11 +205,14 @@ def snapshot():
     return result
 
 
+# The removed proof is never admitted as an untracked or indexed executable.
+assert not (repo / scripts / supply_proof).exists()
+assert not (repo / scripts / supply_proof).is_symlink()
 before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
-for name in (session_runtime, session_probe, runtime_staging, runtime_supply, supply_proof):
+for name in (session_runtime, session_probe, runtime_staging, runtime_supply):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -239,6 +233,8 @@ def rejected(path, text):
 
 
 # Mutate only in-memory snapshots; the actual repository is never written.
+rejected(workflows + 'ai-workflow-regression.yml',
+         sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)
 for needle, filename, suite, baseline_name in contracts:
     call = f'run({filename!r})\n'
     for path in (scripts + 'unknown-caller.py', scripts + 'deepinfra-investigator.py',
@@ -336,7 +332,7 @@ def snapshot_rejected():
 
 
 # In-memory index/filesystem mocks: no git index or repository writes.
-listing = subprocess.run(['git', 'ls-files', '--stage', '-z', '--', scripts, workflows],
+listing = subprocess.run(['git', 'ls-files', '--stage', '-z', '--', scripts, workflows, ':!' + scripts + supply_proof],
                          cwd=repo, capture_output=True, check=True).stdout
 for invalid in (b'', listing[:-1], listing + listing.split(b'\0')[0] + b'\0',
                 listing.replace(b'100644 ', b'120000 ', 1),

@@ -895,13 +895,6 @@ def assert_no_caller(name, text):
     assert 'workload_session' not in text and '_WorkloadSession' not in text, ('raw session caller', name)
     if needle not in text:
         return
-    if name == 'runtime-supply-proof.py':
-        # #741 proof-only reuse of physical root identity, no session API.
-        reference = "load('product-npm-orchestrator').CanonicalRoot"
-        assert text.count(reference) == 1 and needle not in text.replace(reference, '')
-        assert all(symbol not in text for symbol in (
-            'production_session', 'workload_session', '_WorkloadSession', 'verify_post_workload'))
-        return
     # #696: only the exact declarative inventory/mapping spans are exempt.
     assert name == 'select-ai-workflow-fixtures.py', ('unexpected caller', name)
     tree = ast.parse(text)

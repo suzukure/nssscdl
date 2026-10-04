@@ -6,7 +6,6 @@ import importlib.util
 import os
 from pathlib import Path
 import stat
-import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -20,7 +19,6 @@ def load(name):
     spec.loader.exec_module(module)
     return module
 supply, staging = load('trusted-runtime-supply'), load('product-runtime-staging')
-proof = load('runtime-supply-proof')
 roots = load('product-npm-orchestrator')
 
 def rejected(call, reason=None):
@@ -55,7 +53,7 @@ for attribute in ('system.posix_acl_access', 'system.posix_acl_default', 'securi
 with patch.object(os, 'listxattr', return_value=['user.metadata']), \
      patch.object(os, 'getxattr', return_value=b'private metadata'):
     attributes = supply.source_xattrs(1)
-    assert attributes == (('user.metadata', proof.hashlib.sha256(b'private metadata').hexdigest()),)
+    assert attributes == (('user.metadata', supply.hashlib.sha256(b'private metadata').hexdigest()),)
     assert 'private metadata' not in repr(attributes)
 with patch.object(os, 'listxattr', return_value=['user.metadata']), \
      patch.object(os, 'getxattr', side_effect=PermissionError):
@@ -126,6 +124,33 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
     extra = {**setup, 'sources': {**setup['sources'], '/extra': None}}
     rejected(lambda: prepare(setup=extra), 'source-inventory-mismatch')
     rejected(lambda: prepare([rows[0], rows[0]]), 'duplicate-inventory')
+    rejected(lambda: prepare(rows * 17, setup=setup), 'invalid-inventory')
+    rejected(lambda: prepare([rows[0], {**rows[1], 'destination': rows[0]['destination']}]),
+             'duplicate-inventory')
+    # Sparse oversize input is rejected before any hashing or copying.
+    large = source / 'large'
+    with large.open('wb') as stream:
+        stream.truncate(512 * 1024 * 1024 + 1)
+    rejected(lambda: prepare([{**rows[0], 'source': str(large)}]), 'source-size-limit')
+    large.unlink()
+    # Bound the combined inventory independently of per-file size validation.
+    third = source / 'third'
+    third.write_bytes(b'third')
+    values = rows + [{**rows[1], 'source': str(third), 'destination': '/runtime/third'}]
+    bounded = evidence(values)
+    oversized = {}
+    for path, observed in bounded['sources'].items():
+        identity = list(observed[1])
+        identity[6] = 512 * 1024 * 1024
+        oversized[path] = (observed[0], tuple(identity), *observed[2:])
+    with patch.object(supply, 'observe', side_effect=lambda path, api: oversized[str(path)]):
+        rejected(lambda: prepare(values, setup={**supply.SETUP, 'sources': oversized}),
+                 'inventory-size-limit')
+    third.unlink()
+    # Same physical identity under distinct source names is never admitted.
+    alias_evidence = {path: setup['sources'][str(node)] for path in setup['sources']}
+    with patch.object(supply, 'observe', return_value=setup['sources'][str(node)]):
+        rejected(lambda: prepare(setup={**setup, 'sources': alias_evidence}), 'aliased-source')
     rejected(lambda: prepare([rows[0], {**rows[1], 'destination': '/runtime/node/child'}]))
     rejected(lambda: prepare([{**rows[0], 'destination': '/runtime/../node'}]))
     rejected(lambda: prepare([{**rows[0], 'source': 'relative'}]))
@@ -134,6 +159,9 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
     rejected(lambda: prepare(excluded=[]), 'missing-excluded-roots')
     link = source / 'symlink'
     link.symlink_to(node)
+    ancestor_link = area / 'source-alias'
+    ancestor_link.symlink_to(source, target_is_directory=True)
+    rejected(lambda: prepare([{**rows[0], 'source': str(ancestor_link / 'node')}]))
     fifo = source / 'fifo'
     os.mkfifo(fifo)
     for path in (link, fifo, source):
@@ -150,6 +178,8 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
     prepared = prepare()
     original_digest = staging.digest_fd
     with patch.object(staging, 'digest_fd', return_value='0' * 64):
+        rejected(prepared.verify, 'source-drift')
+    with patch.object(supply, 'filesystem', return_value=('changed-mount',)):
         rejected(prepared.verify, 'source-drift')
     # A physical bind-alias result is honored without lexical fallback.
     with patch.object(roots.CanonicalRoot, 'overlaps', return_value=True):
@@ -292,86 +322,14 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
         (residual / 'runtime').chmod(0o755)
         supply.shutil.rmtree(residual)
 
-# Secretless subprocess surface: version-only, bounded and no inherited env.
-with patch.object(proof.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'codex-cli 0.159.3\n')) as run:
-    assert proof.version(['/runtime/codex', '--version'], Path('/runtime/package')) == 'codex-cli 0.159.3'
-    assert run.call_args.kwargs['env'] == {
-        'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'CODEX_MANAGED_PACKAGE_ROOT': '/runtime/package',
-        'CODEX_MANAGED_BY_NPM': '1'}
-    assert run.call_args.kwargs['timeout'] == 20
-
-# Resolver identity/parity negatives without launching the setup executables.
-node = Path('/opt/hostedtoolcache/node/24.1.2/x64/bin/node')
-distribution = node.parent.parent
-package = distribution / 'lib/node_modules/@openai/codex'
-entry = package / 'bin/codex.js'
-platform = package / 'node_modules/@openai/codex-linux-x64'
-action = Path('/trusted/action/dist/main.js')
-def metadata(path):
-    if path == action:
-        return b'synthetic pinned action'
-    import json
-    return json.dumps({'name': '@openai/codex', 'version':
-        '0.159.3-linux-x64' if path == platform / 'package.json' else '0.159.3'}).encode()
-def versions(argv, package=None):
-    return 'v24.1.2' if argv == [str(node), '--version'] else 'codex-cli 0.159.3'
-def resolver():
-    return proof.resolve(node, entry, action, Path('/workspace'), supply, staging, roots.CanonicalRoot)
-with patch.object(Path, 'resolve', lambda path, **kwargs: path), \
-     patch.object(Path, 'exists', lambda path: path == platform), \
-     patch.object(supply, 'observe', return_value=('synthetic-evidence',)), \
-     patch.object(proof.hashlib, 'sha1', return_value=SimpleNamespace(hexdigest=lambda: supply.ACTION_BLOB)), \
-     patch.object(proof, 'version', side_effect=versions), \
-     patch.object(supply, 'PreparedSupply') as prepare_mock:
-    # Path methods mocked at class level retain the instance via autospec.
-    with patch.object(Path, 'read_bytes', autospec=True, side_effect=metadata):
-        resolver()
-        values = prepare_mock.call_args.args[0]
-        assert len(values) == 5 and len({row['source'] for row in values}) == 5
-        assert set(prepare_mock.call_args.kwargs['setup']['sources']) == {row['source'] for row in values}
-        assert str(node) in {row['source'] for row in values}
-        with patch.object(proof, 'version', return_value='wrong-version'):
-            rejected(resolver, 'unexpected-node-version')
-        with patch.object(proof, 'version', side_effect=lambda argv, package=None:
-                          'v24.1.2' if argv == [str(node), '--version'] else 'codex-cli wrong'):
-            rejected(resolver, 'launcher-parity-failed')
-        with patch.object(proof.hashlib, 'sha1', return_value=SimpleNamespace(hexdigest=lambda: '0' * 40)):
-            rejected(resolver, 'unexpected-action-blob')
-    with patch.object(Path, 'read_bytes', autospec=True, side_effect=lambda path:
-                      metadata(path).replace(b'0.159.3', b'0.159.4')):
-        rejected(resolver, 'unexpected-package-identity')
-
+# Prepared-only surface: no actual setup/privileged proof in PR regression.
+assert not (repo / '.github/scripts/runtime-supply-proof.py').exists()
 workflow = yaml.safe_load((repo / '.github/workflows/ai-workflow-regression.yml').read_text())
-job = workflow['jobs']['runtime-supply']
-assert set(job) == {'name', 'runs-on', 'timeout-minutes', 'steps'}
-assert job['runs-on'] == 'ubuntu-latest' and job['timeout-minutes'] == 10
-assert 'needs' not in job and 'if' not in job
-assert len(job['steps']) == 3
-checkout, setup, actual = job['steps']
-assert checkout['uses'] == 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
-assert set(checkout) == set(setup) == {'name', 'uses', 'with'}
-assert checkout['with'] == {'ref': '${{ github.event.pull_request.head.sha }}', 'persist-credentials': False}
-assert setup['uses'] == 'openai/codex-action@' + proof.PIN
-assert setup['with'] == {'codex-version': '0.159.3',
-    'codex-home': '${{ runner.temp }}/runtime-supply-codex-home', 'safety-strategy': 'unsafe',
-    'allow-bot-users': 'nssscdl-chatgpt-dev'}
-assert 'secrets.' not in str(job) and 'vars.' not in str(job)
-assert set(actual) == {'name', 'timeout-minutes', 'shell', 'env', 'run'}
-assert actual['timeout-minutes'] == 5 and actual['shell'] == 'bash'
-assert actual['env'] == {'HEAD_SHA': '${{ github.event.pull_request.head.sha }}',
-                        'RUNNER_ENVIRONMENT': '${{ runner.environment }}'}
-expected_run = '''set -euo pipefail
-node_path="$(command -v node)"
-launcher_path="$(command -v codex)"
-action_main="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e/dist/main.js"
-sudo -n env -i PATH=/usr/bin:/bin LC_ALL=C python3 -B \\
-  .github/scripts/runtime-supply-proof.py \\
-  "$node_path" "$launcher_path" "$action_main" "$GITHUB_WORKSPACE" \\
-  "$HEAD_SHA" "$RUNNER_ENVIRONMENT"
-'''
-assert actual['run'] == expected_run, 'proof command/phase/env drift'
+assert set(workflow['jobs']) == {'fixtures'}
+regression = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
+assert 'sudo' not in regression and 'openai/codex-action@' not in regression
+assert 'runtime-supply-proof' not in regression
 developer = (repo / '.github/workflows/ai-developer.yml').read_text()
 assert supply.ACTION_BLOB in developer and 'codex-cli 0.159.3' in developer
-assert proof.PIN in developer
-print('Trusted runtime supply: synthetic provenance / drift / authority / inventory / seal / cleanup / workflow PASS')
+print('Trusted runtime supply: synthetic provenance / drift / authority / inventory / seal / cleanup / prepared-only PASS')
 PY
