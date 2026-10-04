@@ -1170,17 +1170,26 @@ jobs:
             exit 0
           fi
           set +e
-          bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"
-          marker_status=$?
+          classification="$(bash "$RUNNER_TEMP/classify-ai-developer-decision-marker.sh" "$CODEX_FINAL")"
+          classification_status=$?
           set -e
-          if [ "$marker_status" -gt 1 ]; then
-            pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。'
+          if [ "$classification_status" -ne 0 ]; then
+            pause_for_human developer_execution_failed 'decision markerの分類に失敗しました。人間の判断があるまで自動開発を停止します。'
             exit 0
-          elif [ "$marker_status" -eq 0 ]; then
-            pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
-          else
-            echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
+          case "$classification" in
+            requirements_change)
+              pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
+              ;;
+            none) echo 'continue=true' >> "$GITHUB_OUTPUT" ;;
+            scope_decision)
+              # Scope pause semantics are not activated in this consumer yet.
+              pause_for_human developer_execution_failed '未接続のscope decisionを検出しました。人間の判断があるまで自動開発を停止します。'
+              ;;
+            *)
+              pause_for_human developer_execution_failed 'decision marker classifierの出力が不正です。人間の判断があるまで自動開発を停止します。'
+              ;;
+          esac
 
       - name: Evaluate trusted diff guard
         if: steps.development-gate.outputs.continue == 'true'

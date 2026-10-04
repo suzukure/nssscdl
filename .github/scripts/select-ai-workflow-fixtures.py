@@ -117,6 +117,7 @@ PATH_SUITES = (
     (SCRIPTS + "npm-offline-ci-runtime.py", ("product-npm",)),
     (SCRIPTS + "npm-offline-ci-probe.js", ("product-npm",)),
     (SCRIPTS + "evaluate-codex-diff-gate.sh", ("ai-developer-codex", "claude")),
+    (SCRIPTS + "classify-ai-developer-decision-marker.sh", ("ai-developer-codex",)),
     (SCRIPTS + "parse-ai-resume-command.sh", ("resume-human-pause",)),
     (SCRIPTS + "classify-claude-human-escalation.sh", ("claude",)),
     (SCRIPTS + "classify-claude-review-risk.sh", ("claude",)),

@@ -3,7 +3,7 @@ set -euo pipefail
 
 final_response="${1:?Codex final response path is required}"
 
-# Dormant primitive (#721): no production caller. Preserve exact line matching
+# Classifier primitive (#721): no pause side effects. Preserve exact line matching
 # and CRLF normalization; ignore Markdown fenced code without trimming markers.
 awk '
   {

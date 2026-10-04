@@ -1285,7 +1285,7 @@ assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIR
 assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
 assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
 
-# #730 supplies the prepared helpers; decision consumption remains deferred.
+# #730 supplies trusted helpers; #731 consumes only the Issue-origin classifier.
 python3 -B - "$repo_root" "$test_dir" <<'PY'
 from pathlib import Path
 import os
@@ -1371,8 +1371,11 @@ unreadable = scratch / 'unreadable-final-response.md'
 unreadable.write_text(scope_marker + '\n')
 unreadable.chmod(0)
 try:
-    assert not os.access(unreadable, os.R_OK), 'unreadable fixture must be inaccessible'
-    classify('unreadable response', [unreadable], None)
+    if os.geteuid() == 0:
+        print('SKIP unreadable response: root can read chmod(0) files; missing/non-regular checks still run')
+    else:
+        assert not os.access(unreadable, os.R_OK), 'unreadable fixture must be inaccessible'
+        classify('unreadable response', [unreadable], None)
 finally:
     unreadable.chmod(0o600)
 fifo = scratch / 'final-response.fifo'
@@ -1416,8 +1419,8 @@ for helper in (scope_helper, requirements_helper):
 response.write_bytes((scope_marker + '\n').encode())
 assert subprocess.run(['bash', str(requirements_helper), str(response)], capture_output=True).returncode == 1
 
-# Only exact supply/restore lines in the two Issue-origin steps may reference
-# prepared helpers. Reject callers elsewhere, including both fixed prompts.
+# Only exact Issue-origin supply/restore/consumer lines may execute the helpers.
+# Selector inventory mapping is read-only; both fixed prompts remain unchanged.
 workflow_path = root / '.github/workflows/ai-developer.yml'
 workflow_text = workflow_path.read_text()
 
@@ -1456,8 +1459,20 @@ for helper, variable in prepared:
     assert (f'{variable.upper()}_BLOB: ${{{{ steps.issue_context.outputs.{variable}_blob }}}}'
             in restore)
     allowed_supply[filename] = pre_lines | post_lines
-    assert workflow_text.count(filename) == sum(line.count(filename) for line in pre_lines | post_lines)
-assert 'bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"' in step('Gate requirement changes')
+    if helper == decision_classifier:
+        consumer = ('          classification="$(bash "$RUNNER_TEMP/' + filename +
+                    '" "$CODEX_FINAL")"')
+        assert step('Gate requirement changes').splitlines().count(consumer) == 1
+        allowed_supply[filename].add(consumer)
+    assert workflow_text.count(filename) == sum(line.count(filename) for line in allowed_supply[filename])
+assert 'has-requirements-change-marker.sh' not in step('Gate requirement changes')
+assert 'bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"' in step('Gate Codex follow-up requirement changes')
+# These are the actual Actions conditions: every stopped classification below
+# must skip staging/diff guard and all commit/push/PR creation in this job.
+assert "        if: steps.development-gate.outputs.continue == 'true'\n" in step('Evaluate trusted diff guard')
+assert ("        if: steps.development-gate.outputs.continue == 'true' && "
+        "steps.diff-guard.outputs.continue == 'true'\n") in step('Commit, push, and open or update PR')
+assert 'pause_for_human scope_decision' not in step('Gate requirement changes')
 
 sources = [root / 'AGENTS.md', *sorted((root / '.github/workflows').glob('*')),
            *sorted((root / '.github/scripts').glob('*'))]
@@ -1470,9 +1485,12 @@ for source in sources:
     assert scope_marker not in content, ('dormant scope marker reached production/instructions', source)
     for filename, allowed_lines in allowed_supply.items():
         references = [line for line in content.splitlines() if filename in line]
+        if source == root / '.github/scripts/select-ai-workflow-fixtures.py' and filename == decision_classifier.name:
+            assert references == ['    (SCRIPTS + "' + filename + '", ("ai-developer-codex",)),']
+            continue
         assert not references or (source == workflow_path and set(references) == allowed_lines
                                   and len(references) == len(allowed_lines)), (
-            'prepared helper reached a production consumer', source, references)
+            'unexpected decision helper consumer', source, references)
 
 # Execute the production bootstrap/restore run bodies with only remote/context
 # inputs mocked. All blob reads and hashes use the repository's local base.
@@ -1556,7 +1574,7 @@ for helper, variable in prepared:
         result = execute(restore_script, {'FAULT_HELPER': helper.name, 'FAULT': fault})
         assert result.returncode != 0, ('unsafe restore passed', helper, fault)
 print('Prepared trusted supply/restore and fail-closed fixtures passed')
-print('Prepared decision classifier and dormant scope marker fixtures passed')
+print('Decision classifier and scope marker primitive fixtures passed')
 PY
 
 extract_workflow_step() {
@@ -1603,10 +1621,11 @@ fi
 
 # Both Codex requirement-change gates must fail closed for helper and final
 # response failures, and only their successful gates may reach repository write.
-grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。' "$workflow"
+grep -Fq 'decision markerの分類に失敗しました。人間の判断があるまで自動開発を停止します。' "$workflow"
 grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動フォローアップを停止します。' "$workflow"
-if [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 2 ]; then
-  echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
+if [ "$(grep -Fc 'classification_status=$?' "$workflow")" -ne 1 ] ||
+   [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 1 ]; then
+  echo 'Issue classifier and follow-up marker gate must each capture their helper status.' >&2
   exit 1
 fi
 if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$workflow")" -ne 2 ]; then
@@ -2067,11 +2086,11 @@ for gate in "$issue_requirements" "$issue_diff_guard"; do
   fi
 done
 grep -Fq "pause_for_human developer_execution_failed 'Codexの最終報告がありません" "$issue_requirements"
-grep -Fq "pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed 'decision markerの分類に失敗しました" "$issue_requirements"
 grep -Fq "pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました" "$issue_requirements"
 grep -Fq 'local options=(--failed-action develop)' "$issue_requirements"
-grep -Fq "[ \"\$marker_status\" -gt 1 ]" "$issue_requirements"
-grep -Fq "[ \"\$marker_status\" -eq 0 ]" "$issue_requirements"
+grep -Fq '[ "$classification_status" -ne 0 ]' "$issue_requirements"
+grep -Fq 'case "$classification" in' "$issue_requirements"
 grep -Fq "echo 'continue=true' >> \"\$GITHUB_OUTPUT\"" "$issue_requirements"
 grep -Fq 'pause_reason=diff_guard_error' "$issue_diff_guard"
 grep -Fq 'pause_reason=diff_guard_exceeded' "$issue_diff_guard"
@@ -2096,6 +2115,7 @@ mkdir -p "$requirements_case/bin" "$requirements_case/runner/trusted-human-pause
 cat > "$requirements_case/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "$GATE_CALLS"
 case "$1 $2" in
   'pr list') printf '[]\n' ;;
   'api /apps/dev') printf '123\n' ;;
@@ -2104,42 +2124,72 @@ case "$1 $2" in
   *) echo "Unexpected gh call: $*" >&2; exit 2 ;;
 esac
 EOF
-cat > "$requirements_case/runner/has-requirements-change-marker.sh" <<'EOF'
-#!/usr/bin/env bash
-exit "$MARKER_EXIT"
-EOF
 cat > "$requirements_case/runner/trusted-human-pause/create-human-pause.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PAUSE_CALLS"
 EOF
 chmod +x "$requirements_case/bin/gh"
-for scenario in missing marker helper_failure absent; do
+for scenario in missing empty marker marker_crlf absent free_text scope both \
+  classifier_missing requirements_helper_missing scope_helper_missing helper_failure \
+  classifier_nonzero classifier_nonzero_with_valid_output unknown_output empty_output \
+  multiple_output whitespace_output valid_output_stderr; do
   : > "$requirements_case/output"
   : > "$requirements_case/pause-calls"
+  : > "$requirements_case/gate-calls"
+  for helper in classify-ai-developer-decision-marker has-requirements-change-marker has-scope-decision-marker; do
+    cp "$repo_root/.github/scripts/$helper.sh" "$requirements_case/runner/$helper.sh"
+  done
+  printf 'response\n' > "$requirements_case/final"
+  classifier_stdout='' classifier_exit=0
   case "$scenario" in
-    missing) : > "$requirements_case/final"; marker_exit=0 ;;
-    marker) printf 'marker\n' > "$requirements_case/final"; marker_exit=0 ;;
-    helper_failure) printf 'response\n' > "$requirements_case/final"; marker_exit=2 ;;
-    absent) printf 'response\n' > "$requirements_case/final"; marker_exit=1 ;;
+    missing) rm "$requirements_case/final" ;;
+    empty) : > "$requirements_case/final" ;;
+    marker) printf '[REQUIREMENTS_CHANGE_REQUIRED]\n' > "$requirements_case/final" ;;
+    marker_crlf) printf '[REQUIREMENTS_CHANGE_REQUIRED]\r\n' > "$requirements_case/final" ;;
+    free_text) printf 'requirements_change scope_decision\n' > "$requirements_case/final" ;;
+    scope) printf '[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
+    both) printf '[REQUIREMENTS_CHANGE_REQUIRED]\n[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
+    classifier_missing) rm "$requirements_case/runner/classify-ai-developer-decision-marker.sh" ;;
+    requirements_helper_missing) rm "$requirements_case/runner/has-requirements-change-marker.sh" ;;
+    scope_helper_missing) rm "$requirements_case/runner/has-scope-decision-marker.sh" ;;
+    helper_failure) printf 'exit 7\n' > "$requirements_case/runner/has-scope-decision-marker.sh" ;;
+    classifier_nonzero) classifier_exit=1 ;;
+    classifier_nonzero_with_valid_output) classifier_stdout=none; classifier_exit=7 ;;
+    unknown_output) classifier_stdout=unexpected ;;
+    multiple_output) classifier_stdout=$'none\nrequirements_change' ;;
+    whitespace_output) classifier_stdout=' none ' ;;
+    valid_output_stderr) classifier_stdout=none ;;
+  esac
+  case "$scenario" in
+    classifier_nonzero*|*_output|valid_output_stderr)
+      cat > "$requirements_case/runner/classify-ai-developer-decision-marker.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$CLASSIFIER_STDOUT"
+printf 'requirements_change scope_decision diagnostic only\n' >&2
+exit "$CLASSIFIER_EXIT"
+EOF
+      ;;
   esac
   (
     unset -f gh
     PATH="$requirements_case/bin:$PATH" \
       RUNNER_TEMP="$requirements_case/runner" \
       CODEX_FINAL="$requirements_case/final" \
-      MARKER_EXIT="$marker_exit" \
+      CLASSIFIER_STDOUT="$classifier_stdout" CLASSIFIER_EXIT="$classifier_exit" \
       PAUSE_CALLS="$requirements_case/pause-calls" \
+      GATE_CALLS="$requirements_case/gate-calls" \
       GITHUB_OUTPUT="$requirements_case/output" \
       GITHUB_REPOSITORY=owner/repo ISSUE_NUMBER=169 APP_SLUG=dev \
       bash "$requirements_run"
   )
-  if [ "$scenario" = absent ]; then
+  if [[ "$scenario" == absent || "$scenario" == free_text || "$scenario" == valid_output_stderr ]]; then
     grep -Fxq 'continue=true' "$requirements_case/output"
     [ ! -s "$requirements_case/pause-calls" ]
+    [ ! -s "$requirements_case/gate-calls" ]
   else
     grep -Fxq 'continue=false' "$requirements_case/output"
     case "$scenario" in
-      marker)
+      marker|marker_crlf)
         grep -Fq 'create owner/repo 169 - 123 requirements_change' "$requirements_case/pause-calls"
         expected="sha256:$(printf 'line\n' | sha256sum | cut -d' ' -f1)"
         grep -Fq -- "--issue-body-fingerprint $expected" "$requirements_case/pause-calls"
@@ -2147,8 +2197,18 @@ for scenario in missing marker helper_failure absent; do
       *)
         grep -Fq 'create owner/repo 169 - 123 developer_execution_failed' "$requirements_case/pause-calls"
         grep -Fq -- '--failed-action develop' "$requirements_case/pause-calls"
+        if grep -Fq -- '--issue-body-fingerprint' "$requirements_case/pause-calls" ||
+           grep -Fq 'api /repos/owner/repo/issues/169' "$requirements_case/gate-calls"; then
+          echo "Generic developer failure must not use requirements/scope fingerprint: $scenario" >&2
+          exit 1
+        fi
         ;;
     esac
+  fi
+  [ "$(wc -l < "$requirements_case/output")" -eq 1 ]
+  if grep -Eq 'create .* scope_decision|^(pr create|pr comment|pr ready) ' "$requirements_case/pause-calls" "$requirements_case/gate-calls"; then
+    echo "Decision gate activated scope pause or published a PR: $scenario" >&2
+    exit 1
   fi
 done
 

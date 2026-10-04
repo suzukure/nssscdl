@@ -80,6 +80,7 @@ cases = (
     ('product-npm-session-probe.js', {'product-npm'}),
     ('test-ai-developer-branch-freshness.sh', {'ai-developer-codex'}),
     ('evaluate-codex-diff-gate.sh', {'ai-developer-codex', 'claude'}),
+    ('classify-ai-developer-decision-marker.sh', {'ai-developer-codex'}),
     ('build-review-context.sh', {'ai-developer-codex', 'claude'}),
     ('classify-claude-review-risk.sh', {'claude'}),
     ('parse-ai-resume-command.sh', {'resume-human-pause'}),
