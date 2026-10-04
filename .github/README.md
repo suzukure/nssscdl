@@ -80,7 +80,17 @@ builder自身はGitHub API / LLM / network / env読込 / repository write / cred
 
 collectorはfresh APIでrepository ID/name、workflow ID/name/path、completed failure / pull_request event、run ID/attempt/head、attempt-specific jobsとindividual jobの所属、associated PR 1件、current PR head、current main、same-repository closing Issue 1件を照合する。最新runのattemptも一致させ、superseded attemptを拒否する。PR baseはmain、source headとcurrent PR headは一致が必要で、不一致は `stale`。PR/Issue 0件は `incomplete`、複数件やidentity矛盾は `conflict` とする。API error / malformed shape / pagination欠落はcompleteへ昇格せず、PR / main / Issue / closing relation / latest runをbuilder直前に再照合する。取得間の競合を完全に排除する保証ではない。
 
-failed jobは1件だけを許可し、そのstep番号順のfirst failureを選ぶ。step番号・名前の重複は拒否し、`gh run view --attempt --job --log` のjob/step prefixでphysical line rangeをbindする。source log全文を上記secret-like evidence境界で検査した後、4096 bytesのfailure excerptと直前successの1024 bytesだけをbuilderへ渡す。raw full logは短命tempfileに限定し、artifactへ保存しない。API responseは2 MiB、source log取得は16 MiBを上限とし、超過は `oversized` とする。source artifactは取得・展開しない。
+failure jobが1件なら、そのjobを選ぶ既存挙動を維持する。複数failureの場合だけ、下記#751のprepared topologyを認識する。選択jobのstep番号順のfirst failureを選ぶ。step番号・名前の重複は拒否し、`gh run view --attempt --job --log` のjob/step prefixでphysical line rangeをbindする。source log全文を上記secret-like evidence境界で検査した後、4096 bytesのfailure excerptと直前successの1024 bytesだけをbuilderへ渡す。raw full logは短命tempfileに限定し、artifactへ保存しない。API responseは2 MiB、source log取得は16 MiBを上限とし、超過は `oversized` とする。source artifactは取得・展開しない。
+
+#### Known 2-shard topology（#751、prepared / dormant）
+
+#698が消費するjob選択契約の機械正本はcollectorの `failed_job()` / `SHARD_WORKERS` / `SHARD_TERMINAL` とする。failure jobが複数の場合、terminal `Regression Result` がちょうど1件存在して `completed / failure` であり、terminal以外のfailure job名がexact `Fixture shard 1` / `Fixture shard 2` の既知worker集合の部分集合の場合だけ受理する。plan / selected-path等のnon-failure jobはevidence source選択に使わず、exact nameを固定しない。ただしattempt内の全job（success / skipped等も含む）の名前は文字列・空白のみでない値・一意性を検証し、job ID重複、run ID / attempt不一致、metadata不正の既存検証も維持する。未知failed job、名前重複・failed job名drift、terminal欠落・non-failureは `conflict / failed_job_ambiguous` で拒否し、API返却順に意味を持たせない。
+
+canonical evidence sourceはterminalだけとし、そのindividual jobをfresh照合してpacketのjob ID / first failing step / log locatorへbindする。worker failureをsuccessへ変更するものではなく、source run全体がfailureで、aggregateがworker結果をfail-closedに正規化することを後続#698の前提とする。first failing step、log boundary、secret-like reject、packet上限、read-only権限は既存契約を再利用する。現在の `Fixtures` workflowは変更せず、このtopologyのproduction到達・aggregate実装・3 shard以上への一般化は本変更に含めない。
+
+検証は既存collector fixtureでsingle failureの維持、1 / 2 worker failureとterminal failureの受理、non-failure orchestration / selected-path job共存時の同一packet・job順序独立、unknown failed job / duplicate / terminal欠落・success・cancelled・timed_out、全jobの名前不正・identity / attempt不一致・metadata不正の拒否、aggregateへのpacket bindと既存evidence境界を固定する。synthetic fixtureはproduction multi-shard runの証拠ではなく、E2Eは#698でtopologyがproduction到達した最初の自然runで確認する。
+
+#### Issue contractとevidence出力
 
 Issue contractは以下のexact `## <heading>` 対応表にある6節から取得する（scriptの `HEADINGS` が機械正本）。case変更・別headingや本文からのsection inferenceは行わない。
 

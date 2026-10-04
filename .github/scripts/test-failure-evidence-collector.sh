@@ -6,6 +6,7 @@ import base64
 import copy
 import importlib.util
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -92,7 +93,7 @@ def consume(values, ev=None):
             value = values['closing']
         else:
             assert args == ['gh', 'run', 'view', '65401', '--repo', repo, '--attempt', '1',
-                            '--job', '65402', '--log'], args
+                            '--job', str(values.get('log_job_id', 65402)), '--log'], args
             assert cap == c.LOG_CAP
             return values['log']
         if isinstance(value, Exception):
@@ -115,7 +116,7 @@ def accepted(values):
     assert packet['identity']['run_head_sha'] == packet['identity']['current_pr_head']
     assert packet['repository']['code'][0]['locator']['path'] == code_path
     assert packet['contract']['checkpoint']['provenance'] == 'trusted_selector'
-    assert packet['failure']['first_failing_step']['log']['locator']['job_id'] == 65402
+    assert packet['failure']['first_failing_step']['log']['locator']['job_id'] == values.get('log_job_id', 65402)
     assert packet['failure']['preceding_pass'][0]['number'] == 1
     assert result == consume(values)[0]
     return packet
@@ -213,6 +214,160 @@ for change, status in [('no-step', 'incomplete'), ('two-jobs', 'conflict'), ('wr
 values = snapshot()
 values[prefix + '/actions/runs/65401/attempts/1/jobs?per_page=100&page=1']['total_count'] = 2
 refused(values, 'incomplete')
+
+# #751: prepared exact topology, no production shard/aggregate implementation.
+jobs_path = prefix + '/actions/runs/65401/attempts/1/jobs?per_page=100&page=1'
+aggregate_path = prefix + '/actions/jobs/65405'
+
+
+def sharded(text=fixtures['cases'][0]['log'], second='failure'):
+    values = snapshot(text)
+    aggregate = copy.deepcopy(job) | {'id': 65405, 'name': 'Regression Result'}
+    aggregate['steps'][1].update(number=4, name='Normalize shard results')
+    aggregate['steps'].append(dict(number=5, name='Later failure', status='completed', conclusion='failure'))
+    aggregate['steps'].reverse()
+    workers = [copy.deepcopy(job) | {'id': 65403, 'name': 'Fixture shard 1'}]
+    if second is not None:
+        workers.append(copy.deepcopy(job) | {'id': 65404, 'name': 'Fixture shard 2', 'conclusion': second})
+    values[jobs_path] = dict(total_count=len(workers) + 1, jobs=workers + [aggregate])
+    values[aggregate_path] = copy.deepcopy(aggregate)
+    values['log_job_id'] = aggregate['id']
+    values['log'] = values['log'].replace(b'Fixtures\t', b'Regression Result\t').replace(
+        b'Run AI workflow fixtures\t', b'Normalize shard results\t')
+    return values
+
+
+# One/two failed workers and all API orders produce the same aggregate packet.
+for second in [None, 'failure', 'success', 'cancelled', 'timed_out', 'skipped']:
+    values = sharded(second=second)
+    expected = None
+    for order in itertools.permutations(values[jobs_path]['jobs']):
+        values[jobs_path]['jobs'] = list(order)
+        packet = accepted(values)
+        assert packet['identity']['job_id'] == 65405 and packet['identity']['failing_step'] == 4
+        first = packet['failure']['first_failing_step']
+        assert (first['number'], first['name']) == (4, 'Normalize shard results')
+        for step in [first] + packet['failure']['preceding_pass']:
+            loc = step['log']['locator']
+            assert (loc['run_id'], loc['run_attempt'], loc['job_id'], loc['path'], loc['step']) == (
+                65401, 1, 65405, 'job/65405/log', step['number'])
+            assert all(line.startswith('Regression Result\t' + step['name'] + '\t')
+                       for line in step['log']['text'].splitlines())
+        assert any(args[-3:] == ['--job', '65405', '--log'] for args in consume(values)[1])
+        assert expected is None or packet == expected
+        expected = packet
+
+# Non-failure orchestration/selected-path names do not constrain selection.
+for second in [None, 'failure']:
+    values = sharded(second=second)
+    expected = accepted(values)
+    jobs = values[jobs_path]['jobs']
+    jobs.extend([copy.deepcopy(job) | {'id': 55, 'name': 'Plan', 'conclusion': 'success'},
+                 copy.deepcopy(job) | {'id': 56, 'name': 'Selected fixtures', 'conclusion': 'skipped'}])
+    values[jobs_path]['total_count'] = len(jobs)
+    for order in itertools.permutations(jobs):
+        values[jobs_path]['jobs'] = list(order)
+        assert accepted(values) == expected
+
+# All non-failure jobs still undergo name, identity, and metadata validation.
+for key, value, status, reason in [
+        ('name', None, 'conflict', 'failed_job_ambiguous'),
+        ('name', [], 'conflict', 'failed_job_ambiguous'),
+        ('name', 55, 'conflict', 'failed_job_ambiguous'),
+        ('name', '', 'conflict', 'failed_job_ambiguous'),
+        ('name', '  ', 'conflict', 'failed_job_ambiguous'),
+        ('name', 'Fixture shard 1', 'conflict', 'failed_job_ambiguous'),
+        ('name', 'Regression Result', 'conflict', 'failed_job_ambiguous'),
+        ('id', 65403, 'conflict', 'job_identity_mismatch'),
+        ('run_id', 55, 'conflict', 'job_identity_mismatch'),
+        ('run_attempt', 2, 'conflict', 'job_identity_mismatch'),
+        ('status', 'in_progress', 'incomplete', 'job_metadata_invalid'),
+        ('steps', None, 'incomplete', 'job_metadata_invalid'),
+        ('conclusion', 'unknown', 'incomplete', 'job_metadata_invalid')]:
+    for conclusion in ['success', 'skipped']:
+        values = sharded()
+        extra = copy.deepcopy(job) | {'id': 55, 'name': 'Plan', 'conclusion': conclusion}
+        extra[key] = value
+        values[jobs_path]['jobs'].append(extra)
+        values[jobs_path]['total_count'] += 1
+        result, calls = refused(values, status)
+        assert result['reason'] == reason
+        assert not any(args[1:3] == ['run', 'view'] for args in calls)
+values = sharded()
+values[jobs_path]['jobs'].extend([
+    copy.deepcopy(job) | {'id': 55, 'name': 'Plan', 'conclusion': 'success'},
+    copy.deepcopy(job) | {'id': 56, 'name': 'Plan', 'conclusion': 'skipped'}])
+values[jobs_path]['total_count'] += 2
+assert refused(values, 'conflict')[0]['reason'] == 'failed_job_ambiguous'
+values = snapshot()
+values[jobs_path]['jobs'].append(copy.deepcopy(job) | {'id': 55, 'name': 'Other failure'})
+values[jobs_path]['total_count'] = 2
+assert refused(values, 'conflict')[0]['reason'] == 'failed_job_ambiguous'
+
+# Missing/duplicate/drifted names and identity fail before any log is read.
+for change in ['missing', 'duplicate-terminal', 'duplicate-worker', 'duplicate-id',
+               'unknown-failed', 'third-shard', 'name-drift', 'missing-name',
+               'malformed-name', 'worker-run', 'worker-attempt', 'terminal-run', 'terminal-attempt']:
+    values = sharded()
+    jobs = values[jobs_path]['jobs']
+    if change == 'missing':
+        jobs.pop()
+    elif change in {'duplicate-terminal', 'duplicate-worker', 'duplicate-id'}:
+        original = jobs[-1] if change == 'duplicate-terminal' else jobs[0]
+        jobs.append(copy.deepcopy(original) | {'id': original['id'] if change == 'duplicate-id' else 55})
+    elif change in {'unknown-failed', 'third-shard'}:
+        jobs.append(copy.deepcopy(job) | {'id': 55,
+            'name': 'Fixture shard 3' if change == 'third-shard' else 'Other',
+            'conclusion': 'failure'})
+    elif change in {'name-drift', 'missing-name', 'malformed-name'}:
+        jobs[0]['name'] = {'name-drift': 'Fixture shard 1 ', 'missing-name': None,
+                           'malformed-name': ['Fixture shard 1']}[change]
+    else:
+        jobs[-1 if change.startswith('terminal') else 0][
+            'run_id' if change.endswith('run') else 'run_attempt'] = 55
+    values[jobs_path]['total_count'] = len(jobs)
+    result, calls = refused(values, 'conflict')
+    assert result['reason'] in {'failed_job_ambiguous', 'job_identity_mismatch'}
+    assert not any(args[1:3] == ['run', 'view'] for args in calls)
+for conclusion in ['success', 'cancelled', 'timed_out', 'skipped']:
+    values = sharded()
+    values[jobs_path]['jobs'][-1]['conclusion'] = conclusion
+    result, _ = refused(values, 'conflict')
+    assert result['reason'] == 'failed_job_ambiguous'
+for key, value in [('run_id', 55), ('run_attempt', 2), ('name', 'Fixtures'), ('steps', [])]:
+    values = sharded()
+    values[aggregate_path][key] = value
+    refused(values, 'conflict' if key != 'steps' else 'incomplete')
+
+# The exception preserves the single-failure path, including unrelated success jobs.
+values = snapshot()
+values[jobs_path]['jobs'].append(copy.deepcopy(job) | {'id': 55, 'name': 'Other', 'conclusion': 'success'})
+values[jobs_path]['total_count'] = 2
+assert accepted(values)['identity']['job_id'] == 65402
+values = sharded(second='success')
+values[jobs_path]['jobs'][0]['conclusion'] = 'success'
+assert accepted(values)['identity']['job_id'] == 65405
+
+# Reuse existing log/secret/size/freshness/pagination boundaries on aggregate evidence.
+values = sharded('setup\n' * 10000 + 'Error: aggregate ' + code_path + ':2\n' + 'tail\n' * 10000)
+assert accepted(values)['failure']['first_failing_step']['log']['truncated']
+values = sharded('safe\n' * 10000 + 'token: fixture-sensitive-value')
+assert refused(values, 'incomplete')[0]['reason'] == 'secret_like_evidence'
+values = sharded()
+values['log'] = values['log'].replace(b'Regression Result\t', b'Fixture shard 1\t')
+assert refused(values, 'incomplete')[0]['reason'] == 'log_boundary_invalid'
+values = sharded()
+values[prefix + '/actions/runs/65401']['run_attempt'] = 2
+refused(values, 'conflict')
+values = sharded()
+values[prefix + '/pulls/657']['head']['sha'] = 'c' * 40
+refused(values, 'stale')
+values = sharded()
+values[jobs_path]['total_count'] += 1
+assert refused(values, 'incomplete')[0]['reason'] == 'pagination_incomplete'
+values = sharded()
+values[prefix + '/issues/654']['body'] = body.replace(goal_text, 'x' * 33000)
+refused(values, 'oversized')
 
 # First failure is ordered by step number. Multiple distinct later failures are unambiguous.
 values = snapshot()
@@ -403,5 +558,9 @@ assert 'retention-days: 3' in workflow and 'if-no-files-found: error' in workflo
 assert 'failure-evidence-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}' in workflow
 assert 'if: always()' in workflow and workflow.count('uses: actions/upload-artifact@') == 1
 assert 'workflow_run.head_sha' not in workflow and 'download-artifact' not in workflow
-print('failure evidence collector: 7 synthetic #654 packets with body-equivalent Done inline contract; Actions masked checkout/Bearer accepted, real/partial credentials rejected; exact aliases, locators, fail-closed ambiguity, identity, stale, bounded logs, cap, inert evidence, read-only wiring passed')
+# Dormant topology cannot be emitted by the current production source workflow.
+regression = (repo_root / '.github/workflows/ai-workflow-regression.yml').read_text()
+assert '    name: Fixtures\n' in regression
+assert all(name not in regression for name in ['Fixture shard 1', 'Fixture shard 2', 'Regression Result'])
+print('failure evidence collector: single failure and #751 prepared exact sharded aggregate selection, order independence, identity/log binding, fail-closed topology; 7 synthetic #654 packets, masked credentials, secret rejection, aliases, stale, pagination, bounded logs, cap, inert evidence, read-only wiring passed')
 PY
