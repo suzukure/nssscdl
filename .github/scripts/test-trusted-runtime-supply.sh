@@ -330,7 +330,7 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
 # Prepared-only surface: no actual setup/privileged proof in PR regression.
 assert not (repo / '.github/scripts/runtime-supply-proof.py').exists()
 workflow = yaml.safe_load((repo / '.github/workflows/ai-workflow-regression.yml').read_text())
-assert set(workflow['jobs']) == {'fixtures'}
+assert set(workflow['jobs']) == {'fixtures', 'shard_1', 'shard_2', 'regression_result'}
 regression = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
 assert 'sudo' not in regression and 'openai/codex-action@' not in regression
 assert 'runtime-supply-proof' not in regression
