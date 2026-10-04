@@ -1289,6 +1289,7 @@ assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_RE
 python3 -B - "$repo_root" "$test_dir" <<'PY'
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1472,7 +1473,16 @@ assert 'bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"' in
 assert "        if: steps.development-gate.outputs.continue == 'true'\n" in step('Evaluate trusted diff guard')
 assert ("        if: steps.development-gate.outputs.continue == 'true' && "
         "steps.diff-guard.outputs.continue == 'true'\n") in step('Commit, push, and open or update PR')
-assert 'pause_for_human scope_decision' not in step('Gate requirement changes')
+assert 'pause_for_human scope_decision' in step('Gate requirement changes')
+gate_run = run_body(step('Gate requirement changes'))
+assert gate_run.count("echo 'continue=false' >> \"$GITHUB_OUTPUT\"") == 1
+assert gate_run.count("echo 'continue=true' >> \"$GITHUB_OUTPUT\"") == 1
+decision_case = gate_run.split('case "$classification" in\n', 1)[1].split('esac', 1)[0]
+branches = re.findall(r'^  (requirements_change|scope_decision|none|\*)\)(.*?);;',
+                      decision_case, re.MULTILINE | re.DOTALL)
+assert [name for name, _ in branches] == ['requirements_change', 'none', 'scope_decision', '*']
+assert all(body.count('pause_for_human ') + body.count("echo 'continue=true'") == 1
+           for _, body in branches), 'each classification must emit exactly one decision'
 
 sources = [root / 'AGENTS.md', *sorted((root / '.github/workflows').glob('*')),
            *sorted((root / '.github/scripts').glob('*'))]
@@ -2112,30 +2122,71 @@ awk '
 ' "$issue_requirements" > "$requirements_run"
 requirements_case="$test_dir/requirements-cases"
 mkdir -p "$requirements_case/bin" "$requirements_case/runner/trusted-human-pause"
+for helper in create-human-pause human-pause-record list-human-pause-records \
+  validate-human-pause-record-graph decompose-human-pause-record-graph \
+  derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance \
+  reconcile-human-pause-active-pause apply-human-pause \
+  format-human-pause-notification notify-human; do
+  cp "$repo_root/.github/scripts/$helper.sh" "$requirements_case/runner/trusted-human-pause/$helper.sh"
+done
+mv "$requirements_case/runner/trusted-human-pause/create-human-pause.sh" \
+  "$requirements_case/runner/trusted-human-pause/create-human-pause-real.sh"
 cat > "$requirements_case/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$GATE_CALLS"
 case "$1 $2" in
-  'pr list') printf '[]\n' ;;
+  'pr list')
+    if [ "$SCENARIO" = scope_pr ]; then
+      printf '[{"number":37,"headRefName":"ai/issue-169","isCrossRepository":false}]\n'
+    else printf '[]\n'; fi ;;
+  'pr view') printf '{"closingIssuesReferences":[{"number":169,"url":"https://github.com/owner/repo/issues/169"}]}\n' ;;
   'api /apps/dev') printf '123\n' ;;
-  'api /repos/owner/repo/issues/169') printf '{"body":"line\\n"}\n' ;;
+  'api /repos/owner/repo/issues/169') cat "$ISSUE_BODY_JSON" ;;
+  'api --paginate') jq -c '[.]' "$PAUSE_COMMENTS" ;;
+  'api -X')
+    [ "$3" = POST ] && [[ "$4" == /repos/owner/repo/issues/*/comments ]]
+    [ "$5" = -f ] && [[ "$6" == body=* ]]
+    printf '%s' "${6#body=}" > "$PAUSE_RECORD"
+    jq -n --rawfile body "$PAUSE_RECORD" \
+      '[{id:101,body:$body,performed_via_github_app:{id:123}}]' > "$PAUSE_COMMENTS"
+    printf '{"id":101}\n' ;;
+  'label create'|'issue edit') exit 0 ;;
   'issue comment') exit 0 ;;
   *) echo "Unexpected gh call: $*" >&2; exit 2 ;;
 esac
 EOF
 cat > "$requirements_case/runner/trusted-human-pause/create-human-pause.sh" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
 printf '%s\n' "$*" >> "$PAUSE_CALLS"
+exec bash "$(dirname "$0")/create-human-pause-real.sh" "$@"
 EOF
-chmod +x "$requirements_case/bin/gh"
-for scenario in missing empty marker marker_crlf absent free_text scope both \
+cat > "$requirements_case/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat > "$PAUSE_NOTIFICATION"
+EOF
+chmod +x "$requirements_case/bin/gh" "$requirements_case/bin/curl"
+# Include Unicode, CRLF, blank lines and terminal newlines in the API body;
+# hash decoded UTF-8 bytes independently, without shell newline stripping.
+python3 - "$requirements_case" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+directory = Path(sys.argv[1])
+body = '対象範囲\r\n\nline\n\n'
+(directory / 'issue-body.json').write_text(json.dumps({'body': body}))
+(directory / 'expected-fingerprint').write_text('sha256:' + hashlib.sha256(body.encode()).hexdigest())
+PY
+for scenario in missing empty marker marker_crlf absent free_text scope scope_crlf scope_pr both \
   classifier_missing requirements_helper_missing scope_helper_missing helper_failure \
   classifier_nonzero classifier_nonzero_with_valid_output unknown_output empty_output \
   multiple_output whitespace_output valid_output_stderr; do
   : > "$requirements_case/output"
   : > "$requirements_case/pause-calls"
   : > "$requirements_case/gate-calls"
+  printf '[]\n' > "$requirements_case/comments.json"
+  rm -f "$requirements_case/record.md" "$requirements_case/notification.json"
   for helper in classify-ai-developer-decision-marker has-requirements-change-marker has-scope-decision-marker; do
     cp "$repo_root/.github/scripts/$helper.sh" "$requirements_case/runner/$helper.sh"
   done
@@ -2148,6 +2199,8 @@ for scenario in missing empty marker marker_crlf absent free_text scope both \
     marker_crlf) printf '[REQUIREMENTS_CHANGE_REQUIRED]\r\n' > "$requirements_case/final" ;;
     free_text) printf 'requirements_change scope_decision\n' > "$requirements_case/final" ;;
     scope) printf '[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
+    scope_crlf) printf '[SCOPE_DECISION_REQUIRED]\r\n' > "$requirements_case/final" ;;
+    scope_pr) printf '[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
     both) printf '[REQUIREMENTS_CHANGE_REQUIRED]\n[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
     classifier_missing) rm "$requirements_case/runner/classify-ai-developer-decision-marker.sh" ;;
     requirements_helper_missing) rm "$requirements_case/runner/has-requirements-change-marker.sh" ;;
@@ -2176,6 +2229,10 @@ EOF
       RUNNER_TEMP="$requirements_case/runner" \
       CODEX_FINAL="$requirements_case/final" \
       CLASSIFIER_STDOUT="$classifier_stdout" CLASSIFIER_EXIT="$classifier_exit" \
+      SCENARIO="$scenario" ISSUE_BODY_JSON="$requirements_case/issue-body.json" \
+      PAUSE_COMMENTS="$requirements_case/comments.json" PAUSE_RECORD="$requirements_case/record.md" \
+      PAUSE_NOTIFICATION="$requirements_case/notification.json" \
+      NOTIFICATION_WEBHOOK_URL=https://discord.invalid/fixture \
       PAUSE_CALLS="$requirements_case/pause-calls" \
       GATE_CALLS="$requirements_case/gate-calls" \
       GITHUB_OUTPUT="$requirements_case/output" \
@@ -2189,10 +2246,54 @@ EOF
   else
     grep -Fxq 'continue=false' "$requirements_case/output"
     case "$scenario" in
-      marker|marker_crlf)
-        grep -Fq 'create owner/repo 169 - 123 requirements_change' "$requirements_case/pause-calls"
-        expected="sha256:$(printf 'line\n' | sha256sum | cut -d' ' -f1)"
+      marker|marker_crlf|scope|scope_crlf|scope_pr)
+        reason=requirements_change pr_number=- target=issue:169
+        if [[ "$scenario" == scope* ]]; then reason=scope_decision; fi
+        if [ "$scenario" = scope_pr ]; then pr_number=37; target=pr:37; fi
+        grep -Fq "create owner/repo 169 $pr_number 123 $reason" "$requirements_case/pause-calls"
+        expected="$(cat "$requirements_case/expected-fingerprint")"
         grep -Fq -- "--issue-body-fingerprint $expected" "$requirements_case/pause-calls"
+        [ "$(grep -Fc 'api /repos/owner/repo/issues/169' "$requirements_case/gate-calls")" -eq 1 ]
+        record="$(bash "$repo_root/.github/scripts/human-pause-record.sh" parse "$requirements_case/record.md")"
+        jq -e --arg reason "$reason" --arg fp "$expected" --arg target "$target" '
+          keys == ["kind","payload","reason","target","version"] and
+          .version == 1 and .kind == "pause" and .reason == $reason and .target == $target and
+          (.payload | keys == ["detail","issue_body_fingerprint"]) and
+          .payload.issue_body_fingerprint == $fp
+        ' <<< "$record" >/dev/null
+        grep -Fq 'issue edit 169 --repo owner/repo --add-label human-review-required' "$requirements_case/gate-calls"
+        if [ "$scenario" = scope_pr ]; then
+          grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$requirements_case/gate-calls"
+        fi
+        jq -e --arg reason "$reason" '.allowed_mentions == {parse: []} and
+          (.content | contains("(" + $reason + ")"))' "$requirements_case/notification.json" >/dev/null
+        if [[ "$scenario" == scope* ]]; then
+          jq -e '.content | contains("スコープの判断が必要") and contains("対象範囲をIssueに記録してください。")' \
+            "$requirements_case/notification.json" >/dev/null
+          context="$(jq -cn --argjson record "$record" --arg fp "$expected" '
+            {command:{result:"accepted",actor:"suzukure",action:"develop"},target:$record.target,
+             closing_issue:{number:169,state:"open",body_fingerprint:$fp},
+             pull_request:(if $record.target == "pr:37" then
+               {number:37,state:"open",base_ref:"main",head_ref:"ai/issue-169",head_sha:("a"*40)}
+               else null end),follow_up_issue:null,
+             pause:{result:"active",pause_id:"101",reason:$record.reason,record:$record}}')"
+          bash "$repo_root/.github/scripts/prepare-ai-resume.sh" <<< "$context" |
+            jq -e '. == {result:"reject",code:"issue_body_not_updated"}' >/dev/null
+          updated="sha256:$(printf '対象範囲を更新\n' | sha256sum | cut -d' ' -f1)"
+          jq -c --arg fp "$updated" '.closing_issue.body_fingerprint=$fp' <<< "$context" |
+            bash "$repo_root/.github/scripts/prepare-ai-resume.sh" |
+            jq -e --arg old "$expected" --arg new "$updated" --arg target "$target" '
+              .result == "prepared" and .dispatch ==
+                {version:1,target:$target,action:"develop",actor:"suzukure",source_pause_id:"101",
+                 reason:"scope_decision",closing_issue_number:169,
+                 pr_number:(if $target == "pr:37" then 37 else null end),paused_head:null,
+                 prepared_head:(if $target == "pr:37" then "a"*40 else null end),
+                 pause_issue_body_fingerprint:$old,prepared_issue_body_fingerprint:$new,follow_up_issue:null}
+            ' >/dev/null
+          jq -c '.command.action="review"' <<< "$context" |
+            bash "$repo_root/.github/scripts/prepare-ai-resume.sh" |
+            jq -e '. == {result:"reject",code:"action_not_allowed"}' >/dev/null
+        fi
         ;;
       *)
         grep -Fq 'create owner/repo 169 - 123 developer_execution_failed' "$requirements_case/pause-calls"
@@ -2206,8 +2307,8 @@ EOF
     esac
   fi
   [ "$(wc -l < "$requirements_case/output")" -eq 1 ]
-  if grep -Eq 'create .* scope_decision|^(pr create|pr comment|pr ready) ' "$requirements_case/pause-calls" "$requirements_case/gate-calls"; then
-    echo "Decision gate activated scope pause or published a PR: $scenario" >&2
+  if grep -Eq '^(pr create|pr comment|pr ready) ' "$requirements_case/gate-calls"; then
+    echo "Decision gate published a PR: $scenario" >&2
     exit 1
   fi
 done
