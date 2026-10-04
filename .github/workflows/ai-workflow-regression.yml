@@ -68,6 +68,7 @@ jobs:
                           'mapping_conflict', 'selector_error'}
           mode, reason, suites = 'full', 'selection_unavailable', sorted(suite_names)
           actual, chosen = [], []
+          base_validated = False
 
 
           def summary(result=None):
@@ -124,6 +125,7 @@ jobs:
                   reason = 'base_unavailable'
                   if git('rev-parse', '--verify', base + '^{commit}').decode('ascii').strip() != base:
                       raise ValueError
+                  base_validated = True
                   reason = 'merge_base_failed'
                   merge_base = git('merge-base', base, head).decode('ascii').strip()
                   if not re.fullmatch('[0-9a-f]{40}', merge_base):
@@ -173,6 +175,50 @@ jobs:
               except (ValueError, OSError, UnicodeError, subprocess.SubprocessError):
                   # Keep the independently discovered full inventory on any selection error.
                   mode, suites, chosen = 'full', sorted(suite_names), actual
+              if mode == 'full':
+                  # Validation only: the plan never supplies the execution list.
+                  selection_reason = reason
+                  reason = 'planner_base_invalid'
+                  base = os.environ.get('BASE_SHA', '')
+                  if not re.fullmatch('[0-9a-f]{40}', base):
+                      raise ValueError
+                  reason = 'planner_base_unavailable'
+                  if (not base_validated
+                          and git('rev-parse', '--verify', base + '^{commit}').decode('ascii').strip() != base):
+                      raise ValueError
+                  reason = 'base_planner_unavailable'
+                  planner = scratch / 'trusted-planner.py'
+                  planner.write_bytes(git('show', base + ':' + prefix + 'plan-ai-workflow-shards.py'))
+                  reason = 'planner_failed'
+                  result = subprocess.run([sys.executable, '-B', str(planner)],
+                                          input=b''.join(p.encode('utf-8') + b'\0' for p in actual),
+                                          capture_output=True, check=True)
+                  reason = 'planner_record_invalid'
+                  plan = json.loads(result.stdout, object_pairs_hook=unique_object)
+                  if (not isinstance(plan, dict)
+                          or set(plan) != {'schema', 'version', 'policy', 'shard_count', 'shards'}
+                          or plan['schema'] != 'ai-workflow-shard-plan'
+                          or type(plan['version']) is not int or plan['version'] != 1
+                          or plan['policy'] != 'observed-lpt-v1'
+                          or type(plan['shard_count']) is not int or plan['shard_count'] != 2
+                          or not isinstance(plan['shards'], list) or len(plan['shards']) != 2):
+                      raise ValueError
+                  ids, assigned = [], []
+                  for shard in plan['shards']:
+                      if (not isinstance(shard, dict) or set(shard) != {'id', 'fixtures'}
+                              or type(shard['id']) is not int or shard['id'] not in (1, 2)
+                              or not isinstance(shard['fixtures'], list) or not shard['fixtures']
+                              or not all(fixture_path(p) and len(p) > len(prefix + 'test-') + 3
+                                         for p in shard['fixtures'])):
+                          raise ValueError
+                      for path in shard['fixtures']:
+                          path.encode('utf-8', 'strict')
+                      ids.append(shard['id'])
+                      assigned.extend(shard['fixtures'])
+                  if (sorted(ids) != [1, 2] or len(assigned) != len(set(assigned))
+                          or len(assigned) != len(actual) or set(assigned) != set(actual)):
+                      raise ValueError
+                  reason = selection_reason
               (scratch / 'fixtures.nul').write_bytes(b''.join(os.fsencode(p) + b'\0' for p in chosen))
               summary()
           except Exception:
