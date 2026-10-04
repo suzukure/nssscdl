@@ -257,9 +257,56 @@ for second in [None, 'failure', 'success', 'cancelled', 'timed_out', 'skipped']:
         assert expected is None or packet == expected
         expected = packet
 
+# Non-failure orchestration/selected-path names do not constrain selection.
+for second in [None, 'failure']:
+    values = sharded(second=second)
+    expected = accepted(values)
+    jobs = values[jobs_path]['jobs']
+    jobs.extend([copy.deepcopy(job) | {'id': 55, 'name': 'Plan', 'conclusion': 'success'},
+                 copy.deepcopy(job) | {'id': 56, 'name': 'Selected fixtures', 'conclusion': 'skipped'}])
+    values[jobs_path]['total_count'] = len(jobs)
+    for order in itertools.permutations(jobs):
+        values[jobs_path]['jobs'] = list(order)
+        assert accepted(values) == expected
+
+# All non-failure jobs still undergo name, identity, and metadata validation.
+for key, value, status, reason in [
+        ('name', None, 'conflict', 'failed_job_ambiguous'),
+        ('name', [], 'conflict', 'failed_job_ambiguous'),
+        ('name', 55, 'conflict', 'failed_job_ambiguous'),
+        ('name', '', 'conflict', 'failed_job_ambiguous'),
+        ('name', '  ', 'conflict', 'failed_job_ambiguous'),
+        ('name', 'Fixture shard 1', 'conflict', 'failed_job_ambiguous'),
+        ('name', 'Regression Result', 'conflict', 'failed_job_ambiguous'),
+        ('id', 65403, 'conflict', 'job_identity_mismatch'),
+        ('run_id', 55, 'conflict', 'job_identity_mismatch'),
+        ('run_attempt', 2, 'conflict', 'job_identity_mismatch'),
+        ('status', 'in_progress', 'incomplete', 'job_metadata_invalid'),
+        ('steps', None, 'incomplete', 'job_metadata_invalid'),
+        ('conclusion', 'unknown', 'incomplete', 'job_metadata_invalid')]:
+    for conclusion in ['success', 'skipped']:
+        values = sharded()
+        extra = copy.deepcopy(job) | {'id': 55, 'name': 'Plan', 'conclusion': conclusion}
+        extra[key] = value
+        values[jobs_path]['jobs'].append(extra)
+        values[jobs_path]['total_count'] += 1
+        result, calls = refused(values, status)
+        assert result['reason'] == reason
+        assert not any(args[1:3] == ['run', 'view'] for args in calls)
+values = sharded()
+values[jobs_path]['jobs'].extend([
+    copy.deepcopy(job) | {'id': 55, 'name': 'Plan', 'conclusion': 'success'},
+    copy.deepcopy(job) | {'id': 56, 'name': 'Plan', 'conclusion': 'skipped'}])
+values[jobs_path]['total_count'] += 2
+assert refused(values, 'conflict')[0]['reason'] == 'failed_job_ambiguous'
+values = snapshot()
+values[jobs_path]['jobs'].append(copy.deepcopy(job) | {'id': 55, 'name': 'Other failure'})
+values[jobs_path]['total_count'] = 2
+assert refused(values, 'conflict')[0]['reason'] == 'failed_job_ambiguous'
+
 # Missing/duplicate/drifted names and identity fail before any log is read.
 for change in ['missing', 'duplicate-terminal', 'duplicate-worker', 'duplicate-id',
-               'unknown-failed', 'unknown-success', 'third-shard', 'name-drift', 'missing-name',
+               'unknown-failed', 'third-shard', 'name-drift', 'missing-name',
                'malformed-name', 'worker-run', 'worker-attempt', 'terminal-run', 'terminal-attempt']:
     values = sharded()
     jobs = values[jobs_path]['jobs']
@@ -268,10 +315,10 @@ for change in ['missing', 'duplicate-terminal', 'duplicate-worker', 'duplicate-i
     elif change in {'duplicate-terminal', 'duplicate-worker', 'duplicate-id'}:
         original = jobs[-1] if change == 'duplicate-terminal' else jobs[0]
         jobs.append(copy.deepcopy(original) | {'id': original['id'] if change == 'duplicate-id' else 55})
-    elif change in {'unknown-failed', 'unknown-success', 'third-shard'}:
+    elif change in {'unknown-failed', 'third-shard'}:
         jobs.append(copy.deepcopy(job) | {'id': 55,
             'name': 'Fixture shard 3' if change == 'third-shard' else 'Other',
-            'conclusion': 'success' if change == 'unknown-success' else 'failure'})
+            'conclusion': 'failure'})
     elif change in {'name-drift', 'missing-name', 'malformed-name'}:
         jobs[0]['name'] = {'name-drift': 'Fixture shard 1 ', 'missing-name': None,
                            'malformed-name': ['Fixture shard 1']}[change]

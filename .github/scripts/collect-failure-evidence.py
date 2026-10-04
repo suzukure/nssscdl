@@ -257,13 +257,13 @@ def failed_job(jobs, run_id, attempt):
     if len(failures) == 1:
         job = failures[0]
     else:
-        # Inspect the entire attempt, including successful/non-failure jobs.
-        # Exact unique names only; API order never selects the evidence source.
+        # Validate names across the attempt, but constrain only failed jobs to
+        # the prepared topology. Non-failure orchestration never selects evidence.
         names = [job.get('name') for job in jobs]
-        require(all(type(name) is str and name in SHARD_WORKERS | {SHARD_TERMINAL}
-                    for name in names)
+        require(all(type(name) is str and name.strip() for name in names)
                 and len(set(names)) == len(names)
-                and names.count(SHARD_TERMINAL) == 1,
+                and names.count(SHARD_TERMINAL) == 1
+                and all(job['name'] in SHARD_WORKERS | {SHARD_TERMINAL} for job in failures),
                 'failed_job_ambiguous', 'conflict')
         job = next(job for job in jobs if job['name'] == SHARD_TERMINAL)
         require(job['conclusion'] == 'failure', 'failed_job_ambiguous', 'conflict')

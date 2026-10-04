@@ -72,11 +72,11 @@ failure jobが1件なら、そのjobを選ぶ既存挙動を維持する。複�
 
 #### Known 2-shard topology（#751、prepared / dormant）
 
-#698が消費するjob選択契約の機械正本はcollectorの `failed_job()` / `SHARD_WORKERS` / `SHARD_TERMINAL` とする。failure jobが複数の場合、attempt内の全job（success等も含む）の名前がexact `Fixture shard 1` / `Fixture shard 2` / `Regression Result` の集合内で一意であり、terminal `Regression Result` がちょうど1件存在して `completed / failure` の場合だけ受理する。terminal以外は既知worker集合の部分集合とし、job ID重複、run ID / attempt不一致、metadata不正の既存検証も維持する。未知job、名前重複・drift、terminal欠落・non-failureは `conflict / failed_job_ambiguous` で拒否し、API返却順に意味を持たせない。
+#698が消費するjob選択契約の機械正本はcollectorの `failed_job()` / `SHARD_WORKERS` / `SHARD_TERMINAL` とする。failure jobが複数の場合、terminal `Regression Result` がちょうど1件存在して `completed / failure` であり、terminal以外のfailure job名がexact `Fixture shard 1` / `Fixture shard 2` の既知worker集合の部分集合の場合だけ受理する。plan / selected-path等のnon-failure jobはevidence source選択に使わず、exact nameを固定しない。ただしattempt内の全job（success / skipped等も含む）の名前は文字列・空白のみでない値・一意性を検証し、job ID重複、run ID / attempt不一致、metadata不正の既存検証も維持する。未知failed job、名前重複・failed job名drift、terminal欠落・non-failureは `conflict / failed_job_ambiguous` で拒否し、API返却順に意味を持たせない。
 
 canonical evidence sourceはterminalだけとし、そのindividual jobをfresh照合してpacketのjob ID / first failing step / log locatorへbindする。worker failureをsuccessへ変更するものではなく、source run全体がfailureで、aggregateがworker結果をfail-closedに正規化することを後続#698の前提とする。first failing step、log boundary、secret-like reject、packet上限、read-only権限は既存契約を再利用する。現在の `Fixtures` workflowは変更せず、このtopologyのproduction到達・aggregate実装・3 shard以上への一般化は本変更に含めない。
 
-検証は既存collector fixtureでsingle failureの維持、1 / 2 worker failureとterminal failureの受理、job順序独立、unknown / duplicate / terminal欠落・success・cancelled・timed_out、identity / attempt不一致の拒否、aggregateへのpacket bindと既存evidence境界を固定する。synthetic fixtureはproduction multi-shard runの証拠ではなく、E2Eは#698でtopologyがproduction到達した最初の自然runで確認する。
+検証は既存collector fixtureでsingle failureの維持、1 / 2 worker failureとterminal failureの受理、non-failure orchestration / selected-path job共存時の同一packet・job順序独立、unknown failed job / duplicate / terminal欠落・success・cancelled・timed_out、全jobの名前不正・identity / attempt不一致・metadata不正の拒否、aggregateへのpacket bindと既存evidence境界を固定する。synthetic fixtureはproduction multi-shard runの証拠ではなく、E2Eは#698でtopologyがproduction到達した最初の自然runで確認する。
 
 #### Issue contractとevidence出力
 
