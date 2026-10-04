@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
 import ast
+import hashlib
+from functools import lru_cache
 from pathlib import Path
 import stat
 import subprocess
@@ -155,14 +157,64 @@ def is_test_fixture(path):
             and p.name.startswith('test-') and p.suffix in ('.sh', '.py'))
 
 
+@lru_cache(maxsize=32)
+def mask_trusted_model_callers(text):
+    # Closed exception for #759: exact reviewed caller bytes, metadata and gates.
+    # Changing this digest requires reviewing the caller and its runtime fixture.
+    value = yaml.safe_load(text)
+    node = yaml.compose(text)
+    def child(mapping, key):
+        matches = [v for k, v in mapping.value if k.value == key]
+        assert len(matches) == 1
+        return matches[0]
+    masked = text.splitlines(keepends=True)
+    jobs = child(node, 'jobs')
+    followup_gate = ("steps.verify-reviewer.outputs.trusted == 'true' && "
+                    "steps.followup-gate.outputs.continue == 'true' && "
+                    "steps.followup-checkout.outputs.continue == 'true'")
+    for job, digest in (
+            ('develop-from-issue', 'e526cfaca0742f923a5b528463c8123ffc26a8d27727ef5c90e6e65f105c04ea'),
+            ('respond-to-claude', 'fbbfa579a33e6561c6ecbcb1835ec04c2ab48e031dbed437773886bbb757294c')):
+        steps = value['jobs'][job]['steps']
+        matches = [(i, step) for i, step in enumerate(steps) if step.get('id') == 'codex_model']
+        assert len(matches) == 1, 'missing/duplicate trusted model caller'
+        index, step = matches[0]
+        env = {'NORMAL_MODEL': '${{ vars.CODEX_MODEL }}'}
+        expected = dict(name='Select trusted Codex Issue model', id='codex_model',
+                        shell='bash', env=env, run=step['run'])
+        if job == 'develop-from-issue':
+            env.update(BASE_SHA='${{ steps.issue_context.outputs.base_sha }}',
+                ISSUE_NUMBER="${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}")
+            assert any(s.get('id') == 'issue_context' for s in steps[:index])
+        else:
+            env.update(BASE_SHA='${{ github.event.pull_request.base.sha }}',
+                       HEAD_REF='${{ github.event.pull_request.head.ref }}')
+            expected['if'] = followup_gate
+            assert any(s.get('id') == 'followup-checkout' for s in steps[:index])
+        assert step == expected, 'untrusted model caller metadata'
+        assert hashlib.sha256(step['run'].encode()).hexdigest() == digest, 'untrusted model caller bytes'
+        assert index < next(i for i, s in enumerate(steps) if s.get('id') == 'codex')
+        step_node = child(child(jobs, job), 'steps').value[index]
+        assert len({k.value for k, _ in step_node.value}) == len(step_node.value)
+        env_node = child(step_node, 'env')
+        assert len({k.value for k, _ in env_node.value}) == len(env_node.value)
+        assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
+                       and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
+                       for token in yaml.scan(text)), 'model caller alias/anchor escape'
+        for line in range(step_node.start_mark.line, step_node.end_mark.line):
+            masked[line] = '\n'
+    return ''.join(masked)
+
+
 def assert_unreachable(sources):
     # Parse source text only. Never import selector, builder, collector or npm.
     for path in (selector_path, selector_fixture):
         assert_declarative(path, sources[path])
     for path, text in sources.items():
         if path.startswith(workflows):
-            assert model_selector[:-3] not in text and model_policy not in text, (
-                'model selection production connection', path)
+            model_text = mask_trusted_model_callers(text) if path == workflows + 'ai-developer.yml' else text
+            assert model_selector[:-3] not in model_text and model_policy not in model_text, (
+                'unknown model selection production connection', path)
             assert exec_usage[:-3] not in text, ('exec usage production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
@@ -286,7 +338,7 @@ def accepted(path, text):
 def rejected(path, text):
     try:
         accepted(path, text)
-    except (AssertionError, ValueError, SyntaxError):
+    except (AssertionError, ValueError, SyntaxError, yaml.YAMLError):
         return
     raise AssertionError(('unsafe reference accepted', path))
 
@@ -302,6 +354,26 @@ for mutation in (
 
 
 # Mutate only in-memory snapshots; the actual repository is never written.
+model_workflow = workflows + 'ai-developer.yml'
+original_model_workflow = sources[model_workflow]
+for mutation in (
+        original_model_workflow.replace('git show "${BASE_SHA}:${source_path}"', 'git show "HEAD:${source_path}"', 1),
+        original_model_workflow.replace('git hash-object --no-filters "$selection_dir/$filename"', 'echo "$expected_blob"', 1),
+        original_model_workflow.replace('steps.issue_context.outputs.base_sha', 'github.event.pull_request.head.sha', 1),
+        original_model_workflow.replace("steps.followup-checkout.outputs.continue == 'true'\n        id: codex_model", "true\n        id: codex_model", 1),
+        original_model_workflow.replace('actual != canonical', 'False', 1),
+        original_model_workflow.replace('        id: codex_model', '        id: invalid\n        id: codex_model', 1),
+        original_model_workflow.replace("python3 -I -B - <<'PY_MODEL'", "python3 -B - <<'PY_MODEL'", 1),
+        original_model_workflow.replace('          export SELECTION_DIR="$selection_dir"', '          export SELECTION_DIR="$selection_dir"\n          # extra select-codex-issue-model caller', 1),
+        original_model_workflow.replace(
+            '        run: |\n          set -euo pipefail\n          [[ "$BASE_SHA"',
+            '        run: &model_caller |\n          set -euo pipefail\n          [[ "$BASE_SHA"', 1),
+        original_model_workflow + '\n# unauthorized ' + model_selector,
+        original_model_workflow + '\n# unauthorized ' + model_policy,
+        original_model_workflow + '\n# unauthorized ' + exec_usage):
+    assert mutation != original_model_workflow
+    rejected(model_workflow, mutation)
+
 rejected(workflows + 'ai-workflow-regression.yml',
          sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)
 for needle, filename, suite, baseline_name in contracts:
