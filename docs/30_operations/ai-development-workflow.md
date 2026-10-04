@@ -329,6 +329,16 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 
 検証は `bash .github/scripts/test-select-codex-issue-model.sh`、既存 `test-production-unreachable.sh`、selector fixtureおよびAI Workflow Regressionのcurrent-head fixtureで行う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
+### fresh Codex exec usage抽出（#753、prepared / dormant）
+
+機械正本は `.github/scripts/extract-codex-exec-usage.py` とする。pure API `extract(jsonl_bytes, context_bytes)` はcaller供給のbounded JSONL bytesと単一context JSON bytesからcanonical JSON bytesを返し、file I/Oを行わない。CLIは `--context PATH` の明示contextとstdinだけをbounded readし、正常時は単一canonical JSON行とexit 0、不正入力時はstdoutなし・固定非反射診断と非0を返す。contextは `schema/version/mode/process_outcome` だけで、`mode=fresh_exec` に限定する。callerによるprovenance取得は別責務であり、contextをtrusted authorityとして証明しない。
+
+対象は新規thread・単一exec invocationに限る。thread/turn開始は各1件必須で、唯一のcompleted terminalのexact 5-field usageを累積snapshotとして1回だけ返し、加算・delta計算・欠落fieldの0補完をしない。UTF-8 / JSONのstrict検査、closed source fields、順序・矛盾拒否、入力byte / line / record上限、整数・内数制約、exact schemaの詳細はhelperを唯一の正本とする。item payloadはopaque JSONとしてのみ検査し、token偽装・prompt・command・thread ID・raw errorを結果へ採用しない。
+
+出力は `schema/version/source/availability/reason/usage` だけで、sourceは常に `codex_exec_jsonl_workload_reported`。成功process・唯一completed terminal・非zero valid usageだけが `reported / terminal_cumulative` となる。全5値zeroは `unavailable / zero_unverified`、process非success・error/failed terminal・terminal欠落も固定reasonと `usage:null` で返す。reasonはprocess cancelled→failed→unknown→error/failed terminal→missing terminalの順を優先する。完全なJSON行でterminalが欠けた場合は取得不能として有効だが、壊れた/truncated行は不正入力として拒否する。取得不能・zero_unverifiedを費用0・課金なし・provider明示zeroと扱わない。
+
+production workflow / non-test callerへ未接続であり、`test-production-unreachable.sh` がexact selector inventory以外の参照を拒否する。検証は `test-extract-codex-exec-usage.sh` のsecretless synthetic fixture、selector / dormant guard、および既存AI Workflow Regressionのcurrent-head fixtureで行う。raw JSONLはfixture内のmemory/stdinだけで扱い、保存・公開しない。このproofはCodex 0.159.3の実取得provenance、provider billing、actual USD、hard cap、complete all-request coverageを証明しない。外部sourceの実schema照合とcaller / provenance / persistence / production proofは親 #744・調査 #746と後続のfresh WACで扱い、resume、streaming、料金計算、paid試行、workflow `--json` 接続を追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ### DeepInfra Investigator
 
 DeepInfra Investigatorは、信頼済みIssue上のコメント `/deepseek analyze` または `/deepseek analyze v4.1` で起動する。コメント投稿者とIssue作成者はいずれも `OWNER` / `MEMBER` / `COLLABORATOR` のいずれかでなければならない。通常コマンドは `DeepSeek-V4-Flash-0731`、`v4.1` 付きコマンドはallowlist済みの `DeepSeek-V4.1-Flash` を選ぶ。
