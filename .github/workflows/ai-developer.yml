@@ -493,6 +493,23 @@ jobs:
           cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
           Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
           Implement the Issue in this working tree.
+          Apply Work Admission Control in docs/30_operations/ai-development-workflow.md to findings discovered during Issue-origin development. Static pre-admission uses R/C/P/B; dynamically stop when a prerequisite cross-boundary Contract decision outside the current Issue authority is needed.
+          Emit the scope decision marker when any of these requires a new human scope/Contract decision:
+          - The current implementation contract itself must change.
+          - A new prerequisite cross-boundary Contract absent from the current Issue/main is needed.
+          - A synthetic/dormant/narrower Contract must be promoted to the target mode.
+          - A new proof infrastructure Contract is a prerequisite.
+          - Fresh R/C/P/B evaluation transitions to Red / split-first.
+          - Progress requires defining a new cross-boundary Contract and its downstream consumer in the same Issue.
+          - A new trust / ownership / failure semantics boundary decision exceeds Issue authority.
+          Do not emit the scope marker merely for existing C0 Contract reuse, Contract definition/proof explicitly scoped by the current Issue, a local bug fix, an existing fail-closed condition fixture, docs synchronization, a P1 fixture/assertion, or a safe Follow-up / Idea that permits consistent completion of the current Issue. These exceptions do not bypass a newly discovered prerequisite decision outside Issue authority.
+          When a scope decision is required, do not infer or finalize the new Contract, do not continue downstream integration, and do not leave speculative partial changes depending on the unresolved Contract in the working tree. Stop dependent work and retain only the minimum observations needed for human judgment in the final report.
+          Output this exact marker on its own unindented plain-text line in the final response:
+          [SCOPE_DECISION_REQUIRED]
+          Do not wrap that line in backticks or a Markdown fenced code block, or add leading/trailing whitespace. CRLF is allowed.
+          Report observed fact, missing/new Contract category, why Done is impossible under the current contract, R/C/P/B changes, proposed split/prerequisite, Product impact, and unverified matters. Free text is for humans; only the exact marker controls the workflow.
+          Preserve the Product requirement change / unresolved upstream decision escalation in AGENTS.base.md. If that escalation applies, output only [REQUIREMENTS_CHANGE_REQUIRED] as the decision marker; otherwise use the scope marker for the scope/Contract decision above. Never output both decision markers in one final response.
+          Human scope decisions must be recorded in the Issue body before the existing /ai resume develop path can resume. Do not automatically split Issues, convert them to parents, or retry.
           Write the final report for humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
           Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.

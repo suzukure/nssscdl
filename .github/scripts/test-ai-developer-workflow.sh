@@ -642,6 +642,35 @@ grep -Fq 'Implement the Issue in this working tree.' "$prompt_step"
 grep -Fq 'Write the final report for humans on GitHub in Japanese.' "$prompt_step"
 grep -Fq 'Keep the proposed repository change within the trusted diff guard contract.' "$prompt_step"
 grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
+for scope_rule in \
+  'Static pre-admission uses R/C/P/B; dynamically stop' \
+  'prerequisite cross-boundary Contract decision outside the current Issue authority' \
+  'The current implementation contract itself must change.' \
+  'A new prerequisite cross-boundary Contract absent from the current Issue/main is needed.' \
+  'A synthetic/dormant/narrower Contract must be promoted to the target mode.' \
+  'A new proof infrastructure Contract is a prerequisite.' \
+  'Fresh R/C/P/B evaluation transitions to Red / split-first.' \
+  'defining a new cross-boundary Contract and its downstream consumer in the same Issue' \
+  'A new trust / ownership / failure semantics boundary decision exceeds Issue authority.' \
+  'Do not emit the scope marker merely for existing C0 Contract reuse' \
+  'Contract definition/proof explicitly scoped by the current Issue' \
+  'a local bug fix, an existing fail-closed condition fixture, docs synchronization' \
+  'a P1 fixture/assertion, or a safe Follow-up / Idea that permits consistent completion' \
+  'These exceptions do not bypass a newly discovered prerequisite decision outside Issue authority.' \
+  'do not infer or finalize the new Contract, do not continue downstream integration' \
+  'do not leave speculative partial changes depending on the unresolved Contract in the working tree' \
+  'retain only the minimum observations needed for human judgment' \
+  'own unindented plain-text line in the final response' \
+  'Do not wrap that line in backticks or a Markdown fenced code block, or add leading/trailing whitespace. CRLF is allowed.' \
+  'observed fact, missing/new Contract category, why Done is impossible under the current contract, R/C/P/B changes, proposed split/prerequisite, Product impact, and unverified matters' \
+  'only the exact marker controls the workflow' \
+  'output only [REQUIREMENTS_CHANGE_REQUIRED] as the decision marker' \
+  'Never output both decision markers in one final response.' \
+  'Issue body before the existing /ai resume develop path can resume' \
+  'Do not automatically split Issues, convert them to parents, or retry.'; do
+  grep -Fq "$scope_rule" "$prompt_step"
+done
+test "$(grep -Fxc '          [SCOPE_DECISION_REQUIRED]' "$prompt_step")" -eq 1
 if grep -Eq 'blocking Claude finding|finding not implemented|upstream-phase decision' "$prompt_step"; then
   echo 'Issue-entry prompt must not include Claude follow-up duties.' >&2
   exit 1
@@ -923,6 +952,10 @@ for followup_rule in \
   'Do not silently change requirements to satisfy a finding.'; do
   grep -Fq "$followup_rule" "$followup_prompt_step"
 done
+if grep -Fq '[SCOPE_DECISION_REQUIRED]' "$followup_prompt_step"; then
+  echo 'Scope producer activation must remain limited to the Issue-origin prompt.' >&2
+  exit 1
+fi
 
 # The follow-up must use the same setup-only Action and hardened native
 # workload boundary as issue-origin development.  In particular, it must not
@@ -1421,7 +1454,8 @@ response.write_bytes((scope_marker + '\n').encode())
 assert subprocess.run(['bash', str(requirements_helper), str(response)], capture_output=True).returncode == 1
 
 # Only exact Issue-origin supply/restore/consumer lines may execute the helpers.
-# Selector inventory mapping is read-only; both fixed prompts remain unchanged.
+# Selector inventory mapping is read-only; only the Issue-origin prompt may
+# produce the scope marker (#729). Claude follow-up stays on requirements.
 workflow_path = root / '.github/workflows/ai-developer.yml'
 workflow_text = workflow_path.read_text()
 
@@ -1435,6 +1469,14 @@ def run_body(block):
     return ''.join(line.removeprefix('          ') for line in
                    block.split('        run: |\n', 1)[1].splitlines(keepends=True))
 
+
+prompt_block = step('Prepare fixed Codex developer prompt')
+prompt_file = scratch / 'generated-developer-prompt.md'
+result = subprocess.run(['bash', '-c', run_body(prompt_block)], capture_output=True,
+                        env={**os.environ, 'CODEX_PROMPT_FILE': str(prompt_file)}, timeout=5)
+assert result.returncode == 0, result.stderr
+assert prompt_file.read_text().splitlines().count(scope_marker) == 1
+assert scope_marker not in step('Prepare fixed Codex follow-up prompt')
 
 bootstrap = step('Prepare branch and Issue context')
 restore = step('Restore trusted post-Codex helpers')
@@ -1492,7 +1534,12 @@ for source in sources:
     if source.parent.name == 'scripts' and source.name.startswith('test-'):
         continue
     content = source.read_text()
-    assert scope_marker not in content, ('dormant scope marker reached production/instructions', source)
+    if source == workflow_path:
+        assert content.count(scope_marker) == prompt_block.count(scope_marker) == 1
+        content_without_prompt = content.replace(prompt_block, '', 1)
+        assert scope_marker not in content_without_prompt, 'scope marker escaped Issue-origin prompt'
+    else:
+        assert scope_marker not in content, ('scope marker escaped Issue-origin activation', source)
     for filename, allowed_lines in allowed_supply.items():
         references = [line for line in content.splitlines() if filename in line]
         if source == root / '.github/scripts/select-ai-workflow-fixtures.py' and filename == decision_classifier.name:
@@ -2298,6 +2345,13 @@ EOF
       *)
         grep -Fq 'create owner/repo 169 - 123 developer_execution_failed' "$requirements_case/pause-calls"
         grep -Fq -- '--failed-action develop' "$requirements_case/pause-calls"
+        if grep -Fq '123 scope_decision' "$requirements_case/pause-calls"; then
+          echo "Classifier error/ambiguity must not create a scope pause: $scenario" >&2
+          exit 1
+        fi
+        record="$(bash "$repo_root/.github/scripts/human-pause-record.sh" parse "$requirements_case/record.md")"
+        jq -e '.reason == "developer_execution_failed" and .reason != "scope_decision"' \
+          <<< "$record" >/dev/null
         if grep -Fq -- '--issue-body-fingerprint' "$requirements_case/pause-calls" ||
            grep -Fq 'api /repos/owner/repo/issues/169' "$requirements_case/gate-calls"; then
           echo "Generic developer failure must not use requirements/scope fingerprint: $scenario" >&2
