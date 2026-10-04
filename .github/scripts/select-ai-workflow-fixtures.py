@@ -76,7 +76,7 @@ BASELINE_COUNTS = {
 # Explicit extensions: #692 / #684, selector, and #701 common guard.
 EXTENSIONS = {
     "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload",
-                    "product-npm-production-session", "product-runtime-staging"),
+                    "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply"),
     "common": ("select-ai-workflow-fixtures", "production-unreachable"),
 }
 INVENTORY = {
@@ -102,6 +102,7 @@ PATH_SUITES = (
     (SCRIPTS + "product-npm-session-runtime.py", ("product-npm",)),
     (SCRIPTS + "product-npm-session-probe.js", ("product-npm",)),
     (SCRIPTS + "product-runtime-staging.py", ("product-npm",)),
+    (SCRIPTS + "trusted-runtime-supply.py", ("product-npm",)),
     (SCRIPTS + "npm-locked-preparation.py", ("product-npm",)),
     (SCRIPTS + "npm-registry-proxy.py", ("product-npm",)),
     (SCRIPTS + "npm-registry-boundary-runtime.py", ("product-npm",)),

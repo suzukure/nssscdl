@@ -20,6 +20,8 @@ verifier = 'verify_post_workload'
 session_runtime = 'product-npm-session-runtime.py'
 session_probe = 'product-npm-session-probe.js'
 runtime_staging = 'product-runtime-staging.py'
+runtime_supply = 'trusted-runtime-supply.py'
+supply_proof = 'runtime-supply-proof.py'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -28,6 +30,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (session_runtime, session_runtime, 'product-npm', None),
              (session_probe, session_probe, 'product-npm', None),
              (runtime_staging, runtime_staging, 'product-npm', None),
+             (runtime_supply, runtime_supply, 'product-npm', None),
              (packet, packet, 'failure-evidence', None))
 
 
@@ -137,9 +140,11 @@ def assert_unreachable(sources):
     for path, text in sources.items():
         if path.startswith(workflows):
             assert all(needle not in text for needle in (product, packet, verifier,
-                                                        session_runtime, session_probe, runtime_staging,
+                                                        session_runtime, session_probe, runtime_staging[:-3],
                                                         *session_symbols)), (
                 'production workflow connection', path)
+            assert runtime_supply[:-3] not in text, ('supply production connection', path)
+            assert supply_proof[:-3] not in text, ('removed proof workflow connection', path)
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
                 continue
@@ -164,13 +169,15 @@ def assert_unreachable(sources):
                 if needle == session_probe and path == scripts + session_runtime:
                     continue  # Exact dormant synthetic launcher; workflows remain forbidden.
                 assert needle not in text, ('unknown production caller', path, filename)
+                if filename in (runtime_staging, runtime_supply, supply_proof):
+                    assert filename[:-3] not in text, ('unknown extensionless runtime caller', path, filename)
 
 
 def snapshot():
     # Index discovery excludes untracked bytecode/runtime artifacts. Inspect
     # working-tree bytes, not index blobs, so proposed source changes are tested.
     listed = subprocess.run(
-        ['git', 'ls-files', '--stage', '-z', '--', scripts, workflows],
+        ['git', 'ls-files', '--stage', '-z', '--', scripts, workflows, ':!' + scripts + supply_proof],
         cwd=repo, capture_output=True, check=True).stdout
     assert listed and listed.endswith(b'\0'), 'invalid tracked inventory framing'
     result = {}
@@ -198,11 +205,14 @@ def snapshot():
     return result
 
 
+# The removed proof is never admitted as an untracked or indexed executable.
+assert not (repo / scripts / supply_proof).exists()
+assert not (repo / scripts / supply_proof).is_symlink()
 before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
-for name in (session_runtime, session_probe, runtime_staging):
+for name in (session_runtime, session_probe, runtime_staging, runtime_supply):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -223,6 +233,8 @@ def rejected(path, text):
 
 
 # Mutate only in-memory snapshots; the actual repository is never written.
+rejected(workflows + 'ai-workflow-regression.yml',
+         sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)
 for needle, filename, suite, baseline_name in contracts:
     call = f'run({filename!r})\n'
     for path in (scripts + 'unknown-caller.py', scripts + 'deepinfra-investigator.py',
@@ -233,6 +245,9 @@ for needle, filename, suite, baseline_name in contracts:
     for path in (workflows + 'caller.yml', workflows + 'caller.yaml',
                  workflows + 'nested/caller.yml'):
         rejected(path, 'run: python3 ' + scripts + filename + '\n')
+    if filename in (runtime_staging, runtime_supply, supply_proof):
+        rejected(scripts + 'unknown-caller.py', f"load({filename[:-3]!r})\n")
+        rejected(workflows + 'caller.yml', f"run: load({filename[:-3]!r})\n")
     # Test-only references and exact implementation identity remain distinct.
     accepted(scripts + 'test-synthetic-caller.sh', call)
     accepted(scripts + filename, sources[scripts + filename])
@@ -317,7 +332,7 @@ def snapshot_rejected():
 
 
 # In-memory index/filesystem mocks: no git index or repository writes.
-listing = subprocess.run(['git', 'ls-files', '--stage', '-z', '--', scripts, workflows],
+listing = subprocess.run(['git', 'ls-files', '--stage', '-z', '--', scripts, workflows, ':!' + scripts + supply_proof],
                          cwd=repo, capture_output=True, check=True).stdout
 for invalid in (b'', listing[:-1], listing + listing.split(b'\0')[0] + b'\0',
                 listing.replace(b'100644 ', b'120000 ', 1),
