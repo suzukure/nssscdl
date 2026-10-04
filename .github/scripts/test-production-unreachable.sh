@@ -19,6 +19,7 @@ product = 'product-npm-orchestrator'
 verifier = 'verify_post_workload'
 session_runtime = 'product-npm-session-runtime.py'
 session_probe = 'product-npm-session-probe.js'
+runtime_staging = 'product-runtime-staging.py'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -26,6 +27,7 @@ packet = 'build-' + 'failure-evidence-packet.py'
 contracts = ((product, product + '.py', 'product-npm', product),
              (session_runtime, session_runtime, 'product-npm', None),
              (session_probe, session_probe, 'product-npm', None),
+             (runtime_staging, runtime_staging, 'product-npm', None),
              (packet, packet, 'failure-evidence', None))
 
 
@@ -34,7 +36,8 @@ def python_body(text):
     body, end, suffix = rest.rpartition('\nPY')
     assert start and end, 'missing fixture Python body'
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
-                                                           session_runtime, session_probe, *session_symbols))
+                                                           session_runtime, session_probe, runtime_staging,
+                                                           *session_symbols))
     return body
 
 
@@ -134,7 +137,8 @@ def assert_unreachable(sources):
     for path, text in sources.items():
         if path.startswith(workflows):
             assert all(needle not in text for needle in (product, packet, verifier,
-                                                        session_runtime, session_probe, *session_symbols)), (
+                                                        session_runtime, session_probe, runtime_staging,
+                                                        *session_symbols)), (
                 'production workflow connection', path)
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
@@ -198,7 +202,7 @@ before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
-for name in (session_runtime, session_probe):
+for name in (session_runtime, session_probe, runtime_staging):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
