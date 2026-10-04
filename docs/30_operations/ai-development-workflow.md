@@ -307,17 +307,17 @@ Repository variables:
 - `ANTHROPIC_WORKSPACE_ID`
 - `CLAUDE_MODEL`（protected pathsを含む高リスクClaudeレビューで使用するモデルを指定する）
 - `CLAUDE_MODEL_STANDARD`（protected pathsを含まない通常Claudeレビューで使用するモデルを指定する）
-- `CODEX_MODEL`（Issue開発とClaudeレビュー追従の両方でCodexが使用するモデルを指定する）
+- `CODEX_MODEL`（Issue開発とClaudeレビュー追従の通常モデルを指定する。Issue単位の選択は次節を参照）
 
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
-通常のAIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。現行productionのCodex側は追加の判定を必要としないためinlineのままとする。Issue単位のpreparedモデル選択は次節を参照する。
+通常のAIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は次節のtrusted selectorを使い、通常モデル値の形式検証も同helperのContractを正本とする。
 
 例外として、DeepInfra Investigatorは任意モデルIDをIssue入力やRepository variableから実行させないことをsecurity boundaryとするため、許可するDeepSeekモデルを `.github/scripts/deepinfra-investigator.py` の `ALLOWED_MODELS` で固定する。workflow側のcommand→model対応とpreflight allowlistはentry boundaryでの多層防御として同じ許可集合を意図的に重複保持し、`test-deepinfra-investigator.sh` で一致を回帰検証する。DeepInfra Investigatorのモデル変更は通常のモデル切替ではなくsecurity allowlist変更として扱い、Issueで範囲を確定しCode Owner review対象の差分として反映する。
 
-### Issue単位のCodexモデル選択（#745、prepared / dormant）
+### Issue単位のCodexモデル選択（#745 / #759）
 
-機械正本は `.github/scripts/select-codex-issue-model.py` と同責務の `.github/scripts/codex-issue-model-policy.json` とする。初期policyの `entries` は空で、production workflow / non-test callerへ未接続である。paid Luna試行・policy entry activationは含めず、通常Issueの `CODEX_MODEL` variable運用と既存 `medium` 固定を維持する。
+機械正本は `.github/scripts/select-codex-issue-model.py` と同責務の `.github/scripts/codex-issue-model-policy.json` とする。policyの `entries` は空を維持し、#759で `.github/workflows/ai-developer.yml` の初回・正式resume develop・Claude follow-upへ接続する。空policyでは `CODEX_MODEL` 値を保持する。paid Luna自然試行・policy entry activation・JSONL収集は未開始で、通常Issueのvariable運用と既存 `medium` 固定を維持する。
 
 helperはcallerが明示的に渡す `--policy PATH` とstdinの単一request JSON（`repository`、`issue`、`normal_model`）を読む。`normal_model` はtrusted normal `CODEX_MODEL` 値であり、Issue/PR/comment由来のoverrideではない。callerがhelperとpolicyをtrusted base/mainから取得する責務を持ち、PR head、model生成file、Issue/PR本文、commentをpolicy正本にしない。helper自身はnetwork / git / GitHub write・open-state検査・永続stateを持たず、policy取得失敗やidentity不明を未登録扱いへfallbackしない。
 
@@ -325,9 +325,11 @@ policy/requestのclosed schema、exact repository / positive integer Issue、重
 
 opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映する。対象IssueとPRがopenの間はentryの変更・削除をしない。変更・削除が必要なら停止して別の人間判断を行う。この固定ownershipはopt-in対象に限定し、default Issueのvariable変更運用には広げない。
 
-後続callerでは初回/resumeの既存entry/resume gateが確定したclosing Issue、follow-upの `check-claude-followup-target.sh` が `ai/issue-N` と `closingIssuesReferences` を照合済みのidentityを使い、branch名だけを信用しない。各callerはcurrent trusted main policyと既存target gateを再取得しpaid call前に選択する。immutable運用と対象再評価は親 #744で確認し、production wiringはfreshな別Issueで扱う。PR headのpolicyを使ったfixtureはproduction provenanceの証明ではない。
+初回/resume callerは既存entry/resume gateが確定した `ISSUE_NUMBER` と、既存context stepがcurrent mainとして固定した `base_sha` を使う。follow-up callerは既存current review/head・closing Issue/open・停止label gateとcheckout照合の成功後だけ、照合済みexact `ai/issue-N` のNを使い、PR番号をIssue番号としない。既存trusted `BASE_SHA` を維持し、任意PR本文/model出力をauthorityにしない。各callerはそのbaseからselector/policyを `RUNNER_TEMP` へ `git show` で抽出し、base blobと `git hash-object --no-filters` を照合する。PR/worktreeの同名fileは使わない。immutable運用と対象再評価は親 #744の対象とする。
 
-検証は `bash .github/scripts/test-select-codex-issue-model.sh`、既存 `test-production-unreachable.sh`、selector fixtureおよびAI Workflow Regressionのcurrent-head fixtureで行う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+選択結果は4096 byte以内のcanonical JSONを、取得済みselectorのpure APIが返すexact schema / type / identity / selectionとbyte単位で照合し、検証後だけstep outputへmodelを渡す。native execのmodel引数だけを切り替え、Repository variableは変更しない。取得不能・hash不一致・selector非0・結果不正・identity不明はpaid前でfail-closedとし、defaultへfallbackせず既存failure/pause handlerへ接続する。診断は固定 `default` / `opt_in` 分類だけとし、model IDの新規公開診断、telemetry / artifact / 台帳を追加しない。selector/policy/resultの一時fileは選択step終了時に削除する。
+
+検証は `test-ai-developer-workflow.sh` のsecretless caller fixture、`test-select-codex-issue-model.sh`、`test-production-unreachable.sh`、selector fixtureおよびAI Workflow Regressionのcurrent-head fixtureで行う。dormant guardはhash照合済みの上記exact callerだけを許可し、usage helper等の未接続部品と不正callerの負例を維持する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### fresh Codex exec usage抽出（#753、prepared / dormant）
 

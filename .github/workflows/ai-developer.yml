@@ -333,16 +333,66 @@ jobs:
             "$RUNNER_TEMP/development-issue.json" \
             "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
-      - name: Validate Codex model configuration
+      - name: Select trusted Codex Issue model
+        id: codex_model
         env:
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          NORMAL_MODEL: ${{ vars.CODEX_MODEL }}
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
-            echo 'repository変数CODEX_MODELには空白以外の値が必要です。' >&2
-            exit 1
-          fi
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]{0,15}$ ]]
+          selection_dir="$(mktemp -d "$RUNNER_TEMP/codex-model-selection.XXXXXX")"
+          export SELECTION_DIR="$selection_dir"
+          trap 'rm -rf -- "$selection_dir"' EXIT
+          for filename in select-codex-issue-model.py codex-issue-model-policy.json; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}")"
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]]
+            git show "${BASE_SHA}:${source_path}" > "$selection_dir/$filename"
+            test "$(git hash-object --no-filters "$selection_dir/$filename")" = "$expected_blob"
+          done
+          python3 -I -B - <<'PY_MODEL'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          try:
+              directory = Path(os.environ["SELECTION_DIR"])
+              source = directory / "select-codex-issue-model.py"
+              policy = directory / "codex-issue-model-policy.json"
+              spec = importlib.util.spec_from_file_location("trusted_model_selector", source)
+              selector = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(selector)
+              request = json.dumps(dict(repository=os.environ["GITHUB_REPOSITORY"],
+                  issue=int(os.environ["ISSUE_NUMBER"]), normal_model=os.environ["NORMAL_MODEL"]),
+                  ensure_ascii=True, separators=(",", ":")).encode()
+              with policy.open("rb") as stream:
+                  policy_bytes = stream.read(selector.MAX_POLICY_BYTES + 1)
+              # Reuse the pure Contract; do not copy schema/allowlist/model rules.
+              expected = selector.select(policy_bytes, request)
+              canonical = (json.dumps(expected, sort_keys=True, ensure_ascii=True,
+                  separators=(",", ":")) + "\n").encode()
+              with (directory / "result.json").open("wb") as output:
+                  result = subprocess.run([sys.executable, "-I", "-B", str(source), "--policy", str(policy)],
+                      input=request, stdout=output, stderr=subprocess.DEVNULL)
+              with (directory / "result.json").open("rb") as stream:
+                  actual = stream.read(4097)
+              # Exact canonical bytes prove closed schema, types, identity and selection.
+              if result.returncode != 0 or not 0 < len(actual) <= 4096 or actual != canonical:
+                  raise ValueError
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("model=" + expected["model"] + "\n")
+              print("モデル選択: " + expected["selection"])
+          except Exception:
+              print("モデル選択を拒否しました: trusted_selection_failed", file=sys.stderr)
+              sys.exit(1)
+          PY_MODEL
 
       - name: Prepare Codex developer runtime
         env:
@@ -550,7 +600,7 @@ jobs:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_MODEL: ${{ steps.codex_model.outputs.model }}
           CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
           CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}
           CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}
@@ -1860,17 +1910,69 @@ jobs:
             "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
             "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
-      - name: Validate Codex model configuration
+      - name: Select trusted Codex Issue model
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
+        id: codex_model
         env:
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          NORMAL_MODEL: ${{ vars.CODEX_MODEL }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
-            echo 'repository変数CODEX_MODELには空白以外の値が必要です。' >&2
-            exit 1
-          fi
+          [[ "$HEAD_REF" =~ ^ai/issue-([1-9][0-9]*)$ ]]
+          export ISSUE_NUMBER="${BASH_REMATCH[1]}"
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]{0,15}$ ]]
+          selection_dir="$(mktemp -d "$RUNNER_TEMP/codex-model-selection.XXXXXX")"
+          export SELECTION_DIR="$selection_dir"
+          trap 'rm -rf -- "$selection_dir"' EXIT
+          for filename in select-codex-issue-model.py codex-issue-model-policy.json; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}")"
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]]
+            git show "${BASE_SHA}:${source_path}" > "$selection_dir/$filename"
+            test "$(git hash-object --no-filters "$selection_dir/$filename")" = "$expected_blob"
+          done
+          python3 -I -B - <<'PY_MODEL'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          try:
+              directory = Path(os.environ["SELECTION_DIR"])
+              source = directory / "select-codex-issue-model.py"
+              policy = directory / "codex-issue-model-policy.json"
+              spec = importlib.util.spec_from_file_location("trusted_model_selector", source)
+              selector = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(selector)
+              request = json.dumps(dict(repository=os.environ["GITHUB_REPOSITORY"],
+                  issue=int(os.environ["ISSUE_NUMBER"]), normal_model=os.environ["NORMAL_MODEL"]),
+                  ensure_ascii=True, separators=(",", ":")).encode()
+              with policy.open("rb") as stream:
+                  policy_bytes = stream.read(selector.MAX_POLICY_BYTES + 1)
+              # Reuse the pure Contract; do not copy schema/allowlist/model rules.
+              expected = selector.select(policy_bytes, request)
+              canonical = (json.dumps(expected, sort_keys=True, ensure_ascii=True,
+                  separators=(",", ":")) + "\n").encode()
+              with (directory / "result.json").open("wb") as output:
+                  result = subprocess.run([sys.executable, "-I", "-B", str(source), "--policy", str(policy)],
+                      input=request, stdout=output, stderr=subprocess.DEVNULL)
+              with (directory / "result.json").open("rb") as stream:
+                  actual = stream.read(4097)
+              # Exact canonical bytes prove closed schema, types, identity and selection.
+              if result.returncode != 0 or not 0 < len(actual) <= 4096 or actual != canonical:
+                  raise ValueError
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("model=" + expected["model"] + "\n")
+              print("モデル選択: " + expected["selection"])
+          except Exception:
+              print("モデル選択を拒否しました: trusted_selection_failed", file=sys.stderr)
+              sys.exit(1)
+          PY_MODEL
 
       - name: Prepare Codex follow-up runtime
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
@@ -2069,7 +2171,7 @@ jobs:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_MODEL: ${{ steps.codex_model.outputs.model }}
           CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
           CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}
           CODEX_PACKAGE_ROOT: ${{ steps.followup_codex_runtime.outputs.package_root }}

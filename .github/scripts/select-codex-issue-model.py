@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepared-only selector. Caller supplies trusted policy and gated identity.
+"""Pure selector. Caller supplies trusted policy and gated identity.
 
 No provenance acquisition, lifecycle state, git/network calls or writes here.
 The policy path is an explicit caller input, never an implicit sibling default.
