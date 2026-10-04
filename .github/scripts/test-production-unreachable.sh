@@ -20,6 +20,9 @@ verifier = 'verify_post_workload'
 session_runtime = 'product-npm-session-runtime.py'
 session_probe = 'product-npm-session-probe.js'
 runtime_staging = 'product-runtime-staging.py'
+runtime_supply = 'trusted-runtime-supply.py'
+supply_proof = 'runtime-supply-proof.py'
+regression = workflows + 'ai-workflow-regression.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -28,6 +31,8 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (session_runtime, session_runtime, 'product-npm', None),
              (session_probe, session_probe, 'product-npm', None),
              (runtime_staging, runtime_staging, 'product-npm', None),
+             (runtime_supply, runtime_supply, 'product-npm', None),
+             (supply_proof, supply_proof, 'product-npm', None),
              (packet, packet, 'failure-evidence', None))
 
 
@@ -137,9 +142,13 @@ def assert_unreachable(sources):
     for path, text in sources.items():
         if path.startswith(workflows):
             assert all(needle not in text for needle in (product, packet, verifier,
-                                                        session_runtime, session_probe, runtime_staging,
+                                                        session_runtime, session_probe, runtime_staging[:-3],
                                                         *session_symbols)), (
                 'production workflow connection', path)
+            assert runtime_supply[:-3] not in text, ('supply production connection', path)
+            if supply_proof[:-3] in text:
+                assert path == regression and text.count(supply_proof[:-3]) == 1, 'unknown proof workflow'
+                assert '            .github/scripts/' + supply_proof + ' \\\n' in text, 'unknown proof call'
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
                 continue
@@ -163,7 +172,14 @@ def assert_unreachable(sources):
                     continue  # The single existing production caller (#687).
                 if needle == session_probe and path == scripts + session_runtime:
                     continue  # Exact dormant synthetic launcher; workflows remain forbidden.
+                if filename in (runtime_staging, runtime_supply) and path == scripts + supply_proof:
+                    continue  # #741 exact proof-only caller, never production.
+                if filename == product + '.py' and path == scripts + supply_proof:
+                    assert text.count(needle) == 1 and "load('" + product + "').CanonicalRoot" in text
+                    continue  # Existing physical-coordinate API only.
                 assert needle not in text, ('unknown production caller', path, filename)
+                if filename in (runtime_staging, runtime_supply, supply_proof):
+                    assert filename[:-3] not in text, ('unknown extensionless runtime caller', path, filename)
 
 
 def snapshot():
@@ -202,7 +218,7 @@ before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
-for name in (session_runtime, session_probe, runtime_staging):
+for name in (session_runtime, session_probe, runtime_staging, runtime_supply, supply_proof):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -233,6 +249,9 @@ for needle, filename, suite, baseline_name in contracts:
     for path in (workflows + 'caller.yml', workflows + 'caller.yaml',
                  workflows + 'nested/caller.yml'):
         rejected(path, 'run: python3 ' + scripts + filename + '\n')
+    if filename in (runtime_staging, runtime_supply, supply_proof):
+        rejected(scripts + 'unknown-caller.py', f"load({filename[:-3]!r})\n")
+        rejected(workflows + 'caller.yml', f"run: load({filename[:-3]!r})\n")
     # Test-only references and exact implementation identity remain distinct.
     accepted(scripts + 'test-synthetic-caller.sh', call)
     accepted(scripts + filename, sources[scripts + filename])

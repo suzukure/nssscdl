@@ -25,6 +25,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  runtime-supply:
+    name: Runtime supply setup-only proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact proof head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      # Independent runner: no fixture/Product/model executable precedes setup.
+      - name: Setup pinned runtime without model execution
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.159.3
+          codex-home: ${{ runner.temp }}/runtime-supply-codex-home
+          safety-strategy: unsafe
+          allow-users: '*'
+      - name: Prove trusted sealed runtime supply
+        timeout-minutes: 5
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          node_path="$(command -v node)"
+          launcher_path="$(command -v codex)"
+          action_main="$(dirname "$RUNNER_WORKSPACE")/_actions/openai/codex-action/86365089eb2b84e0a8fb0717b304f8bdcb13b20e/dist/main.js"
+          sudo -n env -i PATH=/usr/bin:/bin LC_ALL=C python3 -B \
+            .github/scripts/runtime-supply-proof.py \
+            "$node_path" "$launcher_path" "$action_main" "$GITHUB_WORKSPACE" \
+            "$HEAD_SHA" "$RUNNER_ENVIRONMENT"
   fixtures:
     name: Fixtures
     runs-on: ubuntu-latest

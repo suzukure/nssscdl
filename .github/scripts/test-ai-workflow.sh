@@ -169,7 +169,7 @@ import textwrap
 
 repo = Path(sys.argv[1])
 workflow = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
-run_block = textwrap.dedent(workflow.split('        run: |\n', 1)[1])
+run_block = textwrap.dedent(workflow.split('  fixtures:\n', 1)[1].split('        run: |\n', 1)[1])
 subprocess.run(['bash', '-n'], input=run_block.encode(), check=True)
 source = repo / '.github/scripts/select-ai-workflow-fixtures.py'
 spec = importlib.util.spec_from_file_location('regression_policy', source)
@@ -215,7 +215,7 @@ for changed_workflow, patterns in (
 prefix = '.github/scripts/'
 actual = sorted(prefix + p.name for p in (repo / prefix).glob('test-*.sh'))
 assert actual == sorted(p for fixtures in policy.INVENTORY.values() for p in fixtures)
-assert len(actual) == 74
+assert len(actual) == 75
 common_guard = prefix + 'test-production-unreachable.sh'
 local_path = prefix + 'deepinfra-usage-ledger.py'
 selected = sorted(policy.INVENTORY['deepinfra'] + policy.INVENTORY['common'])
@@ -327,7 +327,7 @@ else:
     product_selected = sorted(policy.INVENTORY['product-npm'] + policy.INVENTORY['common'])
     changed_file.write_bytes(encode(['.github/README.md', prefix + 'product-npm-orchestrator.py',
                                     prefix + 'test-product-npm-post-workload.sh']))
-    assert len(product_selected) == 19
+    assert len(product_selected) == 20
     run(product_selected, 'selected', 'known_paths')
     # Changed fixture is required independently of the helper mapping.
     changed_file.write_bytes(encode([prefix + 'test-deepinfra-checkpoint.sh']))
