@@ -1149,7 +1149,7 @@ jobs:
             app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
             [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
             local options=(--failed-action develop)
-            if [ "$pause_reason" = requirements_change ]; then
+            if [[ "$pause_reason" == requirements_change || "$pause_reason" == scope_decision ]]; then
               fingerprint="$(gh api "/repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" | python3 -c '
           import hashlib, json, sys
           body = json.load(sys.stdin)["body"]
@@ -1183,8 +1183,7 @@ jobs:
               ;;
             none) echo 'continue=true' >> "$GITHUB_OUTPUT" ;;
             scope_decision)
-              # Scope pause semantics are not activated in this consumer yet.
-              pause_for_human developer_execution_failed '未接続のscope decisionを検出しました。人間の判断があるまで自動開発を停止します。'
+              pause_for_human scope_decision 'Codexがスコープの判断の必要性を報告しました。対象範囲がIssueに記録されるまで自動開発を停止します。'
               ;;
             *)
               pause_for_human developer_execution_failed 'decision marker classifierの出力が不正です。人間の判断があるまで自動開発を停止します。'
