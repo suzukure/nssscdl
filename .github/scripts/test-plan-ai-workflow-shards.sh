@@ -24,7 +24,7 @@ planner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner)
 actual = sorted(prefix + path.name for path in (repo / prefix).glob('test-*.sh'))
 previous = [path for path in actual if path != prefix + 'test-plan-ai-workflow-shards.sh']
-assert len(previous) == 76 and len(actual) == 77
+assert len(previous) == 77 and len(actual) == 78
 
 
 def encode(paths):
@@ -194,5 +194,5 @@ for path, text in (('.github/workflows/ai-workflow-regression.yml', 'python3 ' +
         pass
     else:
         raise AssertionError('production planner caller accepted')
-print('AI workflow shard planner: 76/77 inventory, exact coverage, balance, canonical, fail-closed, pure/dormant PASS')
+print('AI workflow shard planner: 77/78 inventory, exact coverage, balance, canonical, fail-closed, pure/dormant PASS')
 PY
