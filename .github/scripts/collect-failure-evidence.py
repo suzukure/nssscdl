@@ -24,6 +24,9 @@ builder = load('failure_packet', 'build-failure-evidence-packet.py')
 selector = load('context_selector', 'build-development-context.py')
 WORKFLOW = 'AI Workflow Regression'
 WORKFLOW_PATH = '.github/workflows/ai-workflow-regression.yml'
+# #751 prepared topology; production sharding/aggregate implementation is #698.
+SHARD_WORKERS = {'Fixture shard 1', 'Fixture shard 2'}
+SHARD_TERMINAL = 'Regression Result'
 API_CAP = 2 * 1024 * 1024
 LOG_CAP = 16 * 1024 * 1024
 # Exact headings only; never infer a missing contract from prose/model output.
@@ -251,8 +254,19 @@ def failed_job(jobs, run_id, attempt):
     require(len({job['id'] for job in jobs}) == len(jobs), 'job_identity_mismatch', 'conflict')
     failures = [job for job in jobs if job.get('conclusion') == 'failure']
     require(bool(failures), 'failed_job_missing')
-    require(len(failures) == 1, 'failed_job_ambiguous', 'conflict')
-    job = failures[0]
+    if len(failures) == 1:
+        job = failures[0]
+    else:
+        # Validate names across the attempt, but constrain only failed jobs to
+        # the prepared topology. Non-failure orchestration never selects evidence.
+        names = [job.get('name') for job in jobs]
+        require(all(type(name) is str and name.strip() for name in names)
+                and len(set(names)) == len(names)
+                and names.count(SHARD_TERMINAL) == 1
+                and all(job['name'] in SHARD_WORKERS | {SHARD_TERMINAL} for job in failures),
+                'failed_job_ambiguous', 'conflict')
+        job = next(job for job in jobs if job['name'] == SHARD_TERMINAL)
+        require(job['conclusion'] == 'failure', 'failed_job_ambiguous', 'conflict')
     steps = job['steps']
     for step in steps:
         require(type(step) is dict and integer(step.get('number')) and type(step.get('name')) is str

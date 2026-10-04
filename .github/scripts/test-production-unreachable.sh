@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 from unittest.mock import patch
+import yaml
 
 repo = Path(sys.argv[1])
 scripts = '.github/scripts/'
@@ -25,6 +26,8 @@ supply_proof = 'runtime-supply-proof.py'
 model_selector = 'select-codex-issue-model.py'
 model_policy = 'codex-issue-model-policy.json'
 exec_usage = 'extract-codex-exec-usage.py'
+trusted_proof = 'trusted-main-runtime-supply-proof.py'
+trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -34,6 +37,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (session_probe, session_probe, 'product-npm', None),
              (runtime_staging, runtime_staging, 'product-npm', None),
              (runtime_supply, runtime_supply, 'product-npm', None),
+             (trusted_proof, trusted_proof, 'product-npm', None),
              (packet, packet, 'failure-evidence', None),
              (model_selector[:-3], model_selector, 'ai-developer-codex', None),
              (exec_usage[:-3], exec_usage, 'ai-developer-codex', None),
@@ -160,6 +164,25 @@ def assert_unreachable(sources):
             assert model_selector[:-3] not in text and model_policy not in text, (
                 'model selection production connection', path)
             assert exec_usage[:-3] not in text, ('exec usage production connection', path)
+            if path == trusted_workflow:
+                value = yaml.safe_load(text)
+                assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
+                assert value['permissions'] == {'contents': 'read'}
+                assert set(value['jobs']) == {'proof'}
+                steps = value['jobs']['proof']['steps']
+                assert len(steps) == 5 and 'Require exact trusted main source' == steps[0]['name']
+                assert steps[1]['with'] == {'ref': '${{ github.sha }}', 'persist-credentials': False}
+                assert steps[2]['with'] == {
+                    'codex-version': '0.159.3',
+                    'codex-home': '${{ runner.temp }}/runtime-supply-proof-home',
+                    'safety-strategy': 'unsafe', 'allow-users': '*'}
+                assert steps[3]['run'] == ('/usr/bin/env -i PATH="$PATH" PROOF_SHA="$PROOF_SHA" \\\n'
+                    '  /usr/bin/python3 -I .github/scripts/' + trusted_proof + ' --observe\n')
+                assert steps[4]['run'] == ('sudo -n /usr/bin/env -i PATH="$PATH" PROOF_SHA="$PROOF_SHA" \\\n'
+                    '  /usr/bin/python3 -I .github/scripts/' + trusted_proof + ' --prepare\n')
+                assert all(term not in text for term in ('secrets.', 'vars.', 'pull_request',
+                           product, packet, verifier, runtime_staging, runtime_supply, *session_symbols))
+                continue  # Only this closed proof entry; other workflow callers remain forbidden.
             assert all(needle not in text for needle in (product, packet, verifier,
                                                         session_runtime, session_probe, runtime_staging[:-3],
                                                         *session_symbols)), (
@@ -176,6 +199,18 @@ def assert_unreachable(sources):
                         continue  # Only the closed callback API, never raw session access.
                     assert symbol not in text, ('unknown session caller', path)
             for needle, filename, _, _ in contracts:
+                if path == scripts + trusted_proof:
+                    if filename in (runtime_staging, runtime_supply):
+                        # Exactly one closed module load; no caller inventory input.
+                        expression = "load('" + filename[:-3] + "')"
+                        assert text.count(expression) == 1
+                        assert needle not in text.replace(expression, 'PREPARED_API', 1)
+                        continue
+                    if filename == product + '.py':
+                        expression = "load('product-npm-orchestrator').CanonicalRoot"
+                        assert text.count(expression) == 1
+                        assert needle not in text.replace(expression, 'ROOT_API', 1)
+                        continue
                 if path == scripts + filename:
                     continue  # Implementation's own source identity is not a caller.
                 if path == scripts + product + '.py' and filename in (session_runtime, session_probe):
@@ -233,11 +268,13 @@ before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
-for name in (session_runtime, session_probe, runtime_staging, runtime_supply,
+for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
              model_selector, model_policy, exec_usage):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
+assert stat.S_ISREG((repo / trusted_workflow).lstat().st_mode), 'invalid proof workflow type'
+sources[trusted_workflow] = (repo / trusted_workflow).read_text()
 assert_unreachable(sources)
 print('production unreachable: current repository / exact selector literals passed')
 
@@ -252,6 +289,16 @@ def rejected(path, text):
     except (AssertionError, ValueError, SyntaxError):
         return
     raise AssertionError(('unsafe reference accepted', path))
+
+
+for mutation in (
+        sources[trusted_workflow].replace('workflow_dispatch:', 'pull_request:'),
+        sources[trusted_workflow].replace('contents: read', 'contents: write'),
+        sources[trusted_workflow].replace('ref: ${{ github.sha }}', 'ref: ${{ github.event.pull_request.head.sha }}'),
+        sources[trusted_workflow].replace('persist-credentials: false', 'persist-credentials: true'),
+        sources[trusted_workflow].replace('--prepare', '--prepare --path /candidate'),
+        sources[trusted_workflow].replace('codex-version: 0.159.3', 'codex-version: latest')):
+    rejected(trusted_workflow, mutation)
 
 
 # Mutate only in-memory snapshots; the actual repository is never written.

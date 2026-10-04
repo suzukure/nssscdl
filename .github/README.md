@@ -22,7 +22,7 @@ parse済みchanged pathsはtrusted baseの `TRIGGER_PATTERNS` に一致するも
 
 #711では `production_session` / `workload_session` / `_WorkloadSession` もguard対象とする。closed `production_session` callbackを呼ぶexact dormant runtimeと、そのruntimeからsynthetic probeへの参照だけを追加許容する。orchestratorの `SOURCES` はexact source identity literalだけをASTで許容し、実行参照・重複・未知callerは拒否する。raw sessionはruntimeへ許可しない。
 
-snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked filesだけをNUL-safeに列挙し、working treeのsource bytesを検査する。#711の2つのexact dormant sourceと#738 prepared staging helperは提案時のuntracked状態でも明示読込する。#738 staging helperと#741 supply helperはproduction workflow / non-test callerを拒否し、selectorのexact宣言とsynthetic fixtureだけを許容する。削除したactual proofへのworkflow接続も拒否する。untracked `__pycache__/*.pyc` 等は対象にしない。列挙失敗・不正path・未解決index stage・tracked symlink / 特殊file・ancestorの不正型・読込失敗・不正UTF-8はsilent skipせずFAILする。
+snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked filesだけをNUL-safeに列挙し、working treeのsource bytesを検査する。#711の2つのexact dormant sourceと#738 / #741 / #747 helper、および#747専用workflowは提案時のuntracked状態でも明示読込する。#738 staging helperと#741 supply helperはproduction workflow / 未知non-test callerを拒否し、selectorのexact宣言、synthetic fixtureと下記#747のclosed proof helperだけを許容する。削除したPR HEAD actual proofへのworkflow接続も拒否する。untracked `__pycache__/*.pyc` 等は対象にしない。列挙失敗・不正path・未解決index stage・tracked symlink / 特殊file・ancestorの不正型・読込失敗・不正UTF-8はsilent skipせずFAILする。
 
 検証は `bash .github/scripts/test-production-unreachable.sh`。synthetic caller / workflow / AST mutationはmemory内だけで構成し、repositoryを書き換えない。selected modeではcommonとともに必ず選択され、無関係なhelper変更で重いProduct npm suiteの常時選択を必要としない。inventory同期には既存#684 fixtureの未登録解消も含む。既存Product npm / failure-evidence fixtureの重複guardは維持する。production workflow / event / permission / stateは変更せず、network / GitHub API / Secrets / paid AIを使用しない。#697のregression callerでもcommon guardの必須実行を検証し、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
@@ -48,7 +48,19 @@ source acceptanceはcanonical absolute path、no-follow ancestor、single-link r
 
 検証は [`test-trusted-runtime-supply.sh`](scripts/test-trusted-runtime-supply.sh) のsynthetic/focused fixtureと既存AI Workflow Regressionの `Fixtures` で行う。syntheticではroot ownership/ext4を仮想化し、実copy/hash/no-follow/cleanupと否定条件、およびmock xattrのname/value drift、#738へのsealed-path handoffを固定する。pull_request workflowでPR HEAD scriptをsudo/root実行するactual proof helperと専用jobは除去し、production workflowへは接続しない。新しいSecrets/Variables、model/Responses call、repository write lifecycle変更はない。
 
-actual GitHub-hosted privileged proofは **#743** の責務とする。trusted main由来workflow/helperによるcandidate code実行前のprivileged preparation、root不要のbounded xattr-name observation、actual runnerのexact xattr allowlist決定、setup-only actual Codex runtimeとsealed supply → #738のactual C0 proofをそこで確認する。#741のsynthetic成功からactual runnerのauthority/xattr対応やformal proof済み/C0化済みとは主張しない。#739の再開判断には#743の証拠とmain反映が必要であり、RootDirectory/systemd/network consumerは本Issueに含めない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+親 **#743** はproof infrastructure導入 **#747** とactual GitHub-hosted privileged proof **#748** へ分離する。actual runnerのexact xattr allowlist決定、setup-only actual Codex runtimeとsealed supply → #738のactual C0判定は#748の責務とする。#741 / #747のsynthetic成功からactual runnerのauthority/xattr対応やformal proof済み/C0化済みとは主張しない。#739の再開判断には#748完了・#743完了の証拠とmain反映が必要であり、RootDirectory/systemd/network consumerは含めない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### Trusted-main runtime-supply proof infrastructure（#747、prepared）
+
+[`trusted-main-runtime-supply-proof.yml`](workflows/trusted-main-runtime-supply-proof.yml) は入力なしの `workflow_dispatch` 専用である。main反映後、Actionsの同workflowを `main` で明示起動する。source gateはdefault branch `main`、`refs/heads/main`、workflow source ref、workflow SHAとproof対象SHAの一致、入力集合が空であることをcheckout/setup/sudo前に要求する。対象はdispatch時のexact main SHAであり、自由入力SHAやPR HEADを受理しない。checkoutはそのSHAに固定し `persist-credentials:false`、権限は `contents:read` のみとする。PR regressionからactual privileged proofは到達不能である。
+
+setupは既存pin済み `openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e` / Codex `0.159.3` をkey / promptなしで使う。pin済みActionはCLIとproxy packageをinstallするが、空key / promptではResponses proxyを起動せず `codex exec` に入らない。固定 `allow-users:'*'` はAction内のpermission API確認を省略するためであり、workflow_dispatchのGitHub側認可やsource gateを置き換えない。Action内部のsetup network以外の通信を追加しない。Secrets / Variables / App tokenを参照せず、proof processは `env -i` で `PATH` とtrusted `PROOF_SHA` だけを受け取る。
+
+[`trusted-main-runtime-supply-proof.py`](scripts/trusted-main-runtime-supply-proof.py) のclosed modeは `--observe` / `--prepare` だけとする。Linux x64のinstalled npm layoutからNode、Codex launcher・metadata、native package metadata・binaryの5 regular-file rowsを決定し、既存Action blob pinとcheckout SHAを照合する。非root observationはno-follow descriptorでsourceと `/var/lib` の全ancestorをread-only観測し、`runtime-supply-observation` version `1` にsource class、ancestor depth（対象自身が0）、xattr name、filesystem / mountの非機密identifier、固定status/reason/errnoだけを記録する。最大192 records、各32 names・name 255 bytes、JSON出力128 KiB、mount table 1 MiB・4096 rows・escaped row 32件に束縛する。absolute source path、mount coordinate、xattr value/digest、file content、env、credentialを出力しない。unsupported authorityは失敗であり、#741 `filesystem()` の対象外escaped coordinateによるglobal rejectもrowのmount ID / device / filesystemと `relation:unrelated` で観測できる。policyを緩和しない。
+
+root preparationはmain由来helperだけを使う。#741 source evidenceを同じparent memoryへ捕捉してからversion probesを非root `runner` UID/GID・補助groupなし・最小envで実行し、launcher/nativeの `codex-cli 0.159.3` 一致を要求する。#710 `CanonicalRoot` だけを再利用し、Product consumerを起動しない。fresh `/var/lib/runtime-supply-proof-*` 内で#741 sealと#738 prepared handoffを検証してcleanupし、成功JSONも `c0_decision:not-made` とする。未知layout/authority・drift・cleanup失敗・timeoutは停止し、retry/fallbackしない。Product workspace/cache、RootDirectory/systemd/network、model、repository writeへの接続はない。
+
+PR上の検証は既存 `test-trusted-runtime-supply.sh` のsynthetic/static fixtureとcommon production-unreachable guardを使用し、fixture数75を維持する。専用workflow以外のproof caller、PR event、candidate codeのroot実行、event input injection、追加permission/credential、key/prompt、診断への禁止情報混入を検査する。本IssueのDoneはprepared infrastructureのreview/merge可能性であり、actual runは実施・消費しない。#748はmain反映後に同workflowを起動し、authority観測・actual proofとC0可否を判断する。700秒timeout後のblind retryは行わない。
 
 ## Failure evidence packet（#686 / #687）
 
@@ -68,7 +80,17 @@ builder自身はGitHub API / LLM / network / env読込 / repository write / cred
 
 collectorはfresh APIでrepository ID/name、workflow ID/name/path、completed failure / pull_request event、run ID/attempt/head、attempt-specific jobsとindividual jobの所属、associated PR 1件、current PR head、current main、same-repository closing Issue 1件を照合する。最新runのattemptも一致させ、superseded attemptを拒否する。PR baseはmain、source headとcurrent PR headは一致が必要で、不一致は `stale`。PR/Issue 0件は `incomplete`、複数件やidentity矛盾は `conflict` とする。API error / malformed shape / pagination欠落はcompleteへ昇格せず、PR / main / Issue / closing relation / latest runをbuilder直前に再照合する。取得間の競合を完全に排除する保証ではない。
 
-failed jobは1件だけを許可し、そのstep番号順のfirst failureを選ぶ。step番号・名前の重複は拒否し、`gh run view --attempt --job --log` のjob/step prefixでphysical line rangeをbindする。source log全文を上記secret-like evidence境界で検査した後、4096 bytesのfailure excerptと直前successの1024 bytesだけをbuilderへ渡す。raw full logは短命tempfileに限定し、artifactへ保存しない。API responseは2 MiB、source log取得は16 MiBを上限とし、超過は `oversized` とする。source artifactは取得・展開しない。
+failure jobが1件なら、そのjobを選ぶ既存挙動を維持する。複数failureの場合だけ、下記#751のprepared topologyを認識する。選択jobのstep番号順のfirst failureを選ぶ。step番号・名前の重複は拒否し、`gh run view --attempt --job --log` のjob/step prefixでphysical line rangeをbindする。source log全文を上記secret-like evidence境界で検査した後、4096 bytesのfailure excerptと直前successの1024 bytesだけをbuilderへ渡す。raw full logは短命tempfileに限定し、artifactへ保存しない。API responseは2 MiB、source log取得は16 MiBを上限とし、超過は `oversized` とする。source artifactは取得・展開しない。
+
+#### Known 2-shard topology（#751、prepared / dormant）
+
+#698が消費するjob選択契約の機械正本はcollectorの `failed_job()` / `SHARD_WORKERS` / `SHARD_TERMINAL` とする。failure jobが複数の場合、terminal `Regression Result` がちょうど1件存在して `completed / failure` であり、terminal以外のfailure job名がexact `Fixture shard 1` / `Fixture shard 2` の既知worker集合の部分集合の場合だけ受理する。plan / selected-path等のnon-failure jobはevidence source選択に使わず、exact nameを固定しない。ただしattempt内の全job（success / skipped等も含む）の名前は文字列・空白のみでない値・一意性を検証し、job ID重複、run ID / attempt不一致、metadata不正の既存検証も維持する。未知failed job、名前重複・failed job名drift、terminal欠落・non-failureは `conflict / failed_job_ambiguous` で拒否し、API返却順に意味を持たせない。
+
+canonical evidence sourceはterminalだけとし、そのindividual jobをfresh照合してpacketのjob ID / first failing step / log locatorへbindする。worker failureをsuccessへ変更するものではなく、source run全体がfailureで、aggregateがworker結果をfail-closedに正規化することを後続#698の前提とする。first failing step、log boundary、secret-like reject、packet上限、read-only権限は既存契約を再利用する。現在の `Fixtures` workflowは変更せず、このtopologyのproduction到達・aggregate実装・3 shard以上への一般化は本変更に含めない。
+
+検証は既存collector fixtureでsingle failureの維持、1 / 2 worker failureとterminal failureの受理、non-failure orchestration / selected-path job共存時の同一packet・job順序独立、unknown failed job / duplicate / terminal欠落・success・cancelled・timed_out、全jobの名前不正・identity / attempt不一致・metadata不正の拒否、aggregateへのpacket bindと既存evidence境界を固定する。synthetic fixtureはproduction multi-shard runの証拠ではなく、E2Eは#698でtopologyがproduction到達した最初の自然runで確認する。
+
+#### Issue contractとevidence出力
 
 Issue contractは以下のexact `## <heading>` 対応表にある6節から取得する（scriptの `HEADINGS` が機械正本）。case変更・別headingや本文からのsection inferenceは行わない。
 
