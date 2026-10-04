@@ -309,22 +309,22 @@ compile(runtime_child, '<fixed-supervisor-fixture>', 'exec')
 runtime_canary = b'SECRET_CANARY_764_command_body_error_stderr'
 independent = (Path('/proc/1/comm').read_text().strip() == 'systemd'
                and 'codex-' not in Path('/proc/self/cgroup').read_text())
-if not independent:
-    if os.environ.get('GITHUB_ACTIONS') == 'true':
-        raise SystemExit('FAIL supervisor runtime: independent systemd runner required; SKIP forbidden')
-    print('SKIP supervisor runtime: 独立systemd runnerが必要です（local checksのみ）')
-    sys.exit(0)
 
 
-def checked(args):
+def checked(args, missing_unit=False):
     # Never reflect systemd/journal/child diagnostics on failure.
     result = subprocess.run(['sudo', '-n', *args], capture_output=True, timeout=10)
-    assert result.returncode == 0, 'runtime control command failed'
+    # Match the existing cleanup's not-found rc 0/1 contract while the unique
+    # transient unit is still being registered; other command errors fail.
+    absent = (missing_unit and result.returncode == 1
+              and b'LoadState=not-found' in result.stdout.splitlines())
+    assert result.returncode == 0 or absent, 'runtime control command failed'
     return result.stdout
 
 
-def show(unit, names):
-    data = checked(['systemctl', 'show', unit, *['--property=' + n for n in names]])
+def show(unit, names, missing_unit=False):
+    data = checked(['systemctl', 'show', unit, *['--property=' + n for n in names]],
+                   missing_unit=missing_unit)
     return dict(line.split('=', 1) for line in data.decode().splitlines())
 
 
@@ -336,6 +336,88 @@ def until(predicate, seconds=10):
             return value
         time.sleep(0.05)
     raise AssertionError('runtime observation deadline exceeded')
+
+
+outcome_fields = ('ActiveState', 'SubState', 'Result', 'ExecMainCode', 'ExecMainStatus')
+
+
+def finished(unit, last_state):
+    last_state.clear()
+    last_state.update(show(unit, ('LoadState', *outcome_fields), missing_unit=True))
+    # A unique unit can still be inactive/dead before systemd-run starts it.
+    # ExecMainCode is waitid's code (1=exited, 2=killed, 3=core-dumped),
+    # not the exit status. Require a reaped main process AND a terminal pair;
+    # fast exits need not have been observed in the running state first.
+    if (last_state.get('LoadState') != 'not-found'
+            and last_state.get('ExecMainCode') in ('1', '2', '3')
+            and (last_state.get('ActiveState'), last_state.get('SubState')) in (
+                ('active', 'exited'), ('failed', 'failed'), ('inactive', 'dead'))):
+        return dict(last_state)
+
+
+def outcome_diagnostic(value):
+    allowed = dict(ActiveState=('inactive', 'activating', 'active', 'deactivating', 'failed'),
+                   SubState=('dead', 'start', 'running', 'exited', 'stop', 'stop-sigterm',
+                             'stop-sigkill', 'failed'),
+                   Result=('success', 'exit-code', 'signal', 'core-dump', 'timeout',
+                           'resources', 'protocol', 'start-limit-hit', 'exec-condition'),
+                   ExecMainCode=tuple(str(n) for n in range(7)),
+                   ExecMainStatus=tuple(str(n) for n in range(256)))
+    return {key: value.get(key) if value.get(key) in allowed[key] else 'unknown'
+            for key in outcome_fields}
+
+
+# Local regression of the actual finite poll, including a fast non-started child
+# whose supervisor exits 2 without the observer ever seeing running.
+initial = dict(zip(outcome_fields, ('inactive', 'dead', 'success', '0', '0')))
+for state, substate, code, status, result in (
+        ('active', 'exited', '1', '0', 'success'),
+        ('failed', 'failed', '1', '7', 'exit-code'),
+        ('failed', 'failed', '1', '2', 'exit-code'),
+        ('inactive', 'dead', '1', '0', 'success'),
+        ('failed', 'failed', '2', str(signal.SIGTERM), 'timeout')):
+    terminal = dict(zip(outcome_fields, (state, substate, result, code, status)))
+    pending = [{'LoadState': 'not-found'}, initial,
+               {**initial, 'ActiveState': 'active', 'SubState': 'exited'},
+               {**initial, 'ActiveState': 'activating', 'SubState': 'start'},
+               {**terminal, 'ActiveState': 'active', 'SubState': 'running'},
+               {**terminal, 'ActiveState': 'deactivating', 'SubState': 'stop-sigkill'}]
+    with patch('__main__.show', side_effect=[*pending, terminal]) as observed, \
+         patch.object(time, 'sleep'):
+        assert until(lambda: finished('fixed-fixture-unit', {})) == terminal
+        assert observed.call_count == len(pending) + 1
+    with patch('__main__.show', side_effect=[initial, terminal]) as observed, \
+         patch.object(time, 'sleep'):
+        assert until(lambda: finished('fixed-fixture-unit', {})) == terminal
+        assert observed.call_count == 2
+with patch('__main__.show', return_value=initial), \
+     patch.object(time, 'monotonic', side_effect=(0, 0, 11)), patch.object(time, 'sleep'):
+    try:
+        until(lambda: finished('fixed-fixture-unit', {}))
+    except AssertionError as error:
+        assert str(error) == 'runtime observation deadline exceeded'
+    else:
+        raise AssertionError('unstarted service accepted as completed')
+assert outcome_diagnostic({key: canary for key in (*outcome_fields, 'raw')}) == {
+    key: 'unknown' for key in outcome_fields}
+assert outcome_diagnostic(terminal) == terminal
+for rc, data, accepted in ((0, b'LoadState=not-found\n', True),
+                           (1, b'LoadState=not-found\n', True),
+                           (1, b'', False), (2, b'LoadState=not-found\n', False)):
+    with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(
+            [], rc, stdout=data, stderr=canary.encode())):
+        try:
+            checked(['systemctl', 'show', 'fixed-fixture-unit'], missing_unit=True)
+        except AssertionError:
+            assert not accepted
+        else:
+            assert accepted
+print('supervisor systemd poll: pre-start / fast exit / terminal code / deadline / diagnostic PASS')
+if not independent:
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        raise SystemExit('FAIL supervisor runtime: independent systemd runner required; SKIP forbidden')
+    print('SKIP supervisor runtime: 独立systemd runnerが必要です（local checksのみ）')
+    sys.exit(0)
 
 
 def identity(pid, cgroup):
@@ -372,6 +454,7 @@ with tempfile.TemporaryDirectory(prefix='supervisor-764-', dir='/tmp') as direct
         base.mkdir()
         unit = 'supervisor-764-' + uuid.uuid4().hex + '.service'
         processes = {}
+        last_state = {}
         waiter = None
         try:
             argv = ([str(base / 'absent-executable')] if mode == 'not-started' else
@@ -410,11 +493,7 @@ with tempfile.TemporaryDirectory(prefix='supervisor-764-', dir='/tmp') as direct
                 (base / 'release').touch()
             # --wait with RemainAfterExit needs a bounded status poll before
             # stopping successful retained units; it cannot define child rc.
-            def finished():
-                value = show(unit, ('ActiveState', 'SubState', 'Result', 'ExecMainCode', 'ExecMainStatus'))
-                if value['ActiveState'] in ('active', 'failed', 'inactive') and value['SubState'] != 'running':
-                    return value
-            outcome = until(finished, seconds=25)
+            outcome = until(lambda: finished(unit, last_state), seconds=25)
             expected_rc = None if mode == 'not-started' else int(mode[2:]) if mode.startswith('rc') else 0
             if mode == 'timeout':
                 assert outcome['Result'] == 'timeout'
@@ -462,6 +541,10 @@ with tempfile.TemporaryDirectory(prefix='supervisor-764-', dir='/tmp') as direct
                                               separators=(',', ':')).encode())
             assert {p.name for p in base.iterdir()} <= {'ready', 'release', 'descendant'}
             print('supervisor systemd: ' + mode + ' PASS（synthetic stream/lifecycleのみ）', flush=True)
+        except Exception:
+            print('FAIL supervisor systemd: ' + mode + ' ' + json.dumps(
+                outcome_diagnostic(last_state), sort_keys=True, separators=(',', ':')), flush=True)
+            raise
         finally:
             # Stop/reset only the unique fixture unit, including outer timeout
             # or assertion failures. Never kill by username or touch other units.
