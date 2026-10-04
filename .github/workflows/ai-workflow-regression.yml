@@ -42,7 +42,7 @@ jobs:
           codex-version: 0.159.3
           codex-home: ${{ runner.temp }}/runtime-supply-codex-home
           safety-strategy: unsafe
-          allow-users: '*'
+          allow-bot-users: nssscdl-chatgpt-dev
       - name: Prove trusted sealed runtime supply
         timeout-minutes: 5
         shell: bash

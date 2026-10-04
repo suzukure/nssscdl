@@ -101,12 +101,16 @@ def main():
     expected_action = workspace.parent.parent / '_actions/openai/codex-action' / PIN / 'dist/main.js'
     require(Path(action) == expected_action, 'unexpected-action-path')
     prepared = resolve(Path(node), Path(launcher), Path(action), workspace, supply, staging, root_api)
-    # Bounded source observation: class + uid/mode/mount + xattr count only.
-    for row, _, evidence in prepared._rows:
-        print(json.dumps({'class': row['class'], 'uid': evidence[1][2],
+    # Bounded names only: no source paths, xattr values or value digests in logs.
+    observations = [('pinned-action', supply.observe(Path(action), staging))]
+    observations += [(row['class'], evidence) for row, _, evidence in prepared._rows]
+    for kind, evidence in observations:
+        print(json.dumps({'class': kind, 'uid': evidence[1][2],
                           'mode': oct(evidence[1][4] & 0o7777), 'mount': evidence[2],
                           'ancestor_modes': [oct(a[0][4] & 0o7777) for a in evidence[0]],
-                          'xattr_count': 0}, sort_keys=True))
+                          'xattr_names': [name for name, _ in evidence[4]],
+                          'ancestor_xattr_names': [[name for name, _ in a[2]]
+                                                   for a in evidence[0]]}, sort_keys=True))
     # Demonstrate #738 authority refusal without modifying actual host sources.
     try:
         staging.authority(type('Info', (), {'st_uid': 0, 'st_mode': 0o40777})(), {0},

@@ -48,6 +48,27 @@ for attribute in ('system.posix_acl_access', 'system.posix_acl_default',
         rejected(lambda: supply.no_xattrs(1), 'unsupported-xattr-authority')
 with patch.object(os, 'listxattr', side_effect=PermissionError):
     rejected(lambda: supply.no_xattrs(1))
+for attribute in ('system.posix_acl_access', 'system.posix_acl_default', 'security.capability',
+                  'security.selinux', 'system.nfs4_acl', 'trusted.metadata', 'unknown.metadata', 'user.'):
+    with patch.object(os, 'listxattr', return_value=[attribute]):
+        rejected(lambda: supply.source_xattrs(1), 'unsupported-xattr-authority')
+with patch.object(os, 'listxattr', return_value=['user.metadata']), \
+     patch.object(os, 'getxattr', return_value=b'private metadata'):
+    attributes = supply.source_xattrs(1)
+    assert attributes == (('user.metadata', proof.hashlib.sha256(b'private metadata').hexdigest()),)
+    assert 'private metadata' not in repr(attributes)
+with patch.object(os, 'listxattr', return_value=['user.metadata']), \
+     patch.object(os, 'getxattr', side_effect=PermissionError):
+    rejected(lambda: supply.source_xattrs(1))
+for names, value in ((['user.' + str(i) for i in range(33)], b''),
+                     (['user.' + 'x' * 251], b''), (['user.duplicate'] * 2, b''),
+                     (['user.large'], b'x' * 65537)):
+    with patch.object(os, 'listxattr', return_value=names), \
+         patch.object(os, 'getxattr', return_value=value):
+        rejected(lambda: supply.source_xattrs(1), 'source-xattr-limit')
+with patch.object(os, 'listxattr', side_effect=[['user.metadata'], []]), \
+     patch.object(os, 'getxattr', return_value=b''):
+    rejected(lambda: supply.source_xattrs(1), 'source-drift')
 
 # Synthetic authority namespace: real copying/hashing/no-follow/inode checks,
 # virtual root ownership + ext4 only. This is NOT actual runner evidence.
@@ -142,9 +163,36 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
         rejected(lambda: prepared.snapshot(parent).__enter__(), 'supply-overlap')
     with patch.object(os, 'getuid', return_value=1001):
         rejected(lambda: prepared.snapshot(parent).__enter__(), 'root-preparation-required')
-    for attribute in ('system.posix_acl_access', 'security.capability', 'user.unknown'):
+    for attribute in ('system.posix_acl_access', 'security.capability', 'trusted.metadata', 'unknown.metadata'):
         with patch.object(os, 'listxattr', return_value=[attribute]):
             rejected(prepare, 'unsupported-xattr-authority')
+
+    # Metadata is bound on files AND ancestors, without relying on ctime drift.
+    for metadata_path in (node, source):
+        metadata_inode = metadata_path.stat().st_ino
+        metadata = {'user.metadata': b'original'}
+        def metadata_names(fd):
+            info = os.fstat(fd) if type(fd) is int else os.stat(fd)
+            return list(metadata) if info.st_ino == metadata_inode else []
+        with patch.object(os, 'listxattr', side_effect=metadata_names), \
+             patch.object(os, 'getxattr', side_effect=lambda fd, name: metadata[name]):
+            bound = prepare()
+            with bound.snapshot(parent) as sealed:
+                assert all(not os.listxattr(path) for path in sealed.path.rglob('*'))
+                sealed.prepared_runtime().verify()
+            for changed in ({'user.metadata': b'changed'}, {}, {'user.renamed': b'original'}):
+                metadata.clear()
+                metadata.update(changed)
+                rejected(bound.verify, 'source-drift')
+            metadata.clear()
+            metadata['user.metadata'] = b'original'
+            real_open = os.fdopen
+            def metadata_copy_open(fd, mode):
+                metadata['user.metadata'] = b'copy-time change'
+                return real_open(fd, mode)
+            with patch.object(os, 'fdopen', side_effect=metadata_copy_open):
+                rejected(lambda: bound.snapshot(parent).__enter__(), 'source-drift')
+            assert not list(parent.iterdir())
 
     # Copy-time drift never publishes a handle and removes the partial root.
     original_read = os.read
@@ -305,7 +353,8 @@ assert set(checkout) == set(setup) == {'name', 'uses', 'with'}
 assert checkout['with'] == {'ref': '${{ github.event.pull_request.head.sha }}', 'persist-credentials': False}
 assert setup['uses'] == 'openai/codex-action@' + proof.PIN
 assert setup['with'] == {'codex-version': '0.159.3',
-    'codex-home': '${{ runner.temp }}/runtime-supply-codex-home', 'safety-strategy': 'unsafe', 'allow-users': '*'}
+    'codex-home': '${{ runner.temp }}/runtime-supply-codex-home', 'safety-strategy': 'unsafe',
+    'allow-bot-users': 'nssscdl-chatgpt-dev'}
 assert 'secrets.' not in str(job) and 'vars.' not in str(job)
 assert set(actual) == {'name', 'timeout-minutes', 'shell', 'env', 'run'}
 assert actual['timeout-minutes'] == 5 and actual['shell'] == 'bash'

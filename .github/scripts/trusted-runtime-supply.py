@@ -3,10 +3,11 @@
 
 The parent must run before any model/Product/PR arbitrary executable, retaining
 resolver evidence in memory. Evidence is a caller assertion, not authentication
-of workflow history. Only ext4 with no xattrs is supported; never trust writable
-toolcache authority as a #738 source. No workload receives original paths.
+of workflow history. Only ext4 is supported: source user.* metadata is bound,
+sealed authority has no xattrs. Never trust writable toolcache as a #738 source.
 """
 from contextlib import contextmanager
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -51,6 +52,23 @@ def no_xattrs(fd):
     require(os.listxattr(fd) == [], 'unsupported-xattr-authority')
 
 
+def source_xattrs(fd):
+    """ext4 user metadata only; exact names/digests, never trust evidence."""
+    names = os.listxattr(fd)
+    require(len(names) <= 32 and len(set(names)) == len(names), 'source-xattr-limit')
+    require(all(name.startswith('user.') and len(name) > 5 for name in names),
+            'unsupported-xattr-authority')
+    attributes, total = [], 0
+    for name in sorted(names):
+        require(len(os.fsencode(name)) <= 255, 'source-xattr-limit')
+        value = os.getxattr(fd, name)
+        total += len(value)
+        require(total <= 65536, 'source-xattr-limit')
+        attributes.append((name, hashlib.sha256(value).hexdigest()))
+    require(sorted(os.listxattr(fd)) == sorted(names), 'source-drift')
+    return tuple(attributes)
+
+
 @contextmanager
 def sealed_directory(path, staging):
     # #738 checks owner/mode; additionally reject unknown ancestor authority.
@@ -84,8 +102,8 @@ def source_file(path, staging):
                 fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                    dir_fd=fds[-1]))
             info = os.fstat(fds[-1])
-            no_xattrs(fds[-1])
-            ancestors.append((staging.signature(info)[:5], filesystem(current, info.st_dev)))
+            mount = filesystem(current, info.st_dev)
+            ancestors.append((staging.signature(info)[:5], mount, source_xattrs(fds[-1])))
         before = os.stat(path.name, dir_fd=fds[-1], follow_symlinks=False)
         require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1, 'unsafe-source-type')
         require(0 < before.st_size <= 512 * 1024 * 1024, 'source-size-limit')
@@ -94,19 +112,19 @@ def source_file(path, staging):
                            dir_fd=fds[-1]))
         info = os.fstat(fds[-1])
         require(staging.signature(info) == staging.signature(before), 'source-drift')
-        no_xattrs(fds[-1])
         mount = filesystem(path, info.st_dev)
-        yield fds[-1], tuple(ancestors), staging.signature(info), mount
+        yield fds[-1], tuple(ancestors), staging.signature(info), mount, source_xattrs(fds[-1])
     finally:
         for fd in reversed(fds):
             os.close(fd)
 
 
 def observe(path, staging):
-    with source_file(path, staging) as (fd, ancestors, identity, mount):
+    with source_file(path, staging) as (fd, ancestors, identity, mount, xattrs):
         digest = staging.digest_fd(fd)
-        require(staging.signature(os.fstat(fd)) == identity, 'source-drift')
-        return ancestors, identity, mount, digest
+        require(source_xattrs(fd) == xattrs and staging.signature(os.fstat(fd)) == identity,
+                'source-drift')
+        return ancestors, identity, mount, digest, xattrs
 
 
 class PreparedSupply:
@@ -181,8 +199,8 @@ class PreparedSupply:
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 directories.update(p for p in (target.parent, *target.parent.parents)
                                    if p == root or root in p.parents)
-                with source_file(Path(row['source']), staging) as (fd, ancestry, identity, mount):
-                    require((ancestry, identity, mount, staging.digest_fd(fd)) == evidence,
+                with source_file(Path(row['source']), staging) as (fd, ancestry, identity, mount, xattrs):
+                    require((ancestry, identity, mount, staging.digest_fd(fd), xattrs) == evidence,
                             'source-drift')
                     os.lseek(fd, 0, os.SEEK_SET)
                     out = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -192,7 +210,7 @@ class PreparedSupply:
                         stream.flush()
                         os.fchmod(stream.fileno(), 0o555 if row['executable'] else 0o444)
                         no_xattrs(stream.fileno())
-                    require(staging.signature(os.fstat(fd)) == identity
+                    require(source_xattrs(fd) == xattrs and staging.signature(os.fstat(fd)) == identity
                             and staging.digest_fd(fd) == evidence[3], 'source-drift')
             self.verify()
             for path in sorted(directories, key=lambda p: len(p.parts), reverse=True):
