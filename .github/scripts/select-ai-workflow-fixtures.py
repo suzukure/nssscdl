@@ -103,6 +103,7 @@ PATH_SUITES = (
     (SCRIPTS + "product-npm-session-probe.js", ("product-npm",)),
     (SCRIPTS + "product-runtime-staging.py", ("product-npm",)),
     (SCRIPTS + "trusted-runtime-supply.py", ("product-npm",)),
+    (SCRIPTS + "trusted-main-runtime-supply-proof.py", ("product-npm",)),
     (SCRIPTS + "npm-locked-preparation.py", ("product-npm",)),
     (SCRIPTS + "npm-registry-proxy.py", ("product-npm",)),
     (SCRIPTS + "npm-registry-boundary-runtime.py", ("product-npm",)),

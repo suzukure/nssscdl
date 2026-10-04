@@ -80,6 +80,7 @@ cases = (
     ('product-npm-session-probe.js', {'product-npm'}),
     ('product-runtime-staging.py', {'product-npm'}),
     ('trusted-runtime-supply.py', {'product-npm'}),
+    ('trusted-main-runtime-supply-proof.py', {'product-npm'}),
     ('test-ai-developer-branch-freshness.sh', {'ai-developer-codex'}),
     ('evaluate-codex-diff-gate.sh', {'ai-developer-codex', 'claude'}),
     ('classify-ai-developer-decision-marker.sh', {'ai-developer-codex'}),
