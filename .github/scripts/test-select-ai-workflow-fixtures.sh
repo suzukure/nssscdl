@@ -28,9 +28,10 @@ assert sum(counts.values()) == 68
 assert selector.EXTENSIONS == {
     'product-npm': ('product-npm-bootstrap-preparation', 'product-npm-post-workload',
                     'product-npm-production-session', 'product-runtime-staging', 'trusted-runtime-supply'),
+    'ai-developer-codex': ('select-' + 'codex-issue-model',),
     'common': ('select-ai-workflow-fixtures', 'production-unreachable')}
 inventory = sorted(p for values in selector.INVENTORY.values() for p in values)
-assert len(inventory) == len(set(inventory)) == 75
+assert len(inventory) == len(set(inventory)) == 76
 assert inventory == actual, 'Every current shell fixture must be registered exactly once'
 common_guard = prefix + 'test-production-unreachable.sh'
 assert common_guard in selector.INVENTORY['common']
@@ -84,6 +85,8 @@ cases = (
     ('test-ai-developer-branch-freshness.sh', {'ai-developer-codex'}),
     ('evaluate-codex-diff-gate.sh', {'ai-developer-codex', 'claude'}),
     ('classify-ai-developer-decision-marker.sh', {'ai-developer-codex'}),
+    ('select-codex-issue-model.py', {'ai-developer-codex'}),
+    ('codex-issue-model-policy.json', {'ai-developer-codex'}),
     ('build-review-context.sh', {'ai-developer-codex', 'claude'}),
     ('classify-claude-review-risk.sh', {'claude'}),
     ('parse-ai-resume-command.sh', {'resume-human-pause'}),
@@ -304,5 +307,5 @@ assert 'fixtures=(.github/scripts/test-*.sh)' in regression
 assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
 assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
-print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + selector + #701 = 75).')
+print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + #745 + selector + #701 = 76).')
 PY

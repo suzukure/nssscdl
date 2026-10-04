@@ -23,6 +23,8 @@ session_probe = 'product-npm-session-probe.js'
 runtime_staging = 'product-runtime-staging.py'
 runtime_supply = 'trusted-runtime-supply.py'
 supply_proof = 'runtime-supply-proof.py'
+model_selector = 'select-codex-issue-model.py'
+model_policy = 'codex-issue-model-policy.json'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
@@ -35,7 +37,9 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (runtime_staging, runtime_staging, 'product-npm', None),
              (runtime_supply, runtime_supply, 'product-npm', None),
              (trusted_proof, trusted_proof, 'product-npm', None),
-             (packet, packet, 'failure-evidence', None))
+             (packet, packet, 'failure-evidence', None),
+             (model_selector[:-3], model_selector, 'ai-developer-codex', None),
+             (model_policy, model_policy, 'ai-developer-codex', None))
 
 
 def python_body(text):
@@ -44,7 +48,7 @@ def python_body(text):
     assert start and end, 'missing fixture Python body'
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
                                                            session_runtime, session_probe, runtime_staging,
-                                                           *session_symbols))
+                                                           *session_symbols, model_selector[:-3], model_policy))
     return body
 
 
@@ -117,6 +121,17 @@ def assert_declarative(path, text):
         for row in matches:
             allowed.extend(n for n in ast.walk(row)
                            if isinstance(n, ast.Constant) and n.value == filename)
+        if filename == model_selector and not is_fixture:
+            # Exact fixture registration is data, never an executable reference.
+            extension = declaration(tree, 'EXTENSIONS', ast.Dict)
+            ast.literal_eval(extension)
+            values = [v for k, v in zip(extension.keys, extension.values)
+                      if isinstance(k, ast.Constant) and k.value == suite]
+            assert len(values) == 1 and isinstance(values[0], ast.Tuple)
+            names = [n for n in values[0].elts
+                     if isinstance(n, ast.Constant) and n.value == model_selector[:-3]]
+            assert len(names) == 1, 'missing/duplicate model fixture extension'
+            allowed.extend(names)
         if baseline is not None and baseline_name:
             values = [v for k, v in zip(baseline.keys, baseline.values)
                       if isinstance(k, ast.Constant) and k.value == suite]
@@ -143,6 +158,8 @@ def assert_unreachable(sources):
         assert_declarative(path, sources[path])
     for path, text in sources.items():
         if path.startswith(workflows):
+            assert model_selector[:-3] not in text and model_policy not in text, (
+                'model selection production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -247,7 +264,8 @@ before = snapshot()
 sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
-for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof):
+for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
+             model_selector, model_policy):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -332,6 +350,16 @@ for name in ('BASELINE', 'PATH_SUITES'):
     for assignment in (f'{name} = ()', f'{name}: tuple = ()', f'{name} += ()',
                        f'def extra():\n    {name} = ()'):
         rejected(selector_path, original + '\n' + assignment + '\n')
+
+# The new extension exception admits only one declarative fixture identity.
+original = sources[selector_path]
+literal = '"' + model_selector[:-3] + '"'
+for replacement in ('"other"', literal + ', ' + literal,
+                    f'run({model_selector[:-3]!r})'):
+    rejected(selector_path, original.replace(literal, replacement))
+for assignment in ('EXTENSIONS = {}', 'EXTENSIONS += {}',
+                   'def extra():\n    EXTENSIONS = {}'):
+    rejected(selector_path, original + '\n' + assignment + '\n')
 
 for symbol in session_symbols:
     for path in (scripts + 'unknown.py', scripts + 'copy-' + session_runtime,
