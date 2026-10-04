@@ -215,7 +215,7 @@ for changed_workflow, patterns in (
 prefix = '.github/scripts/'
 actual = sorted(prefix + p.name for p in (repo / prefix).glob('test-*.sh'))
 assert actual == sorted(p for fixtures in policy.INVENTORY.values() for p in fixtures)
-assert len(actual) == 73
+assert len(actual) == 74
 common_guard = prefix + 'test-production-unreachable.sh'
 local_path = prefix + 'deepinfra-usage-ledger.py'
 selected = sorted(policy.INVENTORY['deepinfra'] + policy.INVENTORY['common'])
@@ -327,7 +327,7 @@ else:
     product_selected = sorted(policy.INVENTORY['product-npm'] + policy.INVENTORY['common'])
     changed_file.write_bytes(encode(['.github/README.md', prefix + 'product-npm-orchestrator.py',
                                     prefix + 'test-product-npm-post-workload.sh']))
-    assert len(product_selected) == 18
+    assert len(product_selected) == 19
     run(product_selected, 'selected', 'known_paths')
     # Changed fixture is required independently of the helper mapping.
     changed_file.write_bytes(encode([prefix + 'test-deepinfra-checkpoint.sh']))
