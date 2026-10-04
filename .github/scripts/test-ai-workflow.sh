@@ -171,7 +171,11 @@ import textwrap
 
 repo = Path(sys.argv[1])
 workflow = (repo / '.github/workflows/ai-workflow-regression.yml').read_text()
-run_block = textwrap.dedent(workflow.split('  fixtures:\n', 1)[1].split('        run: |\n', 1)[1])
+jobs = dict(re.findall(r'^  (\w+):\n(.*?)(?=^  \w+:\n|\Z)', workflow.split('jobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+run_block = textwrap.dedent(jobs['fixtures'].split('        run: |\n', 1)[1])
+validator = textwrap.dedent(workflow.split('  EXECUTION_PLAN_VALIDATOR: |\n', 1)[1].split('\njobs:', 1)[0])
+worker_blocks = {str(i): textwrap.dedent(jobs[f'shard_{i}'].split('        run: |\n', 1)[1]) for i in (1, 2)}
+terminal_block = textwrap.dedent(jobs['regression_result'].split('        run: |\n', 1)[1])
 subprocess.run(['bash', '-n'], input=run_block.encode(), check=True)
 source = repo / '.github/scripts/select-ai-workflow-fixtures.py'
 planner_source = repo / '.github/scripts/plan-ai-workflow-shards.py'
@@ -181,13 +185,38 @@ spec.loader.exec_module(policy)
 spec = importlib.util.spec_from_file_location('regression_planner', planner_source)
 planner_policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner_policy)
-# Producer-only job output: no consumer or worker topology.
-assert re.findall(r'^  (\w+):$', workflow.split('jobs:\n', 1)[1], re.MULTILINE) == ['fixtures']
-assert not re.search(r'^\s*(strategy|matrix|max-parallel|needs):', workflow, re.MULTILINE)
-assert re.findall(r'^    outputs:\n      (.+)\n', workflow, re.MULTILINE) == [
-    'execution_plan_b64: ${{ steps.fixtures.outputs.execution_plan_b64 }}']
+# Exact serialized topology, secretless worker checkout and bounded terminal.
+assert list(jobs) == ['fixtures', 'shard_1', 'shard_2', 'regression_result']
+assert not re.search(r'^\s*(strategy|matrix|max-parallel):', workflow, re.MULTILINE)
+assert '    needs: [fixtures]\n' in jobs['shard_1']
+assert '    needs: [fixtures, shard_1]\n' in jobs['shard_2']
+condition = "    if: always() && needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'\n"
+for i in (1, 2):
+    worker = jobs[f'shard_{i}']
+    assert condition in worker and f'    name: Fixture shard {i}\n' in worker
+    assert f"          SHARD_ID: '{i}'\n" in worker
+    assert '          PRODUCER_RESULT: ${{ needs.fixtures.result }}\n' in worker
+    assert '          EXECUTION_PLAN_B64: ${{ needs.fixtures.outputs.execution_plan_b64 }}\n' in worker
+    assert '          ref: ${{ github.event.pull_request.head.sha }}\n' in worker
+    assert '          persist-credentials: false\n' in worker
+    assert '    timeout-minutes: 10\n' in worker
+terminal = jobs['regression_result']
+assert '    name: Regression Result\n' in terminal
+assert '    needs: [fixtures, shard_1, shard_2]\n' in terminal and '    if: always()\n' in terminal
+assert '      - name: Normalize shard results\n' in terminal
+for line in ('SHARD_ID: terminal', 'PRODUCER_RESULT: ${{ needs.fixtures.result }}',
+             'EXECUTION_PLAN_B64: ${{ needs.fixtures.outputs.execution_plan_b64 }}',
+             'ROUTING_MODE: ${{ needs.fixtures.outputs.routing_mode }}',
+             'SHARD_1_RESULT: ${{ needs.shard_1.result }}',
+             'SHARD_2_RESULT: ${{ needs.shard_2.result }}'):
+    assert '          ' + line + '\n' in terminal
+assert 'uses:' not in terminal and 'checkout' not in terminal and '    timeout-minutes: 1\n' in terminal
+assert '      routing_mode: ${{ steps.fixtures.outputs.routing_mode }}\n' in jobs['fixtures']
+assert '      execution_plan_b64: ${{ steps.fixtures.outputs.execution_plan_b64 }}\n' in jobs['fixtures']
 assert '        id: fixtures\n' in workflow
-assert workflow.count('GITHUB_OUTPUT') == 1  # Write only, no readback.
+assert workflow.count('GITHUB_OUTPUT') == 1  # Producer write only.
+for block in [*worker_blocks.values(), terminal_block]:
+    subprocess.run(['bash', '-n'], input=block.encode(), check=True)
 
 
 def execution_list_boundary(block):
@@ -325,10 +354,22 @@ else:
     mock_git.chmod(0o755)
     env = {**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
            'BASE_SHA': base, 'HEAD_SHA': head, 'GITHUB_STEP_SUMMARY': str(summary_file),
-           'GITHUB_OUTPUT': str(output_file),
+           'GITHUB_OUTPUT': str(output_file), 'EXECUTION_PLAN_VALIDATOR': validator,
            'EXECUTION_LOG': str(execution_log), 'GIT_LOG': str(git_log),
            'CHANGED_FILE': str(changed_file), 'TRUSTED_SELECTOR': str(trusted),
            'TRUSTED_PLANNER': str(trusted_planner), 'PLANNER_LOG': str(planner_log)}
+
+    def consumer(role, encoded, producer='success', routing='full', results=('success', 'success'), overrides=None,
+                 block=None):
+        block = block or (terminal_block if role == 'terminal' else worker_blocks[role])
+        return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', block], cwd=workspace,
+                              env={**env, 'SHARD_ID': role, 'PRODUCER_RESULT': producer,
+                                   'EXECUTION_PLAN_B64': encoded, 'ROUTING_MODE': routing,
+                                   'SHARD_1_RESULT': results[0], 'SHARD_2_RESULT': results[1],
+                                   **(overrides or {})}, capture_output=True)
+
+    def output_value():
+        return output_file.read_text().splitlines()[0].split('=', 1)[1]
 
     def set_planner(body):
         # Observe actual subprocess invocations and exact NUL input before running
@@ -363,14 +404,26 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
             path.unlink(missing_ok=True)
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', block], cwd=workspace,
                                 env={**env, **(overrides or {})}, capture_output=True)
+        producer_status = result.returncode
+        if mode == 'full' and expected and output_override is None and producer_status == 0:
+            assert not execution_log.exists(), 'full producer executed fixtures'
+            encoded = output_value()
+            workers = [consumer(str(i), encoded, overrides=overrides) for i in (1, 2)]
+            results = tuple('success' if w.returncode == 0 else 'failure' for w in workers)
+            result = consumer('terminal', encoded, results=results)
         executed = (execution_log.read_bytes().split(b'\0')[:-1] if execution_log.exists() else [])
         executed = [path.decode() for path in executed]
         summary = summary_file.read_text()
         assert (result.returncode == 0) == (status == 0), (reason, result.stderr, summary)
-        assert executed == expected, (reason, executed, expected)
+        if mode == 'full' and expected and output_override is None:
+            assert sorted(executed) == expected and len(executed) == len(set(executed)), (reason, executed, expected)
+            prepared_shards = json.loads(base64.b64decode(output_value()))['shards']
+            assert executed == [p for shard in prepared_shards for p in shard['fixtures']]
+        else:
+            assert executed == ([] if mode == 'full' else expected), (reason, executed, expected)
         assert f'- mode: {mode}\n' in summary and f'- reason: {reason}\n' in summary, summary
         assert f'- full count: {len(list(scripts.glob("test-*.sh")))}\n' in summary
-        assert f'結果: **{"PASS" if status == 0 else "FAIL"}**' in summary
+        assert f'結果: **{"PASS" if producer_status == 0 else "FAIL"}**' in summary
         assert len(summary) < 1024 and '| Fixture |' not in summary
         assert not any(path in summary for path in actual)
         inputs = [bytes(json.loads(line)) for line in planner_log.read_text().splitlines()] if planner_log.exists() else []
@@ -392,8 +445,9 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
             assert output == output_override
         elif expected:
             assert output.startswith(b'execution_plan_b64=') and output.endswith(b'\n')
-            assert output.count(b'\n') == 1 and output.isascii()
-            encoded = output.split(b'=', 1)[1][:-1]
+            assert output.count(b'\n') == 2 and output.isascii()
+            assert output.splitlines()[1] == ('routing_mode=' + mode).encode()
+            encoded = output.splitlines()[0].split(b'=', 1)[1]
             assert len(encoded) <= 256 * 1024
             decoded = base64.b64decode(encoded, validate=True)
             prepared = json.loads(decoded.decode('utf-8', 'strict'), object_pairs_hook=unique_object)
@@ -460,7 +514,7 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
             raise AssertionError('inconsistent prepared execution plan accepted')
     assert common_guard in selected and len(selected) == 14
     # Producer failures stop before execution; never silently fall back.
-    encoded_length = len(first_output.split(b'=', 1)[1][:-1])
+    encoded_length = len(first_output.splitlines()[0].split(b'=', 1)[1])
     run(selected, 'selected', 'known_paths', block=run_block.replace(
         'execution_plan_limit = 256 * 1024', f'execution_plan_limit = {encoded_length}'))
     run([], 'selected', 'execution_plan_output_invalid', status=1, block=run_block.replace(
@@ -588,8 +642,6 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
     full_output = output_file.read_bytes()
     run(actual, 'full', 'unmapped_path')
     assert output_file.read_bytes() == full_output
-    run(actual, 'full', 'unmapped_path', block=tampered,
-        output_override=b'execution_plan_b64=modified\n')
     for order, expression in ((actual[::-1], 'actual[::-1]'),
                               (actual[::2] + actual[1::2], 'actual[::2] + actual[1::2]')):
         reordered = run_block.replace("for p in actual),", f"for p in {expression}),")
@@ -644,7 +696,7 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
     for payload in payloads:
         set_planner('print(' + repr(payload) + ')\n')
         run([], 'full', 'planner_record_invalid', status=1)
-    # Both valid shard orderings are accepted, never used as execution order.
+    # Producer canonicalizes both valid planner orderings before handoff.
     valid_plan['shards'].reverse()
     for shard in valid_plan['shards']:
         shard['fixtures'].reverse()
@@ -728,7 +780,137 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
         pass
     else:
         raise AssertionError('swallowed fixture failure accepted')
-print('AI Workflow Regression: trusted-base selected/full behavior, prepared execution plan and mutations passed.')
+    reset()
+    changed_file.write_bytes(encode([prefix + 'unknown.py']))
+    run(actual, 'full', 'unmapped_path')
+    full_encoded = output_value()
+    full_plan = json.loads(base64.b64decode(full_encoded))
+    selected_encoded = first_output.splitlines()[0].split(b'=', 1)[1].decode()
+
+    def packed(value):
+        return base64.b64encode(json.dumps(value, sort_keys=True, ensure_ascii=True,
+                                          separators=(',', ':')).encode()).decode()
+
+    def rejected_consumer(encoded=full_encoded, overrides=None, producer='success'):
+        for role in ('1', '2', 'terminal'):
+            execution_log.unlink(missing_ok=True)
+            result = consumer(role, encoded, producer=producer, overrides=overrides)
+            assert result.returncode != 0, (role, result.stdout, result.stderr)
+            assert not execution_log.exists(), 'invalid plan acquired execution authority'
+
+    # Prepublished output has no authority when producer failed, including cancellation.
+    for producer in ('failure', 'cancelled', 'skipped', 'timed_out', 'startup_failure', ''):
+        for role in ('1', '2'):
+            execution_log.unlink(missing_ok=True)
+            assert consumer(role, full_encoded, producer=producer).returncode != 0
+            assert not execution_log.exists()
+        assert consumer('terminal', 'corrupt', producer=producer).returncode == 0
+    assert consumer('terminal', selected_encoded, routing='selected', results=('skipped', 'skipped')).returncode == 0
+    for role in ('1', '2'):
+        execution_log.unlink(missing_ok=True)
+        assert consumer(role, selected_encoded).returncode != 0
+        assert not execution_log.exists()
+    for results in (('success', 'skipped'), ('failure', 'failure'), ('skipped', 'success')):
+        assert consumer('terminal', selected_encoded, routing='selected', results=results).returncode != 0
+    assert consumer('terminal', full_encoded).returncode == 0
+    for status in ('failure', 'cancelled', 'skipped', 'timed_out', 'startup_failure', 'neutral', ''):
+        for results in ((status, 'success'), ('success', status), (status, status)):
+            assert consumer('terminal', full_encoded, results=results).returncode != 0
+    for encoded, routing in ((full_encoded, 'selected'), (selected_encoded, 'full'), (full_encoded, '')):
+        assert consumer('terminal', encoded, routing=routing).returncode != 0
+
+    for encoded in ('', '!', full_encoded + '\n', '_' + full_encoded[1:],
+                    base64.b64encode(b'\xff').decode(), base64.b64encode(b'{}{}').decode(),
+                    base64.b64encode(json.dumps(full_plan)[:-1].encode() + b',"mode":"full"}').decode(),
+                    base64.b64encode(b'{"mode":"full","mode":"full"}').decode()):
+        rejected_consumer(encoded)
+    # Inject oversized input inside Python, beyond Linux's single-env-entry exec limit.
+    for role in ('1', '2', 'terminal'):
+        oversized = subprocess.run([sys.executable, '-B', '-c',
+            "import os, sys; os.environ['EXECUTION_PLAN_B64'] = sys.stdin.read(); "
+            "exec(os.environ['EXECUTION_PLAN_VALIDATOR'])"], input=b'A' * (256 * 1024 + 1),
+            env={**env, 'SHARD_ID': role, 'PRODUCER_RESULT': 'success'}, capture_output=True)
+        assert oversized.returncode != 0
+    mutations = []
+    for key, value in [('schema', 'unknown'), ('version', True), ('version', 2),
+                       ('base_sha', base.upper()), ('head_sha', 'invalid'), ('mode', 'unknown'),
+                       ('reason', 'unknown'), ('reason', []), ('suites', ['unknown']),
+                       ('suites', ['common', 'common']), ('suites', 'common'),
+                       ('full_count', True), ('full_count', 80), ('execution_count', 78),
+                       ('fixtures', []), ('fixtures', actual[::-1]), ('shards', []), ('extra', 1)]:
+        mutations.append({**full_plan, key: value})
+    for key in full_plan:
+        mutations.append({k: v for k, v in full_plan.items() if k != key})
+    for field, value in [('id', True), ('id', 2), ('extra', None), ('fixtures', []),
+                         ('fixtures', [prefix + 'test-.sh']), ('fixtures', [prefix + 'test-\ud800.sh']),
+                         ('fixtures', [prefix + '../test-escape.sh']), ('fixtures', [prefix + 'test-a\\b.sh']),
+                         ('fixtures', [prefix + 'test-a\0b.sh'])]:
+        broken = json.loads(json.dumps(full_plan))
+        broken['shards'][0][field] = value
+        mutations.append(broken)
+    for action in ('duplicate', 'intersection', 'missing', 'extra', 'unsorted', 'reversed-ids'):
+        broken = json.loads(json.dumps(full_plan))
+        shards = broken['shards']
+        if action == 'duplicate': shards[0]['fixtures'].append(shards[0]['fixtures'][0])
+        elif action == 'intersection': shards[0]['fixtures'] = sorted(shards[0]['fixtures'] + shards[1]['fixtures'][:1])
+        elif action == 'missing': shards[0]['fixtures'].pop()
+        elif action == 'extra': shards[0]['fixtures'].append(prefix + 'test-extra.sh')
+        elif action == 'unsorted': shards[0]['fixtures'].reverse()
+        else: shards.reverse()
+        mutations.append(broken)
+    for broken in mutations:
+        rejected_consumer(packed(broken))
+    # Stale head and inventory drift are worker-only checkout validations.
+    for role in ('1', '2'):
+        execution_log.unlink(missing_ok=True)
+        assert consumer(role, full_encoded, overrides={'MOCK_HEAD': base}).returncode != 0
+        assert not execution_log.exists()
+    for kind in ('missing', 'extra', 'symlink', 'directory', 'fifo', 'invalid-utf8', 'ancestor-symlink'):
+        reset()
+        target = workspace / actual[0]
+        if kind == 'missing': target.unlink()
+        elif kind == 'extra': fixture(prefix + 'test-extra.sh')
+        elif kind == 'invalid-utf8':
+            bad = os.fsencode(scripts) + b'/test-invalid-\xff.sh'
+            descriptor = os.open(bad, os.O_CREAT | os.O_WRONLY, 0o600)
+            os.close(descriptor)
+        elif kind == 'ancestor-symlink':
+            scripts.rename(workspace / '.github/real-scripts')
+            scripts.symlink_to(workspace / '.github/real-scripts', target_is_directory=True)
+        else:
+            target.unlink()
+            if kind == 'symlink': target.symlink_to(workspace / actual[1])
+            elif kind == 'directory': target.mkdir()
+            else: os.mkfifo(target)
+        for role in ('1', '2'):
+            execution_log.unlink(missing_ok=True)
+            assert consumer(role, full_encoded).returncode != 0, kind
+            assert not execution_log.exists()
+        if kind == 'invalid-utf8': os.unlink(bad)
+        if kind == 'ancestor-symlink':
+            scripts.unlink()
+            (workspace / '.github/real-scripts').rename(scripts)
+    reset()
+    # Failure in shard 1 must preserve its later fixtures and all shard 2 coverage.
+    a, b = [s['fixtures'] for s in full_plan['shards']]
+    fixture(a[0], fail=True)
+    execution_log.unlink(missing_ok=True)
+    assert consumer('1', full_encoded).returncode != 0
+    assert consumer('2', full_encoded).returncode == 0
+    assert execution_log.read_bytes() == encode(a + b)
+    assert consumer('terminal', full_encoded, results=('failure', 'success')).returncode != 0
+    # Recheck catches a fixture replaced by an earlier fixture, then continues.
+    for role, shard in (('1', a), ('2', b)):
+        reset()
+        (workspace / shard[0]).write_text(
+            f'printf "%s\\0" {shlex.quote(shard[0])} >> "$EXECUTION_LOG"\n'
+            + f'rm -- {shlex.quote(shard[1])}\n'
+            + f'ln -s -- {shlex.quote((workspace / shard[2]).as_posix())} {shlex.quote(shard[1])}\n')
+        execution_log.unlink(missing_ok=True)
+        assert consumer(role, full_encoded).returncode != 0
+        assert execution_log.read_bytes() == encode([shard[0]] + shard[2:])
+    reset()
+print('AI Workflow Regression: selected behavior, serialized full execution, validated consumers, terminal normalization and mutations passed.')
 PY
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"

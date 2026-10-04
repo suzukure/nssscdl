@@ -24,6 +24,137 @@ concurrency:
   group: ai-workflow-regression-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Shared bounded validator; workers and checkout-free terminal use the same contract.
+env:
+  EXECUTION_PLAN_VALIDATOR: |
+    import base64
+    import json
+    import os
+    from pathlib import Path
+    import re
+    import stat
+    import subprocess
+    import sys
+
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError
+            value[key] = item
+        return value
+
+
+    def fixture_path(path):
+        if not isinstance(path, str):
+            return False
+        path.encode('utf-8', 'strict')
+        prefix = '.github/scripts/test-'
+        return (path.startswith(prefix) and path.endswith('.sh')
+                and len(path) > len(prefix) + 3
+                and '/' not in path[len(prefix):] and '\\' not in path and '\0' not in path)
+
+
+    def paths(value):
+        if (not isinstance(value, list) or not value
+                or not all(fixture_path(p) for p in value) or value != sorted(set(value))):
+            raise ValueError
+        return value
+
+
+    try:
+        role = os.environ['SHARD_ID']
+        producer = os.environ['PRODUCER_RESULT']
+        if role == 'terminal' and producer != 'success':
+            # The producer keeps failure ownership; do not create a second failure.
+            print('producerが非successのため、元jobのfailure ownershipを維持します。')
+            sys.exit(0)
+        if producer != 'success' or role not in ('1', '2', 'terminal'):
+            raise ValueError
+        encoded = os.environ['EXECUTION_PLAN_B64']
+        if (not encoded or len(encoded) > 256 * 1024
+                or not re.fullmatch('[A-Za-z0-9+/]+={0,2}', encoded)):
+            raise ValueError
+        decoded = base64.b64decode(encoded, validate=True)
+        if base64.b64encode(decoded).decode('ascii') != encoded:
+            raise ValueError
+        plan = json.loads(decoded.decode('utf-8', 'strict'), object_pairs_hook=unique_object)
+        suites = {'common', 'product-npm', 'resume-human-pause', 'claude',
+                  'deepinfra', 'ai-developer-codex', 'failure-evidence'}
+        full_reasons = {'inventory_unavailable', 'inventory_mismatch', 'malformed_input',
+                        'empty_selection', 'global_boundary', 'unmapped_path',
+                        'mapping_conflict', 'selector_error', 'sha_invalid', 'head_mismatch',
+                        'base_unavailable', 'merge_base_failed', 'diff_failed', 'empty_diff',
+                        'base_selector_unavailable', 'selector_failed',
+                        'selector_record_invalid', 'common_guard_missing'}
+        if (not isinstance(plan, dict)
+                or set(plan) != {'schema', 'version', 'base_sha', 'head_sha', 'mode',
+                                 'reason', 'suites', 'full_count', 'execution_count', 'fixtures', 'shards'}
+                or plan['schema'] != 'ai-workflow-regression-execution-plan'
+                or type(plan['version']) is not int or plan['version'] != 1
+                or not all(isinstance(plan[k], str) and re.fullmatch('[0-9a-f]{40}', plan[k])
+                           for k in ('base_sha', 'head_sha'))
+                or plan['mode'] not in ('selected', 'full')
+                or not isinstance(plan['reason'], str)
+                or not isinstance(plan['suites'], list)
+                or not all(isinstance(s, str) and s in suites for s in plan['suites'])
+                or plan['suites'] != sorted(set(plan['suites']))
+                or any(type(plan[k]) is not int or plan[k] <= 0
+                       for k in ('full_count', 'execution_count'))
+                or plan['execution_count'] > plan['full_count']
+                or not isinstance(plan['shards'], list)):
+            raise ValueError
+        fixtures = paths(plan['fixtures'])
+        if len(fixtures) != plan['execution_count']:
+            raise ValueError
+        if plan['mode'] == 'selected':
+            if (plan['reason'] != 'known_paths' or 'common' not in plan['suites']
+                    or plan['shards'] != []
+                    or '.github/scripts/test-production-unreachable.sh' not in fixtures):
+                raise ValueError
+        else:
+            if (plan['reason'] not in full_reasons or len(plan['shards']) != 2
+                    or plan['full_count'] != len(fixtures)):
+                raise ValueError
+            assigned = []
+            for index, shard in enumerate(plan['shards'], 1):
+                if (not isinstance(shard, dict) or set(shard) != {'id', 'fixtures'}
+                        or type(shard['id']) is not int or shard['id'] != index):
+                    raise ValueError
+                assigned.extend(paths(shard['fixtures']))
+            if len(assigned) != len(set(assigned)) or sorted(assigned) != fixtures:
+                raise ValueError
+        if decoded != json.dumps(plan, sort_keys=True, ensure_ascii=True,
+                                 separators=(',', ':'), allow_nan=False).encode('utf-8', 'strict'):
+            raise ValueError
+        if role == 'terminal':
+            if os.environ['ROUTING_MODE'] != plan['mode']:
+                raise ValueError
+            results = [os.environ['SHARD_1_RESULT'], os.environ['SHARD_2_RESULT']]
+            if results != (['success', 'success'] if plan['mode'] == 'full' else ['skipped', 'skipped']):
+                raise ValueError
+            print('Regression結果: PASS')
+        else:
+            if plan['mode'] != 'full':
+                raise ValueError
+            current_head = subprocess.run(['git', 'rev-parse', 'HEAD'], check=True,
+                                          capture_output=True).stdout.decode('ascii').strip()
+            if current_head != plan['head_sha']:
+                raise ValueError
+            if not all(stat.S_ISDIR(Path(p).lstat().st_mode) for p in ('.github', '.github/scripts')):
+                raise ValueError
+            inventory = sorted(p.as_posix() for p in Path('.github/scripts').glob('test-*.sh'))
+            paths(inventory)
+            if (inventory != fixtures or len(inventory) != plan['full_count']
+                    or not all(stat.S_ISREG(Path(p).lstat().st_mode) for p in inventory)):
+                raise ValueError
+            chosen = plan['shards'][int(role) - 1]['fixtures']
+            Path(os.environ['FIXTURE_LIST']).write_bytes(b''.join(p.encode('utf-8') + b'\0' for p in chosen))
+    except Exception:
+        print('execution planまたはshard結果の再検証に失敗しました。', file=sys.stderr)
+        sys.exit(1)
+
 jobs:
   fixtures:
     name: Fixtures
@@ -31,6 +162,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       execution_plan_b64: ${{ steps.fixtures.outputs.execution_plan_b64 }}
+      routing_mode: ${{ steps.fixtures.outputs.routing_mode }}
     steps:
       - name: Check out pull request head
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -191,7 +323,7 @@ jobs:
                   # Keep the independently discovered full inventory on any selection error.
                   mode, suites, chosen = 'full', sorted(suite_names), actual
               if mode == 'full':
-                  # Validation only: the plan never supplies the execution list.
+                  # Trusted-base planning; full execution belongs to serialized workers.
                   selection_reason = reason
                   reason = 'planner_base_invalid'
                   base = os.environ.get('BASE_SHA', '')
@@ -234,8 +366,8 @@ jobs:
                           or len(assigned) != len(actual) or set(assigned) != set(actual)):
                       raise ValueError
                   reason = selection_reason
-              # Prepared data only: neither this record nor the output is read
-              # back to construct fixtures.nul or drive current execution.
+              # Selected execution retains its local list; full is handed off only
+              # after plan validation. Routing never grants execution authority.
               execution_reason = reason
               reason = 'execution_plan_invalid'
               current_head = git('rev-parse', 'HEAD').decode('ascii').strip()
@@ -266,14 +398,19 @@ jobs:
                   raise ValueError
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='ascii', newline='\n') as output:
                   output.write('execution_plan_b64=' + encoded_plan + '\n')
+                  output.write('routing_mode=' + mode + '\n')
               reason = execution_reason
               (scratch / 'fixtures.nul').write_bytes(b''.join(os.fsencode(p) + b'\0' for p in chosen))
-              summary()
+              (scratch / 'mode').write_text(mode, encoding='ascii')
+              summary('PASS' if mode == 'full' else None)
           except Exception:
               summary('FAIL')
               print('AI workflow fixtureの安全な実行集合を確定できませんでした。', file=sys.stderr)
               sys.exit(1)
           PY
+          if [ "$(cat "$regression_tmp/mode")" = full ]; then
+            exit 0
+          fi
           mapfile -d '' -t fixtures < "$regression_tmp/fixtures.nul"
           if [ "${#fixtures[@]}" -eq 0 ]; then
             echo '結果: **FAIL**（該当fixtureなし）' >> "$GITHUB_STEP_SUMMARY"
@@ -302,3 +439,127 @@ jobs:
             exit 1
           fi
           echo '結果: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  shard_1:
+    name: Fixture shard 1
+    needs: [fixtures]
+    if: always() && needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Run shard fixtures
+        shell: bash
+        env:
+          SHARD_ID: '1'
+          PRODUCER_RESULT: ${{ needs.fixtures.result }}
+          EXECUTION_PLAN_B64: ${{ needs.fixtures.outputs.execution_plan_b64 }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          regression_tmp="$(mktemp -d)"
+          trap 'rm -rf "$regression_tmp"' EXIT
+          export FIXTURE_LIST="$regression_tmp/fixtures.nul"
+          python3 -B -c "$EXECUTION_PLAN_VALIDATOR"
+          mapfile -d '' -t fixtures < "$FIXTURE_LIST"
+          failed=0
+          for fixture in "${fixtures[@]}"; do
+            printf '::group::Fixture: %q\n' "$fixture"
+            # Recheck immediately before execution, including changes by earlier fixtures.
+            if [ ! -f "$fixture" ] || [ -L "$fixture" ]; then
+              echo 'FAIL（不正fixture）'
+              failed=1
+              echo '::endgroup::'
+              continue
+            fi
+            if bash "$fixture"; then
+              echo 'PASS'
+            else
+              echo 'FAIL'
+              failed=1
+            fi
+            echo '::endgroup::'
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo '結果: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo '結果: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  shard_2:
+    name: Fixture shard 2
+    needs: [fixtures, shard_1]
+    if: always() && needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Run shard fixtures
+        shell: bash
+        env:
+          SHARD_ID: '2'
+          PRODUCER_RESULT: ${{ needs.fixtures.result }}
+          EXECUTION_PLAN_B64: ${{ needs.fixtures.outputs.execution_plan_b64 }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          regression_tmp="$(mktemp -d)"
+          trap 'rm -rf "$regression_tmp"' EXIT
+          export FIXTURE_LIST="$regression_tmp/fixtures.nul"
+          python3 -B -c "$EXECUTION_PLAN_VALIDATOR"
+          mapfile -d '' -t fixtures < "$FIXTURE_LIST"
+          failed=0
+          for fixture in "${fixtures[@]}"; do
+            printf '::group::Fixture: %q\n' "$fixture"
+            # Recheck immediately before execution, including changes by earlier fixtures.
+            if [ ! -f "$fixture" ] || [ -L "$fixture" ]; then
+              echo 'FAIL（不正fixture）'
+              failed=1
+              echo '::endgroup::'
+              continue
+            fi
+            if bash "$fixture"; then
+              echo 'PASS'
+            else
+              echo 'FAIL'
+              failed=1
+            fi
+            echo '::endgroup::'
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo '結果: **FAIL**' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo '結果: **PASS**' >> "$GITHUB_STEP_SUMMARY"
+
+  regression_result:
+    name: Regression Result
+    needs: [fixtures, shard_1, shard_2]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Normalize shard results
+        shell: bash
+        env:
+          SHARD_ID: terminal
+          PRODUCER_RESULT: ${{ needs.fixtures.result }}
+          EXECUTION_PLAN_B64: ${{ needs.fixtures.outputs.execution_plan_b64 }}
+          ROUTING_MODE: ${{ needs.fixtures.outputs.routing_mode }}
+          SHARD_1_RESULT: ${{ needs.shard_1.result }}
+          SHARD_2_RESULT: ${{ needs.shard_2.result }}
+        run: |
+          set -euo pipefail
+          python3 -B -c "$EXECUTION_PLAN_VALIDATOR"

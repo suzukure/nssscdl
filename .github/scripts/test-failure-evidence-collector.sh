@@ -558,9 +558,11 @@ assert 'retention-days: 3' in workflow and 'if-no-files-found: error' in workflo
 assert 'failure-evidence-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}' in workflow
 assert 'if: always()' in workflow and workflow.count('uses: actions/upload-artifact@') == 1
 assert 'workflow_run.head_sha' not in workflow and 'download-artifact' not in workflow
-# Dormant topology cannot be emitted by the current production source workflow.
+# #769 emits the exact prepared names; natural failure-path proof remains separate.
 regression = (repo_root / '.github/workflows/ai-workflow-regression.yml').read_text()
 assert '    name: Fixtures\n' in regression
-assert all(name not in regression for name in ['Fixture shard 1', 'Fixture shard 2', 'Regression Result'])
+assert all('    name: ' + name + '\n' in regression
+           for name in ['Fixture shard 1', 'Fixture shard 2', 'Regression Result'])
+assert '      - name: Normalize shard results\n' in regression
 print('failure evidence collector: single failure and #751 prepared exact sharded aggregate selection, order independence, identity/log binding, fail-closed topology; 7 synthetic #654 packets, masked credentials, secret rejection, aliases, stale, pagination, bounded logs, cap, inert evidence, read-only wiring passed')
 PY
