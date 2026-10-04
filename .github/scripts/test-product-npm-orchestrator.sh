@@ -339,6 +339,11 @@ mapped_name = "product-npm-orchestrator.py"
 
 
 def assert_no_caller(name, text):
+    if name == 'trusted-main-runtime-supply-proof.py':
+        # #747 reuses only the existing root API, never the Product consumer.
+        expression = "load('product-npm-orchestrator').CanonicalRoot"
+        assert text.count(expression) == 1
+        text = text.replace(expression, 'ROOT_API', 1)
     if needle not in text:
         return
     # #696 permits only exact declarative inventory/mapping literals in the
