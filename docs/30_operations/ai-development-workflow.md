@@ -311,9 +311,23 @@ Repository variables:
 
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
-AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は追加の判定を必要としないためinlineのままとする。
+通常のAIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。現行productionのCodex側は追加の判定を必要としないためinlineのままとする。Issue単位のpreparedモデル選択は次節を参照する。
 
 例外として、DeepInfra Investigatorは任意モデルIDをIssue入力やRepository variableから実行させないことをsecurity boundaryとするため、許可するDeepSeekモデルを `.github/scripts/deepinfra-investigator.py` の `ALLOWED_MODELS` で固定する。workflow側のcommand→model対応とpreflight allowlistはentry boundaryでの多層防御として同じ許可集合を意図的に重複保持し、`test-deepinfra-investigator.sh` で一致を回帰検証する。DeepInfra Investigatorのモデル変更は通常のモデル切替ではなくsecurity allowlist変更として扱い、Issueで範囲を確定しCode Owner review対象の差分として反映する。
+
+### Issue単位のCodexモデル選択（#745、prepared / dormant）
+
+機械正本は `.github/scripts/select-codex-issue-model.py` と同責務の `.github/scripts/codex-issue-model-policy.json` とする。初期policyの `entries` は空で、production workflow / non-test callerへ未接続である。paid Luna試行・policy entry activationは含めず、通常Issueの `CODEX_MODEL` variable運用と既存 `medium` 固定を維持する。
+
+helperはcallerが明示的に渡す `--policy PATH` とstdinの単一request JSON（`repository`、`issue`、`normal_model`）を読む。`normal_model` はtrusted normal `CODEX_MODEL` 値であり、Issue/PR/comment由来のoverrideではない。callerがhelperとpolicyをtrusted base/mainから取得する責務を持ち、PR head、model生成file、Issue/PR本文、commentをpolicy正本にしない。helper自身はnetwork / git / GitHub write・open-state検査・永続stateを持たず、policy取得失敗やidentity不明を未登録扱いへfallbackしない。
+
+policy/requestのclosed schema、exact repository / positive integer Issue、重複Issue / JSON key拒否、model allowlist、入力byte / entry数上限、canonical出力のexact fieldはhelperを唯一の正本とする。正常未登録Issueはnormal model、exact opt-inだけはpolicyの `gpt-6-luna` を返し、variable変更はopt-inへ影響しない。正常時は `schema/version/issue/model/selection` の単一bounded JSONとexit 0、拒否時はstdoutなし・固定診断と非0を返し、raw入力・prompt・秘密値を反射しない。effort入力や任意model overrideは受理しない。
+
+opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映する。対象IssueとPRがopenの間はentryの変更・削除をしない。変更・削除が必要なら停止して別の人間判断を行う。この固定ownershipはopt-in対象に限定し、default Issueのvariable変更運用には広げない。
+
+後続callerでは初回/resumeの既存entry/resume gateが確定したclosing Issue、follow-upの `check-claude-followup-target.sh` が `ai/issue-N` と `closingIssuesReferences` を照合済みのidentityを使い、branch名だけを信用しない。各callerはcurrent trusted main policyと既存target gateを再取得しpaid call前に選択する。immutable運用と対象再評価は親 #744で確認し、production wiringはfreshな別Issueで扱う。PR headのpolicyを使ったfixtureはproduction provenanceの証明ではない。
+
+検証は `bash .github/scripts/test-select-codex-issue-model.sh`、既存 `test-production-unreachable.sh`、selector fixtureおよびAI Workflow Regressionのcurrent-head fixtureで行う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### DeepInfra Investigator
 

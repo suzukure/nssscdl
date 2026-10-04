@@ -215,7 +215,7 @@ for changed_workflow, patterns in (
 prefix = '.github/scripts/'
 actual = sorted(prefix + p.name for p in (repo / prefix).glob('test-*.sh'))
 assert actual == sorted(p for fixtures in policy.INVENTORY.values() for p in fixtures)
-assert len(actual) == 75
+assert len(actual) == 76
 common_guard = prefix + 'test-production-unreachable.sh'
 local_path = prefix + 'deepinfra-usage-ledger.py'
 selected = sorted(policy.INVENTORY['deepinfra'] + policy.INVENTORY['common'])
