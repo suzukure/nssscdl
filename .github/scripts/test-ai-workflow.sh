@@ -157,6 +157,7 @@ fi
 # must be rejected by observable coverage and exit status, not text presence.
 python3 -B - "$repo_root" <<'PY'
 import ast
+import base64
 import importlib.util
 import json
 import os
@@ -180,10 +181,13 @@ spec.loader.exec_module(policy)
 spec = importlib.util.spec_from_file_location('regression_planner', planner_source)
 planner_policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner_policy)
-# The plan remains a local validation record: no job output or worker topology.
+# Producer-only job output: no consumer or worker topology.
 assert re.findall(r'^  (\w+):$', workflow.split('jobs:\n', 1)[1], re.MULTILINE) == ['fixtures']
-assert not re.search(r'^\s*(outputs|strategy|matrix|max-parallel|needs):', workflow, re.MULTILINE)
-assert 'GITHUB_OUTPUT' not in workflow
+assert not re.search(r'^\s*(strategy|matrix|max-parallel|needs):', workflow, re.MULTILINE)
+assert re.findall(r'^    outputs:\n      (.+)\n', workflow, re.MULTILINE) == [
+    'execution_plan_b64: ${{ steps.fixtures.outputs.execution_plan_b64 }}']
+assert '        id: fixtures\n' in workflow
+assert workflow.count('GITHUB_OUTPUT') == 1  # Write only, no readback.
 
 
 def execution_list_boundary(block):
@@ -264,6 +268,14 @@ def encode(paths):
     return b''.join(p.encode() + b'\0' for p in paths)
 
 
+def unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        assert key not in value, 'duplicate JSON key'
+        value[key] = item
+    return value
+
+
 with tempfile.TemporaryDirectory() as temporary:
     tmp = Path(temporary)
     workspace = tmp / 'workspace'
@@ -275,6 +287,7 @@ with tempfile.TemporaryDirectory() as temporary:
     trusted_planner, planner_log = tmp / 'base-planner.py', tmp / 'planner.log'
     changed_file, git_log = tmp / 'changed.nul', tmp / 'git.log'
     summary_file, execution_log = tmp / 'summary', tmp / 'executed'
+    output_file = tmp / 'github-output'
     # Head policy is deliberately executable and hostile. It must never run.
     (scripts / source.name).write_text("raise RuntimeError('HEAD POLICY EXECUTED')\n")
     (scripts / planner_source.name).write_text("raise RuntimeError('HEAD PLANNER EXECUTED')\n")
@@ -312,6 +325,7 @@ else:
     mock_git.chmod(0o755)
     env = {**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
            'BASE_SHA': base, 'HEAD_SHA': head, 'GITHUB_STEP_SUMMARY': str(summary_file),
+           'GITHUB_OUTPUT': str(output_file),
            'EXECUTION_LOG': str(execution_log), 'GIT_LOG': str(git_log),
            'CHANGED_FILE': str(changed_file), 'TRUSTED_SELECTOR': str(trusted),
            'TRUSTED_PLANNER': str(trusted_planner), 'PLANNER_LOG': str(planner_log)}
@@ -344,8 +358,8 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
         changed_file.write_bytes(encode([local_path]))
 
     def run(expected, mode, reason, status=0, block=run_block, overrides=None,
-            planner_calls=None, planner_input=None):
-        for path in (summary_file, execution_log, git_log, planner_log):
+            planner_calls=None, planner_input=None, output_override=None, suites_override=None):
+        for path in (summary_file, execution_log, git_log, planner_log, output_file):
             path.unlink(missing_ok=True)
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', block], cwd=workspace,
                                 env={**env, **(overrides or {})}, capture_output=True)
@@ -365,13 +379,62 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
                 'no_fixtures', 'invalid_fixture_type', 'selected_fixture_missing',
                 'planner_base_invalid', 'planner_base_unavailable', 'base_planner_unavailable'})
         inventory = sorted(prefix + p.name for p in scripts.glob('test-*.sh'))
-        assert inputs == [encode(planner_input if planner_input is not None else inventory)] * planner_calls, (reason, inputs)
+        assert inputs == ([encode(planner_input if planner_input is not None else inventory)]
+                          * planner_calls if planner_calls else []), (reason, inputs)
         calls = [json.loads(line) for line in git_log.read_text().splitlines()] if git_log.exists() else []
         extraction = ['show', base + ':' + prefix + planner_source.name]
         if mode == 'selected':
             assert extraction not in calls, 'selected path retrieved planner'
         if inputs:
             assert calls.count(extraction) == 1, 'planner must be extracted exactly once from base'
+        output = output_file.read_bytes() if output_file.exists() else b''
+        if output_override is not None:
+            assert output == output_override
+        elif expected:
+            assert output.startswith(b'execution_plan_b64=') and output.endswith(b'\n')
+            assert output.count(b'\n') == 1 and output.isascii()
+            encoded = output.split(b'=', 1)[1][:-1]
+            assert len(encoded) <= 256 * 1024
+            decoded = base64.b64decode(encoded, validate=True)
+            prepared = json.loads(decoded.decode('utf-8', 'strict'), object_pairs_hook=unique_object)
+            assert set(prepared) == {'schema', 'version', 'base_sha', 'head_sha', 'mode',
+                                     'reason', 'suites', 'full_count', 'execution_count',
+                                     'fixtures', 'shards'}
+            assert prepared['schema'] == 'ai-workflow-regression-execution-plan'
+            assert type(prepared['version']) is int and prepared['version'] == 1
+            assert prepared['base_sha'] == base
+            # Even on event SHA fallback, the output identifies validated current HEAD.
+            assert prepared['head_sha'] == (overrides or {}).get('MOCK_HEAD', head)
+            assert prepared['mode'] == mode and prepared['reason'] == reason
+            expected_suites = (suites_override if suites_override is not None else
+                              sorted(policy.INVENTORY) if mode == 'full' else
+                              sorted(s for s, paths in policy.INVENTORY.items()
+                                     if set(paths) & set(expected)))
+            assert prepared['suites'] == expected_suites
+            assert type(prepared['full_count']) is int and prepared['full_count'] == len(inventory)
+            assert type(prepared['execution_count']) is int and prepared['execution_count'] == len(expected)
+            assert prepared['fixtures'] == expected == sorted(set(expected))
+            if mode == 'selected':
+                assert prepared['shards'] == []
+            else:
+                assert expected == inventory  # Independent current discovery.
+                assert len(prepared['shards']) == 2
+                assert [s['id'] for s in prepared['shards']] == [1, 2]
+                assigned = []
+                for shard in prepared['shards']:
+                    assert set(shard) == {'id', 'fixtures'} and type(shard['id']) is int
+                    assert shard['fixtures'] and shard['fixtures'] == sorted(set(shard['fixtures']))
+                    assigned.extend(shard['fixtures'])
+                assert len(assigned) == len(set(assigned)) and sorted(assigned) == expected
+                canonical_shards = [dict(id=s['id'], fixtures=sorted(s['fixtures']))
+                                    for s in planner_policy.plan(encode(inventory))['shards']]
+                assert prepared['shards'] == canonical_shards
+            assert decoded == json.dumps(prepared, sort_keys=True, ensure_ascii=True,
+                                         separators=(',', ':'), allow_nan=False).encode('utf-8')
+            assert base64.b64encode(decoded) == encoded
+            assert encoded.decode() not in summary and prepared['schema'] not in summary
+        else:
+            assert output == b'', (reason, output)
         return calls
 
     reset()
@@ -379,8 +442,47 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
     assert calls == [['rev-parse', 'HEAD'], ['rev-parse', '--verify', base + '^{commit}'],
                      ['merge-base', base, head],
                      ['diff', '--no-renames', '--name-only', '-z', merge, head],
-                     ['show', base + ':' + prefix + source.name]]
+                     ['show', base + ':' + prefix + source.name], ['rev-parse', 'HEAD']]
+    first_output = output_file.read_bytes()
+    run(selected, 'selected', 'known_paths')
+    assert output_file.read_bytes() == first_output
+    # The record oracle must detect changed coverage/count independently of
+    # unchanged execution, rather than merely accepting parseable JSON.
+    for before, after in (('fixtures=chosen, shards=shards', 'fixtures=actual, shards=shards'),
+                          ('execution_count=len(chosen)', 'execution_count=len(actual)')):
+        mutated = run_block.replace(before, after)
+        assert mutated != run_block
+        try:
+            run(selected, 'selected', 'known_paths', block=mutated)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('inconsistent prepared execution plan accepted')
     assert common_guard in selected and len(selected) == 14
+    # Producer failures stop before execution; never silently fall back.
+    encoded_length = len(first_output.split(b'=', 1)[1][:-1])
+    run(selected, 'selected', 'known_paths', block=run_block.replace(
+        'execution_plan_limit = 256 * 1024', f'execution_plan_limit = {encoded_length}'))
+    run([], 'selected', 'execution_plan_output_invalid', status=1, block=run_block.replace(
+        'execution_plan_limit = 256 * 1024', f'execution_plan_limit = {encoded_length - 1}'))
+    for before, after in (
+            ('json.dumps(execution_plan,', 'json.dumps(object(),'),
+            ('base64.b64encode(canonical)', 'base64.b64encode(None)'),
+            ('execution_reason = reason', "suites = ['unknown']\n    execution_reason = reason"),
+            ('execution_reason = reason', "reason = 'unknown'\n    execution_reason = reason")):
+        run([], 'selected', 'execution_plan_invalid', status=1,
+            block=run_block.replace(before, after))
+    run([], 'selected', 'execution_plan_output_invalid', status=1,
+        block=run_block.replace('base64.b64encode(canonical)', "b'bad\\n'"))
+    run([], 'selected', 'execution_plan_output_invalid', status=1,
+        overrides={'GITHUB_OUTPUT': str(tmp)})  # Cannot open a directory as output.
+    run([], 'unknown', 'execution_plan_invalid', status=1, block=run_block.replace(
+        'execution_reason = reason', "mode = 'unknown'\n    execution_reason = reason"))
+    # Tampering with the prepared value cannot change fixtures.nul or execution.
+    tampered = run_block.replace('mapfile -d',
+        'printf "execution_plan_b64=modified\\n" > "$GITHUB_OUTPUT"\nmapfile -d')
+    run(selected, 'selected', 'known_paths', block=tampered,
+        output_override=b'execution_plan_b64=modified\n')
     # Selected must succeed even if the base planner cannot be retrieved/executed.
     run(selected, 'selected', 'known_paths', overrides={'GIT_FAILURE': 'planner-show'})
     set_planner('raise SystemExit(7)\n')
@@ -453,12 +555,13 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
     # Full caller ignores an otherwise well-formed selector's incomplete full list.
     full_record = {**record, 'mode': 'full', 'reason': 'unmapped_path', 'fixtures': selected[:1]}
     trusted.write_text('print(' + repr(json.dumps(full_record)) + ')\n')
-    run(actual, 'full', 'unmapped_path')
+    run(actual, 'full', 'unmapped_path', suites_override=sorted(full_record['suites']))
     for key, value in [('schema', 'unknown'), ('version', True), ('mode', 'unknown'),
                        ('reason', 'untrusted\ntext'), ('suites', ['unknown']),
                        ('suites', ['common', 'common']), ('fixtures', 'not-list'),
                        ('fixtures', selected + selected[:1]),
                        ('fixtures', [prefix + '../test-escape.sh']),
+                       ('fixtures', [prefix + 'test-\ud800.sh']),
                        ('fixtures', ['outside/test-escape.sh'])]:
         broken = {**record, key: value}
         trusted.write_text('print(' + repr(json.dumps(broken)) + ')\n')
@@ -482,11 +585,17 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
     # #763: actual production full path, trusted planner errors are terminal.
     changed_file.write_bytes(encode([prefix + 'unknown.py']))
     run(actual, 'full', 'unmapped_path')
+    full_output = output_file.read_bytes()
+    run(actual, 'full', 'unmapped_path')
+    assert output_file.read_bytes() == full_output
+    run(actual, 'full', 'unmapped_path', block=tampered,
+        output_override=b'execution_plan_b64=modified\n')
     for order, expression in ((actual[::-1], 'actual[::-1]'),
                               (actual[::2] + actual[1::2], 'actual[::2] + actual[1::2]')):
         reordered = run_block.replace("for p in actual),", f"for p in {expression}),")
         assert reordered != run_block
         run(actual, 'full', 'unmapped_path', block=reordered, planner_input=order)
+        assert output_file.read_bytes() == full_output
     run([], 'full', 'base_planner_unavailable', status=1,
         overrides={'GIT_FAILURE': 'planner-show'})
     trusted_planner.unlink()  # Blob missing at base is also a failed git show.
@@ -541,6 +650,7 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
         shard['fixtures'].reverse()
     set_planner('print(' + repr(json.dumps(valid_plan)) + ')\n')
     run(actual, 'full', 'unmapped_path')
+    assert output_file.read_bytes() == full_output
     # Selector failure must pass the same planner gate before full execution.
     trusted.write_text('raise SystemExit(3)\n')
     set_planner('raise SystemExit(7)\n')
@@ -558,11 +668,28 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
         else:
             raise AssertionError('head source / skipped planner accepted')
     reset()
-    unusual_fixture = prefix + 'test-space name\nline.sh'
+    unusual_fixture = prefix + 'test-space name\nline-日本語-é-"\'.sh'
     fixture(unusual_fixture)
     changed_file.write_bytes(encode([unusual_fixture]))
     run(sorted(actual + [unusual_fixture]), 'full', 'inventory_mismatch')
+    unusual_selected = sorted(selected + [unusual_fixture])
+    trusted.write_text('print(' + repr(json.dumps({**record, 'fixtures': unusual_selected})) + ')\n')
+    run(unusual_selected, 'selected', 'known_paths')
     (workspace / unusual_fixture).unlink()
+    reset()
+    # Invalid filesystem bytes arrive as surrogateescape argv under LC_ALL=C.
+    bad_bytes = os.fsencode(scripts) + b'/test-invalid-\xff.sh'
+    descriptor = os.open(bad_bytes, os.O_CREAT | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    run([], 'full', 'invalid_fixture_type', status=1)
+    os.unlink(bad_bytes)
+    # A real oversized record must stop, with no output and no fixture execution.
+    for index in range(220):
+        fixture(prefix + f'test-{index:03d}-' + '界' * 75 + '.sh')
+    run([], 'full', 'execution_plan_output_invalid', status=1)
+    reset()
+    run([], 'full', 'execution_plan_invalid', status=1,
+        overrides={'MOCK_HEAD': 'invalid'})
     reset()
     extra = prefix + 'test-new.sh'
     fixture(extra)
@@ -601,7 +728,7 @@ sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
         pass
     else:
         raise AssertionError('swallowed fixture failure accepted')
-print('AI Workflow Regression: trusted-base selected/full behavior and #528 mutations passed.')
+print('AI Workflow Regression: trusted-base selected/full behavior, prepared execution plan and mutations passed.')
 PY
 
 grep -Fq 'outputs.execution_file' "$repo_root/.github/workflows/claude-review.yml"

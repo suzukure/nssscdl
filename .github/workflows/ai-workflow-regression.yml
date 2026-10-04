@@ -29,6 +29,8 @@ jobs:
     name: Fixtures
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      execution_plan_b64: ${{ steps.fixtures.outputs.execution_plan_b64 }}
     steps:
       - name: Check out pull request head
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -38,6 +40,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run AI workflow fixtures
+        id: fixtures
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -50,6 +53,7 @@ jobs:
           regression_tmp="$(mktemp -d)"
           trap 'rm -rf "$regression_tmp"' EXIT
           python3 -B - "$regression_tmp" "${fixtures[@]}" <<'PY'
+          import base64
           import json
           import os
           from pathlib import Path
@@ -66,6 +70,12 @@ jobs:
           full_reasons = {'inventory_unavailable', 'inventory_mismatch', 'malformed_input',
                           'empty_selection', 'global_boundary', 'unmapped_path',
                           'mapping_conflict', 'selector_error'}
+          fallback_reasons = {'sha_invalid', 'head_mismatch', 'base_unavailable',
+                              'merge_base_failed', 'diff_failed', 'empty_diff',
+                              'base_selector_unavailable', 'selector_failed',
+                              'selector_record_invalid', 'common_guard_missing'}
+          # Producer budget for the Base64 value, excluding key and final LF.
+          execution_plan_limit = 256 * 1024
           mode, reason, suites = 'full', 'selection_unavailable', sorted(suite_names)
           actual, chosen = [], []
           base_validated = False
@@ -87,6 +97,11 @@ jobs:
 
 
           def fixture_path(value):
+              if isinstance(value, str):
+                  try:
+                      value.encode('utf-8', 'strict')
+                  except UnicodeError:
+                      return False
               return (isinstance(value, str) and '\0' not in value and '\\' not in value
                       and value.startswith(prefix + 'test-') and value.endswith('.sh')
                       and '/' not in value[len(prefix):])
@@ -219,6 +234,39 @@ jobs:
                           or len(assigned) != len(actual) or set(assigned) != set(actual)):
                       raise ValueError
                   reason = selection_reason
+              # Prepared data only: neither this record nor the output is read
+              # back to construct fixtures.nul or drive current execution.
+              execution_reason = reason
+              reason = 'execution_plan_invalid'
+              current_head = git('rev-parse', 'HEAD').decode('ascii').strip()
+              if (mode not in ('selected', 'full')
+                      or not all(re.fullmatch('[0-9a-f]{40}', sha) for sha in (base, current_head))
+                      or suites != sorted(set(suites)) or not set(suites) <= suite_names
+                      or not chosen or chosen != sorted(set(chosen))
+                      or not all(fixture_path(p) for p in chosen)
+                      or not set(chosen) <= set(actual)
+                      or (mode == 'selected' and execution_reason != 'known_paths')
+                      or (mode == 'full' and (chosen != actual
+                          or execution_reason not in full_reasons | fallback_reasons))):
+                  raise ValueError
+              shards = ([] if mode == 'selected' else
+                        [dict(id=s['id'], fixtures=sorted(s['fixtures']))
+                         for s in sorted(plan['shards'], key=lambda s: s['id'])])
+              execution_plan = dict(schema='ai-workflow-regression-execution-plan', version=1,
+                                    base_sha=base, head_sha=current_head, mode=mode,
+                                    reason=execution_reason, suites=suites,
+                                    full_count=len(actual), execution_count=len(chosen),
+                                    fixtures=chosen, shards=shards)
+              canonical = json.dumps(execution_plan, sort_keys=True, ensure_ascii=True,
+                                     separators=(',', ':'), allow_nan=False).encode('utf-8', 'strict')
+              encoded_plan = base64.b64encode(canonical).decode('ascii', 'strict')
+              reason = 'execution_plan_output_invalid'
+              if (not encoded_plan or len(encoded_plan) > execution_plan_limit
+                      or not re.fullmatch('[A-Za-z0-9+/]+={0,2}', encoded_plan)):
+                  raise ValueError
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='ascii', newline='\n') as output:
+                  output.write('execution_plan_b64=' + encoded_plan + '\n')
+              reason = execution_reason
               (scratch / 'fixtures.nul').write_bytes(b''.join(os.fsencode(p) + b'\0' for p in chosen))
               summary()
           except Exception:
