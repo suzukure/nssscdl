@@ -1285,7 +1285,7 @@ assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIR
 assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
 assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
 
-# #721 primitive and #725 classifier remain prepared; wiring belongs to #722.
+# #730 supplies the prepared helpers; decision consumption remains deferred.
 python3 -B - "$repo_root" "$test_dir" <<'PY'
 from pathlib import Path
 import os
@@ -1416,9 +1416,49 @@ for helper in (scope_helper, requirements_helper):
 response.write_bytes((scope_marker + '\n').encode())
 assert subprocess.run(['bash', str(requirements_helper), str(response)], capture_output=True).returncode == 1
 
-# Forbid direct and helper-mediated production callers, including both fixed
-# Codex prompts. Only fixtures, the primitive, and its prepared classifier may
-# reference the scope signal; no production source may reference the classifier.
+# Only exact supply/restore lines in the two Issue-origin steps may reference
+# prepared helpers. Reject callers elsewhere, including both fixed prompts.
+workflow_path = root / '.github/workflows/ai-developer.yml'
+workflow_text = workflow_path.read_text()
+
+
+def step(name):
+    block = workflow_text.split('      - name: ' + name + '\n', 1)[1]
+    return block.split('      - name: ', 1)[0]
+
+
+def run_body(block):
+    return ''.join(line.removeprefix('          ') for line in
+                   block.split('        run: |\n', 1)[1].splitlines(keepends=True))
+
+
+bootstrap = step('Prepare branch and Issue context')
+restore = step('Restore trusted post-Codex helpers')
+prepared = ((decision_classifier, 'decision_classifier'), (scope_helper, 'scope_marker'))
+allowed_supply = {}
+for helper, variable in prepared:
+    filename = helper.name
+    pre_lines = {
+        f'          {variable}_blob="$(git rev-parse "${{base_sha}}:.github/scripts/{filename}")"',
+        f'          git show "${{base_sha}}:.github/scripts/{filename}" > "$RUNNER_TEMP/{filename}"',
+        f'          test "$(git hash-object --no-filters "$RUNNER_TEMP/{filename}")" = "${variable}_blob"',
+        f'            "$RUNNER_TEMP/{filename}" \\',
+    }
+    post_lines = {
+        f"          restore_base_blob '.github/scripts/{filename}' \\",
+        f'            "$RUNNER_TEMP/{filename}" "${variable.upper()}_BLOB"',
+    }
+    for block, lines in ((bootstrap, pre_lines), (restore, post_lines)):
+        for line in lines:
+            assert block.splitlines().count(line) == 1, ('missing/duplicate staging line', line)
+    assert f'[[ "${variable}_blob" =~ ^[0-9a-f]{{40}}$ ]]' in bootstrap
+    assert f"printf '{variable}_blob=%s\\n' \"${variable}_blob\"" in bootstrap
+    assert (f'{variable.upper()}_BLOB: ${{{{ steps.issue_context.outputs.{variable}_blob }}}}'
+            in restore)
+    allowed_supply[filename] = pre_lines | post_lines
+    assert workflow_text.count(filename) == sum(line.count(filename) for line in pre_lines | post_lines)
+assert 'bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"' in step('Gate requirement changes')
+
 sources = [root / 'AGENTS.md', *sorted((root / '.github/workflows').glob('*')),
            *sorted((root / '.github/scripts').glob('*'))]
 for source in sources:
@@ -1426,11 +1466,96 @@ for source in sources:
         continue
     if source.parent.name == 'scripts' and source.name.startswith('test-'):
         continue
-    content = source.read_bytes()
-    assert scope_helper.name.encode() not in content and scope_marker.encode() not in content, (
-        'dormant scope marker reached production/instructions', source)
-    assert decision_classifier.name.encode() not in content, (
-        'prepared decision classifier reached production/instructions', source)
+    content = source.read_text()
+    assert scope_marker not in content, ('dormant scope marker reached production/instructions', source)
+    for filename, allowed_lines in allowed_supply.items():
+        references = [line for line in content.splitlines() if filename in line]
+        assert not references or (source == workflow_path and set(references) == allowed_lines
+                                  and len(references) == len(allowed_lines)), (
+            'prepared helper reached a production consumer', source, references)
+
+# Execute the production bootstrap/restore run bodies with only remote/context
+# inputs mocked. All blob reads and hashes use the repository's local base.
+base = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+staging = scratch / 'prepared-supply'
+staging.mkdir()
+runner = staging / 'runner'
+runner.mkdir()
+output = staging / 'output'
+bootstrap_script = staging / 'bootstrap.sh'
+restore_script = staging / 'restore.sh'
+bootstrap_script.write_text(run_body(bootstrap))
+restore_script.write_text(run_body(restore))
+harness = r'''set -euo pipefail
+git() {
+  case "$1" in
+    fetch|checkout) return 0 ;;
+    rev-parse)
+      if [ "${2-}" = --verify ]; then printf '%s\n' "$FIXTURE_BASE"; return; fi ;;
+  esac
+  if [[ "$*" == *"$FAULT_HELPER"* ]] && [ -n "$FAULT_HELPER" ]; then
+    if [ "$FAULT" = missing ] && [[ "$1" == show || "$1" == rev-parse ]]; then return 1; fi
+    if [ "$FAULT" = tampered ] && [ "$1" = show ]; then printf 'exit 99\n'; return; fi
+  fi
+  command git -C "$FIXTURE_ROOT" "$@"
+}
+gh() {
+  [ "$1 $2" = 'issue view' ] || return 2
+  printf '{"number":730,"title":"Prepared supply","body":"fixture","url":"local","comments":[],"labels":[]}\n'
+}
+export -f git gh
+bash "$1"
+'''
+env = {**os.environ, 'FIXTURE_ROOT': str(root), 'FIXTURE_BASE': base,
+       'BASE_SHA': base, 'RUNNER_TEMP': str(runner), 'GITHUB_OUTPUT': str(output),
+       'GITHUB_ENV': str(staging / 'env'), 'GITHUB_STEP_SUMMARY': str(staging / 'summary'),
+       'ISSUE_NUMBER': '730', 'GITHUB_REPOSITORY': 'owner/repo',
+       'PRE_WRITE_REMOTE_HEAD': 'absent', 'FAULT_HELPER': '', 'FAULT': ''}
+
+
+def execute(script, overrides=None):
+    return subprocess.run(['bash', '-c', harness, '--', str(script)], cwd=staging,
+                          env={**env, **(overrides or {})}, capture_output=True, timeout=10)
+
+
+result = execute(bootstrap_script)
+assert result.returncode == 0, result.stderr
+pinned = dict(line.split('=', 1) for line in output.read_text().splitlines())
+for helper, variable in prepared:
+    identity = subprocess.check_output(['git', '-C', str(root), 'rev-parse',
+                                       base + ':.github/scripts/' + helper.name], text=True).strip()
+    assert pinned[variable + '_blob'] == identity and len(identity) == 40
+    assert not (runner / helper.name).exists(), ('bootstrap helper survived workload entry', helper)
+for helper, variable in prepared:
+    for fault in ('missing', 'tampered'):
+        result = execute(bootstrap_script, {'FAULT_HELPER': helper.name, 'FAULT': fault})
+        assert result.returncode != 0, ('unsafe bootstrap passed', helper, fault)
+
+# Carry identities via the step's real output/env bindings, never runner files.
+import re
+for key, binding in re.findall(r'^          ([A-Z_]+): \$\{\{ steps\.issue_context\.outputs\.([a-z_]+) \}\}',
+                             restore, re.MULTILINE):
+    env[key] = pinned[binding]
+for helper in (requirements_helper, *[item[0] for item in prepared]):
+    (runner / helper.name).write_text('exit 99\n')
+(runner / 'codex-diff-guard-contract.json').write_text('{}\n')
+result = execute(restore_script)
+assert result.returncode == 0, result.stderr
+for helper in (requirements_helper, *[item[0] for item in prepared]):
+    assert (runner / helper.name).read_bytes() == subprocess.check_output(
+        ['git', '-C', str(root), 'show', base + ':.github/scripts/' + helper.name])
+response.write_text('ordinary response\n')
+classify('restored sibling primitives', [response], 'none', runner / decision_classifier.name,
+         cwd=staging)
+for helper, variable in prepared:
+    key = variable.upper() + '_BLOB'
+    for invalid in ('', 'BAD', '0' * 40):
+        result = execute(restore_script, {key: invalid})
+        assert result.returncode != 0, ('invalid pinned identity passed', helper, invalid)
+    for fault in ('missing', 'tampered'):
+        result = execute(restore_script, {'FAULT_HELPER': helper.name, 'FAULT': fault})
+        assert result.returncode != 0, ('unsafe restore passed', helper, fault)
+print('Prepared trusted supply/restore and fail-closed fixtures passed')
 print('Prepared decision classifier and dormant scope marker fixtures passed')
 PY
 
