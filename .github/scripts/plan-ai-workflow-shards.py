@@ -16,8 +16,9 @@ Worker naming and production integration remain outside this helper.
 Policy: descending integer weight, then path; assign to the smallest total,
 then fewest fixtures, then lowest shard id. #756 / PR #742 / Regression #487
 observations supply tenths-of-second hints; unobserved inputs use 30 (3s).
-Hints only balance work; absent hints never remove fixtures. Policy changes
-must change POLICY. No env policy, network, repository writes, or subprocesses.
+Hints only balance work; absent hints never remove fixtures. The 3.0s fallback
+rounds the #487 residual average: (526.2s - 319.8s hinted) / 70 ~= 2.95s.
+Policy changes, including weight semantics, must change POLICY. No env policy, network, repository writes, or subprocesses.
 Malformed input or internal contradiction exits nonzero with no plan output.
 """
 

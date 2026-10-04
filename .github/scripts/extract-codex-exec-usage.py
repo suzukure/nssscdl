@@ -85,6 +85,32 @@ def validate_usage(usage):
             and usage["reasoning_output_tokens"] <= usage["output_tokens"])
 
 
+def validate_result(data):
+    """Validate a parser result for prepared collectors; return only safe fields.
+
+    This shares the source's schema and usage checks, without changing extract's
+    input/output contract. Noncanonical bytes and unknown fields are rejected.
+    """
+    require(type(data) is bytes and 0 < len(data) <= MAX_OUTPUT_BYTES)
+    result = parse(data)
+    fields(result, ("schema", "version", "source", "availability", "reason", "usage"))
+    require(result["schema"] == RESULT_SCHEMA and result["source"] == SOURCE
+            and type(result["version"]) is JsonInteger and result["version"] == "1")
+    result["version"] = VERSION
+    if result["availability"] == "reported":
+        require(result["reason"] == "terminal_cumulative")
+        validate_usage(result["usage"])
+        require(any(result["usage"].values()))
+    else:
+        require(result["availability"] == "unavailable" and result["usage"] is None
+                and type(result["reason"]) is str and result["reason"] in (
+                    "process_cancelled", "process_failed", "process_unknown",
+                    "execution_failed", "missing_terminal", "zero_unverified"))
+    require(data == json.dumps(result, sort_keys=True, ensure_ascii=True,
+                              separators=(",", ":"), allow_nan=False).encode("ascii"))
+    return result
+
+
 def extract(jsonl_bytes, context_bytes):
     """Pure bounded inputs -> canonical bounded JSON; invalid raises fixed ValueError.
 
