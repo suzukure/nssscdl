@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prepared classifier (#725): no production caller or pause/write side effects.
+# Pure classifier (#725), consumed by the Issue-origin post-Codex gate (#731).
 # Success: exit 0 and one canonical classification. Any error: exit 2, no stdout.
 if [ "$#" -ne 1 ] || [ -z "${1-}" ]; then
   echo 'Codex最終報告の通常ファイルpathを1つ指定してください。' >&2
