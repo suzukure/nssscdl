@@ -345,7 +345,7 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 
 機械正本は `.github/scripts/validate-codex-usage-identity.py`。pure API `validate_identity(identity_bytes)` はcaller供給の単一JSON object bytesをclosed schemaで検証し、全fieldを保持した新しいdictを返す。schema / version、repository、workflow job ID、整数範囲、SHA、model、CLI version、medium / fresh_exec固定、4096 byte上限とstrict JSON拒否の詳細はhelperを唯一の正本とする。非canonical JSONも受理し、不正入力は生入力・例外chainを含まない固定 `ValueError("invalid_identity")` で拒否する。型検証はtrusted authorityの証明ではなく、identity確定は将来callerの責務とする。
 
-identity helper自身にはCLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerを追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalと下記#782のexact prepared loaderだけを許可してproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の依存順を維持する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+identity helper自身にはCLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerを追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalと下記#782 / #796のexact prepared loaderだけを許可してproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の依存順を維持する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### usage stream recordのpure検証（#781）
 
@@ -374,6 +374,14 @@ bytesのみ・16 MiB上限で、空行・非JSON診断行を無視する。先�
 APIの受理上限はproduction取得がboundedで切り詰め無しである証明ではない。trusted journal authority・同unit性も確定せず、後続callerがunique unit・取得成否・上限・非切り詰めを確認する。first / last選択、raw journal保存、自由文reason、0補完、retry / fallbackは追加しない。production persistence・journalctl・systemd lifecycle・artifact / upload・GITHUB_OUTPUT・台帳 / 価格 / 課金照合・Luna policy / provider / Secrets / Variablesは変更せず、#785のhelperへ依存しない。
 
 `test-select-codex-usage-journal.sh` は実extractor / #781へ直結したfinite secretless fixtureで、reported / unavailable、診断・他schema混在、候補0 / 1 / 2・同一重複、strict parse拒否、noncanonical、4096 byte stream / 16 MiB journal境界、入力型、非反射、依存固定エラーを確認する。selector / inventory・横断fixture・guardも同期し、guardはexact source / loaderだけを追加許可して未知caller・copy・追加loader・production接続拒否を維持する。selector変更時はcurrent-head正式full Regressionを確認する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。merge後の最小production persistence callerは親 #746でfresh WAC評価し、job cancel / runner lossでartifact回収を保証しない。Luna未開始・試行全体10 USD・まず1成果・逐次費用確認・unknown非0・自動retry / fallback禁止を維持する。
+
+### bounded unit journal収集とsanitized evidence（#796）
+
+機械正本は `.github/scripts/collect-codex-usage-evidence.py`。API `collect(identity_bytes)` は#780でidentityを検証し、job / run_id / run_attemptからexact unitを内部生成する。CLIは引数なしでstdinのidentityをbounded readする。任意unit / path / commandを受けず、固定同一directoryの#789 selector・#782 builder・#780 validatorと既存の推移的dependencyだけをロードし、schemaを複製しない。
+
+固定 `/usr/bin/journalctl` をshellなし・exact unit・`--no-pager --output=cat --quiet`で1回だけ起動する。正常EOFとexit0のbytesだけをselectorへ渡し、16 MiB + 1 byteでoverflowを検出して切り詰めない。取得deadline / cleanup boundの詳細はhelperを正本とし、timeout / exec error / nonzero / overflowはinvalid、正常取得で候補なしはmissingとする。出力はbuilderのcanonical evidence + LFだけで、unknownをusage 0へ変換せず、stderr / raw journal / raw JSONL / 自由文例外を保存・公開しない。
+
+`test-collect-codex-usage-evidence.sh` のfinite secretless pipe fixtureと既存selector / guard / Regressionで検証する。guardはcollectorのexact sourceと3つのfixed sibling loaderだけを追加許可し、#792のexact bootstrap例外と未知caller・copy・production接続拒否を維持する。fixture inventory変更はcurrent-head正式full AI Workflow Regression対象とする。production workflow / artifact / rematerialization wiringは未接続で、actual transient-unitでの取得・trusted caller authority・課金はこのfixtureで実証しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### bounded native stream supervisor（#761 / #764 / #772）
 

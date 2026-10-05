@@ -34,6 +34,7 @@ usage_identity = 'validate-codex-usage-identity.py'
 usage_stream = 'validate-codex-usage-stream.py'
 usage_evidence = 'build-codex-usage-evidence.py'
 usage_journal = 'select-codex-usage-journal.py'
+usage_collector = 'collect-codex-usage-evidence.py'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 bootstrap_entry = 'trusted-main-npm-bootstrap.py'
@@ -59,6 +60,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (usage_stream[:-3], usage_stream, 'ai-developer-codex', None),
              (usage_evidence[:-3], usage_evidence, 'ai-developer-codex', None),
              (usage_journal[:-3], usage_journal, 'ai-developer-codex', None),
+             (usage_collector[:-3], usage_collector, 'ai-developer-codex', None),
              (model_policy, model_policy, 'ai-developer-codex', None))
 
 
@@ -69,7 +71,7 @@ def python_body(text):
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
                                                            session_runtime, session_probe, runtime_staging,
                                                            *session_symbols, model_selector[:-3], model_policy,
-                                                           exec_usage[:-3], stream_supervisor[:-3], usage_identity[:-3], usage_stream[:-3], usage_evidence[:-3], usage_journal[:-3]))
+                                                           exec_usage[:-3], stream_supervisor[:-3], usage_identity[:-3], usage_stream[:-3], usage_evidence[:-3], usage_journal[:-3], usage_collector[:-3]))
     return body
 
 
@@ -142,7 +144,7 @@ def assert_declarative(path, text):
         for row in matches:
             allowed.extend(n for n in ast.walk(row)
                            if isinstance(n, ast.Constant) and n.value == filename)
-        if filename in (model_selector, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal) and not is_fixture:
+        if filename in (model_selector, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector) and not is_fixture:
             # Exact fixture registration is data, never an executable reference.
             extension = declaration(tree, 'EXTENSIONS', ast.Dict)
             ast.literal_eval(extension)
@@ -285,6 +287,7 @@ def assert_unreachable(sources):
             assert usage_stream[:-3] not in text, ('usage stream production connection', path)
             assert usage_evidence[:-3] not in text, ('usage evidence production connection', path)
             assert usage_journal[:-3] not in text, ('usage journal production connection', path)
+            assert usage_collector[:-3] not in text, ('usage collector production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -320,6 +323,17 @@ def assert_unreachable(sources):
                         continue  # Only the closed callback API, never raw session access.
                     assert symbol not in text, ('unknown session caller', path)
             for needle, filename, _, _ in contracts:
+                if path == scripts + usage_collector and filename in (usage_journal, usage_evidence, usage_identity):
+                    # #796 permits only this exact bounded collector and fixed loaders.
+                    assert hashlib.sha256(text.encode()).hexdigest() == (
+                        'ed49b9dee3378f854b10cec5fb21d35492a1351d5e9a84d5667d14b6fcbdc15b')
+                    tree = ast.parse(text)
+                    name = {usage_journal: 'SELECTOR_NAME', usage_evidence: 'BUILDER_NAME',
+                            usage_identity: 'IDENTITY_NAME'}[filename]
+                    identity = declaration(tree, name, ast.Constant)
+                    assert identity.value == filename
+                    assert needle.encode() not in mask_literals(text, [identity])
+                    continue
                 if path == scripts + usage_journal and filename == usage_stream:
                     # #789 admits only the exact pure selection source/loader.
                     assert hashlib.sha256(text.encode()).hexdigest() == (
@@ -428,7 +442,7 @@ sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
 for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
-             model_selector, model_policy, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal):
+             model_selector, model_policy, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -571,7 +585,7 @@ for name in ('BASELINE', 'PATH_SUITES'):
 
 # The new extension exception admits only one declarative fixture identity.
 original = sources[selector_path]
-for filename in (model_selector, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal):
+for filename in (model_selector, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector):
     literal = '"' + filename[:-3] + '"'
     for replacement in ('"other"', literal + ', ' + literal,
                         f'run({filename[:-3]!r})'):
@@ -658,6 +672,24 @@ rejected(scripts + 'unknown-loader.py', journal_source)
 for path in (scripts + usage_evidence, scripts + stream_supervisor,
              scripts + 'unknown-loader.py', workflows + 'ai-developer.yml'):
     for call in (f'load({usage_journal!r})', f'load({usage_journal[:-3]!r})'):
+        rejected(path, sources.get(path, '') + '\n' + call + '\n')
+
+# #796 acquisition is prepared-only: exact loaders/source, no downstream wiring.
+collector_source = sources[scripts + usage_collector]
+accepted(scripts + usage_collector, collector_source)
+for mutation in (
+        collector_source + '\nload_sibling(SELECTOR_NAME)\n',
+        collector_source.replace('Path(__file__).with_name(name)', 'Path("/candidate").with_name(name)'),
+        collector_source.replace('shell=False', 'shell=True'),
+        collector_source.replace('limit + 1 - len(data)', 'limit - len(data)'),
+        collector_source.replace('selector.select_stream(journal)', 'selector.select_stream(b"")')):
+    assert mutation != collector_source
+    rejected(scripts + usage_collector, mutation)
+rejected(scripts + 'copy-' + usage_collector, collector_source)
+rejected(scripts + 'unknown-loader.py', collector_source)
+for path in (scripts + usage_evidence, scripts + stream_supervisor,
+             scripts + 'unknown-loader.py', workflows + 'ai-developer.yml'):
+    for call in (f'load({usage_collector!r})', f'load({usage_collector[:-3]!r})'):
         rejected(path, sources.get(path, '') + '\n' + call + '\n')
 
 for symbol in session_symbols:

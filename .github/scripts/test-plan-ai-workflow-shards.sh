@@ -23,7 +23,8 @@ spec = importlib.util.spec_from_file_location('planner', source)
 planner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner)
 actual = sorted(prefix + path.name for path in (repo / prefix).glob('test-*.sh'))
-checkpoint_792 = [path for path in actual if path != prefix + 'test-trusted-main-npm-bootstrap.sh']
+checkpoint_796 = [path for path in actual if path != prefix + 'test-collect-codex-usage-evidence.sh']
+checkpoint_792 = [path for path in checkpoint_796 if path != prefix + 'test-trusted-main-npm-bootstrap.sh']
 checkpoint_789 = [path for path in checkpoint_792 if path != prefix + 'test-select-codex-usage-journal.sh']
 checkpoint_783 = [path for path in checkpoint_789 if path != prefix + 'test-systemd-transient-lifecycle.sh']
 stream_inventory = [path for path in checkpoint_783 if path != prefix + 'test-build-codex-usage-evidence.sh']
@@ -32,7 +33,7 @@ checkpoint = [path for path in identity_inventory if path != prefix + 'test-vali
 previous = [path for path in checkpoint if path != prefix + 'test-plan-ai-workflow-shards.sh']
 assert len(previous) == 78 and len(checkpoint) == 79 and len(identity_inventory) == 80
 assert len(stream_inventory) == 81 and len(checkpoint_783) == 82 and len(checkpoint_789) == 83 and len(checkpoint_792) == 84
-assert len(actual) == 85
+assert len(checkpoint_796) == 85 and len(actual) == 86
 assert set(planner.RUNTIME_HINTS) <= set(actual), 'runtime hint absent from current inventory'
 
 
@@ -68,7 +69,7 @@ def rejected(data):
 
 
 # Preserve the #756 / #780 / #781 / #782 inventory proofs alongside the current full inventory.
-for paths in (previous, checkpoint, identity_inventory, stream_inventory, checkpoint_783, checkpoint_789, checkpoint_792, actual):
+for paths in (previous, checkpoint, identity_inventory, stream_inventory, checkpoint_783, checkpoint_789, checkpoint_792, checkpoint_796, actual):
     result = planner.plan(encode(paths))
     a, b = coverage(result, paths)
     for reordered in (paths[::-1], paths[::2] + paths[1::2], paths[1:] + paths[:1]):
@@ -207,5 +208,5 @@ for path, text in (('.github/workflows/ai-workflow-regression.yml', 'python3 ' +
         pass
     else:
         raise AssertionError('production planner caller accepted')
-print('AI workflow shard planner: 78/79/80/81/82/83/84/85 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
+print('AI workflow shard planner: 78/79/80/81/82/83/84/85/86 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
 PY
