@@ -23,8 +23,9 @@ spec = importlib.util.spec_from_file_location('planner', source)
 planner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner)
 actual = sorted(prefix + path.name for path in (repo / prefix).glob('test-*.sh'))
-previous = [path for path in actual if path != prefix + 'test-plan-ai-workflow-shards.sh']
-assert len(previous) == 78 and len(actual) == 79
+previous = [path for path in actual if path not in (
+    prefix + 'test-plan-ai-workflow-shards.sh', prefix + 'test-systemd-transient-lifecycle.sh')]
+assert len(previous) == 78 and len(actual) == 80
 assert set(planner.RUNTIME_HINTS) <= set(actual), 'runtime hint absent from current inventory'
 
 
@@ -59,7 +60,7 @@ def rejected(data):
         raise AssertionError('invalid input/assignment accepted')
 
 
-# Independently enumerate the full pre-Issue inventory and this Issue's added fixture.
+# Independently enumerate the #756 pre-Issue inventory and the current inventory.
 for paths in (previous, actual):
     result = planner.plan(encode(paths))
     a, b = coverage(result, paths)
@@ -199,5 +200,5 @@ for path, text in (('.github/workflows/ai-workflow-regression.yml', 'python3 ' +
         pass
     else:
         raise AssertionError('production planner caller accepted')
-print('AI workflow shard planner: 78/79 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
+print('AI workflow shard planner: 78/80 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
 PY
