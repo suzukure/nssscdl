@@ -558,6 +558,15 @@ jobs:
           [SCOPE_DECISION_REQUIRED]
           Do not wrap that line in backticks or a Markdown fenced code block, or add leading/trailing whitespace. CRLF is allowed.
           Report observed fact, missing/new Contract category, why Done is impossible under the current contract, R/C/P/B changes, proposed split/prerequisite, Product impact, and unverified matters. Free text is for humans; only the exact marker controls the workflow.
+          Only when emitting the scope decision marker, include each exact label below once, at the start of a separate single plain-text line, followed by ": " and a nonempty Japanese explanation. No bullets, Markdown formatting, or multiline values in these seven lines:
+          Observed fact
+          Missing/new Contract category
+          Why Done is impossible under the current contract
+          R/C/P/B change
+          Proposed split/prerequisite
+          Product impact
+          Unverified matters
+          Keep the entire final report within 16 KiB UTF-8, each field within 1 KiB UTF-8, and the rendered human report within 8 KiB. Retain only minimum observations; omit raw tool output, JSONL, token/secret/credential values, environment dumps, absolute runner/toolcache paths, and numeric UID/GID or other runner internals. Use repository-relative paths and abstract non-secret descriptions. These labels validate human evidence only; they do not classify the decision or authorize resume.
           Preserve the Product requirement change / unresolved upstream decision escalation in AGENTS.base.md. If that escalation applies, output only [REQUIREMENTS_CHANGE_REQUIRED] as the decision marker; otherwise use the scope marker for the scope/Contract decision above. Never output both decision markers in one final response.
           Human scope decisions must be recorded in the Issue body before the existing /ai resume develop path can resume. Do not automatically split Issues, convert them to parents, or retry.
           Write the final report for humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
@@ -1278,7 +1287,99 @@ jobs:
               ;;
             none) echo 'continue=true' >> "$GITHUB_OUTPUT" ;;
             scope_decision)
-              pause_for_human scope_decision 'Codexがスコープの判断の必要性を報告しました。対象範囲がIssueに記録されるまで自動開発を停止します。'
+              scope_report="$(mktemp "$RUNNER_TEMP/scope-report.XXXXXX" 2>/dev/null)" || scope_report=''
+              trap 'if [ -n "$scope_report" ]; then rm -f -- "$scope_report"; fi' EXIT
+              scope_detail='Codexがスコープの判断の必要性を報告しました。対象範囲がIssueに記録されるまで自動開発を停止します。'
+              scope_report_valid=false
+              # Trusted inline gate: human fields never determine machine reason.
+              if python3 -I -B - "$CODEX_FINAL" "$scope_report" <<'PY'
+          import html
+          import os
+          import re
+          import stat
+          import sys
+          import unicodedata
+
+          try:
+              fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as source:
+                  if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                      raise ValueError
+                  raw = source.read(16 * 1024 + 1)
+              if not raw or len(raw) > 16 * 1024:
+                  raise ValueError
+              report = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              if any(unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp")
+                     for c in report if c != "\n"):
+                  raise ValueError
+              labels = (
+                  "Observed fact", "Missing/new Contract category",
+                  "Why Done is impossible under the current contract", "R/C/P/B change",
+                  "Proposed split/prerequisite", "Product impact", "Unverified matters",
+              )
+              fields = {}
+              for line in report.split("\n"):
+                  for label in labels:
+                      if line.startswith(label + ":"):
+                          if label in fields or not line.startswith(label + ": "):
+                              raise ValueError
+                          value = line[len(label) + 2:]
+                          if not value.strip() or len(value.encode("utf-8")) > 1024:
+                              raise ValueError
+                          fields[label] = value
+              if set(fields) != set(labels):
+                  raise ValueError
+              # Reject obvious credential/raw diagnostic shapes, never echo matches.
+              unsafe = re.compile(
+                  r"-----BEGIN[ A-Z]*PRIVATE KEY-----|\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+"
+                  r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bBearer\s+\S+"
+                  r"|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+                  r"|https?://[^\s]*(?:webhooks?/|[?&](?:token|key|secret)=)"
+                  r"|\b(?:token|secret|password|credential|api[_ -]?key)\s*[:=]\s*\S+"
+                  r"|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\s*=\s*\S+"
+                  r"|\b(?:HOME|USER|LOGNAME|PATH|SHELL)\s*=\s*\S+"
+                  r"|\b(?:uid|gid|userId|primaryGroupId|supplementaryGroupIds)\b[^\n]{0,16}\d"
+                  r"|/(?:home|opt|tmp|var|run|proc|sys|etc|usr|mnt|Users|private|__w|_work|_temp)(?:/|\b)"
+                  r"|\b[A-Za-z]:[\\/]|(?:hostedtoolcache|/toolcache/|/_actions/|/_temp/)"
+                  r'|"(?:type|environment|env)"\s*:',
+                  re.IGNORECASE,
+              )
+              if any(unsafe.search(value) for value in fields.values()):
+                  raise ValueError
+              def escape(value):
+                  # Display model text literally; suppress HTML/Markdown and mentions.
+                  value = html.escape(value, quote=True).replace("@", "&#64;")
+                  return re.sub(r"([\\`*_{}\[\]()!|])", r"\\\1", value)
+              rendered = "### スコープ判断の理由（Codexの報告）\n\n"
+              rendered += "以下は人間向けの判断材料です。停止・再開の制御は既存pause recordを正本とします。\n\n"
+              rendered += "\n".join("- " + label + ": " + escape(fields[label]) for label in labels) + "\n"
+              if len(rendered.encode("utf-8")) > 8 * 1024:
+                  raise ValueError
+              fd = os.open(sys.argv[2], os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "wb") as output:
+                  if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
+                      raise ValueError
+                  output.write(rendered.encode("utf-8"))
+          except Exception:
+              # No traceback, input bytes, paths, or environment in diagnostics.
+              sys.exit(1)
+          PY
+              then
+                scope_report_valid=true
+              else
+                scope_detail='スコープ判断理由を安全な形式・上限内で検証できませんでした。raw内容は公開せずscope_decisionの停止を維持します。人間による確認が必要です。'
+              fi
+              pause_for_human scope_decision "$scope_detail"
+              if [ "$scope_report_valid" != true ]; then
+                echo 'スコープ判断理由の検証に失敗しました。自動開発は停止しています。' >&2
+                exit 1
+              fi
+              # Machine pause and generic comment already exist before human evidence.
+              if ! gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body-file "$scope_report" >/dev/null 2>&1; then
+                echo 'スコープ判断理由の投稿を確認できませんでした。停止を維持し、自動再試行しません。' >&2
+                exit 1
+              fi
               ;;
             *)
               pause_for_human developer_execution_failed 'decision marker classifierの出力が不正です。人間の判断があるまで自動開発を停止します。'
