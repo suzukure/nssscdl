@@ -552,6 +552,16 @@ manual protected-path merge等によりmerge後もstale `human-review-required` 
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `content` と自動mentionを無効にする `allowed_mentions: {parse: []}` を送り、contentが1800 byteを超える場合は送信に失敗する。Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
 
+### scope_decisionの人間向け判断理由保存（#776）
+
+Issue起点post-Codex gateのclassifierが `scope_decision` を返した場合だけ、最終応答の必要7項目をtrusted inline validationで抽出し、対象Issueへ別commentとして `gh issue comment --body-file` で保存する。形式の正本は `.github/workflows/ai-developer.yml` のIssue-origin fixed promptと `Gate requirement changes` である。exact label `Observed fact`、`Missing/new Contract category`、`Why Done is impossible under the current contract`、`R/C/P/B change`、`Proposed split/prerequisite`、`Product impact`、`Unverified matters` はそれぞれ行頭から1回だけ `Label: 値` のplain-text単独行とし、値は日本語の非空説明とする。markerは従来どおり別のexact standalone lineを使用する。labelや値はhuman evidenceの形式検証だけに使用し、reason分類・resume判断・repository write認可へ使わない。
+
+最終応答は16 KiB、各fieldは1 KiB UTF-8、renderしたcommentは8 KiBを上限とする。通常fileのbounded read、strict UTF-8、CRLF以外の不正control文字、required field欠落・重複・空値・不正形式、入力／field／render上限を検証する。promptでraw tool output / JSONL、token / secret / credential / environment dump、absolute runner/toolcache path、numeric UID/GID等のrunner内部情報を禁止し、validatorでも明白なcredential prefix・private key・Bearer/JWT・webhook・機密値代入・environment dump・runner path・UID/GID・raw JSON形状を拒否する。全finalの転載やraw stream保存は行わず、検証済み7項目だけをHTML / Markdown / mentionをescapeして表示する。この形状検査は任意の未知secretの完全検出を保証せず、producerはraw値を持ち込まない責務を維持する。
+
+順序はreport検証、既存machine pause成立、既存generic pause comment、bounded human report commentとする。既存pause recordの `reason` / fingerprint / lifecycleは変更せず、`payload.detail` へmodel free textを埋め込まない。scope分類後のreport検証・一時file保存失敗はraw内容を反射せず固定診断の `scope_decision` pauseを成立させ、step failureで停止する。human report comment API失敗・応答不明も固定診断でstep failureとし、成立済みpauseを維持する。どちらもdiff guard・commit・push・PR writeへ進まず、理由再取得のpaid retryや自動再送を行わない。最終応答欠落・空、classifier異常・両marker曖昧性は従来の `developer_execution_failed` を維持し、markerなし・requirements-only・Claude Blocking follow-upへ保存を一般化しない。一時report fileはgate終了時に削除する。
+
+検証は既存 `test-ai-developer-workflow.sh` で実gateを抽出し、synthetic scope reportと実common pause helper・mock GitHub writeを合成する。7項目の投稿・pause先行・fingerprint/resume不変、正常／上限境界／不正UTF-8・control・field・oversize・credential/runner形状・file異常、固定診断の非反射、comment failure、後続write不達を確認する。正式current-headの証拠は自然なAI Workflow Regressionで確認し、外部サービスへ診断目的の実アクセスは行わない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ### human pause record のschema契約
 
 コメントへ埋め込むversion 1のrecordは `.github/scripts/human-pause-record.sh` をschema validationの正本とする。`reason` はそのrecordが扱う有効なpause reasonであり、`kind` ごとの意味は次のとおりである。
