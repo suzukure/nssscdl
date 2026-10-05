@@ -29,10 +29,10 @@ assert selector.EXTENSIONS == {
     'product-npm': ('product-npm-bootstrap-preparation', 'product-npm-post-workload',
                     'product-npm-production-session', 'product-runtime-staging', 'trusted-runtime-supply'),
     'ai-developer-codex': ('select-' + 'codex-issue-model', 'extract-' + 'codex-exec-usage',
-                           'supervise-' + 'codex-exec-stream'),
+                           'supervise-' + 'codex-exec-stream', 'validate-' + 'codex-usage-identity'),
     'common': ('select-ai-workflow-fixtures', 'production-unreachable', 'plan-ai-workflow-shards')}
 inventory = sorted(p for values in selector.INVENTORY.values() for p in values)
-assert len(inventory) == len(set(inventory)) == 79
+assert len(inventory) == len(set(inventory)) == 80
 assert inventory == actual, 'Every current shell fixture must be registered exactly once'
 common_guard = prefix + 'test-production-unreachable.sh'
 assert common_guard in selector.INVENTORY['common']
@@ -90,6 +90,7 @@ cases = (
     ('select-codex-issue-model.py', {'ai-developer-codex'}),
     ('extract-codex-exec-usage.py', {'ai-developer-codex'}),
     ('supervise-codex-exec-stream.py', {'ai-developer-codex'}),
+    ('validate-codex-usage-identity.py', {'ai-developer-codex'}),
     ('codex-issue-model-policy.json', {'ai-developer-codex'}),
     ('build-review-context.sh', {'ai-developer-codex', 'claude'}),
     ('classify-claude-review-risk.sh', {'claude'}),
@@ -311,5 +312,5 @@ assert 'fixtures=(.github/scripts/test-*.sh)' in regression
 assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
 assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
-print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + #745 + #753 + #761 + selector + #701 + #756 = 79).')
+print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + #745 + #753 + #761 + #780 + selector + #701 + #756 = 80).')
 PY

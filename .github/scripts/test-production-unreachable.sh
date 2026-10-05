@@ -30,6 +30,7 @@ model_selector = 'select-codex-issue-model.py'
 model_policy = 'codex-issue-model-policy.json'
 exec_usage = 'extract-codex-exec-usage.py'
 stream_supervisor = 'supervise-codex-exec-stream.py'
+usage_identity = 'validate-codex-usage-identity.py'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
@@ -46,6 +47,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (model_selector[:-3], model_selector, 'ai-developer-codex', None),
              (exec_usage[:-3], exec_usage, 'ai-developer-codex', None),
              (stream_supervisor[:-3], stream_supervisor, 'ai-developer-codex', None),
+             (usage_identity[:-3], usage_identity, 'ai-developer-codex', None),
              (model_policy, model_policy, 'ai-developer-codex', None))
 
 
@@ -56,7 +58,7 @@ def python_body(text):
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
                                                            session_runtime, session_probe, runtime_staging,
                                                            *session_symbols, model_selector[:-3], model_policy,
-                                                           exec_usage[:-3], stream_supervisor[:-3]))
+                                                           exec_usage[:-3], stream_supervisor[:-3], usage_identity[:-3]))
     return body
 
 
@@ -129,7 +131,7 @@ def assert_declarative(path, text):
         for row in matches:
             allowed.extend(n for n in ast.walk(row)
                            if isinstance(n, ast.Constant) and n.value == filename)
-        if filename in (model_selector, exec_usage, stream_supervisor) and not is_fixture:
+        if filename in (model_selector, exec_usage, stream_supervisor, usage_identity) and not is_fixture:
             # Exact fixture registration is data, never an executable reference.
             extension = declaration(tree, 'EXTENSIONS', ast.Dict)
             ast.literal_eval(extension)
@@ -253,6 +255,7 @@ def assert_unreachable(sources):
             stream_text = mask_trusted_stream_callers(text) if path == workflows + 'ai-developer.yml' else text
             assert exec_usage[:-3] not in stream_text, ('unknown exec usage production connection', path)
             assert stream_supervisor[:-3] not in stream_text, ('unknown stream supervisor production connection', path)
+            assert usage_identity[:-3] not in text, ('usage identity production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -368,7 +371,7 @@ sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
 for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
-             model_selector, model_policy, exec_usage, stream_supervisor):
+             model_selector, model_policy, exec_usage, stream_supervisor, usage_identity):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -500,7 +503,7 @@ for name in ('BASELINE', 'PATH_SUITES'):
 
 # The new extension exception admits only one declarative fixture identity.
 original = sources[selector_path]
-for filename in (model_selector, exec_usage, stream_supervisor):
+for filename in (model_selector, exec_usage, stream_supervisor, usage_identity):
     literal = '"' + filename[:-3] + '"'
     for replacement in ('"other"', literal + ', ' + literal,
                         f'run({filename[:-3]!r})'):
@@ -524,6 +527,12 @@ for mutation in (prepared_source + '\nload_extractor(EXTRACTOR_NAME)\n',
     rejected(scripts + stream_supervisor, mutation)
 rejected(scripts + 'copy-' + stream_supervisor, prepared_source)
 rejected(scripts + 'unknown-loader.py', prepared_source)
+
+# #780 has no prepared or production loader exception, including extensionless loads.
+for path in (scripts + stream_supervisor, scripts + 'unknown-loader.py',
+             scripts + 'copy-' + usage_identity, workflows + 'ai-developer.yml'):
+    for call in (f'load({usage_identity!r})', f'load({usage_identity[:-3]!r})'):
+        rejected(path, sources.get(path, '') + '\n' + call + '\n')
 
 for symbol in session_symbols:
     for path in (scripts + 'unknown.py', scripts + 'copy-' + session_runtime,
