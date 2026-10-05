@@ -8,10 +8,13 @@ import io
 import json
 import os
 from pathlib import Path
+import pwd
 import signal
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from unittest.mock import patch
 
 repo = Path(sys.argv[1])
@@ -239,4 +242,319 @@ assert not any(isinstance(n, ast.Call) and ast.unparse(n.func) in (
     'open', 'exec', 'eval', 'os.system', 'subprocess.run', 'subprocess.call',
     'child.communicate', 'child.kill', 'child.terminate') for n in ast.walk(tree))
 print('Codex stream supervisor: bounded capture/drain/outcome/stdin/single child/non-reflection/prepared PASS')
+
+# #764 reuses only the existing launch hardening/lifecycle contract. No API,
+# proxy/socket preflight, native binary, workspace isolation or paid-path proof.
+properties = ('Type=exec', 'TimeoutStopSec=5s', 'KillMode=control-group',
+              'SendSIGKILL=yes', 'NoNewPrivileges=yes', 'SystemCallArchitectures=native',
+              'SystemCallFilter=~io_uring_setup:EPERM io_uring_enter:EPERM io_uring_register:EPERM')
+privileges = ('--clear-groups', '--no-new-privs', '--bounding-set=-all',
+              '--inh-caps=-all', '--ambient-caps=-all')
+workflow = (repo / '.github/workflows/ai-developer.yml').read_text()
+for launch in workflow.split('/usr/bin/systemd-run \\\n')[1:]:
+    launch = launch.split('rc=$?', 1)[0]
+    for value in properties:
+        assert ('--property=' + value + ' ' in launch
+                or '--property="' + value + '" ' in launch)
+    assert '--property="RuntimeMaxSec=${runtime_max_sec}s"' in launch
+    assert '/usr/bin/setpriv' in launch and '/usr/bin/env -i' in launch
+    assert '--reuid="$uid"' in launch and '--regid="$nobody_gid"' in launch
+    assert all(value in launch for value in privileges)
+assert workflow.count('/usr/bin/systemd-run \\\n') == 2
+assert 'uid="$(id -u)"' in workflow and 'nobody_gid="$(id -g nobody)"' in workflow
+
+# Fixed child source stays inside this fixture; only PID readiness metadata is
+# saved. Raw stdout/stderr are generated in memory and never saved by the test.
+runtime_child = r'''
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+base, mode = Path(sys.argv[1]), sys.argv[2]
+if mode == 'descendant':
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    (base / 'descendant').write_text(str(os.getpid()))
+    time.sleep(60)
+    sys.exit(99)
+assert sys.stdin.buffer.read() == b'finite-stdin-764\n'
+if mode == 'timeout':
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    subprocess.Popen([sys.executable, '-B', __file__, str(base), 'descendant'])
+(base / 'ready').write_text(json.dumps([os.getppid(), os.getpid()]))
+deadline = time.monotonic() + 30
+while not (base / 'release').exists():
+    assert time.monotonic() < deadline
+    time.sleep(0.02)
+canary = 'SECRET_CANARY_764_command_body_error_stderr'
+os.write(2, canary.encode() * 8192)
+if mode == 'timeout':
+    time.sleep(60)
+    sys.exit(99)
+if mode == 'limit':
+    for _ in range(320):
+        os.write(1, (canary.encode() + b'x' * 65536)[:65536])
+    sys.exit(0)
+events = [dict(type='thread.started', thread_id='synthetic-764'), dict(type='turn.started'),
+          dict(type='item.completed', item=dict(command=canary, body=canary, error=canary))]
+if mode == 'rc0':
+    events.append(dict(type='turn.completed', usage=dict(input_tokens=100,
+        cached_input_tokens=70, cache_write_input_tokens=40,
+        output_tokens=20, reasoning_output_tokens=10)))
+else:
+    events.append(dict(type='turn.failed', error=dict(message=canary)))
+for event in events:
+    sys.stdout.buffer.write(json.dumps(event).encode() + b'\n')
+sys.stdout.buffer.flush()
+sys.exit(int(mode[2:]))
+'''
+compile(runtime_child, '<fixed-supervisor-fixture>', 'exec')
+runtime_canary = b'SECRET_CANARY_764_command_body_error_stderr'
+independent = (Path('/proc/1/comm').read_text().strip() == 'systemd'
+               and 'codex-' not in Path('/proc/self/cgroup').read_text())
+
+
+def checked(args, missing_unit=False):
+    # Never reflect systemd/journal/child diagnostics on failure.
+    result = subprocess.run(['sudo', '-n', *args], capture_output=True, timeout=10)
+    # Match the existing cleanup's not-found rc 0/1 contract while the unique
+    # transient unit is still being registered; other command errors fail.
+    absent = (missing_unit and result.returncode == 1
+              and b'LoadState=not-found' in result.stdout.splitlines())
+    assert result.returncode == 0 or absent, 'runtime control command failed'
+    return result.stdout
+
+
+def show(unit, names, missing_unit=False):
+    data = checked(['systemctl', 'show', unit, *['--property=' + n for n in names]],
+                   missing_unit=missing_unit)
+    return dict(line.split('=', 1) for line in data.decode().splitlines())
+
+
+def until(predicate, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.05)
+    raise AssertionError('runtime observation deadline exceeded')
+
+
+outcome_fields = ('ActiveState', 'SubState', 'Result', 'ExecMainCode', 'ExecMainStatus')
+
+
+def finished(unit, last_state):
+    last_state.clear()
+    last_state.update(show(unit, ('LoadState', *outcome_fields), missing_unit=True))
+    # A unique unit can still be inactive/dead before systemd-run starts it.
+    # ExecMainCode is waitid's code (1=exited, 2=killed, 3=core-dumped),
+    # not the exit status. Require a reaped main process AND a terminal pair;
+    # fast exits need not have been observed in the running state first.
+    if (last_state.get('LoadState') != 'not-found'
+            and last_state.get('ExecMainCode') in ('1', '2', '3')
+            and (last_state.get('ActiveState'), last_state.get('SubState')) in (
+                ('active', 'exited'), ('failed', 'failed'), ('inactive', 'dead'))):
+        return dict(last_state)
+
+
+def outcome_diagnostic(value):
+    allowed = dict(ActiveState=('inactive', 'activating', 'active', 'deactivating', 'failed'),
+                   SubState=('dead', 'start', 'running', 'exited', 'stop', 'stop-sigterm',
+                             'stop-sigkill', 'failed'),
+                   Result=('success', 'exit-code', 'signal', 'core-dump', 'timeout',
+                           'resources', 'protocol', 'start-limit-hit', 'exec-condition'),
+                   ExecMainCode=tuple(str(n) for n in range(7)),
+                   ExecMainStatus=tuple(str(n) for n in range(256)))
+    return {key: value.get(key) if value.get(key) in allowed[key] else 'unknown'
+            for key in outcome_fields}
+
+
+# Local regression of the actual finite poll, including a fast non-started child
+# whose supervisor exits 2 without the observer ever seeing running.
+initial = dict(zip(outcome_fields, ('inactive', 'dead', 'success', '0', '0')))
+for state, substate, code, status, result in (
+        ('active', 'exited', '1', '0', 'success'),
+        ('failed', 'failed', '1', '7', 'exit-code'),
+        ('failed', 'failed', '1', '2', 'exit-code'),
+        ('inactive', 'dead', '1', '0', 'success'),
+        ('failed', 'failed', '2', str(signal.SIGTERM), 'timeout')):
+    terminal = dict(zip(outcome_fields, (state, substate, result, code, status)))
+    pending = [{'LoadState': 'not-found'}, initial,
+               {**initial, 'ActiveState': 'active', 'SubState': 'exited'},
+               {**initial, 'ActiveState': 'activating', 'SubState': 'start'},
+               {**terminal, 'ActiveState': 'active', 'SubState': 'running'},
+               {**terminal, 'ActiveState': 'deactivating', 'SubState': 'stop-sigkill'}]
+    with patch('__main__.show', side_effect=[*pending, terminal]) as observed, \
+         patch.object(time, 'sleep'):
+        assert until(lambda: finished('fixed-fixture-unit', {})) == terminal
+        assert observed.call_count == len(pending) + 1
+    with patch('__main__.show', side_effect=[initial, terminal]) as observed, \
+         patch.object(time, 'sleep'):
+        assert until(lambda: finished('fixed-fixture-unit', {})) == terminal
+        assert observed.call_count == 2
+with patch('__main__.show', return_value=initial), \
+     patch.object(time, 'monotonic', side_effect=(0, 0, 11)), patch.object(time, 'sleep'):
+    try:
+        until(lambda: finished('fixed-fixture-unit', {}))
+    except AssertionError as error:
+        assert str(error) == 'runtime observation deadline exceeded'
+    else:
+        raise AssertionError('unstarted service accepted as completed')
+assert outcome_diagnostic({key: canary for key in (*outcome_fields, 'raw')}) == {
+    key: 'unknown' for key in outcome_fields}
+assert outcome_diagnostic(terminal) == terminal
+for rc, data, accepted in ((0, b'LoadState=not-found\n', True),
+                           (1, b'LoadState=not-found\n', True),
+                           (1, b'', False), (2, b'LoadState=not-found\n', False)):
+    with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(
+            [], rc, stdout=data, stderr=canary.encode())):
+        try:
+            checked(['systemctl', 'show', 'fixed-fixture-unit'], missing_unit=True)
+        except AssertionError:
+            assert not accepted
+        else:
+            assert accepted
+print('supervisor systemd poll: pre-start / fast exit / terminal code / deadline / diagnostic PASS')
+if not independent:
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        raise SystemExit('FAIL supervisor runtime: independent systemd runner required; SKIP forbidden')
+    print('SKIP supervisor runtime: 独立systemd runnerが必要です（local checksのみ）')
+    sys.exit(0)
+
+
+def identity(pid, cgroup):
+    proc = Path('/proc') / str(pid)
+    assert proc.joinpath('cgroup').read_text().strip() == '0::' + cgroup
+    status = dict(line.split(':', 1) for line in proc.joinpath('status').read_text().splitlines())
+    assert set(map(int, status['Uid'].split())) == {os.getuid()}
+    assert set(map(int, status['Gid'].split())) == {pwd.getpwnam('nobody').pw_gid}
+    assert not status['Groups'].strip() and status['NoNewPrivs'].strip() == '1'
+    assert all(int(status[key].strip(), 16) == 0
+               for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
+    # PID reuse must not be mistaken for a surviving fixture process.
+    return proc.joinpath('stat').read_text().rsplit(')', 1)[1].split()[19]
+
+
+def gone(pid, started):
+    try:
+        return Path('/proc', str(pid), 'stat').read_text().rsplit(')', 1)[1].split()[19] != started
+    except FileNotFoundError:
+        return True
+
+
+assert os.getuid() != 0, 'runtime requires the existing non-root runner identity'
+checked(['true'])
+with tempfile.TemporaryDirectory(prefix='supervisor-764-', dir='/tmp') as directory:
+    scratch = Path(directory)
+    scratch.chmod(0o755)
+    child_source = scratch / 'child.py'
+    child_source.write_text(runtime_child)
+    finite_input = scratch / 'stdin'
+    finite_input.write_bytes(b'finite-stdin-764\n')
+    for mode in ('rc0', 'rc7', 'not-started', 'rc2', 'limit', 'timeout'):
+        base = scratch / mode
+        base.mkdir()
+        unit = 'supervisor-764-' + uuid.uuid4().hex + '.service'
+        processes = {}
+        last_state = {}
+        waiter = None
+        try:
+            argv = ([str(base / 'absent-executable')] if mode == 'not-started' else
+                    [sys.executable, '-B', str(child_source), str(base), mode])
+            # Retain the finished unit for property/status observations. Unlike
+            # production --collect, release it in finally after unit-only proof.
+            launch = ['sudo', '-n', '/usr/bin/systemd-run', '--quiet', '--wait', '--unit=' + unit,
+                      *['--property=' + p for p in properties],
+                      '--property=RuntimeMaxSec=' + ('8s' if mode == 'timeout' else '20s'),
+                      '--property=RemainAfterExit=yes', '--property=StandardOutput=journal',
+                      '--property=StandardError=journal', '--property=StandardInput=file:' + str(finite_input),
+                      '/usr/bin/setpriv', '--reuid=' + str(os.getuid()),
+                      '--regid=' + str(pwd.getpwnam('nobody').pw_gid), *privileges,
+                      '--', '/usr/bin/env', '-i', *command, *argv]
+            waiter = subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if mode != 'not-started':
+                until(lambda: (base / 'ready').exists() and (base / 'ready').stat().st_size > 0)
+                pids = json.loads((base / 'ready').read_text())
+                if mode == 'timeout':
+                    until(lambda: (base / 'descendant').exists() and (base / 'descendant').stat().st_size > 0)
+                    pids.append(int((base / 'descendant').read_text()))
+                observed = show(unit, ('MainPID', 'ControlGroup', 'Type', 'KillMode',
+                                      'SendSIGKILL', 'NoNewPrivileges', 'TimeoutStopUSec',
+                                      'SystemCallArchitectures', 'SystemCallFilter'))
+                assert int(observed['MainPID']) == pids[0] and len(set(pids)) == len(pids)
+                assert observed['Type'] == 'exec' and observed['KillMode'] == 'control-group'
+                assert observed['SendSIGKILL'] == observed['NoNewPrivileges'] == 'yes'
+                assert observed['TimeoutStopUSec'] == '5s'
+                assert observed['SystemCallArchitectures'] == 'native'
+                assert observed['SystemCallFilter'].startswith('~')
+                assert all(name in observed['SystemCallFilter'] for name in
+                           ('io_uring_setup', 'io_uring_enter', 'io_uring_register'))
+                cgroup = observed['ControlGroup']
+                assert cgroup == '/system.slice/' + unit
+                processes = {pid: identity(pid, cgroup) for pid in pids}
+                (base / 'release').touch()
+            # --wait with RemainAfterExit needs a bounded status poll before
+            # stopping successful retained units; it cannot define child rc.
+            outcome = until(lambda: finished(unit, last_state), seconds=25)
+            expected_rc = None if mode == 'not-started' else int(mode[2:]) if mode.startswith('rc') else 0
+            if mode == 'timeout':
+                assert outcome['Result'] == 'timeout'
+                assert outcome['ExecMainCode'] == '2' and outcome['ExecMainStatus'] == str(signal.SIGTERM)
+            else:
+                assert outcome['ExecMainCode'] == '1'
+                assert int(outcome['ExecMainStatus']) == helper.exit_status(expected_rc)
+            until(lambda: all(gone(pid, started) for pid, started in processes.items()))
+            if mode != 'not-started':
+                members = Path('/sys/fs/cgroup' + cgroup) / 'cgroup.procs'
+                assert not members.exists() or not members.read_text().strip()
+            checked(['systemctl', 'stop', unit])
+            waiter.wait(timeout=10)
+            if mode == 'timeout':
+                assert waiter.returncode != 0
+            else:
+                assert waiter.returncode == helper.exit_status(expected_rc)
+            # Synchronize journal delivery; never read/clear the host journal.
+            def delivered():
+                data = checked(['journalctl', '--unit=' + unit, '--no-pager', '--output=json'])
+                if data and (mode == 'timeout' or any(json.loads(line).get('_TRANSPORT') == 'stdout'
+                                                     for line in data.splitlines())):
+                    return data
+            journal = until(delivered)
+            assert len(journal) <= 65536 and runtime_canary not in journal
+            entries = [json.loads(line) for line in journal.splitlines()]
+            assert all(type(e['MESSAGE']) is str and len(e['MESSAGE'].encode()) <= 4096 for e in entries)
+            outputs = [e for e in entries if e.get('_TRANSPORT') == 'stdout']
+            assert all(e.get('_SYSTEMD_UNIT') == unit for e in outputs)
+            if mode != 'not-started':
+                assert all(e.get('_PID') == str(pids[0]) and e.get('_SYSTEMD_CGROUP') == cgroup for e in outputs)
+            records = [e['MESSAGE'].encode() for e in outputs]
+            if mode == 'timeout':
+                assert records == [], 'external termination must not fabricate a result'
+                availability = 'unknown' if not records else 'reported'
+                assert availability == 'unknown'  # Never success or usage=0.
+            else:
+                assert len(records) == 1
+                status = ('execution_not_started' if mode == 'not-started' else
+                          'capture_limit_exceeded' if mode == 'limit' else 'collected')
+                reason = 'terminal_cumulative' if mode == 'rc0' else 'process_failed'
+                value = check_record(records[0], expected_rc, status, reason)
+                if status == 'collected':
+                    extractor.validate_result(json.dumps(value['usage_result'], sort_keys=True,
+                                              separators=(',', ':')).encode())
+            assert {p.name for p in base.iterdir()} <= {'ready', 'release', 'descendant'}
+            print('supervisor systemd: ' + mode + ' PASS（synthetic stream/lifecycleのみ）', flush=True)
+        except Exception:
+            print('FAIL supervisor systemd: ' + mode + ' ' + json.dumps(
+                outcome_diagnostic(last_state), sort_keys=True, separators=(',', ':')), flush=True)
+            raise
+        finally:
+            # Stop/reset only the unique fixture unit, including outer timeout
+            # or assertion failures. Never kill by username or touch other units.
+            subprocess.run(['sudo', '-n', 'systemctl', 'stop', unit], capture_output=True, timeout=10)
+            if waiter is not None:
+                waiter.wait(timeout=10)
+            subprocess.run(['sudo', '-n', 'systemctl', 'reset-failed', unit], capture_output=True, timeout=10)
+            state = subprocess.run(['sudo', '-n', 'systemctl', 'show', unit,
+                                    '--property=LoadState', '--value'], capture_output=True, timeout=10)
+            assert state.returncode in (0, 1) and state.stdout.strip() == b'not-found', 'unit cleanup unconfirmed'
+            until(lambda: all(gone(pid, started) for pid, started in processes.items()))
+print('supervisor systemd runtime: 同一cgroup / sanitized journal / drain / control-group終了 PASS')
 PY
