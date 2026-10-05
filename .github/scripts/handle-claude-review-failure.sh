@@ -59,6 +59,13 @@ jq -e --argjson id "$run_id" --argjson attempt "$event_attempt" '
   .id == $id and .run_attempt == $attempt and .status == "completed"
 ' "$tmp/attempt.json" > /dev/null || fail '起点attemptが不整合です'
 
+source_conclusion="$(jq -r '.conclusion // empty' "$tmp/run.json")"
+case "$source_conclusion" in
+  success|skipped) echo '{"result":"ignored"}'; exit 0 ;;
+  failure|cancelled|timed_out|stale) ;;
+  *) fail '不明な起点runの終了結果です' ;;
+esac
+
 gh api --paginate --slurp "/repos/$repo/actions/runs/$run_id/attempts/$event_attempt/jobs?per_page=100" \
   > "$tmp/jobs.json" || fail '起点jobを取得できません'
 jq -e 'type == "array" and all(.[]; .jobs | type == "array")' "$tmp/jobs.json" > /dev/null \
