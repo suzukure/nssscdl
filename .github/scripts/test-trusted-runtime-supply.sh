@@ -580,19 +580,92 @@ with patch.dict(os.environ, {'PROOF_SHA': 'a' * 40}), patch.object(Path, 'read_b
     rejected(lambda: proof.check_checkout(SimpleNamespace(ACTION_BLOB='b' * 40)), 'action-blob-mismatch')
     checkout.return_value = subprocess.CompletedProcess([], 0, b'b' * 40 + b'\n', b'')
     rejected(lambda: proof.check_checkout(SimpleNamespace(ACTION_BLOB=expected_blob)), 'checkout-sha-mismatch')
-calls = []
-with patch.object(proof.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001)), \
-     patch.object(proof.subprocess, 'run', side_effect=lambda *a, **k: calls.append((a, k)) or
-                  subprocess.CompletedProcess(a[0], 0, b'codex-cli 0.159.3\n', b'')):
-    proof.version_parity([{'source': '/fixed/' + p} for p in ('node', 'bin/codex.js', 'metadata', 'native-metadata', 'codex')])
-assert len(calls) == 2
-assert all(k['user'] == k['group'] == 1001 and k['extra_groups'] == ()
-           and set(k['env']) == {'PATH', 'HOME', 'LC_ALL', 'CODEX_MANAGED_BY_NPM', 'CODEX_MANAGED_PACKAGE_ROOT'}
-           for _, k in calls)
+# #774 production resolver uses Bash command substitution (trailing LF removed),
+# exit zero and exact identity/parity. Stderr is observable, not an identity gate.
+probe_rows = [{'source': '/private/toolcache/' + p} for p in
+              ('node', 'bin/codex.js', 'metadata', 'native-metadata', 'codex')]
+identity = b'codex-cli 0.159.3'
+canary = b'/private/toolcache/token=CANARY uid=1001 gid=1001'
+good = subprocess.CompletedProcess([], 0, identity + b'\n', b'')
+def production_identity(left, right):
+    # Run the actual resolver comparison semantics with local synthetic outputs.
+    result = subprocess.run(['bash', '-euo', 'pipefail', '-c',
+        'launcher_version="$(printf %s "$LEFT")"; '
+        'native_version="$(printf %s "$RIGHT")"; '
+        'test "$launcher_version" = "$native_version"; '
+        'test "$native_version" = "codex-cli 0.159.3"'],
+        env={'PATH': '/usr/bin:/bin', 'LEFT': left.decode(), 'RIGHT': right.decode()},
+        capture_output=True)
+    return result.returncode == 0
+for left, right in ((identity, identity + b'\n'),
+                    (identity + b'\n\n', identity + b'\n'),
+                    (identity + b'\n', identity + b'\n')):
+    assert production_identity(left, right)
+    results = [subprocess.CompletedProcess([], 0, left, canary),
+               subprocess.CompletedProcess([], 0, right, b'')]
+    with patch.object(proof.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001)), \
+         patch.object(proof.subprocess, 'run', side_effect=results) as probes:
+        diagnostic = proof.version_parity(probe_rows)
+    assert probes.call_count == 2 and diagnostic['parity'] is True
+    assert diagnostic['environment'] == 'closed'
+    assert all(p['status'] == 'pass' and p['reason'] is None for p in diagnostic['probes'])
+    assert diagnostic['probes'][0]['stderr_present'] is True
+    assert diagnostic['probes'][0]['stderr_bytes'] == len(canary)
+    for call in probes.call_args_list:
+        k = call.kwargs
+        assert k['user'] == k['group'] == 1001 and k['extra_groups'] == ()
+        assert k['cwd'] == '/' and k['timeout'] == 20 and k['capture_output'] is True
+        assert k['env'] == {'PATH': '/private/toolcache:/usr/bin:/bin', 'HOME': '/nonexistent',
+                            'LC_ALL': 'C', 'CODEX_MANAGED_BY_NPM': '1',
+                            'CODEX_MANAGED_PACKAGE_ROOT': '/private/toolcache'}
+    assert all(v not in json.dumps(diagnostic) for v in ('CANARY', '/private', '1001'))
+success_diagnostic = diagnostic
+
+failures = [(subprocess.CompletedProcess([], 1, identity + b'\n', canary), 'probe-nonzero'),
+            (subprocess.CompletedProcess([], -9, identity + b'\n', canary), 'probe-signal'),
+            (subprocess.TimeoutExpired('/private/command', 20, identity + b'\n', canary), 'probe-timeout'),
+            (PermissionError(13, canary.decode(), '/private/command'), 'probe-exec-error')]
+for stdout, reason in ((b'wrong\n' + canary, 'stdout-identity-mismatch'),
+                       (b'codex-cli 0.159.2\n', 'stdout-identity-mismatch'),
+                       (b'', 'stdout-identity-mismatch'),
+                       (identity + b'\r\n', 'stdout-format-mismatch'),
+                       (b' ' + identity + b'\n', 'stdout-format-mismatch'),
+                       (identity + b' \n', 'stdout-format-mismatch'),
+                       (identity + b'\nextra\n', 'stdout-identity-mismatch'),
+                       (b'codex-cli\n0.159.3\n', 'stdout-identity-mismatch'),
+                       (identity + b'\x00\n', 'stdout-identity-mismatch')):
+    if b'\x00' not in stdout:
+        assert not production_identity(stdout, good.stdout)
+    failures.append((subprocess.CompletedProcess([], 0, stdout, canary), reason))
+for failed_probe in (0, 1):
+    for failure, reason in failures:
+        results = [good, good]
+        results[failed_probe] = failure
+        with patch.object(proof.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001)), \
+             patch.object(proof.subprocess, 'run', side_effect=results) as probes, \
+             patch.object(sys, 'argv', ['proof', '--prepare']), patch.object(proof, 'load'), \
+             patch.object(proof, 'check_checkout'), patch.object(proof, 'runtime_rows', return_value=probe_rows), \
+             patch.object(proof, 'prepare', side_effect=lambda rows, supply: proof.version_parity(rows)), \
+             redirect_stdout(io.StringIO()) as output:
+            assert proof.main() == 1
+        assert probes.call_count == 2  # other side diagnosed, no retries/fallback
+        value = json.loads(output.getvalue())
+        assert value['reason'] == 'version-parity-failed' and value['status'] == 'error'
+        diagnostic = value['version_parity']
+        assert diagnostic['probes'][failed_probe]['reason'] == reason
+        assert diagnostic['probes'][failed_probe]['probe'] == ('launcher', 'native')[failed_probe]
+        assert diagnostic['probes'][1 - failed_probe]['status'] == 'pass'
+        assert all(v not in output.getvalue() for v in ('CANARY', '/private', '1001', 'PermissionError'))
+        assert len(output.getvalue().encode()) < 2048
+# Both invalid identities may be equal; parity alone must never pass the gate.
 with patch.object(proof.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001)), \
      patch.object(proof.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'wrong\n', b'')):
-    rejected(lambda: proof.version_parity([{'source': '/fixed/' + p} for p in
-             ('node', 'bin/codex.js', 'metadata', 'native-metadata', 'codex')]), 'version-parity-failed')
+    try:
+        proof.version_parity(probe_rows)
+        raise AssertionError('wrong but equal versions accepted')
+    except proof.VersionParityError as error:
+        assert error.diagnostic['parity'] is True
+        assert all(p['reason'] == 'stdout-identity-mismatch' for p in error.diagnostic['probes'])
 
 # Pure composition proof: parent evidence precedes probes, handoff stays active,
 # and cleanup failure cannot produce a success result. No real privileged call.
@@ -614,12 +687,13 @@ with tempfile.TemporaryDirectory() as temporary:
         PreparedSupply=constructor)
     fake_staging, fake_roots = object(), SimpleNamespace(CanonicalRoot=object())
     with patch.object(proof, 'load', side_effect=lambda name: fake_staging if name == 'product-runtime-staging' else fake_roots), \
-         patch.object(proof, 'version_parity', side_effect=lambda rows: order.append('probe')), \
+         patch.object(proof, 'version_parity', side_effect=lambda rows: order.append('probe') or success_diagnostic), \
          patch.object(proof.os, 'getuid', return_value=0), patch.object(proof.os, 'getgid', return_value=0), \
          patch.object(proof, 'SUPPLY_PARENT', Path(temporary)):
         result = proof.prepare([{'source': '/fixed/node'}], mocked_supply)
         assert order == ['capture', 'probe', 'bind', 'snapshot', 'seal-verify', 'handoff-verify', 'cleanup']
         assert result['status'] == 'pass' and result['c0_decision'] == 'not-made'
+        assert result['version_parity'] == success_diagnostic
         assert not list(Path(temporary).iterdir())
         @contextmanager
         def failed_cleanup(parent):
@@ -628,6 +702,10 @@ with tempfile.TemporaryDirectory() as temporary:
             raise OSError('private cleanup failure')
         with patch.object(mocked_supply, 'PreparedSupply', return_value=SimpleNamespace(snapshot=failed_cleanup)):
             rejected(lambda: proof.prepare([{'source': '/fixed/node'}], mocked_supply))
+        order.clear()
+        with patch.object(proof, 'version_parity', side_effect=proof.VersionParityError(diagnostic)):
+            rejected(lambda: proof.prepare([{'source': '/fixed/node'}], mocked_supply), 'version-parity-failed')
+        assert order == ['capture']  # parity failure cannot reach bind/seal/handoff
 for args in ([], ['--prepare', '--path', '/candidate'], ['--observe', '--version', 'latest']):
     with patch.object(sys, 'argv', ['proof', *args]), patch.object(proof, 'check_checkout') as checkout, \
          redirect_stdout(io.StringIO()) as output:

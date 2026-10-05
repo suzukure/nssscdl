@@ -184,21 +184,61 @@ def observation(rows, supply):
                 else 'error', records=records)
 
 
+class VersionParityError(ValueError):
+    def __init__(self, diagnostic):
+        super().__init__('version-parity-failed')
+        self.diagnostic = diagnostic
+
+
 def version_parity(rows):
+    """Production identity semantics: strip trailing LF only, ignore stderr.
+
+    Keep the closed preparation env and privilege drop; never retry in an
+    inherited environment or reflect process output/exception/identity values.
+    """
     runner = pwd.getpwnam('runner')
     require(runner.pw_uid != 0, 'invalid-probe-user')
     node, entry, _, _, native = (Path(row['source']) for row in rows)
     environment = {'PATH': str(node.parent) + ':/usr/bin:/bin', 'HOME': '/nonexistent',
                    'LC_ALL': 'C', 'CODEX_MANAGED_BY_NPM': '1',
                    'CODEX_MANAGED_PACKAGE_ROOT': str(entry.parent.parent)}
-    outputs = []
-    for command in ([str(node), str(entry), '--version'], [str(native), '--version']):
-        result = subprocess.run(command, cwd='/', env=environment, capture_output=True,
-                                timeout=20, user=runner.pw_uid, group=runner.pw_gid, extra_groups=())
-        require(result.returncode == 0 and result.stdout == b'codex-cli 0.159.3\n'
-                and not result.stderr, 'version-parity-failed')
-        outputs.append(result.stdout)
-    require(outputs[0] == outputs[1], 'version-parity-failed')
+    expected = b'codex-cli 0.159.3'
+    outputs, probes = [], []
+    for name, command in (('launcher', [str(node), str(entry), '--version']),
+                          ('native', [str(native), '--version'])):
+        stdout = stderr = None
+        try:
+            result = subprocess.run(command, cwd='/', env=environment, capture_output=True,
+                                    timeout=20, user=runner.pw_uid, group=runner.pw_gid, extra_groups=())
+            stdout, stderr = result.stdout, result.stderr
+            exit_class = 'zero' if result.returncode == 0 else (
+                'signal' if result.returncode < 0 else 'nonzero')
+        except subprocess.TimeoutExpired as error:
+            exit_class = 'timeout'
+            stdout, stderr = error.output, error.stderr
+        except OSError:
+            exit_class = 'exec-error'
+        normalized = stdout.rstrip(b'\n') if stdout is not None else None
+        exact = normalized == expected
+        stdout_class = ('unavailable' if stdout is None else
+                        'exact-line' if stdout == expected + b'\n' else
+                        'exact-identity' if exact else
+                        'format-mismatch' if stdout.strip(b' \t\r\n') == expected else
+                        'identity-mismatch')
+        reason = ('probe-' + exit_class if exit_class != 'zero' else
+                  'stdout-' + stdout_class if not exact else None)
+        probes.append(dict(probe=name, status='error' if reason else 'pass', reason=reason,
+                           exit_class=exit_class, stdout_class=stdout_class,
+                           stdout_bytes=len(stdout) if stdout is not None else None,
+                           stderr_bytes=len(stderr) if stderr is not None else None,
+                           stderr_present=bool(stderr)))
+        # Timeout output cannot establish parity, even if it contains the identity.
+        outputs.append(normalized if exit_class in ('zero', 'nonzero', 'signal') else None)
+    parity = outputs[0] == outputs[1] if all(v is not None for v in outputs) else None
+    diagnostic = dict(environment='closed', parity=parity, probes=probes)
+    if not all(p['status'] == 'pass' for p in probes) or parity is not True:
+        raise VersionParityError(diagnostic)
+    return diagnostic
 
 
 def prepare(rows, supply):
@@ -208,7 +248,7 @@ def prepare(rows, supply):
     # Parent memory evidence spans unprivileged probes; never import a claim.
     setup = {**supply.SETUP, 'sources': {
         row['source']: supply.observe(Path(row['source']), staging) for row in rows}}
-    version_parity(rows)
+    parity = version_parity(rows)
     bound = supply.PreparedSupply(rows, setup=setup, excluded_roots=[SCRIPTS.parents[1]],
                                   root_api=root_api, staging_api=staging)
     with tempfile.TemporaryDirectory(prefix='runtime-supply-proof-', dir=SUPPLY_PARENT) as temporary:
@@ -216,7 +256,7 @@ def prepare(rows, supply):
             sealed.verify()
             sealed.prepared_runtime().verify()
     return dict(schema='runtime-supply-proof', version=1, status='pass',
-                scope='setup-seal-prepared-handoff', c0_decision='not-made')
+                scope='setup-seal-prepared-handoff', c0_decision='not-made', version_parity=parity)
 
 
 def check_checkout(supply):
@@ -248,6 +288,10 @@ def main():
         require(len(output.encode()) <= MAX_OUTPUT, 'diagnostic-output-limit')
         print(output)
         return 0 if result['status'] == 'pass' else 1
+    except VersionParityError as error:
+        print(json.dumps(dict(schema='runtime-supply-proof', version=1, status='error',
+                              reason='version-parity-failed', version_parity=error.diagnostic)))
+        return 1
     except Exception as error:
         # Raw exception/path/package/subprocess output is never diagnostic data.
         reason = str(error) if type(error) is ValueError and str(error) in FILESYSTEM_REASONS | {
