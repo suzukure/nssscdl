@@ -888,6 +888,11 @@ with tempfile.TemporaryDirectory(prefix='post-workload-fixture-') as temporary:
     print('pure production session: three origins/policy/ownership/post gate/regressions passed')
 
 def assert_no_caller(name, text):
+    if name == 'trusted-main-npm-bootstrap.py':
+        # #792's exact prepare/bootstrap/verify proof; post-workload stays dormant.
+        assert hashlib.sha256(text.encode()).hexdigest() == (
+            'e35393291ff80b682432ec1316ccb44844e3c352a5a10f45a494512f0343c0e6')
+        return
     if name == 'trusted-main-runtime-supply-proof.py':
         expression = "load('product-npm-orchestrator').CanonicalRoot"
         assert text.count(expression) == 1
@@ -942,6 +947,7 @@ selector_text = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read_t
 assert_no_caller('select-ai-workflow-fixtures.py', selector_text)
 row = '(SCRIPTS + "product-npm-orchestrator.py", ("product-npm",))'
 for name, text in (
+        ('trusted-main-npm-bootstrap.py', 'unauthorized caller'),
         ('unknown.py', 'run("product-npm-orchestrator.py")'),
         ('unknown-inventory.py', selector_text),
         ('select-ai-workflow-fixtures.py', selector_text + '\nrun("product-npm-orchestrator.py")'),

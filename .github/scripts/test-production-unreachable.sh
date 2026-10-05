@@ -35,6 +35,11 @@ usage_stream = 'validate-codex-usage-stream.py'
 usage_evidence = 'build-codex-usage-evidence.py'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
+bootstrap_entry = 'trusted-main-npm-bootstrap.py'
+bootstrap_workflow = workflows + 'trusted-main-npm-bootstrap.yml'
+# #792 admits only this reviewed secretless proof entry; AI wiring stays closed.
+bootstrap_entry_hash = 'e35393291ff80b682432ec1316ccb44844e3c352a5a10f45a494512f0343c0e6'
+bootstrap_workflow_hash = 'cb32ed26911426828744519836df667b5f81f0359c18d80f2d91ff4d00a15068'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -252,6 +257,21 @@ def assert_unreachable(sources):
     for path in (selector_path, selector_fixture):
         assert_declarative(path, sources[path])
     for path, text in sources.items():
+        if path == bootstrap_workflow:
+            assert hashlib.sha256(text.encode()).hexdigest() == bootstrap_workflow_hash
+            continue  # Exact dispatch gate, trusted checkout and success-only upload.
+        if path == scripts + bootstrap_entry:
+            assert hashlib.sha256(text.encode()).hexdigest() == bootstrap_entry_hash
+            continue  # Exact prepare/bootstrap/verify caller, no AI session consumer.
+        if not is_test_fixture(path):
+            bootstrap_text = text
+            if path == selector_path:
+                extension = declaration(ast.parse(text), 'EXTENSIONS', ast.Dict)
+                literals = [n for n in ast.walk(extension) if isinstance(n, ast.Constant)
+                            and n.value == bootstrap_entry[:-3]]
+                assert len(literals) == 1
+                bootstrap_text = mask_literals(text, literals).decode()
+            assert bootstrap_entry[:-3] not in bootstrap_text, ('unknown bootstrap entry caller', path)
         if path.startswith(workflows):
             model_text = mask_trusted_model_callers(text) if path == workflows + 'ai-developer.yml' else text
             assert model_selector[:-3] not in model_text and model_policy not in model_text, (
@@ -402,6 +422,9 @@ for name in (session_runtime, session_probe, runtime_staging, runtime_supply, tr
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
 assert stat.S_ISREG((repo / trusted_workflow).lstat().st_mode), 'invalid proof workflow type'
 sources[trusted_workflow] = (repo / trusted_workflow).read_text()
+for path in (scripts + bootstrap_entry, bootstrap_workflow):
+    assert stat.S_ISREG((repo / path).lstat().st_mode), 'invalid bootstrap source type'
+    sources[path] = (repo / path).read_text()
 assert_unreachable(sources)
 print('production unreachable: current repository / exact selector literals passed')
 
@@ -416,6 +439,14 @@ def rejected(path, text):
     except (AssertionError, ValueError, SyntaxError, yaml.YAMLError):
         return
     raise AssertionError(('unsafe reference accepted', path))
+
+
+for path in (scripts + bootstrap_entry, bootstrap_workflow):
+    rejected(path, sources[path] + '\n# caller drift\n')
+    rejected(path.replace('trusted-main-', 'copy-'), sources[path])
+for path in (workflows + 'ai-developer.yml', workflows + 'claude-review.yml',
+             scripts + 'unknown-caller.py'):
+    rejected(path, sources.get(path, '') + '\n' + bootstrap_entry + '\n')
 
 
 for mutation in (

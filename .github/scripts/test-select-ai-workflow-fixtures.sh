@@ -27,14 +27,15 @@ assert {s: len(v) for s, v in selector.BASELINE.items()} == counts
 assert sum(counts.values()) == 68
 assert selector.EXTENSIONS == {
     'product-npm': ('product-npm-bootstrap-preparation', 'product-npm-post-workload',
-                    'product-npm-production-session', 'product-runtime-staging', 'trusted-runtime-supply'),
+                    'product-npm-production-session', 'product-runtime-staging', 'trusted-runtime-supply',
+                    'trusted-main-npm-bootstrap'),
     'ai-developer-codex': ('select-' + 'codex-issue-model', 'extract-' + 'codex-exec-usage',
                            'supervise-' + 'codex-exec-stream', 'validate-' + 'codex-usage-identity',
                            'validate-' + 'codex-usage-stream', 'build-' + 'codex-usage-evidence',
                            'systemd-transient-lifecycle'),
     'common': ('select-ai-workflow-fixtures', 'production-unreachable', 'plan-ai-workflow-shards')}
 inventory = sorted(p for values in selector.INVENTORY.values() for p in values)
-assert len(inventory) == len(set(inventory)) == 83
+assert len(inventory) == len(set(inventory)) == 84
 assert inventory == actual, 'Every current shell fixture must be registered exactly once'
 common_guard = prefix + 'test-production-unreachable.sh'
 assert common_guard in selector.INVENTORY['common']
@@ -158,7 +159,7 @@ for path in (prefix + 'unknown.sh', prefix + 'test-new.sh',
 # Compose the helper name so the common guard retains its exact inventory-only rule.
 product = selected(['.github/README.md', prefix + 'product-' + 'npm-orchestrator.py',
                     prefix + 'test-product-npm-post-workload.sh'], {'product-npm'})
-assert len(product['fixtures']) == 21
+assert len(product['fixtures']) == 22
 selected(['README.md', prefix + 'deepinfra-usage-ledger.py'], {'deepinfra'})
 for path in ('.github/README.md', 'README.md', 'src/product.py',
              'docs/diagrams/other.md', 'AGENTS.md.bak', 'src/notCLAUDE.md',
@@ -317,5 +318,5 @@ assert 'fixtures=(.github/scripts/test-*.sh)' in regression
 assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
 assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
-print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + #745 + #753 + #761 + #780 + #781 + #782 + #783 + selector + #701 + #756 = 83).')
+print('AI workflow fixture selector tests passed (68 baseline + registered extensions including #792 = 84).')
 PY

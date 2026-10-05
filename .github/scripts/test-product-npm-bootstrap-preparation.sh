@@ -320,6 +320,11 @@ mapped_name = "product-npm-orchestrator.py"
 
 
 def assert_no_caller(name, text):
+    if name == 'trusted-main-npm-bootstrap.py':
+        # #792's exact secretless proof entry only, never locked preparation.
+        assert hashlib.sha256(text.encode()).hexdigest() == (
+            'e35393291ff80b682432ec1316ccb44844e3c352a5a10f45a494512f0343c0e6')
+        return
     if name == 'trusted-main-runtime-supply-proof.py':
         # #747 reuses only the existing root API, never the Product consumer.
         expression = "load('product-npm-orchestrator').CanonicalRoot"
@@ -371,6 +376,7 @@ selector_source = (repo / '.github/scripts/select-ai-workflow-fixtures.py').read
 assert_no_caller('select-ai-workflow-fixtures.py', selector_source)
 # Exercise the same guard used by the repository scan, without writing callers.
 for name, text in (
+        ('trusted-main-npm-bootstrap.py', 'unauthorized caller'),
         ('trusted-main-runtime-supply-proof.py', 'ROOT_API'),
         ('trusted-main-runtime-supply-proof.py',
          "load('product-npm-orchestrator').CanonicalRoot\n" * 2),
