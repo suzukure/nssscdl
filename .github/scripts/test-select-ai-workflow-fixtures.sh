@@ -32,10 +32,10 @@ assert selector.EXTENSIONS == {
     'ai-developer-codex': ('select-' + 'codex-issue-model', 'extract-' + 'codex-exec-usage',
                            'supervise-' + 'codex-exec-stream', 'validate-' + 'codex-usage-identity',
                            'validate-' + 'codex-usage-stream', 'build-' + 'codex-usage-evidence',
-                           'systemd-transient-lifecycle'),
+                           'systemd-transient-lifecycle', 'select-' + 'codex-usage-journal'),
     'common': ('select-ai-workflow-fixtures', 'production-unreachable', 'plan-ai-workflow-shards')}
 inventory = sorted(p for values in selector.INVENTORY.values() for p in values)
-assert len(inventory) == len(set(inventory)) == 84
+assert len(inventory) == len(set(inventory)) == 85
 assert inventory == actual, 'Every current shell fixture must be registered exactly once'
 common_guard = prefix + 'test-production-unreachable.sh'
 assert common_guard in selector.INVENTORY['common']
@@ -97,6 +97,7 @@ cases = (
     ('validate-codex-usage-stream.py', {'ai-developer-codex'}),
     ('build-codex-usage-evidence.py', {'ai-developer-codex'}),
     ('systemd-transient-lifecycle.py', {'ai-developer-codex'}),
+    ('select-codex-usage-journal.py', {'ai-developer-codex'}),
     ('codex-issue-model-policy.json', {'ai-developer-codex'}),
     ('build-review-context.sh', {'ai-developer-codex', 'claude'}),
     ('classify-claude-review-risk.sh', {'claude'}),
@@ -318,5 +319,5 @@ assert 'fixtures=(.github/scripts/test-*.sh)' in regression
 assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
 assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
-print('AI workflow fixture selector tests passed (68 baseline + registered extensions including #792 = 84).')
+print('AI workflow fixture selector tests passed (68 baseline + registered extensions including #789 + #792 = 85).')
 PY
