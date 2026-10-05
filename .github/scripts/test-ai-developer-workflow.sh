@@ -515,7 +515,10 @@ job = yaml.safe_load(open(sys.argv[1]))['jobs'][sys.argv[2]]
 assert not job.get('continue-on-error', False)
 allowed = {'Collect trusted Codex Issue usage evidence',
            'Upload sanitized Codex Issue usage evidence',
-           'Report Codex Issue usage evidence persistence'} if sys.argv[2] == 'develop-from-issue' else set()
+           'Report Codex Issue usage evidence persistence'} if sys.argv[2] == 'develop-from-issue' else {
+           'Collect trusted Codex follow-up usage evidence',
+           'Upload sanitized Codex follow-up usage evidence',
+           'Report Codex follow-up usage evidence persistence'}
 actual = {s.get('name') for s in job['steps'] if s.get('continue-on-error', False)}
 assert actual == allowed, 'non-fatal step outside approved evidence scope'
 PY_NONFATAL
@@ -3011,10 +3014,11 @@ PY_STREAM_FIXTURE
 
 printf '%s\n' 'AI Developer workflow fixture tests passed'
 
-# #797: execute the actual Issue-origin consumer, without sudo/journal/service
+# #797 / #798: execute both actual consumers, without sudo/journal/service
 # access. Real local base blobs + real collector dependencies; only acquisition
 # and privilege transport are finite stand-ins. Natural run owns runtime proof.
-python3 -B - "$repo_root" "$test_dir" <<'PY_USAGE_FIXTURE'
+for usage_job in develop-from-issue respond-to-claude; do
+python3 -B - "$repo_root" "$test_dir" "$usage_job" <<'PY_USAGE_FIXTURE'
 import json
 import os
 from pathlib import Path
@@ -3023,43 +3027,59 @@ import subprocess
 import sys
 import yaml
 
-repo, temporary = map(Path, sys.argv[1:])
+repo, temporary = map(Path, sys.argv[1:3])
+job = sys.argv[3]
+followup = job == 'respond-to-claude'
+label = 'follow-up' if followup else 'Issue'
+issue = 798 if followup else 797
+pr = 37 if followup else None
 workflow = yaml.safe_load((repo / '.github/workflows/ai-developer.yml').read_text())
-steps = workflow['jobs']['develop-from-issue']['steps']
-context = next(s for s in steps if s.get('id') == 'issue_context')
+steps = workflow['jobs'][job]['steps']
+context = next(s for s in steps if s.get('id') == ('followup_context' if followup else 'issue_context'))
 collect = next(s for s in steps if s.get('id') == 'usage_evidence')
 upload = next(s for s in steps if s.get('id') == 'usage_upload')
-summary = next(s for s in steps if s.get('name') == 'Report Codex Issue usage evidence persistence')
+summary = next(s for s in steps if s.get('name') == 'Report Codex ' + label + ' usage evidence persistence')
 identity_binding = "${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}"
-assert context['env']['ISSUE_NUMBER'] == collect['env']['ISSUE_NUMBER'] == identity_binding
-assert collect['env'] == dict(BASE_SHA='${{ steps.issue_context.outputs.base_sha }}',
-    USAGE_HELPER_BLOBS='${{ steps.issue_context.outputs.usage_helper_blobs }}',
-    GITHUB_REPOSITORY='${{ github.repository }}', RUN_ID='${{ github.run_id }}',
-    RUN_ATTEMPT='${{ github.run_attempt }}', ISSUE_NUMBER=identity_binding,
-    SELECTED_MODEL='${{ steps.codex_model.outputs.model }}')
-assert collect['if'] == "always() && (steps.codex.outcome == 'success' || steps.codex.outcome == 'failure')"
+expected_env = dict(GITHUB_REPOSITORY='${{ github.repository }}', RUN_ID='${{ github.run_id }}',
+    RUN_ATTEMPT='${{ github.run_attempt }}', SELECTED_MODEL='${{ steps.codex_model.outputs.model }}')
+condition = "always() && (steps.codex.outcome == 'success' || steps.codex.outcome == 'failure')"
+if followup:
+    expected_env.update(BASE_SHA='${{ github.event.pull_request.base.sha }}',
+        USAGE_HELPER_BLOBS='${{ steps.followup_context.outputs.usage_helper_blobs }}',
+        HEAD_REF='${{ github.event.pull_request.head.ref }}', PR_NUMBER='${{ github.event.pull_request.number }}')
+    assert context['env']['BASE_SHA'] == expected_env['BASE_SHA']
+    assert context['env']['PR_NUMBER'] == expected_env['PR_NUMBER']
+    condition = condition.replace('always() && ', "always() && steps.codex.outputs.continue == 'true' && ")
+else:
+    expected_env.update(BASE_SHA='${{ steps.issue_context.outputs.base_sha }}',
+        USAGE_HELPER_BLOBS='${{ steps.issue_context.outputs.usage_helper_blobs }}', ISSUE_NUMBER=identity_binding)
+    assert context['env']['ISSUE_NUMBER'] == identity_binding
+assert collect['env'] == expected_env
+assert collect['if'] == condition
 assert collect['continue-on-error'] is True and collect['timeout-minutes'] == 1
 assert upload['continue-on-error'] is True
 assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 assert upload['if'] == "always() && steps.usage_evidence.outcome == 'success'"
-assert upload['with'] == dict(name='codex-usage-evidence-develop-${{ github.run_id }}-${{ github.run_attempt }}',
+assert upload['with'] == dict(name='codex-usage-evidence-' + ('followup' if followup else 'develop') + '-${{ github.run_id }}-${{ github.run_attempt }}',
     path='${{ runner.temp }}/codex-usage-evidence.json', **{'retention-days': 7, 'if-no-files-found': 'error'})
 assert summary['continue-on-error'] is True
 assert summary['if'] == "always() && steps.usage_evidence.outcome != 'skipped'"
 assert steps.index(context) < next(i for i, s in enumerate(steps) if s.get('id') == 'codex')
-assert next(i for i, s in enumerate(steps) if s.get('name') == 'Verify AI Developer host integrity') < steps.index(collect)
+assert next(i for i, s in enumerate(steps) if s.get('name') == ('Verify Codex follow-up host integrity' if followup else 'Verify AI Developer host integrity')) < steps.index(collect)
 assert steps.index(collect) < steps.index(upload) < steps.index(summary) < next(
     i for i, s in enumerate(steps) if s.get('name') == 'Restore trusted post-Codex helpers')
 # Evidence outcome cannot authorize/suppress any existing lifecycle consumer.
-for job in workflow['jobs'].values():
-    for step in job['steps']:
-        if step not in (upload, summary):
+for lifecycle_job in workflow['jobs'].values():
+    for step in lifecycle_job['steps']:
+        if step.get('name') not in {
+                'Upload sanitized Codex Issue usage evidence',
+                'Report Codex Issue usage evidence persistence',
+                'Upload sanitized Codex follow-up usage evidence',
+                'Report Codex follow-up usage evidence persistence'}:
             assert 'steps.usage_' not in json.dumps(step)
-assert all('codex-usage-evidence' not in json.dumps(s)
-           for s in workflow['jobs']['respond-to-claude']['steps'])
 assert all(term not in collect['run'] for term in ('GITHUB_OUTPUT', 'journalctl', '--sync', 'sleep', 'retry', 'gh '))
 
-fixture = temporary / 'usage-caller'
+fixture = temporary / ('usage-caller-' + job)
 fixture.mkdir()
 runner = fixture / 'runner'
 runner.mkdir()
@@ -3075,12 +3095,13 @@ base = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], te
 blobs = [subprocess.check_output(['git', '-C', str(repo), 'rev-parse',
          base + ':.github/scripts/' + name], text=True).strip() for name in helpers]
 # Run the exact pre-model declaration block; no branch/API orchestration.
-pre = context['run'].split('usage_helpers=(', 1)[1].split('pause_helpers=(', 1)[0]
+pre = context['run'].split('usage_helpers=(', 1)[1].split('done\n', 1)[0] + 'done\n'
 pre = 'set -euo pipefail\nbase_sha="$BASE_SHA"\nusage_helpers=(' + pre
 pre += 'printf "%s\\n" "${usage_helper_blobs[*]}"\n'
 pre_result = subprocess.run(['bash', '-c', pre], cwd=repo, env={**os.environ, 'BASE_SHA': base},
                             capture_output=True, check=True)
 assert pre_result.stdout.decode().strip().split() == blobs
+assert "printf 'usage_helper_blobs=%s\\n'" in context['run']
 script = fixture / 'collect.sh'
 script.write_text(collect['run'])
 bridge = fixture / 'bridge.py'
@@ -3093,7 +3114,7 @@ spec = importlib.util.spec_from_file_location('trusted_collector', source)
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 def acquire(unit, limit):
-    assert unit == 'codex-developer-123-2' and limit == 16 * 1024 * 1024
+    assert unit == os.environ['EXPECTED_UNIT'] and limit == 16 * 1024 * 1024
     mode = os.environ['EVIDENCE_CASE']
     if mode == 'missing': return b''
     if mode == 'acquisition-failure': return None
@@ -3131,7 +3152,8 @@ bash "$1"
 '''
 env = {**os.environ, 'BASE_SHA': base, 'USAGE_HELPER_BLOBS': ' '.join(blobs),
        'RUNNER_TEMP': str(runner), 'GITHUB_REPOSITORY': 'suzukure/nssscdl',
-       'RUN_ID': '123', 'RUN_ATTEMPT': '2', 'ISSUE_NUMBER': '797', 'SELECTED_MODEL': 'gpt-6.1-sol',
+       'RUN_ID': '123', 'RUN_ATTEMPT': '2', 'ISSUE_NUMBER': str(issue), 'HEAD_REF': 'ai/issue-798', 'PR_NUMBER': '37',
+       'EXPECTED_UNIT': ('codex-followup' if followup else 'codex-developer') + '-123-2', 'SELECTED_MODEL': 'gpt-6.1-sol',
        'FIXTURE_REPO': str(repo), 'FIXTURE_BRIDGE': str(bridge), 'FAULT_HELPER': '', 'FAULT': '',
        'PRIVILEGE_LOG': str(fixture / 'privilege.log'), 'EVIDENCE_CASE': 'recorded'}
 evidence = runner / 'codex-usage-evidence.json'
@@ -3155,8 +3177,8 @@ for mode, status in [('recorded', 'recorded'), ('missing', 'missing'),
     value = json.loads(raw)
     assert raw == (json.dumps(value,sort_keys=True,separators=(',',':')) + '\n').encode()
     assert value['identity'] == dict(schema='codex-usage-evidence-identity',version=1,
-        repository='suzukure/nssscdl',run_id=123,run_attempt=2,issue_number=797,
-        job='develop-from-issue',pr_number=None,base_sha=base,selected_model='gpt-6.1-sol',
+        repository='suzukure/nssscdl',run_id=123,run_attempt=2,issue_number=issue,
+        job=job,pr_number=pr,base_sha=base,selected_model='gpt-6.1-sol',
         cli_version='0.159.3',reasoning_effort='medium',invocation_mode='fresh_exec')
     assert value['evidence_status'] == status and value['billing_status'] == 'unverified'
     assert b'private-raw-canary' not in raw
@@ -3170,8 +3192,14 @@ for overrides in ({'USAGE_HELPER_BLOBS': ''}, {'USAGE_HELPER_BLOBS': ' '.join(['
                   {'USAGE_HELPER_BLOBS': ' '.join(blobs + blobs[:1])},
                   {'BASE_SHA': 'bad'}, {'FAULT': 'symlink'}):
     assert execute(overrides).returncode != 0 and not evidence.exists() and not privilege.exists()
-for overrides in ({'FAULT': 'sudo-failure'}, {'ISSUE_NUMBER': 'bad'}, {'SELECTED_MODEL': ''}):
+for overrides in ({'FAULT': 'sudo-failure'}, ({'HEAD_REF': 'ai/issue-0'} if followup else {'ISSUE_NUMBER': 'bad'}), {'SELECTED_MODEL': ''}):
     assert execute(overrides).returncode != 0 and not evidence.exists()
+if followup:
+    for branch in ('ai/issue-0', 'ai/issue-0798', 'ai/issue-798-extra', 'ai/issue-798\n', 'other/issue-798', ''):
+        result = execute({'HEAD_REF': branch})
+        assert result.returncode != 0 and not evidence.exists() and not privilege.exists()
+    for number in ('0', 'null', 'true', '"37"', 'bad'):
+        assert execute({'PR_NUMBER': number}).returncode != 0 and not evidence.exists()
 summary_script = fixture / 'summary.sh'
 summary_script.write_text(summary['run'])
 for collection, persistence in [('success','success'), ('success','failure'), ('failure','skipped')]:
@@ -3182,5 +3210,6 @@ for collection, persistence in [('success','success'), ('success','failure'), ('
         'UPLOAD_OUTCOME': persistence}, capture_output=True, check=True)
     assert collection in output.read_text() and persistence in output.read_text()
     assert 'unknown' in output.read_text() and not result.stdout
-print('Issue usage caller: initial/resume identity, six base blobs, restored root transport, sanitized-only persistence, failures and lifecycle isolation PASS')
+print(job + ' usage caller: trusted identity and exact unit, six base blobs, restored root transport, sanitized-only persistence, failures and lifecycle isolation PASS')
 PY_USAGE_FIXTURE
+done
