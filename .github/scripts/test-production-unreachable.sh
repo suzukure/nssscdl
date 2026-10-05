@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
 import ast
 import hashlib
+import json
 from functools import lru_cache
 from pathlib import Path
 import stat
@@ -208,6 +209,38 @@ def mask_trusted_model_callers(text):
     return ''.join(masked)
 
 
+@lru_cache(maxsize=32)
+def mask_trusted_stream_callers(text):
+    # #772 admits only the reviewed producer steps, including env/gates/timeout.
+    # No filename-wide exception; mutations require caller fixture review.
+    value = yaml.safe_load(text)
+    node = yaml.compose(text)
+    def child(mapping, key):
+        matches = [v for k, v in mapping.value if k.value == key]
+        assert len(matches) == 1
+        return matches[0]
+    masked = text.splitlines(keepends=True)
+    jobs = child(node, 'jobs')
+    for job, digest in (
+            ('develop-from-issue', '6f9d09c2576a4b922747d1925f56aab4fb5a9df5de401b2119f74f8f7c448e59'),
+            ('respond-to-claude', '0be20d47722cae3db396eef15ae27574c40690a81044a5010d0d3c5e76c1cc2a')):
+        steps = value['jobs'][job]['steps']
+        matches = [(i, step) for i, step in enumerate(steps) if step.get('id') == 'codex']
+        assert len(matches) == 1, 'missing/duplicate stream producer'
+        index, step = matches[0]
+        assert hashlib.sha256(json.dumps(step, sort_keys=True).encode()).hexdigest() == digest, (
+            'untrusted stream producer bytes/metadata', job)
+        step_node = child(child(jobs, job), 'steps').value[index]
+        for mapping in (step_node, child(step_node, 'env')):
+            assert len({k.value for k, _ in mapping.value}) == len(mapping.value)
+        assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
+                       and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
+                       for token in yaml.scan(text)), 'stream producer alias/anchor escape'
+        for line in range(step_node.start_mark.line, step_node.end_mark.line):
+            masked[line] = '\n'
+    return ''.join(masked)
+
+
 def assert_unreachable(sources):
     # Parse source text only. Never import selector, builder, collector or npm.
     for path in (selector_path, selector_fixture):
@@ -217,8 +250,9 @@ def assert_unreachable(sources):
             model_text = mask_trusted_model_callers(text) if path == workflows + 'ai-developer.yml' else text
             assert model_selector[:-3] not in model_text and model_policy not in model_text, (
                 'unknown model selection production connection', path)
-            assert exec_usage[:-3] not in text, ('exec usage production connection', path)
-            assert stream_supervisor[:-3] not in text, ('stream supervisor production connection', path)
+            stream_text = mask_trusted_stream_callers(text) if path == workflows + 'ai-developer.yml' else text
+            assert exec_usage[:-3] not in stream_text, ('unknown exec usage production connection', path)
+            assert stream_supervisor[:-3] not in stream_text, ('unknown stream supervisor production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -387,6 +421,29 @@ for mutation in (
         original_model_workflow + '\n# unauthorized ' + stream_supervisor):
     assert mutation != original_model_workflow
     rejected(model_workflow, mutation)
+
+# Exact #772 exception must reject source, stream, invocation and metadata drift.
+for old, new in (
+        ('git show "${BASE_SHA}:${source_path}" > "$stream_dir/$filename"',
+         'git show "HEAD:${source_path}" > "$stream_dir/$filename"'),
+        ('git hash-object --no-filters "$stream_dir/$filename"', 'echo "$expected_blob"'),
+        ('"$CODEX_NATIVE" exec --json', '"$CODEX_NATIVE" exec'),
+        ('"$CODEX_NATIVE" exec --json', '"$CODEX_NATIVE" exec --json --json'),
+        ('/usr/bin/python3 -I -B "$3" --extractor "$4" --',
+         '/usr/bin/python3 -B "$3" --extractor "$4" --'),
+        ('"$stream_dir/supervise-codex-exec-stream.py"',
+         '"$GITHUB_WORKSPACE/.github/scripts/supervise-codex-exec-stream.py"'),
+        ('              stream_supervisor="${18}"',
+         '              stream_supervisor="${18}"\n              # extra supervise-codex-exec-stream caller'),
+        ('        id: codex\n', '        id: codex\n        id: codex\n')):
+    assert old in original_model_workflow
+    rejected(model_workflow, original_model_workflow.replace(old, new, 1))
+# Each producer is independently closed, including the later follow-up copy.
+for job in ('develop-from-issue', 'respond-to-claude'):
+    original = yaml.safe_load(original_model_workflow)
+    producer = next(s for s in original['jobs'][job]['steps'] if s.get('id') == 'codex')
+    producer['env']['BASE_SHA'] = '${{ github.event.pull_request.head.sha }}'
+    rejected(model_workflow, yaml.safe_dump(original))
 
 rejected(workflows + 'ai-workflow-regression.yml',
          sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)
