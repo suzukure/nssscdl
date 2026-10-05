@@ -20,7 +20,9 @@ helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 policy = json.loads(policy_path.read_bytes())
 assert policy == {'schema': 'codex-issue-model-policy', 'version': 1,
-                  'repository': 'suzukure/nssscdl', 'entries': []}
+                  'repository': 'suzukure/nssscdl',
+                  'entries': [dict(issue=635, model='gpt-6-luna')]}
+empty_policy = {**policy, 'entries': []}
 request = dict(repository='suzukure/nssscdl', issue=745, normal_model='gpt-6-sol')
 opt_in = {**policy, 'entries': [dict(issue=745, model='gpt-6-luna')]}
 
@@ -43,9 +45,15 @@ def rejected(p=policy, r=request, raw_policy=None, raw_request=None):
     raise AssertionError('invalid model selection accepted')
 
 assert select() == expected('gpt-6-sol', 'default')
+assert select(empty_policy, {**request, 'issue': 635}) == expected('gpt-6-sol', 'default', 635)
+for issue in (634, 636, 745, 802, 1635, helper.MAX_ISSUE):
+    for normal in ('gpt-6-sol', 'gpt-6.1-sol'):
+        assert select(policy, {**request, 'issue': issue, 'normal_model': normal}) == expected(normal, 'default', issue)
 assert select(opt_in) == expected('gpt-6-luna', 'opt_in')
 # initial / follow-up / resume use the same gated identity contract, no phase state.
 for phase in ('initial', 'follow-up', 'resume'):
+    for normal in ('gpt-6-sol', 'gpt-6.1-sol'):
+        assert select(policy, {**request, 'issue': 635, 'normal_model': normal}) == expected('gpt-6-luna', 'opt_in', 635)
     assert select(opt_in, copy.deepcopy(request)) == expected('gpt-6-luna', 'opt_in')
     assert select(opt_in, {**request, 'normal_model': 'gpt-6.1-sol'}) == expected('gpt-6-luna', 'opt_in')
     assert select(policy, {**request, 'normal_model': 'gpt-6.1-sol'}) == expected('gpt-6.1-sol', 'default')
@@ -116,9 +124,11 @@ with tempfile.TemporaryDirectory() as temporary:
     def run(raw_policy, raw_request=encoded(request), arguments=command):
         fixture_policy.write_bytes(raw_policy)
         return subprocess.run(arguments, input=raw_request, capture_output=True)
-    for p, want in ((policy, expected('gpt-6-sol', 'default')),
-                    (opt_in, expected('gpt-6-luna', 'opt_in'))):
-        first, second = run(encoded(p)), run(encoded(p))
+    for p, r, want in ((policy, request, expected('gpt-6-sol', 'default')),
+                       (empty_policy, request, expected('gpt-6-sol', 'default')),
+                       (policy, {**request, 'issue': 635}, expected('gpt-6-luna', 'opt_in', 635)),
+                       (opt_in, request, expected('gpt-6-luna', 'opt_in'))):
+        first, second = run(encoded(p), encoded(r)), run(encoded(p), encoded(r))
         canonical = (json.dumps(want, sort_keys=True, separators=(',', ':')) + '\n').encode()
         assert first.returncode == second.returncode == 0
         assert first.stdout == second.stdout == canonical and not first.stderr and not second.stderr
