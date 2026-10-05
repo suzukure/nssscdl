@@ -23,10 +23,12 @@ spec = importlib.util.spec_from_file_location('planner', source)
 planner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner)
 actual = sorted(prefix + path.name for path in (repo / prefix).glob('test-*.sh'))
-identity_inventory = [path for path in actual if path != prefix + 'test-validate-codex-usage-stream.sh']
+stream_inventory = [path for path in actual if path != prefix + 'test-build-codex-usage-evidence.sh']
+identity_inventory = [path for path in stream_inventory if path != prefix + 'test-validate-codex-usage-stream.sh']
 checkpoint = [path for path in identity_inventory if path != prefix + 'test-validate-codex-usage-identity.sh']
 previous = [path for path in checkpoint if path != prefix + 'test-plan-ai-workflow-shards.sh']
-assert len(previous) == 78 and len(checkpoint) == 79 and len(identity_inventory) == 80 and len(actual) == 81
+assert len(previous) == 78 and len(checkpoint) == 79 and len(identity_inventory) == 80
+assert len(stream_inventory) == 81 and len(actual) == 82
 assert set(planner.RUNTIME_HINTS) <= set(actual), 'runtime hint absent from current inventory'
 
 
@@ -62,7 +64,7 @@ def rejected(data):
 
 
 # Preserve the #756 pre-Issue inventory proof alongside the current full inventory.
-for paths in (previous, checkpoint, identity_inventory, actual):
+for paths in (previous, checkpoint, identity_inventory, stream_inventory, actual):
     result = planner.plan(encode(paths))
     a, b = coverage(result, paths)
     for reordered in (paths[::-1], paths[::2] + paths[1::2], paths[1:] + paths[:1]):
@@ -201,5 +203,5 @@ for path, text in (('.github/workflows/ai-workflow-regression.yml', 'python3 ' +
         pass
     else:
         raise AssertionError('production planner caller accepted')
-print('AI workflow shard planner: 78/79/80/81 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
+print('AI workflow shard planner: 78/79/80/81/82 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
 PY
