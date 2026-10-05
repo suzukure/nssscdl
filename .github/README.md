@@ -26,6 +26,8 @@ snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked fil
 
 検証は `bash .github/scripts/test-production-unreachable.sh`。synthetic caller / workflow / AST mutationはmemory内だけで構成し、repositoryを書き換えない。selected modeではcommonとともに必ず選択され、無関係なhelper変更で重いProduct npm suiteの常時選択を必要としない。inventory同期には既存#684 fixtureの未登録解消も含む。既存Product npm / failure-evidence fixtureの重複guardは維持する。production workflow / event / permission / stateは変更せず、network / GitHub API / Secrets / paid AIを使用しない。#697のregression callerでもcommon guardの必須実行を検証し、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
+#772ではprepared Codex supervisor / extractorのproducer-only接続として、`ai-developer.yml` の2つのexact reviewed実行step（initial/resume共通・Claude follow-up）を追加許容する。trusted base source / blob照合・通常file型・service argv・metadata / gates / timeoutを含むstepをdigestで閉じ、未知caller・PR/worktree source・hash bypass・重複 `--json` 等の負例を維持する。usageのdownstream consumerやpersistenceは許可しない。詳細は[stream supervisor運用契約](../docs/30_operations/ai-development-workflow.md)を正本とし、static guardの成功をactual native proofと扱わない。
+
 ## Product runtime exact staging（#738、prepared / dormant）
 
 [`product-runtime-staging.py`](scripts/product-runtime-staging.py) の `PreparedRuntime(rows, trusted_uids=..., excluded_roots=..., root_api=...)` はtrusted parent保持のprepared Contractである。`root_api`には既存#710の `CanonicalRoot` を渡し、そのancestry / mount identityとphysical座標を再利用する。trusted base由来module・parent memory・sourceをmodel変更から隔離し、Product workspace / cache等の全workload変更可能rootを `excluded_roots` に指定する責務はtrusted callerにある。UIDやmodeだけをprovenanceの根拠にせず、同一trusted UIDの並行攻撃からの隔離は本synthetic fixtureでは実証しない。
@@ -86,9 +88,9 @@ failure jobが1件なら、そのjobを選ぶ既存挙動を維持する。複�
 
 #698が消費するjob選択契約の機械正本はcollectorの `failed_job()` / `SHARD_WORKERS` / `SHARD_TERMINAL` とする。failure jobが複数の場合、terminal `Regression Result` がちょうど1件存在して `completed / failure` であり、terminal以外のfailure job名がexact `Fixture shard 1` / `Fixture shard 2` の既知worker集合の部分集合の場合だけ受理する。plan / selected-path等のnon-failure jobはevidence source選択に使わず、exact nameを固定しない。ただしattempt内の全job（success / skipped等も含む）の名前は文字列・空白のみでない値・一意性を検証し、job ID重複、run ID / attempt不一致、metadata不正の既存検証も維持する。未知failed job、名前重複・failed job名drift、terminal欠落・non-failureは `conflict / failed_job_ambiguous` で拒否し、API返却順に意味を持たせない。
 
-canonical evidence sourceはterminalだけとし、そのindividual jobをfresh照合してpacketのjob ID / first failing step / log locatorへbindする。worker failureをsuccessへ変更するものではなく、source run全体がfailureで、aggregateがworker結果をfail-closedに正規化することを後続#698の前提とする。first failing step、log boundary、secret-like reject、packet上限、read-only権限は既存契約を再利用する。現在の `Fixtures` workflowは変更せず、このtopologyのproduction到達・aggregate実装・3 shard以上への一般化は本変更に含めない。
+canonical evidence sourceはterminalだけとし、そのindividual jobをfresh照合してpacketのjob ID / first failing step / log locatorへbindする。worker failureをsuccessへ変更するものではなく、source run全体がfailureで、aggregateがworker結果をfail-closedに正規化することをconsumerの前提とする。first failing step、log boundary、secret-like reject、packet上限、read-only権限は既存契約を再利用する。#751自体ではsource workflowを変更せず、#769がserialized 2-shard / aggregateを接続する。現在の実行契約は[AI開発運用文書](../docs/30_operations/ai-development-workflow.md#bootstrapと復旧)と `ai-workflow-regression.yml` を正本とする。collector本体・permissions・triggerの変更、3 shard以上への一般化は含めない。
 
-検証は既存collector fixtureでsingle failureの維持、1 / 2 worker failureとterminal failureの受理、non-failure orchestration / selected-path job共存時の同一packet・job順序独立、unknown failed job / duplicate / terminal欠落・success・cancelled・timed_out、全jobの名前不正・identity / attempt不一致・metadata不正の拒否、aggregateへのpacket bindと既存evidence境界を固定する。synthetic fixtureはproduction multi-shard runの証拠ではなく、E2Eは#698でtopologyがproduction到達した最初の自然runで確認する。
+検証は既存collector fixtureでsingle failureの維持、1 / 2 worker failureとterminal failureの受理、non-failure orchestration / selected-path job共存時の同一packet・job順序独立、unknown failed job / duplicate / terminal欠落・success・cancelled・timed_out、全jobの名前不正・identity / attempt不一致・metadata不正の拒否、aggregateへのpacket bindと既存evidence境界を固定する。synthetic fixtureはproduction multi-shard runの証拠ではなく、failure-path E2Eは#769のtopologyでactual failing sharded natural runが発生したときに確認する。未発生ならtarget proof完了とは主張しない。
 
 #### Issue contractとevidence出力
 

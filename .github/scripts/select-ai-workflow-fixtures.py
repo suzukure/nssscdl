@@ -73,12 +73,13 @@ BASELINE_COUNTS = {
     "product-npm": 11, "resume-human-pause": 26, "claude": 11, "deepinfra": 9,
     "ai-developer-codex": 7, "failure-evidence": 2, "common": 2,
 }
-# Explicit extensions: #692 / #684, selector, and #701 common guard.
+# Explicit extensions: #692 / #684, selector, #701 common guard, and #756 shard planner.
 EXTENSIONS = {
     "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload",
                     "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply"),
-    "ai-developer-codex": ("select-codex-issue-model",),
-    "common": ("select-ai-workflow-fixtures", "production-unreachable"),
+    "ai-developer-codex": ("select-codex-issue-model", "extract-codex-exec-usage",
+                           "supervise-codex-exec-stream"),
+    "common": ("select-ai-workflow-fixtures", "production-unreachable", "plan-ai-workflow-shards"),
 }
 INVENTORY = {
     suite: tuple(SCRIPTS + "test-" + name + ".sh"
@@ -89,6 +90,7 @@ INVENTORY = {
 # Coarse exact-path mapping. Unlisted trigger paths require full regression.
 # Tuple rows preserve duplicate-path contradictions for validation.
 PATH_SUITES = (
+    (SCRIPTS + "plan-ai-workflow-shards.py", ("common",)),
     (SCRIPTS + "build-failure-evidence-packet.py", ("failure-evidence",)),
     (SCRIPTS + "collect-failure-evidence.py", ("failure-evidence",)),
     (SCRIPTS + "fixtures/failure-evidence-654.json", ("failure-evidence",)),
@@ -123,6 +125,8 @@ PATH_SUITES = (
     (SCRIPTS + "evaluate-codex-diff-gate.sh", ("ai-developer-codex", "claude")),
     (SCRIPTS + "classify-ai-developer-decision-marker.sh", ("ai-developer-codex",)),
     (SCRIPTS + "select-codex-issue-model.py", ("ai-developer-codex",)),
+    (SCRIPTS + "extract-codex-exec-usage.py", ("ai-developer-codex",)),
+    (SCRIPTS + "supervise-codex-exec-stream.py", ("ai-developer-codex",)),
     (SCRIPTS + "codex-issue-model-policy.json", ("ai-developer-codex",)),
     (SCRIPTS + "parse-ai-resume-command.sh", ("resume-human-pause",)),
     (SCRIPTS + "classify-claude-human-escalation.sh", ("claude",)),

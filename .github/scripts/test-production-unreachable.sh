@@ -4,6 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
 import ast
+import hashlib
+import json
+from functools import lru_cache
 from pathlib import Path
 import stat
 import subprocess
@@ -25,6 +28,8 @@ runtime_supply = 'trusted-runtime-supply.py'
 supply_proof = 'runtime-supply-proof.py'
 model_selector = 'select-codex-issue-model.py'
 model_policy = 'codex-issue-model-policy.json'
+exec_usage = 'extract-codex-exec-usage.py'
+stream_supervisor = 'supervise-codex-exec-stream.py'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
@@ -39,6 +44,8 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (trusted_proof, trusted_proof, 'product-npm', None),
              (packet, packet, 'failure-evidence', None),
              (model_selector[:-3], model_selector, 'ai-developer-codex', None),
+             (exec_usage[:-3], exec_usage, 'ai-developer-codex', None),
+             (stream_supervisor[:-3], stream_supervisor, 'ai-developer-codex', None),
              (model_policy, model_policy, 'ai-developer-codex', None))
 
 
@@ -48,7 +55,8 @@ def python_body(text):
     assert start and end, 'missing fixture Python body'
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
                                                            session_runtime, session_probe, runtime_staging,
-                                                           *session_symbols, model_selector[:-3], model_policy))
+                                                           *session_symbols, model_selector[:-3], model_policy,
+                                                           exec_usage[:-3], stream_supervisor[:-3]))
     return body
 
 
@@ -121,7 +129,7 @@ def assert_declarative(path, text):
         for row in matches:
             allowed.extend(n for n in ast.walk(row)
                            if isinstance(n, ast.Constant) and n.value == filename)
-        if filename == model_selector and not is_fixture:
+        if filename in (model_selector, exec_usage, stream_supervisor) and not is_fixture:
             # Exact fixture registration is data, never an executable reference.
             extension = declaration(tree, 'EXTENSIONS', ast.Dict)
             ast.literal_eval(extension)
@@ -129,8 +137,8 @@ def assert_declarative(path, text):
                       if isinstance(k, ast.Constant) and k.value == suite]
             assert len(values) == 1 and isinstance(values[0], ast.Tuple)
             names = [n for n in values[0].elts
-                     if isinstance(n, ast.Constant) and n.value == model_selector[:-3]]
-            assert len(names) == 1, 'missing/duplicate model fixture extension'
+                     if isinstance(n, ast.Constant) and n.value == filename[:-3]]
+            assert len(names) == 1, 'missing/duplicate dormant fixture extension'
             allowed.extend(names)
         if baseline is not None and baseline_name:
             values = [v for k, v in zip(baseline.keys, baseline.values)
@@ -152,14 +160,99 @@ def is_test_fixture(path):
             and p.name.startswith('test-') and p.suffix in ('.sh', '.py'))
 
 
+@lru_cache(maxsize=32)
+def mask_trusted_model_callers(text):
+    # Closed exception for #759: exact reviewed caller bytes, metadata and gates.
+    # Changing this digest requires reviewing the caller and its runtime fixture.
+    value = yaml.safe_load(text)
+    node = yaml.compose(text)
+    def child(mapping, key):
+        matches = [v for k, v in mapping.value if k.value == key]
+        assert len(matches) == 1
+        return matches[0]
+    masked = text.splitlines(keepends=True)
+    jobs = child(node, 'jobs')
+    followup_gate = ("steps.verify-reviewer.outputs.trusted == 'true' && "
+                    "steps.followup-gate.outputs.continue == 'true' && "
+                    "steps.followup-checkout.outputs.continue == 'true'")
+    for job, digest in (
+            ('develop-from-issue', 'e526cfaca0742f923a5b528463c8123ffc26a8d27727ef5c90e6e65f105c04ea'),
+            ('respond-to-claude', 'fbbfa579a33e6561c6ecbcb1835ec04c2ab48e031dbed437773886bbb757294c')):
+        steps = value['jobs'][job]['steps']
+        matches = [(i, step) for i, step in enumerate(steps) if step.get('id') == 'codex_model']
+        assert len(matches) == 1, 'missing/duplicate trusted model caller'
+        index, step = matches[0]
+        env = {'NORMAL_MODEL': '${{ vars.CODEX_MODEL }}'}
+        expected = dict(name='Select trusted Codex Issue model', id='codex_model',
+                        shell='bash', env=env, run=step['run'])
+        if job == 'develop-from-issue':
+            env.update(BASE_SHA='${{ steps.issue_context.outputs.base_sha }}',
+                ISSUE_NUMBER="${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}")
+            assert any(s.get('id') == 'issue_context' for s in steps[:index])
+        else:
+            env.update(BASE_SHA='${{ github.event.pull_request.base.sha }}',
+                       HEAD_REF='${{ github.event.pull_request.head.ref }}')
+            expected['if'] = followup_gate
+            assert any(s.get('id') == 'followup-checkout' for s in steps[:index])
+        assert step == expected, 'untrusted model caller metadata'
+        assert hashlib.sha256(step['run'].encode()).hexdigest() == digest, 'untrusted model caller bytes'
+        assert index < next(i for i, s in enumerate(steps) if s.get('id') == 'codex')
+        step_node = child(child(jobs, job), 'steps').value[index]
+        assert len({k.value for k, _ in step_node.value}) == len(step_node.value)
+        env_node = child(step_node, 'env')
+        assert len({k.value for k, _ in env_node.value}) == len(env_node.value)
+        assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
+                       and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
+                       for token in yaml.scan(text)), 'model caller alias/anchor escape'
+        for line in range(step_node.start_mark.line, step_node.end_mark.line):
+            masked[line] = '\n'
+    return ''.join(masked)
+
+
+@lru_cache(maxsize=32)
+def mask_trusted_stream_callers(text):
+    # #772 admits only the reviewed producer steps, including env/gates/timeout.
+    # No filename-wide exception; mutations require caller fixture review.
+    value = yaml.safe_load(text)
+    node = yaml.compose(text)
+    def child(mapping, key):
+        matches = [v for k, v in mapping.value if k.value == key]
+        assert len(matches) == 1
+        return matches[0]
+    masked = text.splitlines(keepends=True)
+    jobs = child(node, 'jobs')
+    for job, digest in (
+            ('develop-from-issue', '6f9d09c2576a4b922747d1925f56aab4fb5a9df5de401b2119f74f8f7c448e59'),
+            ('respond-to-claude', '0be20d47722cae3db396eef15ae27574c40690a81044a5010d0d3c5e76c1cc2a')):
+        steps = value['jobs'][job]['steps']
+        matches = [(i, step) for i, step in enumerate(steps) if step.get('id') == 'codex']
+        assert len(matches) == 1, 'missing/duplicate stream producer'
+        index, step = matches[0]
+        assert hashlib.sha256(json.dumps(step, sort_keys=True).encode()).hexdigest() == digest, (
+            'untrusted stream producer bytes/metadata', job)
+        step_node = child(child(jobs, job), 'steps').value[index]
+        for mapping in (step_node, child(step_node, 'env')):
+            assert len({k.value for k, _ in mapping.value}) == len(mapping.value)
+        assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
+                       and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
+                       for token in yaml.scan(text)), 'stream producer alias/anchor escape'
+        for line in range(step_node.start_mark.line, step_node.end_mark.line):
+            masked[line] = '\n'
+    return ''.join(masked)
+
+
 def assert_unreachable(sources):
     # Parse source text only. Never import selector, builder, collector or npm.
     for path in (selector_path, selector_fixture):
         assert_declarative(path, sources[path])
     for path, text in sources.items():
         if path.startswith(workflows):
-            assert model_selector[:-3] not in text and model_policy not in text, (
-                'model selection production connection', path)
+            model_text = mask_trusted_model_callers(text) if path == workflows + 'ai-developer.yml' else text
+            assert model_selector[:-3] not in model_text and model_policy not in model_text, (
+                'unknown model selection production connection', path)
+            stream_text = mask_trusted_stream_callers(text) if path == workflows + 'ai-developer.yml' else text
+            assert exec_usage[:-3] not in stream_text, ('unknown exec usage production connection', path)
+            assert stream_supervisor[:-3] not in stream_text, ('unknown stream supervisor production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -195,6 +288,16 @@ def assert_unreachable(sources):
                         continue  # Only the closed callback API, never raw session access.
                     assert symbol not in text, ('unknown session caller', path)
             for needle, filename, _, _ in contracts:
+                if path == scripts + stream_supervisor and filename == exec_usage:
+                    # Only #761's exact prepared loader/CLI/API source is allowed.
+                    # This static exception proves no runtime source provenance.
+                    assert hashlib.sha256(text.encode()).hexdigest() == (
+                        'b035818833808d9a129f84501dfe4ed8206f78ba74a5de9f14012125897c5f15')
+                    tree = ast.parse(text)
+                    identity = declaration(tree, 'EXTRACTOR_NAME', ast.Constant)
+                    assert identity.value == filename
+                    assert needle.encode() not in mask_literals(text, [identity])
+                    continue
                 if path == scripts + trusted_proof:
                     if filename in (runtime_staging, runtime_supply):
                         # Exactly one closed module load; no caller inventory input.
@@ -265,7 +368,7 @@ sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
 for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
-             model_selector, model_policy):
+             model_selector, model_policy, exec_usage, stream_supervisor):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -282,7 +385,7 @@ def accepted(path, text):
 def rejected(path, text):
     try:
         accepted(path, text)
-    except (AssertionError, ValueError, SyntaxError):
+    except (AssertionError, ValueError, SyntaxError, yaml.YAMLError):
         return
     raise AssertionError(('unsafe reference accepted', path))
 
@@ -298,6 +401,50 @@ for mutation in (
 
 
 # Mutate only in-memory snapshots; the actual repository is never written.
+model_workflow = workflows + 'ai-developer.yml'
+original_model_workflow = sources[model_workflow]
+for mutation in (
+        original_model_workflow.replace('git show "${BASE_SHA}:${source_path}"', 'git show "HEAD:${source_path}"', 1),
+        original_model_workflow.replace('git hash-object --no-filters "$selection_dir/$filename"', 'echo "$expected_blob"', 1),
+        original_model_workflow.replace('steps.issue_context.outputs.base_sha', 'github.event.pull_request.head.sha', 1),
+        original_model_workflow.replace("steps.followup-checkout.outputs.continue == 'true'\n        id: codex_model", "true\n        id: codex_model", 1),
+        original_model_workflow.replace('actual != canonical', 'False', 1),
+        original_model_workflow.replace('        id: codex_model', '        id: invalid\n        id: codex_model', 1),
+        original_model_workflow.replace("python3 -I -B - <<'PY_MODEL'", "python3 -B - <<'PY_MODEL'", 1),
+        original_model_workflow.replace('          export SELECTION_DIR="$selection_dir"', '          export SELECTION_DIR="$selection_dir"\n          # extra select-codex-issue-model caller', 1),
+        original_model_workflow.replace(
+            '        run: |\n          set -euo pipefail\n          [[ "$BASE_SHA"',
+            '        run: &model_caller |\n          set -euo pipefail\n          [[ "$BASE_SHA"', 1),
+        original_model_workflow + '\n# unauthorized ' + model_selector,
+        original_model_workflow + '\n# unauthorized ' + model_policy,
+        original_model_workflow + '\n# unauthorized ' + exec_usage,
+        original_model_workflow + '\n# unauthorized ' + stream_supervisor):
+    assert mutation != original_model_workflow
+    rejected(model_workflow, mutation)
+
+# Exact #772 exception must reject source, stream, invocation and metadata drift.
+for old, new in (
+        ('git show "${BASE_SHA}:${source_path}" > "$stream_dir/$filename"',
+         'git show "HEAD:${source_path}" > "$stream_dir/$filename"'),
+        ('git hash-object --no-filters "$stream_dir/$filename"', 'echo "$expected_blob"'),
+        ('"$CODEX_NATIVE" exec --json', '"$CODEX_NATIVE" exec'),
+        ('"$CODEX_NATIVE" exec --json', '"$CODEX_NATIVE" exec --json --json'),
+        ('/usr/bin/python3 -I -B "$3" --extractor "$4" --',
+         '/usr/bin/python3 -B "$3" --extractor "$4" --'),
+        ('"$stream_dir/supervise-codex-exec-stream.py"',
+         '"$GITHUB_WORKSPACE/.github/scripts/supervise-codex-exec-stream.py"'),
+        ('              stream_supervisor="${18}"',
+         '              stream_supervisor="${18}"\n              # extra supervise-codex-exec-stream caller'),
+        ('        id: codex\n', '        id: codex\n        id: codex\n')):
+    assert old in original_model_workflow
+    rejected(model_workflow, original_model_workflow.replace(old, new, 1))
+# Each producer is independently closed, including the later follow-up copy.
+for job in ('develop-from-issue', 'respond-to-claude'):
+    original = yaml.safe_load(original_model_workflow)
+    producer = next(s for s in original['jobs'][job]['steps'] if s.get('id') == 'codex')
+    producer['env']['BASE_SHA'] = '${{ github.event.pull_request.head.sha }}'
+    rejected(model_workflow, yaml.safe_dump(original))
+
 rejected(workflows + 'ai-workflow-regression.yml',
          sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)
 for needle, filename, suite, baseline_name in contracts:
@@ -353,13 +500,30 @@ for name in ('BASELINE', 'PATH_SUITES'):
 
 # The new extension exception admits only one declarative fixture identity.
 original = sources[selector_path]
-literal = '"' + model_selector[:-3] + '"'
-for replacement in ('"other"', literal + ', ' + literal,
-                    f'run({model_selector[:-3]!r})'):
-    rejected(selector_path, original.replace(literal, replacement))
+for filename in (model_selector, exec_usage, stream_supervisor):
+    literal = '"' + filename[:-3] + '"'
+    for replacement in ('"other"', literal + ', ' + literal,
+                        f'run({filename[:-3]!r})'):
+        rejected(selector_path, original.replace(literal, replacement))
 for assignment in ('EXTENSIONS = {}', 'EXTENSIONS += {}',
                    'def extra():\n    EXTENSIONS = {}'):
     rejected(selector_path, original + '\n' + assignment + '\n')
+
+# The only new prepared caller exception is exact source, never a filename-wide
+# permission. Copies, extra loads, changed source/API and workflow callers fail.
+prepared_source = sources[scripts + stream_supervisor]
+accepted(scripts + stream_supervisor, prepared_source)
+for mutation in (prepared_source + '\nload_extractor(EXTRACTOR_NAME)\n',
+                 prepared_source.replace('spec.loader.exec_module(module)',
+                                         'spec.loader.exec_module(module)\n    spec.loader.exec_module(module)'),
+                 prepared_source.replace('"prepared_exec_usage", source_path',
+                                         '"prepared_exec_usage", EXTRACTOR_NAME'),
+                 prepared_source.replace('shell=False', 'shell=True'),
+                 prepared_source.replace('return module', 'return load_extractor(source_path)')):
+    assert mutation != prepared_source
+    rejected(scripts + stream_supervisor, mutation)
+rejected(scripts + 'copy-' + stream_supervisor, prepared_source)
+rejected(scripts + 'unknown-loader.py', prepared_source)
 
 for symbol in session_symbols:
     for path in (scripts + 'unknown.py', scripts + 'copy-' + session_runtime,
