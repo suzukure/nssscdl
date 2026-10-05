@@ -2599,7 +2599,7 @@ selector_name = 'select-codex-issue-model.py'
 policy_name = 'codex-issue-model-policy.json'
 source = (repo / '.github/scripts' / selector_name).read_text()
 policy = json.loads((repo / '.github/scripts' / policy_name).read_text())
-assert policy['entries'] == []
+assert policy['entries'] == [dict(issue=635, model='gpt-6-luna')]
 # Neither a malicious worktree helper nor a worktree opt-in policy is authority.
 (workspace / '.github/scripts' / selector_name).write_text('raise RuntimeError("worktree-used")\n')
 # Trusted Python must also exclude PR/worktree and inherited module search paths.
@@ -2697,12 +2697,16 @@ def run(job='develop-from-issue', entries=None, supply='valid', model=normal,
     assert b'gpt-6-luna' not in result.stdout + result.stderr
     assert b'private-marker' not in result.stdout + result.stderr
     if ok:
-        assert result.stdout == ('モデル選択: ' + ('opt_in' if any(e['issue'] == issue for e in entries or []) else 'default') + '\n').encode()
+        gated_issue = int(head_ref.removeprefix('ai/issue-') if job == 'respond-to-claude' else identity)
+        assert result.stdout == ('モデル選択: ' + ('opt_in' if any(e['issue'] == gated_issue for e in entries or []) else 'default') + '\n').encode()
     return result
 
 # initial and formal resume use the same gated Issue expression and run block.
 for phase in ('initial', 'resume', 'follow-up'):
     job = 'respond-to-claude' if phase == 'follow-up' else 'develop-from-issue'
+    run(job, entries=policy['entries'], identity='635', head_ref='ai/issue-635', want='gpt-6-luna')
+    for other_issue in (634, 636, 802):
+        run(job, entries=policy['entries'], identity=str(other_issue), head_ref=f'ai/issue-{other_issue}')
     run(job)
     run(job, entries=[dict(issue=issue, model='gpt-6-luna')], want='gpt-6-luna')
     run(job, entries=[dict(issue=issue, model='gpt-6-luna')], model='fixture-normal-v2', want='gpt-6-luna')

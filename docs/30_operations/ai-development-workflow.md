@@ -317,7 +317,7 @@ EnvironmentではなくRepositoryスコープに設定する。Repository variab
 
 ### Issue単位のCodexモデル選択（#745 / #759）
 
-機械正本は `.github/scripts/select-codex-issue-model.py` と同責務の `.github/scripts/codex-issue-model-policy.json` とする。policyの `entries` は空を維持し、#759で `.github/workflows/ai-developer.yml` の初回・正式resume develop・Claude follow-upへ接続する。空policyでは `CODEX_MODEL` 値を保持する。paid Luna自然試行・policy entry activationは未開始で、stream producerは下記#772、Issue-origin persistenceは下記#797、Claude follow-up persistenceは下記#798に限定し、通常Issueのvariable運用と既存 `medium` 固定を維持する。
+機械正本は `.github/scripts/select-codex-issue-model.py` と同責務の `.github/scripts/codex-issue-model-policy.json` とする。#759で `.github/workflows/ai-developer.yml` の初回・正式resume develop・Claude follow-upへ接続済みであり、#802でpolicyの `entries` に #635 → `gpt-6-luna` のexact entryを1件だけ追加する。#635の3経路だけが `opt_in / gpt-6-luna` となり、他Issueは `CODEX_MODEL` 値を保持する。stream producerは下記#772、Issue-origin persistenceは下記#797、Claude follow-up persistenceは下記#798を再利用し、通常Issueのvariable運用と既存 `medium` 固定を維持する。
 
 helperはcallerが明示的に渡す `--policy PATH` とstdinの単一request JSON（`repository`、`issue`、`normal_model`）を読む。`normal_model` はtrusted normal `CODEX_MODEL` 値であり、Issue/PR/comment由来のoverrideではない。callerがhelperとpolicyをtrusted base/mainから取得する責務を持ち、PR head、model生成file、Issue/PR本文、commentをpolicy正本にしない。helper自身はnetwork / git / GitHub write・open-state検査・永続stateを持たず、policy取得失敗やidentity不明を未登録扱いへfallbackしない。
 
@@ -330,6 +330,14 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 選択結果は4096 byte以内のcanonical JSONを、取得済みselectorのpure APIが返すexact schema / type / identity / selectionとbyte単位で照合し、検証後だけstep outputへmodelを渡す。native execのmodel引数だけを切り替え、Repository variableは変更しない。取得不能・hash不一致・selector非0・結果不正・identity不明はpaid前でfail-closedとし、defaultへfallbackせず既存failure/pause handlerへ接続する。診断は固定 `default` / `opt_in` 分類だけとし、model IDの新規公開診断、telemetry / artifact / 台帳を追加しない。selector/policy/resultの一時fileは選択step終了時に削除する。
 
 検証は `test-ai-developer-workflow.sh` のsecretless caller fixture、`test-select-codex-issue-model.sh`、`test-production-unreachable.sh`、selector fixtureおよびAI Workflow Regressionのcurrent-head fixtureで行う。guardはhash照合済みの上記exact model callerと下記#772のexact stream producerだけを許可し、不正callerの負例を維持する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### #635限定Luna trialのpolicy activation（#802）
+
+#802は親 #746 / #744の判断に基づく既存policyのactivationだけを扱い、#635の修正本体は対象外とする。schema / version / repository、selectorのallowlist / fail-closed、caller / usage collector / runtime / timeout / retry / fallbackは変更しない。policyのmain反映後、人間が #635をfirst Luna natural trialとして1回だけ開始する。自動fallback / retry / Sol昇格は行わない。
+
+試行全体の管理上限は10 USDを維持する。#635の1成果を完了するまで他IssueをLuna opt-inせず、そのOpenAI usage artifactとClaude Review usage / costを確認してから2成果目を判断する。unknown costを0として残予算を増やさない。#802のAI Develop自体は通常modelで実行し、trial費用ではなく準備固定費として扱う。paid試行の実行・費用確認はpolicy activationのlocal fixtureでは証明しない。
+
+WACはR1 / C0 / P1 / B1、Green / bounded activation、forced splitなしとする。検証は上記の既存fixtureでexact単一entry、#635のopt-in、隣接・未知Issueと#802のdefault経路、3経路のgated identity、malformed / duplicate / unknown modelのfail-closedを確認し、current-head正式AI Workflow Regression / PR Traceability / Claude Reviewを別途確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### fresh Codex exec usage抽出（#753 / #772）
 
@@ -373,7 +381,7 @@ bytesのみ・16 MiB上限で、空行・非JSON診断行を無視する。先�
 
 APIの受理上限はproduction取得がboundedで切り詰め無しである証明ではない。trusted journal authority・同unit性も確定せず、後続callerがunique unit・取得成否・上限・非切り詰めを確認する。first / last選択、raw journal保存、自由文reason、0補完、retry / fallbackは追加しない。production persistence・journalctl・systemd lifecycle・artifact / upload・GITHUB_OUTPUT・台帳 / 価格 / 課金照合・Luna policy / provider / Secrets / Variablesは変更せず、#785のhelperへ依存しない。
 
-`test-select-codex-usage-journal.sh` は実extractor / #781へ直結したfinite secretless fixtureで、reported / unavailable、診断・他schema混在、候補0 / 1 / 2・同一重複、strict parse拒否、noncanonical、4096 byte stream / 16 MiB journal境界、入力型、非反射、依存固定エラーを確認する。selector / inventory・横断fixture・guardも同期し、guardはexact source / loaderだけを追加許可して未知caller・copy・追加loader・下記#797 / #798以外のproduction接続拒否を維持する。selector変更時はcurrent-head正式full Regressionを確認する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。Issue-origin persistenceは下記#797へ接続し、Claude follow-up persistenceは下記#798とする。job cancel / runner lossでartifact回収を保証しない。Luna未開始・試行全体10 USD・まず1成果・逐次費用確認・unknown非0・自動retry / fallback禁止を維持する。
+`test-select-codex-usage-journal.sh` は実extractor / #781へ直結したfinite secretless fixtureで、reported / unavailable、診断・他schema混在、候補0 / 1 / 2・同一重複、strict parse拒否、noncanonical、4096 byte stream / 16 MiB journal境界、入力型、非反射、依存固定エラーを確認する。selector / inventory・横断fixture・guardも同期し、guardはexact source / loaderだけを追加許可して未知caller・copy・追加loader・下記#797 / #798以外のproduction接続拒否を維持する。selector変更時はcurrent-head正式full Regressionを確認する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。Issue-origin persistenceは下記#797へ接続し、Claude follow-up persistenceは下記#798とする。job cancel / runner lossでartifact回収を保証しない。Luna試行のactivationと費用確認の運用は上記「#635限定Luna trialのpolicy activation」を正本とする。
 
 ### bounded unit journal収集とsanitized evidence（#796）
 
@@ -391,7 +399,7 @@ identityは#780を型正本とし、repository / run / attemptはGitHub context�
 
 collector成功時だけcanonical evidence 1 object + LFを `RUNNER_TEMP/codex-usage-evidence.json` へ移し、pinned upload actionでdevelop / run / attemptを含むartifact名・7日保持・sanitized file 1つだけを保存する。pin / path / conditionの詳細はworkflowを正本とする。identity中間file・prompt・command output・raw journalをartifact化せず、usage本文をGITHUB_OUTPUT / Issue comment / #665 ledger / repositoryへ保存しない。収集・upload・outcome summaryだけをnon-fatalとし、failureをstep outcome / Job Summaryで可視化する。既存Codex result・host integrity・requirements / scope pause・diff guard・repository-write gateを維持し、artifact欠損 / invalid / missing / usage unavailableをunknownとして扱い、0補完しない。
 
-`test-ai-developer-workflow.sh` は実run blockで6 base blobの記録・復元、worktree / leftover非採用、root caller固定argv、identity・分類・失敗時非保存、success-only pinned upload、lifecycle隔離を検証する。guardは上記exact caller bytes / metadataだけを例外とし、改変・未知callerを拒否し、follow-upの許可は下記#798のexact callerだけとする。開始前checkpointのR2 / C0 / P1 / B2、Yellow bounded admitを維持する。既存root journal readとsuccessful natural runの即時visibility証拠を再利用し、merge後最初のIssue起点natural runのsanitized artifactとrecorded / missing / invalid分類をactual transient-unit integration proofとして確認する。local fixtureは実runner journal権限・反映順序・artifact転送・課金を証明せず、job cancellation / runner lossで回収を保証しない。Claude follow-upは下記#798を正本とし、Luna paid trialは未開始。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+`test-ai-developer-workflow.sh` は実run blockで6 base blobの記録・復元、worktree / leftover非採用、root caller固定argv、identity・分類・失敗時非保存、success-only pinned upload、lifecycle隔離を検証する。guardは上記exact caller bytes / metadataだけを例外とし、改変・未知callerを拒否し、follow-upの許可は下記#798のexact callerだけとする。開始前checkpointのR2 / C0 / P1 / B2、Yellow bounded admitを維持する。既存root journal readとsuccessful natural runの即時visibility証拠を再利用し、merge後最初のIssue起点natural runのsanitized artifactとrecorded / missing / invalid分類をactual transient-unit integration proofとして確認する。local fixtureは実runner journal権限・反映順序・artifact転送・課金を証明せず、job cancellation / runner lossで回収を保証しない。Claude follow-upは下記#798を正本とし、Luna trialのpolicy activationは上記#802を正本とする。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### Claude follow-up usage evidenceの収集・artifact保存（#798）
 
@@ -399,7 +407,7 @@ collector成功時だけcanonical evidence 1 object + LFを `RUNNER_TEMP/codex-u
 
 identityは#780を唯一の型正本とし、Issue番号はtrusted exact `HEAD_REF=ai/issue-<n>`、PR番号はtrusted pull_request event、base SHAは `github.event.pull_request.base.sha`、modelはtrusted selectorから構成する。repository / run / attemptはGitHub contextを使い、`job=respond-to-claude` と既存 `0.159.3 / medium / fresh_exec` を固定する。collectorが生成するexact unitは `codex-followup-<run>-<attempt>`、artifact名はfollowup / run / attemptでIssue起点と区別する。raw journal / JSONL / identity中間物を保存・公開せず、unknown非0と既存Codex result / requirements gate / diff guard / repository-write semanticsを維持する。
 
-`test-ai-developer-workflow.sh` は上記#797と同じ実run block fixtureでidentity・6 blob復元・root transport・sanitized-only保存・収集失敗・lifecycle隔離を検証し、exact branch拒否・event PR番号・PR base authority・exact follow-up unitを追加確認する。`test-production-unreachable.sh` は#792 / #796 / #797の例外を維持してexact follow-up callerだけを追加許可し、改変・copy・未知callerを拒否する。開始前checkpointのR1–2 / C0 / P1 / B1–2、Yellow bounded admitの範囲とし、新規prerequisite Contractは追加しない。current-head正式AI Workflow Regression / PR Traceabilityと、自然なClaude follow-up runのsanitized artifactを確認する。local fixtureはactual journal / artifact転送・課金の証明ではなく、cancellation / runner lossで回収を保証しない。自然run evidenceの統合は親 #794、price / cost / first Luna opt-in判断は#746で扱い、paid diagnostic / blind retry / Luna trialを追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+`test-ai-developer-workflow.sh` は上記#797と同じ実run block fixtureでidentity・6 blob復元・root transport・sanitized-only保存・収集失敗・lifecycle隔離を検証し、exact branch拒否・event PR番号・PR base authority・exact follow-up unitを追加確認する。`test-production-unreachable.sh` は#792 / #796 / #797の例外を維持してexact follow-up callerだけを追加許可し、改変・copy・未知callerを拒否する。開始前checkpointのR1–2 / C0 / P1 / B1–2、Yellow bounded admitの範囲とし、新規prerequisite Contractは追加しない。current-head正式AI Workflow Regression / PR Traceabilityと、自然なClaude follow-up runのsanitized artifactを確認する。local fixtureはactual journal / artifact転送・課金の証明ではなく、cancellation / runner lossで回収を保証しない。自然run evidenceの統合は親 #794、price / costは#746、first Luna opt-inは上記#802で扱い、本persistence変更ではpaid diagnostic / blind retry / Luna trialを追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### bounded native stream supervisor（#761 / #764 / #772）
 
@@ -419,7 +427,7 @@ stdoutを64 KiB以下のchunkで読み、16 MiB以内をmemoryに保持する。
 
 #772のproduction service stdoutは既存fixed preflight diagnosticsとLF込み4096 bytes以内のsanitized canonical supervisor recordだけとし、native stdoutはpipe、stderrはDEVNULLへ送る。supervisor自身は既存unit journal以外のusage persistenceやconsumerを追加しない。Issue-originのsanitized evidence artifactだけを上記#797が保存し、follow-upは未接続とする。usage本文をStep Summary / Issue / PR / GITHUB_OUTPUT / repository file / external ledgerへ保存しない。collection invalid / limit / unavailableをusage 0やbilling成功へ変換せず、child rc preservationをprocess outcomeのauthorityとする。outer timeout / cancellationではrecord自体が欠け得るが、record存在を新たな成功条件とせず既存failure / cancellation / pause-resume / repository write / review lifecycleを維持する。
 
-検証は既存 `test-ai-developer-workflow.sh` のtrusted source・不正type/hash・worktree差し替え拒否、3経路のexact one invocation / `--json`、raw canary非反射・canonical stdout・rc 0/nonzero/not-started・invalid/limitでもrc保持・final message / environment / hardening回帰と、parser / supervisor / guard fixtureで行う。WACは #772の明示判断どおりR2 / C1 / P1 / B2、Yellow bounded activationであり、policyは空・通常modelのまま。current-head formal Regression Successは必要だが、それだけではactual native JSONL schema / provenanceをC0としない。自然な通常AI Developer runでsanitized recordと既存behaviorを確認する責務は親 #746に残し、Issue-origin persistenceは上記#797のfresh WAC判断で接続する。Luna opt-in・paid trial・費用計算は未接続。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+検証は既存 `test-ai-developer-workflow.sh` のtrusted source・不正type/hash・worktree差し替え拒否、3経路のexact one invocation / `--json`、raw canary非反射・canonical stdout・rc 0/nonzero/not-started・invalid/limitでもrc保持・final message / environment / hardening回帰と、parser / supervisor / guard fixtureで行う。WACは #772の明示判断どおりR2 / C1 / P1 / B2、Yellow bounded activationであり、#772導入時点はpolicyが空・通常modelのままであった。現行policy activationは上記#802を正本とする。current-head formal Regression Successは必要だが、それだけではactual native JSONL schema / provenanceをC0としない。自然な通常AI Developer runでsanitized recordと既存behaviorを確認する責務は親 #746に残し、Issue-origin persistenceは上記#797のfresh WAC判断で接続する。本producer変更ではLuna opt-in・paid trial・費用計算を追加せず、policy activationは上記#802を正本とする。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### DeepInfra Investigator
 
