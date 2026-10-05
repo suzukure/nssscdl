@@ -79,7 +79,8 @@ EXTENSIONS = {
                     "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply"),
     "ai-developer-codex": ("select-codex-issue-model", "extract-codex-exec-usage",
                            "supervise-codex-exec-stream", "validate-codex-usage-identity",
-                           "validate-codex-usage-stream", "systemd-transient-lifecycle"),
+                           "validate-codex-usage-stream", "build-codex-usage-evidence",
+                           "systemd-transient-lifecycle"),
     "common": ("select-ai-workflow-fixtures", "production-unreachable", "plan-ai-workflow-shards"),
 }
 INVENTORY = {
@@ -130,6 +131,7 @@ PATH_SUITES = (
     (SCRIPTS + "supervise-codex-exec-stream.py", ("ai-developer-codex",)),
     (SCRIPTS + "validate-codex-usage-identity.py", ("ai-developer-codex",)),
     (SCRIPTS + "validate-codex-usage-stream.py", ("ai-developer-codex",)),
+    (SCRIPTS + "build-codex-usage-evidence.py", ("ai-developer-codex",)),
     (SCRIPTS + "systemd-transient-lifecycle.py", ("ai-developer-codex",)),
     (SCRIPTS + "codex-issue-model-policy.json", ("ai-developer-codex",)),
     (SCRIPTS + "parse-ai-resume-command.sh", ("resume-human-pause",)),
