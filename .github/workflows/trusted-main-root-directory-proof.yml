@@ -1,0 +1,73 @@
+name: Trusted Main RootDirectory Proof
+
+# #784 prepared infrastructure; #739 target execution remains unreachable.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require exact trusted main source
+        env:
+          PROOF_EVENT: ${{ github.event_name }}
+          PROOF_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PROOF_REF: ${{ github.ref }}
+          PROOF_SHA: ${{ github.sha }}
+          PROOF_WORKFLOW_REF: ${{ github.workflow_ref }}
+          PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re
+          with open(os.environ['GITHUB_EVENT_PATH']) as stream:
+              event = json.load(stream)
+          valid = (
+              os.environ['PROOF_EVENT'] == 'workflow_dispatch'
+              and os.environ['PROOF_DEFAULT_BRANCH'] == 'main'
+              and os.environ['PROOF_REF'] == 'refs/heads/main'
+              and os.environ['PROOF_WORKFLOW_REF'] == os.environ['GITHUB_REPOSITORY']
+                  + '/.github/workflows/trusted-main-root-directory-proof.yml@refs/heads/main'
+              and re.fullmatch('[0-9a-f]{40}', os.environ['PROOF_SHA'])
+              and os.environ['PROOF_WORKFLOW_SHA'] == os.environ['PROOF_SHA']
+              and (event.get('inputs') is None or event.get('inputs') == {})
+          )
+          if not valid:
+              raise SystemExit('trusted-main runtime supply: source gate拒否')
+          print('trusted-main runtime supply: source gate通過')
+          PY
+
+      - name: Checkout exact trusted main SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup runtime without key or prompt
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
+        with:
+          codex-version: 0.159.3
+          codex-home: ${{ runner.temp }}/root-directory-proof-home
+          safety-strategy: unsafe
+          # Dispatch authorization belongs to GitHub; avoid Action permission API.
+          allow-users: '*'
+
+      - name: Observe bounded authority without root
+        env:
+          PROOF_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          /usr/bin/env -i PATH="$PATH" PROOF_SHA="$PROOF_SHA" \
+            /usr/bin/python3 -I .github/scripts/trusted-main-runtime-supply-proof.py --observe
+
+      - name: Verify prepared RootDirectory handoff with closed trusted main helper
+        env:
+          PROOF_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          sudo -n /usr/bin/env -i PATH="$PATH" PROOF_SHA="$PROOF_SHA" \
+            /usr/bin/python3 -I .github/scripts/trusted-main-root-directory-proof.py

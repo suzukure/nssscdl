@@ -385,6 +385,16 @@ stdoutを64 KiB以下のchunkで読み、16 MiB以内をmemoryに保持する。
 
 検証は既存 `test-ai-developer-workflow.sh` のtrusted source・不正type/hash・worktree差し替え拒否、3経路のexact one invocation / `--json`、raw canary非反射・canonical stdout・rc 0/nonzero/not-started・invalid/limitでもrc保持・final message / environment / hardening回帰と、parser / supervisor / guard fixtureで行う。WACは #772の明示判断どおりR2 / C1 / P1 / B2、Yellow bounded activationであり、policyは空・通常modelのまま。current-head formal Regression Successは必要だが、それだけではactual native JSONL schema / provenanceをC0としない。merge後の次の自然な通常AI Developer runでsanitized recordと既存behaviorを確認する責務は親 #746に残し、その後にpersistence consumerをfresh WAC評価する。Luna opt-in・paid trial・費用計算は未接続。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
+### prepared RootDirectory handoff / trusted-main proof（#784）
+
+`.github/workflows/trusted-main-root-directory-proof.yml` はinputなしのmain専用 `workflow_dispatch` とし、default branch、exact SHA、workflow source/refをcheckout前に確認する。exact SHAを `persist-credentials:false` でcheckoutし、既存pinned setupだけを使用する。PR event / candidate HEAD、任意path / command / property / bind / executable入力、paid/model call、Secrets / Variables、repository write、Product workspace/cacheは接続しない。
+
+handoffとbounded resultの正本は `.github/scripts/trusted-main-root-directory-proof.py`。#741 / #748の供給から #738のactive PreparedRuntime / SealedRootを得て、handoff直前に既存 `verify()` を再実行する。#783へのlaunchは固定internal descriptorから構築し、unit identityのexact bindingを確認する。`/runtime/proof` は #739用の予約interfaceであり、具体的probeやtarget inventoryを本Issueで導入しない。現在のCLIはexecutionを要求せず、execution branchはsynthetic fixtureだけで検証する。production callerは追加しない。
+
+main専用proofではfresh未存在unitへの実systemd stop/showを固定transportで観測し、rcとexact `not-found` の有無だけを記録する。#783のcleanup / residual semanticsを変更せず、nonzero showとexact `not-found` の組合せは `scope-decision-required` として失敗し、adapterで補正しない。transport失敗は `manager-proof-failed`。どちらもsupply/handoffへ進まない。stage/supply cleanup完了前にsuccessを返さず、raw diagnosticsを反射しない。
+
+PR fixtureはsource/ref gate、input拒否、実 #738 handleのsynthetic handoff、drift、exact unit binding、#783 failure伝播、bounded非反射を検証する。static guardはexact reviewed helper/workflow bytesだけを許可する。actual main proofは別途必要であり、PR fixtureやlocal transport失敗をactual proof成功、#739 target execution成功、C0判定と扱わない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ### DeepInfra Investigator
 
 DeepInfra Investigatorは、信頼済みIssue上のコメント `/deepseek analyze` または `/deepseek analyze v4.1` で起動する。コメント投稿者とIssue作成者はいずれも `OWNER` / `MEMBER` / `COLLABORATOR` のいずれかでなければならない。通常コマンドは `DeepSeek-V4-Flash-0731`、`v4.1` 付きコマンドはallowlist済みの `DeepSeek-V4.1-Flash` を選ぶ。

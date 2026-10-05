@@ -76,7 +76,8 @@ BASELINE_COUNTS = {
 # Explicit extensions: #692 / #684, selector, #701 common guard, and #756 shard planner.
 EXTENSIONS = {
     "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload",
-                    "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply"),
+                    "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply",
+                    "trusted-main-root-directory-proof"),
     "ai-developer-codex": ("select-codex-issue-model", "extract-codex-exec-usage",
                            "supervise-codex-exec-stream", "validate-codex-usage-identity",
                            "validate-codex-usage-stream", "build-codex-usage-evidence",
@@ -109,6 +110,7 @@ PATH_SUITES = (
     (SCRIPTS + "product-runtime-staging.py", ("product-npm",)),
     (SCRIPTS + "trusted-runtime-supply.py", ("product-npm",)),
     (SCRIPTS + "trusted-main-runtime-supply-proof.py", ("product-npm",)),
+    (SCRIPTS + "trusted-main-root-directory-proof.py", ("product-npm",)),
     (SCRIPTS + "npm-locked-preparation.py", ("product-npm",)),
     (SCRIPTS + "npm-registry-proxy.py", ("product-npm",)),
     (SCRIPTS + "npm-registry-boundary-runtime.py", ("product-npm",)),

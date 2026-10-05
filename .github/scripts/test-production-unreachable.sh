@@ -35,6 +35,8 @@ usage_stream = 'validate-codex-usage-stream.py'
 usage_evidence = 'build-codex-usage-evidence.py'
 trusted_proof = 'trusted-main-runtime-supply-proof.py'
 trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
+root_proof = 'trusted-main-root-directory-proof.py'
+root_workflow = workflows + 'trusted-main-root-directory-proof.yml'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact
 # reference scan does not mistake this test's own contract data for a caller.
@@ -45,6 +47,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (runtime_staging, runtime_staging, 'product-npm', None),
              (runtime_supply, runtime_supply, 'product-npm', None),
              (trusted_proof, trusted_proof, 'product-npm', None),
+             (root_proof, root_proof, 'product-npm', None),
              (packet, packet, 'failure-evidence', None),
              (model_selector[:-3], model_selector, 'ai-developer-codex', None),
              (exec_usage[:-3], exec_usage, 'ai-developer-codex', None),
@@ -252,7 +255,14 @@ def assert_unreachable(sources):
     for path in (selector_path, selector_fixture):
         assert_declarative(path, sources[path])
     for path, text in sources.items():
+        # #784: exact reviewed prepared topology; no filename-wide exception.
+        if path in (scripts + root_proof, root_workflow):
+            expected = {scripts + root_proof: '5f9d0d6c2864452fabc92a682a60ff72157bc48629aa1fb6aac08c8441327123',
+                        root_workflow: 'c4acf6002c78d2a08caf47dfa2b56b3ffe865b79785e39d7fdfa852ca9efdb67'}
+            assert hashlib.sha256(text.encode()).hexdigest() == expected[path]
+            continue
         if path.startswith(workflows):
+            assert root_proof[:-3] not in text, ('unknown prepared topology caller', path)
             model_text = mask_trusted_model_callers(text) if path == workflows + 'ai-developer.yml' else text
             assert model_selector[:-3] not in model_text and model_policy not in model_text, (
                 'unknown model selection production connection', path)
@@ -290,6 +300,7 @@ def assert_unreachable(sources):
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
                 continue
+            assert root_proof[:-3] not in text, ('unknown prepared helper caller', path)
             if path != scripts + product + '.py':
                 assert verifier not in text, ('unknown verifier caller', path)
                 for symbol in session_symbols:
@@ -396,12 +407,13 @@ sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
 for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
-             model_selector, model_policy, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence):
+             model_selector, model_policy, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, root_proof):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
 assert stat.S_ISREG((repo / trusted_workflow).lstat().st_mode), 'invalid proof workflow type'
 sources[trusted_workflow] = (repo / trusted_workflow).read_text()
+sources[root_workflow] = (repo / root_workflow).read_text()
 assert_unreachable(sources)
 print('production unreachable: current repository / exact selector literals passed')
 
@@ -427,6 +439,13 @@ for mutation in (
         sources[trusted_workflow].replace('codex-version: 0.159.3', 'codex-version: latest')):
     rejected(trusted_workflow, mutation)
 
+
+# #784 exact prepared caller exceptions reject any reachability/source mutation.
+for path in (scripts + root_proof, root_workflow):
+    rejected(path, sources[path] + '\n# altered source\n')
+rejected(workflows + 'candidate-root-proof.yml', sources[root_workflow])
+rejected(scripts + 'candidate-root-proof.py', sources[scripts + root_proof])
+rejected(scripts + 'candidate-root-proof.py', "load('trusted-main-root-directory-proof')\n")
 
 # Mutate only in-memory snapshots; the actual repository is never written.
 model_workflow = workflows + 'ai-developer.yml'

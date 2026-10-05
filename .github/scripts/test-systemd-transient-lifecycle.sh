@@ -3,6 +3,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
 import ast
+import hashlib
 from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
 import io
@@ -163,6 +164,9 @@ for directory in ('.github/scripts', '.github/workflows'):
                               and path.name.startswith('test-')):
             continue
         text = path.read_text()
+        if path.name == 'trusted-main-root-directory-proof.py':
+            assert hashlib.sha256(text.encode()).hexdigest() == '5f9d0d6c2864452fabc92a682a60ff72157bc48629aa1fb6aac08c8441327123'
+            continue  # #784 exact prepared caller; CLI never requests execution.
         if path.name == 'select-ai-workflow-fixtures.py':
             expected = '(SCRIPTS + "systemd-transient-lifecycle.py", ("ai-developer-codex",))'
             assert text.count(expected) == 1
