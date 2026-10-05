@@ -76,7 +76,8 @@ BASELINE_COUNTS = {
 # Explicit extensions: #692 / #684, selector, #701 common guard, and #756 shard planner.
 EXTENSIONS = {
     "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload",
-                    "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply"),
+                    "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply",
+                    "trusted-main-npm-bootstrap"),
     "ai-developer-codex": ("select-codex-issue-model", "extract-codex-exec-usage",
                            "supervise-codex-exec-stream", "validate-codex-usage-identity",
                            "validate-codex-usage-stream", "build-codex-usage-evidence",

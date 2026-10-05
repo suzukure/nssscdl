@@ -20,9 +20,11 @@ parse済みchanged pathsはtrusted baseの `TRIGGER_PATTERNS` に一致するも
 
 [`test-production-unreachable.sh`](scripts/test-production-unreachable.sh) はscript / workflowをread-only走査する軽量common fixtureである。`product-npm-orchestrator.py` のproduction workflow接続・未知non-test caller、`build-failure-evidence-packet.py` のworkflow直接接続・`collect-failure-evidence.py` 以外のproduction caller、および `verify_post_workload` のworkflow直接参照・orchestrator source自身以外のnon-test script参照を拒否する。selectorの `BASELINE` / `PATH_SUITES` とselector fixtureの `cases` では既知のexact宣言的literalだけをASTで許容し、実行参照・追加参照・重複宣言をfail-closedで拒否する。implementation自身と直下の `test-*.sh` / `test-*.py` は構造的に区別し、guardはhelperをimport・実行しない。
 
+#792では、[trusted-main npm bootstrap](#trusted-main-npm-bootstrap-792) のsecretless manual proof入口だけを例外として許容する。`bootstrap_entry_hash` / `bootstrap_workflow_hash` に固定したexact helper / workflow bytesを要求し、改変・別pathへの複製・未知callerを拒否する。許可するAPI消費は `prepare()` / `bootstrap()` / `ValidatedBootstrap.verify()` に限り、locked preparation・post-workload・AI Developer / Claude follow-up配線を許可しない。
+
 #711では `production_session` / `workload_session` / `_WorkloadSession` もguard対象とする。closed `production_session` callbackを呼ぶexact dormant runtimeと、そのruntimeからsynthetic probeへの参照だけを追加許容する。orchestratorの `SOURCES` はexact source identity literalだけをASTで許容し、実行参照・重複・未知callerは拒否する。raw sessionはruntimeへ許可しない。
 
-snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked filesだけをNUL-safeに列挙し、working treeのsource bytesを検査する。#711の2つのexact dormant sourceと#738 / #741 / #747 helper、および#747専用workflowは提案時のuntracked状態でも明示読込する。#738 staging helperと#741 supply helperはproduction workflow / 未知non-test callerを拒否し、selectorのexact宣言、synthetic fixtureと下記#747のclosed proof helperだけを許容する。削除したPR HEAD actual proofへのworkflow接続も拒否する。untracked `__pycache__/*.pyc` 等は対象にしない。列挙失敗・不正path・未解決index stage・tracked symlink / 特殊file・ancestorの不正型・読込失敗・不正UTF-8はsilent skipせずFAILする。
+snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked filesだけをNUL-safeに列挙し、working treeのsource bytesを検査する。#711の2つのexact dormant sourceと#738 / #741 / #747 helper、および#747専用workflowは提案時のuntracked状態でも明示読込する。#792のexact helper / workflowも同様に明示読込する。#738 staging helperと#741 supply helperはproduction workflow / 未知non-test callerを拒否し、selectorのexact宣言、synthetic fixtureと下記#747のclosed proof helperだけを許容する。削除したPR HEAD actual proofへのworkflow接続も拒否する。untracked `__pycache__/*.pyc` 等は対象にしない。列挙失敗・不正path・未解決index stage・tracked symlink / 特殊file・ancestorの不正型・読込失敗・不正UTF-8はsilent skipせずFAILする。
 
 検証は `bash .github/scripts/test-production-unreachable.sh`。synthetic caller / workflow / AST mutationはmemory内だけで構成し、repositoryを書き換えない。selected modeではcommonとともに必ず選択され、無関係なhelper変更で重いProduct npm suiteの常時選択を必要としない。inventory同期には既存#684 fixtureの未登録解消も含む。既存Product npm / failure-evidence fixtureの重複guardは維持する。production workflow / event / permission / stateは変更せず、network / GitHub API / Secrets / paid AIを使用しない。#697のregression callerでもcommon guardの必須実行を検証し、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
@@ -69,6 +71,40 @@ root preparationはmain由来helperだけを使う。#741 source evidenceを同�
 #748 run `37258791202` attempt 1（exact SHA `aab827c50d4d38c99ce93d96fe032ae1b997762e`）はsupplied Issueによればauthority観測成功後、seal/#738 acceptance前の旧 `version-parity-failed` で停止した。旧診断はexit/stdout/stderr条件を一括拒否するため、どのprobe・条件かはそのreasonだけでは説明できない。既存artifact本文はsupplied contextにないため、stderr-onlyやclosed envを実原因と断定しない。focused fixtureは上記分類・exact identity/parity・非漏洩・seal未到達を固定する。#774 main反映後、#748はlatest mainでactual proofを新規1回だけ実行し、失敗時はblind retryせずbounded診断を確認する。actual成功・C0判断は引き続き#748の責務である。
 
 PR上の検証は既存 `test-trusted-runtime-supply.sh` のsynthetic/static fixtureとcommon production-unreachable guardを使用し、fixture数75を維持する。専用workflow以外のproof caller、PR event、candidate codeのroot実行、event input injection、追加permission/credential、key/prompt、診断への禁止情報混入を検査する。本IssueのDoneはprepared infrastructureのreview/merge可能性であり、actual runは実施・消費しない。#748はmain反映後に同workflowを起動し、authority観測・actual proofとC0可否を判断する。700秒timeout後のblind retryは行わない。
+
+## Trusted-main npm bootstrap (#792)
+
+[`trusted-main-npm-bootstrap.yml`](workflows/trusted-main-npm-bootstrap.yml) は `workflow_dispatch` 専用のsecretless/read-only bootstrap proof入口である。入力はexact 40-hex `candidate_sha` 1件だけで、package pathはroot `package.json` に固定する。source gateはcheckout前にeventが `workflow_dispatch`、default branchが `main`、refが `refs/heads/main`、workflow refが `<repository>/.github/workflows/trusted-main-npm-bootstrap.yml@refs/heads/main`、`github.sha` が40桁小文字hex、`github.workflow_sha == github.sha`、event inputsが当該candidate SHAだけであることを要求する。権限は `contents:read` のみ、checkoutはdispatch時のexact reviewed main SHAに固定し `persist-credentials:false` とする。Secrets / Variables / App token / API key / paid model callを使用しない。
+
+candidateは `git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"` でgit objectとして取得するだけで、checkoutもcandidate code / script / workflow / helperの実行も行わない。取得経路には認証情報を追加しないため、実runnerから認証なしでrepositoryと当該commitを取得できることが前提である。repositoryの可視性およびPR branchだけに存在するexact SHAの取得可否は、供給contextから確定していない。main反映後の自然実行で確認し、取得失敗をbootstrap成功と扱わず、credential追加や別sourceへのfallbackは行わない。
+
+[`trusted-main-npm-bootstrap.py`](scripts/trusted-main-npm-bootstrap.py) はsource gateを再確認し、HEAD・scripts/workflowのclean状態・自身のbytesをexact main SHAと照合する。candidateのcommit identity、root manifestのregular blob型・size・canonical exact-version policyを検証し、manifest bytesだけを `/tmp` 配下のfresh private synthetic workspaceへ置く。trusted mainの既存 `prepare()` で `bootstrap-required` を確認し、`bootstrap()` → `generate_validated()` と `ValidatedBootstrap.verify()` を消費する。official-registry/source/integrity/lifecycle非実行・cleanup契約の正本は下記#691/#662であり、resolverやcommandを複製しない。`prepare_bootstrap()`・locked preparation・production/workload session・post-workload・repository writeへは接続しない。
+
+成功時だけ、cleanup・main source再照合・canonical lock再検証・bytes/hash再照合を通過した次の3ファイルを `${{ runner.temp }}/product-npm-bootstrap-artifact` からuploadする。artifact名は `npm-bootstrap-<candidate_sha>-<run_id>-<attempt>`、`retention-days:3`、`if-no-files-found:error`、upload条件は既定の `success()` である。失敗・unavailable・identity/hash mismatch・cleanup failure時のartifactを成功成果物にしない。
+
+- `package.json`: exact candidate manifest bytes。
+- `package-lock.json`: 検証済みgenerated lock bytes。
+- `bootstrap-summary.json`: 最大32 KiBのcanonical JSON。schemaと項目の機械正本はhelperの `summary_record()` とする。
+
+| summary項目 | 内容 |
+| --- | --- |
+| `schema` / `version` / `status` | `trusted-main-npm-bootstrap` / `1` / `validated` |
+| `candidate_sha` / `trusted_main_sha` | 小文字に正規化したcandidate SHA / authorityのexact main SHA |
+| `manifest_sha256` / `lock_sha256` | handoff対象bytesのSHA-256 |
+| `node_version` / `npm_version` / `runtime_hashes` | Node 24/npm version、`node_sha256` / `npm_cli_sha256` |
+| `registry` / `source_contract` | canonical official registry / `npm-official-tarball-with-integrity-v1` |
+| `contracts` / `orchestrator_contracts` / `entry` | 消費したsource path/hash identity、入口の `source` / `sha256` |
+
+raw environment、credential、raw provenance、unbounded journal、absolute runtime/artifact pathはsummaryへ含めない。artifact名のcandidate SHAは入力表記を保持し、summaryでは小文字へ正規化するため、照合時は入力を小文字化する。
+
+main反映後の自然実行と#638へのhandoffは次の手順で行う。
+
+1. #638で採用対象のexact candidate commit SHAを確定する。表記を揃えるため小文字40-hexを使用する。
+2. Actionsの `Trusted Main Npm Bootstrap` をbranch `main` で選び、`candidate_sha` だけを入力して1回明示起動する。PR上のcandidate workflow/helperをauthorityとして実行しない。
+3. run成功とcandidate object取得、上記3ファイルを確認する。summaryのcandidate SHA・trusted main SHAを入力・runのexact source SHAと照合し、candidate root manifestとのbytes一致、artifact manifest/lockのSHA-256とsummaryの一致、runtime/source/helper identityを確認する。失敗時は成功扱い・自動retry・writebackを行わない。
+4. 保持期間内にartifactを取得し、run ID / attempt・artifact名・candidate/main SHA・manifest/lock hash・summaryを#638の通常PRレビューで追跡できる形で受け渡す。採用するmanifest/lockは通常PR diffへ含める。Product dependency/version・standard command / D1 harnessは#638、Product PR CIは#639、required-check governanceは#640の責務とする。
+
+PR上のローカル検証は `bash .github/scripts/test-trusted-main-npm-bootstrap.sh` とcommon production-unreachable guardで行う。mock/canonical fixtureの成功は実runnerでのcandidate取得・registry到達・lock生成の証拠ではなく、上記post-merge validationは別途必要である。AI Developer / Claude follow-up production wiringを変更せず、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ## Failure evidence packet（#686 / #687）
 
@@ -325,9 +361,11 @@ cache欠落時は同じexact ciが`ENOTCACHED`で失敗し、dependency content�
 
 既存AI Workflow Regressionの`test-*.sh` discoveryだけで到達し、production developer / follow-up / #645からunreachable。制限されたCodex service内では独立runtimeを`SKIP`とし、正式実証済みと扱わない。独立GitHub Actions runnerではsystemd不在も失敗とする。#677のDone判定には自然に走る正式runnerの成功証拠を確認する。#645/#646/#650/#656関連回帰を維持する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はなく、production wiringは#647の責務である。
 
-## Product npm shared orchestrator（#682、dormant）
+## Product npm shared orchestrator（#682、AI Developer / follow-up未接続）
 
 [`product-npm-orchestrator.py`](scripts/product-npm-orchestrator.py) のPython parent API `prepare(workspace, run_root, node, npm)` はcontext managerとしてrun-local `Handoff`を返す。trusted base由来moduleをtrusted parentで読み込み、handleと期待bytesをそのmemoryに保持する。CLIやproduction developer / follow-up配線は追加しない。
+
+workflow接続は[上記#792のexact hash固定secretless manual proof入口](#trusted-main-npm-bootstrap-792)だけを例外とする。同入口はmanifest-onlyの `bootstrap-required` 停止と下記#691 bootstrapを消費し、locked preparationやAI Developer / follow-upへは接続しない。
 
 manifest不存在は`state/status=no-manifest`を返し、schema/state/statusと入力存在・不存在の証拠だけを保持する。exact manifestのみなら#645の`parse()` / `manifest_dependencies()`で検証して`state/status=bootstrap-required`を返し、exact manifestのbase64 snapshot/hashとlock不存在をhandoffする。両状態とも`prepare()`ではtool/version probe、registry/network、cache、dependency/lock生成、directory作成を行わない。bootstrap-requiredのNode/npm versionは未観測の`null`とし、`prepare()`から#650/#662を呼ばない。明示的なbootstrap接続は下記#691、locked preparationへの収束は下記#692が扱う。
 
@@ -343,11 +381,13 @@ locked成功の`status=prepared` / shared handoff schema `1`はexact manifest/va
 
 `Handoff.record()`のJSON copyはclaimであり、`verify(claim)`はtrusted parent memoryの期待record全体と照合し、snapshot/source/cache identity・bytes/hash・入力不変を再検証する。workspaceやworkload-writable `RUNNER_TEMP`のcopyを期待証拠として再読込しない。private path/modeだけで同一UID workloadからの保護を保証せず、後続production wiringはtrusted parent memoryの保持とworkloadとの隔離を別途成立させる。context終了・失敗時は全準備artifact/cacheをcleanupし、handleをexpireする。post-workload verifierは下記#684、caller-specific workspace policyと消費用cacheは下記#702が扱い、persistent cache、Product package/version選定は扱わない。
 
-検証は `bash .github/scripts/test-product-npm-orchestrator.sh`。外部通信なしのpure/mockで3状態、stop時のtool/cache未起動、不正入力、handoff field/snapshot/source/cache改変、workspace不変、cleanup失敗とproduction unreachableを固定する。local tarballをseedするfixture専用transportで#645の実準備と#677 constructor由来offline readinessをcold/repeated cacheで確認し、cache欠落の失敗・root/dependency lifecycle非実行を検証する。追加の `bash .github/scripts/test-npm-locked-preparation.sh` はmandatory boundary・transport・準備失敗・unsafe export・host fallback不存在をpure/mockで検証する。独立systemd runnerでは#661の既存TLS/CONNECT metadata adapterから固定official fixture `is-number:7.0.0`のlockを直接構成し、bootstrapなしでorchestrator自身のcold/repeated locked preparationとoffline readinessを同じ#649 restricted経路で成功させる。proxy停止後の同経路の失敗、cleanup、workspace・host socket/resolver不変も確認する。制限されたCodex環境の実runtimeは`SKIP`であり、正式証拠は自然に走るAI Workflow Regressionのcurrent HEAD結果で確認する。既存discoveryのみを使い、production workflow / paid AI / Secrets / GitHub write tokenには接続しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+検証は `bash .github/scripts/test-product-npm-orchestrator.sh`。外部通信なしのpure/mockで3状態、stop時のtool/cache未起動、不正入力、handoff field/snapshot/source/cache改変、workspace不変、cleanup失敗とproduction unreachableを固定する。local tarballをseedするfixture専用transportで#645の実準備と#677 constructor由来offline readinessをcold/repeated cacheで確認し、cache欠落の失敗・root/dependency lifecycle非実行を検証する。追加の `bash .github/scripts/test-npm-locked-preparation.sh` はmandatory boundary・transport・準備失敗・unsafe export・host fallback不存在をpure/mockで検証する。独立systemd runnerでは#661の既存TLS/CONNECT metadata adapterから固定official fixture `is-number:7.0.0`のlockを直接構成し、bootstrapなしでorchestrator自身のcold/repeated locked preparationとoffline readinessを同じ#649 restricted経路で成功させる。proxy停止後の同経路の失敗、cleanup、workspace・host socket/resolver不変も確認する。制限されたCodex環境の実runtimeは`SKIP`であり、正式証拠は自然に走るAI Workflow Regressionのcurrent HEAD結果で確認する。既存discoveryのみを使い、workflow接続は上記#792のexact hash固定secretless manual proof入口だけを例外とする。production developer / follow-up、paid AI / Secrets / GitHub write tokenには接続しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
-## Product npm bootstrap composition（#691、dormant）
+## Product npm bootstrap composition（#691、AI Developer / follow-up未接続）
 
 [`product-npm-orchestrator.py`](scripts/product-npm-orchestrator.py) の明示的なcontext manager `bootstrap(input_handle, run_root)` は、activeな#682 `Handoff`の`state/status=bootstrap-required`だけを受理する。serialized recordやworkspace / `RUNNER_TEMP` copyを入力証拠にせず、parent memoryのexact manifest bytes / snapshot / hash一致を確認する。`prepare()`のno-manifest / bootstrap-required停止・existing locked動作は維持する。output rootはworkspace / repository / `RUNNER_TEMP`と重ならないtrusted UID所有・mode `0700`・ACLなしとし、呼出ごとにfresh `bootstrap-run-*`を作る。
+
+workflowからの消費は[上記#792のexact hash固定secretless manual proof入口](#trusted-main-npm-bootstrap-792)だけを例外とする。AI Developer / follow-up production wiring・locked preparation・post-workloadの未接続境界は維持する。
 
 [`npm-registry-lock-runtime.py`](scripts/npm-registry-lock-runtime.py) の `generate_validated()` は#650/#661のruntime選択・root構築・registry-only proxy・property observer・service hardening・direct deny・前後controlを再利用し、exact manifest bytesだけをstageする。#660 `command('lock', port)` / `runNpm()` / env / config / inventoryを正本とし、commandの複製やhost npm fallback、retryはない。service停止・collectとpost snapshot確認後にだけ#662 `freeze_candidate()`を呼び、generation root削除後にも`verify_handoff()`を行う。proxy / listener / rootのcleanupとhost socket / resolver / workspace不変確認が完了するまで成功artifactを公開しない。
 
@@ -355,7 +395,7 @@ locked成功の`status=prepared` / shared handoff schema `1`はexact manifest/va
 
 成功出力の `ValidatedBootstrap` は#662 provenance schemaをそのまま使い、manifest snapshot/hash、generated / validated lock snapshot/hash、artifact path/id、generation root/id・run id、Node/npm source/staged identity、#650/#662 contract identity、lifecycle resultをbindする。snapshotはartifact内のexact `package.json` / `package-lock.json`であり、candidateやworkload-writable copyを期待証拠として渡さない。`verify(claim)`はparent memoryのrecord全体、元の#682 handle、artifact device/inode・source contract、#662 `verify_handoff()`を再検証する。context終了時はhandleをexpireしてrun専用artifactを破棄し、cleanup失敗を成功にしない。
 
-検証は `bash .github/scripts/test-product-npm-bootstrap.sh` と#650/#662/#682関連回帰。外部通信なしのpure/mockでmetadata経路・不正candidate / provenance / mutation / cleanup・反復hash安定とfresh identity・generation root削除後のverify・workspace不変・production unreachableを確認する。独立systemd runnerでは#682 exact manifest handleから2 fresh official bootstrap runsを実行し、validated artifactを検証する。制限されたCodex環境の実runtimeは`SKIP`とし、正式証拠は自然に走るAI Workflow Regressionで確認する。production workflow / paid AI / Secrets / GitHub write token・persistent cacheは未接続。validated artifactを#682 locked preparationへ渡すこととfinal shared handoffは下記#692、post-workload verifierは下記#684、workspaceへのtrusted lock materializationは下記#702、production wiringは後続の責務とする。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+検証は `bash .github/scripts/test-product-npm-bootstrap.sh` と#650/#662/#682関連回帰。外部通信なしのpure/mockでmetadata経路・不正candidate / provenance / mutation / cleanup・反復hash安定とfresh identity・generation root削除後のverify・workspace不変・production unreachableを確認する。独立systemd runnerでは#682 exact manifest handleから2 fresh official bootstrap runsを実行し、validated artifactを検証する。制限されたCodex環境の実runtimeは`SKIP`とし、正式証拠は自然に走るAI Workflow Regressionで確認する。workflow接続は上記#792のexact hash固定secretless manual proof入口だけを例外とし、production developer / follow-up、paid AI / Secrets / GitHub write token・persistent cacheは未接続。validated artifactを#682 locked preparationへ渡すこととfinal shared handoffは下記#692、post-workload verifierは下記#684、workspaceへのtrusted lock materializationは下記#702、production wiringは後続の責務とする。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 
 ## Product npm validated bootstrap locked preparation（#692、dormant）
