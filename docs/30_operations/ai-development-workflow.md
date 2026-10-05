@@ -353,7 +353,7 @@ identity helper自身にはCLI・stream解釈・evidence組み立て・取得・
 
 usage内部schema・数値・availability / reasonの正本は既存extractorの `validate_result`。固定同一directoryのextractor sourceだけを明示loaderで読み、canonical usage bytesを渡して返却dictを使用する。loader欠落・import失敗はrecord invalidへ隠さず、生path・例外chainを含まない固定 `ValueError("validator_unavailable")` で停止する。loaded codeはtrusted repository前提であり、runtime provenanceを証明しない。CLI、identityの利用、最終evidence組み立て、journal取得、永続化、費用計算、production callerは追加しない。
 
-`test-validate-codex-usage-stream.sh` のfinite secretless fixture、既存extractor / supervisor / selector、横断guard / Regressionで検証する。guardは当該helperのexact loader / API sourceとinventory、および下記#782のexact prepared loaderを許可し、既存supervisor例外を維持してproduction caller・未知caller・copy・追加loaderを拒否する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+`test-validate-codex-usage-stream.sh` のfinite secretless fixture、既存extractor / supervisor / selector、横断guard / Regressionで検証する。guardは当該helperのexact loader / API sourceとinventory、および下記#782 / #789のexact pure loaderを許可し、既存supervisor例外を維持してproduction caller・未知caller・copy・追加loaderを拒否する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### usage evidence recordのpure結合とCLI（#782）
 
@@ -364,6 +364,16 @@ usage内部schema・数値・availability / reasonの正本は既存extractorの
 CLI `python3 -B .github/scripts/build-codex-usage-evidence.py --identity FILE` は明示identity fileとstdinだけを各4096+1 byteでbounded readし、成功時にcanonical+LFの単一行とexit0を返す。stream欠落・不正もunknown recordとexit0、引数不正はexit2、入力I/O・identity不正・依存／出力失敗は固定診断とexit1とする。moduleロード以外のfile読取はCLI入力のみで、network / subprocess / env lookup / 状態書込を行わない。
 
 `test-build-codex-usage-evidence.sh` は実validator / extractor直結、全identity field保持、recorded≠billing verified、unknown分類、canonical / closed output / 上限、CLI / 固定診断 / canary非反射を確認する。各上流専用fixtureで詳細schemaを回帰し、selector / guard / 既存Regressionで検証する。guardは2つのexact prepared loaderとinventoryだけを追加許可し、production caller・未知caller・copy・追加loaderの拒否を維持する。#778のpure record結合は成立するが、production persistence・artifact / ledger / GITHUB_OUTPUT・journal取得・課金照合・Luna試行は未接続とし、後続をfresh admissionする。R0 / C0 / P1 / B1、Greenであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### bounded unit journalのpure単一stream選択（#789）
+
+機械正本は `.github/scripts/select-codex-usage-journal.py`。pure API `select_stream(journal_bytes)->bytes` はLF区切りのjournalから単一 `codex-exec-stream` 候補を選び、元の行bytesを固定同一directoryの#781 `validate_stream` へ渡す。stream / usage schemaを複製せず、canonical条件を緩めない。CLI、network / subprocess / env lookup / 状態書込はなく、exact loaderは#782と同じget_source / compile / exec方式でcacheを書かない。依存失敗は生入力・path・例外chainを含まない固定 `ValueError("validator_unavailable")` とする。
+
+bytesのみ・16 MiB上限で、空行・非JSON診断行を無視する。先頭ASCII空白を除いて `{` で始まる行はstrict UTF-8 / 単一JSON / duplicate key・NaN・Infinity拒否でparseし、破損は選択全体をinvalidにする。他schemaは無視し、対象候補が複数なら同一内容でもinvalid。単一候補の#781検証成功時はcanonical bytes（末尾LFなし）、対象なしは `b""`、入力型・上限・JSON破損・重複・#781不正は固定 `b"invalid"` を返す。このsentinelは#781でinvalidとなり、missingへ隠さず、journal内容を反射しない。validなunavailable / rc / statusは保持し、recordedを正常実行・由来・課金証明へ昇格しない。
+
+APIの受理上限はproduction取得がboundedで切り詰め無しである証明ではない。trusted journal authority・同unit性も確定せず、後続callerがunique unit・取得成否・上限・非切り詰めを確認する。first / last選択、raw journal保存、自由文reason、0補完、retry / fallbackは追加しない。production persistence・journalctl・systemd lifecycle・artifact / upload・GITHUB_OUTPUT・台帳 / 価格 / 課金照合・Luna policy / provider / Secrets / Variablesは変更せず、#785のhelperへ依存しない。
+
+`test-select-codex-usage-journal.sh` は実extractor / #781へ直結したfinite secretless fixtureで、reported / unavailable、診断・他schema混在、候補0 / 1 / 2・同一重複、strict parse拒否、noncanonical、4096 byte stream / 16 MiB journal境界、入力型、非反射、依存固定エラーを確認する。selector / inventory・横断fixture・guardも同期し、guardはexact source / loaderだけを追加許可して未知caller・copy・追加loader・production接続拒否を維持する。selector変更時はcurrent-head正式full Regressionを確認する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。merge後の最小production persistence callerは親 #746でfresh WAC評価し、job cancel / runner lossでartifact回収を保証しない。Luna未開始・試行全体10 USD・まず1成果・逐次費用確認・unknown非0・自動retry / fallback禁止を維持する。
 
 ### bounded native stream supervisor（#761 / #764 / #772）
 
