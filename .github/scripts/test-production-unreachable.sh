@@ -256,6 +256,41 @@ def mask_trusted_stream_callers(text):
     return ''.join(masked)
 
 
+@lru_cache(maxsize=32)
+def mask_trusted_usage_callers(text, masked_text=None):
+    # #797 admits exact Issue-origin caller/persistence steps only. Follow-up,
+    # arbitrary loaders and copied callers remain closed; review runtime proof
+    # with any change to these source/metadata digests.
+    value, node = yaml.safe_load(text), yaml.compose(text)
+    def child(mapping, key):
+        matches = [v for k, v in mapping.value if k.value == key]
+        assert len(matches) == 1
+        return matches[0]
+    steps = value['jobs']['develop-from-issue']['steps']
+    nodes = child(child(child(node, 'jobs'), 'develop-from-issue'), 'steps').value
+    masked = (text if masked_text is None else masked_text).splitlines(keepends=True)
+    for name, digest in (
+            ('Prepare branch and Issue context', '97fd5f4c7ddc606ee7c00b1fc1be1a146237fc3f74040e266cf9d44ad13443d4'),
+            ('Collect trusted Codex Issue usage evidence', 'bfc251027d66840b06728ff7a6120f1a763e8482a21586641bdfa90666009b80'),
+            ('Upload sanitized Codex Issue usage evidence', '9caaa0bf306eb6f44d03c7db3f1b74e5eaf30c8f0f42ed1ec6b3cfc7bd809c4d'),
+            ('Report Codex Issue usage evidence persistence', '980b17711d9035000aa47a6a26877271a8689b67c278f859bd43f2a87f511742')):
+        matches = [(i, s) for i, s in enumerate(steps) if s.get('name') == name]
+        assert len(matches) == 1, 'missing/duplicate usage caller'
+        index, step = matches[0]
+        assert hashlib.sha256(json.dumps(step, sort_keys=True).encode()).hexdigest() == digest, (
+            'untrusted usage caller bytes/metadata', name)
+        step_node = nodes[index]
+        mappings = [step_node] + [v for k, v in step_node.value if k.value in ('env', 'with')]
+        for mapping in mappings:
+            assert len({k.value for k, _ in mapping.value}) == len(mapping.value)
+        assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
+                       and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
+                       for token in yaml.scan(text)), 'usage caller alias/anchor escape'
+        for line in range(step_node.start_mark.line, step_node.end_mark.line):
+            masked[line] = '\n'
+    return ''.join(masked)
+
+
 def assert_unreachable(sources):
     # Parse source text only. Never import selector, builder, collector or npm.
     for path in (selector_path, selector_fixture):
@@ -281,13 +316,16 @@ def assert_unreachable(sources):
             assert model_selector[:-3] not in model_text and model_policy not in model_text, (
                 'unknown model selection production connection', path)
             stream_text = mask_trusted_stream_callers(text) if path == workflows + 'ai-developer.yml' else text
+            usage_text = mask_trusted_usage_callers(text) if path == workflows + 'ai-developer.yml' else text
+            if path == workflows + 'ai-developer.yml':
+                stream_text = mask_trusted_usage_callers(text, stream_text)
             assert exec_usage[:-3] not in stream_text, ('unknown exec usage production connection', path)
             assert stream_supervisor[:-3] not in stream_text, ('unknown stream supervisor production connection', path)
-            assert usage_identity[:-3] not in text, ('usage identity production connection', path)
-            assert usage_stream[:-3] not in text, ('usage stream production connection', path)
-            assert usage_evidence[:-3] not in text, ('usage evidence production connection', path)
-            assert usage_journal[:-3] not in text, ('usage journal production connection', path)
-            assert usage_collector[:-3] not in text, ('usage collector production connection', path)
+            assert usage_identity[:-3] not in usage_text, ('usage identity production connection', path)
+            assert usage_stream[:-3] not in usage_text, ('usage stream production connection', path)
+            assert usage_evidence[:-3] not in usage_text, ('usage evidence production connection', path)
+            assert usage_journal[:-3] not in usage_text, ('usage journal production connection', path)
+            assert usage_collector[:-3] not in usage_text, ('usage collector production connection', path)
             if path == trusted_workflow:
                 value = yaml.safe_load(text)
                 assert value.get('on', value.get(True)) == {'workflow_dispatch': None}
@@ -529,6 +567,27 @@ for job in ('develop-from-issue', 'respond-to-claude'):
     producer = next(s for s in original['jobs'][job]['steps'] if s.get('id') == 'codex')
     producer['env']['BASE_SHA'] = '${{ github.event.pull_request.head.sha }}'
     rejected(model_workflow, yaml.safe_dump(original))
+
+# #797 exception rejects authority, raw storage, persistence and failure drift.
+for old, new in (
+        ('printf \'usage_helper_blobs=%s\\n\'', 'printf \'untrusted_blobs=%s\\n\''),
+        ('"$evidence_dir/$filename")" = "$expected_blob"', '"$evidence_dir/$filename")" = "ignored"'),
+        ('git show "${BASE_SHA}:${source_path}" > "$evidence_dir/$filename"',
+         'git show "HEAD:${source_path}" > "$evidence_dir/$filename"'),
+        ('sudo -n -- /usr/bin/env -i PATH=/usr/bin:/bin', '/usr/bin/env -i PATH=/usr/bin:/bin'),
+        ('pr_number:null,base_sha:$base_sha', 'pr_number:1,base_sha:$base_sha'),
+        ('retention-days: 7', 'retention-days: 90'),
+        ('steps.usage_evidence.outcome == \'success\'', 'true'),
+        ('path: ${{ runner.temp }}/codex-usage-evidence.json', 'path: ${{ runner.temp }}/*'),
+        ('ea165f8d65b6e75b540449e92b4886f43607fa02', 'v4'),
+        ('id: usage_evidence', 'id: usage_evidence\n        id: usage_evidence')):
+    assert old in original_model_workflow
+    rejected(model_workflow, original_model_workflow.replace(old, new, 1))
+original = yaml.safe_load(original_model_workflow)
+collector_step = next(s for s in original['jobs']['develop-from-issue']['steps']
+                      if s.get('id') == 'usage_evidence')
+original['jobs']['respond-to-claude']['steps'].append(collector_step)
+rejected(model_workflow, yaml.safe_dump(original))
 
 rejected(workflows + 'ai-workflow-regression.yml',
          sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)

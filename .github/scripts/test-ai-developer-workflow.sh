@@ -506,10 +506,19 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   else
     grep -Fqx '    timeout-minutes: 15' "$codex_job"
   fi
-  if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
-    echo "$codex_job_name must fail closed." >&2
-    exit 1
-  fi
+  # Only #797 non-authoritative evidence steps may be non-fatal. Every
+  # execution, host-integrity, pause and write gate retains fail-closed status.
+  python3 -B - "$workflow" "$codex_job_name" <<'PY_NONFATAL'
+import sys
+import yaml
+job = yaml.safe_load(open(sys.argv[1]))['jobs'][sys.argv[2]]
+assert not job.get('continue-on-error', False)
+allowed = {'Collect trusted Codex Issue usage evidence',
+           'Upload sanitized Codex Issue usage evidence',
+           'Report Codex Issue usage evidence persistence'} if sys.argv[2] == 'develop-from-issue' else set()
+actual = {s.get('name') for s in job['steps'] if s.get('continue-on-error', False)}
+assert actual == allowed, 'non-fatal step outside approved evidence scope'
+PY_NONFATAL
 done
 
 # Both paths use the pinned OpenAI action only for setup, resolve trusted
@@ -3001,3 +3010,177 @@ print('Trusted stream producer: initial/resume/follow-up / supply / single child
 PY_STREAM_FIXTURE
 
 printf '%s\n' 'AI Developer workflow fixture tests passed'
+
+# #797: execute the actual Issue-origin consumer, without sudo/journal/service
+# access. Real local base blobs + real collector dependencies; only acquisition
+# and privilege transport are finite stand-ins. Natural run owns runtime proof.
+python3 -B - "$repo_root" "$test_dir" <<'PY_USAGE_FIXTURE'
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import yaml
+
+repo, temporary = map(Path, sys.argv[1:])
+workflow = yaml.safe_load((repo / '.github/workflows/ai-developer.yml').read_text())
+steps = workflow['jobs']['develop-from-issue']['steps']
+context = next(s for s in steps if s.get('id') == 'issue_context')
+collect = next(s for s in steps if s.get('id') == 'usage_evidence')
+upload = next(s for s in steps if s.get('id') == 'usage_upload')
+summary = next(s for s in steps if s.get('name') == 'Report Codex Issue usage evidence persistence')
+identity_binding = "${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}"
+assert context['env']['ISSUE_NUMBER'] == collect['env']['ISSUE_NUMBER'] == identity_binding
+assert collect['env'] == dict(BASE_SHA='${{ steps.issue_context.outputs.base_sha }}',
+    USAGE_HELPER_BLOBS='${{ steps.issue_context.outputs.usage_helper_blobs }}',
+    GITHUB_REPOSITORY='${{ github.repository }}', RUN_ID='${{ github.run_id }}',
+    RUN_ATTEMPT='${{ github.run_attempt }}', ISSUE_NUMBER=identity_binding,
+    SELECTED_MODEL='${{ steps.codex_model.outputs.model }}')
+assert collect['if'] == "always() && (steps.codex.outcome == 'success' || steps.codex.outcome == 'failure')"
+assert collect['continue-on-error'] is True and collect['timeout-minutes'] == 1
+assert upload['continue-on-error'] is True
+assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+assert upload['if'] == "always() && steps.usage_evidence.outcome == 'success'"
+assert upload['with'] == dict(name='codex-usage-evidence-develop-${{ github.run_id }}-${{ github.run_attempt }}',
+    path='${{ runner.temp }}/codex-usage-evidence.json', **{'retention-days': 7, 'if-no-files-found': 'error'})
+assert summary['continue-on-error'] is True
+assert summary['if'] == "always() && steps.usage_evidence.outcome != 'skipped'"
+assert steps.index(context) < next(i for i, s in enumerate(steps) if s.get('id') == 'codex')
+assert next(i for i, s in enumerate(steps) if s.get('name') == 'Verify AI Developer host integrity') < steps.index(collect)
+assert steps.index(collect) < steps.index(upload) < steps.index(summary) < next(
+    i for i, s in enumerate(steps) if s.get('name') == 'Restore trusted post-Codex helpers')
+# Evidence outcome cannot authorize/suppress any existing lifecycle consumer.
+for job in workflow['jobs'].values():
+    for step in job['steps']:
+        if step not in (upload, summary):
+            assert 'steps.usage_' not in json.dumps(step)
+assert all('codex-usage-evidence' not in json.dumps(s)
+           for s in workflow['jobs']['respond-to-claude']['steps'])
+assert all(term not in collect['run'] for term in ('GITHUB_OUTPUT', 'journalctl', '--sync', 'sleep', 'retry', 'gh '))
+
+fixture = temporary / 'usage-caller'
+fixture.mkdir()
+runner = fixture / 'runner'
+runner.mkdir()
+workspace = fixture / 'worktree'
+(workspace / '.github/scripts').mkdir(parents=True)
+helpers = ('collect-codex-usage-evidence.py', 'select-codex-usage-journal.py',
+           'build-codex-usage-evidence.py', 'validate-codex-usage-identity.py',
+           'validate-codex-usage-stream.py', 'extract-codex-exec-usage.py')
+for name in (*helpers, 'json.py'):
+    (workspace / '.github/scripts' / name).write_text('raise RuntimeError("untrusted-worktree")\n')
+    (runner / name).write_text('raise RuntimeError("untrusted-leftover")\n')
+base = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+blobs = [subprocess.check_output(['git', '-C', str(repo), 'rev-parse',
+         base + ':.github/scripts/' + name], text=True).strip() for name in helpers]
+# Run the exact pre-model declaration block; no branch/API orchestration.
+pre = context['run'].split('usage_helpers=(', 1)[1].split('pause_helpers=(', 1)[0]
+pre = 'set -euo pipefail\nbase_sha="$BASE_SHA"\nusage_helpers=(' + pre
+pre += 'printf "%s\\n" "${usage_helper_blobs[*]}"\n'
+pre_result = subprocess.run(['bash', '-c', pre], cwd=repo, env={**os.environ, 'BASE_SHA': base},
+                            capture_output=True, check=True)
+assert pre_result.stdout.decode().strip().split() == blobs
+script = fixture / 'collect.sh'
+script.write_text(collect['run'])
+bridge = fixture / 'bridge.py'
+bridge.write_text('''import importlib.util,json,os,sys
+from pathlib import Path
+source = Path(sys.argv[1])
+assert source.parent.name.startswith('codex-usage.')
+assert source.name == 'collect-codex-usage-evidence.py'
+spec = importlib.util.spec_from_file_location('trusted_collector', source)
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+def acquire(unit, limit):
+    assert unit == 'codex-developer-123-2' and limit == 16 * 1024 * 1024
+    mode = os.environ['EVIDENCE_CASE']
+    if mode == 'missing': return b''
+    if mode == 'acquisition-failure': return None
+    if mode == 'invalid': return b'{broken'
+    record = dict(schema='codex-exec-stream',version=1,process_returncode=0,
+                  collection_status='collected',usage_result=dict(schema='codex-exec-usage',version=1,
+                  source='codex_exec_jsonl_workload_reported',availability='reported',reason='terminal_cumulative',
+                  usage=dict(input_tokens=9,cached_input_tokens=2,cache_write_input_tokens=1,
+                             output_tokens=4,reasoning_output_tokens=3)))
+    return b'private-raw-canary\\n' + json.dumps(record,sort_keys=True,separators=(',',':')).encode() + b'\\n'
+helper._acquire = acquire
+sys.argv = [str(source)]
+sys.exit(helper.main())
+''')
+harness = '''set -euo pipefail
+git() {
+  if [ "$1" = show ] && [[ "$2" == *"$FAULT_HELPER" ]] && [ -n "$FAULT_HELPER" ]; then
+    case "$FAULT" in missing) return 1 ;; tampered) printf 'raise SystemExit(99)\\n'; return ;; esac
+  fi
+  if [ "$1" = ls-tree ] && [ "$FAULT" = symlink ]; then
+    command git -C "$FIXTURE_REPO" "$@" | sed 's/100644 blob/120000 blob/'
+    return
+  fi
+  command git -C "$FIXTURE_REPO" "$@"
+}
+sudo() {
+  [ "$#" -eq 9 ]
+  [ "$1 $2 $3 $4 $5 $6 $7 $8" = '-n -- /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B' ]
+  printf 'called\\n' >> "$PRIVILEGE_LOG"
+  [ "$FAULT" != sudo-failure ] || return 1
+  /usr/bin/python3 -I -B "$FIXTURE_BRIDGE" "$9"
+}
+export -f git sudo
+bash "$1"
+'''
+env = {**os.environ, 'BASE_SHA': base, 'USAGE_HELPER_BLOBS': ' '.join(blobs),
+       'RUNNER_TEMP': str(runner), 'GITHUB_REPOSITORY': 'suzukure/nssscdl',
+       'RUN_ID': '123', 'RUN_ATTEMPT': '2', 'ISSUE_NUMBER': '797', 'SELECTED_MODEL': 'gpt-6.1-sol',
+       'FIXTURE_REPO': str(repo), 'FIXTURE_BRIDGE': str(bridge), 'FAULT_HELPER': '', 'FAULT': '',
+       'PRIVILEGE_LOG': str(fixture / 'privilege.log'), 'EVIDENCE_CASE': 'recorded'}
+evidence = runner / 'codex-usage-evidence.json'
+privilege = Path(env['PRIVILEGE_LOG'])
+def execute(overrides=None):
+    privilege.unlink(missing_ok=True)
+    evidence.unlink(missing_ok=True)
+    # Model-written final target/sibling leftovers are never uploaded/executed.
+    evidence.symlink_to(runner / helpers[0])
+    result = subprocess.run(['bash', '-c', harness, '--', str(script)], cwd=workspace,
+        env={**env, **(overrides or {})}, capture_output=True, timeout=10)
+    assert not list(runner.glob('codex-usage.*')), 'temporary source/identity survived'
+    assert not result.stdout and b'private-raw-canary' not in result.stderr
+    return result
+for mode, status in [('recorded', 'recorded'), ('missing', 'missing'),
+                     ('invalid', 'invalid'), ('acquisition-failure', 'invalid')]:
+    result = execute({'EVIDENCE_CASE': mode})
+    assert result.returncode == 0, result.stderr
+    assert privilege.read_text() == 'called\n'
+    raw = evidence.read_bytes()
+    value = json.loads(raw)
+    assert raw == (json.dumps(value,sort_keys=True,separators=(',',':')) + '\n').encode()
+    assert value['identity'] == dict(schema='codex-usage-evidence-identity',version=1,
+        repository='suzukure/nssscdl',run_id=123,run_attempt=2,issue_number=797,
+        job='develop-from-issue',pr_number=None,base_sha=base,selected_model='gpt-6.1-sol',
+        cli_version='0.159.3',reasoning_effort='medium',invocation_mode='fresh_exec')
+    assert value['evidence_status'] == status and value['billing_status'] == 'unverified'
+    assert b'private-raw-canary' not in raw
+    if status != 'recorded': assert value['stream_result'] is None
+for helper in helpers:
+    for fault in ('missing', 'tampered'):
+        result = execute({'FAULT_HELPER': helper, 'FAULT': fault})
+        assert result.returncode != 0 and not evidence.exists() and not privilege.exists(), (helper, fault)
+for overrides in ({'USAGE_HELPER_BLOBS': ''}, {'USAGE_HELPER_BLOBS': ' '.join(['0'*40]*6)},
+                  {'USAGE_HELPER_BLOBS': 'bad ' + ' '.join(blobs[1:])},
+                  {'USAGE_HELPER_BLOBS': ' '.join(blobs + blobs[:1])},
+                  {'BASE_SHA': 'bad'}, {'FAULT': 'symlink'}):
+    assert execute(overrides).returncode != 0 and not evidence.exists() and not privilege.exists()
+for overrides in ({'FAULT': 'sudo-failure'}, {'ISSUE_NUMBER': 'bad'}, {'SELECTED_MODEL': ''}):
+    assert execute(overrides).returncode != 0 and not evidence.exists()
+summary_script = fixture / 'summary.sh'
+summary_script.write_text(summary['run'])
+for collection, persistence in [('success','success'), ('success','failure'), ('failure','skipped')]:
+    output = fixture / 'summary'
+    output.write_bytes(b'')
+    result = subprocess.run(['bash', str(summary_script)], env={**os.environ,
+        'GITHUB_STEP_SUMMARY': str(output), 'COLLECTION_OUTCOME': collection,
+        'UPLOAD_OUTCOME': persistence}, capture_output=True, check=True)
+    assert collection in output.read_text() and persistence in output.read_text()
+    assert 'unknown' in output.read_text() and not result.stdout
+print('Issue usage caller: initial/resume identity, six base blobs, restored root transport, sanitized-only persistence, failures and lifecycle isolation PASS')
+PY_USAGE_FIXTURE
