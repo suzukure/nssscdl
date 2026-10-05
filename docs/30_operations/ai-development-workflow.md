@@ -345,7 +345,7 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 
 機械正本は `.github/scripts/validate-codex-usage-identity.py`。pure API `validate_identity(identity_bytes)` はcaller供給の単一JSON object bytesをclosed schemaで検証し、全fieldを保持した新しいdictを返す。schema / version、repository、workflow job ID、整数範囲、SHA、model、CLI version、medium / fresh_exec固定、4096 byte上限とstrict JSON拒否の詳細はhelperを唯一の正本とする。非canonical JSONも受理し、不正入力は生入力・例外chainを含まない固定 `ValueError("invalid_identity")` で拒否する。型検証はtrusted authorityの証明ではなく、identity確定は将来callerの責務とする。
 
-CLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerは追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalだけを許可してproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の順で後続をfresh admissionし、本Issueでは後続loaderを許可しない。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+identity helper自身にはCLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerを追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalと下記#782のexact prepared loaderだけを許可してproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の依存順を維持する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### usage stream recordのpure検証（#781）
 
@@ -353,7 +353,17 @@ CLI・stream解釈・evidence組み立て・取得・永続化・費用計算・
 
 usage内部schema・数値・availability / reasonの正本は既存extractorの `validate_result`。固定同一directoryのextractor sourceだけを明示loaderで読み、canonical usage bytesを渡して返却dictを使用する。loader欠落・import失敗はrecord invalidへ隠さず、生path・例外chainを含まない固定 `ValueError("validator_unavailable")` で停止する。loaded codeはtrusted repository前提であり、runtime provenanceを証明しない。CLI、identityの利用、最終evidence組み立て、journal取得、永続化、費用計算、production callerは追加しない。
 
-`test-validate-codex-usage-stream.sh` のfinite secretless fixture、既存extractor / supervisor / selector、横断guard / Regressionで検証する。guardは当該helperのexact loader / API sourceとinventoryだけを追加許可し、既存supervisor例外を維持してproduction caller・未知caller・copy・追加loaderを拒否する。後続の結合 / CLIは#782でfresh admissionする。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+`test-validate-codex-usage-stream.sh` のfinite secretless fixture、既存extractor / supervisor / selector、横断guard / Regressionで検証する。guardは当該helperのexact loader / API sourceとinventory、および下記#782のexact prepared loaderを許可し、既存supervisor例外を維持してproduction caller・未知caller・copy・追加loaderを拒否する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### usage evidence recordのpure結合とCLI（#782）
+
+機械正本は `.github/scripts/build-codex-usage-evidence.py`。pure API `build(identity_bytes, stream_bytes)` は固定同一directoryの#780 / #781 validatorをidentity → streamの順で呼び、実返却objectを `codex-usage-evidence` v1のcanonical ASCII JSON bytesへ結合する。identity / stream / usageの入力schemaを複製しない。closed output、8192 byte上限（LF除外）、固定非反射例外の詳細はhelperを唯一の正本とする。identity不正はrecordなし、validatorロード・出力契約失敗は `validator_unavailable`、出力上限超過は `invalid_evidence` として停止する。
+
+`billing_status=unverified` とworkload-reported sourceを固定し、missing / invalidはstream_result=nullのunknown recordにする。妥当なunavailable・capture_limit_exceeded・execution_not_started等はrecordedのまま、元のstatus / reason / rc / nullを保持する。rc0 + process_failedも#781の結果を維持し、recordedは正常終了・producer由来・課金検証済みを意味しない。identityの型検証はGitHub authorityを証明せず、journal値やPIDも改ざん不能な課金証明としない。usageの0補完・加算・USD変換を行わない。
+
+CLI `python3 -B .github/scripts/build-codex-usage-evidence.py --identity FILE` は明示identity fileとstdinだけを各4096+1 byteでbounded readし、成功時にcanonical+LFの単一行とexit0を返す。stream欠落・不正もunknown recordとexit0、引数不正はexit2、入力I/O・identity不正・依存／出力失敗は固定診断とexit1とする。moduleロード以外のfile読取はCLI入力のみで、network / subprocess / env lookup / 状態書込を行わない。
+
+`test-build-codex-usage-evidence.sh` は実validator / extractor直結、全identity field保持、recorded≠billing verified、unknown分類、canonical / closed output / 上限、CLI / 固定診断 / canary非反射を確認する。各上流専用fixtureで詳細schemaを回帰し、selector / guard / 既存Regressionで検証する。guardは2つのexact prepared loaderとinventoryだけを追加許可し、production caller・未知caller・copy・追加loaderの拒否を維持する。#778のpure record結合は成立するが、production persistence・artifact / ledger / GITHUB_OUTPUT・journal取得・課金照合・Luna試行は未接続とし、後続をfresh admissionする。R0 / C0 / P1 / B1、Greenであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### bounded native stream supervisor（#761 / #764 / #772）
 

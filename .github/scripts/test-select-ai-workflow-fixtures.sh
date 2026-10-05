@@ -30,10 +30,10 @@ assert selector.EXTENSIONS == {
                     'product-npm-production-session', 'product-runtime-staging', 'trusted-runtime-supply'),
     'ai-developer-codex': ('select-' + 'codex-issue-model', 'extract-' + 'codex-exec-usage',
                            'supervise-' + 'codex-exec-stream', 'validate-' + 'codex-usage-identity',
-                           'validate-' + 'codex-usage-stream'),
+                           'validate-' + 'codex-usage-stream', 'build-' + 'codex-usage-evidence'),
     'common': ('select-ai-workflow-fixtures', 'production-unreachable', 'plan-ai-workflow-shards')}
 inventory = sorted(p for values in selector.INVENTORY.values() for p in values)
-assert len(inventory) == len(set(inventory)) == 81
+assert len(inventory) == len(set(inventory)) == 82
 assert inventory == actual, 'Every current shell fixture must be registered exactly once'
 common_guard = prefix + 'test-production-unreachable.sh'
 assert common_guard in selector.INVENTORY['common']
@@ -93,6 +93,7 @@ cases = (
     ('supervise-codex-exec-stream.py', {'ai-developer-codex'}),
     ('validate-codex-usage-identity.py', {'ai-developer-codex'}),
     ('validate-codex-usage-stream.py', {'ai-developer-codex'}),
+    ('build-codex-usage-evidence.py', {'ai-developer-codex'}),
     ('codex-issue-model-policy.json', {'ai-developer-codex'}),
     ('build-review-context.sh', {'ai-developer-codex', 'claude'}),
     ('classify-claude-review-risk.sh', {'claude'}),
@@ -314,5 +315,5 @@ assert 'fixtures=(.github/scripts/test-*.sh)' in regression
 assert "selector.write_bytes(git('show', base + ':' + prefix + 'select-ai-workflow-fixtures.py'))" in regression
 assert "[sys.executable, '-B', str(selector), '--repo-root', str(root)]" in regression
 assert 'for fixture in "${fixtures[@]}"; do' in regression
-print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + #745 + #753 + #761 + #780 + #781 + selector + #701 + #756 = 81).')
+print('AI workflow fixture selector tests passed (68 baseline + #692 + #684 + #711 + #738 + #741 + #745 + #753 + #761 + #780 + #781 + #782 + selector + #701 + #756 = 82).')
 PY
