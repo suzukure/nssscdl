@@ -3,7 +3,7 @@
 
 The parent must run before any model/Product/PR arbitrary executable, retaining
 resolver evidence in memory. Evidence is a caller assertion, not authentication
-of workflow history. Only ext4 is supported: source user.* metadata is bound,
+of workflow history. Only ext4 is supported: source user.* and exact POSIX ACL metadata is bound,
 sealed authority has no xattrs. Never trust writable toolcache as a #738 source.
 """
 from contextlib import contextmanager
@@ -12,11 +12,16 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import struct
 import tempfile
 
 ACTION_BLOB = 'ce4e94e119abb91b980d23bfb4210688241f3a0a'
 SETUP = {'phase': 'pre-workload-trusted-setup', 'action_blob': ACTION_BLOB,
          'package': '@openai/codex', 'version': '0.159.3', 'launcher_parity': True}
+SOURCE_ACLS = frozenset(('system.posix_acl_access', 'system.posix_acl_default'))
+ACL_MAX_ENTRIES = 32
+ACL_CLASSES = {1: 'user-object', 2: 'named-user', 4: 'group-object',
+               8: 'named-group', 16: 'mask', 32: 'other'}
 
 
 def require(condition, reason):
@@ -52,11 +57,44 @@ def no_xattrs(fd):
     require(os.listxattr(fd) == [], 'unsupported-xattr-authority')
 
 
+def source_xattr_name(name):
+    return name in SOURCE_ACLS or (name.startswith('user.') and len(name) > 5)
+
+
+def decode_source_acl(name, value, mode):
+    """Linux UAPI v2: LE32 header, LE16 tag/perm + LE32 id entries.
+
+    Strict canonical tag/id ordering and shape; summary omits all identity values.
+    ACL grants are untrusted source authority, never provenance authentication.
+    """
+    require(name in SOURCE_ACLS, 'unsupported-xattr-authority')
+    require(name != 'system.posix_acl_default' or stat.S_ISDIR(mode), 'source-acl-type')
+    require(type(value) is bytes and 28 <= len(value) <= 4 + 8 * ACL_MAX_ENTRIES
+            and (len(value) - 4) % 8 == 0, 'invalid-source-acl')
+    require(struct.unpack_from('<I', value)[0] == 2, 'invalid-source-acl')
+    entries = tuple(struct.iter_unpack('<HHI', value[4:]))
+    keys, classes = [], {}
+    for tag, permission, identity in entries:
+        require(tag in ACL_CLASSES and permission <= 7, 'invalid-source-acl')
+        named = tag in (2, 8)
+        require((identity != 0xffffffff) == named, 'invalid-source-acl')
+        keys.append((tag, identity))
+        classes.setdefault(tag, []).append(permission)
+    require(keys == sorted(set(keys)), 'invalid-source-acl')
+    require(all(len(classes.get(tag, ())) == 1 for tag in (1, 4, 32))
+            and len(classes.get(16, ())) <= 1
+            and (not ({2, 8} & classes.keys()) or 16 in classes), 'invalid-source-acl')
+    return dict(entry_count=len(entries), named_identity=bool({2, 8} & classes.keys()),
+                classes=[dict(entry_class=ACL_CLASSES[tag], count=len(permissions),
+                              permissions=sorted(set(permissions)))
+                         for tag, permissions in sorted(classes.items())])
+
+
 def source_xattrs(fd):
-    """ext4 user metadata only; exact names/digests, never trust evidence."""
+    """Source-only exact names/digests; ACL semantics never confer trust."""
     names = os.listxattr(fd)
     require(len(names) <= 32 and len(set(names)) == len(names), 'source-xattr-limit')
-    require(all(name.startswith('user.') and len(name) > 5 for name in names),
+    require(all(source_xattr_name(name) for name in names),
             'unsupported-xattr-authority')
     attributes, total = [], 0
     for name in sorted(names):
@@ -64,6 +102,8 @@ def source_xattrs(fd):
         value = os.getxattr(fd, name)
         total += len(value)
         require(total <= 65536, 'source-xattr-limit')
+        if name in SOURCE_ACLS:
+            decode_source_acl(name, value, os.fstat(fd).st_mode)
         attributes.append((name, hashlib.sha256(value).hexdigest()))
     require(sorted(os.listxattr(fd)) == sorted(names), 'source-drift')
     return tuple(attributes)

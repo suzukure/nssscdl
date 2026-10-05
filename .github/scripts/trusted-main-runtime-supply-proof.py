@@ -123,7 +123,7 @@ def identifier(value):
 
 
 def observation(rows, supply):
-    """Read-only, no-follow descriptor walk; names only, including unsupported ones."""
+    """Read-only no-follow walk; exact names and bounded ACL semantics, no values."""
     records = []
     for row in [*rows, {'source': str(SUPPLY_PARENT), 'class': 'sealed-parent'}]:
         path = Path(row['source'])
@@ -153,10 +153,25 @@ def observation(rows, supply):
                         'xattr-observation-limit')
                 mount = mount_diagnostics(current, info.st_dev, supply)
                 acceptable = not names if row['class'] == 'sealed-parent' else all(
-                    n.startswith('user.') and len(n) > 5 for n in names)
+                    supply.source_xattr_name(n) for n in names)
+                reason = None if acceptable else 'unsupported-xattr-authority'
+                acl_summaries = {}
+                if acceptable and row['class'] != 'sealed-parent':
+                    try:
+                        for name in names:
+                            if name in supply.SOURCE_ACLS:
+                                acl_summaries[name] = supply.decode_source_acl(
+                                    name, os.getxattr(fd, name), info.st_mode)
+                        require(sorted(os.listxattr(fd)) == names, 'source-drift')
+                    except ValueError as error:
+                        require(str(error) in {'invalid-source-acl', 'source-acl-type', 'source-drift'},
+                                'xattr-observation-failed')
+                        acceptable, reason = False, str(error)
+                    except OSError:
+                        acceptable, reason = False, 'xattr-observation-failed'
                 records.append(dict(source_class=row['class'], ancestor_depth=len(path.parts) - 1 - index,
                                     xattr_names=names, mount=mount, status='pass' if acceptable else 'error',
-                                    reason=None if acceptable else 'unsupported-xattr-authority'))
+                                    reason=reason, acl_summaries=acl_summaries))
                 require(len(records) <= MAX_RECORDS, 'observation-record-limit')
         except OSError as error:
             records.append(dict(source_class=row['class'],

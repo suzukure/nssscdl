@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import struct
 import sys
 import subprocess
 import tempfile
@@ -51,7 +52,7 @@ for attribute in ('system.posix_acl_access', 'system.posix_acl_default',
         rejected(lambda: supply.no_xattrs(1), 'unsupported-xattr-authority')
 with patch.object(os, 'listxattr', side_effect=PermissionError):
     rejected(lambda: supply.no_xattrs(1))
-for attribute in ('system.posix_acl_access', 'system.posix_acl_default', 'security.capability',
+for attribute in ('security.capability',
                   'security.selinux', 'system.nfs4_acl', 'trusted.metadata', 'unknown.metadata', 'user.'):
     with patch.object(os, 'listxattr', return_value=[attribute]):
         rejected(lambda: supply.source_xattrs(1), 'unsupported-xattr-authority')
@@ -72,6 +73,51 @@ for names, value in ((['user.' + str(i) for i in range(33)], b''),
 with patch.object(os, 'listxattr', side_effect=[['user.metadata'], []]), \
      patch.object(os, 'getxattr', return_value=b''):
     rejected(lambda: supply.source_xattrs(1), 'source-drift')
+
+# Exact Linux ACL layout, canonical ordering, shape, IDs and permissions.
+undefined = 0xffffffff
+base_acl = [(1, 7, undefined), (4, 5, undefined), (32, 5, undefined)]
+named_acl = [(1, 7, undefined), (2, 6, 1001), (4, 5, undefined),
+             (8, 4, 1002), (16, 6, undefined), (32, 0, undefined)]
+def acl_bytes(entries=base_acl, version=2):
+    return struct.pack('<I', version) + b''.join(struct.pack('<HHI', *entry) for entry in entries)
+def decode(value, name='system.posix_acl_access', mode=stat.S_IFDIR):
+    return supply.decode_source_acl(name, value, mode)
+for name in supply.SOURCE_ACLS:
+    for entries in (base_acl, named_acl, base_acl[:-1] + [(16, 7, undefined), base_acl[-1]]):
+        summary = decode(acl_bytes(entries), name)
+        assert summary['entry_count'] == len(entries)
+        assert summary['named_identity'] == (entries == named_acl)
+        assert all(str(identity) not in json.dumps(summary) for identity in (1001, 1002, undefined))
+limit_acl = [base_acl[0], *((2, 4, identity) for identity in range(28)),
+             base_acl[1], (16, 5, undefined), base_acl[2]]
+assert decode(acl_bytes(limit_acl))['entry_count'] == supply.ACL_MAX_ENTRIES
+rejected(lambda: decode(acl_bytes(limit_acl[:29] + [(2, 4, 28)] + limit_acl[29:])),
+         'invalid-source-acl')
+rejected(lambda: decode(acl_bytes(), 'system.posix_acl_default', stat.S_IFREG), 'source-acl-type')
+bad_values = [b'', struct.pack('<I', 2), acl_bytes(version=1), acl_bytes(version=0x02000000),
+              acl_bytes()[:-1], acl_bytes() + b'x', acl_bytes(base_acl * 11),
+              acl_bytes([(64, 7, undefined), *base_acl]),
+              acl_bytes([(1, 8, undefined), *base_acl[1:]]),
+              acl_bytes([(1, 7, 1001), *base_acl[1:]]),
+              acl_bytes([base_acl[0], (2, 4, undefined), *base_acl[1:]]),
+              acl_bytes([base_acl[0], (2, 4, 1001), *base_acl[1:]]),
+              acl_bytes(base_acl[:2]), acl_bytes(list(reversed(base_acl))),
+              acl_bytes([base_acl[0], base_acl[0], *base_acl[1:]]),
+              acl_bytes(named_acl[:2] + [named_acl[1]] + named_acl[2:]),
+              acl_bytes(named_acl[:2] + [(2, 4, 1000)] + named_acl[2:]),
+              acl_bytes(named_acl[:-2] + [named_acl[-1]])]
+for value in bad_values:
+    rejected(lambda value=value: decode(value), 'invalid-source-acl')
+with patch.object(os, 'listxattr', return_value=['system.posix_acl_access']), \
+     patch.object(os, 'getxattr', return_value=acl_bytes(named_acl)), \
+     patch.object(os, 'fstat', return_value=SimpleNamespace(st_mode=stat.S_IFREG)):
+    assert supply.source_xattrs(1) == (('system.posix_acl_access',
+                                      supply.hashlib.sha256(acl_bytes(named_acl)).hexdigest()),)
+    with patch.object(os, 'getxattr', return_value=bad_values[-1]):
+        rejected(lambda: supply.source_xattrs(1), 'invalid-source-acl')
+    with patch.object(os, 'listxattr', return_value=['system.posix_acl_default']):
+        rejected(lambda: supply.source_xattrs(1), 'source-acl-type')
 
 # Synthetic authority namespace: real copying/hashing/no-follow/inode checks,
 # virtual root ownership + ext4 only. This is NOT actual runner evidence.
@@ -198,14 +244,21 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
         rejected(lambda: prepared.snapshot(parent).__enter__(), 'supply-overlap')
     with patch.object(os, 'getuid', return_value=1001):
         rejected(lambda: prepared.snapshot(parent).__enter__(), 'root-preparation-required')
-    for attribute in ('system.posix_acl_access', 'security.capability', 'trusted.metadata', 'unknown.metadata'):
+    for attribute in ('security.capability', 'trusted.metadata', 'unknown.metadata'):
         with patch.object(os, 'listxattr', return_value=[attribute]):
             rejected(prepare, 'unsupported-xattr-authority')
 
     # Metadata is bound on files AND ancestors, without relying on ctime drift.
-    for metadata_path in (node, source):
+    changed_acl = [named_acl[0], (2, 6, 2001), *named_acl[2:]]
+    assert decode(acl_bytes(changed_acl)) == decode(acl_bytes(named_acl))  # exact ID still bound
+    for metadata_path, attribute, original, mutation in (
+            (node, 'user.metadata', b'original', b'changed'),
+            (source, 'user.metadata', b'original', b'changed'),
+            (node, 'system.posix_acl_access', acl_bytes(named_acl), acl_bytes(changed_acl)),
+            (source, 'system.posix_acl_access', acl_bytes(named_acl), acl_bytes(changed_acl)),
+            (source, 'system.posix_acl_default', acl_bytes(named_acl), acl_bytes(changed_acl))):
         metadata_inode = metadata_path.stat().st_ino
-        metadata = {'user.metadata': b'original'}
+        metadata = {attribute: original}
         def metadata_names(fd):
             info = os.fstat(fd) if type(fd) is int else os.stat(fd)
             return list(metadata) if info.st_ino == metadata_inode else []
@@ -214,16 +267,17 @@ with tempfile.TemporaryDirectory(prefix='supply-fixture-') as temporary, \
             bound = prepare()
             with bound.snapshot(parent) as sealed:
                 assert all(not os.listxattr(path) for path in sealed.path.rglob('*'))
+                assert not os.listxattr(sealed.path)
                 sealed.prepared_runtime().verify()
-            for changed in ({'user.metadata': b'changed'}, {}, {'user.renamed': b'original'}):
+            for changed in ({attribute: mutation}, {}, {'user.renamed': original}):
                 metadata.clear()
                 metadata.update(changed)
                 rejected(bound.verify, 'source-drift')
             metadata.clear()
-            metadata['user.metadata'] = b'original'
+            metadata[attribute] = original
             real_open = os.fdopen
             def metadata_copy_open(fd, mode):
-                metadata['user.metadata'] = b'copy-time change'
+                metadata[attribute] = mutation
                 return real_open(fd, mode)
             with patch.object(os, 'fdopen', side_effect=metadata_copy_open):
                 rejected(lambda: bound.snapshot(parent).__enter__(), 'source-drift')
@@ -425,7 +479,7 @@ with tempfile.TemporaryDirectory() as temporary:
         (native_package / 'package.json').write_text('{"name":"arbitrary","version":"latest"}')
         rejected(proof.runtime_rows, 'native-identity-mismatch')
 
-# Synthetic bounded observer: real no-follow read-only walk; no content/xattr value reads.
+# Synthetic bounded observer: no content or user.* value reads; ACL semantics only.
 with tempfile.TemporaryDirectory() as temporary:
     area = Path(temporary)
     source = area / 'source'
@@ -457,6 +511,39 @@ with tempfile.TemporaryDirectory() as temporary:
             rejected_result = proof.observation(rows, supply)
             assert rejected_result['status'] == 'error'
             assert rejected_result['records'][0]['xattr_names'] == ['security.unknown']
+        for name in supply.SOURCE_ACLS:
+            def acl_names(fd):
+                return [name] if os.fstat(fd).st_ino == source.stat().st_ino else []
+            with patch.object(os, 'listxattr', side_effect=acl_names), \
+                 patch.object(os, 'getxattr', return_value=acl_bytes(named_acl)):
+                result = proof.observation(rows, supply)
+                if name == 'system.posix_acl_default':
+                    assert result['status'] == 'error'
+                    assert any(r['reason'] == 'source-acl-type' for r in result['records'])
+                else:
+                    assert result['status'] == 'pass'
+                    assert any(r['acl_summaries'] == {name: decode(acl_bytes(named_acl))}
+                               for r in result['records'])
+                    encoded = json.dumps(result)
+                    assert all(v not in encoded for v in (str(source), '1001', '1002', 'sha256',
+                                                          supply.hashlib.sha256(acl_bytes(named_acl)).hexdigest()))
+                    for value in bad_values:
+                        with patch.object(os, 'getxattr', return_value=value):
+                            failed = proof.observation(rows, supply)
+                            assert any(r['reason'] == 'invalid-source-acl' for r in failed['records'])
+                    with patch.object(os, 'getxattr', side_effect=PermissionError(13, 'private ACL')):
+                        failed = proof.observation(rows, supply)
+                        assert any(r['reason'] == 'xattr-observation-failed' for r in failed['records'])
+                        assert 'private ACL' not in json.dumps(failed)
+            # Directory default ACL accepted on source ancestors; sealed parent still rejects.
+            with patch.object(os, 'listxattr', return_value=[name]), \
+                 patch.object(os, 'getxattr', return_value=acl_bytes(named_acl)) as get_acl:
+                result = proof.observation(rows, supply)
+                assert result['status'] == 'error'
+                assert result['records'][0]['status'] == 'pass'
+                assert all(r['reason'] == 'unsupported-xattr-authority' and not r['acl_summaries']
+                           for r in result['records'] if r['source_class'] == 'sealed-parent')
+                assert get_acl.call_count == len(source.parts)
         with patch.object(os, 'listxattr', side_effect=PermissionError(13, 'private path')):
             failure = proof.observation(rows, supply)
             assert failure['status'] == 'error' and failure['records'][0]['errno'] == 13
@@ -553,7 +640,15 @@ with patch.object(sys, 'argv', ['proof', '--observe']), patch.object(proof, 'che
     assert proof.main() == 1 and '/private' not in output.getvalue()
 tree = ast.parse(proof_path.read_text())
 assert 'sys.dont_write_bytecode = True' in proof_path.read_text()
-assert not any(isinstance(n, ast.Attribute) and n.attr in ('system', 'getxattr', 'exec', 'eval') for n in ast.walk(tree))
+assert not any(isinstance(n, ast.Attribute) and n.attr in ('system', 'exec', 'eval') for n in ast.walk(tree))
+getxattrs = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'os.getxattr']
+assert len(getxattrs) == 1 and ast.unparse(getxattrs[0]) == 'os.getxattr(fd, name)'
+guards = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+          and ast.unparse(n.test) == 'name in supply.SOURCE_ACLS']
+assert len(guards) == 1 and getxattrs[0] in list(ast.walk(guards[0]))
+decoders = [n for n in ast.walk(guards[0]) if isinstance(n, ast.Call)
+            and ast.unparse(n.func) == 'supply.decode_source_acl']
+assert len(decoders) == 1 and getxattrs[0] in list(ast.walk(decoders[0]))
 print('Trusted main proof: synthetic trust gate / input rejection / secretless setup / bounded observer / unprivileged probes PASS')
 print('Trusted runtime supply: synthetic provenance / drift / authority / inventory / seal / cleanup / prepared-only PASS')
 PY
