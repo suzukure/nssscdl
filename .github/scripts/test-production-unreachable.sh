@@ -258,7 +258,7 @@ def mask_trusted_stream_callers(text):
 
 @lru_cache(maxsize=32)
 def mask_trusted_usage_callers(text, masked_text=None):
-    # #797 admits exact Issue-origin caller/persistence steps only. Follow-up,
+    # #797 / #798 admit exact Issue-origin and follow-up steps only. Unknown
     # arbitrary loaders and copied callers remain closed; review runtime proof
     # with any change to these source/metadata digests.
     value, node = yaml.safe_load(text), yaml.compose(text)
@@ -266,28 +266,38 @@ def mask_trusted_usage_callers(text, masked_text=None):
         matches = [v for k, v in mapping.value if k.value == key]
         assert len(matches) == 1
         return matches[0]
-    steps = value['jobs']['develop-from-issue']['steps']
-    nodes = child(child(child(node, 'jobs'), 'develop-from-issue'), 'steps').value
     masked = (text if masked_text is None else masked_text).splitlines(keepends=True)
-    for name, digest in (
+    callers = {
+        'develop-from-issue': (
             ('Prepare branch and Issue context', '97fd5f4c7ddc606ee7c00b1fc1be1a146237fc3f74040e266cf9d44ad13443d4'),
             ('Collect trusted Codex Issue usage evidence', 'bfc251027d66840b06728ff7a6120f1a763e8482a21586641bdfa90666009b80'),
             ('Upload sanitized Codex Issue usage evidence', '9caaa0bf306eb6f44d03c7db3f1b74e5eaf30c8f0f42ed1ec6b3cfc7bd809c4d'),
-            ('Report Codex Issue usage evidence persistence', '980b17711d9035000aa47a6a26877271a8689b67c278f859bd43f2a87f511742')):
-        matches = [(i, s) for i, s in enumerate(steps) if s.get('name') == name]
-        assert len(matches) == 1, 'missing/duplicate usage caller'
-        index, step = matches[0]
-        assert hashlib.sha256(json.dumps(step, sort_keys=True).encode()).hexdigest() == digest, (
-            'untrusted usage caller bytes/metadata', name)
-        step_node = nodes[index]
-        mappings = [step_node] + [v for k, v in step_node.value if k.value in ('env', 'with')]
-        for mapping in mappings:
-            assert len({k.value for k, _ in mapping.value}) == len(mapping.value)
-        assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
-                       and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
-                       for token in yaml.scan(text)), 'usage caller alias/anchor escape'
-        for line in range(step_node.start_mark.line, step_node.end_mark.line):
-            masked[line] = '\n'
+            ('Report Codex Issue usage evidence persistence', '980b17711d9035000aa47a6a26877271a8689b67c278f859bd43f2a87f511742')),
+        'respond-to-claude': (
+            ('Build review context', '84a21eb7b080f6af2ceba93dbe66a4b4e9aaf3744dee2e4ed64fe490940db215'),
+            ('Collect trusted Codex follow-up usage evidence', '1e598e0c183afca27c0d0be387a024892b121c3da088a2f83d459458ee18a00e'),
+            ('Upload sanitized Codex follow-up usage evidence', '83bc5408c29d042c51bd23128fb1829a107f00806f6f2278034fe61e3a29c355'),
+            ('Report Codex follow-up usage evidence persistence', 'c8b4d3645fc50ad57ec93032c1f827b1946ea79660d5f19ce1764485883dec6e'),
+        ),
+    }
+    for job, approved in callers.items():
+        steps = value['jobs'][job]['steps']
+        nodes = child(child(child(node, 'jobs'), job), 'steps').value
+        for name, digest in approved:
+            matches = [(i, s) for i, s in enumerate(steps) if s.get('name') == name]
+            assert len(matches) == 1, 'missing/duplicate usage caller'
+            index, step = matches[0]
+            assert hashlib.sha256(json.dumps(step, sort_keys=True).encode()).hexdigest() == digest, (
+                'untrusted usage caller bytes/metadata', name)
+            step_node = nodes[index]
+            mappings = [step_node] + [v for k, v in step_node.value if k.value in ('env', 'with')]
+            for mapping in mappings:
+                assert len({k.value for k, _ in mapping.value}) == len(mapping.value)
+            assert not any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
+                           and step_node.start_mark.index <= token.start_mark.index < step_node.end_mark.index
+                           for token in yaml.scan(text)), 'usage caller alias/anchor escape'
+            for line in range(step_node.start_mark.line, step_node.end_mark.line):
+                masked[line] = '\n'
     return ''.join(masked)
 
 
@@ -568,26 +578,38 @@ for job in ('develop-from-issue', 'respond-to-claude'):
     producer['env']['BASE_SHA'] = '${{ github.event.pull_request.head.sha }}'
     rejected(model_workflow, yaml.safe_dump(original))
 
-# #797 exception rejects authority, raw storage, persistence and failure drift.
+# #797 / #798 exceptions reject authority, raw storage, persistence and failure drift.
 for old, new in (
         ('printf \'usage_helper_blobs=%s\\n\'', 'printf \'untrusted_blobs=%s\\n\''),
         ('"$evidence_dir/$filename")" = "$expected_blob"', '"$evidence_dir/$filename")" = "ignored"'),
         ('git show "${BASE_SHA}:${source_path}" > "$evidence_dir/$filename"',
          'git show "HEAD:${source_path}" > "$evidence_dir/$filename"'),
         ('sudo -n -- /usr/bin/env -i PATH=/usr/bin:/bin', '/usr/bin/env -i PATH=/usr/bin:/bin'),
-        ('pr_number:null,base_sha:$base_sha', 'pr_number:1,base_sha:$base_sha'),
         ('retention-days: 7', 'retention-days: 90'),
         ('steps.usage_evidence.outcome == \'success\'', 'true'),
         ('path: ${{ runner.temp }}/codex-usage-evidence.json', 'path: ${{ runner.temp }}/*'),
         ('ea165f8d65b6e75b540449e92b4886f43607fa02', 'v4'),
         ('id: usage_evidence', 'id: usage_evidence\n        id: usage_evidence')):
-    assert old in original_model_workflow
-    rejected(model_workflow, original_model_workflow.replace(old, new, 1))
+    for job in ('develop-from-issue', 'respond-to-claude'):
+        prefix, body = original_model_workflow.split('  ' + job + ':', 1)
+        assert old in body
+        rejected(model_workflow, prefix + '  ' + job + ':' + body.replace(old, new, 1))
 original = yaml.safe_load(original_model_workflow)
 collector_step = next(s for s in original['jobs']['develop-from-issue']['steps']
                       if s.get('id') == 'usage_evidence')
 original['jobs']['respond-to-claude']['steps'].append(collector_step)
 rejected(model_workflow, yaml.safe_dump(original))
+
+# Follow-up authority cannot be replaced by PR head/body or initial identity.
+for old, new in (
+        ('github.event.pull_request.base.sha', 'github.event.pull_request.head.sha'),
+        ('github.event.pull_request.number', 'github.event.issue.number'),
+        ('^ai/issue-([1-9][0-9]*)$', '^ai/issue-([0-9]+)'),
+        ('job:"respond-to-claude",pr_number:$pr_number', 'job:"develop-from-issue",pr_number:null'),
+        ("steps.codex.outputs.continue == 'true' && (steps.codex.outcome", '(steps.codex.outcome')):
+    prefix, body = original_model_workflow.split('  respond-to-claude:', 1)
+    assert old in body
+    rejected(model_workflow, prefix + '  respond-to-claude:' + body.replace(old, new))
 
 rejected(workflows + 'ai-workflow-regression.yml',
          sources[workflows + 'ai-workflow-regression.yml'] + '\nrun: sudo python3 ' + scripts + supply_proof)
