@@ -339,7 +339,21 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 
 出力は `schema/version/source/availability/reason/usage` だけで、sourceは常に `codex_exec_jsonl_workload_reported`。成功process・唯一completed terminal・非zero valid usageだけが `reported / terminal_cumulative` となる。全5値zeroは `unavailable / zero_unverified`、process非success・error/failed terminal・terminal欠落も固定reasonと `usage:null` で返す。reasonはprocess cancelled→failed→unknown→error/failed terminal→missing terminalの順を優先する。完全なJSON行でterminalが欠けた場合は取得不能として有効だが、壊れた/truncated行は不正入力として拒否する。取得不能・zero_unverifiedを費用0・課金なし・provider明示zeroと扱わない。
 
-#772では下記trusted supervisor経由でproductionへ接続し、extractorのpure API / schemaを維持する。`test-production-unreachable.sh` はexact selector inventory、supervisor内の唯一の明示extractor loader、AI Developerのexact approved producer以外の参照を拒否する。検証は `test-extract-codex-exec-usage.sh` のsecretless synthetic fixture、caller fixture / guard、および既存AI Workflow Regressionのcurrent-head fixtureで行う。raw JSONLはfixture内のmemory/stdinとsupervisorのmemoryだけで扱い、保存・公開しない。このproofはCodex 0.159.3の実取得provenance、provider billing、actual USD、hard cap、complete all-request coverageを証明しない。merge後のactual native証跡とdownstream persistenceは下記#772および親 #744・調査 #746で扱う。exec resume thread、料金計算、Luna paid試行は追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+#772では下記trusted supervisor経由でproductionへ接続し、extractorのpure API / schemaを維持する。`test-production-unreachable.sh` はexact selector inventory、supervisor内の唯一の明示extractor loader、#781のexact pure validator loader、AI Developerのexact approved producer以外の参照を拒否する。検証は `test-extract-codex-exec-usage.sh` のsecretless synthetic fixture、caller fixture / guard、および既存AI Workflow Regressionのcurrent-head fixtureで行う。raw JSONLはfixture内のmemory/stdinとsupervisorのmemoryだけで扱い、保存・公開しない。このproofはCodex 0.159.3の実取得provenance、provider billing、actual USD、hard cap、complete all-request coverageを証明しない。merge後のactual native証跡とdownstream persistenceは下記#772および親 #744・調査 #746で扱う。exec resume thread、料金計算、Luna paid試行は追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### usage evidence実行identityのpure検証（#780）
+
+機械正本は `.github/scripts/validate-codex-usage-identity.py`。pure API `validate_identity(identity_bytes)` はcaller供給の単一JSON object bytesをclosed schemaで検証し、全fieldを保持した新しいdictを返す。schema / version、repository、workflow job ID、整数範囲、SHA、model、CLI version、medium / fresh_exec固定、4096 byte上限とstrict JSON拒否の詳細はhelperを唯一の正本とする。非canonical JSONも受理し、不正入力は生入力・例外chainを含まない固定 `ValueError("invalid_identity")` で拒否する。型検証はtrusted authorityの証明ではなく、identity確定は将来callerの責務とする。
+
+CLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerは追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalだけを許可してproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の順で後続をfresh admissionし、本Issueでは後続loaderを許可しない。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### usage stream recordのpure検証（#781）
+
+機械正本は `.github/scripts/validate-codex-usage-stream.py`。pure API `validate_stream(stream_bytes)` は#761のcanonical `codex-exec-stream` v1 recordを検証し、`evidence_status: recorded / missing / invalid` と `stream_result: dict / null` だけを返す。空bytesだけをmissing、不正・非canonical・上限超過をinvalidとし、いずれもstream_result=nullでunknownへ渡す。closed fields、status / rc整合、reported時のrc=0、strict JSON、末尾LF高々1個を含む4096 byte上限の詳細はhelperを唯一の正本とする。妥当なunavailable・非成功statusはrecordedのままrc / reason / nullを保持し、usage 0へ補完しない。
+
+usage内部schema・数値・availability / reasonの正本は既存extractorの `validate_result`。固定同一directoryのextractor sourceだけを明示loaderで読み、canonical usage bytesを渡して返却dictを使用する。loader欠落・import失敗はrecord invalidへ隠さず、生path・例外chainを含まない固定 `ValueError("validator_unavailable")` で停止する。loaded codeはtrusted repository前提であり、runtime provenanceを証明しない。CLI、identityの利用、最終evidence組み立て、journal取得、永続化、費用計算、production callerは追加しない。
+
+`test-validate-codex-usage-stream.sh` のfinite secretless fixture、既存extractor / supervisor / selector、横断guard / Regressionで検証する。guardは当該helperのexact loader / API sourceとinventoryだけを追加許可し、既存supervisor例外を維持してproduction caller・未知caller・copy・追加loaderを拒否する。後続の結合 / CLIは#782でfresh admissionする。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### bounded native stream supervisor（#761 / #764 / #772）
 

@@ -23,9 +23,11 @@ spec = importlib.util.spec_from_file_location('planner', source)
 planner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(planner)
 actual = sorted(prefix + path.name for path in (repo / prefix).glob('test-*.sh'))
-previous = [path for path in actual if path not in (
-    prefix + 'test-plan-ai-workflow-shards.sh', prefix + 'test-systemd-transient-lifecycle.sh')]
-assert len(previous) == 78 and len(actual) == 80
+checkpoint_783 = [path for path in actual if path != prefix + 'test-systemd-transient-lifecycle.sh']
+identity_inventory = [path for path in checkpoint_783 if path != prefix + 'test-validate-codex-usage-stream.sh']
+checkpoint = [path for path in identity_inventory if path != prefix + 'test-validate-codex-usage-identity.sh']
+previous = [path for path in checkpoint if path != prefix + 'test-plan-ai-workflow-shards.sh']
+assert len(previous) == 78 and len(checkpoint) == 79 and len(identity_inventory) == 80 and len(checkpoint_783) == 81 and len(actual) == 82
 assert set(planner.RUNTIME_HINTS) <= set(actual), 'runtime hint absent from current inventory'
 
 
@@ -60,8 +62,8 @@ def rejected(data):
         raise AssertionError('invalid input/assignment accepted')
 
 
-# Independently enumerate the #756 pre-Issue inventory and the current inventory.
-for paths in (previous, actual):
+# Preserve the #756 / #780 / #781 inventory proofs alongside the current full inventory.
+for paths in (previous, checkpoint, identity_inventory, checkpoint_783, actual):
     result = planner.plan(encode(paths))
     a, b = coverage(result, paths)
     for reordered in (paths[::-1], paths[::2] + paths[1::2], paths[1:] + paths[:1]):
@@ -200,5 +202,5 @@ for path, text in (('.github/workflows/ai-workflow-regression.yml', 'python3 ' +
         pass
     else:
         raise AssertionError('production planner caller accepted')
-print('AI workflow shard planner: 78/80 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
+print('AI workflow shard planner: 78/79/80/81/82 inventory, hints, exact coverage, balance, canonical, fail-closed, caller boundary PASS')
 PY
