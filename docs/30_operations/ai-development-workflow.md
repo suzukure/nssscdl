@@ -341,6 +341,12 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 
 #772では下記trusted supervisor経由でproductionへ接続し、extractorのpure API / schemaを維持する。`test-production-unreachable.sh` はexact selector inventory、supervisor内の唯一の明示extractor loader、AI Developerのexact approved producer以外の参照を拒否する。検証は `test-extract-codex-exec-usage.sh` のsecretless synthetic fixture、caller fixture / guard、および既存AI Workflow Regressionのcurrent-head fixtureで行う。raw JSONLはfixture内のmemory/stdinとsupervisorのmemoryだけで扱い、保存・公開しない。このproofはCodex 0.159.3の実取得provenance、provider billing、actual USD、hard cap、complete all-request coverageを証明しない。merge後のactual native証跡とdownstream persistenceは下記#772および親 #744・調査 #746で扱う。exec resume thread、料金計算、Luna paid試行は追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
+### usage evidence実行identityのpure検証（#780）
+
+機械正本は `.github/scripts/validate-codex-usage-identity.py`。pure API `validate_identity(identity_bytes)` はcaller供給の単一JSON object bytesをclosed schemaで検証し、全fieldを保持した新しいdictを返す。schema / version、repository、workflow job ID、整数範囲、SHA、model、CLI version、medium / fresh_exec固定、4096 byte上限とstrict JSON拒否の詳細はhelperを唯一の正本とする。非canonical JSONも受理し、不正入力は生入力・例外chainを含まない固定 `ValueError("invalid_identity")` で拒否する。型検証はtrusted authorityの証明ではなく、identity確定は将来callerの責務とする。
+
+CLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerは追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalだけを許可してproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の順で後続をfresh admissionし、本Issueでは後続loaderを許可しない。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ### bounded native stream supervisor（#761 / #764 / #772）
 
 機械正本は `.github/scripts/supervise-codex-exec-stream.py`。API `supervise(argv, parser, result_validator)` は明示argvと既存extractorの `extract` / `validate_result` callableからcanonical JSON bytesを返す。結果schema・usage判定はextractor側の `validate_result` で共有し、pure parserの入出力契約を変更しない。CLIは `--extractor SOURCE_PATH -- ABSOLUTE_EXECUTABLE [ARG ...]` の明示sourceだけをimportし、暗黙探索・model選択をしない。argvは最大128件・UTF-8合計64 KiB、NULなしのstringで先頭はabsolute executable pathに限定する。不正invocationはchild起動前に固定stderrとexit 2で拒否する。helperは `shell=False` でchildを1回だけ起動し、stdin / cwd / envをcallerから継承する。credential取得・環境追加・git / network / GitHub writeは行わない。
