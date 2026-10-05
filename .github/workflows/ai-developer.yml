@@ -597,6 +597,7 @@ jobs:
         id: codex
         timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
         env:
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
@@ -610,6 +611,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          stream_source_failure() {
+            echo '信頼済みCodex stream sourceを確認できませんでした。' >&2
+            exit 1
+          }
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || stream_source_failure
+          stream_dir="$(mktemp -d "$RUNNER_TEMP/codex-stream.XXXXXX" 2>/dev/null)" || stream_source_failure
+          for filename in supervise-codex-exec-stream.py extract-codex-exec-usage.py; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}" 2>/dev/null)" || stream_source_failure
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+            source_entry="$(git ls-tree "$BASE_SHA" -- "$source_path" 2>/dev/null)" || stream_source_failure
+            case "$source_entry" in
+              "$(printf '100644 blob %s\t%s' "$expected_blob" "$source_path")"|"$(printf '100755 blob %s\t%s' "$expected_blob" "$source_path")") ;;
+              *) stream_source_failure ;;
+            esac
+            git show "${BASE_SHA}:${source_path}" > "$stream_dir/$filename" 2>/dev/null || stream_source_failure
+            [ -f "$stream_dir/$filename" ] && [ ! -L "$stream_dir/$filename" ] || stream_source_failure
+            actual_blob="$(git hash-object --no-filters "$stream_dir/$filename" 2>/dev/null)" || stream_source_failure
+            [ "$actual_blob" = "$expected_blob" ] || stream_source_failure
+          done
 
           test -x "$CODEX_NATIVE"
           test -f "$ACTION_MAIN"
@@ -928,7 +951,8 @@ jobs:
             CODEX_MANAGED_BY_NPM=1 \
             CODEX_HOME="$CODEX_HOME" \
             CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
-            "$CODEX_NATIVE" exec \
+            /usr/bin/python3 -I -B "$3" --extractor "$4" -- \
+              "$CODEX_NATIVE" exec --json \
               --skip-git-repo-check \
               --cd "$GITHUB_WORKSPACE" \
               --output-last-message "$CODEX_FINAL" \
@@ -960,6 +984,8 @@ jobs:
               codex_native="${15}"
               codex_package_root="${16}"
               originator="${17}"
+              stream_supervisor="${18}"
+              stream_extractor="${19}"
               protected_unix_socket_paths="/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request"
               inaccessible_paths=""
               protected_unix_socket_host_ids=""
@@ -1025,7 +1051,7 @@ jobs:
                   "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
                   "PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths" \
                   "PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids" \
-                  /bin/sh "$launcher" "$uid" "$nobody_gid"
+                  /bin/sh "$launcher" "$uid" "$nobody_gid" "$stream_supervisor" "$stream_extractor"
               rc=$?
               set -e
 
@@ -1072,7 +1098,9 @@ jobs:
             "$CODEX_MODEL" \
             "$CODEX_NATIVE" \
             "$CODEX_PACKAGE_ROOT" \
-            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$stream_dir/supervise-codex-exec-stream.py" \
+            "$stream_dir/extract-codex-exec-usage.py"
 
       - name: Verify AI Developer host integrity
         if: always() && steps.host_integrity_before.outputs.captured == 'true'
@@ -2168,6 +2196,7 @@ jobs:
         id: codex
         timeout-minutes: 12
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
@@ -2187,6 +2216,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          stream_source_failure() {
+            echo '信頼済みCodex stream sourceを確認できませんでした。' >&2
+            exit 1
+          }
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || stream_source_failure
+          stream_dir="$(mktemp -d "$RUNNER_TEMP/codex-stream.XXXXXX" 2>/dev/null)" || stream_source_failure
+          for filename in supervise-codex-exec-stream.py extract-codex-exec-usage.py; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}" 2>/dev/null)" || stream_source_failure
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+            source_entry="$(git ls-tree "$BASE_SHA" -- "$source_path" 2>/dev/null)" || stream_source_failure
+            case "$source_entry" in
+              "$(printf '100644 blob %s\t%s' "$expected_blob" "$source_path")"|"$(printf '100755 blob %s\t%s' "$expected_blob" "$source_path")") ;;
+              *) stream_source_failure ;;
+            esac
+            git show "${BASE_SHA}:${source_path}" > "$stream_dir/$filename" 2>/dev/null || stream_source_failure
+            [ -f "$stream_dir/$filename" ] && [ ! -L "$stream_dir/$filename" ] || stream_source_failure
+            actual_blob="$(git hash-object --no-filters "$stream_dir/$filename" 2>/dev/null)" || stream_source_failure
+            [ "$actual_blob" = "$expected_blob" ] || stream_source_failure
+          done
 
           test -x "$CODEX_NATIVE"
           test -f "$ACTION_MAIN"
@@ -2505,7 +2556,8 @@ jobs:
             CODEX_MANAGED_BY_NPM=1 \
             CODEX_HOME="$CODEX_HOME" \
             CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
-            "$CODEX_NATIVE" exec \
+            /usr/bin/python3 -I -B "$3" --extractor "$4" -- \
+              "$CODEX_NATIVE" exec --json \
               --skip-git-repo-check \
               --cd "$GITHUB_WORKSPACE" \
               --output-last-message "$CODEX_FINAL" \
@@ -2546,6 +2598,8 @@ jobs:
               codex_native="${15}"
               codex_package_root="${16}"
               originator="${17}"
+              stream_supervisor="${18}"
+              stream_extractor="${19}"
               protected_unix_socket_paths="/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request"
               inaccessible_paths=""
               protected_unix_socket_host_ids=""
@@ -2611,7 +2665,7 @@ jobs:
                   "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
                   "PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths" \
                   "PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids" \
-                  /bin/sh "$launcher" "$uid" "$nobody_gid"
+                  /bin/sh "$launcher" "$uid" "$nobody_gid" "$stream_supervisor" "$stream_extractor"
               rc=$?
               set -e
 
@@ -2658,7 +2712,9 @@ jobs:
             "$CODEX_MODEL" \
             "$CODEX_NATIVE" \
             "$CODEX_PACKAGE_ROOT" \
-            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$stream_dir/supervise-codex-exec-stream.py" \
+            "$stream_dir/extract-codex-exec-usage.py"
 
       - name: Verify Codex follow-up host integrity
         if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.followup_host_integrity_before.outputs.captured == 'true'
