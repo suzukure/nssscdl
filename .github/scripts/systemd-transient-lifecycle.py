@@ -18,9 +18,11 @@ systemctl stop/show transport, each with a fixed 10-second timeout.
 For admitted inputs: launch once, stop once, show once, including after failure.
 No retry/fallback. Launch/stop output is discarded. Show output is spooled, only
 33 bytes are read, and neither bytes nor exceptions are returned. Exact
-not-found (optionally one LF) with show rc 0 or 1 reuses the existing runner's
-absence check. Stop must independently return zero. This is synthetic-tested
-cleanup semantics, not evidence about an actual manager or target execution.
+not-found (optionally one LF) with show rc 0 confirms absence. Stop zero or
+nonzero permits confirmation: an already collected unit may make stop nonzero.
+Stop signal/timeout/exec-error remains failure even when absence is confirmed.
+This is synthetic-tested cleanup semantics, not evidence about an actual manager
+or target execution. The caller must verify argv/unit binding before execution.
 
 Return schema systemd-transient-lifecycle version 1: status and launch_status
 are pass/fail; launch_exit_class is zero/nonzero/signal/timeout/exec-error;
@@ -86,7 +88,7 @@ def residual(unit):
                                '--property=LoadState', '--value'], CLEANUP_TIMEOUT, output)
             if kind in ('timeout', 'exec-error', 'signal'):
                 return kind
-            if rc not in (0, 1):
+            if rc != 0:
                 return 'nonzero'
             output.seek(0)
             data = output.read(33)
@@ -118,8 +120,9 @@ def execute(unit, launch_argv, timeout_seconds):
                          CLEANUP_TIMEOUT, subprocess.DEVNULL)
         result['residual_class'] = residual(unit)
         result['cleanup_status'] = (
-            'stop-' + stop if stop != 'zero' else
-            'confirmed' if result['residual_class'] == 'not-found' else 'unconfirmed')
+            'confirmed' if stop in ('zero', 'nonzero')
+            and result['residual_class'] == 'not-found' else
+            'stop-' + stop if stop != 'zero' else 'unconfirmed')
     if result['launch_status'] == 'pass' and result['cleanup_status'] == 'confirmed':
         result['status'] = 'pass'
     return result

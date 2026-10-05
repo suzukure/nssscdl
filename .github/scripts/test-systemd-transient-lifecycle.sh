@@ -83,29 +83,40 @@ def run(launch='zero', stop='zero', show='zero', data=b'not-found\n'):
 
 # All launch failures still stop AND show, even when both cleanup operations fail.
 kinds = ('zero', 'nonzero', 'signal', 'timeout', 'exec-error', 'python-error',
-         'interrupt', 'invalid-rc')
+         'interrupt', 'invalid-rc', 'one')
 normalize = lambda kind: ('exec-error' if kind in ('python-error', 'invalid-rc')
-                          else 'signal' if kind == 'interrupt' else kind)
+                          else 'signal' if kind == 'interrupt'
+                          else 'nonzero' if kind == 'one' else kind)
 for launch, stop, show in itertools.product(kinds, repeat=3):
     result = run(launch, stop, show)
     assert result['launch_exit_class'] == normalize(launch)
     assert result['launch_status'] == ('pass' if launch == 'zero' else 'fail')
     assert result['residual_class'] == ('not-found' if show == 'zero' else normalize(show))
-    expected_cleanup = ('stop-' + normalize(stop) if stop != 'zero' else
-                        'confirmed' if show == 'zero' else 'unconfirmed')
+    cleanup_confirmed = stop in ('zero', 'nonzero', 'one') and show == 'zero'
+    expected_cleanup = ('confirmed' if cleanup_confirmed else
+                        'stop-' + normalize(stop) if stop != 'zero' else 'unconfirmed')
     assert result['cleanup_status'] == expected_cleanup
-    assert result['status'] == ('pass' if launch == stop == show == 'zero' else 'fail')
+    assert result['status'] == ('pass' if launch == 'zero' and cleanup_confirmed else 'fail')
 
 for data in (b'not-found', b'not-found\n'):
-    assert run(show='one', data=data)['status'] == 'pass'
+    for stop in ('zero', 'nonzero', 'one'):
+        result = run(stop=stop, data=data)
+        assert result['cleanup_status'] == 'confirmed' and result['status'] == 'pass'
+    for stop in ('signal', 'timeout', 'exec-error'):
+        result = run(stop=stop, data=data)
+        assert result['residual_class'] == 'not-found' and result['status'] == 'fail'
+    for show in ('one', 'nonzero'):
+        result = run(show=show, data=data)
+        assert result['residual_class'] == 'nonzero' and result['status'] == 'fail'
 for data in (b'loaded', b'loaded\n', b'masked\n', b'error\n'):
-    result = run(data=data)
-    assert result['residual_class'] == 'present' and result['status'] == 'fail'
+    for stop in ('zero', 'nonzero', 'one'):
+        result = run(stop=stop, data=data)
+        assert result['residual_class'] == 'present' and result['status'] == 'fail'
 for data in (b'', b' not-found\n', b'not-found\n\n', b'not-found\r\n',
              b'LoadState=not-found\n', b'not-found\0', b'\xff', b'x' * 33,
              b'not-found\n' + b'x' * 100000, private.encode()):
-    for show in ('zero', 'one'):
-        result = run(show=show, data=data)
+    for stop in ('zero', 'nonzero', 'one'):
+        result = run(stop=stop, data=data)
         assert result['residual_class'] == 'malformed' and result['status'] == 'fail'
 assert run(show='nonzero')['status'] == 'fail', 'absence text cannot override rc 2'
 
