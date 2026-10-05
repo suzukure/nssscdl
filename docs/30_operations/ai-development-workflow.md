@@ -251,6 +251,14 @@ AI Developerの投稿またはjob successだけでは、別のmachine-generated 
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
 
+Ready前には、人間/ChatGPT上の開発補助が次の対象箇所と証拠を照合する。既存の準備確認を具体化する手順であり、新しいレビュー段階・ツール・paid diagnosticを追加しない。
+
+1. **対象の実物**：closing Issue本文とcurrent PR本文を実際に読み、確定判断・scope・Doneがcurrent差分と一致することを確認する。途中で変更した実施済み判断は本文へ同期し、未決判断を推測で確定しない。後継がある場合は、[スコープ外影響と後継Issue](#スコープ外影響と後継issue)に従って番号・範囲・完了条件・時期または順序・先行merge理由と、`build-review-context.sh` が読む正規見出し/単独行形式を照合する。後継番号行の末尾へ説明を続けず、後継本文も実際に読み、存在だけで安全な延期と判断しない。同一原因の記録不足はIssue本文・PR本文・後継記録の必要箇所を一度で揃えてからreviewを要求する。
+2. **状態/証明変更の文書同期**：dormantから接続への変更、新しいentry/権限、証明方法・cleanup前提等を変更する場合だけ、変更helper名と関連語で既存の関連正本の該当節を検索・照合する。実測後は「どの機構で保証されたか」「何を実証していないか」を本文と関連文書へ同期し、古い未接続記述・保護機構の誤説明を残さない。exactなschema/値は既存の機械正本参照を優先し、全文書や製品仕様全体のroutine探索を義務化しない。
+3. **外部挙動に依存する期待値**：外部ログ形式、event/skip、終了コード/cleanup、fixture選択・共有guardの変更に限り、既存runの非機密な実例・既存caller・公式仕様等から適切な根拠を少なくとも1件照合する。機密値やraw log全文はIssue/PRへ転記しない。実装を写したsynthetic期待値だけで実統合済みと扱わず、既存証拠で確認できない範囲は未検証として記録する。実統合proofが今回のDoneに必要なら[Work Admission Control](#work-admission-control)と既存の[人間エスカレーション](#人間エスカレーション)に従い、syntheticだけで安全に完了できるprepared変更へ実統合proofを自動追加しない。実例による既存fixtureの局所補強が必要と判明しても、本Issue #804ではscript/fixtureを変更せず、今後の対象実装Issueの既存scope内で判断する。
+
+照合結果はPRの既存`レビュー準備`欄または最新コメントへ、確認したIssueと節、該当する後継番号、current HEAD、formal checkのrunリンク/結果、未確認事項を短く記録する。チェックボックスや「PASS」という宣言自体を証拠にせず、出所は上記「検証結果の出所」に従う。CodexのGitHub/APIアクセス禁止は維持し、[Issue本文におけるcurrent implementation contract](#issue本文におけるcurrent-implementation-contract)のIssue起点の本文同期規約をClaude review follow-upの新runtime義務へ拡張しない。
+
 `ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とする。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。通常のClaude Reviewはpaid実行前とverdict投稿直前に、trusted APIから取得したPRのopen/Ready状態、current head、停止ラベルを確認し、event headと一致しない場合は実行・投稿・人間エスカレーションを抑止する。取得不能時も停止し、診断を残す。競合を完全には排除できないためmerge時の`--match-head-commit`は維持する。Ready後にheadが変わったreviewの`REQUEST_CHANGES`はfollow-up対象にせず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
 Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
