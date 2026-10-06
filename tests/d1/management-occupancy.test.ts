@@ -1,8 +1,26 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 import { managementOccupancyIntegrityQuery, seedManagementOccupancyFixture } from "./management-occupancy-fixture";
 
 beforeAll(async () => { await seedManagementOccupancyFixture("management-schema-file"); });
+beforeEach(async () => {
+  // Restore only this file's fixture rows; storage isolation remains the harness's responsibility.
+  const statements = [];
+  for (const table of ["admin_holds", "group_lessons"]) {
+    for (const id of ["occupancy", "admin", "group"]) {
+      statements.push(env.TEST_DB.prepare(`DELETE FROM ${table} WHERE occupancy_id = ?`).bind(id));
+    }
+  }
+  statements.push(
+    env.TEST_DB.prepare("INSERT INTO admin_holds (occupancy_id) VALUES ('admin')"),
+    env.TEST_DB.prepare("INSERT INTO group_lessons (occupancy_id) VALUES ('group')"),
+    env.TEST_DB.prepare(
+      "UPDATE student_reservations SET status = 'confirmed', cancelled_at = NULL WHERE id = 'reservation'",
+    ),
+  );
+  expect((await env.TEST_DB.batch(statements)).every((result) => result.success)).toBe(true);
+  expect((await env.TEST_DB.prepare(managementOccupancyIntegrityQuery).all()).results).toEqual([]);
+});
 afterEach(async () => {
   expect((await env.TEST_DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
 });
