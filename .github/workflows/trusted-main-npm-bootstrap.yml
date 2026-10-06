@@ -1,0 +1,75 @@
+name: Trusted Main Npm Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: 'root package.json を読む exact candidate commit SHA（40桁）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BOOTSTRAP_EVENT: ${{ github.event_name }}
+      BOOTSTRAP_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      BOOTSTRAP_REF: ${{ github.ref }}
+      BOOTSTRAP_SHA: ${{ github.sha }}
+      BOOTSTRAP_WORKFLOW_REF: ${{ github.workflow_ref }}
+      BOOTSTRAP_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Require exact trusted main source
+        shell: bash
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os, re
+          with open(os.environ['GITHUB_EVENT_PATH']) as stream:
+              event = json.load(stream)
+          valid = (
+              os.environ['BOOTSTRAP_EVENT'] == 'workflow_dispatch'
+              and os.environ['BOOTSTRAP_DEFAULT_BRANCH'] == 'main'
+              and os.environ['BOOTSTRAP_REF'] == 'refs/heads/main'
+              and os.environ['BOOTSTRAP_WORKFLOW_REF'] == os.environ['GITHUB_REPOSITORY']
+                  + '/.github/workflows/trusted-main-npm-bootstrap.yml@refs/heads/main'
+              and re.fullmatch('[0-9a-f]{40}', os.environ['BOOTSTRAP_SHA'])
+              and os.environ['BOOTSTRAP_WORKFLOW_SHA'] == os.environ['BOOTSTRAP_SHA']
+              and re.fullmatch('[0-9a-fA-F]{40}', os.environ['CANDIDATE_SHA'])
+              and event.get('inputs') == {'candidate_sha': os.environ['CANDIDATE_SHA']}
+          )
+          if not valid:
+              raise SystemExit('trusted-main npm bootstrap: source gate拒否')
+          print('trusted-main npm bootstrap: source gate通過')
+          PY
+
+      - name: Checkout exact trusted main SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Fetch candidate object without checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -c core.hooksPath=/dev/null fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
+
+      - name: Generate and verify bounded artifact
+        shell: bash
+        run: python3 -I -B .github/scripts/trusted-main-npm-bootstrap.py
+
+      - name: Upload verified manifest and lock
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-bootstrap-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/product-npm-bootstrap-artifact/package.json
+            ${{ runner.temp }}/product-npm-bootstrap-artifact/package-lock.json
+            ${{ runner.temp }}/product-npm-bootstrap-artifact/bootstrap-summary.json
+          if-no-files-found: error
+          retention-days: 3

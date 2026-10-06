@@ -506,10 +506,22 @@ for codex_job_name in 'develop-from-issue' 'respond-to-claude'; do
   else
     grep -Fqx '    timeout-minutes: 15' "$codex_job"
   fi
-  if grep -Eq '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' "$codex_job"; then
-    echo "$codex_job_name must fail closed." >&2
-    exit 1
-  fi
+  # Only #797 non-authoritative evidence steps may be non-fatal. Every
+  # execution, host-integrity, pause and write gate retains fail-closed status.
+  python3 -B - "$workflow" "$codex_job_name" <<'PY_NONFATAL'
+import sys
+import yaml
+job = yaml.safe_load(open(sys.argv[1]))['jobs'][sys.argv[2]]
+assert not job.get('continue-on-error', False)
+allowed = {'Collect trusted Codex Issue usage evidence',
+           'Upload sanitized Codex Issue usage evidence',
+           'Report Codex Issue usage evidence persistence'} if sys.argv[2] == 'develop-from-issue' else {
+           'Collect trusted Codex follow-up usage evidence',
+           'Upload sanitized Codex follow-up usage evidence',
+           'Report Codex follow-up usage evidence persistence'}
+actual = {s.get('name') for s in job['steps'] if s.get('continue-on-error', False)}
+assert actual == allowed, 'non-fatal step outside approved evidence scope'
+PY_NONFATAL
 done
 
 # Both paths use the pinned OpenAI action only for setup, resolve trusted
@@ -642,6 +654,47 @@ grep -Fq 'Implement the Issue in this working tree.' "$prompt_step"
 grep -Fq 'Write the final report for humans on GitHub in Japanese.' "$prompt_step"
 grep -Fq 'Keep the proposed repository change within the trusted diff guard contract.' "$prompt_step"
 grep -Fq 'Do not commit, push, open a pull request, merge, or contact external services;' "$prompt_step"
+for scope_rule in \
+  'Static pre-admission uses R/C/P/B; dynamically stop' \
+  'prerequisite cross-boundary Contract decision outside the current Issue authority' \
+  'The current implementation contract itself must change.' \
+  'A new prerequisite cross-boundary Contract absent from the current Issue/main is needed.' \
+  'A synthetic/dormant/narrower Contract must be promoted to the target mode.' \
+  'A new proof infrastructure Contract is a prerequisite.' \
+  'Fresh R/C/P/B evaluation transitions to Red / split-first.' \
+  'defining a new cross-boundary Contract and its downstream consumer in the same Issue' \
+  'A new trust / ownership / failure semantics boundary decision exceeds Issue authority.' \
+  'Do not emit the scope marker merely for existing C0 Contract reuse' \
+  'Contract definition/proof explicitly scoped by the current Issue' \
+  'a local bug fix, an existing fail-closed condition fixture, docs synchronization' \
+  'a P1 fixture/assertion, or a safe Follow-up / Idea that permits consistent completion' \
+  'These exceptions do not bypass a newly discovered prerequisite decision outside Issue authority.' \
+  'do not infer or finalize the new Contract, do not continue downstream integration' \
+  'do not leave speculative partial changes depending on the unresolved Contract in the working tree' \
+  'retain only the minimum observations needed for human judgment' \
+  'own unindented plain-text line in the final response' \
+  'Do not wrap that line in backticks or a Markdown fenced code block, or add leading/trailing whitespace. CRLF is allowed.' \
+  'observed fact, missing/new Contract category, why Done is impossible under the current contract, R/C/P/B changes, proposed split/prerequisite, Product impact, and unverified matters' \
+  'only the exact marker controls the workflow' \
+  'output only [REQUIREMENTS_CHANGE_REQUIRED] as the decision marker' \
+  'Never output both decision markers in one final response.' \
+  'Issue body before the existing /ai resume develop path can resume' \
+  'Do not automatically split Issues, convert them to parents, or retry.'; do
+  grep -Fq "$scope_rule" "$prompt_step"
+done
+test "$(grep -Fxc '          [SCOPE_DECISION_REQUIRED]' "$prompt_step")" -eq 1
+for label in 'Observed fact' 'Missing/new Contract category' \
+  'Why Done is impossible under the current contract' 'R/C/P/B change' \
+  'Proposed split/prerequisite' 'Product impact' 'Unverified matters'; do
+  [ "$(grep -Fxc "          $label" "$prompt_step")" -eq 1 ]
+  grep -Fq "$label" "$operations_doc"
+done
+for report_rule in '16 KiB' '1 KiB UTF-8' '8 KiB' \
+  'omit raw tool output, JSONL, token/secret/credential values' \
+  'absolute runner/toolcache paths' 'numeric UID/GID' \
+  'These labels validate human evidence only'; do
+  grep -Fq "$report_rule" "$prompt_step"
+done
 if grep -Eq 'blocking Claude finding|finding not implemented|upstream-phase decision' "$prompt_step"; then
   echo 'Issue-entry prompt must not include Claude follow-up duties.' >&2
   exit 1
@@ -716,7 +769,7 @@ grep -Fqx "        timeout-minutes: \${{ github.event.comment.body == '/codex de
 grep -Fqx '          CODEX_HOME: ${{ runner.temp }}/codex-home' "$developer_step"
 grep -Fqx '          CODEX_FINAL: ${{ runner.temp }}/codex-final.md' "$developer_step"
 grep -Fqx '          CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md' "$developer_step"
-grep -Fqx '          CODEX_MODEL: ${{ vars.CODEX_MODEL }}' "$developer_step"
+grep -Fqx '          CODEX_MODEL: ${{ steps.codex_model.outputs.model }}' "$developer_step"
 grep -Fqx '          CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action' "$developer_step"
 grep -Fqx '          CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}' "$developer_step"
 grep -Fqx '          CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}' "$developer_step"
@@ -871,7 +924,7 @@ grep -Fq -- '-u PROTECTED_UNIX_SOCKET_PATHS \' "$developer_step"
 grep -Fq -- '-u PROTECTED_UNIX_SOCKET_HOST_IDS \' "$developer_step"
 grep -Fq 'CODEX_MANAGED_PACKAGE_ROOT="$CODEX_PACKAGE_ROOT" ' "$developer_step"
 grep -Fq 'CODEX_MANAGED_BY_NPM=1 ' "$developer_step"
-grep -Fq '"$CODEX_NATIVE" exec ' "$developer_step"
+grep -Fq '"$CODEX_NATIVE" exec --json ' "$developer_step"
 grep -Fq -- '--skip-git-repo-check ' "$developer_step"
 grep -Fq -- '--cd "$GITHUB_WORKSPACE" ' "$developer_step"
 grep -Fq -- '--output-last-message "$CODEX_FINAL" ' "$developer_step"
@@ -923,6 +976,10 @@ for followup_rule in \
   'Do not silently change requirements to satisfy a finding.'; do
   grep -Fq "$followup_rule" "$followup_prompt_step"
 done
+if grep -Fq '[SCOPE_DECISION_REQUIRED]' "$followup_prompt_step"; then
+  echo 'Scope producer activation must remain limited to the Issue-origin prompt.' >&2
+  exit 1
+fi
 
 # The follow-up must use the same setup-only Action and hardened native
 # workload boundary as issue-origin development.  In particular, it must not
@@ -1221,7 +1278,7 @@ assert_hardened_codex_runtime() {
   awk '
     /^          exec sudo -n -- \\$/ { in_command = 1 }
     in_command { line = $0; sub(/^          /, "", line); print line }
-    in_command && /^            "\$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"$/ { exit }
+    in_command && /^            "\$stream_dir\/extract-codex-exec-usage.py"$/ { exit }
   ' "$runtime_run" > "$root_command"
   test -s "$root_command"
   local expected_sh_arg0=codex-developer
@@ -1285,6 +1342,322 @@ assert_marker_is_not_detected leading-whitespace $'\t[REQUIREMENTS_CHANGE_REQUIR
 assert_marker_is_not_detected trailing-whitespace '[REQUIREMENTS_CHANGE_REQUIRED] '
 assert_marker_is_not_detected inline-mention 'The marker [REQUIREMENTS_CHANGE_REQUIRED] is explained here.'
 
+# #730 supplies trusted helpers; #731 consumes only the Issue-origin classifier.
+python3 -B - "$repo_root" "$test_dir" <<'PY'
+from pathlib import Path
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+root, scratch = map(Path, sys.argv[1:])
+scope_helper = root / '.github/scripts/has-scope-decision-marker.sh'
+requirements_helper = root / '.github/scripts/has-requirements-change-marker.sh'
+decision_classifier = root / '.github/scripts/classify-ai-developer-decision-marker.sh'
+scope_marker = '[SCOPE_DECISION_REQUIRED]'
+requirements_marker = '[REQUIREMENTS_CHANGE_REQUIRED]'
+response = scratch / 'scope-marker-response.md'
+
+
+def classify(name, args, expected, helper=decision_classifier, cwd=None):
+    result = subprocess.run(['bash', str(helper), *map(str, args)],
+                            capture_output=True, cwd=cwd, timeout=5)
+    assert result.returncode == (2 if expected is None else 0), (
+        name, result.returncode, result.stderr)
+    assert result.stdout == (b'' if expected is None else (expected + '\n').encode()), (
+        'noncanonical classifier stdout', name, result.stdout)
+    assert bool(result.stderr) == (expected is None), (name, result.stderr)
+
+
+cases = (
+    ('exact LF', scope_marker + '\n', 0),
+    ('exact CRLF', scope_marker + '\r\n', 0),
+    ('no terminal newline', scope_marker, 0),
+    ('standalone in prose', 'Before\n' + scope_marker + '\nAfter\n', 0),
+    ('backtick', '`' + scope_marker + '`\n', 1),
+    ('indented', '  ' + scope_marker + '\n', 1),
+    ('leading space', ' ' + scope_marker + '\n', 1),
+    ('leading tab', '\t' + scope_marker + '\n', 1),
+    ('trailing space', scope_marker + ' \n', 1),
+    ('trailing tab CRLF', scope_marker + '\t\r\n', 1),
+    ('inline mention', 'The marker ' + scope_marker + ' is explained here.\n', 1),
+    ('requirements only', '[REQUIREMENTS_CHANGE_REQUIRED]\n', 1),
+    ('empty', '', 1),
+    ('backtick fence', '```text\n' + scope_marker + '\n```\n', 1),
+    ('tilde fence CRLF', '~~~\r\n' + scope_marker + '\r\n~~~\r\n', 1),
+    ('indented fence', '   ```\n' + scope_marker + '\n   ```\n', 1),
+    ('unclosed fence', '```\n' + scope_marker + '\n', 1),
+    ('short closing fence', '````\n```\n' + scope_marker + '\n````\n', 1),
+    ('mismatched fence', '```\n~~~\n' + scope_marker + '\n```\n', 1),
+    ('closing fence with text', '```\n```text\n' + scope_marker + '\n```\n', 1),
+    ('after closing fence', '```\n' + scope_marker + '\n```` \t\n' + scope_marker + '\n', 0),
+)
+for name, content, expected in cases:
+    response.write_bytes(content.encode())
+    result = subprocess.run(['bash', str(scope_helper), str(response)], capture_output=True)
+    assert result.returncode == expected, (name, result.returncode, result.stderr)
+    assert not result.stdout, ('unexpected helper output', name)
+    classification = ('requirements_change' if name == 'requirements only' else
+                      'scope_decision' if expected == 0 else 'none')
+    classify(name, [response], classification)
+
+# Preserve each primitive's contract, including the intentional fence asymmetry.
+for name, content, expected in (
+    ('requirements CRLF', requirements_marker + '\r\n', 'requirements_change'),
+    ('requirements no newline', requirements_marker, 'requirements_change'),
+    ('both', requirements_marker + '\n' + scope_marker + '\n', None),
+    ('both reversed CRLF', scope_marker + '\r\n' + requirements_marker + '\r\n', None),
+    ('both fenced', '```\n' + requirements_marker + '\n' + scope_marker + '\n```\n',
+     'requirements_change'),
+    ('fenced requirements plus scope', '~~~\n' + requirements_marker + '\n~~~\n' +
+     scope_marker + '\n', None),
+    ('free text is not a reason', 'requirements_change scope_decision\n', 'none'),
+):
+    response.write_bytes(content.encode())
+    classify(name, [response], expected)
+for text in ('`' + requirements_marker + '`', '  ' + requirements_marker,
+             '\t' + requirements_marker, requirements_marker + ' ',
+             'The marker ' + requirements_marker + ' is explained here.'):
+    response.write_text(text + '\n')
+    classify('requirements exactness', [response], 'none')
+
+for args in ([], [''], [scratch / 'missing-final-response.md'], [scratch],
+             [response, response]):
+    classify('invalid response path/arguments', args, None)
+unreadable = scratch / 'unreadable-final-response.md'
+unreadable.write_text(scope_marker + '\n')
+unreadable.chmod(0)
+try:
+    if os.geteuid() == 0:
+        print('SKIP unreadable response: root can read chmod(0) files; missing/non-regular checks still run')
+    else:
+        assert not os.access(unreadable, os.R_OK), 'unreadable fixture must be inaccessible'
+        classify('unreadable response', [unreadable], None)
+finally:
+    unreadable.chmod(0o600)
+fifo = scratch / 'final-response.fifo'
+os.mkfifo(fifo)
+classify('FIFO is invalid', [fifo], None)
+for filename in ('-', '-response.md', 'marker=value', 'response with spaces.md'):
+    (scratch / filename).write_text(scope_marker + '\n')
+    classify('relative awk operand', [filename], 'scope_decision', cwd=scratch)
+
+# Inject primitive exit statuses only into disposable sibling copies. Neither
+# environment overrides nor helper substitution are exposed by the classifier.
+mock_dir = scratch / 'decision-classifier-helpers'
+mock_dir.mkdir()
+mock_classifier = mock_dir / decision_classifier.name
+shutil.copyfile(decision_classifier, mock_classifier)
+for requirements_exit in (0, 1, 2, 7, 127):
+    for scope_exit in (0, 1, 2, 7, 127):
+        for helper, status in ((requirements_helper, requirements_exit),
+                               (scope_helper, scope_exit)):
+            (mock_dir / helper.name).write_text(
+                "printf 'unexpected helper stdout\\n'\nexit " + str(status) + '\n')
+        expected = {(0, 1): 'requirements_change', (1, 0): 'scope_decision',
+                    (1, 1): 'none'}.get((requirements_exit, scope_exit))
+        classify(('primitive exits', requirements_exit, scope_exit),
+                 [response], expected, mock_classifier)
+for helper in (requirements_helper, scope_helper):
+    for primitive in (requirements_helper, scope_helper):
+        shutil.copyfile(primitive, mock_dir / primitive.name)
+    (mock_dir / helper.name).unlink()
+    response.write_text('ordinary response\n')
+    classify('missing primitive', [response], None, mock_classifier)
+
+# Empty is marker-absent (1); missing input is a helper error (>1), matching
+# the existing requirements primitive rather than manufacturing a pause reason.
+for helper in (scope_helper, requirements_helper):
+    response.write_bytes(b'')
+    assert subprocess.run(['bash', str(helper), str(response)], capture_output=True).returncode == 1
+    assert subprocess.run(['bash', str(helper)], capture_output=True).returncode == 1
+    result = subprocess.run(['bash', str(helper), str(scratch / 'missing-final-response.md')], capture_output=True)
+    assert result.returncode > 1, ('missing response must fail', helper, result.returncode)
+response.write_bytes((scope_marker + '\n').encode())
+assert subprocess.run(['bash', str(requirements_helper), str(response)], capture_output=True).returncode == 1
+
+# Only exact Issue-origin supply/restore/consumer lines may execute the helpers.
+# Selector inventory mapping is read-only; only the Issue-origin prompt may
+# produce the scope marker (#729). Claude follow-up stays on requirements.
+workflow_path = root / '.github/workflows/ai-developer.yml'
+workflow_text = workflow_path.read_text()
+
+
+def step(name):
+    block = workflow_text.split('      - name: ' + name + '\n', 1)[1]
+    return block.split('      - name: ', 1)[0]
+
+
+def run_body(block):
+    return ''.join(line.removeprefix('          ') for line in
+                   block.split('        run: |\n', 1)[1].splitlines(keepends=True))
+
+
+prompt_block = step('Prepare fixed Codex developer prompt')
+prompt_file = scratch / 'generated-developer-prompt.md'
+result = subprocess.run(['bash', '-c', run_body(prompt_block)], capture_output=True,
+                        env={**os.environ, 'CODEX_PROMPT_FILE': str(prompt_file)}, timeout=5)
+assert result.returncode == 0, result.stderr
+assert prompt_file.read_text().splitlines().count(scope_marker) == 1
+assert scope_marker not in step('Prepare fixed Codex follow-up prompt')
+
+bootstrap = step('Prepare branch and Issue context')
+restore = step('Restore trusted post-Codex helpers')
+prepared = ((decision_classifier, 'decision_classifier'), (scope_helper, 'scope_marker'))
+allowed_supply = {}
+for helper, variable in prepared:
+    filename = helper.name
+    pre_lines = {
+        f'          {variable}_blob="$(git rev-parse "${{base_sha}}:.github/scripts/{filename}")"',
+        f'          git show "${{base_sha}}:.github/scripts/{filename}" > "$RUNNER_TEMP/{filename}"',
+        f'          test "$(git hash-object --no-filters "$RUNNER_TEMP/{filename}")" = "${variable}_blob"',
+        f'            "$RUNNER_TEMP/{filename}" \\',
+    }
+    post_lines = {
+        f"          restore_base_blob '.github/scripts/{filename}' \\",
+        f'            "$RUNNER_TEMP/{filename}" "${variable.upper()}_BLOB"',
+    }
+    for block, lines in ((bootstrap, pre_lines), (restore, post_lines)):
+        for line in lines:
+            assert block.splitlines().count(line) == 1, ('missing/duplicate staging line', line)
+    assert f'[[ "${variable}_blob" =~ ^[0-9a-f]{{40}}$ ]]' in bootstrap
+    assert f"printf '{variable}_blob=%s\\n' \"${variable}_blob\"" in bootstrap
+    assert (f'{variable.upper()}_BLOB: ${{{{ steps.issue_context.outputs.{variable}_blob }}}}'
+            in restore)
+    allowed_supply[filename] = pre_lines | post_lines
+    if helper == decision_classifier:
+        consumer = ('          classification="$(bash "$RUNNER_TEMP/' + filename +
+                    '" "$CODEX_FINAL")"')
+        assert step('Gate requirement changes').splitlines().count(consumer) == 1
+        allowed_supply[filename].add(consumer)
+    assert workflow_text.count(filename) == sum(line.count(filename) for line in allowed_supply[filename])
+assert 'has-requirements-change-marker.sh' not in step('Gate requirement changes')
+assert 'bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"' in step('Gate Codex follow-up requirement changes')
+# These are the actual Actions conditions: every stopped classification below
+# must skip staging/diff guard and all commit/push/PR creation in this job.
+assert "        if: steps.development-gate.outputs.continue == 'true'\n" in step('Evaluate trusted diff guard')
+assert ("        if: steps.development-gate.outputs.continue == 'true' && "
+        "steps.diff-guard.outputs.continue == 'true'\n") in step('Commit, push, and open or update PR')
+assert 'pause_for_human scope_decision' in step('Gate requirement changes')
+gate_run = run_body(step('Gate requirement changes'))
+assert gate_run.count("echo 'continue=false' >> \"$GITHUB_OUTPUT\"") == 1
+assert gate_run.count("echo 'continue=true' >> \"$GITHUB_OUTPUT\"") == 1
+decision_case = gate_run.split('case "$classification" in\n', 1)[1].split('esac', 1)[0]
+branches = re.findall(r'^  (requirements_change|scope_decision|none|\*)\)(.*?);;',
+                      decision_case, re.MULTILINE | re.DOTALL)
+assert [name for name, _ in branches] == ['requirements_change', 'none', 'scope_decision', '*']
+assert all(body.count('pause_for_human ') + body.count("echo 'continue=true'") == 1
+           for _, body in branches), 'each classification must emit exactly one decision'
+
+sources = [root / 'AGENTS.md', *sorted((root / '.github/workflows').glob('*')),
+           *sorted((root / '.github/scripts').glob('*'))]
+for source in sources:
+    if not source.is_file() or source in (scope_helper, decision_classifier):
+        continue
+    if source.parent.name == 'scripts' and source.name.startswith('test-'):
+        continue
+    content = source.read_text()
+    if source == workflow_path:
+        assert content.count(scope_marker) == prompt_block.count(scope_marker) == 1
+        content_without_prompt = content.replace(prompt_block, '', 1)
+        assert scope_marker not in content_without_prompt, 'scope marker escaped Issue-origin prompt'
+    else:
+        assert scope_marker not in content, ('scope marker escaped Issue-origin activation', source)
+    for filename, allowed_lines in allowed_supply.items():
+        references = [line for line in content.splitlines() if filename in line]
+        if source == root / '.github/scripts/select-ai-workflow-fixtures.py' and filename == decision_classifier.name:
+            assert references == ['    (SCRIPTS + "' + filename + '", ("ai-developer-codex",)),']
+            continue
+        assert not references or (source == workflow_path and set(references) == allowed_lines
+                                  and len(references) == len(allowed_lines)), (
+            'unexpected decision helper consumer', source, references)
+
+# Execute the production bootstrap/restore run bodies with only remote/context
+# inputs mocked. All blob reads and hashes use the repository's local base.
+base = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+staging = scratch / 'prepared-supply'
+staging.mkdir()
+runner = staging / 'runner'
+runner.mkdir()
+output = staging / 'output'
+bootstrap_script = staging / 'bootstrap.sh'
+restore_script = staging / 'restore.sh'
+bootstrap_script.write_text(run_body(bootstrap))
+restore_script.write_text(run_body(restore))
+harness = r'''set -euo pipefail
+git() {
+  case "$1" in
+    fetch|checkout) return 0 ;;
+    rev-parse)
+      if [ "${2-}" = --verify ]; then printf '%s\n' "$FIXTURE_BASE"; return; fi ;;
+  esac
+  if [[ "$*" == *"$FAULT_HELPER"* ]] && [ -n "$FAULT_HELPER" ]; then
+    if [ "$FAULT" = missing ] && [[ "$1" == show || "$1" == rev-parse ]]; then return 1; fi
+    if [ "$FAULT" = tampered ] && [ "$1" = show ]; then printf 'exit 99\n'; return; fi
+  fi
+  command git -C "$FIXTURE_ROOT" "$@"
+}
+gh() {
+  [ "$1 $2" = 'issue view' ] || return 2
+  printf '{"number":730,"title":"Prepared supply","body":"fixture","url":"local","comments":[],"labels":[]}\n'
+}
+export -f git gh
+bash "$1"
+'''
+env = {**os.environ, 'FIXTURE_ROOT': str(root), 'FIXTURE_BASE': base,
+       'BASE_SHA': base, 'RUNNER_TEMP': str(runner), 'GITHUB_OUTPUT': str(output),
+       'GITHUB_ENV': str(staging / 'env'), 'GITHUB_STEP_SUMMARY': str(staging / 'summary'),
+       'ISSUE_NUMBER': '730', 'GITHUB_REPOSITORY': 'owner/repo',
+       'PRE_WRITE_REMOTE_HEAD': 'absent', 'FAULT_HELPER': '', 'FAULT': ''}
+
+
+def execute(script, overrides=None):
+    return subprocess.run(['bash', '-c', harness, '--', str(script)], cwd=staging,
+                          env={**env, **(overrides or {})}, capture_output=True, timeout=10)
+
+
+result = execute(bootstrap_script)
+assert result.returncode == 0, result.stderr
+pinned = dict(line.split('=', 1) for line in output.read_text().splitlines())
+for helper, variable in prepared:
+    identity = subprocess.check_output(['git', '-C', str(root), 'rev-parse',
+                                       base + ':.github/scripts/' + helper.name], text=True).strip()
+    assert pinned[variable + '_blob'] == identity and len(identity) == 40
+    assert not (runner / helper.name).exists(), ('bootstrap helper survived workload entry', helper)
+for helper, variable in prepared:
+    for fault in ('missing', 'tampered'):
+        result = execute(bootstrap_script, {'FAULT_HELPER': helper.name, 'FAULT': fault})
+        assert result.returncode != 0, ('unsafe bootstrap passed', helper, fault)
+
+# Carry identities via the step's real output/env bindings, never runner files.
+import re
+for key, binding in re.findall(r'^          ([A-Z_]+): \$\{\{ steps\.issue_context\.outputs\.([a-z_]+) \}\}',
+                             restore, re.MULTILINE):
+    env[key] = pinned[binding]
+for helper in (requirements_helper, *[item[0] for item in prepared]):
+    (runner / helper.name).write_text('exit 99\n')
+(runner / 'codex-diff-guard-contract.json').write_text('{}\n')
+result = execute(restore_script)
+assert result.returncode == 0, result.stderr
+for helper in (requirements_helper, *[item[0] for item in prepared]):
+    assert (runner / helper.name).read_bytes() == subprocess.check_output(
+        ['git', '-C', str(root), 'show', base + ':.github/scripts/' + helper.name])
+response.write_text('ordinary response\n')
+classify('restored sibling primitives', [response], 'none', runner / decision_classifier.name,
+         cwd=staging)
+for helper, variable in prepared:
+    key = variable.upper() + '_BLOB'
+    for invalid in ('', 'BAD', '0' * 40):
+        result = execute(restore_script, {key: invalid})
+        assert result.returncode != 0, ('invalid pinned identity passed', helper, invalid)
+    for fault in ('missing', 'tampered'):
+        result = execute(restore_script, {'FAULT_HELPER': helper.name, 'FAULT': fault})
+        assert result.returncode != 0, ('unsafe restore passed', helper, fault)
+print('Prepared trusted supply/restore and fail-closed fixtures passed')
+print('Decision classifier and scope marker primitive fixtures passed')
+PY
+
 extract_workflow_step() {
   local step_name="${1:?step name is required}"
   local output_path="${2:?output path is required}"
@@ -1329,10 +1702,11 @@ fi
 
 # Both Codex requirement-change gates must fail closed for helper and final
 # response failures, and only their successful gates may reach repository write.
-grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。' "$workflow"
+grep -Fq 'decision markerの分類に失敗しました。人間の判断があるまで自動開発を停止します。' "$workflow"
 grep -Fq '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動フォローアップを停止します。' "$workflow"
-if [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 2 ]; then
-  echo 'Both Codex requirement-change gates must fail closed when their helper fails.' >&2
+if [ "$(grep -Fc 'classification_status=$?' "$workflow")" -ne 1 ] ||
+   [ "$(grep -Fc 'marker_status=$?' "$workflow")" -ne 1 ]; then
+  echo 'Issue classifier and follow-up marker gate must each capture their helper status.' >&2
   exit 1
 fi
 if [ "$(grep -Fc 'if [ ! -s "$CODEX_FINAL" ]; then' "$workflow")" -ne 2 ]; then
@@ -1793,11 +2167,11 @@ for gate in "$issue_requirements" "$issue_diff_guard"; do
   fi
 done
 grep -Fq "pause_for_human developer_execution_failed 'Codexの最終報告がありません" "$issue_requirements"
-grep -Fq "pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました" "$issue_requirements"
+grep -Fq "pause_for_human developer_execution_failed 'decision markerの分類に失敗しました" "$issue_requirements"
 grep -Fq "pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました" "$issue_requirements"
 grep -Fq 'local options=(--failed-action develop)' "$issue_requirements"
-grep -Fq "[ \"\$marker_status\" -gt 1 ]" "$issue_requirements"
-grep -Fq "[ \"\$marker_status\" -eq 0 ]" "$issue_requirements"
+grep -Fq '[ "$classification_status" -ne 0 ]' "$issue_requirements"
+grep -Fq 'case "$classification" in' "$issue_requirements"
 grep -Fq "echo 'continue=true' >> \"\$GITHUB_OUTPUT\"" "$issue_requirements"
 grep -Fq 'pause_reason=diff_guard_error' "$issue_diff_guard"
 grep -Fq 'pause_reason=diff_guard_exceeded' "$issue_diff_guard"
@@ -1819,64 +2193,366 @@ awk '
 ' "$issue_requirements" > "$requirements_run"
 requirements_case="$test_dir/requirements-cases"
 mkdir -p "$requirements_case/bin" "$requirements_case/runner/trusted-human-pause"
+for helper in create-human-pause human-pause-record list-human-pause-records \
+  validate-human-pause-record-graph decompose-human-pause-record-graph \
+  derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance \
+  reconcile-human-pause-active-pause apply-human-pause \
+  format-human-pause-notification notify-human; do
+  cp "$repo_root/.github/scripts/$helper.sh" "$requirements_case/runner/trusted-human-pause/$helper.sh"
+done
+mv "$requirements_case/runner/trusted-human-pause/create-human-pause.sh" \
+  "$requirements_case/runner/trusted-human-pause/create-human-pause-real.sh"
 cat > "$requirements_case/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "$GATE_CALLS"
 case "$1 $2" in
-  'pr list') printf '[]\n' ;;
+  'pr list')
+    if [ "$SCENARIO" = scope_pr ]; then
+      printf '[{"number":37,"headRefName":"ai/issue-169","isCrossRepository":false}]\n'
+    else printf '[]\n'; fi ;;
+  'pr view') printf '{"closingIssuesReferences":[{"number":169,"url":"https://github.com/owner/repo/issues/169"}]}\n' ;;
   'api /apps/dev') printf '123\n' ;;
-  'api /repos/owner/repo/issues/169') printf '{"body":"line\\n"}\n' ;;
-  'issue comment') exit 0 ;;
+  'api /repos/owner/repo/issues/169') cat "$ISSUE_BODY_JSON" ;;
+  'api --paginate') jq -c '[.]' "$PAUSE_COMMENTS" ;;
+  'api -X')
+    [ "$3" = POST ] && [[ "$4" == /repos/owner/repo/issues/*/comments ]]
+    [ "$5" = -f ] && [[ "$6" == body=* ]]
+    printf '%s' "${6#body=}" > "$PAUSE_RECORD"
+    jq -n --rawfile body "$PAUSE_RECORD" \
+      '[{id:101,body:$body,performed_via_github_app:{id:123}}]' > "$PAUSE_COMMENTS"
+    printf '{"id":101}\n' ;;
+  'label create'|'issue edit') exit 0 ;;
+  'issue comment')
+    if [ "$6" = --body-file ]; then
+      # Persist only the file actually offered to GitHub, after real pause creation.
+      [ -s "$PAUSE_RECORD" ]
+      grep -Fq 'issue comment 169 --repo owner/repo --body ' "$GATE_CALLS"
+      cp "$7" "$SCOPE_COMMENT"
+      if [ "$SCENARIO" = scope_comment_failure ]; then
+        echo 'COMMENT_API_RAW_CANARY' >&2
+        echo 'COMMENT_API_RAW_CANARY'
+        exit 7
+      fi
+    fi
+    exit 0 ;;
   *) echo "Unexpected gh call: $*" >&2; exit 2 ;;
 esac
 EOF
-cat > "$requirements_case/runner/has-requirements-change-marker.sh" <<'EOF'
-#!/usr/bin/env bash
-exit "$MARKER_EXIT"
-EOF
 cat > "$requirements_case/runner/trusted-human-pause/create-human-pause.sh" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
 printf '%s\n' "$*" >> "$PAUSE_CALLS"
+exec bash "$(dirname "$0")/create-human-pause-real.sh" "$@"
 EOF
-chmod +x "$requirements_case/bin/gh"
-for scenario in missing marker helper_failure absent; do
+cat > "$requirements_case/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat > "$PAUSE_NOTIFICATION"
+EOF
+chmod +x "$requirements_case/bin/gh" "$requirements_case/bin/curl"
+cat > "$requirements_case/bin/mktemp" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$SCENARIO" = scope_temp_failure ] && [[ "$*" == *scope-report.XXXXXX* ]]; then
+  echo 'TEMP_FILE_RAW_CANARY' >&2
+  exit 7
+fi
+exec /usr/bin/mktemp "$@"
+EOF
+chmod +x "$requirements_case/bin/mktemp"
+# Include Unicode, CRLF, blank lines and terminal newlines in the API body;
+# hash decoded UTF-8 bytes independently, without shell newline stripping.
+python3 - "$requirements_case" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+directory = Path(sys.argv[1])
+body = '対象範囲\r\n\nline\n\n'
+(directory / 'issue-body.json').write_text(json.dumps({'body': body}))
+(directory / 'expected-fingerprint').write_text('sha256:' + hashlib.sha256(body.encode()).hexdigest())
+PY
+for scenario in missing empty marker marker_crlf absent free_text scope scope_crlf scope_pr both \
+  scope_missing_field scope_duplicate scope_empty_field scope_bad_label scope_utf8 scope_nul \
+  scope_control scope_bare_cr scope_bidi scope_final_limit scope_final_oversize \
+  scope_field_limit scope_field_oversize scope_render_oversize scope_symlink \
+  scope_token scope_private_key scope_aws scope_bearer scope_jwt scope_webhook \
+  scope_secret scope_env scope_home scope_uid scope_gid scope_toolcache scope_runner \
+  scope_raw_jsonl scope_comment_failure scope_temp_failure scope_escaped \
+  classifier_missing requirements_helper_missing missing_scope_helper helper_failure \
+  classifier_nonzero classifier_nonzero_with_valid_output unknown_output empty_output \
+  multiple_output whitespace_output valid_output_stderr; do
   : > "$requirements_case/output"
   : > "$requirements_case/pause-calls"
+  : > "$requirements_case/gate-calls"
+  printf '[]\n' > "$requirements_case/comments.json"
+  rm -f "$requirements_case/record.md" "$requirements_case/notification.json" "$requirements_case/scope-comment.md" "$requirements_case/final"
+  for helper in classify-ai-developer-decision-marker has-requirements-change-marker has-scope-decision-marker; do
+    cp "$repo_root/.github/scripts/$helper.sh" "$requirements_case/runner/$helper.sh"
+  done
+  printf 'response\n' > "$requirements_case/final"
+  classifier_stdout='' classifier_exit=0
   case "$scenario" in
-    missing) : > "$requirements_case/final"; marker_exit=0 ;;
-    marker) printf 'marker\n' > "$requirements_case/final"; marker_exit=0 ;;
-    helper_failure) printf 'response\n' > "$requirements_case/final"; marker_exit=2 ;;
-    absent) printf 'response\n' > "$requirements_case/final"; marker_exit=1 ;;
+    missing) rm "$requirements_case/final" ;;
+    empty) : > "$requirements_case/final" ;;
+    marker) printf '[REQUIREMENTS_CHANGE_REQUIRED]\n' > "$requirements_case/final" ;;
+    marker_crlf) printf '[REQUIREMENTS_CHANGE_REQUIRED]\r\n' > "$requirements_case/final" ;;
+    free_text) printf 'requirements_change scope_decision\n' > "$requirements_case/final" ;;
+    scope) printf '[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
+    scope_crlf) printf '[SCOPE_DECISION_REQUIRED]\r\n' > "$requirements_case/final" ;;
+    scope_pr) printf '[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
+    both) printf '[REQUIREMENTS_CHANGE_REQUIRED]\n[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
+    classifier_missing) rm "$requirements_case/runner/classify-ai-developer-decision-marker.sh" ;;
+    requirements_helper_missing) rm "$requirements_case/runner/has-requirements-change-marker.sh" ;;
+    missing_scope_helper) rm "$requirements_case/runner/has-scope-decision-marker.sh" ;;
+    helper_failure) printf 'exit 7\n' > "$requirements_case/runner/has-scope-decision-marker.sh" ;;
+    classifier_nonzero) classifier_exit=1 ;;
+    classifier_nonzero_with_valid_output) classifier_stdout=none; classifier_exit=7 ;;
+    unknown_output) classifier_stdout=unexpected ;;
+    multiple_output) classifier_stdout=$'none\nrequirements_change' ;;
+    whitespace_output) classifier_stdout=' none ' ;;
+    valid_output_stderr) classifier_stdout=none ;;
   esac
+  if [[ "$scenario" == scope* ]]; then
+    python3 - "$scenario" "$requirements_case/final" <<'PY_SCOPE'
+from pathlib import Path
+import sys
+scenario, filename = sys.argv[1:]
+labels = ('Observed fact', 'Missing/new Contract category',
+          'Why Done is impossible under the current contract', 'R/C/P/B change',
+          'Proposed split/prerequisite', 'Product impact', 'Unverified matters')
+values = ['観測した事実', '未定義の境界契約', '現在契約では下流を接続できない',
+          'R=1 / C=C0 → C2 / P=P1 / B=2', '前提の契約判断を先行する',
+          'POL / BR / REQ / AC / TC / CON / OOS: none', '外部事実は未検証']
+unsafe = {
+    'scope_token': 'sk-test_credential_canary',
+    'scope_private_key': '-----BEGIN RSA PRIVATE KEY-----',
+    'scope_aws': 'AKIA' + 'X' * 16,
+    'scope_bearer': 'Bearer test_credential_canary',
+    'scope_jwt': 'eyJjYW5hcnk.abc.def',
+    'scope_webhook': 'https://discord.invalid/api/webhooks/123/canary',
+    'scope_secret': 'password: test_credential_canary',
+    'scope_env': 'EXAMPLE_ENV=test_environment_canary',
+    'scope_home': 'HOME=test_environment_canary',
+    'scope_uid': 'uid=1001(test_runner_canary)',
+    'scope_gid': 'UID/GID: 1001/65534 test_runner_canary',
+    'scope_toolcache': '/opt/hostedtoolcache/canary/bin/tool',
+    'scope_runner': '/home/runner/work/_temp/canary',
+    'scope_raw_jsonl': '{"type":"item.completed","item":{"text":"RAW_JSONL_CANARY"}}',
+}
+if scenario in unsafe:
+    values[0] = unsafe[scenario]
+if scenario == 'scope_escaped':
+    values[0] = '<script>canary</script> @owner [リンク](https://example.invalid) *文字*'
+if scenario in ('scope_field_limit', 'scope_field_oversize', 'scope_render_oversize'):
+    values = [('あ' * 341 + 'x') if scenario != 'scope_render_oversize' else '<' * 1024] * 7
+    if scenario == 'scope_field_oversize':
+        values[0] += 'x'
+lines = [label + ': ' + value for label, value in zip(labels, values)]
+if scenario == 'scope_missing_field':
+    lines.pop()
+if scenario == 'scope_duplicate':
+    lines.append(lines[0])
+if scenario == 'scope_empty_field':
+    lines[0] = labels[0] + ':  '
+if scenario == 'scope_bad_label':
+    lines[0] = labels[0] + ':値'
+raw = ('[SCOPE_DECISION_REQUIRED]\n' + '\n'.join(lines) + '\n').encode()
+# Outside the seven fields: the whole final must never be copied to GitHub.
+raw += b'FINAL_OUTSIDE_FIELDS_CANARY\n'
+if scenario == 'scope_crlf':
+    raw = raw.replace(b'\n', b'\r\n')
+for name, suffix in [('scope_utf8', b'\xff'), ('scope_nul', b'\x00'),
+                     ('scope_control', b'\x1b'), ('scope_bare_cr', b'\r'),
+                     ('scope_bidi', '\u202e'.encode())]:
+    if scenario == name:
+        raw += suffix
+if scenario in ('scope_final_limit', 'scope_final_oversize'):
+    raw += b'x' * (16384 - len(raw))
+    if scenario == 'scope_final_oversize':
+        raw += b'x'
+path = Path(filename)
+if scenario == 'scope_symlink':
+    path.unlink()
+    target = path.with_name('symlink-source')
+    target.write_bytes(raw)
+    path.symlink_to(target)
+else:
+    path.write_bytes(raw)
+PY_SCOPE
+  fi
+  case "$scenario" in
+    classifier_nonzero*|*_output|valid_output_stderr)
+      cat > "$requirements_case/runner/classify-ai-developer-decision-marker.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$CLASSIFIER_STDOUT"
+printf 'requirements_change scope_decision diagnostic only\n' >&2
+exit "$CLASSIFIER_EXIT"
+EOF
+      ;;
+  esac
+  gate_status=0
   (
     unset -f gh
     PATH="$requirements_case/bin:$PATH" \
       RUNNER_TEMP="$requirements_case/runner" \
       CODEX_FINAL="$requirements_case/final" \
-      MARKER_EXIT="$marker_exit" \
+      CLASSIFIER_STDOUT="$classifier_stdout" CLASSIFIER_EXIT="$classifier_exit" \
+      SCENARIO="$scenario" ISSUE_BODY_JSON="$requirements_case/issue-body.json" \
+      PAUSE_COMMENTS="$requirements_case/comments.json" PAUSE_RECORD="$requirements_case/record.md" \
+      PAUSE_NOTIFICATION="$requirements_case/notification.json" \
+      SCOPE_COMMENT="$requirements_case/scope-comment.md" \
+      NOTIFICATION_WEBHOOK_URL=https://discord.invalid/fixture \
       PAUSE_CALLS="$requirements_case/pause-calls" \
+      GATE_CALLS="$requirements_case/gate-calls" \
       GITHUB_OUTPUT="$requirements_case/output" \
       GITHUB_REPOSITORY=owner/repo ISSUE_NUMBER=169 APP_SLUG=dev \
       bash "$requirements_run"
-  )
-  if [ "$scenario" = absent ]; then
+  ) > "$requirements_case/stdout" 2> "$requirements_case/stderr" || gate_status=$?
+  if [[ "$scenario" == absent || "$scenario" == free_text || "$scenario" == valid_output_stderr ]]; then
     grep -Fxq 'continue=true' "$requirements_case/output"
     [ ! -s "$requirements_case/pause-calls" ]
+    [ ! -s "$requirements_case/gate-calls" ]
   else
     grep -Fxq 'continue=false' "$requirements_case/output"
     case "$scenario" in
-      marker)
-        grep -Fq 'create owner/repo 169 - 123 requirements_change' "$requirements_case/pause-calls"
-        expected="sha256:$(printf 'line\n' | sha256sum | cut -d' ' -f1)"
+      marker|marker_crlf|scope*)
+        reason=requirements_change pr_number=- target=issue:169
+        if [[ "$scenario" == scope* ]]; then reason=scope_decision; fi
+        if [ "$scenario" = scope_pr ]; then pr_number=37; target=pr:37; fi
+        grep -Fq "create owner/repo 169 $pr_number 123 $reason" "$requirements_case/pause-calls"
+        expected="$(cat "$requirements_case/expected-fingerprint")"
         grep -Fq -- "--issue-body-fingerprint $expected" "$requirements_case/pause-calls"
+        [ "$(grep -Fc 'api /repos/owner/repo/issues/169' "$requirements_case/gate-calls")" -eq 1 ]
+        record="$(bash "$repo_root/.github/scripts/human-pause-record.sh" parse "$requirements_case/record.md")"
+        jq -e --arg reason "$reason" --arg fp "$expected" --arg target "$target" '
+          keys == ["kind","payload","reason","target","version"] and
+          .version == 1 and .kind == "pause" and .reason == $reason and .target == $target and
+          (.payload | keys == ["detail","issue_body_fingerprint"]) and
+          .payload.issue_body_fingerprint == $fp
+        ' <<< "$record" >/dev/null
+        grep -Fq 'issue edit 169 --repo owner/repo --add-label human-review-required' "$requirements_case/gate-calls"
+        if [ "$scenario" = scope_pr ]; then
+          grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$requirements_case/gate-calls"
+        fi
+        jq -e --arg reason "$reason" '.allowed_mentions == {parse: []} and
+          (.content | contains("(" + $reason + ")"))' "$requirements_case/notification.json" >/dev/null
+        if [[ "$scenario" == scope* ]]; then
+          jq -e '.content | contains("スコープの判断が必要") and contains("対象範囲をIssueに記録してください。")' \
+            "$requirements_case/notification.json" >/dev/null
+          context="$(jq -cn --argjson record "$record" --arg fp "$expected" '
+            {command:{result:"accepted",actor:"suzukure",action:"develop"},target:$record.target,
+             closing_issue:{number:169,state:"open",body_fingerprint:$fp},
+             pull_request:(if $record.target == "pr:37" then
+               {number:37,state:"open",base_ref:"main",head_ref:"ai/issue-169",head_sha:("a"*40)}
+               else null end),follow_up_issue:null,
+             pause:{result:"active",pause_id:"101",reason:$record.reason,record:$record}}')"
+          bash "$repo_root/.github/scripts/prepare-ai-resume.sh" <<< "$context" |
+            jq -e '. == {result:"reject",code:"issue_body_not_updated"}' >/dev/null
+          updated="sha256:$(printf '対象範囲を更新\n' | sha256sum | cut -d' ' -f1)"
+          jq -c --arg fp "$updated" '.closing_issue.body_fingerprint=$fp' <<< "$context" |
+            bash "$repo_root/.github/scripts/prepare-ai-resume.sh" |
+            jq -e --arg old "$expected" --arg new "$updated" --arg target "$target" '
+              .result == "prepared" and .dispatch ==
+                {version:1,target:$target,action:"develop",actor:"suzukure",source_pause_id:"101",
+                 reason:"scope_decision",closing_issue_number:169,
+                 pr_number:(if $target == "pr:37" then 37 else null end),paused_head:null,
+                 prepared_head:(if $target == "pr:37" then "a"*40 else null end),
+                 pause_issue_body_fingerprint:$old,prepared_issue_body_fingerprint:$new,follow_up_issue:null}
+            ' >/dev/null
+          jq -c '.command.action="review"' <<< "$context" |
+            bash "$repo_root/.github/scripts/prepare-ai-resume.sh" |
+            jq -e '. == {result:"reject",code:"action_not_allowed"}' >/dev/null
+        fi
         ;;
       *)
         grep -Fq 'create owner/repo 169 - 123 developer_execution_failed' "$requirements_case/pause-calls"
         grep -Fq -- '--failed-action develop' "$requirements_case/pause-calls"
+        if grep -Fq '123 scope_decision' "$requirements_case/pause-calls"; then
+          echo "Classifier error/ambiguity must not create a scope pause: $scenario" >&2
+          exit 1
+        fi
+        record="$(bash "$repo_root/.github/scripts/human-pause-record.sh" parse "$requirements_case/record.md")"
+        jq -e '.reason == "developer_execution_failed" and .reason != "scope_decision"' \
+          <<< "$record" >/dev/null
+        if grep -Fq -- '--issue-body-fingerprint' "$requirements_case/pause-calls" ||
+           grep -Fq 'api /repos/owner/repo/issues/169' "$requirements_case/gate-calls"; then
+          echo "Generic developer failure must not use requirements/scope fingerprint: $scenario" >&2
+          exit 1
+        fi
         ;;
     esac
   fi
+  case "$scenario" in
+    scope|scope_crlf|scope_pr|scope_final_limit|scope_field_limit|scope_escaped)
+      [ "$gate_status" -eq 0 ]
+      python3 - "$requirements_case/scope-comment.md" "$scenario" <<'PY_SCOPE'
+from pathlib import Path
+import sys
+report = Path(sys.argv[1]).read_bytes()
+assert len(report) <= 8192
+text = report.decode('utf-8')
+for label in ('Observed fact', 'Missing/new Contract category',
+              'Why Done is impossible under the current contract', 'R/C/P/B change',
+              'Proposed split/prerequisite', 'Product impact', 'Unverified matters'):
+    assert text.count('- ' + label + ': ') == 1
+assert 'FINAL_OUTSIDE_FIELDS_CANARY' not in text
+assert '[SCOPE_DECISION_REQUIRED]' not in text
+if sys.argv[2] == 'scope_escaped':
+    assert '<script>' not in text and '@owner' not in text
+    assert '&lt;script&gt;' in text and '&#64;owner' in text
+    assert '\\[リンク\\]\\(' in text
+else:
+    assert '外部事実は未検証' in text or 'あ' * 341 in text
+PY_SCOPE
+      ;;
+    scope_comment_failure)
+      [ "$gate_status" -ne 0 ]
+      [ -s "$requirements_case/scope-comment.md" ]
+      grep -Fq 'スコープ判断理由の投稿を確認できませんでした。' "$requirements_case/stderr"
+      ;;
+    scope*)
+      [ "$gate_status" -ne 0 ]
+      [ ! -e "$requirements_case/scope-comment.md" ]
+      grep -Fq 'スコープ判断理由の検証に失敗しました。' "$requirements_case/stderr"
+      grep -Fq 'スコープ判断理由を安全な形式・上限内で検証できませんでした。' "$requirements_case/record.md"
+      ;;
+    *)
+      [ "$gate_status" -eq 0 ]
+      [ ! -e "$requirements_case/scope-comment.md" ]
+      ;;
+  esac
+  # Compare logs/comments with actual unsafe input: no raw rejection or API error.
+  if [[ "$scenario" == scope* ]]; then
+    python3 - "$requirements_case" "$scenario" <<'PY_SCOPE'
+from pathlib import Path
+import sys
+root, scenario = Path(sys.argv[1]), sys.argv[2]
+public = ''.join((root / name).read_text() for name in
+                 ('stdout', 'stderr', 'gate-calls', 'pause-calls', 'record.md'))
+if (root / 'scope-comment.md').exists():
+    public += (root / 'scope-comment.md').read_text()
+for canary in ('FINAL_OUTSIDE_FIELDS_CANARY', 'COMMENT_API_RAW_CANARY', 'TEMP_FILE_RAW_CANARY',
+               'test_credential_canary', 'test_environment_canary', 'test_runner_canary',
+               '/opt/hostedtoolcache/canary', '/home/runner/work/_temp/canary', 'RAW_JSONL_CANARY'):
+    assert canary not in public, (scenario, canary)
+PY_SCOPE
+    # The real Actions conditions above require success and continue=true.
+    # Sentinels model all downstream writes; no stopped scope case can run them.
+    : > "$requirements_case/downstream"
+    if [ "$gate_status" -eq 0 ] && grep -Fxq 'continue=true' "$requirements_case/output"; then
+      printf 'diff guard\ncommit\npush\nPR write\n' > "$requirements_case/downstream"
+    fi
+    [ ! -s "$requirements_case/downstream" ]
+    [ -z "$(find "$requirements_case/runner" -maxdepth 1 -name 'scope-report.*' -print)" ]
+  fi
+  [ "$(wc -l < "$requirements_case/output")" -eq 1 ]
+  if grep -Eq '^(pr create|pr comment|pr ready) ' "$requirements_case/gate-calls"; then
+    echo "Decision gate published a PR: $scenario" >&2
+    exit 1
+  fi
 done
+
+echo 'Scope report persistence, bounded rejection, pause ordering and write failure fixtures passed.'
 
 # Execute the workflow's hash snippet on a body with a terminal newline.
 fingerprint_code="$test_dir/issue-body-fingerprint.py"
@@ -1894,4 +2570,650 @@ if printf '{"body":null}' | python3 "$fingerprint_code" >/dev/null 2>&1; then
   exit 1
 fi
 
+# #759: run the production caller with trusted Git blobs and secretless inputs.
+# Keep this inside the existing Developer fixture: no new inventory/count entry.
+python3 -B - "$repo_root" "$test_dir" <<'PY_MODEL_FIXTURE'
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import yaml
+
+# Earlier shell fixtures export gh functions; isolate this executable stub boundary.
+clean_environment = {k: v for k, v in os.environ.items() if not k.startswith('BASH_FUNC_')}
+repo, temporary = map(Path, sys.argv[1:])
+workflow = yaml.safe_load((repo / '.github/workflows/ai-developer.yml').read_text())
+base = 'a' * 40
+issue = 169
+pr = 37  # Deliberately distinct from Issue identity.
+normal = 'fixture-normal-v1'
+fixture = temporary / 'model-caller'
+fixture.mkdir()
+trusted = fixture / 'trusted'
+trusted.mkdir()
+workspace = fixture / 'pr-worktree'
+(workspace / '.github/scripts').mkdir(parents=True)
+selector_name = 'select-codex-issue-model.py'
+policy_name = 'codex-issue-model-policy.json'
+source = (repo / '.github/scripts' / selector_name).read_text()
+policy = json.loads((repo / '.github/scripts' / policy_name).read_text())
+assert policy['entries'] == [dict(issue=635, model='gpt-6-luna')]
+# Neither a malicious worktree helper nor a worktree opt-in policy is authority.
+(workspace / '.github/scripts' / selector_name).write_text('raise RuntimeError("worktree-used")\n')
+# Trusted Python must also exclude PR/worktree and inherited module search paths.
+(workspace / 'json.py').write_text('raise RuntimeError("worktree-module-used")\n')
+(workspace / '.github/scripts' / policy_name).write_text(json.dumps({**policy,
+    'entries': [dict(issue=issue, model='gpt-6-luna')]}))
+bin_dir = fixture / 'bin'
+bin_dir.mkdir()
+(bin_dir / 'git').write_text('''#!/usr/bin/env python3
+import hashlib, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+base = 'a' * 40
+mode = os.environ['SUPPLY_CASE']
+def blob(data):
+    return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\\0' + data).hexdigest()
+if args[0] in ('rev-parse', 'show'):
+    assert len(args) == 2 and args[1].startswith(base + ':.github/scripts/')
+    name = args[1].split('/')[-1]
+    assert name in ('select-codex-issue-model.py', 'codex-issue-model-policy.json')
+    if mode == 'missing-' + name or (mode == 'show-failed' and args[0] == 'show'):
+        sys.exit(7)
+    data = (Path(os.environ['TRUSTED_SOURCES']) / name).read_bytes()
+    if args[0] == 'rev-parse':
+        print('invalid' if mode == 'bad-blob' else blob(data))
+    else:
+        sys.stdout.buffer.write(data + (b'\\n# tampered\\n' if mode == 'hash-mismatch' else b''))
+elif args[0] == 'hash-object':
+    assert args[1] == '--no-filters' and len(args) == 3
+    print(blob(Path(args[2]).read_bytes()))
+else:
+    raise AssertionError('untrusted Git operation')
+''')
+(bin_dir / 'git').chmod(0o755)
+followup_if = ("steps.verify-reviewer.outputs.trusted == 'true' && "
+               "steps.followup-gate.outputs.continue == 'true' && "
+               "steps.followup-checkout.outputs.continue == 'true'")
+identity = "${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}"
+callers = {}
+for job, runtime_name in (('develop-from-issue', 'Run Codex developer'),
+                          ('respond-to-claude', 'Run Codex follow-up')):
+    steps = workflow['jobs'][job]['steps']
+    select_index = next(i for i, s in enumerate(steps) if s.get('id') == 'codex_model')
+    caller = steps[select_index]
+    callers[job] = caller['run']
+    assert caller['name'] == 'Select trusted Codex Issue model'
+    assert caller['env']['NORMAL_MODEL'] == '${{ vars.CODEX_MODEL }}'
+    runtime = next(s for s in steps if s.get('name') == runtime_name)
+    assert runtime['env']['CODEX_MODEL'] == '${{ steps.codex_model.outputs.model }}'
+    assert '--model "$CODEX_MODEL"' in runtime['run']
+    assert "--config 'model_reasoning_effort=\"medium\"'" in runtime['run']
+    setup_index = next(i for i, s in enumerate(steps) if s.get('uses', '').startswith('openai/codex-action@'))
+    assert select_index < setup_index
+    if job == 'develop-from-issue':
+        assert caller['env']['ISSUE_NUMBER'] == identity
+        assert caller['env']['BASE_SHA'] == '${{ steps.issue_context.outputs.base_sha }}'
+        for name in ('Revalidate and consume resume inside Issue concurrency',
+                     'Recheck current Issue inside Issue concurrency', 'Prepare branch and Issue context'):
+            assert next(i for i, s in enumerate(steps) if s.get('name') == name) < select_index
+    else:
+        assert caller['if'] == followup_if
+        assert caller['env']['BASE_SHA'] == '${{ github.event.pull_request.base.sha }}'
+        assert caller['env']['HEAD_REF'] == '${{ github.event.pull_request.head.ref }}'
+        assert not any('PR_NUMBER' == key for key in caller['env'])
+        for name in ('Gate automated follow-up', 'Check follow-up checkout target'):
+            assert next(i for i, s in enumerate(steps) if s.get('name') == name) < select_index
+
+runner = fixture / 'runner'
+runner.mkdir()
+output = fixture / 'output'
+script = fixture / 'run.sh'
+def run(job='develop-from-issue', entries=None, supply='valid', model=normal,
+        identity=str(issue), head_ref='ai/issue-169', sha=base, cli=None, want=normal, ok=True):
+    trusted_source = source
+    if cli is not None:
+        # Corrupt only the synthetic trusted CLI; the unchanged pure API remains
+        # the expected-result authority. This tests independent caller validation.
+        trusted_source = source.replace('print(json.dumps(result, sort_keys=True, ensure_ascii=True, separators=(",", ":")))', cli)
+        assert trusted_source != source
+    (trusted / selector_name).write_text(trusted_source)
+    (trusted / policy_name).write_text(json.dumps({**policy, 'entries': entries or []}))
+    output.write_bytes(b'')
+    script.write_text(callers[job])
+    env = dict(clean_environment, PATH=str(bin_dir) + ':' + os.environ['PATH'],
+        SUPPLY_CASE=supply, TRUSTED_SOURCES=str(trusted), RUNNER_TEMP=str(runner),
+        GITHUB_OUTPUT=str(output), GITHUB_REPOSITORY='suzukure/nssscdl',
+        BASE_SHA=sha, ISSUE_NUMBER=identity, HEAD_REF=head_ref, NORMAL_MODEL=model,
+        PYTHONPATH=str(workspace))
+    result = subprocess.run(['bash', str(script)], cwd=workspace, env=env, capture_output=True)
+    assert (result.returncode == 0) == ok, (job, supply, cli, result.stderr)
+    assert output.read_bytes() == (('model=' + want + '\n').encode() if ok else b'')
+    assert not list(runner.iterdir()), 'temporary caller files survived selection'
+    # No new diagnostics disclose selected/normal model IDs or raw marker data.
+    assert normal.encode() not in result.stdout + result.stderr
+    assert b'gpt-6-luna' not in result.stdout + result.stderr
+    assert b'private-marker' not in result.stdout + result.stderr
+    if ok:
+        gated_issue = int(head_ref.removeprefix('ai/issue-') if job == 'respond-to-claude' else identity)
+        assert result.stdout == ('モデル選択: ' + ('opt_in' if any(e['issue'] == gated_issue for e in entries or []) else 'default') + '\n').encode()
+    return result
+
+# initial and formal resume use the same gated Issue expression and run block.
+for phase in ('initial', 'resume', 'follow-up'):
+    job = 'respond-to-claude' if phase == 'follow-up' else 'develop-from-issue'
+    run(job, entries=policy['entries'], identity='635', head_ref='ai/issue-635', want='gpt-6-luna')
+    for other_issue in (634, 636, 802):
+        run(job, entries=policy['entries'], identity=str(other_issue), head_ref=f'ai/issue-{other_issue}')
+    run(job)
+    run(job, entries=[dict(issue=issue, model='gpt-6-luna')], want='gpt-6-luna')
+    run(job, entries=[dict(issue=issue, model='gpt-6-luna')], model='fixture-normal-v2', want='gpt-6-luna')
+# A PR-number policy entry must not route the corresponding follow-up Issue.
+run('respond-to-claude', entries=[dict(issue=pr, model='gpt-6-luna')])
+for job in callers:
+    for supply in ('missing-' + selector_name, 'missing-' + policy_name,
+                   'show-failed', 'bad-blob', 'hash-mismatch'):
+        run(job, supply=supply, ok=False)
+    for identity in ('', '0', '0169', '169\nmodel=private-marker', str(2**53), '9'*100):
+        run(job, identity=identity, head_ref='ai/issue-' + identity, ok=False)
+    for sha in ('', 'HEAD', 'b'*40, base + '\n'):
+        run(job, sha=sha, ok=False)
+    for bad in ('', ' ', 'fixture-normal\nmodel=private-marker', 'x'*129, '$(private-marker)'):
+        run(job, model=bad, ok=False)
+    # CLI nonzero, no output, oversized/extra record, canonical shape/type/
+    # identity/selection/model mismatch, duplicate key and newline model injection.
+    for cli in ('return 7', 'return 0', 'print("x" * 4097)',
+                'print("{}")', 'print("null")', 'print("{}\\n{}")',
+                'result["issue"] = 37; print(json.dumps(result))',
+                'result["version"] = True; print(json.dumps(result))',
+                'result["model"] = []; print(json.dumps(result))',
+                'result["model"] = "private-marker\\nmodel=injected"; print(json.dumps(result))',
+                'result["selection"] = "opt_in"; print(json.dumps(result))',
+                'result["extra"] = 0; print(json.dumps(result))',
+                'print(\'{"model":"private-marker","model":"fixture-normal-v1"}\')'):
+        if '; print(json.dumps(result))' in cli:
+            cli = cli.replace('print(json.dumps(result))', 'print(json.dumps(result, sort_keys=True, ensure_ascii=True, separators=(",", ":")))')
+        run(job, cli=cli, ok=False)
+for ref in ('ai/issue-0169', 'ai/issue-169-extra', 'other/169', '', 'ai/issue-37/169'):
+    run('respond-to-claude', head_ref=ref, ok=False)
+# Exercise the existing exact review/head/closing/open/label gate before routing.
+(bin_dir / 'gh').write_text('''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+case = os.environ['TARGET_CASE']
+sha = 'c' * 40
+if args[:2] == ['api', 'repos/suzukure/nssscdl/pulls/37/reviews/99']:
+    value = dict(id=99, state='CHANGES_REQUESTED', commit_id=('d'*40 if case == 'stale-review' else sha),
+                 user=dict(login='reviewer[bot]'))
+elif args[:3] == ['pr', 'view', '37']:
+    value = dict(number=37, state='CLOSED' if case == 'closed-pr' else 'OPEN',
+                 headRefOid='d'*40 if case == 'changed-head' else sha, headRefName='ai/issue-169',
+                 labels=[dict(name='human-review-required')] if case == 'pr-label' else [],
+                 closingIssuesReferences=[dict(number=170 if case == 'closing-mismatch' else 169,
+                     url='https://github.com/suzukure/nssscdl/issues/169')])
+elif args[:2] == ['api', 'repos/suzukure/nssscdl/issues/169']:
+    value = dict(number=169, state='closed' if case == 'closed-issue' else 'open',
+                 labels=[dict(name='human-review-required')] if case == 'issue-label' else [])
+else:
+    raise AssertionError('unexpected API call')
+print(json.dumps(value))
+''')
+(bin_dir / 'gh').chmod(0o755)
+for case in ('current', 'stale-review', 'changed-head', 'closing-mismatch',
+             'closed-pr', 'closed-issue', 'pr-label', 'issue-label'):
+    output.write_bytes(b'')
+    env = dict(clean_environment, PATH=str(bin_dir) + ':' + os.environ['PATH'], TARGET_CASE=case)
+    target = subprocess.run(['bash', str(repo / '.github/scripts/check-claude-followup-target.sh'),
+        'suzukure/nssscdl', str(pr), '99', 'c'*40, 'reviewer', 'ai/issue-169'],
+        env=env, capture_output=True)
+    assert target.returncode == 0
+    assert target.stdout == (b'current\n' if case == 'current' else b'skip\n'), (case, target.stdout, target.stderr)
+    if target.stdout == b'current\n':
+        run('respond-to-claude', entries=[dict(issue=issue, model='gpt-6-luna')], want='gpt-6-luna')
+    else:
+        assert not output.read_bytes()  # Selection/paid caller is unreachable.
+print('Trusted Issue model caller: default / opt-in / initial-resume-follow-up / provenance / bounded fail-closed PASS')
+PY_MODEL_FIXTURE
+
+# #772: exercise exact production source supply and child launcher, secretless.
+# The independent #764 fixture owns real systemd/cgroup proof; these mocks do
+# not establish native schema/proxy/billing provenance or actual journal proof.
+python3 -B - "$repo_root" "$test_dir" <<'PY_STREAM_FIXTURE'
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import textwrap
+import yaml
+
+repo, temporary = map(Path, sys.argv[1:])
+workflow_text = (repo / '.github/workflows/ai-developer.yml').read_text()
+workflow = yaml.safe_load(workflow_text)
+assert workflow_text.count('"$CODEX_NATIVE" exec') == 2
+assert workflow_text.count('"$CODEX_NATIVE" exec --json') == 2
+base = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+fixture = temporary / 'stream-caller'
+fixture.mkdir()
+workspace = fixture / 'untrusted-worktree'
+(workspace / '.github/scripts').mkdir(parents=True)
+for name in ('supervise-codex-exec-stream.py', 'extract-codex-exec-usage.py', 'json.py'):
+    (workspace / '.github/scripts' / name).write_text('raise RuntimeError("worktree-used")\n')
+(workspace / 'json.py').write_text('raise RuntimeError("worktree-module-used")\n')
+bin_dir = fixture / 'bin'
+bin_dir.mkdir()
+real_git = shutil.which('git')
+(bin_dir / 'git').write_text('''#!/usr/bin/env python3
+import os, subprocess, sys
+args = sys.argv[1:]
+mode = os.environ['SUPPLY_CASE']
+if args[0] in ('rev-parse', 'show'):
+    assert args[1].startswith(os.environ['BASE_SHA'] + ':.github/scripts/')
+    if mode == 'missing-' + args[1].split('/')[-1]:
+        print('private-stream-canary', file=sys.stderr)
+        sys.exit(7)
+result = subprocess.run([os.environ['REAL_GIT'], '-C', os.environ['REPO'], *args], capture_output=True)
+data = result.stdout
+if args[0] == 'show' and mode == 'hash-mismatch':
+    data += b'\\n# private-stream-canary\\n'
+if args[0] == 'rev-parse' and mode == 'bad-blob':
+    data = b'invalid\\n'
+if args[0] == 'ls-tree':
+    if mode in ('symlink', 'tree', 'submodule'):
+        data = data.replace(b'100644 blob', {'symlink': b'120000 blob',
+            'tree': b'040000 tree', 'submodule': b'160000 commit'}[mode])
+    if mode == 'missing-entry':
+        data = b''
+sys.stdout.buffer.write(data)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+''')
+(bin_dir / 'git').chmod(0o755)
+# The root syntax fixture already parses the actual outer /bin/sh -c argument.
+# Here sudo/systemd are local transport stubs; preserve the service env/argv.
+(bin_dir / 'sudo').write_text('''#!/bin/sh
+while [ "$1" != /bin/sh ]; do shift; done
+exec "$@"
+''')
+(bin_dir / 'sudo').chmod(0o755)
+unit_stub = fixture / 'systemd-run'
+unit_stub.write_text('''#!/usr/bin/python3
+import os, subprocess, sys
+args = sys.argv[1:]
+assert '--property=Type=exec' in args and '--property=KillMode=control-group' in args
+assert '--property=SendSIGKILL=yes' in args and '--property=TimeoutStopSec=5s' in args
+index = args.index('/usr/bin/env')
+assert args[index + 1] == '-i'
+# env -i retains only the exact production allowlist, never inherited secrets.
+sys.exit(subprocess.call(args[index:]))
+''')
+unit_stub.chmod(0o755)
+journal_stub = fixture / 'journalctl'
+journal_stub.write_text('#!/bin/sh\nprintf "%s\\n" "Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary."\n')
+journal_stub.chmod(0o755)
+native = fixture / 'native'
+native.write_text('''#!/usr/bin/python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+assert args[0] == 'exec' and args.count('--json') == 1
+assert args.count('--output-last-message') == args.count('--model') == 1
+assert '--skip-git-repo-check' in args
+assert args[args.index('--cd') + 1] == os.environ['GITHUB_WORKSPACE']
+assert 'model_reasoning_effort="medium"' in args
+assert 'default_permissions=":workspace"' in args
+assert os.environ['CODEX_MANAGED_BY_NPM'] == '1'
+assert os.environ['CODEX_MANAGED_PACKAGE_ROOT'] == os.environ['CODEX_PACKAGE_ROOT']
+assert not any(k in os.environ for k in ('GH_TOKEN', 'OPENAI_API_KEY', 'GITHUB_OUTPUT',
+    'GITHUB_STEP_SUMMARY', 'PROTECTED_UNIX_SOCKET_PATHS', 'PROTECTED_UNIX_SOCKET_HOST_IDS',
+    'CODEX_MANAGED_BY_BUN', 'CODEX_MANAGED_BY_PNPM', 'CODEX_MANAGED_BY_VITE_PLUS'))
+assert sys.stdin.read() == 'private-prompt-canary'
+directory = pathlib.Path(os.environ['RUNNER_TEMP'])
+count = directory / 'invocations'
+count.write_text(count.read_text() + '1\\n' if count.exists() else '1\\n')
+pathlib.Path(args[args.index('--output-last-message') + 1]).write_text('fixture final response\\n')
+mode = args[args.index('--model') + 1].removeprefix('private-model-canary-')
+print('private-stderr-canary', file=sys.stderr)
+if mode.startswith('limit'):
+    sys.stdout.write('private-item-canary' * (16 * 1024 * 1024 // 19 + 1))
+elif mode.startswith('invalid'):
+    print('private-jsonl-canary')
+else:
+    events = [dict(type='thread.started', thread_id='private-thread-canary'),
+              dict(type='turn.started'),
+              dict(type='item.completed', item=dict(text='private-item-canary'))]
+    if mode == 'rc7':
+        events.append(dict(type='turn.failed', error=dict(message='private-error-canary')))
+    else:
+        events.append(dict(type='turn.completed', usage=dict(input_tokens=9,
+            cached_input_tokens=2, cache_write_input_tokens=0, output_tokens=4,
+            reasoning_output_tokens=1)))
+    for event in events:
+        print(json.dumps(event))
+sys.exit(7 if mode.endswith('7') else 0)
+''')
+native.chmod(0o755)
+clean_env = {k: v for k, v in os.environ.items() if not k.startswith('BASH_FUNC_')}
+for phase in ('initial', 'resume', 'follow-up'):
+    job = 'respond-to-claude' if phase == 'follow-up' else 'develop-from-issue'
+    steps = workflow['jobs'][job]['steps']
+    step = next(s for s in steps if s.get('id') == 'codex')
+    run = step['run']
+    expected_base = ('${{ github.event.pull_request.base.sha }}' if phase == 'follow-up'
+                     else '${{ steps.issue_context.outputs.base_sha }}')
+    assert step['env']['BASE_SHA'] == expected_base
+    assert run.count('"$CODEX_NATIVE" exec --json') == 1
+    assert run.count('/usr/bin/python3 -I -B "$3" --extractor "$4" --') == 1
+    assert run.count('--output-last-message "$CODEX_FINAL"') == 1
+    assert '--json' not in run.split("<<'CODEX_RUN'", 1)[0]
+    assert 'usage_result' not in run  # No record consumer or record-required gate.
+    if phase == 'follow-up':
+        assert step['if'] == ("steps.verify-reviewer.outputs.trusted == 'true' && "
+            "steps.followup-gate.outputs.continue == 'true' && "
+            "steps.followup-checkout.outputs.continue == 'true'")
+        assert run.index('target="$(bash') < run.index('exec sudo -n --')
+    supply = run.split('test -x "$CODEX_NATIVE"', 1)[0]
+    launcher = textwrap.dedent(run.split("<<'CODEX_RUN'\n", 1)[1].split('CODEX_RUN\n', 1)[0])
+    launch = launcher[launcher.index('exec env \\\n'):]
+    # Keep root positional forwarding and service argv intact; mock transports.
+    root_command = run[run.index('exec sudo -n --'):]
+    root_command = root_command.replace('/usr/bin/systemd-run', str(unit_stub)).replace(
+        '/usr/bin/journalctl', str(journal_stub))
+    # Host socket metadata is owned by the hardening fixture, not this mock.
+    root_command = root_command.replace('for path in $protected_unix_socket_paths; do',
+                                        'for path in; do')
+    root_script = shlex.split(root_command)[shlex.split(root_command).index('-c') + 1]
+    assert 'stream_supervisor="${18}"' in root_script and 'stream_extractor="${19}"' in root_script
+    cases = [('valid', m, rc, status) for m, rc, status in (
+        ('rc0', 0, 'collected'), ('rc7', 7, 'collected'),
+        ('invalid0', 0, 'invalid_input'), ('invalid7', 7, 'invalid_input'),
+        ('limit0', 0, 'capture_limit_exceeded'), ('limit7', 7, 'capture_limit_exceeded'),
+        ('not-started', 2, 'execution_not_started'))]
+    cases += [(s, 'rc0', 1, None) for s in (
+        'missing-supervise-codex-exec-stream.py', 'missing-extract-codex-exec-usage.py',
+        'hash-mismatch', 'bad-blob', 'symlink', 'tree', 'submodule', 'missing-entry')]
+    for index, (supply_case, mode, rc, status) in enumerate(cases):
+        runner = fixture / (phase + '-' + str(index))
+        runner.mkdir()
+        (runner / 'prompt').write_text('private-prompt-canary')
+        (runner / 'launcher.sh').write_text('#!/bin/sh\nset -eu\n' + launch)
+        script = runner / 'run.sh'
+        script.write_text(supply + '''
+runner_user=fixture
+uid=1234
+nobody_gid=65534
+runner_home="$HOME"
+runner_path="$PATH"
+unit=fixture-772
+''' + root_command)
+        env = dict(clean_env, PATH=str(bin_dir) + ':' + os.environ['PATH'],
+            REAL_GIT=real_git, REPO=str(repo), SUPPLY_CASE=supply_case, BASE_SHA=base,
+            RUNNER_TEMP=str(runner), CODEX_RUNTIME_MAX_SEC='700', GITHUB_WORKSPACE=str(workspace),
+            CODEX_HOME=str(runner), CODEX_FINAL=str(runner / 'final'), CODEX_PROMPT_FILE=str(runner / 'prompt'),
+            CODEX_MODEL='private-model-canary-' + mode,
+            CODEX_NATIVE=str(runner / 'missing') if mode == 'not-started' else str(native),
+            CODEX_PACKAGE_ROOT=str(fixture), CODEX_INTERNAL_ORIGINATOR_OVERRIDE='codex_github_action',
+            GH_TOKEN='private-token-canary', OPENAI_API_KEY='private-key-canary',
+            GITHUB_OUTPUT=str(runner / 'output'), GITHUB_STEP_SUMMARY=str(runner / 'summary'),
+            PYTHONPATH=str(workspace))
+        # Exact root argv points at this production launcher filename.
+        (runner / 'run-native-codex.sh').write_text((runner / 'launcher.sh').read_text())
+        result = subprocess.run(['bash', str(script)], cwd=workspace, env=env,
+                                capture_output=True, timeout=15)
+        assert result.returncode == rc, (phase, supply_case, mode, result.returncode, result.stderr)
+        assert b'private-' not in result.stdout + result.stderr, (phase, supply_case, mode)
+        count = runner / 'invocations'
+        if status is None or mode == 'not-started':
+            assert not count.exists(), 'native started before trusted supply accepted'
+        else:
+            assert count.read_text() == '1\n'
+            assert (runner / 'final').read_text() == 'fixture final response\n'
+        records = [line for line in result.stdout.splitlines() if line.startswith(b'{')]
+        assert len(records) == (0 if status is None else 1)
+        if records:
+            data = records[0]
+            record = json.loads(data)
+            assert len(data) + 1 <= 4096
+            assert data == json.dumps(record, sort_keys=True, separators=(',', ':')).encode()
+            assert set(record) == {'schema', 'version', 'process_returncode', 'collection_status', 'usage_result'}
+            assert record['schema'] == 'codex-exec-stream' and record['version'] == 1
+            assert record['collection_status'] == status
+            assert record['process_returncode'] == (None if mode == 'not-started' else rc)
+            if status != 'collected':
+                assert record['usage_result'] is None
+            else:
+                assert record['usage_result']['availability'] == ('reported' if rc == 0 else 'unavailable')
+        assert not (runner / 'output').exists() and not (runner / 'summary').exists()
+        assert not list(runner.rglob('*.pyc'))
+# Run the existing immediate pre-paid follow-up recheck with a local target.
+# Stale review/head must stop before the root/supervisor command is reachable.
+followup = next(s for s in workflow['jobs']['respond-to-claude']['steps'] if s.get('id') == 'codex')['run']
+recheck = followup[followup.index('target="$(bash'):followup.index('exec sudo -n --')]
+for target, head in (('skip', base), ('current', 'f' * 40), ('current', base)):
+    gate_dir = fixture / ('gate-' + target + '-' + head)
+    gate_dir.mkdir()
+    (gate_dir / 'check-claude-followup-target.sh').write_text('printf "%s\\n" "' + target + '"\n')
+    script = gate_dir / 'recheck.sh'
+    script.write_text('set -euo pipefail\n' + recheck + 'printf "paid-reachable\\n"\n')
+    # This git stub only observes current checkout identity; no external call.
+    (gate_dir / 'git').write_text('#!/bin/sh\nprintf "%s\\n" "' + base + '"\n')
+    (gate_dir / 'git').chmod(0o755)
+    output = gate_dir / 'output'
+    env = dict(clean_env, PATH=str(gate_dir) + ':' + os.environ['PATH'],
+        RUNNER_TEMP=str(gate_dir), GITHUB_OUTPUT=str(output), REVIEW_COMMIT=head,
+        GITHUB_REPOSITORY='suzukure/nssscdl', PR_NUMBER='37', REVIEW_ID='99',
+        REVIEWER_APP_SLUG='reviewer', HEAD_REF='ai/issue-169', GH_TOKEN='private-token-canary')
+    result = subprocess.run(['bash', str(script)], env=env, capture_output=True, timeout=5)
+    allowed = target == 'current' and head == base
+    assert result.returncode == 0
+    assert (b'paid-reachable' in result.stdout) == allowed
+    assert output.read_text() == ('continue=true\n' if allowed else 'continue=false\n')
+    assert b'private-' not in result.stdout + result.stderr
+print('Trusted stream producer: initial/resume/follow-up / supply / single child / sanitized stdout / rc / final message PASS')
+PY_STREAM_FIXTURE
+
 printf '%s\n' 'AI Developer workflow fixture tests passed'
+
+# #797 / #798: execute both actual consumers, without sudo/journal/service
+# access. Real local base blobs + real collector dependencies; only acquisition
+# and privilege transport are finite stand-ins. Natural run owns runtime proof.
+for usage_job in develop-from-issue respond-to-claude; do
+python3 -B - "$repo_root" "$test_dir" "$usage_job" <<'PY_USAGE_FIXTURE'
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import yaml
+
+repo, temporary = map(Path, sys.argv[1:3])
+job = sys.argv[3]
+followup = job == 'respond-to-claude'
+label = 'follow-up' if followup else 'Issue'
+issue = 798 if followup else 797
+pr = 37 if followup else None
+workflow = yaml.safe_load((repo / '.github/workflows/ai-developer.yml').read_text())
+steps = workflow['jobs'][job]['steps']
+context = next(s for s in steps if s.get('id') == ('followup_context' if followup else 'issue_context'))
+collect = next(s for s in steps if s.get('id') == 'usage_evidence')
+upload = next(s for s in steps if s.get('id') == 'usage_upload')
+summary = next(s for s in steps if s.get('name') == 'Report Codex ' + label + ' usage evidence persistence')
+identity_binding = "${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}"
+expected_env = dict(GITHUB_REPOSITORY='${{ github.repository }}', RUN_ID='${{ github.run_id }}',
+    RUN_ATTEMPT='${{ github.run_attempt }}', SELECTED_MODEL='${{ steps.codex_model.outputs.model }}')
+condition = "always() && (steps.codex.outcome == 'success' || steps.codex.outcome == 'failure')"
+if followup:
+    expected_env.update(BASE_SHA='${{ github.event.pull_request.base.sha }}',
+        USAGE_HELPER_BLOBS='${{ steps.followup_context.outputs.usage_helper_blobs }}',
+        HEAD_REF='${{ github.event.pull_request.head.ref }}', PR_NUMBER='${{ github.event.pull_request.number }}')
+    assert context['env']['BASE_SHA'] == expected_env['BASE_SHA']
+    assert context['env']['PR_NUMBER'] == expected_env['PR_NUMBER']
+    condition = condition.replace('always() && ', "always() && steps.codex.outputs.continue == 'true' && ")
+else:
+    expected_env.update(BASE_SHA='${{ steps.issue_context.outputs.base_sha }}',
+        USAGE_HELPER_BLOBS='${{ steps.issue_context.outputs.usage_helper_blobs }}', ISSUE_NUMBER=identity_binding)
+    assert context['env']['ISSUE_NUMBER'] == identity_binding
+assert collect['env'] == expected_env
+assert collect['if'] == condition
+assert collect['continue-on-error'] is True and collect['timeout-minutes'] == 1
+assert upload['continue-on-error'] is True
+assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+assert upload['if'] == "always() && steps.usage_evidence.outcome == 'success'"
+assert upload['with'] == dict(name='codex-usage-evidence-' + ('followup' if followup else 'develop') + '-${{ github.run_id }}-${{ github.run_attempt }}',
+    path='${{ runner.temp }}/codex-usage-evidence.json', **{'retention-days': 7, 'if-no-files-found': 'error'})
+assert summary['continue-on-error'] is True
+assert summary['if'] == "always() && steps.usage_evidence.outcome != 'skipped'"
+assert steps.index(context) < next(i for i, s in enumerate(steps) if s.get('id') == 'codex')
+assert next(i for i, s in enumerate(steps) if s.get('name') == ('Verify Codex follow-up host integrity' if followup else 'Verify AI Developer host integrity')) < steps.index(collect)
+assert steps.index(collect) < steps.index(upload) < steps.index(summary) < next(
+    i for i, s in enumerate(steps) if s.get('name') == 'Restore trusted post-Codex helpers')
+# Evidence outcome cannot authorize/suppress any existing lifecycle consumer.
+for lifecycle_job in workflow['jobs'].values():
+    for step in lifecycle_job['steps']:
+        if step.get('name') not in {
+                'Upload sanitized Codex Issue usage evidence',
+                'Report Codex Issue usage evidence persistence',
+                'Upload sanitized Codex follow-up usage evidence',
+                'Report Codex follow-up usage evidence persistence'}:
+            assert 'steps.usage_' not in json.dumps(step)
+assert all(term not in collect['run'] for term in ('GITHUB_OUTPUT', 'journalctl', '--sync', 'sleep', 'retry', 'gh '))
+
+fixture = temporary / ('usage-caller-' + job)
+fixture.mkdir()
+runner = fixture / 'runner'
+runner.mkdir()
+workspace = fixture / 'worktree'
+(workspace / '.github/scripts').mkdir(parents=True)
+helpers = ('collect-codex-usage-evidence.py', 'select-codex-usage-journal.py',
+           'build-codex-usage-evidence.py', 'validate-codex-usage-identity.py',
+           'validate-codex-usage-stream.py', 'extract-codex-exec-usage.py')
+for name in (*helpers, 'json.py'):
+    (workspace / '.github/scripts' / name).write_text('raise RuntimeError("untrusted-worktree")\n')
+    (runner / name).write_text('raise RuntimeError("untrusted-leftover")\n')
+base = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+blobs = [subprocess.check_output(['git', '-C', str(repo), 'rev-parse',
+         base + ':.github/scripts/' + name], text=True).strip() for name in helpers]
+# Run the exact pre-model declaration block; no branch/API orchestration.
+pre = context['run'].split('usage_helpers=(', 1)[1].split('done\n', 1)[0] + 'done\n'
+pre = 'set -euo pipefail\nbase_sha="$BASE_SHA"\nusage_helpers=(' + pre
+pre += 'printf "%s\\n" "${usage_helper_blobs[*]}"\n'
+pre_result = subprocess.run(['bash', '-c', pre], cwd=repo, env={**os.environ, 'BASE_SHA': base},
+                            capture_output=True, check=True)
+assert pre_result.stdout.decode().strip().split() == blobs
+assert "printf 'usage_helper_blobs=%s\\n'" in context['run']
+script = fixture / 'collect.sh'
+script.write_text(collect['run'])
+bridge = fixture / 'bridge.py'
+bridge.write_text('''import importlib.util,json,os,sys
+from pathlib import Path
+source = Path(sys.argv[1])
+assert source.parent.name.startswith('codex-usage.')
+assert source.name == 'collect-codex-usage-evidence.py'
+spec = importlib.util.spec_from_file_location('trusted_collector', source)
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+def acquire(unit, limit):
+    assert unit == os.environ['EXPECTED_UNIT'] and limit == 16 * 1024 * 1024
+    mode = os.environ['EVIDENCE_CASE']
+    if mode == 'missing': return b''
+    if mode == 'acquisition-failure': return None
+    if mode == 'invalid': return b'{broken'
+    record = dict(schema='codex-exec-stream',version=1,process_returncode=0,
+                  collection_status='collected',usage_result=dict(schema='codex-exec-usage',version=1,
+                  source='codex_exec_jsonl_workload_reported',availability='reported',reason='terminal_cumulative',
+                  usage=dict(input_tokens=9,cached_input_tokens=2,cache_write_input_tokens=1,
+                             output_tokens=4,reasoning_output_tokens=3)))
+    return b'private-raw-canary\\n' + json.dumps(record,sort_keys=True,separators=(',',':')).encode() + b'\\n'
+helper._acquire = acquire
+sys.argv = [str(source)]
+sys.exit(helper.main())
+''')
+harness = '''set -euo pipefail
+git() {
+  if [ "$1" = show ] && [[ "$2" == *"$FAULT_HELPER" ]] && [ -n "$FAULT_HELPER" ]; then
+    case "$FAULT" in missing) return 1 ;; tampered) printf 'raise SystemExit(99)\\n'; return ;; esac
+  fi
+  if [ "$1" = ls-tree ] && [ "$FAULT" = symlink ]; then
+    command git -C "$FIXTURE_REPO" "$@" | sed 's/100644 blob/120000 blob/'
+    return
+  fi
+  command git -C "$FIXTURE_REPO" "$@"
+}
+sudo() {
+  [ "$#" -eq 9 ]
+  [ "$1 $2 $3 $4 $5 $6 $7 $8" = '-n -- /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B' ]
+  printf 'called\\n' >> "$PRIVILEGE_LOG"
+  [ "$FAULT" != sudo-failure ] || return 1
+  /usr/bin/python3 -I -B "$FIXTURE_BRIDGE" "$9"
+}
+export -f git sudo
+bash "$1"
+'''
+env = {**os.environ, 'BASE_SHA': base, 'USAGE_HELPER_BLOBS': ' '.join(blobs),
+       'RUNNER_TEMP': str(runner), 'GITHUB_REPOSITORY': 'suzukure/nssscdl',
+       'RUN_ID': '123', 'RUN_ATTEMPT': '2', 'ISSUE_NUMBER': str(issue), 'HEAD_REF': 'ai/issue-798', 'PR_NUMBER': '37',
+       'EXPECTED_UNIT': ('codex-followup' if followup else 'codex-developer') + '-123-2', 'SELECTED_MODEL': 'gpt-6.1-sol',
+       'FIXTURE_REPO': str(repo), 'FIXTURE_BRIDGE': str(bridge), 'FAULT_HELPER': '', 'FAULT': '',
+       'PRIVILEGE_LOG': str(fixture / 'privilege.log'), 'EVIDENCE_CASE': 'recorded'}
+evidence = runner / 'codex-usage-evidence.json'
+privilege = Path(env['PRIVILEGE_LOG'])
+def execute(overrides=None):
+    privilege.unlink(missing_ok=True)
+    evidence.unlink(missing_ok=True)
+    # Model-written final target/sibling leftovers are never uploaded/executed.
+    evidence.symlink_to(runner / helpers[0])
+    result = subprocess.run(['bash', '-c', harness, '--', str(script)], cwd=workspace,
+        env={**env, **(overrides or {})}, capture_output=True, timeout=10)
+    assert not list(runner.glob('codex-usage.*')), 'temporary source/identity survived'
+    assert not result.stdout and b'private-raw-canary' not in result.stderr
+    return result
+for mode, status in [('recorded', 'recorded'), ('missing', 'missing'),
+                     ('invalid', 'invalid'), ('acquisition-failure', 'invalid')]:
+    result = execute({'EVIDENCE_CASE': mode})
+    assert result.returncode == 0, result.stderr
+    assert privilege.read_text() == 'called\n'
+    raw = evidence.read_bytes()
+    value = json.loads(raw)
+    assert raw == (json.dumps(value,sort_keys=True,separators=(',',':')) + '\n').encode()
+    assert value['identity'] == dict(schema='codex-usage-evidence-identity',version=1,
+        repository='suzukure/nssscdl',run_id=123,run_attempt=2,issue_number=issue,
+        job=job,pr_number=pr,base_sha=base,selected_model='gpt-6.1-sol',
+        cli_version='0.159.3',reasoning_effort='medium',invocation_mode='fresh_exec')
+    assert value['evidence_status'] == status and value['billing_status'] == 'unverified'
+    assert b'private-raw-canary' not in raw
+    if status != 'recorded': assert value['stream_result'] is None
+for helper in helpers:
+    for fault in ('missing', 'tampered'):
+        result = execute({'FAULT_HELPER': helper, 'FAULT': fault})
+        assert result.returncode != 0 and not evidence.exists() and not privilege.exists(), (helper, fault)
+for overrides in ({'USAGE_HELPER_BLOBS': ''}, {'USAGE_HELPER_BLOBS': ' '.join(['0'*40]*6)},
+                  {'USAGE_HELPER_BLOBS': 'bad ' + ' '.join(blobs[1:])},
+                  {'USAGE_HELPER_BLOBS': ' '.join(blobs + blobs[:1])},
+                  {'BASE_SHA': 'bad'}, {'FAULT': 'symlink'}):
+    assert execute(overrides).returncode != 0 and not evidence.exists() and not privilege.exists()
+for overrides in ({'FAULT': 'sudo-failure'}, ({'HEAD_REF': 'ai/issue-0'} if followup else {'ISSUE_NUMBER': 'bad'}), {'SELECTED_MODEL': ''}):
+    assert execute(overrides).returncode != 0 and not evidence.exists()
+if followup:
+    for branch in ('ai/issue-0', 'ai/issue-0798', 'ai/issue-798-extra', 'ai/issue-798\n', 'other/issue-798', ''):
+        result = execute({'HEAD_REF': branch})
+        assert result.returncode != 0 and not evidence.exists() and not privilege.exists()
+    for number in ('0', 'null', 'true', '"37"', 'bad'):
+        assert execute({'PR_NUMBER': number}).returncode != 0 and not evidence.exists()
+summary_script = fixture / 'summary.sh'
+summary_script.write_text(summary['run'])
+for collection, persistence in [('success','success'), ('success','failure'), ('failure','skipped')]:
+    output = fixture / 'summary'
+    output.write_bytes(b'')
+    result = subprocess.run(['bash', str(summary_script)], env={**os.environ,
+        'GITHUB_STEP_SUMMARY': str(output), 'COLLECTION_OUTCOME': collection,
+        'UPLOAD_OUTCOME': persistence}, capture_output=True, check=True)
+    assert collection in output.read_text() and persistence in output.read_text()
+    assert 'unknown' in output.read_text() and not result.stdout
+print(job + ' usage caller: trusted identity and exact unit, six base blobs, restored root transport, sanitized-only persistence, failures and lifecycle isolation PASS')
+PY_USAGE_FIXTURE
+done

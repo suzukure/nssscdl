@@ -1,0 +1,41 @@
+name: DeepInfra Usage Ledger
+
+on:
+  workflow_run:
+    workflows: [DeepInfra Investigator, DeepInfra Review Benchmark, DeepInfra Diagnostic A, DeepInfra Diagnostic B]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  record:
+    name: Record usage in Issue 665
+    # Gate-skipped runs must never occupy or replace a pending ledger writer.
+    if: github.event.workflow_run.conclusion != 'skipped'
+    concurrency:
+      group: deepinfra-usage-ledger-665
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted default branch helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Record validated usage once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: bash
+        run: python3 .github/scripts/deepinfra-usage-ledger.py
+
+      - name: Report recording failure
+        if: failure()
+        shell: bash
+        run: |
+          echo 'DeepInfra台帳consumerが失敗しました。元のpaid runは再実行せず、原因解消後にこのconsumerだけを再実行してください。' >> "$GITHUB_STEP_SUMMARY"

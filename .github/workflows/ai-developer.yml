@@ -246,8 +246,21 @@ jobs:
           notify_human_blob="$(git rev-parse "${base_sha}:.github/scripts/notify-human.sh")"
           apply_human_pause_blob="$(git rev-parse "${base_sha}:.github/scripts/apply-human-pause.sh")"
           requirements_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-requirements-change-marker.sh")"
+          decision_classifier_blob="$(git rev-parse "${base_sha}:.github/scripts/classify-ai-developer-decision-marker.sh")"
+          [[ "$decision_classifier_blob" =~ ^[0-9a-f]{40}$ ]]
+          scope_marker_blob="$(git rev-parse "${base_sha}:.github/scripts/has-scope-decision-marker.sh")"
+          [[ "$scope_marker_blob" =~ ^[0-9a-f]{40}$ ]]
           diff_guard_blob="$(git rev-parse "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh")"
           development_context_blob="$(git rev-parse "${base_sha}:.github/scripts/build-development-context.py")"
+          usage_helpers=(collect-codex-usage-evidence.py select-codex-usage-journal.py
+            build-codex-usage-evidence.py validate-codex-usage-identity.py
+            validate-codex-usage-stream.py extract-codex-exec-usage.py)
+          usage_helper_blobs=()
+          for filename in "${usage_helpers[@]}"; do
+            blob="$(git rev-parse "${base_sha}:.github/scripts/$filename")"
+            [[ "$blob" =~ ^[0-9a-f]{40}$ ]]
+            usage_helper_blobs+=("$blob")
+          done
           pause_helpers=(create-human-pause human-pause-record list-human-pause-records
             validate-human-pause-record-graph decompose-human-pause-record-graph
             derive-human-pause-pre-resume-state reconcile-human-pause-resume-acceptance
@@ -262,8 +275,11 @@ jobs:
             printf 'notify_human_blob=%s\n' "$notify_human_blob"
             printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
             printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
+            printf 'decision_classifier_blob=%s\n' "$decision_classifier_blob"
+            printf 'scope_marker_blob=%s\n' "$scope_marker_blob"
             printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
             printf 'pause_helper_blobs=%s\n' "${pause_helper_blobs[*]}"
+            printf 'usage_helper_blobs=%s\n' "${usage_helper_blobs[*]}"
           } >> "$GITHUB_OUTPUT"
           branch="ai/issue-${ISSUE_NUMBER}"
           if [[ "$PRE_WRITE_REMOTE_HEAD" == absent ]]; then
@@ -284,11 +300,15 @@ jobs:
           git show "${base_sha}:.github/scripts/notify-human.sh" > "$RUNNER_TEMP/notify-human.sh"
           git show "${base_sha}:.github/scripts/apply-human-pause.sh" > "$RUNNER_TEMP/apply-human-pause.sh"
           git show "${base_sha}:.github/scripts/has-requirements-change-marker.sh" > "$RUNNER_TEMP/has-requirements-change-marker.sh"
+          git show "${base_sha}:.github/scripts/classify-ai-developer-decision-marker.sh" > "$RUNNER_TEMP/classify-ai-developer-decision-marker.sh"
+          git show "${base_sha}:.github/scripts/has-scope-decision-marker.sh" > "$RUNNER_TEMP/has-scope-decision-marker.sh"
           git show "${base_sha}:.github/scripts/evaluate-codex-diff-gate.sh" > "$RUNNER_TEMP/evaluate-codex-diff-gate.sh"
           git show "${base_sha}:.github/scripts/build-development-context.py" > "$RUNNER_TEMP/build-development-context.py"
           test "$(git hash-object --no-filters "$RUNNER_TEMP/notify-human.sh")" = "$notify_human_blob"
           test "$(git hash-object --no-filters "$RUNNER_TEMP/apply-human-pause.sh")" = "$apply_human_pause_blob"
           test "$(git hash-object --no-filters "$RUNNER_TEMP/has-requirements-change-marker.sh")" = "$requirements_marker_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/classify-ai-developer-decision-marker.sh")" = "$decision_classifier_blob"
+          test "$(git hash-object --no-filters "$RUNNER_TEMP/has-scope-decision-marker.sh")" = "$scope_marker_blob"
           test "$(git hash-object --no-filters "$RUNNER_TEMP/evaluate-codex-diff-gate.sh")" = "$diff_guard_blob"
           test "$(git hash-object --no-filters "$RUNNER_TEMP/build-development-context.py")" = "$development_context_blob"
           bash "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" --contract > "$RUNNER_TEMP/codex-diff-guard-contract.json"
@@ -316,21 +336,73 @@ jobs:
             "$RUNNER_TEMP/notify-human.sh" \
             "$RUNNER_TEMP/apply-human-pause.sh" \
             "$RUNNER_TEMP/has-requirements-change-marker.sh" \
+            "$RUNNER_TEMP/classify-ai-developer-decision-marker.sh" \
+            "$RUNNER_TEMP/has-scope-decision-marker.sh" \
             "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
             "$RUNNER_TEMP/build-development-context.py" \
             "$RUNNER_TEMP/development-issue.json" \
             "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
-      - name: Validate Codex model configuration
+      - name: Select trusted Codex Issue model
+        id: codex_model
         env:
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          NORMAL_MODEL: ${{ vars.CODEX_MODEL }}
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
-            echo 'repository変数CODEX_MODELには空白以外の値が必要です。' >&2
-            exit 1
-          fi
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]{0,15}$ ]]
+          selection_dir="$(mktemp -d "$RUNNER_TEMP/codex-model-selection.XXXXXX")"
+          export SELECTION_DIR="$selection_dir"
+          trap 'rm -rf -- "$selection_dir"' EXIT
+          for filename in select-codex-issue-model.py codex-issue-model-policy.json; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}")"
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]]
+            git show "${BASE_SHA}:${source_path}" > "$selection_dir/$filename"
+            test "$(git hash-object --no-filters "$selection_dir/$filename")" = "$expected_blob"
+          done
+          python3 -I -B - <<'PY_MODEL'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          try:
+              directory = Path(os.environ["SELECTION_DIR"])
+              source = directory / "select-codex-issue-model.py"
+              policy = directory / "codex-issue-model-policy.json"
+              spec = importlib.util.spec_from_file_location("trusted_model_selector", source)
+              selector = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(selector)
+              request = json.dumps(dict(repository=os.environ["GITHUB_REPOSITORY"],
+                  issue=int(os.environ["ISSUE_NUMBER"]), normal_model=os.environ["NORMAL_MODEL"]),
+                  ensure_ascii=True, separators=(",", ":")).encode()
+              with policy.open("rb") as stream:
+                  policy_bytes = stream.read(selector.MAX_POLICY_BYTES + 1)
+              # Reuse the pure Contract; do not copy schema/allowlist/model rules.
+              expected = selector.select(policy_bytes, request)
+              canonical = (json.dumps(expected, sort_keys=True, ensure_ascii=True,
+                  separators=(",", ":")) + "\n").encode()
+              with (directory / "result.json").open("wb") as output:
+                  result = subprocess.run([sys.executable, "-I", "-B", str(source), "--policy", str(policy)],
+                      input=request, stdout=output, stderr=subprocess.DEVNULL)
+              with (directory / "result.json").open("rb") as stream:
+                  actual = stream.read(4097)
+              # Exact canonical bytes prove closed schema, types, identity and selection.
+              if result.returncode != 0 or not 0 < len(actual) <= 4096 or actual != canonical:
+                  raise ValueError
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("model=" + expected["model"] + "\n")
+              print("モデル選択: " + expected["selection"])
+          except Exception:
+              print("モデル選択を拒否しました: trusted_selection_failed", file=sys.stderr)
+              sys.exit(1)
+          PY_MODEL
 
       - name: Prepare Codex developer runtime
         env:
@@ -481,6 +553,32 @@ jobs:
           cat > "$CODEX_PROMPT_FILE" <<'CODEX_PROMPT'
           Read .ai-context/AGENTS.base.md, .ai-context/request.md, and .ai-context/diff-guard-contract.json completely. The base-commit AGENTS copy is the governing instruction file.
           Implement the Issue in this working tree.
+          Apply Work Admission Control in docs/30_operations/ai-development-workflow.md to findings discovered during Issue-origin development. Static pre-admission uses R/C/P/B; dynamically stop when a prerequisite cross-boundary Contract decision outside the current Issue authority is needed.
+          Emit the scope decision marker when any of these requires a new human scope/Contract decision:
+          - The current implementation contract itself must change.
+          - A new prerequisite cross-boundary Contract absent from the current Issue/main is needed.
+          - A synthetic/dormant/narrower Contract must be promoted to the target mode.
+          - A new proof infrastructure Contract is a prerequisite.
+          - Fresh R/C/P/B evaluation transitions to Red / split-first.
+          - Progress requires defining a new cross-boundary Contract and its downstream consumer in the same Issue.
+          - A new trust / ownership / failure semantics boundary decision exceeds Issue authority.
+          Do not emit the scope marker merely for existing C0 Contract reuse, Contract definition/proof explicitly scoped by the current Issue, a local bug fix, an existing fail-closed condition fixture, docs synchronization, a P1 fixture/assertion, or a safe Follow-up / Idea that permits consistent completion of the current Issue. These exceptions do not bypass a newly discovered prerequisite decision outside Issue authority.
+          When a scope decision is required, do not infer or finalize the new Contract, do not continue downstream integration, and do not leave speculative partial changes depending on the unresolved Contract in the working tree. Stop dependent work and retain only the minimum observations needed for human judgment in the final report.
+          Output this exact marker on its own unindented plain-text line in the final response:
+          [SCOPE_DECISION_REQUIRED]
+          Do not wrap that line in backticks or a Markdown fenced code block, or add leading/trailing whitespace. CRLF is allowed.
+          Report observed fact, missing/new Contract category, why Done is impossible under the current contract, R/C/P/B changes, proposed split/prerequisite, Product impact, and unverified matters. Free text is for humans; only the exact marker controls the workflow.
+          Only when emitting the scope decision marker, include each exact label below once, at the start of a separate single plain-text line, followed by ": " and a nonempty Japanese explanation. No bullets, Markdown formatting, or multiline values in these seven lines:
+          Observed fact
+          Missing/new Contract category
+          Why Done is impossible under the current contract
+          R/C/P/B change
+          Proposed split/prerequisite
+          Product impact
+          Unverified matters
+          Keep the entire final report within 16 KiB UTF-8, each field within 1 KiB UTF-8, and the rendered human report within 8 KiB. Retain only minimum observations; omit raw tool output, JSONL, token/secret/credential values, environment dumps, absolute runner/toolcache paths, and numeric UID/GID or other runner internals. Use repository-relative paths and abstract non-secret descriptions. These labels validate human evidence only; they do not classify the decision or authorize resume.
+          Preserve the Product requirement change / unresolved upstream decision escalation in AGENTS.base.md. If that escalation applies, output only [REQUIREMENTS_CHANGE_REQUIRED] as the decision marker; otherwise use the scope marker for the scope/Contract decision above. Never output both decision markers in one final response.
+          Human scope decisions must be recorded in the Issue body before the existing /ai resume develop path can resume. Do not automatically split Issues, convert them to parents, or retry.
           Write the final report for humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
           Keep the proposed repository change within the trusted diff guard contract. Avoid broad formatting changes and large generated additions. If the Issue cannot fit within those bounds, keep the change small and explain the required split in the final response.
@@ -518,10 +616,11 @@ jobs:
         id: codex
         timeout-minutes: ${{ github.event.comment.body == '/codex develop extended' && 30 || 12 }}
         env:
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-developer-prompt.md
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_MODEL: ${{ steps.codex_model.outputs.model }}
           CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
           CODEX_NATIVE: ${{ steps.codex_runtime.outputs.native_path }}
           CODEX_PACKAGE_ROOT: ${{ steps.codex_runtime.outputs.package_root }}
@@ -531,6 +630,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          stream_source_failure() {
+            echo '信頼済みCodex stream sourceを確認できませんでした。' >&2
+            exit 1
+          }
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || stream_source_failure
+          stream_dir="$(mktemp -d "$RUNNER_TEMP/codex-stream.XXXXXX" 2>/dev/null)" || stream_source_failure
+          for filename in supervise-codex-exec-stream.py extract-codex-exec-usage.py; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}" 2>/dev/null)" || stream_source_failure
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+            source_entry="$(git ls-tree "$BASE_SHA" -- "$source_path" 2>/dev/null)" || stream_source_failure
+            case "$source_entry" in
+              "$(printf '100644 blob %s\t%s' "$expected_blob" "$source_path")"|"$(printf '100755 blob %s\t%s' "$expected_blob" "$source_path")") ;;
+              *) stream_source_failure ;;
+            esac
+            git show "${BASE_SHA}:${source_path}" > "$stream_dir/$filename" 2>/dev/null || stream_source_failure
+            [ -f "$stream_dir/$filename" ] && [ ! -L "$stream_dir/$filename" ] || stream_source_failure
+            actual_blob="$(git hash-object --no-filters "$stream_dir/$filename" 2>/dev/null)" || stream_source_failure
+            [ "$actual_blob" = "$expected_blob" ] || stream_source_failure
+          done
 
           test -x "$CODEX_NATIVE"
           test -f "$ACTION_MAIN"
@@ -849,7 +970,8 @@ jobs:
             CODEX_MANAGED_BY_NPM=1 \
             CODEX_HOME="$CODEX_HOME" \
             CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
-            "$CODEX_NATIVE" exec \
+            /usr/bin/python3 -I -B "$3" --extractor "$4" -- \
+              "$CODEX_NATIVE" exec --json \
               --skip-git-repo-check \
               --cd "$GITHUB_WORKSPACE" \
               --output-last-message "$CODEX_FINAL" \
@@ -881,6 +1003,8 @@ jobs:
               codex_native="${15}"
               codex_package_root="${16}"
               originator="${17}"
+              stream_supervisor="${18}"
+              stream_extractor="${19}"
               protected_unix_socket_paths="/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request"
               inaccessible_paths=""
               protected_unix_socket_host_ids=""
@@ -946,7 +1070,7 @@ jobs:
                   "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
                   "PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths" \
                   "PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids" \
-                  /bin/sh "$launcher" "$uid" "$nobody_gid"
+                  /bin/sh "$launcher" "$uid" "$nobody_gid" "$stream_supervisor" "$stream_extractor"
               rc=$?
               set -e
 
@@ -993,7 +1117,9 @@ jobs:
             "$CODEX_MODEL" \
             "$CODEX_NATIVE" \
             "$CODEX_PACKAGE_ROOT" \
-            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$stream_dir/supervise-codex-exec-stream.py" \
+            "$stream_dir/extract-codex-exec-usage.py"
 
       - name: Verify AI Developer host integrity
         if: always() && steps.host_integrity_before.outputs.captured == 'true'
@@ -1029,12 +1155,99 @@ jobs:
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
           echo 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。'
 
+      - name: Collect trusted Codex Issue usage evidence
+        id: usage_evidence
+        if: always() && (steps.codex.outcome == 'success' || steps.codex.outcome == 'failure')
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
+          USAGE_HELPER_BLOBS: ${{ steps.issue_context.outputs.usage_helper_blobs }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}
+          SELECTED_MODEL: ${{ steps.codex_model.outputs.model }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No pre-model copy or workload-written leftover is authority.
+          rm -f -- "$RUNNER_TEMP/codex-usage-evidence.json"
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${BASE_SHA}^{commit}"
+          evidence_dir="$(mktemp -d "$RUNNER_TEMP/codex-usage.XXXXXX")"
+          trap 'rm -rf -- "$evidence_dir"' EXIT
+          usage_helpers=(collect-codex-usage-evidence.py select-codex-usage-journal.py
+            build-codex-usage-evidence.py validate-codex-usage-identity.py
+            validate-codex-usage-stream.py extract-codex-exec-usage.py)
+          read -r -a expected_blobs <<< "$USAGE_HELPER_BLOBS"
+          [ "${#expected_blobs[@]}" -eq "${#usage_helpers[@]}" ]
+          for index in "${!usage_helpers[@]}"; do
+            filename="${usage_helpers[$index]}"
+            source_path=".github/scripts/$filename"
+            expected_blob="${expected_blobs[$index]}"
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]]
+            source_entry="$(git ls-tree "$BASE_SHA" -- "$source_path")"
+            case "$source_entry" in
+              "$(printf '100644 blob %s\t%s' "$expected_blob" "$source_path")"|"$(printf '100755 blob %s\t%s' "$expected_blob" "$source_path")") ;;
+              *) exit 1 ;;
+            esac
+            git show "${BASE_SHA}:${source_path}" > "$evidence_dir/$filename"
+            [ -f "$evidence_dir/$filename" ] && [ ! -L "$evidence_dir/$filename" ]
+            test "$(git hash-object --no-filters "$evidence_dir/$filename")" = "$expected_blob"
+          done
+          # Reuse the existing post-systemd-run root journal authority. The
+          # collector alone reads raw bytes, once; no shell capture or raw file.
+          jq -cn --arg repository "$GITHUB_REPOSITORY" \
+            --argjson run_id "$RUN_ID" --argjson run_attempt "$RUN_ATTEMPT" \
+            --argjson issue_number "$ISSUE_NUMBER" --arg base_sha "$BASE_SHA" \
+            --arg selected_model "$SELECTED_MODEL" \
+            '{schema:"codex-usage-evidence-identity",version:1,repository:$repository,
+              run_id:$run_id,run_attempt:$run_attempt,issue_number:$issue_number,
+              job:"develop-from-issue",pr_number:null,base_sha:$base_sha,
+              selected_model:$selected_model,cli_version:"0.159.3",
+              reasoning_effort:"medium",invocation_mode:"fresh_exec"}' |
+            sudo -n -- /usr/bin/env -i PATH=/usr/bin:/bin \
+              /usr/bin/python3 -I -B "$evidence_dir/collect-codex-usage-evidence.py" \
+              > "$evidence_dir/evidence.json"
+          test -s "$evidence_dir/evidence.json"
+          mv -T -- "$evidence_dir/evidence.json" "$RUNNER_TEMP/codex-usage-evidence.json"
+
+      - name: Upload sanitized Codex Issue usage evidence
+        id: usage_upload
+        if: always() && steps.usage_evidence.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-usage-evidence-develop-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/codex-usage-evidence.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Report Codex Issue usage evidence persistence
+        if: always() && steps.usage_evidence.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          COLLECTION_OUTCOME: ${{ steps.usage_evidence.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.usage_upload.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Codex Issue usage evidence'
+            printf '\n- 収集step: %s\n- 保存step: %s\n' "$COLLECTION_OUTCOME" "$UPLOAD_OUTCOME"
+            echo '- artifact欠損・missing・invalid・usage unavailableはunknownであり、費用0を意味しません。'
+            echo '- この収集・保存結果は既存の実行・停止・書き込み判定を変更しません。'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Restore trusted post-Codex helpers
         env:
           BASE_SHA: ${{ steps.issue_context.outputs.base_sha }}
           NOTIFY_HUMAN_BLOB: ${{ steps.issue_context.outputs.notify_human_blob }}
           APPLY_HUMAN_PAUSE_BLOB: ${{ steps.issue_context.outputs.apply_human_pause_blob }}
           REQUIREMENTS_MARKER_BLOB: ${{ steps.issue_context.outputs.requirements_marker_blob }}
+          DECISION_CLASSIFIER_BLOB: ${{ steps.issue_context.outputs.decision_classifier_blob }}
+          SCOPE_MARKER_BLOB: ${{ steps.issue_context.outputs.scope_marker_blob }}
           DIFF_GUARD_BLOB: ${{ steps.issue_context.outputs.diff_guard_blob }}
           PAUSE_HELPER_BLOBS: ${{ steps.issue_context.outputs.pause_helper_blobs }}
         shell: bash
@@ -1064,6 +1277,10 @@ jobs:
             "$RUNNER_TEMP/apply-human-pause.sh" "$APPLY_HUMAN_PAUSE_BLOB"
           restore_base_blob '.github/scripts/has-requirements-change-marker.sh' \
             "$RUNNER_TEMP/has-requirements-change-marker.sh" "$REQUIREMENTS_MARKER_BLOB"
+          restore_base_blob '.github/scripts/classify-ai-developer-decision-marker.sh' \
+            "$RUNNER_TEMP/classify-ai-developer-decision-marker.sh" "$DECISION_CLASSIFIER_BLOB"
+          restore_base_blob '.github/scripts/has-scope-decision-marker.sh' \
+            "$RUNNER_TEMP/has-scope-decision-marker.sh" "$SCOPE_MARKER_BLOB"
           restore_base_blob '.github/scripts/evaluate-codex-diff-gate.sh' \
             "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" "$DIFF_GUARD_BLOB"
 
@@ -1131,7 +1348,7 @@ jobs:
             app_id="$(gh api "/apps/$APP_SLUG" --jq '.id')"
             [[ "$app_id" =~ ^[1-9][0-9]*$ ]]
             local options=(--failed-action develop)
-            if [ "$pause_reason" = requirements_change ]; then
+            if [[ "$pause_reason" == requirements_change || "$pause_reason" == scope_decision ]]; then
               fingerprint="$(gh api "/repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" | python3 -c '
           import hashlib, json, sys
           body = json.load(sys.stdin)["body"]
@@ -1152,17 +1369,117 @@ jobs:
             exit 0
           fi
           set +e
-          bash "$RUNNER_TEMP/has-requirements-change-marker.sh" "$CODEX_FINAL"
-          marker_status=$?
+          classification="$(bash "$RUNNER_TEMP/classify-ai-developer-decision-marker.sh" "$CODEX_FINAL")"
+          classification_status=$?
           set -e
-          if [ "$marker_status" -gt 1 ]; then
-            pause_for_human developer_execution_failed '要件変更マーカーの判定に失敗しました。人間の判断があるまで自動開発を停止します。'
+          if [ "$classification_status" -ne 0 ]; then
+            pause_for_human developer_execution_failed 'decision markerの分類に失敗しました。人間の判断があるまで自動開発を停止します。'
             exit 0
-          elif [ "$marker_status" -eq 0 ]; then
-            pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
-          else
-            echo 'continue=true' >> "$GITHUB_OUTPUT"
           fi
+          case "$classification" in
+            requirements_change)
+              pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
+              ;;
+            none) echo 'continue=true' >> "$GITHUB_OUTPUT" ;;
+            scope_decision)
+              scope_report="$(mktemp "$RUNNER_TEMP/scope-report.XXXXXX" 2>/dev/null)" || scope_report=''
+              trap 'if [ -n "$scope_report" ]; then rm -f -- "$scope_report"; fi' EXIT
+              scope_detail='Codexがスコープの判断の必要性を報告しました。対象範囲がIssueに記録されるまで自動開発を停止します。'
+              scope_report_valid=false
+              # Trusted inline gate: human fields never determine machine reason.
+              if python3 -I -B - "$CODEX_FINAL" "$scope_report" <<'PY'
+          import html
+          import os
+          import re
+          import stat
+          import sys
+          import unicodedata
+
+          try:
+              fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as source:
+                  if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                      raise ValueError
+                  raw = source.read(16 * 1024 + 1)
+              if not raw or len(raw) > 16 * 1024:
+                  raise ValueError
+              report = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              if any(unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp")
+                     for c in report if c != "\n"):
+                  raise ValueError
+              labels = (
+                  "Observed fact", "Missing/new Contract category",
+                  "Why Done is impossible under the current contract", "R/C/P/B change",
+                  "Proposed split/prerequisite", "Product impact", "Unverified matters",
+              )
+              fields = {}
+              for line in report.split("\n"):
+                  for label in labels:
+                      if line.startswith(label + ":"):
+                          if label in fields or not line.startswith(label + ": "):
+                              raise ValueError
+                          value = line[len(label) + 2:]
+                          if not value.strip() or len(value.encode("utf-8")) > 1024:
+                              raise ValueError
+                          fields[label] = value
+              if set(fields) != set(labels):
+                  raise ValueError
+              # Reject obvious credential/raw diagnostic shapes, never echo matches.
+              unsafe = re.compile(
+                  r"-----BEGIN[ A-Z]*PRIVATE KEY-----|\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+"
+                  r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bBearer\s+\S+"
+                  r"|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+                  r"|https?://[^\s]*(?:webhooks?/|[?&](?:token|key|secret)=)"
+                  r"|\b(?:token|secret|password|credential|api[_ -]?key)\s*[:=]\s*\S+"
+                  r"|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\s*=\s*\S+"
+                  r"|\b(?:HOME|USER|LOGNAME|PATH|SHELL)\s*=\s*\S+"
+                  r"|\b(?:uid|gid|userId|primaryGroupId|supplementaryGroupIds)\b[^\n]{0,16}\d"
+                  r"|/(?:home|opt|tmp|var|run|proc|sys|etc|usr|mnt|Users|private|__w|_work|_temp)(?:/|\b)"
+                  r"|\b[A-Za-z]:[\\/]|(?:hostedtoolcache|/toolcache/|/_actions/|/_temp/)"
+                  r'|"(?:type|environment|env)"\s*:',
+                  re.IGNORECASE,
+              )
+              if any(unsafe.search(value) for value in fields.values()):
+                  raise ValueError
+              def escape(value):
+                  # Display model text literally; suppress HTML/Markdown and mentions.
+                  value = html.escape(value, quote=True).replace("@", "&#64;")
+                  return re.sub(r"([\\`*_{}\[\]()!|])", r"\\\1", value)
+              rendered = "### スコープ判断の理由（Codexの報告）\n\n"
+              rendered += "以下は人間向けの判断材料です。停止・再開の制御は既存pause recordを正本とします。\n\n"
+              rendered += "\n".join("- " + label + ": " + escape(fields[label]) for label in labels) + "\n"
+              if len(rendered.encode("utf-8")) > 8 * 1024:
+                  raise ValueError
+              fd = os.open(sys.argv[2], os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "wb") as output:
+                  if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
+                      raise ValueError
+                  output.write(rendered.encode("utf-8"))
+          except Exception:
+              # No traceback, input bytes, paths, or environment in diagnostics.
+              sys.exit(1)
+          PY
+              then
+                scope_report_valid=true
+              else
+                scope_detail='スコープ判断理由を安全な形式・上限内で検証できませんでした。raw内容は公開せずscope_decisionの停止を維持します。人間による確認が必要です。'
+              fi
+              pause_for_human scope_decision "$scope_detail"
+              if [ "$scope_report_valid" != true ]; then
+                echo 'スコープ判断理由の検証に失敗しました。自動開発は停止しています。' >&2
+                exit 1
+              fi
+              # Machine pause and generic comment already exist before human evidence.
+              if ! gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body-file "$scope_report" >/dev/null 2>&1; then
+                echo 'スコープ判断理由の投稿を確認できませんでした。停止を維持し、自動再試行しません。' >&2
+                exit 1
+              fi
+              ;;
+            *)
+              pause_for_human developer_execution_failed 'decision marker classifierの出力が不正です。人間の判断があるまで自動開発を停止します。'
+              ;;
+          esac
 
       - name: Evaluate trusted diff guard
         if: steps.development-gate.outputs.continue == 'true'
@@ -1780,11 +2097,21 @@ jobs:
           apply_human_pause_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/apply-human-pause.sh")"
           requirements_marker_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/has-requirements-change-marker.sh")"
           diff_guard_blob="$(git rev-parse "${BASE_SHA}:.github/scripts/evaluate-codex-diff-gate.sh")"
+          usage_helpers=(collect-codex-usage-evidence.py select-codex-usage-journal.py
+            build-codex-usage-evidence.py validate-codex-usage-identity.py
+            validate-codex-usage-stream.py extract-codex-exec-usage.py)
+          usage_helper_blobs=()
+          for filename in "${usage_helpers[@]}"; do
+            blob="$(git rev-parse "${BASE_SHA}:.github/scripts/$filename")"
+            [[ "$blob" =~ ^[0-9a-f]{40}$ ]]
+            usage_helper_blobs+=("$blob")
+          done
           {
             printf 'notify_human_blob=%s\n' "$notify_human_blob"
             printf 'apply_human_pause_blob=%s\n' "$apply_human_pause_blob"
             printf 'requirements_marker_blob=%s\n' "$requirements_marker_blob"
             printf 'diff_guard_blob=%s\n' "$diff_guard_blob"
+            printf 'usage_helper_blobs=%s\n' "${usage_helper_blobs[*]}"
           } >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
@@ -1817,17 +2144,69 @@ jobs:
             "$RUNNER_TEMP/evaluate-codex-diff-gate.sh" \
             "$RUNNER_TEMP/codex-diff-guard-contract.json"
 
-      - name: Validate Codex model configuration
+      - name: Select trusted Codex Issue model
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
+        id: codex_model
         env:
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          NORMAL_MODEL: ${{ vars.CODEX_MODEL }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$CODEX_MODEL" =~ [^[:space:]] ]]; then
-            echo 'repository変数CODEX_MODELには空白以外の値が必要です。' >&2
-            exit 1
-          fi
+          [[ "$HEAD_REF" =~ ^ai/issue-([1-9][0-9]*)$ ]]
+          export ISSUE_NUMBER="${BASH_REMATCH[1]}"
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]{0,15}$ ]]
+          selection_dir="$(mktemp -d "$RUNNER_TEMP/codex-model-selection.XXXXXX")"
+          export SELECTION_DIR="$selection_dir"
+          trap 'rm -rf -- "$selection_dir"' EXIT
+          for filename in select-codex-issue-model.py codex-issue-model-policy.json; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}")"
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]]
+            git show "${BASE_SHA}:${source_path}" > "$selection_dir/$filename"
+            test "$(git hash-object --no-filters "$selection_dir/$filename")" = "$expected_blob"
+          done
+          python3 -I -B - <<'PY_MODEL'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          try:
+              directory = Path(os.environ["SELECTION_DIR"])
+              source = directory / "select-codex-issue-model.py"
+              policy = directory / "codex-issue-model-policy.json"
+              spec = importlib.util.spec_from_file_location("trusted_model_selector", source)
+              selector = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(selector)
+              request = json.dumps(dict(repository=os.environ["GITHUB_REPOSITORY"],
+                  issue=int(os.environ["ISSUE_NUMBER"]), normal_model=os.environ["NORMAL_MODEL"]),
+                  ensure_ascii=True, separators=(",", ":")).encode()
+              with policy.open("rb") as stream:
+                  policy_bytes = stream.read(selector.MAX_POLICY_BYTES + 1)
+              # Reuse the pure Contract; do not copy schema/allowlist/model rules.
+              expected = selector.select(policy_bytes, request)
+              canonical = (json.dumps(expected, sort_keys=True, ensure_ascii=True,
+                  separators=(",", ":")) + "\n").encode()
+              with (directory / "result.json").open("wb") as output:
+                  result = subprocess.run([sys.executable, "-I", "-B", str(source), "--policy", str(policy)],
+                      input=request, stdout=output, stderr=subprocess.DEVNULL)
+              with (directory / "result.json").open("rb") as stream:
+                  actual = stream.read(4097)
+              # Exact canonical bytes prove closed schema, types, identity and selection.
+              if result.returncode != 0 or not 0 < len(actual) <= 4096 or actual != canonical:
+                  raise ValueError
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("model=" + expected["model"] + "\n")
+              print("モデル選択: " + expected["selection"])
+          except Exception:
+              print("モデル選択を拒否しました: trusted_selection_failed", file=sys.stderr)
+              sys.exit(1)
+          PY_MODEL
 
       - name: Prepare Codex follow-up runtime
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true'
@@ -2023,10 +2402,11 @@ jobs:
         id: codex
         timeout-minutes: 12
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           CODEX_FINAL: ${{ runner.temp }}/codex-final.md
           CODEX_PROMPT_FILE: ${{ runner.temp }}/codex-followup-prompt.md
-          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          CODEX_MODEL: ${{ steps.codex_model.outputs.model }}
           CODEX_INTERNAL_ORIGINATOR_OVERRIDE: codex_github_action
           CODEX_NATIVE: ${{ steps.followup_codex_runtime.outputs.native_path }}
           CODEX_PACKAGE_ROOT: ${{ steps.followup_codex_runtime.outputs.package_root }}
@@ -2042,6 +2422,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          stream_source_failure() {
+            echo '信頼済みCodex stream sourceを確認できませんでした。' >&2
+            exit 1
+          }
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || stream_source_failure
+          stream_dir="$(mktemp -d "$RUNNER_TEMP/codex-stream.XXXXXX" 2>/dev/null)" || stream_source_failure
+          for filename in supervise-codex-exec-stream.py extract-codex-exec-usage.py; do
+            source_path=".github/scripts/$filename"
+            expected_blob="$(git rev-parse "${BASE_SHA}:${source_path}" 2>/dev/null)" || stream_source_failure
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]] || stream_source_failure
+            source_entry="$(git ls-tree "$BASE_SHA" -- "$source_path" 2>/dev/null)" || stream_source_failure
+            case "$source_entry" in
+              "$(printf '100644 blob %s\t%s' "$expected_blob" "$source_path")"|"$(printf '100755 blob %s\t%s' "$expected_blob" "$source_path")") ;;
+              *) stream_source_failure ;;
+            esac
+            git show "${BASE_SHA}:${source_path}" > "$stream_dir/$filename" 2>/dev/null || stream_source_failure
+            [ -f "$stream_dir/$filename" ] && [ ! -L "$stream_dir/$filename" ] || stream_source_failure
+            actual_blob="$(git hash-object --no-filters "$stream_dir/$filename" 2>/dev/null)" || stream_source_failure
+            [ "$actual_blob" = "$expected_blob" ] || stream_source_failure
+          done
 
           test -x "$CODEX_NATIVE"
           test -f "$ACTION_MAIN"
@@ -2360,7 +2762,8 @@ jobs:
             CODEX_MANAGED_BY_NPM=1 \
             CODEX_HOME="$CODEX_HOME" \
             CODEX_INTERNAL_ORIGINATOR_OVERRIDE="$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
-            "$CODEX_NATIVE" exec \
+            /usr/bin/python3 -I -B "$3" --extractor "$4" -- \
+              "$CODEX_NATIVE" exec --json \
               --skip-git-repo-check \
               --cd "$GITHUB_WORKSPACE" \
               --output-last-message "$CODEX_FINAL" \
@@ -2401,6 +2804,8 @@ jobs:
               codex_native="${15}"
               codex_package_root="${16}"
               originator="${17}"
+              stream_supervisor="${18}"
+              stream_extractor="${19}"
               protected_unix_socket_paths="/run/dbus/system_bus_socket /run/dhcpcd/eth0-4.unpriv.sock /run/docker.sock /run/snapd-snap.socket /run/snapd.socket /run/systemd/io.systemd.ManagedOOM /run/systemd/journal/dev-log /run/systemd/journal/socket /run/systemd/journal/stdout /run/systemd/journal/syslog /run/systemd/notify /run/systemd/userdb/io.systemd.DynamicUser /run/uuidd/request"
               inaccessible_paths=""
               protected_unix_socket_host_ids=""
@@ -2466,7 +2871,7 @@ jobs:
                   "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=$originator" \
                   "PROTECTED_UNIX_SOCKET_PATHS=$protected_unix_socket_paths" \
                   "PROTECTED_UNIX_SOCKET_HOST_IDS=$protected_unix_socket_host_ids" \
-                  /bin/sh "$launcher" "$uid" "$nobody_gid"
+                  /bin/sh "$launcher" "$uid" "$nobody_gid" "$stream_supervisor" "$stream_extractor"
               rc=$?
               set -e
 
@@ -2513,7 +2918,9 @@ jobs:
             "$CODEX_MODEL" \
             "$CODEX_NATIVE" \
             "$CODEX_PACKAGE_ROOT" \
-            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+            "$CODEX_INTERNAL_ORIGINATOR_OVERRIDE" \
+            "$stream_dir/supervise-codex-exec-stream.py" \
+            "$stream_dir/extract-codex-exec-usage.py"
 
       - name: Verify Codex follow-up host integrity
         if: always() && steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.followup_host_integrity_before.outputs.captured == 'true'
@@ -2548,6 +2955,96 @@ jobs:
           getent ahosts api.github.com >/dev/null
           printf 'HOST_INTEGRITY after sockets=unchanged resolved=unchanged dns=ok\n'
           echo 'ホストの保護対象socketと名前解決サービスに変化はなく、DNSも正常です。'
+
+      - name: Collect trusted Codex follow-up usage evidence
+        id: usage_evidence
+        if: always() && steps.codex.outputs.continue == 'true' && (steps.codex.outcome == 'success' || steps.codex.outcome == 'failure')
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          USAGE_HELPER_BLOBS: ${{ steps.followup_context.outputs.usage_helper_blobs }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SELECTED_MODEL: ${{ steps.codex_model.outputs.model }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No pre-model copy or workload-written leftover is authority.
+          rm -f -- "$RUNNER_TEMP/codex-usage-evidence.json"
+          [[ "$HEAD_REF" =~ ^ai/issue-([1-9][0-9]*)$ ]]
+          ISSUE_NUMBER="${BASH_REMATCH[1]}"
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${BASE_SHA}^{commit}"
+          evidence_dir="$(mktemp -d "$RUNNER_TEMP/codex-usage.XXXXXX")"
+          trap 'rm -rf -- "$evidence_dir"' EXIT
+          usage_helpers=(collect-codex-usage-evidence.py select-codex-usage-journal.py
+            build-codex-usage-evidence.py validate-codex-usage-identity.py
+            validate-codex-usage-stream.py extract-codex-exec-usage.py)
+          read -r -a expected_blobs <<< "$USAGE_HELPER_BLOBS"
+          [ "${#expected_blobs[@]}" -eq "${#usage_helpers[@]}" ]
+          for index in "${!usage_helpers[@]}"; do
+            filename="${usage_helpers[$index]}"
+            source_path=".github/scripts/$filename"
+            expected_blob="${expected_blobs[$index]}"
+            [[ "$expected_blob" =~ ^[0-9a-f]{40}$ ]]
+            source_entry="$(git ls-tree "$BASE_SHA" -- "$source_path")"
+            case "$source_entry" in
+              "$(printf '100644 blob %s\t%s' "$expected_blob" "$source_path")"|"$(printf '100755 blob %s\t%s' "$expected_blob" "$source_path")") ;;
+              *) exit 1 ;;
+            esac
+            git show "${BASE_SHA}:${source_path}" > "$evidence_dir/$filename"
+            [ -f "$evidence_dir/$filename" ] && [ ! -L "$evidence_dir/$filename" ]
+            test "$(git hash-object --no-filters "$evidence_dir/$filename")" = "$expected_blob"
+          done
+          # Reuse the existing post-systemd-run root journal authority. The
+          # collector alone reads raw bytes, once; no shell capture or raw file.
+          jq -cn --arg repository "$GITHUB_REPOSITORY" \
+            --argjson run_id "$RUN_ID" --argjson run_attempt "$RUN_ATTEMPT" \
+            --argjson issue_number "$ISSUE_NUMBER" --argjson pr_number "$PR_NUMBER" \
+            --arg base_sha "$BASE_SHA" \
+            --arg selected_model "$SELECTED_MODEL" \
+            '{schema:"codex-usage-evidence-identity",version:1,repository:$repository,
+              run_id:$run_id,run_attempt:$run_attempt,issue_number:$issue_number,
+              job:"respond-to-claude",pr_number:$pr_number,base_sha:$base_sha,
+              selected_model:$selected_model,cli_version:"0.159.3",
+              reasoning_effort:"medium",invocation_mode:"fresh_exec"}' |
+            sudo -n -- /usr/bin/env -i PATH=/usr/bin:/bin \
+              /usr/bin/python3 -I -B "$evidence_dir/collect-codex-usage-evidence.py" \
+              > "$evidence_dir/evidence.json"
+          test -s "$evidence_dir/evidence.json"
+          mv -T -- "$evidence_dir/evidence.json" "$RUNNER_TEMP/codex-usage-evidence.json"
+
+      - name: Upload sanitized Codex follow-up usage evidence
+        id: usage_upload
+        if: always() && steps.usage_evidence.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-usage-evidence-followup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/codex-usage-evidence.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Report Codex follow-up usage evidence persistence
+        if: always() && steps.usage_evidence.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          COLLECTION_OUTCOME: ${{ steps.usage_evidence.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.usage_upload.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Codex follow-up usage evidence'
+            printf '\n- 収集step: %s\n- 保存step: %s\n' "$COLLECTION_OUTCOME" "$UPLOAD_OUTCOME"
+            echo '- artifact欠損・missing・invalid・usage unavailableはunknownであり、費用0を意味しません。'
+            echo '- この収集・保存結果は既存の実行・停止・書き込み判定を変更しません。'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore trusted post-Codex helpers
         if: steps.verify-reviewer.outputs.trusted == 'true' && steps.followup-gate.outputs.continue == 'true' && steps.followup-checkout.outputs.continue == 'true' && steps.codex.outputs.continue == 'true'

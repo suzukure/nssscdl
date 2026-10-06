@@ -33,6 +33,79 @@ Claude Reviewのreview contextでは、reviewer Appによる最新のformal revi
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
 
+## Work Admission Control
+
+問題・改善点は無制限に発見してよい。発見（Discovery）と着手（Execution）を分離し、現在Issueを完了するために必要でないものは現在scopeへ取り込まず、同一の自律実行チェーンから新たに着手しない。AI Developer、Claude Review、ChatGPT上の開発補助、横断監査等に共通して本節を適用する。
+
+本節は新しい仕事をActiveへ入れるかを判断する上流の運用契約である。admissionしたIssueには、既存の[Issueの分割単位](#issueの分割単位)と、AI開発環境Issueの場合は #549 由来の[semantic/runtime scope確認](#ai開発環境issueのruntime-scope確認)を適用する。これらの分割基準を置き換えない。
+
+### findingの分類とBlocking判定
+
+作業中に新しいfindingを発見したら、現在契約と未対応の影響を照合し、少なくとも次のQ1〜Q3を確認する。
+
+- **Q1**: 対応しないと、現在Issueの既存Acceptance Criteria / Done / current implementation contractを満たせないか。
+- **Q2**: 対応せず現在PRをmainへ反映すると、安全性・正確性・要求／設計整合性が壊れるか。
+- **Q3**: 現在Issueを成立させるために新たに判明した必須前提か。
+
+| 分類 | 境界 | 現在作業での扱い |
+|---|---|---|
+| In-scope required | 現在Issueの既存Acceptance Criteria / Done / current implementation contractを満たすために不可欠で、元Issueの責務と不可分。 | 現Issue内で対応し、同じ判断に不可分な関連修正・検証を揃える。 |
+| Blocker | 現Issueとは独立した責務だが、未解決のままmainへ反映すると安全性・正確性・要求／設計整合性を維持できない、または現在Issue成立の必須前提が欠ける。 | 現Issueを停止し、「Issueの分割単位」と既存の人間判断・停止／再開契約に従って扱う。 |
+| Follow-up | 対応価値はあるが、未対応でも現在Issueを安全かつ整合した状態で完了・main反映できる。 | 現在scopeへ取り込まず、[スコープ外影響と後継Issue](#スコープ外影響と後継issue)の契約に従って記録し、現在Issueへ復帰する。 |
+| Idea / Improvement | 将来改善の可能性はあるが、問題・scope・Doneが独立Issueとして十分具体化していない。 | 現Issueへ取り込まず、既存のIssue / review等へ必要最小限の記録に留める。発見時点で独立Issueを必ず生成する必要はない。 |
+
+Q1のみが該当し、責務が元Issueに不可分ならIn-scope requiredとする。Q2またはQ3が該当し、独立責務として分離可能ならBlocker候補とする。すべて該当しないfindingは現在scopeへ取り込まず、Follow-upまたはIdea / Improvementへ送る。重要性、改善効果、将来の堅牢性向上だけを理由にBlockingへ昇格させない。
+
+Q2 / Q3の影響を、後継Issueの存在やIdeaという名称で回避してはならない。不可分な関連修正は既存契約内で揃え、分類・責務境界を確定できない場合や現在契約の変更が必要な場合は人間判断へ送る。要求変更または未決の上流判断が必要なら既存の要求変更エスカレーションに従い、推測した変更を残さない。
+
+### current implementation contractとDoDの維持
+
+`/codex develop` 投入時点の[current implementation contract](#issue本文におけるcurrent-implementation-contract)を作業scopeの基準とする。AIは実装中に発見した改善候補を理由として、新しいAcceptance Criteria / Done条件 / 検証義務を自律的に追加しない。既存契約を満たすために必要な修正・検証と、新しい完了条件の追加を区別する。
+
+現在契約そのものを変更する必要が判明した場合は、要求変更・scope変更・人間判断等の既存契約に従って停止し、人間の必要な判断をIssue本文へ反映してから再開する。本節は #219 の人間判断待ち・pause/resume状態モデルを再設計せず、新しい停止reasonや自動再開経路を追加しない。
+
+### Issue起点開発中のdynamic scope decision
+
+#720のstatic pre-admissionは[AI開発環境Issueのruntime scope確認](#ai開発環境issueのruntime-scope確認)のR/C/P/Bで判断する。#718 / #729のin-development dynamic stopは、着手後に現在Issue authority外の必須cross-boundary Contract判断が判明した場合に適用する。producer指示は `.github/workflows/ai-developer.yml` のIssue-origin fixed Codex promptだけに置き、AGENTSのglobal ruleやClaude Blocking follow-up prompt/pathへ広げない。
+
+停止対象は、current implementation contract自体の変更、current Issue/mainにないnew prerequisite cross-boundary Contract、synthetic/dormant/narrower Contractのtarget-mode昇格、new proof infrastructure Contractの必須化、fresh R/C/P/BのRed / split-firstへの遷移、new cross-boundary Contract定義とdownstream consumerを同一Issueへ入れないと進めない場合、またはIssue authority外のtrust / ownership / failure semanticsの新boundary判断とする。existing C0の単純利用、current Issueが明示scope化したContract definition/proof、local bug fix、existing fail-closed fixture、docs同期、P1 fixture/assertion、current Issueを先に整合的に完了できるsafe Follow-up / Ideaだけでは停止しない。ただし、新たなauthority外の必須判断をこれらの例外で回避しない。
+
+scope判断が必要なら、Codexはnew Contractを推測で確定せず、downstream integrationを継続せず、未決Contractに依存するspeculative partial changeをworking treeへ残さない。final reportへ判断に必要な最小限のobserved fact、missing/new Contract category、current contractでDone不可な理由、R/C/P/Bの変化、proposed split/prerequisite、Product impact、未検証事項を記録し、exact `[SCOPE_DECISION_REQUIRED]` をplain textの単独行で出力する。検出規約とfail-closedは[人間エスカレーション](#人間エスカレーション)を正本とし、free textをmachine controlへ使用しない。Product要求変更・未決の上流判断には既存 `[REQUIREMENTS_CHANGE_REQUIRED]` を優先し、両markerを同時に出力しない。
+
+scope markerは既存reason `scope_decision` のhuman pauseへ接続し、repository writeへ進まない。人間が判断をIssue本文へ更新してから既存 `/ai resume develop` で再開する。本文fingerprintが未更新ならresumeを拒否する。automatic Issue split / parent化 / retryは行わず、新しいreasonやschema fieldを追加しない。
+
+### 記録、Active work、次のadmission
+
+findingを独立Issueへ昇格するのは、少なくとも次を満たす場合を基本とする。
+
+- 問題または変更目的が具体化している。
+- 独立したscopeを説明できる。
+- Doneを定義できる。
+- 実施候補として追跡する合理的な価値がある。
+
+低確度の可能性、一般的改善案、将来あると便利というだけの項目は、直ちにIssue化する必要はない。ただし、後継対応へ分離するスコープ外影響の人間による安全判断・closing Issue本文とPRへの記録・後継Issue確認は「スコープ外影響と後継Issue」に従い、本節によって省略しない。AI Developer自身のGitHub書込み禁止等、各担当の責務境界も維持する。
+
+Follow-up Issueの作成・記録は次の着手許可を意味しない。そのIssueを同一の自律実行チェーンから自動で `/codex develop` しない。原則フローは次のとおりとする。
+
+```text
+現在Issue -> finding発見 -> 分類 -> Follow-upなら記録 -> 現在Issueへ復帰
+         -> Done / review / merge -> 次の着手判断
+```
+
+Blockerのみ、現在Issueを停止した上で例外的に先行対応できる。これは既存の人間判断・scope確定・停止／再開契約を迂回する自動着手許可ではない。
+
+プロジェクト全体を機械的にWIP=1とはしない。同一の目的・価値単位・依存チェーンについては、原則として現在完了へ向けて進めるActive開発チェーンを1本に保つ。レビュー待ちや明示的Blocker等で独立作業を進める場合も、新しいIssueを発見したことだけを理由にActive workを枝分かれさせない。
+
+Follow-upやIdeaは発見時点で優先順位を深掘りせず、現在Issueの完了へ復帰する。現在のIssue / 価値単位 / milestone等の区切りで、未着手候補の必要性・価値・依存・scope・Doneをfresh評価し、次にadmissionする対象を選ぶ。発見順、Issue番号順、Claude / Astra等の指摘順を着手順の根拠にしない。
+
+### Claude Reviewと横断監査への適用
+
+Claudeの `blocking_findings` は現PRのmerge gateであり、既存契約どおり対応する。対応の責務境界は本節の分類で確認し、独立したBlockerを無断で現Issueへ取り込まない。`non_blocking_findings` は現PRのDoneへ自動追加せず、Follow-up / Idea候補として人間判断または既存契約に従って扱う。非Blockingという理由だけで必ずIssue化せず、指摘されたことを同じPRで直す自動拡張の根拠にしない。承認後の延期判断・記録・再レビュー条件は[承認後の非Blocking改善](#承認後の非blocking改善)を維持する。
+
+横断監査では、少なくとも意味上、現在の監査対象の完了条件を満たさず次工程へ進めない **Gate finding** と、現在の完了条件を満たしたまま後続へ送れる **System improvement finding** を区別する。System improvement findingが存在するだけでは現在のGateを閉じず、現在scopeへ自動追加しない。監査の目的を「問題ゼロになるまで改善」へ暗黙に変更しない。
+
+本契約は運用規約として導入する。GitHub Project列・label体系・新state machine・workflow/runtime behavior・Secrets / Variables / permissions・paid AI pathは追加または変更しない。実運用で逸脱や誤分類が観測された場合にのみ、後続Issueでfixture / lint / machine gateの必要性を判断する。自動化の導入は別Issueでsecurity / trust boundary、fail-closed、cost、retry、observability、human escalationをfresh評価する。
+
 ## Issueの分割単位
 
 Issueは、独立して判断・実施・検証・完了判定でき、単独でmainへ反映しても安全性・正確性・要求および設計の整合性を維持できる「意味のある最小単位」とする。Issue作成時だけでなく、検討・実装・reviewによって責務境界が明らかになった時点でも、この単位を維持しているか再評価する。
@@ -54,9 +127,13 @@ Issueは、独立して判断・実施・検証・完了判定でき、単独で
 
 ### AI開発環境Issueのruntime scope確認
 
+[Work Admission Control](#work-admission-control)で着手対象を判断した後に、本節のruntime scope確認を行う。
+
+#719で確定したstatic admissionの再校正に基づき、#549由来のheavy runtime responsibility（R）に、Consumed Contract readiness（C）、Proof topology readiness（P）、Boundary span（B）を組み合わせる。本節はpre-developmentの事前判定を正本とする。AI Develop中のnew Contract discoveryに伴うdynamic pause / re-evaluationは #718 の別責務であり、本節ではmarker / reason / resume契約やworkflow/runtime behaviorを追加・変更しない。
+
 AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記の「意味のある最小単位」を満たす候補について、inner `RuntimeMaxSec=700s` 内に実装・検証・報告まで収まるscopeかを見積もる。これはIssue境界の下位に置く事前確認であり、責務数や差分量を理由に、安全性・正確性・要求／設計整合性に不可分な変更を機械的に分割しない。
 
-次のproduction runtime責務を各1つのheavy responsibilityとして数える。
+**R — Heavy runtime responsibility**: 次のproduction runtime責務を各1つのheavy responsibilityとして数える。
 
 1. 新しいproduction event、`repository_dispatch`、workflow entryの接続。
 2. accepted record、label、machine state、Ready/Draft等の不可逆または外部状態遷移。
@@ -67,26 +144,67 @@ AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記�
 7. App tokenまたはtrust boundaryを跨ぐ新しい権限境界。
 8. 既存normal pathを維持した新path追加に伴う対称性・重複抑止。
 
-単なるfixture追加、既存helperへの局所的なpure判定追加、docs同期は原則として数えない。ただしproduction ownershipやstate transitionを実際に変更する場合は数える。見積もった数を次の事前scope riskに当てはめる。
+単なるfixture追加、既存helperへの局所的なpure判定追加、docs同期は原則として数えない。ただしproduction ownershipやstate transitionを実際に変更する場合は数える。
 
-| Risk | Heavy responsibility数 | 投入前の判断 |
-|---|---:|---|
-| Green | 0〜3 | 通常投入可。 |
-| Yellow | 4〜5 | 分割を優先検討し、少なくともprepared/helperとproduction wiringを分離できないか確認する。 |
-| Red | 6以上 | 原則として投入前に分割する。 |
+**C — Consumed Contract readiness**: 評価対象はIssue自身が新規定義するContractではなく、そのIssueがprerequisiteとして消費するcritical cross-boundary Contractとする。
 
-次の組合せは個数にかかわらず強制分割候補とする。
+| 区分 | 消費するprerequisite Contractの状態 |
+|---|---|
+| C0 | same target mode / same trust boundaryでlatest main上formal proof済み。 |
+| C1 | pure / dormant / synthetic / prepared等のnarrower modeではproof済みだが、target modeでは未実証。 |
+| C2 | prerequisite Contract自体が未定義、または着手前に新しいcontract decisionが必要。 |
+
+Issue自身がContractだけを定義/proofする独立単位は、その新規Contractを理由にC2扱いにしない。消費するcritical cross-boundary prerequisite Contractがなければ、Green条件上はC0相当とする。そのContractを同じIssueで即downstream consumerまで消費する場合は、下記の強制分割候補として扱う。
+
+**P — Proof topology readiness**: Doneを証明するformal proofの構成を確認する。
+
+| 区分 | Proof topologyの状態 |
+|---|---|
+| P0 | current formal proof topologyでDoneを証明可能。 |
+| P1 | existing formal workflowへのfixture/assertion追加だけで証明可能。 |
+| P2 | new runner / runtime supply / staging / observer / handoff等、proof infrastructure自体を先に成立させる必要がある。 |
+
+P2 infrastructureそのものをdormant/preparedに作る独立Issueはadmit可能であり、P2だけで自動的にRed扱いにしない。他のriskと安全な独立単位の条件も確認する。P2 infrastructureと、そのproof対象integrationを同じIssueで完成させる場合はsplit-firstとする。
+
+**B — Boundary span**: 次のcross-boundary categoryのうち、Issue内で新規導入またはmaterially変更するものだけを各1つ数える。
+
+1. trusted source identity
+2. runtime / staging
+3. service / isolation
+4. workspace / cache handoff
+5. paid AI boundary
+6. post gate / validation ownership
+7. repository write / external machine state
+8. workflow-to-workflow handoff
+
+加算条件は、少なくともownershipを跨ぐ、trusted/untrusted authorityを跨ぐ、activation/reachabilityを開く、failure/cleanup ownershipを移す、durable identity/stateを境界越しに受け渡す場合を含む。既存main上の確定Contractをcallerがそのまま利用するだけならBへ加算しない。
+
+R/C/P/Bを次の事前scope riskへ統合する。Red条件と強制分割候補を先に確認し、YellowはRed条件がない場合に限る。
+
+| Risk | 条件 | 投入前の判断 |
+|---|---|---|
+| Green | R <= 3、C0、P0 / P1、B <= 3、既存/追加の強制分割条件なしを全て満たす。 | 通常投入可。 |
+| Yellow | Red条件なしで、R = 4–5、C1だがdormant/proof-only、B = 4のいずれか。 | 分割を優先検討し、pure/prepared/proofとdownstream integration（prepared/helperとproduction wiringを含む）を分離できないかfresh確認する。 |
+| Red / split-first | R >= 6、B >= 5、B = 4 + C1、B = 4 + R >= 4、または下記の強制分割候補のいずれか。 | 原則として投入前に分割する。 |
+
+次の組合せはR/Bの個数にかかわらず強制分割候補とする。#549由来の既存4条件を維持し、#719のContract / Proof / Boundary条件を追加する。
 
 - 新しいproduction pathと独立runner-loss recoveryを同じIssueで初めて実装する。
 - producerとconsumerを同時に初めてproduction接続する。
 - paid AI boundary、accepted/state lifecycle、独立failure recoveryを同時に実装する。
 - 新しいproduction workflowを2本以上追加する。
+- C1 Contractをproduction / paid / repository-write targetへ初めて昇格させながらconsumer wiringも行う。
+- C2 prerequisiteを決めながらdownstream consumer/integrationも同じIssueで閉じる。
+- P2 proof infrastructureを作りながら、そのproof対象integrationも同じIssueで完成させる。
+- new cross-boundary Contractを定義し、その次boundaryのconsumerまで同じIssueで接続する。
 
 強制分割候補は、各段階を安全性・正確性・要求／設計整合性を保つ独立単位へ分けられる場合に分割必須とする。分割自体が正本不整合を生む場合はIssue本文に不可分な理由を明示して人間が判断し、extended-runへ安易に切り替えない。runtime-heavyなworkflow変更は、可能なら (1) pure helper / trusted gate / prepared lifecycle、(2) production wiring / event connection、(3) independent failure recovery / cancellation recovery の順に分ける。各段階は単独でmainへ反映しても安全で、後続未実装の間にproductionが不完全状態へ到達しないことを必須とする。prepared/dormant codeを先行反映する場合は、default production runtimeから到達不能であることをfixtureで固定する。
 
 通常Codex runの実績は次回同種Issueの判断へ反映する。5分以下は粒度が概ね適切、5分超〜8分は次回同種scopeを一段細かく分割することを優先、8分超〜10分は同一Issueへの大きな追加責務を避ける危険域、10分超はsuccessでも分割不足の実績として扱う。700秒上限に到達した場合は同scopeを単純retryせず、「Issue本文におけるcurrent implementation contract」と「Codex timeout・runner異常終了時の診断と再開」で現行契約とfailure categoryを確認し、scope再分割を第一選択にする。timeoutだけでscope過大と断定せず、host/runtime障害、契約矛盾、non-convergence等を切り分けた後に本基準を適用する。
 
-変更行数とファイル数は補助指標であり、Issue境界の主指標にしない。概算のchanged lines（追加＋削除）は400以下を通常、400超〜700を注意、700超を分割優先検討の警告とする。小差分でもheavy responsibilityが多ければtimeoutし得るため責務数を主指標とし、1つの確定判断と整合性維持に不可分な変更を行数だけで分割しない。
+elapsed単独でscope適否を決めず、`time-to-first-result + result category` をセットで扱う。短時間のrequirements/contract pauseはGreen evidenceと解釈せず、10分超のsuccessは引き続きundersplit warningとする。correction/Regression回数は現時点ではadmission thresholdへ使わない。new Contract discovery / proof topology discovery / split decisionはscope feedbackとして記録し、次回のfresh事前判定へ反映する。このelapsed feedbackはdynamic gateではなく、開発中の停止は[Issue起点開発中のdynamic scope decision](#issue起点開発中のdynamic-scope-decision)を正本とする。
+
+変更行数とファイル数は補助指標であり、Issue境界の主指標にしない。概算のchanged lines（追加＋削除）は400以下を通常、400超〜700を注意、700超を分割優先検討の警告とする。小差分でもheavy responsibilityが多ければtimeoutし得るためR/C/P/Bを主指標とし、1つの確定判断と整合性維持に不可分な変更を行数だけで分割しない。
 
 ## 基本設計後の価値単位の開発
 
@@ -108,6 +226,8 @@ Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすた�
 Issueを確定する際は、対象ファイル・節・IDに加え、同じ判断に伴う参照、用語、追跡表、図、検証範囲を洗い出して本文へ記録する。既存の別Issueを無断で取り込まず、範囲を広げる場合は人間の決定を先にIssue本文へ反映する。
 
 ### Issue本文におけるcurrent implementation contract
+
+[Work Admission Control](#work-admission-control)に従い、投入後のDoD拡張と新規findingの着手を制御する。
 
 Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時点で有効な実装契約、すなわちscope、責務境界、入出力interface、完了条件および検証範囲を表していることを確認する。trusted conversationでこれらの実装判断が更新され、本文の記述が古くなった場合は、実行前にcurrent contractをIssue本文へ同期する。
 
@@ -131,6 +251,14 @@ AI Developerの投稿またはjob successだけでは、別のmachine-generated 
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
 
+Ready前には、人間/ChatGPT上の開発補助が次の対象箇所と証拠を照合する。既存の準備確認を具体化する手順であり、新しいレビュー段階・ツール・paid diagnosticを追加しない。
+
+1. **対象の実物**：closing Issue本文とcurrent PR本文を実際に読み、確定判断・scope・Doneがcurrent差分と一致することを確認する。途中で変更した実施済み判断は本文へ同期し、未決判断を推測で確定しない。後継がある場合は、[スコープ外影響と後継Issue](#スコープ外影響と後継issue)に従って番号・範囲・完了条件・時期または順序・先行merge理由と、`build-review-context.sh` が読む正規見出し/単独行形式を照合する。後継番号行の末尾へ説明を続けず、後継本文も実際に読み、存在だけで安全な延期と判断しない。同一原因の記録不足はIssue本文・PR本文・後継記録の必要箇所を一度で揃えてからreviewを要求する。
+2. **状態/証明変更の文書同期**：dormantから接続への変更、新しいentry/権限、証明方法・cleanup前提等を変更する場合だけ、変更helper名と関連語で既存の関連正本の該当節を検索・照合する。実測後は「どの機構で保証されたか」「何を実証していないか」を本文と関連文書へ同期し、古い未接続記述・保護機構の誤説明を残さない。exactなschema/値は既存の機械正本参照を優先し、全文書や製品仕様全体のroutine探索を義務化しない。
+3. **外部挙動に依存する期待値**：外部ログ形式、event/skip、終了コード/cleanup、fixture選択・共有guardの変更に限り、既存runの非機密な実例・既存caller・公式仕様等から適切な根拠を少なくとも1件照合する。機密値やraw log全文はIssue/PRへ転記しない。実装を写したsynthetic期待値だけで実統合済みと扱わず、既存証拠で確認できない範囲は未検証として記録する。実統合proofが今回のDoneに必要なら[Work Admission Control](#work-admission-control)と既存の[人間エスカレーション](#人間エスカレーション)に従い、syntheticだけで安全に完了できるprepared変更へ実統合proofを自動追加しない。実例による既存fixtureの局所補強が必要と判明しても、本Issue #804ではscript/fixtureを変更せず、今後の対象実装Issueの既存scope内で判断する。
+
+照合結果はPRの既存`レビュー準備`欄または最新コメントへ、確認したIssueと節、該当する後継番号、current HEAD、formal checkのrunリンク/結果、未確認事項を短く記録する。チェックボックスや「PASS」という宣言自体を証拠にせず、出所は上記「検証結果の出所」に従う。CodexのGitHub/APIアクセス禁止は維持し、[Issue本文におけるcurrent implementation contract](#issue本文におけるcurrent-implementation-contract)のIssue起点の本文同期規約をClaude review follow-upの新runtime義務へ拡張しない。
+
 `ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とする。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。通常のClaude Reviewはpaid実行前とverdict投稿直前に、trusted APIから取得したPRのopen/Ready状態、current head、停止ラベルを確認し、event headと一致しない場合は実行・投稿・人間エスカレーションを抑止する。取得不能時も停止し、診断を残す。競合を完全には排除できないためmerge時の`--match-head-commit`は維持する。Ready後にheadが変わったreviewの`REQUEST_CHANGES`はfollow-up対象にせず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
 Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
@@ -145,6 +273,8 @@ Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはre
 
 ### 承認後の非Blocking改善
 
+[Work Admission Control](#work-admission-control)でFollow-up / Idea候補を扱い、後継対応へ分離する場合は次の契約を適用する。
+
 承認後の非Blocking改善は、先行マージが安全性・正確性・要求整合性を損なわないことを人間が確認した場合だけ、次の関連保守Issueへまとめてよい。closing Issue本文へ残る影響、先行マージ可能な理由、後継Issue、範囲・完了条件・時期または順序を記録し、PR本文へ要約とリンクを反映する。詳細は「スコープ外影響と後継Issue」を正本とする。非Blockingという分類だけで延期せず、要求や判断を実質的に変更した場合は古い承認を流用せず再レビューする。不要な微修正pushで承認済みheadを変更しない。
 
 ## ChatGPT Workのコンテキスト・コスト管理
@@ -154,6 +284,8 @@ ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位
 Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、チャット終了時と再開の正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定仕様はGitHub main上の正本文書、未決事項・検討状態はIssueを正本とし、チャットだけに決定を残さない。
 
 ## スコープ外影響と後継Issue
+
+[Work Admission Control](#work-admission-control)で新規findingを分類し、本節は後継対応へ分離する影響の安全判断・記録・確認を定める。
 
 Codexはスコープ外影響を発見した場合、その安全性・正確性・要求整合性への影響を調査して報告する。Claudeは、対応を後継Issueへ分離する妥当性と、その後継Issueを確認する。後継Issueの存在だけでblockingを解除してはならない。
 
@@ -183,13 +315,127 @@ Repository variables:
 - `ANTHROPIC_WORKSPACE_ID`
 - `CLAUDE_MODEL`（protected pathsを含む高リスクClaudeレビューで使用するモデルを指定する）
 - `CLAUDE_MODEL_STANDARD`（protected pathsを含まない通常Claudeレビューで使用するモデルを指定する）
-- `CODEX_MODEL`（Issue開発とClaudeレビュー追従の両方でCodexが使用するモデルを指定する）
+- `CODEX_MODEL`（Issue開発とClaudeレビュー追従の通常モデルを指定する。Issue単位の選択は次節を参照）
 
 EnvironmentではなくRepositoryスコープに設定する。Repository variableの値は既定でIssue、PR、ログ、文書へ貼り付けない。ただし `CLAUDE_MODEL` / `CLAUDE_MODEL_STANDARD` / `CODEX_MODEL` のモデルIDは機微情報ではないため、変更履歴と検証証跡を残す目的でIssueやPRへ記録してよい。
 
-AIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は追加の判定を必要としないためinlineのままとする。
+通常のAIモデルを変更する場合はworkflowへモデルIDを直書きせず、`CLAUDE_MODEL`、`CLAUDE_MODEL_STANDARD`、または `CODEX_MODEL` のRepository variableを更新する。これにより通常のモデル切替では `.github/**` のCode Owner保護対象workflowを変更しない。Claude reviewは自動マージゲートと同じprotected-path判定を使い、protected pathsを含む場合は `CLAUDE_MODEL`、それ以外は `CLAUDE_MODEL_STANDARD` を選ぶ。モデルvariableを未設定または空白のみの状態はサポートせず、workflowはモデル実行前のpreflightで実値を確認して該当時は失敗させる。Claude側のpreflightは、PR headをcheckoutした作業ツリーを信頼せず、通常は信頼済みcurrent base commit由来の`classify-claude-review-risk.sh`を個別に`$RUNNER_TEMP`へ取得して実行する。base commitにこのscriptがない、scriptを初めて導入するPRだけは、workflow内の固定コピーへfallbackする。このfallbackはbootstrap専用であり、PR head由来のscriptは実行しない。workflow内固定コピーと正本scriptの一致は`test-claude-review-workflow.sh`の`RISK_CLASSIFIER` fixtureで維持・検証する。これに対しmerge gateは、同じ信頼済みbase commitをcheckoutした作業ツリーから`verify-pr-gates.sh`を実行し、その兄弟scriptとして`classify-claude-review-risk.sh`を解決する。この作業ツリー依存を保つため、merge gateでclassifierの単体取得方式を使ってはならない。Codex側は次節のtrusted selectorを使い、通常モデル値の形式検証も同helperのContractを正本とする。
 
 例外として、DeepInfra Investigatorは任意モデルIDをIssue入力やRepository variableから実行させないことをsecurity boundaryとするため、許可するDeepSeekモデルを `.github/scripts/deepinfra-investigator.py` の `ALLOWED_MODELS` で固定する。workflow側のcommand→model対応とpreflight allowlistはentry boundaryでの多層防御として同じ許可集合を意図的に重複保持し、`test-deepinfra-investigator.sh` で一致を回帰検証する。DeepInfra Investigatorのモデル変更は通常のモデル切替ではなくsecurity allowlist変更として扱い、Issueで範囲を確定しCode Owner review対象の差分として反映する。
+
+### Issue単位のCodexモデル選択（#745 / #759）
+
+機械正本は `.github/scripts/select-codex-issue-model.py` と同責務の `.github/scripts/codex-issue-model-policy.json` とする。#759で `.github/workflows/ai-developer.yml` の初回・正式resume develop・Claude follow-upへ接続済みであり、#802でpolicyの `entries` に #635 → `gpt-6-luna` のexact entryを1件だけ追加する。#635の3経路だけが `opt_in / gpt-6-luna` となり、他Issueは `CODEX_MODEL` 値を保持する。stream producerは下記#772、Issue-origin persistenceは下記#797、Claude follow-up persistenceは下記#798を再利用し、通常Issueのvariable運用と既存 `medium` 固定を維持する。
+
+helperはcallerが明示的に渡す `--policy PATH` とstdinの単一request JSON（`repository`、`issue`、`normal_model`）を読む。`normal_model` はtrusted normal `CODEX_MODEL` 値であり、Issue/PR/comment由来のoverrideではない。callerがhelperとpolicyをtrusted base/mainから取得する責務を持ち、PR head、model生成file、Issue/PR本文、commentをpolicy正本にしない。helper自身はnetwork / git / GitHub write・open-state検査・永続stateを持たず、policy取得失敗やidentity不明を未登録扱いへfallbackしない。
+
+policy/requestのclosed schema、exact repository / positive integer Issue、重複Issue / JSON key拒否、model allowlist、入力byte / entry数上限、canonical出力のexact fieldはhelperを唯一の正本とする。正常未登録Issueはnormal model、exact opt-inだけはpolicyの `gpt-6-luna` を返し、variable変更はopt-inへ影響しない。正常時は `schema/version/issue/model/selection` の単一bounded JSONとexit 0、拒否時はstdoutなし・固定診断と非0を返し、raw入力・prompt・秘密値を反射しない。effort入力や任意model overrideは受理しない。
+
+opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映する。対象IssueとPRがopenの間はentryの変更・削除をしない。変更・削除が必要なら停止して別の人間判断を行う。この固定ownershipはopt-in対象に限定し、default Issueのvariable変更運用には広げない。
+
+初回/resume callerは既存entry/resume gateが確定した `ISSUE_NUMBER` と、既存context stepがcurrent mainとして固定した `base_sha` を使う。follow-up callerは既存current review/head・closing Issue/open・停止label gateとcheckout照合の成功後だけ、照合済みexact `ai/issue-N` のNを使い、PR番号をIssue番号としない。既存trusted `BASE_SHA` を維持し、任意PR本文/model出力をauthorityにしない。各callerはそのbaseからselector/policyを `RUNNER_TEMP` へ `git show` で抽出し、base blobと `git hash-object --no-filters` を照合する。PR/worktreeの同名fileは使わない。immutable運用と対象再評価は親 #744の対象とする。
+
+選択結果は4096 byte以内のcanonical JSONを、取得済みselectorのpure APIが返すexact schema / type / identity / selectionとbyte単位で照合し、検証後だけstep outputへmodelを渡す。native execのmodel引数だけを切り替え、Repository variableは変更しない。取得不能・hash不一致・selector非0・結果不正・identity不明はpaid前でfail-closedとし、defaultへfallbackせず既存failure/pause handlerへ接続する。診断は固定 `default` / `opt_in` 分類だけとし、model IDの新規公開診断、telemetry / artifact / 台帳を追加しない。selector/policy/resultの一時fileは選択step終了時に削除する。
+
+検証は `test-ai-developer-workflow.sh` のsecretless caller fixture、`test-select-codex-issue-model.sh`、`test-production-unreachable.sh`、selector fixtureおよびAI Workflow Regressionのcurrent-head fixtureで行う。guardはhash照合済みの上記exact model callerと下記#772のexact stream producerだけを許可し、不正callerの負例を維持する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### #635限定Luna trialのpolicy activation（#802）
+
+#802は親 #746 / #744の判断に基づく既存policyのactivationだけを扱い、#635の修正本体は対象外とする。schema / version / repository、selectorのallowlist / fail-closed、caller / usage collector / runtime / timeout / retry / fallbackは変更しない。policyのmain反映後、人間が #635をfirst Luna natural trialとして1回だけ開始する。自動fallback / retry / Sol昇格は行わない。
+
+試行全体の管理上限は10 USDを維持する。#635の1成果を完了するまで他IssueをLuna opt-inせず、そのOpenAI usage artifactとClaude Review usage / costを確認してから2成果目を判断する。unknown costを0として残予算を増やさない。#802のAI Develop自体は通常modelで実行し、trial費用ではなく準備固定費として扱う。paid試行の実行・費用確認はpolicy activationのlocal fixtureでは証明しない。
+
+WACはR1 / C0 / P1 / B1、Green / bounded activation、forced splitなしとする。検証は上記の既存fixtureでexact単一entry、#635のopt-in、隣接・未知Issueと#802のdefault経路、3経路のgated identity、malformed / duplicate / unknown modelのfail-closedを確認し、current-head正式AI Workflow Regression / PR Traceability / Claude Reviewを別途確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### fresh Codex exec usage抽出（#753 / #772）
+
+機械正本は `.github/scripts/extract-codex-exec-usage.py` とする。pure API `extract(jsonl_bytes, context_bytes)` はcaller供給のbounded JSONL bytesと単一context JSON bytesからcanonical JSON bytesを返し、file I/Oを行わない。CLIは `--context PATH` の明示contextとstdinだけをbounded readし、正常時は単一canonical JSON行とexit 0、不正入力時はstdoutなし・固定非反射診断と非0を返す。contextは `schema/version/mode/process_outcome` だけで、`mode=fresh_exec` に限定する。callerによるprovenance取得は別責務であり、contextをtrusted authorityとして証明しない。
+
+対象は新規thread・単一exec invocationに限る。thread/turn開始は各1件必須で、唯一のcompleted terminalのexact 5-field usageを累積snapshotとして1回だけ返し、加算・delta計算・欠落fieldの0補完をしない。UTF-8 / JSONのstrict検査、closed source fields、順序・矛盾拒否、入力byte / line / record上限、整数・内数制約、exact schemaの詳細はhelperを唯一の正本とする。item payloadはopaque JSONとしてのみ検査し、token偽装・prompt・command・thread ID・raw errorを結果へ採用しない。
+
+出力は `schema/version/source/availability/reason/usage` だけで、sourceは常に `codex_exec_jsonl_workload_reported`。成功process・唯一completed terminal・非zero valid usageだけが `reported / terminal_cumulative` となる。全5値zeroは `unavailable / zero_unverified`、process非success・error/failed terminal・terminal欠落も固定reasonと `usage:null` で返す。reasonはprocess cancelled→failed→unknown→error/failed terminal→missing terminalの順を優先する。完全なJSON行でterminalが欠けた場合は取得不能として有効だが、壊れた/truncated行は不正入力として拒否する。取得不能・zero_unverifiedを費用0・課金なし・provider明示zeroと扱わない。
+
+#772では下記trusted supervisor経由でproductionへ接続し、extractorのpure API / schemaを維持する。`test-production-unreachable.sh` はexact selector inventory、supervisor内の唯一の明示extractor loader、#781のexact pure validator loader、AI Developerのexact approved producerと下記#797 / #798のexact caller以外の参照を拒否する。検証は `test-extract-codex-exec-usage.sh` のsecretless synthetic fixture、caller fixture / guard、および既存AI Workflow Regressionのcurrent-head fixtureで行う。raw JSONLはfixture内のmemory/stdinとsupervisorのmemoryだけで扱い、保存・公開しない。このproofはCodex 0.159.3の実取得provenance、provider billing、actual USD、hard cap、complete all-request coverageを証明しない。merge後のactual native証跡とdownstream persistenceは下記#772および親 #744・調査 #746で扱う。exec resume thread、料金計算、Luna paid試行は追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### usage evidence実行identityのpure検証（#780）
+
+機械正本は `.github/scripts/validate-codex-usage-identity.py`。pure API `validate_identity(identity_bytes)` はcaller供給の単一JSON object bytesをclosed schemaで検証し、全fieldを保持した新しいdictを返す。schema / version、repository、workflow job ID、整数範囲、SHA、model、CLI version、medium / fresh_exec固定、4096 byte上限とstrict JSON拒否の詳細はhelperを唯一の正本とする。非canonical JSONも受理し、不正入力は生入力・例外chainを含まない固定 `ValueError("invalid_identity")` で拒否する。型検証はtrusted authorityの証明ではなく、identity確定は下記#797 / #798のtrusted caller責務とする。
+
+identity helper自身にはCLI・stream解釈・evidence組み立て・取得・永続化・費用計算・production callerを追加しない。`test-validate-codex-usage-identity.sh` のfinite secretless fixtureと既存selector / guard / Regressionで検証し、guardはexact inventory literalと下記#782 / #796のexact loaderと#797 / #798のexact callerだけを許可し、その他のproduction caller・未知caller・copy・追加loaderを拒否する。#780 → #781（stream）→ #782（結合 / CLI）の依存順を維持する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### usage stream recordのpure検証（#781）
+
+機械正本は `.github/scripts/validate-codex-usage-stream.py`。pure API `validate_stream(stream_bytes)` は#761のcanonical `codex-exec-stream` v1 recordを検証し、`evidence_status: recorded / missing / invalid` と `stream_result: dict / null` だけを返す。空bytesだけをmissing、不正・非canonical・上限超過をinvalidとし、いずれもstream_result=nullでunknownへ渡す。closed fields、status / rc整合、reported時のrc=0、strict JSON、末尾LF高々1個を含む4096 byte上限の詳細はhelperを唯一の正本とする。妥当なunavailable・非成功statusはrecordedのままrc / reason / nullを保持し、usage 0へ補完しない。
+
+usage内部schema・数値・availability / reasonの正本は既存extractorの `validate_result`。固定同一directoryのextractor sourceだけを明示loaderで読み、canonical usage bytesを渡して返却dictを使用する。loader欠落・import失敗はrecord invalidへ隠さず、生path・例外chainを含まない固定 `ValueError("validator_unavailable")` で停止する。loaded codeはtrusted repository前提であり、runtime provenanceを証明しない。CLI、identityの利用、最終evidence組み立て、journal取得、永続化、費用計算、production callerは追加しない。
+
+`test-validate-codex-usage-stream.sh` のfinite secretless fixture、既存extractor / supervisor / selector、横断guard / Regressionで検証する。guardは当該helperのexact loader / API sourceとinventory、および下記#782 / #789のexact pure loaderを許可し、既存supervisor例外と下記#797 / #798のexact callerを維持し、その他のproduction caller・未知caller・copy・追加loaderを拒否する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### usage evidence recordのpure結合とCLI（#782）
+
+機械正本は `.github/scripts/build-codex-usage-evidence.py`。pure API `build(identity_bytes, stream_bytes)` は固定同一directoryの#780 / #781 validatorをidentity → streamの順で呼び、実返却objectを `codex-usage-evidence` v1のcanonical ASCII JSON bytesへ結合する。identity / stream / usageの入力schemaを複製しない。closed output、8192 byte上限（LF除外）、固定非反射例外の詳細はhelperを唯一の正本とする。identity不正はrecordなし、validatorロード・出力契約失敗は `validator_unavailable`、出力上限超過は `invalid_evidence` として停止する。
+
+`billing_status=unverified` とworkload-reported sourceを固定し、missing / invalidはstream_result=nullのunknown recordにする。妥当なunavailable・capture_limit_exceeded・execution_not_started等はrecordedのまま、元のstatus / reason / rc / nullを保持する。rc0 + process_failedも#781の結果を維持し、recordedは正常終了・producer由来・課金検証済みを意味しない。identityの型検証はGitHub authorityを証明せず、journal値やPIDも改ざん不能な課金証明としない。usageの0補完・加算・USD変換を行わない。
+
+CLI `python3 -B .github/scripts/build-codex-usage-evidence.py --identity FILE` は明示identity fileとstdinだけを各4096+1 byteでbounded readし、成功時にcanonical+LFの単一行とexit0を返す。stream欠落・不正もunknown recordとexit0、引数不正はexit2、入力I/O・identity不正・依存／出力失敗は固定診断とexit1とする。moduleロード以外のfile読取はCLI入力のみで、network / subprocess / env lookup / 状態書込を行わない。
+
+`test-build-codex-usage-evidence.sh` は実validator / extractor直結、全identity field保持、recorded≠billing verified、unknown分類、canonical / closed output / 上限、CLI / 固定診断 / canary非反射を確認する。各上流専用fixtureで詳細schemaを回帰し、selector / guard / 既存Regressionで検証する。guardは2つのexact loader・inventoryと下記#797 / #798のexact callerだけを許可し、その他のproduction caller・未知caller・copy・追加loaderの拒否を維持する。#778のpure record結合を下記#797が消費する。ledger / GITHUB_OUTPUTへのusage本文保存・課金照合・Luna試行は未接続とする。R0 / C0 / P1 / B1、Greenであり、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### bounded unit journalのpure単一stream選択（#789）
+
+機械正本は `.github/scripts/select-codex-usage-journal.py`。pure API `select_stream(journal_bytes)->bytes` はLF区切りのjournalから単一 `codex-exec-stream` 候補を選び、元の行bytesを固定同一directoryの#781 `validate_stream` へ渡す。stream / usage schemaを複製せず、canonical条件を緩めない。CLI、network / subprocess / env lookup / 状態書込はなく、exact loaderは#782と同じget_source / compile / exec方式でcacheを書かない。依存失敗は生入力・path・例外chainを含まない固定 `ValueError("validator_unavailable")` とする。
+
+bytesのみ・16 MiB上限で、空行・非JSON診断行を無視する。先頭ASCII空白を除いて `{` で始まる行はstrict UTF-8 / 単一JSON / duplicate key・NaN・Infinity拒否でparseし、破損は選択全体をinvalidにする。他schemaは無視し、対象候補が複数なら同一内容でもinvalid。単一候補の#781検証成功時はcanonical bytes（末尾LFなし）、対象なしは `b""`、入力型・上限・JSON破損・重複・#781不正は固定 `b"invalid"` を返す。このsentinelは#781でinvalidとなり、missingへ隠さず、journal内容を反射しない。validなunavailable / rc / statusは保持し、recordedを正常実行・由来・課金証明へ昇格しない。
+
+APIの受理上限はproduction取得がboundedで切り詰め無しである証明ではない。trusted journal authority・同unit性も確定せず、後続callerがunique unit・取得成否・上限・非切り詰めを確認する。first / last選択、raw journal保存、自由文reason、0補完、retry / fallbackは追加しない。production persistence・journalctl・systemd lifecycle・artifact / upload・GITHUB_OUTPUT・台帳 / 価格 / 課金照合・Luna policy / provider / Secrets / Variablesは変更せず、#785のhelperへ依存しない。
+
+`test-select-codex-usage-journal.sh` は実extractor / #781へ直結したfinite secretless fixtureで、reported / unavailable、診断・他schema混在、候補0 / 1 / 2・同一重複、strict parse拒否、noncanonical、4096 byte stream / 16 MiB journal境界、入力型、非反射、依存固定エラーを確認する。selector / inventory・横断fixture・guardも同期し、guardはexact source / loaderだけを追加許可して未知caller・copy・追加loader・下記#797 / #798以外のproduction接続拒否を維持する。selector変更時はcurrent-head正式full Regressionを確認する。R0 / C0相当 / P1 / B1、Greenの独立pure Contractで、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。Issue-origin persistenceは下記#797へ接続し、Claude follow-up persistenceは下記#798とする。job cancel / runner lossでartifact回収を保証しない。Luna試行のactivationと費用確認の運用は上記「#635限定Luna trialのpolicy activation」を正本とする。
+
+### bounded unit journal収集とsanitized evidence（#796）
+
+機械正本は `.github/scripts/collect-codex-usage-evidence.py`。API `collect(identity_bytes)` は#780でidentityを検証し、job / run_id / run_attemptからexact unitを内部生成する。CLIは引数なしでstdinのidentityをbounded readする。任意unit / path / commandを受けず、固定同一directoryの#789 selector・#782 builder・#780 validatorと既存の推移的dependencyだけをロードし、schemaを複製しない。
+
+固定 `/usr/bin/journalctl` をshellなし・exact unit・`--no-pager --output=cat --quiet`で1回だけ起動する。正常EOFとexit0のbytesだけをselectorへ渡し、16 MiB + 1 byteでoverflowを検出して切り詰めない。取得deadline / cleanup boundの詳細はhelperを正本とし、timeout / exec error / nonzero / overflowはinvalid、正常取得で候補なしはmissingとする。出力はbuilderのcanonical evidence + LFだけで、unknownをusage 0へ変換せず、stderr / raw journal / raw JSONL / 自由文例外を保存・公開しない。
+
+`test-collect-codex-usage-evidence.sh` のfinite secretless pipe fixtureと既存selector / guard / Regressionで検証する。guardはcollectorのexact source・3つのfixed sibling loaderと下記#797 / #798のexact callerだけを許可し、#792のexact bootstrap例外と未知caller・copy・その他のproduction接続拒否を維持する。fixture inventory変更はcurrent-head正式full AI Workflow Regression対象とする。actual transient-unitでの取得・trusted caller authority・課金はこのsynthetic fixtureで実証しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### Issue起点usage evidenceの収集・artifact保存（#797）
+
+機械正本は `.github/workflows/ai-developer.yml` の `develop-from-issue` とする。initial `/codex develop` と正式 `/ai resume develop` が同じpost-Codex callerを通る。`issue_context` はmodel実行前にcollectorを含む固定6 helperのbase blob identityをstep outputへ記録する。callerはpost-Codexにfresh専用temp directoryへ同baseから通常blobを再materializeし、全identity照合後だけ実行する。worktree版・pre-model copy・RUNNER_TEMPのleftoverをauthorityにせず、未知dependency / loader / search pathは追加しない。
+
+identityは#780を型正本とし、repository / run / attemptはGitHub context、Issue番号は既存entry / resume gate、base SHAは `issue_context`、modelはtrusted selectorから構成する。`job=develop-from-issue`、`pr_number=null`、`cli_version=0.159.3`、`reasoning_effort=medium`、`invocation_mode=fresh_exec` を固定する。collectorはexisting `systemd-run --wait --collect` 復帰後のroot journal authorityを `sudo -n -- /usr/bin/env -i` とisolated Pythonで再利用し、identityからexact `codex-developer-<run>-<attempt>` を生成する。helper取得・分類契約を変更せず、raw journal / JSONLをshell変数・file・artifactへ保存せず、sleep / retry / sync / flush frameworkを追加しない。
+
+collector成功時だけcanonical evidence 1 object + LFを `RUNNER_TEMP/codex-usage-evidence.json` へ移し、pinned upload actionでdevelop / run / attemptを含むartifact名・7日保持・sanitized file 1つだけを保存する。pin / path / conditionの詳細はworkflowを正本とする。identity中間file・prompt・command output・raw journalをartifact化せず、usage本文をGITHUB_OUTPUT / Issue comment / #665 ledger / repositoryへ保存しない。収集・upload・outcome summaryだけをnon-fatalとし、failureをstep outcome / Job Summaryで可視化する。既存Codex result・host integrity・requirements / scope pause・diff guard・repository-write gateを維持し、artifact欠損 / invalid / missing / usage unavailableをunknownとして扱い、0補完しない。
+
+`test-ai-developer-workflow.sh` は実run blockで6 base blobの記録・復元、worktree / leftover非採用、root caller固定argv、identity・分類・失敗時非保存、success-only pinned upload、lifecycle隔離を検証する。guardは上記exact caller bytes / metadataだけを例外とし、改変・未知callerを拒否し、follow-upの許可は下記#798のexact callerだけとする。開始前checkpointのR2 / C0 / P1 / B2、Yellow bounded admitを維持する。既存root journal readとsuccessful natural runの即時visibility証拠を再利用し、merge後最初のIssue起点natural runのsanitized artifactとrecorded / missing / invalid分類をactual transient-unit integration proofとして確認する。local fixtureは実runner journal権限・反映順序・artifact転送・課金を証明せず、job cancellation / runner lossで回収を保証しない。Claude follow-upは下記#798を正本とし、Luna trialのpolicy activationは上記#802を正本とする。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### Claude follow-up usage evidenceの収集・artifact保存（#798）
+
+機械正本は `.github/workflows/ai-developer.yml` の `respond-to-claude` とする。既存current review / checkout / paid直前target gateを維持し、Codex実行へ進んだsuccess / failureだけを収集対象とする。`followup_context` で固定6 helperのPR base blob identityをmodel前に記録し、post-Codexでfresh専用tempへ再materializeする。復元・root collector transport・sanitized single-file upload・7日保持・non-fatal outcome summaryは上記#797のpatternを再利用し、collector / schema / ledger契約を変更しない。
+
+identityは#780を唯一の型正本とし、Issue番号はtrusted exact `HEAD_REF=ai/issue-<n>`、PR番号はtrusted pull_request event、base SHAは `github.event.pull_request.base.sha`、modelはtrusted selectorから構成する。repository / run / attemptはGitHub contextを使い、`job=respond-to-claude` と既存 `0.159.3 / medium / fresh_exec` を固定する。collectorが生成するexact unitは `codex-followup-<run>-<attempt>`、artifact名はfollowup / run / attemptでIssue起点と区別する。raw journal / JSONL / identity中間物を保存・公開せず、unknown非0と既存Codex result / requirements gate / diff guard / repository-write semanticsを維持する。
+
+`test-ai-developer-workflow.sh` は上記#797と同じ実run block fixtureでidentity・6 blob復元・root transport・sanitized-only保存・収集失敗・lifecycle隔離を検証し、exact branch拒否・event PR番号・PR base authority・exact follow-up unitを追加確認する。`test-production-unreachable.sh` は#792 / #796 / #797の例外を維持してexact follow-up callerだけを追加許可し、改変・copy・未知callerを拒否する。開始前checkpointのR1–2 / C0 / P1 / B1–2、Yellow bounded admitの範囲とし、新規prerequisite Contractは追加しない。current-head正式AI Workflow Regression / PR Traceabilityと、自然なClaude follow-up runのsanitized artifactを確認する。local fixtureはactual journal / artifact転送・課金の証明ではなく、cancellation / runner lossで回収を保証しない。自然run evidenceの統合は親 #794、price / costは#746、first Luna opt-inは上記#802で扱い、本persistence変更ではpaid diagnostic / blind retry / Luna trialを追加しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### bounded native stream supervisor（#761 / #764 / #772）
+
+機械正本は `.github/scripts/supervise-codex-exec-stream.py`。API `supervise(argv, parser, result_validator)` は明示argvと既存extractorの `extract` / `validate_result` callableからcanonical JSON bytesを返す。結果schema・usage判定はextractor側の `validate_result` で共有し、pure parserの入出力契約を変更しない。CLIは `--extractor SOURCE_PATH -- ABSOLUTE_EXECUTABLE [ARG ...]` の明示sourceだけをimportし、暗黙探索・model選択をしない。argvは最大128件・UTF-8合計64 KiB、NULなしのstringで先頭はabsolute executable pathに限定する。不正invocationはchild起動前に固定stderrとexit 2で拒否する。helperは `shell=False` でchildを1回だけ起動し、stdin / cwd / envをcallerから継承する。credential取得・環境追加・git / network / GitHub writeは行わない。
+
+stdoutを64 KiB以下のchunkで読み、16 MiB以内をmemoryに保持する。超過時は保持bufferを破棄して `capture_limit_exceeded` とし、その後もEOFまでdrainする。stderrはDEVNULL。raw bytesをdisk / journal / stdoutへ保存・反射せず、child outputをJSONLと断定して転送しない。stdout EOFとwait完了後、上限内のbytesを既存parserへ渡す。新規thread・単一exec contextのprocess outcomeはrc 0だけsuccess、positive / negative signal rcはfailedとし、cancelledを推測しない。parser例外・不正resultは `invalid_input`。usage unavailableとcollector failureを区別し、usage 0へ補完しない。
+
+出力は `schema/version/process_returncode/collection_status/usage_result` の単一canonical JSON行、LF込み最大4096 bytes。signed process returncode（未開始null）とcollector statusを分離し、statusは `collected / invalid_input / capture_limit_exceeded / execution_not_started` のみ。collected時だけ既存parserのcanonical resultを保持し、他はusage_result=null。開始失敗は固定JSONとexit 2、child開始後のCLI exitはrc 0→0、positive rc→その値（1..255）、negative rc→128+signalとする。collector invalid / limitでchild成功を失敗へ変更しない。raw traceback / path / argv / error / body / thread_id / modelを反射しない。
+
+#772では `.github/workflows/ai-developer.yml` のinitial `/codex develop`・正式 `/ai resume develop` の共通 `Run Codex developer` とClaudeの `Run Codex follow-up` だけをproducerとして接続する。各callerは既存trusted base SHA（Issue側 `steps.issue_context.outputs.base_sha`、follow-up側PR base SHA）からsupervisor / extractorのblob identityを取得し、tree entryが通常blobであることを確認してfresh `RUNNER_TEMP` directoryへ抽出する。`git hash-object --no-filters` の照合完了前にpaid execへ進まず、取得不能・type不正・hash不一致は固定非反射診断でfail-closedとする。PR/worktree版helper・Issue/PR/comment由来path/model overrideはauthorityにしない。service launcherへsource pathを明示argvで渡し、既存preflight後に `/usr/bin/python3 -I -B` でsupervisorを起動する。supervisor / native childは同じservice/cgroup内であり、child argvだけへ `--json` をexact once追加する。model selector、medium effort、workspace permissions、`--output-last-message "$CODEX_FINAL"` と既存final consumerを維持し、follow-upのcurrent review/head gateもpaid前に維持する。
+
+`test-production-unreachable.sh` はexact selector inventory、review対象supervisor source内の唯一のextractor loader、上記2つのexact reviewed producer stepと上記#797 / #798のexact caller bytes / metadata / gatesだけを許可し、コピー・追加load・未知workflow caller・source/argv/hash/gate改変を拒否する。#759の既存model caller例外とProduct prepared guardのcoverageを維持する。CLI source / argvのruntime trusted provenanceはcaller責務であり、static guardやsynthetic recordは課金・actual native provenance・hard capの証拠ではない。
+
+`test-supervise-codex-exec-stream.sh` はfake local childでcapture境界・超過後drain・大量stdout/stderr・stdin継承・終了コード・非反射を有限時間で検証する。#764では既存AI Workflow Regressionの独立systemd runnerで、productionのType=exec / control-group終了 / setpriv identity・capability除去 / NoNewPrivileges / syscall制約を照合し、有限synthetic childの同一cgroup、単一起動・stdin、rc 0/7/2と未起動null、bounded canonical journalとcanary非反射、16 MiB超過後drain、RuntimeMaxSecによるsupervisor / child / descendant収束を検証する。外側terminationでrecordが欠けた場合はunknownであり、成功やusage=0と扱わない。全unitはunique name・外側deadline・finallyのunit限定cleanupを使う。独立runnerがないlocalでは理由付きruntime SKIP、`GITHUB_ACTIONS=true`ではruntime不可・証明不成立をFAILとする。
+
+#764 fixtureは有限stdin file・PID readiness metadata・終了後観測用RemainAfterExitを使い、productionの--collectとは異なる。API/proxy・全socket preflight・native binary・workspace permission・native schema / billing、およびproduction paid path全体の証明ではない。raw streamは永続化・公開せず、固定fixture diagnosticだけを出す。supervisor自身へのtimeout / retry / fallback / process group / session / cgroup / signal forwardingやproduction recoveryは追加しない。
+
+#772のproduction service stdoutは既存fixed preflight diagnosticsとLF込み4096 bytes以内のsanitized canonical supervisor recordだけとし、native stdoutはpipe、stderrはDEVNULLへ送る。supervisor自身は既存unit journal以外のusage persistenceやconsumerを追加しない。Issue-originのsanitized evidence artifactだけを上記#797が保存し、follow-upは未接続とする。usage本文をStep Summary / Issue / PR / GITHUB_OUTPUT / repository file / external ledgerへ保存しない。collection invalid / limit / unavailableをusage 0やbilling成功へ変換せず、child rc preservationをprocess outcomeのauthorityとする。outer timeout / cancellationではrecord自体が欠け得るが、record存在を新たな成功条件とせず既存failure / cancellation / pause-resume / repository write / review lifecycleを維持する。
+
+検証は既存 `test-ai-developer-workflow.sh` のtrusted source・不正type/hash・worktree差し替え拒否、3経路のexact one invocation / `--json`、raw canary非反射・canonical stdout・rc 0/nonzero/not-started・invalid/limitでもrc保持・final message / environment / hardening回帰と、parser / supervisor / guard fixtureで行う。WACは #772の明示判断どおりR2 / C1 / P1 / B2、Yellow bounded activationであり、#772導入時点はpolicyが空・通常modelのままであった。現行policy activationは上記#802を正本とする。current-head formal Regression Successは必要だが、それだけではactual native JSONL schema / provenanceをC0としない。自然な通常AI Developer runでsanitized recordと既存behaviorを確認する責務は親 #746に残し、Issue-origin persistenceは上記#797のfresh WAC判断で接続する。本producer変更ではLuna opt-in・paid trial・費用計算を追加せず、policy activationは上記#802を正本とする。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### DeepInfra Investigator
 
@@ -206,6 +452,46 @@ Stage A runnerはdefault branch上の `workflow_dispatch` から、workflowに�
 workflow権限はcontents/issues read-onlyとし、モデルへtoolやrepository write経路を公開しない。DeepInfra API callは既存 `DEEPINFRA_API_KEY` と `.github/scripts/deepinfra-investigator.py` のshared transport / secret redaction境界を再利用する。結果はproduction Claude Reviewへ投稿せず、Actions Step Summaryと7日保持artifactだけへ出力する。structured result schemaはcurrent `.github/workflows/claude-review.yml` のreview JSON schemaを読み、schema mismatch・free-form result・truncationはfail-closedとする。DeepInfra API応答受領後にschema不正・truncation・cost guard超過等でfail-closedする場合も、取得できたtoken usage、local/provider estimated cost、duration、validation status/reasonを先にJSON/Markdownへ保存し、workflowは失敗時もSummaryとartifactを回収する。API到達前またはprovider failureでusageが得られない項目は成功値を捏造せず `unavailable` と記録する。
 
 Stage Aで許可するcase/model集合、固定SHA、context上限、単一run cost guardの正本は `.github/scripts/deepinfra-review-benchmark.py` とする。価格表は評価時点のDeepInfra公表価格をtrusted configurationとして固定し、paid run開始前に現行価格を再確認する。Issue #342で承認されたDeepInfra評価費用は全体で$10をhard ceiling、Stage Aは$2を目標上限とし、runnerは累積費用を自動で増やすfan-outを持たない。各runのprompt/completion token、provider/local estimated cost、duration、context hashを成果物へ記録する。Stage A paid execution、Stage B/C、shadow運用、production Claude Review provider変更はrunner実装Issueとは別Issueで扱う。
+
+### DeepInfra共通usage telemetry
+
+Investigator / Review Benchmark / Diagnostic A / Diagnostic Bは、paid stepだけに固定 `DEEPINFRA_USAGE_PATH=${{ runner.temp }}/deepinfra-usage.json` と `DEEPINFRA_USAGE_KIND`（`investigator` / `review_benchmark` / `diagnostic_a` / `diagnostic_b`）を渡す。共通producerとschemaの正本は `.github/scripts/deepinfra-investigator.py` の `UsageSidecar` / `deepinfra_request()` とする。request開始前とresponseのusage取得直後にatomic replaceで保存し、callerのprotocol / structured-output / analysis検証、budget終端、result artifact生成の失敗から独立させる。保存不能ならfail-closedとし、paid callのretryやfallbackは追加しない。
+
+schema version 1はkind、trusted requestのmodel、request / response count、3種token数、`provider_estimated_cost_usd`、`usage_availability`、`missing_usage_response_count`、`request_error_count`、request単位の`requests`を持つ。各requestは連番、response受領有無、同じ4種usage field、固定 `error_reason_code`（`http_error` / `network_error` / `invalid_json` / `invalid_response` / `response_read_error` または `null`）だけを持つ。response countはHTTP errorを除く受領数で、不正JSONや本文読取失敗も受領後なら数える。欠落数は4種fieldのいずれかが取得不能なresponse数とする。tokenは非負整数、costは非負の有限数のみ採用し、booleanや文字列は数値に変換しない。
+
+runのusage fieldは取得できた値だけの累積であり、全requestの確定総額とは限らない。未取得fieldは `null` とし、providerの明示的な0だけを0として保存する。全requestでresponseと4種fieldを取得しerrorもなければ `complete`、一部だけ取得済みなら `partial`、全field未取得なら `unavailable` とする。中断中のrequestも連番と未取得値を残し、error理由を推測しない。prompt、request payload、response本文、tool result、secret、header、raw provider errorは含めない。
+
+4 workflowはpaid step後の `if: always()` でこのsidecarだけを `deepinfra-usage-<usage_kind>-<run_id>-<run_attempt>` artifactへ7日保持でuploadする。既存result artifactと分離した短期handoffであり、永続台帳へのwriteは下記consumer、横断集計は下記「DeepInfra台帳のread-only集計」で扱う。API callへ到達しない場合はsidecarがなく、uploadはwarningとなる。runner loss等でupload stepが実行できない場合の回収を保証するものではない。検証は `test-deepinfra-usage.sh` と既存DeepInfra / AI Workflow Regressionのsecretless fixtureで行い、integration evidenceは自然な次回runで確認する。
+
+### DeepInfra永続usage台帳
+
+#667の独立 `DeepInfra Usage Ledger` は4 producerの `workflow_run.completed` を受け、既定ブランチcommitの `.github/scripts/deepinfra-usage-ledger.py` だけを実行する。consumerの権限は `actions: read` / `contents: read` / `issues: write` とし、provider credentialは渡さない。same-repository、既定ブランチ、workflow name / path / event、eventと再取得したexact run / attempt / conclusion / HEADを照合し、artifact名とrepository / run / HEADが一致するusage artifactだけを読む。ZIPを展開・実行せず、単一 `deepinfra-usage.json` のサイズ、重複JSON key、unexpected field、model / reason allowlist、数値型・非負・有限性、requestと集計値の整合を検証する。schemaは共通producerを正本とし、consumerの厳密な入力境界・サイズ上限はhelperを正本とする。result、prompt、response、tool trace、raw errorは取得・保存しない。
+
+paid対象外の判定基準はsource runの `conclusion == 'skipped'` とする。通常コメント等によるInvestigatorのgate skipを含め、record jobの `if` で除外し、台帳全体の固定concurrencyはworkflowではなくこのjobだけに置く。これによりskip runはwriterのpendingを置換せず、#665へ欠落recordも投稿しない。helperを直接実行した場合もexact run / attempt / workflow identity照合後に `skipped_run_ignored` で終了し、comments / artifactを読まない。gateを通過してpaid stepへ到達する前に失敗したrunは除外せず、artifactがなければ従来どおり `unavailable` / `artifact_missing` とする。non-skipped runの課金有無をconclusionだけから推測しない。
+
+台帳正本はParent Issue #665のcomment streamとする。各commentは `deepinfra-usage-ledger:v1 / <run_id> / <run_attempt>` の単独行と、その後の単一JSON objectだけで構成する。helperのrecord schemaはrun identity / URL / conclusion / HEAD、usage集計、`telemetry_status` / `telemetry_reason_code`、UTC `recorded_at`を保持し、request配列は保存しない。validでもusage欠落は `partial` / `unavailable` のまま残す。artifact不在・期限切れは `unavailable`、不正schema / 内容・サイズは `invalid` とし、未検証の金額・token・model・countは `null` とする。run conclusionとtelemetry statusは独立であり、失敗runの取得済みusageも保存する。
+
+identityは `run_id + run_attempt`。台帳全体の固定concurrencyでcheck-then-writeを直列化し、write直前まで#665 commentsを全ページ列挙して、`github-actions[bot]` のexact markerとrecord identityを確認する。人間の引用はrecordとして扱わず、既存recordは編集・上書きしない。POST応答喪失時は再取得で成立を確認し、確認不能なら固定reason codeをJob Summaryへ残してfail-closed停止する。API / metadata / identity異常でもwriteせず、paid runの結論変更・paid retry・自動再送を行わない。人間は原因解消後に元のconsumerだけを再実行する。Actions concurrencyはrunning 1件 / pending 1件であり、`cancel-in-progress: false` でもpending置換は起こり得る。cancel・runner loss・retention経過を含め自動回収を保証せず、未記録のsource run / attemptを照合してconsumerを手動再実行する。append済みの欠落recordは後から上書きしない。`test-deepinfra-usage-ledger.sh` がproducer追加時の接続漏れ、入力境界、重複抑止、権限・concurrencyをsecretless検証する。自然な次回runでdefault branch event / artifact取得 / #665投稿のintegration evidenceを確認し、検証目的のpaid callは追加しない。
+
+### DeepInfra台帳のread-only集計
+
+#668の `.github/scripts/summarize-deepinfra-usage.py` は#665 commentsだけを一次入力とする手動helperである。record schemaの検証はconsumerの `validate_record()` を共有し、exact marker、JSON identity、workflow / usage kind、model、repositoryに対応するrun URL、数値、実在するUTC日時、availability整合も確認する。`github-actions[bot]` / `Bot` の単独行exact markerだけを候補にし、人間の引用・checkpoint・その他commentは無視する。LLM、provider credential、Issue write、artifact / log取得、paid call、定期実行、通知、cost guardは追加しない。GitHubからの取得は明示的な `--fetch` だけで、既存 `gh api` の全ページGETを使い、権限は `issues: read` / `contents: read` で足りる。新しいsecretを要求しない。
+
+```bash
+python3 .github/scripts/summarize-deepinfra-usage.py --repo owner/repo --fetch \
+  --since 2026-10-02T00:00:00Z --until 2026-11-01T00:00:00Z \
+  --markdown /tmp/deepinfra-usage.md > /tmp/deepinfra-usage.json
+```
+
+外部取得を行わず再計算する場合は `--fetch` の代わりに `--comments /path/to/comments.json` を指定する。入力は全ページを連結したREST comments配列（各commentの `user.login` / `user.type` / `body` を保持）で、同じsnapshotとfilterから同じJSON / Markdownを生成する。snapshotには人間のcommentも入り得るため、共有する際はusage record以外の内容を確認する。MarkdownはJSON正本と同じ全項目の表示であり、再parseしない。`--workflow` / `--usage-kind` / `--model` / `--run-conclusion` / `--usage-availability` を組み合わせて絞り込める。
+
+期間はrun開始時刻ではなく台帳の `recorded_at` とし、`--since` は含む、`--until` は含まない。UTCの秒精度ISO日時（`Z` / `+00:00`）を受け、結果にはfilterと実際の最初・最後の記録時刻を保持する。対象は#667 activation後に記録されたrun / attemptだけで、未記録run数や台帳の完全性は推測しない。historical paid rerunやbackfillは行わない。
+
+`run_id + run_attempt` の重複判定はfilter前の全候補に適用し、不正候補を含む同一identityの全件を集計から除外する。JSONには全体のinvalid理由別件数とduplicate identity / comment件数、除外identityを診断として残す。schema-validな `telemetry_status: invalid` recordは未検証usageがnullの取得不能recordであり、不正commentとは区別する。run conclusionとusage availabilityも別々に集計する。summaryとworkflow / kind / model / conclusion / availability別groupは件数と4種usage合計を持ち、model未取得はnull groupとする。対象run ID / attempt / URLもidentity昇順で示す。
+
+各fieldの `known_sum` は取得済み値だけの合計で、取得済み0件ならnullとする。`known_records` / `unknown_records`（fieldがnullの件数）と、取得済み値を持つ `partial_records` を併記し、partialの累積を確定総額と扱わない。complete / partial / unavailable件数も併記する。provider costは保存された数値の10進表現を丸めず加算し、JSONでは精度を保つ10進文字列（USD）として出す。providerが明示した0だけを0とする。
+
+検証は `bash .github/scripts/test-summarize-deepinfra-usage.sh`。producer / consumer実出力との互換性、filter、重複、不正schema / 数値 / 日時、unknown / partial、小数加算、順序、JSON / Markdown、GET paginationをsecretless fixtureで確認する。既存AI Workflow Regressionの `test-*.sh` discovery以外のworkflow配線は変更せず、POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。実recordとの照合は自然run発生後に行い、検証目的のpaid callは追加しない。
 
 ## GitHub Apps
 
@@ -324,12 +610,15 @@ default branchに次を適用する。
 次のいずれかで `human-review-required` を付け、自動修正と自動マージを停止する。
 
 - Codexが、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。backtick・code block・字下げ・前後空白は付けず、CRLFは通常のplain-text行末として扱う。説明文中の言及は停止シグナルにしない。Codex最終応答が欠落または空の場合、または検出helperかtrusted bootstrapが失敗した場合も「マーカーなし」と扱わず、Issue起点とClaude review follow-upの両方で安全側に停止する。
+- Issue起点Codexが `[SCOPE_DECISION_REQUIRED]` を返した。出力条件は[Issue起点開発中のdynamic scope decision](#issue起点開発中のdynamic-scope-decision)を正本とする。
 - Claudeのvalidated structured review `summary` に、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` または `[HUMAN_ESCALATION_RECOMMENDED]` がある。backtick・code block・字下げ・前後空白付きの行や説明文中の言及は停止シグナルにせず、CRLFは通常のplain-text行末として扱う。判定step自体が失敗した場合はreview jobを失敗させ、mergeへ進ませない。Claude review follow-upと過去reviewのmarker短縮記録も同じ単独行規約を使う。
 - Claudeのchange requestが3回に到達した。
 
+Codexのscope markerもCRLFを許す字下げ・前後空白のない単独行完全一致だけを検出し、backtickや説明文中の言及を検出しない。Markdown fenced code内のscope markerは無視する。一方、requirements marker primitiveはMarkdownをparseしない既存behaviorを維持し、fenced code内でも単独行が一致すれば検出し得る。上記のcode block禁止はproducerの出力規約である。この非対称は #725 / #722 系列の意図したcompatibility boundaryであり、requirements primitiveの意味を変更しない。将来揃える場合は別Issueで判断する。
+
 `.github/scripts/classify-claude-human-escalation.sh` は、callerがtrusted境界で抽出したClaude structured reviewの`summary`本文だけをstdinからplain textとして受け取るpure helperである。行末CRだけを除いた単独行完全一致で上記2種類のmarkerを分類し、markerなしは`{"result":"none"}`、要求変更だけなら`{"result":"pause","reason":"requirements_change"}`、人間エスカレーションだけなら`{"result":"pause","reason":"explicit_human_escalation"}`、両方あれば`{"result":"state_inconsistent"}`を返す。同一markerの重複は同一signalとして扱い、review JSONやPR comment wrapper、自由文からreasonを推測しない。Claude Reviewはcurrent base SHA由来のhelperで分類し、markerなしは停止せず、それ以外の3結果はreasonを推測せず従来の `apply-human-pause.sh` によるラベル同期と通知を行う。Claude Reviewのhuman escalationではcommon pause recordを作らず、人間がclosing Issue、PRの順にラベルを解除する現行resumeを維持する。分類またはtrusted helperの失敗はreview jobを失敗させ、自動retryしない。
 
-Issue起点のpost-Codex requirements gateは、明示マーカーだけを `requirements_change`、最終応答の欠落・空ファイルまたはtrusted marker helperの異常終了を `developer_execution_failed`（`failed_action=develop`）として `create-human-pause.sh` に渡す。マーカーなしは停止しない。Issue起点のdiff guardはhelper成功かつ妥当な `stop` だけを `diff_guard_exceeded`、`error`・helper失敗・不正/未知出力を `diff_guard_error` として渡す。`requirements_change` と `diff_guard_exceeded` のfingerprintはpause直前にcanonical Issueのcurrent body stringをAPIから再取得し、そのUTF-8 bytesだけをSHA-256にかけた `sha256:<64 lowercase hex>` とする。取得・形式・hashの失敗はfail-closedで停止する。両gateはCodex前にblob identityを固定したtrusted base由来のcommon helperと依存scriptをpost-Codexに再配置・照合し、developer App IDを解決して呼び出す。GitHub pause成立後の通知と重複抑止はcommon helperに委ねる。
+Issue起点のpost-Codex gateは、trusted `classify-ai-developer-decision-marker.sh` の `requirements_change` / `scope_decision` を同名の既存reasonとして `create-human-pause.sh` に渡す。`none` だけが `continue=true` となり、最終応答の欠落・空ファイル、classifier異常終了（両markerの曖昧性を含む）、不正/未知出力は `developer_execution_failed`（`failed_action=develop`）として停止する。scope pauseは `continue=false` とし、diff guard・commit・push・PR書き込みへ進まず、検出後のworking treeを公開しない。自由文からreasonを推測せず、producer条件は「Issue起点開発中のdynamic scope decision」を参照する。Claude Blocking follow-up経路は変更しない。Issue起点のdiff guardはhelper成功かつ妥当な `stop` だけを `diff_guard_exceeded`、`error`・helper失敗・不正/未知出力を `diff_guard_error` として渡す。`requirements_change` / `scope_decision` / `diff_guard_exceeded` のfingerprintはpause直前にcanonical Issueのcurrent body stringをAPIから再取得し、そのUTF-8 bytesだけをSHA-256にかけた `sha256:<64 lowercase hex>` とする。取得・形式・hashの失敗はfail-closedで停止する。両gateはCodex前にblob identityを固定したtrusted base由来のcommon helperと依存scriptをpost-Codexに再配置・照合し、developer App IDを解決して呼び出す。GitHub pause成立後の通知と重複抑止はcommon helperに委ねる。
 
 停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。通常のClaude change request follow-upは停止ラベルを付けずに実行し、成功時だけReady eventで再レビューへ進む。Draft復帰jobの異常終了、3回目のchange request、要求変更、diff guard stop、Codex異常、または人間エスカレーションでは停止ラベルを付ける。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。Claude Reviewの入口は二層で保護する。workflow job条件はevent payload時点でPRがopenであり停止ラベルを持たないことを確認して早期にjobを止め、trusted base由来のentry gateはClaude API呼び出し直前にGitHubからPR stateとPR / closing Issueの停止ラベルを再取得する。entry gateはopen PRだけをreview対象とし、merged / closed PRはmodel call前に正常skipする。PR stateを安全に判定できない、または未知stateである場合はfail-closedで停止する。 workflow job条件はpull_request event payloadの小文字 `open` を判定し、trusted entry gateは `gh pr view` の `OPEN` / `CLOSED` / `MERGED` を判定するため値の語彙は異なるが、いずれもopen PRだけをpaid reviewへ進める。
 
@@ -338,6 +627,16 @@ Issue起点のpost-Codex requirements gateは、明示マーカーだけを `req
 manual protected-path merge等によりmerge後もstale `human-review-required` が残った場合も、cleanup順序はclosing Issue側を先に、merged/closed PR側を最後とする。ただしmerged/closed PR側のラベル解除はClaude再レビュー要求として扱わず、paid Claude Reviewを起動しない。この停止解除・cleanup順序とreview起動条件の正本は本節であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claudeレビュー未実施」で未実施理由を確認する。
 
 `NOTIFICATION_WEBHOOK_URL` が設定済みならPRまたはIssueへのリンクをDiscordへ送る。通知scriptはDiscord Webhookの `content` と自動mentionを無効にする `allowed_mentions: {parse: []}` を送り、contentが1800 byteを超える場合は送信に失敗する。Webhook URLをログ、Issue、PRへ出力しない。未設定時はActionsにwarningを残し、GitHub上のラベルとコメントによる停止は継続する。人間が判断をIssueへ記録し、必要な修正を行った後にだけラベルを外して再開する。
+
+### scope_decisionの人間向け判断理由保存（#776）
+
+Issue起点post-Codex gateのclassifierが `scope_decision` を返した場合だけ、最終応答の必要7項目をtrusted inline validationで抽出し、対象Issueへ別commentとして `gh issue comment --body-file` で保存する。形式の正本は `.github/workflows/ai-developer.yml` のIssue-origin fixed promptと `Gate requirement changes` である。exact label `Observed fact`、`Missing/new Contract category`、`Why Done is impossible under the current contract`、`R/C/P/B change`、`Proposed split/prerequisite`、`Product impact`、`Unverified matters` はそれぞれ行頭から1回だけ `Label: 値` のplain-text単独行とし、値は日本語の非空説明とする。markerは従来どおり別のexact standalone lineを使用する。labelや値はhuman evidenceの形式検証だけに使用し、reason分類・resume判断・repository write認可へ使わない。
+
+最終応答は16 KiB、各fieldは1 KiB UTF-8、renderしたcommentは8 KiBを上限とする。通常fileのbounded read、strict UTF-8、CRLF以外の不正control文字、required field欠落・重複・空値・不正形式、入力／field／render上限を検証する。promptでraw tool output / JSONL、token / secret / credential / environment dump、absolute runner/toolcache path、numeric UID/GID等のrunner内部情報を禁止し、validatorでも明白なcredential prefix・private key・Bearer/JWT・webhook・機密値代入・environment dump・runner path・UID/GID・raw JSON形状を拒否する。全finalの転載やraw stream保存は行わず、検証済み7項目だけをHTML / Markdown / mentionをescapeして表示する。この形状検査は任意の未知secretの完全検出を保証せず、producerはraw値を持ち込まない責務を維持する。
+
+順序はreport検証、既存machine pause成立、既存generic pause comment、bounded human report commentとする。既存pause recordの `reason` / fingerprint / lifecycleは変更せず、`payload.detail` へmodel free textを埋め込まない。scope分類後のreport検証・一時file保存失敗はraw内容を反射せず固定診断の `scope_decision` pauseを成立させ、step failureで停止する。human report comment API失敗・応答不明も固定診断でstep failureとし、成立済みpauseを維持する。どちらもdiff guard・commit・push・PR writeへ進まず、理由再取得のpaid retryや自動再送を行わない。最終応答欠落・空、classifier異常・両marker曖昧性は従来の `developer_execution_failed` を維持し、markerなし・requirements-only・Claude Blocking follow-upへ保存を一般化しない。一時report fileはgate終了時に削除する。
+
+検証は既存 `test-ai-developer-workflow.sh` で実gateを抽出し、synthetic scope reportと実common pause helper・mock GitHub writeを合成する。7項目の投稿・pause先行・fingerprint/resume不変、正常／上限境界／不正UTF-8・control・field・oversize・credential/runner形状・file異常、固定診断の非反射、comment failure、後続write不達を確認する。正式current-headの証拠は自然なAI Workflow Regressionで確認し、外部サービスへ診断目的の実アクセスは行わない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### human pause record のschema契約
 
@@ -492,7 +791,7 @@ setup前にはrunner temp `CODEX_HOME/config.toml` を削除し、前runや別�
 
 固定developer promptは `$RUNNER_TEMP` の専用fileへ書き、Issue本文とtrusted conversationは従来どおり `.ai-context/request.md` のdataとして読み込ませる。workflow shellへIssue本文を展開しない。
 
-`RUNNER_TEMP` はCodex workloadをまたぐtrusted artifact保持境界として扱わない。native Codex serviceへ `RUNNER_TEMP` 自体をallowlistし、`CODEX_FINAL=$RUNNER_TEMP/codex-final.md` をworkload completion時に書き出すproduction経路が成立しているため、同directoryへpre-Codexに置いたhelper / contractについて「workloadから書換不能」とは推定しない。Issue Developerでは `notify-human.sh` / `apply-human-pause.sh` / `has-requirements-change-marker.sh` / `evaluate-codex-diff-gate.sh` のbase commit blob SHAとbase SHAをpre-Codex runner step outputへ固定し、follow-upでも同4 helperのbase blob SHAをstep outputへ固定する。これらのstep outputはnative Codex serviceの `env -i` allowlistへ渡さない。pre-Codex helperと `codex-diff-guard-contract.json` はcontext生成後に `RUNNER_TEMP` から削除し、workspace側 `.ai-context/diff-guard-contract.json` はmodel-visible dataであってpost-Codex trusted判定の正本とはしない。Codex終了後かつhost integrity observer成功後、requirement gateより前に同4 helperをexplicit base commitから再materializeし、各fileの `git hash-object --no-filters` がpre-Codexに固定したblob SHAと一致することを必須とする。missing / malformed output、`git show` failure、blob mismatchはいずれもfail-closedとし、diff guard contractは復元済み `evaluate-codex-diff-gate.sh --contract` から再生成してschemaを再検証する。その後のrequirement marker判定、human pause / notify、diff guardだけがこの復元済みartifactを使用する。Issue Developer / Claude follow-upは同じ境界を使い、root-owned temporary directory、host-global permission mutation、追加secret、追加model callには依存しない。
+`RUNNER_TEMP` はCodex workloadをまたぐtrusted artifact保持境界として扱わない。native Codex serviceへ `RUNNER_TEMP` 自体をallowlistし、`CODEX_FINAL=$RUNNER_TEMP/codex-final.md` をworkload completion時に書き出すproduction経路が成立しているため、同directoryへpre-Codexに置いたhelper / contractについて「workloadから書換不能」とは推定しない。Issue Developer / Claude follow-upはそれぞれ使用するhelperとその依存scriptのbase commit blob SHA、およびbase SHAをpre-Codex runner step outputへ固定する。対象集合の正本は `.github/workflows/ai-developer.yml` の各context生成・restore step（上記#797 / #798の収集専用restoreを含む）と、`.github/scripts/test-ai-developer-workflow.sh` のsupply/restore fixtureとし、Issue Developerのdecision classifier / scope primitive / common pause依存scriptも含む。これらのstep outputはnative Codex serviceの `env -i` allowlistへ渡さない。pre-Codex helperと `codex-diff-guard-contract.json` はcontext生成後に `RUNNER_TEMP` から削除し、workspace側 `.ai-context/diff-guard-contract.json` はmodel-visible dataであってpost-Codex trusted判定の正本とはしない。Codex終了後かつhost integrity observer成功後、post-Codex decision gateより前に各経路の対象helperをexplicit base commitから再materializeし、各fileの `git hash-object --no-filters` がpre-Codexに固定したblob SHAと一致することを必須とする。missing / malformed output、`git show` failure、blob mismatchはいずれもfail-closedとし、diff guard contractは復元済み `evaluate-codex-diff-gate.sh --contract` から再生成してschemaを再検証する。その後のdecision marker判定、human pause / notify、diff guardだけがこの復元済みartifactを使用する。Issue Developer / Claude follow-upは同じ境界を使い、root-owned temporary directory、host-global permission mutation、追加secret、追加model callには依存しない。上記#797 / #798の非致命な収集専用restoreはこのidentity照合境界を再利用するが、実行失敗後も観測できるよう独立conditionとし、decision gate用restoreの成功条件・authorityを変更しない。
 
 developer stepはtrusted Action helperのblob SHAを再確認したうえで、`sudo -n` を**transient service作成だけ**に使用する。step environment全体をrootへ継承する `sudo -E` は使用せず、pin済みActionの `drop-sudo --root-phase` は呼ばない。runner userのgroup membership、sudoers、root-owned `/run` service socketなどhost-global stateを変更しない。root shellから `systemd-run --wait --collect` で一意なtransient serviceを作成し、既存のcgroup propertiesに加えて `NoNewPrivileges=yes`、`SystemCallArchitectures=native`、`SystemCallFilter=~io_uring_setup:EPERM io_uring_enter:EPERM io_uring_register:EPERM` を固定する。Codex/bubblewrapがlocal tool sandbox初期化にAF_UNIXを必要とするためblanket `RestrictAddressFamilies=~AF_UNIX` は使用しない。代わりに、#377 / Run `35508896886` でpositive proofした旧root-phase対象13 socketを `InaccessiblePaths=` でtransient serviceのmount namespaceだけにmaskする。対象pathは `/run/dbus/system_bus_socket`、`/run/dhcpcd/eth0-4.unpriv.sock`、`/run/docker.sock`、`/run/snapd-snap.socket`、`/run/snapd.socket`、`/run/systemd/io.systemd.ManagedOOM`、`/run/systemd/journal/dev-log`、`/run/systemd/journal/socket`、`/run/systemd/journal/stdout`、`/run/systemd/journal/syslog`、`/run/systemd/notify`、`/run/systemd/userdb/io.systemd.DynamicUser`、`/run/uuidd/request` の13件である。runner imageでpathが存在しない場合だけ `-` prefixで無視し、host側permissionは変更しない。service内では `setpriv` を用いて次を固定する。
 
@@ -508,9 +807,9 @@ developer stepはtrusted Action helperのblob SHAを再確認したうえで、`
 
 native Codex exec前には同じservice / `setpriv` contextで、UID/GID、supplementary groups empty、`NoNewPrivs=1`、全capability zero、`sudo -n true` の失敗、AF_UNIX socket作成成功、AF_INET socket作成成功をfail-closedに確認する。さらにroot shellはservice起動直前に固定13 pathのうち存在するsocketについてowner/dev:inodeだけをread-only取得し、socket種別はshellの`-S`で確認してroot-owned socketであることを固定する。service側は同baselineを受け、固定pathが存在する場合はservice viewがsocket / mode 0000 / runner identityからR/W/X不可かつhost側dev:inodeとは異なることを確認する。host baseline取得後に新たに固定pathが出現した場合もraceを信用せずfail-closedする。その後 `/run` をread-only走査し、mask後もrunner identityからwrite可能なroot-owned UNIX socketが1件でも残れば、未知のrunner-image driftとしてnative Codex/model call前にfail-closedする。permission上traverse不能なpathとscan中に消滅したpathはworkloadから到達不能または通常のruntime raceとしてskipするが、それ以外のscan errorはfail-closedとする。directory symlinkは `os.walk(..., followlinks=False)` で辿らず、files entryのmetadata取得も `os.stat(..., follow_symlinks=False)` としてsymlink targetを解決しない。これはsymlink loopと `/run` 外へのscope escapeを避けるための意図的な境界であり、`ELOOP` をgeneric skip errorへ追加してfail-closed条件を弱めない。socketへconnectは行わず、host側permissionも変更しない。このguardの対象は、旧root-phaseが実際に制限していたsecurity intentに合わせたfilesystem path上のroot-owned service socket under `/run` である。abstract namespace socket、`/run` 外のfilesystem socket、非root所有socketは本guardの対象外であり、blanket AF_UNIX denyと同等の全AF_UNIX遮断を主張しない。現在のrunner/Codex evidenceではこれらを追加遮断する根拠はなく、別のprivileged IPC classがrunner imageまたはCodex threat modelで確認された場合は#328で再評価し、推測でscopeを拡張しない。なお固定13 pathの `InaccessiblePaths` maskはservice全期間で継続する一方、residual writable root-owned socket scanはnative Codex起動直前のpoint-in-time検査であり、preflight通過後に新規生成された別pathのsocketを継続監視しない。この時間的残存面も受容済みとし、runtime revalidationやrunner-image変化で新規privileged socket classが観測された場合は#328で再評価する。このpreflightはtransient serviceのExecStart内で実行されるため `RuntimeMaxSec` の内側に含まれる。service内preflightの失敗はunit journalへ `サービス内の保護設定の事前確認で...` diagnosticを残し、exit codeを `39=sudo検査不能 / 40=sudo保持 / 41=UID不一致 / 42=GID不一致 / 43=supplementary groups残存 / 44=NoNewPrivs不成立 / 45=capability非zero / 46=AF_UNIX拒否 / 47=AF_INET拒否 / 48=固定socket maskまたはhost baseline不成立 / 49=残存writable root-owned UNIX socketまたはscan異常` として付与する。root shellでservice起動前の固定path baseline取得・socket種別・owner確認が失敗した場合はexit 50とし、transient unit作成前なのでunit journalではなくdeveloper step logへ `root側の保護設定の事前確認で保護対象UNIX socketの基準値取得に失敗しました: ...` を残す。この場合はunit限定journal回収へ到達しない。これらのcodeはnative Codex自身のexit codeと衝突し得るため、code単独で原因を確定せず、39–49はunit journal、50はdeveloper step logの対応diagnosticと併読して判定する。service自体がrc=0でも、後段のexact preflight success markerを同一unit journalから回収・検証できない場合はdeveloper stepがexit 51でfail-closedする。一方でnative Codex自身のrc=51もそのままdeveloper stepへ伝播し得るため、51だけでは原因を確定しない。developer step logに `サービス内の保護設定の事前確認の成功markerをunit journalから取得できませんでした。` がある場合だけmarker回収failureと判定し、同diagnosticが無い51はservice/Codex側failureの可能性を維持する。
 
-Codexはこのhardening後かつservice cgroup内でvalidated native binaryを直接実行する。service commandは `/usr/bin/env -i` から開始し、`HOME` / `USER` / `LOGNAME` / `PATH` / `RUNNER_TEMP` / `GITHUB_WORKSPACE` / `CODEX_HOME` / `CODEX_FINAL` / `CODEX_PROMPT_FILE` / `CODEX_MODEL` / `CODEX_NATIVE` / `CODEX_PACKAGE_ROOT` / `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` / `PROTECTED_UNIX_SOCKET_PATHS` / `PROTECTED_UNIX_SOCKET_HOST_IDS` だけを明示allowlistとして渡す。後二者は上記13件の非機密な固定path listと、service起動直前にroot shellがread-only取得した存在pathのdev:inode baselineであり、同一service preflightが `InaccessiblePaths` の実効性とhost inode非露出を検証するためだけに使用する。preflight完了後のnative Codex `exec env` では両変数を明示unsetし、Codex process / local toolへhost baselineを継承しない。API key、GitHub App token、setup stepのその他environmentも継承しない。npm launcher parityとして `CODEX_MANAGED_PACKAGE_ROOT=<validated package root>`、`CODEX_MANAGED_BY_NPM=1` をchild launcher内で付与し、Bun / pnpm / Vite+ markerはunsetする。pin済みAction sourceではResponses API endpointは追加environmentではなく `CODEX_HOME/config.toml` のlocalhost providerで渡されるため、serviceはこのallowlistだけでproxyを利用する。actual Codex + localhost request pathは#363 / Run #137でservice-local hardening下でも成立済みである。
+#772ではこのhardening後かつservice cgroup内で上記trusted supervisorがvalidated native binaryを1回起動する。service commandは `/usr/bin/env -i` から開始し、`HOME` / `USER` / `LOGNAME` / `PATH` / `RUNNER_TEMP` / `GITHUB_WORKSPACE` / `CODEX_HOME` / `CODEX_FINAL` / `CODEX_PROMPT_FILE` / `CODEX_MODEL` / `CODEX_NATIVE` / `CODEX_PACKAGE_ROOT` / `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` / `PROTECTED_UNIX_SOCKET_PATHS` / `PROTECTED_UNIX_SOCKET_HOST_IDS` だけを明示allowlistとして渡す。後二者は上記13件の非機密な固定path listと、service起動直前にroot shellがread-only取得した存在pathのdev:inode baselineであり、同一service preflightが `InaccessiblePaths` の実効性とhost inode非露出を検証するためだけに使用する。preflight完了後のsupervisor / native childへ渡す `exec env` では両変数を明示unsetし、Codex process / local toolへhost baselineを継承しない。API key、GitHub App token、setup stepのその他environmentも継承しない。npm launcher parityとして `CODEX_MANAGED_PACKAGE_ROOT=<validated package root>`、`CODEX_MANAGED_BY_NPM=1` をchild launcher内で付与し、Bun / pnpm / Vite+ markerはunsetする。pin済みAction sourceではResponses API endpointは追加environmentではなく `CODEX_HOME/config.toml` のlocalhost providerで渡されるため、serviceはこのallowlistだけでproxyを利用する。actual Codex + localhost request pathは#363 / Run #137でservice-local hardening下でも成立済みである。
 
-developer stepのpreflightでは `CODEX_HOME/config.toml` をTOML parseし、top-levelが `model_provider` / `model_providers` だけであること、selected providerが `codex-action-responses-proxy` であること、`base_url` が `http://127.0.0.1:<valid-port>/v1`、`wire_api` が `responses` であることを必須とする。unexpected keyやpermission / sandbox / approval設定が混入した場合はfail-closedに停止する。CLI optionはworkflow側の固定値だけとし、`--skip-git-repo-check`、workspace、final output path、trusted `CODEX_MODEL`、`model_reasoning_effort="medium"`、`default_permissions=":workspace"` を固定する。0.156.1 sourceでは `default_permissions` がpermission profile選択キーで、`:` 始まりの名前はbuilt-in profile、`:workspace` はbuilt-in workspace profileとして解決される。これらの旧versionのsource確認だけでは0.159.3の実効動作を保証しない。#410 / Run `35822596587` と#328 / Run `35514293157` では0.156.1 / `:workspace` のactual local-tool pathとfinite completionを確認済みだが、任意の `$RUNNER_TEMP` pathに対するlocal-tool write可否までは推測しない。一方、native Codex workload自身が同directoryの `CODEX_FINAL` を書く設計・実績があるため、`RUNNER_TEMP` をpost-Codex trusted artifactの非書込境界としては使用しない。継続的なruntime / hardening実証は#328を正本とする。service rcがnon-zeroの場合はそのcodeをdeveloper stepへ伝播させ、timeout / Codex failure / launcher failureを既存どおりfail-closedに扱う。transient serviceのstdout/stderrは既定どおりjournalへ送られるため、service終了後にはまず対象unitだけを `journalctl --unit="$unit" --no-pager --output=cat --lines=200` でboundedに回収し、preflight / native Codex / timeout failureの非機密診断をephemeral runner終了前に残す。このbounded dumpはdiagnostic専用で `|| true` を維持する。service rc=0の場合だけ、同じunique unitへ2本目のread-only `journalctl --unit="$unit" --no-pager --output=cat --quiet` を実行してそのunitの出力を取得し、journalctl固有の `--grep` / `--lines` 評価順序には依存せず、取得済みtextをshell側の `grep -Fxq` でexact `Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.` markerと照合する。この2本目はtail boundを掛けず同一unit journal全体をshell変数へcaptureするため、unit journal量に応じてメモリ使用量と処理時間が増える。Run `35514293157` でpreflight markerが末尾200行から押し出された実績があり、boundedな診断用1本目だけではmarkerを確認できないためである。この2本目の取得内容はjob logへ出さない。journalctl自体の失敗またはexact marker欠落はexit 51でfail-closedとし、成功時はexpected markerと日本語の確認説明をstep logへ明示出力してからservice rc=0を返す。service rcがnon-zeroの場合はこのsuccess-marker確認を実行せず、marker欠落によって元のfailure rc / diagnosticを上書きしない。2本のjournalctlはいずれも同一unit限定であり、host-wide journalや他unitをdumpせず、marker用のworkload-writable fileも作成しない。
+developer stepのpreflightでは `CODEX_HOME/config.toml` をTOML parseし、top-levelが `model_provider` / `model_providers` だけであること、selected providerが `codex-action-responses-proxy` であること、`base_url` が `http://127.0.0.1:<valid-port>/v1`、`wire_api` が `responses` であることを必須とする。unexpected keyやpermission / sandbox / approval設定が混入した場合はfail-closedに停止する。CLI optionはworkflow側の固定値だけとし、native childにだけ付ける `--json`、`--skip-git-repo-check`、workspace、final output path、trusted `CODEX_MODEL`、`model_reasoning_effort="medium"`、`default_permissions=":workspace"` を固定する。0.156.1 sourceでは `default_permissions` がpermission profile選択キーで、`:` 始まりの名前はbuilt-in profile、`:workspace` はbuilt-in workspace profileとして解決される。これらの旧versionのsource確認だけでは0.159.3の実効動作を保証しない。#410 / Run `35822596587` と#328 / Run `35514293157` では0.156.1 / `:workspace` のactual local-tool pathとfinite completionを確認済みだが、任意の `$RUNNER_TEMP` pathに対するlocal-tool write可否までは推測しない。一方、native Codex workload自身が同directoryの `CODEX_FINAL` を書く設計・実績があるため、`RUNNER_TEMP` をpost-Codex trusted artifactの非書込境界としては使用しない。継続的なruntime / hardening実証は#328を正本とする。service rcがnon-zeroの場合はそのcodeをdeveloper stepへ伝播させ、timeout / Codex failure / launcher failureを既存どおりfail-closedに扱う。transient serviceのstdout/stderrは既定どおりjournalへ送られるため、service終了後にはまず対象unitだけを `journalctl --unit="$unit" --no-pager --output=cat --lines=200` でboundedに回収し、既存preflight診断 / sanitized supervisor record / timeout failureの非機密診断をephemeral runner終了前に残す。このbounded dumpはdiagnostic専用で `|| true` を維持する。service rc=0の場合だけ、同じunique unitへ2本目のread-only `journalctl --unit="$unit" --no-pager --output=cat --quiet` を実行してそのunitの出力を取得し、journalctl固有の `--grep` / `--lines` 評価順序には依存せず、取得済みtextをshell側の `grep -Fxq` でexact `Service-local hardening preflight verified AF_UNIX/AF_INET and protected UNIX socket boundary.` markerと照合する。この2本目はtail boundを掛けず同一unit journal全体をshell変数へcaptureするため、unit journal量に応じてメモリ使用量と処理時間が増える。Run `35514293157` でpreflight markerが末尾200行から押し出された実績があり、boundedな診断用1本目だけではmarkerを確認できないためである。この2本目の取得内容はjob logへ出さない。journalctl自体の失敗またはexact marker欠落はexit 51でfail-closedとし、成功時はexpected markerと日本語の確認説明をstep logへ明示出力してからservice rc=0を返す。service rcがnon-zeroの場合はこのsuccess-marker確認を実行せず、marker欠落によって元のfailure rc / diagnosticを上書きしない。2本のjournalctlはいずれも同一unit限定であり、host-wide journalや他unitをdumpせず、marker用のworkload-writable fileも作成しない。
 
 #369以降、`Run Codex developer` の直前と直後にはread-only host integrity observerを置く。beforeでは `/run/systemd/notify` と `/run/dbus/system_bus_socket` のdev / inode / uid / gid / mode、`systemd-resolved.service` のActiveState / SubState / MainPID / NRestartsを取得し、github.com / api.github.com DNS成功を確認する。capture stepはsocket / resolved / DNS確認完了後に値と `captured=true` を `$GITHUB_OUTPUT` へ書き、runnerがstep終了時にstep outputとして回収した値だけをafter observerへ渡す。`$GITHUB_OUTPUT` のbacking fileが実装上 `$RUNNER_TEMP` 配下に置かれること自体を安全根拠にはせず、Codex workloadへbaseline outputをenvironmentとして渡さないことと、capture step終了後にworkflow context経由で参照することを境界とする。afterは `if: always() && steps.host_integrity_before.outputs.captured == 'true'` でbaseline取得済みの場合だけ実行し、developer stepがrunnerへ制御を返した場合に、socket identity / modeとresolved 4 propertyがbeforeと完全一致、resolvedがactive/running、両DNSが引き続き成功することをfail-closedに確認する。host状態の取得には `stat` / `systemctl show` / `getent ahosts` のread-only commandだけを使用し、値の整形・比較は `printf` / `tr` / `sort` / `test` / `grep` のshell text処理に限定する。`/run` write、permission変更、service lifecycle変更、secret出力は行わない。before observerが失敗またはそれ以前の失敗でskipされた場合、after observerは明示的にskipし、主failureに加えてsecondary failureを発生させない。baseline取得後のdeveloper step failureではafter observerを引き続き実行し、不一致やDNS failureはfail-closedにする。follow-upも同じcapture markerでafter observerをgateする。既知のRun #846 / #853のようにdeveloper stepが `in_progress` のままjob-level cancellationまで制御を返さない場合も、後続の`if: always()`は開始できず `HOST_INTEGRITY after` は残らない。この欠落もhost mutationの証拠とは扱わず、観測不能としてautomatic retryせず#328へ戻る。
 
@@ -601,4 +900,15 @@ bash .github/scripts/test-ai-developer-workflow.sh
 
 `.github/workflows/**` を変更したが上記fixtureの対象外と判断した場合は、その理由をPR本文へ記録する。
 
-AI Workflow Regressionの起動対象path一覧は `.github/workflows/ai-workflow-regression.yml` の `on.pull_request.paths` を唯一の機械正本とし、この運用文書では完全な一覧を複製しない。正本の対象pathに一致するPRでは、独立した `AI Workflow Regression / Fixtures` が `.github/scripts/test-*.sh` を全件実行し、現在PR headに対する結果をGitHub Actionsへ残す。初回導入PRはBootstrap制約に従い、このworkflowがdefault branchへ反映された後の対象PRから通常のCI証跡となる。これは専用fixtureと横断fixtureの両方を実行するrepository側の独立証跡であり、Codex自身の関連validation実行・結果報告責務を置き換えない。Codex側でvalidationを実行できない場合は理由を記録し、CI結果を確認する。対象fixtureは外部サービスへ実アクセスせず、repository内で完結する。event、実行順、timeout、concurrencyなどの詳細も同workflowを正本とする。`test-ai-workflow.sh` は正本workflowに必要なtrigger contractが残ることを検証するfixtureであり、trigger集合全体の独立した正本ではない。`docs/00_requirements/01_Introduction.md` と `docs/diagrams/README.md` は内容をfixtureで読む対象ではないが、`test-ai-developer-workflow.sh` がAGENTS固定参照のfile existenceを機械contractとして直接assertするためexact trigger対象とする。`docs/30_operations/ai-development-workflow.md` は同fixtureが停止・Draft復帰等の運用安全契約とscope-out参照先のcanonical headingを実ファイルから直接assertするためexact trigger対象とする。その他のproduct / requirements / diagrams文書はAI workflow fixtureの直接依存ではないためtriggerへ広げない。Claude review / mergeのprotected-path classifierはCode Owner保護のため `CODEOWNERS` やその他の `.github/**` もhigh-riskに含めるが、AI Workflow RegressionはAI instruction / runtime fixtureが直接依存するsubsetだけを起動対象とし、通常のIssue templateやその他のrepository governance文書の変更だけでは起動しない。この差は意図的であり、protected-path判定そのものを弱めるものではない。PR本文で上記コードブロックの手動fixtureを対象外と記録しても、この全件自動実行は免除されない。
+#763のfull経路は、selectorのfull決定またはselection失敗によるfull fallbackの後、fixture実行前に検証済み `BASE_SHA` の `plan-ai-workflow-shards.py` blobをscratchへ取得して1回だけ実行する。独立列挙したcurrent full inventoryをNUL-framed inputとし、callerがclosed schema / duplicate JSON key拒否 / exact 2-shard coverageを再検証する。取得・実行・出力検証の失敗はRegression failureとなり、single runner実行へfallbackしない。base SHAが不正またはcommitを確認できない場合もplannerへ進めずFAILとする。機械契約は `ai-workflow-regression.yml`、実run blockの検証は `test-ai-workflow.sh` を正本とする。selected経路はplannerを取得・実行しない。planner単体の成功は実行authorityではない。#769では下記consumerがplanを再検証した後だけfullのshard実行集合へ使用し、selectedは既存 `Fixtures` job / `fixtures.nul` / sequential loop / 全結果集計後の失敗伝播を維持する。planner fixtureは `RUNTIME_HINTS` keysがcurrent inventoryに含まれることと、許可済みcaller以外からの接続拒否を確認する。job outputは下記#767でpreparedした契約を再利用する。serialized worker / output consumerは#769で導入し、#698で下記2-workerのparallel executionを有効化する。planner検証成功だけからexecution成功を主張しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+#767でpreparedした既存 `Fixtures` jobの検証済みselection / full shard plan由来のjob output `execution_plan_b64` を、#769のhandoffにも使用する。機械正本は `ai-workflow-regression.yml`、selected/fullのrecord整合・決定性・失敗伝播の検証は `test-ai-workflow.sh` とする。canonical JSONはsorted keys / ASCII escape / 空白なしでstrict UTF-8 encodeし、標準Base64の単一ASCII行として `GITHUB_OUTPUT` へ書く。Base64 valueは256 KiB以内（keyと末尾LFを除く）とし、超過・不正state・生成／書込み失敗はfixture実行前にfail-closed停止する。非UTF-8 / surrogate fixture pathは独立inventory検証で `invalid_fixture_type` として拒否する。`base_sha` は検証済みBASE_SHA、`head_sha` は再検証したcurrent HEADとし、event SHAのselection fallback時も未検証値を渡さない。fullのshard ids / pathsはcanonical順へ揃える。outputだけではexecution authorityにならず、下記workerがcurrent HEAD / inventory / schema / coverageを再検証する。selectedのexecution listはoutputから読み戻さず、producer内のsequential loop / failure aggregationを維持する。Failure Evidence Collector本体、Secrets、permissions、repository write、Product識別子・traceabilityは変更しない。output内容はJob Summaryへ展開しない。
+
+
+#769で導入したfullのfixture execution ownershipを持つexact `Fixture shard 1` / `Fixture shard 2` を、#698で2-runner parallelにする。`Fixtures` はfullではvalidated planのhandoffまでで終了し、fixtureを実行しない。bounded `routing_mode` outputはvalidated stateから作る起動用discriminatorであり、execution authorityではない。workerはproducer successを必須確認し、256 KiB以内のstrict standard Base64 / strict UTF-8 / duplicate-key rejecting JSON / exact schema・version・lowerhex SHA・closed reason / suites / counts / canonical pathsを再検証する。current checkout HEADとplanのhead、独立full inventoryとfixtures / counts、exact ids 1,2のnonempty sorted unique shard、disjoint unionとfull inventoryの一致を照合し、自身のfixed idのlistだけをsequential実行する。各fixture直前にregular file / non-symlinkを再確認し、failure後も同shardの残りを実行して最後にjob failureへ伝播する。両workerのneedsはproducer `fixtures` だけとし、producer success / full routingの通常conditionで起動する。worker側に `always()` を置かず、supersede cancellation後の新規worker開始を避ける。両workerは互いのsuccessを起動条件とせず、一方のfailureで他方のcoverageを失わない。各runner内はsequential実行を維持し、fixture間の共有host / global stateを受け渡さない。matrix / 3 shard以上 / retryは導入しない。
+
+`Regression Result` は全3 jobをneedsとし、`always()` でcheckout / external callなしのbounded validationだけを行う。producer非successではpre-published outputを読まずterminalを第二failureにせず、元producerのfailure / cancellation / timeout ownershipを維持する。producer success時は同じclosed planを再decode / validateし、routingとmodeの一致を確認する。selectedは両workerがskipped、fullは両workerがsuccessの場合だけ成功とし、failure / cancellation / skipped等をsuccessへ昇格しない。terminalのfailure stepはexact `Normalize shard results`。#751のcollector exact topology / legacy single-failure契約を維持し、collector本体・permissions・triggerは変更しない。#769のRegression #509ではworker failure後の他worker coverageとterminal failure、Failure Evidence Collector #61 attempt 2ではcomplete packet / terminal bindingをactual proof済みであり、#698でも同じ契約を再利用する。
+
+#698の検証は既存 `test-ai-workflow.sh` でjob names / producer-only needs / parallel topology / worker通常condition、selected既存set・order・failure、full producer実行0件、workerのexactly-once coverage・failure後継続、producer非success / output corruption / stale head / inventory drift / schema mismatchの拒否、routing不一致とterminal result正規化を固定する。既存collector synthetic fixtureも回帰する。current PR headのnatural full runで両workerの開始・終了時刻のoverlap、current full inventoryのexactly-once coverage、terminal Successを確認する。run ID / attempt / HEAD、各job duration、run wall-clock、全job durationの合計（runner computeの観測値）を記録し、#769のRegression #510（serialized wall-clock約638秒、producer約5秒 / shard 1約282秒 / shard 2約343秒 / terminal約2秒）と比較する。runner schedulingの影響とcompute増のトレードオフを親 #695へ記録する。natural selected runのwall-clock / compute overheadも確認し、ローカルsynthetic成功でactual overlapや時間短縮を代替しない。計測目的のartificial failure / paid AI runは追加せず、既存failure / cancellation fixtureと#509のactual failure evidenceを再利用する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+AI Workflow Regressionの起動対象path一覧は `.github/workflows/ai-workflow-regression.yml` の `on.pull_request.paths` を唯一の機械正本とし、この運用文書では完全な一覧を複製しない。正本の対象pathに一致するPRでは、独立した `AI Workflow Regression` が現在PR headのfixtureをselectedでは `Fixtures`、fullでは上記parallel workersで実行し、`Regression Result` を含む結果をGitHub Actionsへ残す。known local changeはtrusted event base SHA版のselectorが返すselected fixturesとcommon guardを実行する。unknown / shared boundaryで全件が必要な変更、selector失敗・出力不正、base object / selector取得不能、SHA不一致、merge-base取得不能・形式不正、diff失敗・予期しない空diffではselectionをfullへ戻し、上記planner gateへ進む。`BASE_SHA`不正・base commit確認不能はそのgateでFAILし、full fixture executionへfallbackしない。selector自身・selector fixture・regression workflowの変更もfullとする。fullではcallerがPR head上の全 `.github/scripts/test-*.sh` を再列挙し、両modeとも0件・missing・symlink・不正file型はFAILにする。producer checkoutはexact event head SHA、`persist-credentials: false`、`fetch-depth: 0`とし、shellへtokenを渡さずbase policyを取得する。changed pathsは検証済みbase/head SHAからread-onlyに `git merge-base BASE HEAD` を取得し、`git diff --no-renames --name-only -z MERGE_BASE HEAD` でPR変更集合を3-dot相当として取得する。base-only変更を混ぜず、rename両pathをNUL-safeに観測する。trusted base selectorはparse後に正本と同期したtrigger domainだけを評価し、対象外pathはselectionへ影響させず、対象内unknownはfull、filter後0件も `full / empty_selection` とする。workerもexact event head SHA / `persist-credentials: false`でcheckoutする。read-only / secretless、producer / worker各10分timeout（延長なし）、terminal 1分timeout、PR単位concurrency、retryなしを維持し、fixture failureは全実行結果の集計後にjob failureへ伝播する。Job Summaryにはmode / fixed reason / selected count（実行集合件数）/ full count / suites / 各jobのPASS・FAILだけを記録し、full producerのPASSはhandoff validation成功を意味する。fixture名はworker / selected producerのgroup logで確認する。自然なPR runで件数とActionsのwall-clockを確認する。初回導入PRはBootstrap制約に従い、このworkflowがdefault branchへ反映された後の対象PRから通常のCI証跡となる。これは専用fixtureと横断fixtureの両方を実行するrepository側の独立証跡であり、Codex自身の関連validation実行・結果報告責務を置き換えない。Codex側でvalidationを実行できない場合は理由を記録し、CI結果を確認する。対象fixtureは外部サービスへ実アクセスせず、repository内で完結する。event、実行順、timeout、concurrencyなどの詳細も同workflowを正本とする。`test-ai-workflow.sh` は正本workflowの実run blockをsynthetic fixtureで実行し、selected/fullの探索・全選択fixture実行・失敗伝播・fallbackと実行行改変の検出、およびworkflowの `on.pull_request.paths` とselectorの `TRIGGER_PATTERNS` のexact集合同期・未対応patternの拒否を含むtrigger contractを検証するfixtureであり、trigger集合全体の独立した正本ではない。`docs/00_requirements/01_Introduction.md` と `docs/diagrams/README.md` は内容をfixtureで読む対象ではないが、`test-ai-developer-workflow.sh` がAGENTS固定参照のfile existenceを機械contractとして直接assertするためexact trigger対象とする。`docs/30_operations/ai-development-workflow.md` は同fixtureが停止・Draft復帰等の運用安全契約とscope-out参照先のcanonical headingを実ファイルから直接assertするためexact trigger対象とする。その他のproduct / requirements / diagrams文書はAI workflow fixtureの直接依存ではないためtriggerへ広げない。Claude review / mergeのprotected-path classifierはCode Owner保護のため `CODEOWNERS` やその他の `.github/**` もhigh-riskに含めるが、AI Workflow RegressionはAI instruction / runtime fixtureが直接依存するsubsetだけを起動対象とし、通常のIssue templateやその他のrepository governance文書の変更だけでは起動しない。この差は意図的であり、protected-path判定そのものを弱めるものではない。PR本文で上記コードブロックの手動fixtureを対象外と記録しても、このselected/fullの自動実行は免除されない。

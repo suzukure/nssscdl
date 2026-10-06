@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix='node-hardening-') as tmp:
     gid = subprocess.check_output(['id', '-g', 'nobody'], text=True).strip()
     args = [os.environ.get('USER', 'runner'), uid, gid, tmp, runtime_path, tmp, '60', unit,
             str(launcher), tmp, tmp, str(directory / 'final'), str(directory / 'prompt'),
-            'unused', '/usr/bin/true', tmp, 'unused']
+            'unused', '/usr/bin/true', tmp, 'unused', 'unused-supervisor', 'unused-extractor']
     try:
         subprocess.run(['sudo', '-n', '/bin/sh', str(root), *args], check=True, timeout=80)
     finally:

@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from typing import Any
@@ -561,6 +563,115 @@ def validate_analysis(v: Any) -> dict[str, Any]:
     return v
 
 
+USAGE_KINDS = {"investigator", "review_benchmark", "diagnostic_a", "diagnostic_b"}
+# Only trusted request model IDs may be copied; never copy response metadata.
+USAGE_MODELS = ALLOWED_MODELS | {"zai-org/GLM-5.3-Flash", "deepseek-ai/DeepSeek-V4-Pro-0813"}
+USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "provider_estimated_cost_usd")
+
+
+class UsageSidecar:
+    """Single-process run accounting, saved before returning to any caller."""
+
+    def __init__(self, path: str, kind: str, model: str):
+        self.path = pathlib.Path(path)
+        self.kind = kind
+        self.model = model
+        self.requests: list[dict[str, Any]] = []
+
+    def save(self) -> None:
+        responses = [entry for entry in self.requests if entry["response_received"]]
+        totals: dict[str, Any] = {}
+        for field in USAGE_FIELDS:
+            values = [entry[field] for entry in responses if entry[field] is not None]
+            total = sum(values) if values else None
+            # A non-finite provider cost sum is unknown, never a fabricated zero.
+            if field == "provider_estimated_cost_usd" and isinstance(total, float) and not math.isfinite(total):
+                total = None
+            totals[field] = total
+        complete = bool(responses) and len(responses) == len(self.requests) and all(
+            entry[field] is not None for entry in responses for field in USAGE_FIELDS
+        ) and all(value is not None for value in totals.values()) and not any(
+            entry["error_reason_code"] for entry in self.requests
+        )
+        envelope = {
+            "schema_version": 1,
+            "usage_kind": self.kind,
+            "model": self.model,
+            "request_count": len(self.requests),
+            "response_count": len(responses),
+            **totals,
+            "usage_availability": "complete" if complete else (
+                "partial" if any(value is not None for value in totals.values()) else "unavailable"
+            ),
+            "missing_usage_response_count": sum(
+                any(entry[field] is None for field in USAGE_FIELDS) for entry in responses
+            ),
+            "request_error_count": sum(bool(entry["error_reason_code"]) for entry in self.requests),
+            "requests": self.requests,
+        }
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent,
+                                             prefix=".deepinfra-usage-", delete=False) as stream:
+                temporary = stream.name
+                json.dump(envelope, stream, allow_nan=False, indent=2)
+                stream.write("\n")
+            os.replace(temporary, self.path)
+        except (OSError, ValueError) as exc:
+            raise InvestigatorError("DeepInfra usage sidecar write failed") from exc
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def start(self) -> dict[str, Any]:
+        entry = {"request_index": len(self.requests) + 1, "response_received": False,
+                 **dict.fromkeys(USAGE_FIELDS), "error_reason_code": None}
+        self.requests.append(entry)
+        self.save()  # An interrupted request remains visible without claiming zero cost.
+        return entry
+
+    def received(self, entry: dict[str, Any], value: Any, reason: str | None = None) -> None:
+        entry["response_received"] = True
+        usage = value.get("usage") if isinstance(value, dict) else None
+        if isinstance(usage, dict):
+            for field in USAGE_FIELDS:
+                raw = usage.get("estimated_cost" if field == "provider_estimated_cost_usd" else field)
+                if isinstance(raw, bool):
+                    continue
+                if field == "provider_estimated_cost_usd":
+                    if isinstance(raw, (int, float)) and raw >= 0 and (
+                        isinstance(raw, int) or math.isfinite(raw)
+                    ):
+                        # Keep provider numbers only; do not estimate absent fields.
+                        entry[field] = raw
+                elif isinstance(raw, int) and raw >= 0:
+                    entry[field] = raw
+        entry["error_reason_code"] = reason
+        self.save()
+
+    def failed(self, entry: dict[str, Any], reason: str) -> None:
+        entry["error_reason_code"] = reason
+        self.save()
+
+
+_usage_sidecar: UsageSidecar | None = None
+
+
+def usage_sidecar(model: Any) -> UsageSidecar | None:
+    global _usage_sidecar
+    path = os.environ.get("DEEPINFRA_USAGE_PATH", "")
+    kind = os.environ.get("DEEPINFRA_USAGE_KIND", "")
+    if not path and not kind:
+        return None  # Existing standalone callers may omit telemetry configuration.
+    if not path or kind not in USAGE_KINDS or not isinstance(model, str) or model not in USAGE_MODELS:
+        raise InvestigatorError("invalid DeepInfra usage sidecar configuration")
+    if _usage_sidecar is None:
+        _usage_sidecar = UsageSidecar(path, kind, model)
+    if (_usage_sidecar.path, _usage_sidecar.kind, _usage_sidecar.model) != (pathlib.Path(path), kind, model):
+        raise InvestigatorError("DeepInfra usage sidecar identity changed")
+    return _usage_sidecar
+
+
 def deepinfra_request(payload: dict[str, Any]) -> dict[str, Any]:
     key = os.environ.get("DEEPINFRA_API_KEY", "")
     if not key:
@@ -571,14 +682,28 @@ def deepinfra_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST",
     )
+    sidecar = usage_sidecar(payload.get("model"))
+    entry = sidecar.start() if sidecar else None
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
+            if entry is not None:
+                entry["response_received"] = True
             value = json.loads(response.read().decode())
+            if sidecar and entry is not None:
+                sidecar.received(entry, value, None if isinstance(value, dict) else "invalid_response")
     except urllib.error.HTTPError as exc:
+        if sidecar and entry is not None:
+            sidecar.failed(entry, "http_error")
         detail = sanitize(exc.read().decode(errors="replace"))[:3000]
         raise InvestigatorError(f"DeepInfra HTTP {exc.code}: {detail}") from exc
     except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        if sidecar and entry is not None:
+            sidecar.failed(entry, "invalid_json" if isinstance(exc, json.JSONDecodeError) else "network_error")
         raise InvestigatorError(f"DeepInfra request failed: {exc}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        if sidecar and entry is not None:
+            sidecar.failed(entry, "response_read_error")
+        raise InvestigatorError("DeepInfra response read failed") from exc
     if not isinstance(value, dict):
         raise InvestigatorError("DeepInfra response is not an object")
     return value

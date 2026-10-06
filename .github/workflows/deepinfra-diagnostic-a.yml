@@ -29,6 +29,8 @@ jobs:
       - name: Run Diagnostic A once
         env:
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+          DEEPINFRA_USAGE_PATH: ${{ runner.temp }}/deepinfra-usage.json
+          DEEPINFRA_USAGE_KIND: diagnostic_a
           GH_TOKEN: ${{ github.token }}
           RESULT_JSON: ${{ runner.temp }}/deepinfra-diagnostic-a.json
           RESULT_MD: ${{ runner.temp }}/deepinfra-diagnostic-a.md
@@ -48,6 +50,15 @@ jobs:
           test -s "$RESULT_MD"
           cat "$RESULT_MD" >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+
+      - name: Upload DeepInfra usage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deepinfra-usage-diagnostic_a-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deepinfra-usage.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload Diagnostic A result
         if: always()
