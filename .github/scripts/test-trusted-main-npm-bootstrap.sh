@@ -2,9 +2,10 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -204,10 +205,185 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
             rejected(lambda: entry.export_bootstrap(repo, sha, candidate, output, helper))
         assert not output.exists()
 
+        # Exercise the actual Actions diagnostic interface, including suppressed
+        # shared-runtime output and failures before/after publication.
+        output = base / 'product-npm-bootstrap-artifact'
+        event_path.write_text(json.dumps(event))
+        canary = 'EXCEPTION_CANARY /private/absolute-canary ENVIRONMENT_CANARY'
+
+        def fail(*args, **kwargs):
+            print('STDOUT_CANARY ' + canary)
+            print('STDERR_CANARY ' + canary, file=sys.stderr)
+            raise subprocess.CalledProcessError(1, ['fixture'], output=canary, stderr=canary)
+
+        def noisy_generate(*args):
+            print('STDOUT_CANARY')
+            print('STDERR_CANARY', file=sys.stderr)
+            return generate(*args)
+
+        @contextmanager
+        def failed_context(*args):
+            fail()
+            yield
+
+        real_prepare = helper.prepare
+
+        @contextmanager
+        def prepare_cleanup(*args):
+            with real_prepare(*args) as handle:
+                yield handle
+            fail()
+
+        @contextmanager
+        def bootstrap_cleanup(*args):
+            with real_bootstrap(*args) as handle:
+                yield handle
+            fail()
+
+        original_temporary = entry.tempfile.TemporaryDirectory
+
+        @contextmanager
+        def temporary_cleanup(*args, **kwargs):
+            with original_temporary(*args, **kwargs) as path:
+                yield path
+            if kwargs.get('prefix') == 'npm-bootstrap-export-':
+                fail()
+
+        def at_call(original, index, noisy=True):
+            count = 0
+            def invoke(*args, **kwargs):
+                nonlocal count
+                count += 1
+                if count == index:
+                    if noisy:
+                        fail()
+                    raise ValueError(canary)
+                return original(*args, **kwargs)
+            return invoke
+
+        def main_result(expected=None, reason="internal"):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                result = entry.main()
+            assert err.getvalue() == ''
+            if expected is None:
+                assert result == 0
+                assert out.getvalue() == 'trusted-main npm bootstrap: 検証済み artifact の生成完了\n'
+                assert set(os.listdir(output)) == {'package.json', 'package-lock.json', 'bootstrap-summary.json'}
+                assert helper.read_pair(output) == (manifest, lock)
+                assert (output / 'bootstrap-summary.json').read_bytes() == summary
+                entry.shutil.rmtree(output)
+            else:
+                assert result == 1, expected
+                assert out.getvalue() == ('trusted-main npm bootstrap: 検証または cleanup が失敗しました'
+                                          + ' (stage=' + expected
+                                          + (' reason=' + reason if expected == 'bootstrap_enter' else '')
+                                          + ')\n'), expected
+                assert not output.exists(), expected
+
+        seen = set()
+        with patch.dict(os.environ, {**env, 'GITHUB_EVENT_PATH': str(event_path),
+                                     'DIAGNOSTIC_ENV_CANARY': 'ENVIRONMENT_CANARY'}), \
+             patch.object(entry, 'load_orchestrator', return_value=helper), \
+             patch.object(runtime, 'generate_validated', side_effect=noisy_generate):
+            main_result()
+            cases = [
+                (entry, 'source_gate', at_call(lambda *args: None, 1, noisy=False), 'internal'),
+                (entry, 'load_orchestrator', fail, 'internal'),
+                (entry, 'candidate_manifest', fail, 'candidate_manifest'),
+                (helper, 'prepare', failed_context, 'prepare_input'),
+                (helper.Handoff, 'verify', fail, 'prepare_input'),
+                (helper, 'bootstrap', failed_context, 'bootstrap_enter'),
+                (runtime, 'generate_validated', fail, 'bootstrap_enter'),
+                # The first verify is inside shared bootstrap __enter__.
+                *[(helper.ValidatedBootstrap, 'verify',
+                   at_call(helper.ValidatedBootstrap.verify, index), stage)
+                  for index, stage in ((1, 'bootstrap_enter'), (2, 'bootstrap_verify'),
+                                       (3, 'bootstrap_verify'))],
+                (entry, 'summary_record', fail, 'summary'),
+                (helper, 'bootstrap', bootstrap_cleanup, 'bootstrap_cleanup'),
+                (helper, 'prepare', prepare_cleanup, 'bootstrap_cleanup'),
+                (entry.tempfile, 'TemporaryDirectory', temporary_cleanup, 'export_cleanup'),
+                *[(entry, 'verify_export', at_call(real_verify, index), 'export_verify')
+                  for index in (1, 2, 3)],
+                *[(entry, 'authority', at_call(lambda *args: None, index, noisy=False),
+                   'authority_recheck') for index in (1, 2, 3)],
+            ]
+            for target, name, injection, stage in cases:
+                with patch.object(target, name, side_effect=injection, autospec=isinstance(target, type)):
+                    main_result(stage)
+                seen.add(stage)
+            for fault, stage in (('unavailable', 'bootstrap_enter'), ('hash', 'bootstrap_enter'),
+                                 ('source', 'bootstrap_enter'), ('cleanup', 'bootstrap_cleanup'),
+                                 ('export-mutation', 'export_verify')):
+                main_result(stage, 'candidate_validation' if fault in ('hash', 'source')
+                            else 'internal')
+            fault = None
+            # Entry projection accepts only finite, unambiguous generated codes.
+            for code in sorted(entry.CANDIDATE_REJECTIONS):
+                error = validator.Rejected(code)
+                with patch.object(helper.ValidatedBootstrap, 'verify', side_effect=error):
+                    main_result('bootstrap_enter', 'candidate_validation')
+            for args in (('trusted-bootstrap-handle-required',), ('bootstrap-input-required',),
+                         ('trusted-manifest-mismatch',), ('overlapping-trusted-root',),
+                         ('run-root-changed',), ('workspace-input-mutated',),
+                         ('unsafe-trusted-directory',), ('official-registry-unavailable',),
+                         (canary,), ({'reason': 'handoff-hash-mismatch'},),
+                         ('handoff-hash-mismatch', canary), ()):
+                error = validator.Rejected(*args)
+                error.bootstrap_reason = 'candidate_validation'  # Must be overwritten.
+                original_require = helper.require
+                def reject_input(condition, code):
+                    target = args[0] if args and type(args[0]) is str and args[0] in (
+                        'trusted-bootstrap-handle-required', 'bootstrap-input-required',
+                        'trusted-manifest-mismatch', 'overlapping-trusted-root', 'run-root-changed') \
+                        else 'trusted-bootstrap-handle-required'
+                    if code == target:
+                        raise error
+                    return original_require(condition, code)
+                calls.clear()
+                with patch.object(helper, 'require', side_effect=reject_input):
+                    main_result('bootstrap_enter')
+                assert 'generate' not in calls
+            original_input_verify = helper.Handoff.verify
+            count = 0
+            def reject_input_verify(handle, *args, **kwargs):
+                global count
+                count += 1
+                if count == 3:  # prepare, entry, then bootstrap's input recheck.
+                    raise validator.Rejected('workspace-input-mutated')
+                return original_input_verify(handle, *args, **kwargs)
+            calls.clear()
+            with patch.object(helper.Handoff, 'verify', side_effect=reject_input_verify, autospec=True):
+                main_result('bootstrap_enter')
+            assert count == 3 and 'generate' not in calls
+            assert entry.REASONS == runtime.REASONS
+            for reason in (*sorted(entry.REASONS), 'CANARY_UNKNOWN', None, {},
+                           {'reason': 'metadata_prefetch'}):
+                error = runtime.GenerationFailure(reason)
+                with patch.object(runtime, 'generate_validated', side_effect=error):
+                    main_result('bootstrap_enter', reason if type(reason) is str and
+                                reason in entry.REASONS else 'internal')
+            # Even a forged/malformed reason attribute must pass the entry allowlist.
+            for reason in ('EXCEPTION_CANARY', '/private/absolute-canary', None, {},
+                           {'reason': 'npm_generation'}):
+                error = RuntimeError(canary)
+                error.bootstrap_reason = reason
+                with patch.object(runtime, 'generate_validated', side_effect=error):
+                    main_result('bootstrap_enter')
+            main_result()
+        assert seen == entry.STAGES
+
+# Unknown diagnostic state cannot be reflected into an Actions log.
+diagnostic = entry.Diagnostic()
+for invalid in ('EXCEPTION_CANARY\n::error::', '/private/absolute-canary', None, {}):
+    diagnostic.stage = invalid
+    assert diagnostic.code() == 'internal'
+
 # No independent production AI session or locked preparation is admitted.
 source = (repo / entry.HELPER).read_text()
 assert all(term not in source for term in ('production_session(', 'prepare_bootstrap(', 'shell=True',
                                          'git push', 'git commit', 'os.environ.copy'))
 assert source.count("with_name('product-npm-orchestrator.py')") == 1
-print('trusted-main bootstrap: source/ref gate, Git object data, canonical API, bounded export and failure cleanup passed')
+print('trusted-main bootstrap: source/ref gate, Git object data, canonical API, bounded diagnostic/export and failure cleanup passed')
 PY

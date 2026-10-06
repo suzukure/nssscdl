@@ -40,7 +40,7 @@ trusted_workflow = workflows + 'trusted-main-runtime-supply-proof.yml'
 bootstrap_entry = 'trusted-main-npm-bootstrap.py'
 bootstrap_workflow = workflows + 'trusted-main-npm-bootstrap.yml'
 # #792 admits only this reviewed secretless proof entry; AI wiring stays closed.
-bootstrap_entry_hash = 'e35393291ff80b682432ec1316ccb44844e3c352a5a10f45a494512f0343c0e6'
+bootstrap_entry_hash = '03fc093e98065c456279ee163d69135625fb2988951faeb6dea2902836b40b36'
 bootstrap_workflow_hash = 'cb32ed26911426828744519836df667b5f81f0359c18d80f2d91ff4d00a15068'
 session_symbols = ('production_session', 'workload_session', '_WorkloadSession')
 # Compose the packet filename so the preserved legacy packet fixture's exact

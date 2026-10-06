@@ -22,7 +22,7 @@ function command(operation, port) {
   return ['/runtime/npm/bin/npm-cli.js', '--ignore-scripts', '--package-lock=true',
     '--lockfile-version=3', '--audit=false', '--fund=false', '--update-notifier=false',
     '--workspaces=false', '--include=dev', '--include=optional', '--include=peer',
-    '--fetch-retries=0', '--fetch-timeout=5000', '--registry=' + registry(port),
+    '--fetch-retries=0', '--fetch-timeout=8000', '--registry=' + registry(port),
     '--userconfig=/project/empty.npmrc', '--globalconfig=/project/global.npmrc',
     '--cache=/project/cache', ...operations[operation]];
 }
@@ -48,8 +48,10 @@ function validateInvocation(args, expected, env) {
 
 function runNpm(operation, port, args = command(operation, port), env = { ...npmEnv }) {
   validateInvocation(args, command(operation, port), env);
+  // #814: config stays at 10s; lock resolution gets 30s within the outer 55s.
+  const timeout = operation === 'lock' ? 30000 : 10000;
   const result = cp.spawnSync('/runtime/node', args, {
-    cwd: '/project', env, encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL',
+    cwd: '/project', env, encoding: 'utf8', timeout, killSignal: 'SIGKILL',
   });
   assert(!result.error && result.signal === null && result.status === 0,
     'initial-lock npm operation failed: ' + operation);

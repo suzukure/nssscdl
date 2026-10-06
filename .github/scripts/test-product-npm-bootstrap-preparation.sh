@@ -323,7 +323,7 @@ def assert_no_caller(name, text):
     if name == 'trusted-main-npm-bootstrap.py':
         # #792's exact secretless proof entry only, never locked preparation.
         assert hashlib.sha256(text.encode()).hexdigest() == (
-            'e35393291ff80b682432ec1316ccb44844e3c352a5a10f45a494512f0343c0e6')
+            '03fc093e98065c456279ee163d69135625fb2988951faeb6dea2902836b40b36')
         return
     if name == 'trusted-main-runtime-supply-proof.py':
         # #747 reuses only the existing root API, never the Product consumer.

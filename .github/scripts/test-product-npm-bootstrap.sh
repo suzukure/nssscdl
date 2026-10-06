@@ -39,28 +39,53 @@ javascript = r"""
 const fs=require('node:fs'), assert=require('node:assert/strict'), {EventEmitter}=require('node:events');
 const path=process.argv[1];
 let calls=[];
+let rawBody, serving=false, activeTimer, timerDelays=[], responses=new Map(), inFlight=0;
 const socket={destroy(){}};
 const http={request(options){
+  assert.equal(inFlight,0,'prefetch requests must remain sequential');
   calls.push(options);const req=new EventEmitter();req.destroy=()=>{};
-  req.end=()=>process.nextTick(()=>req.emit('connect',{statusCode:200},socket,Buffer.alloc(0)));
+  req.end=()=>process.nextTick(()=>{
+    if(failure==='timeout')activeTimer.callback();
+    else req.emit('connect',{statusCode:200},socket,Buffer.alloc(0));
+  });
   return req;
+},createServer(handler){
+  assert(serving);const server=new EventEmitter();
+  server.listen=(port,host,ready)=>{assert.equal(port,0);assert.equal(host,'127.0.0.1');ready();};
+  server.address=()=>({port:23456});server.close=done=>{if(done)done();};
+  server.closeAllConnections=()=>{};return server;
 }};
 let payload, failure;
 const https={Agent:class{destroy(){}},get(options,callback){
   calls.push(options);assert.equal(options.hostname,'registry.npmjs.org');
   assert.equal(options.headers.Accept,'application/vnd.npm.install-v1+json');
+  assert.equal(options.headers['Accept-Encoding'],'identity');
   assert.equal(options.agent.createConnection(),socket);
-  const req=new EventEmitter();req.destroy=()=>{};
+  const req=new EventEmitter();let destroyed=false;inFlight++;
+  req.destroy=()=>{if(!destroyed)inFlight--;destroyed=true;};
   process.nextTick(()=>{
-    const response=new EventEmitter();response.statusCode=failure==='redirect'?302:200;
-    callback(response);response.emit('data',Buffer.from(JSON.stringify(payload)));response.emit('end');
+    const response=new EventEmitter();response.statusCode=failure==='redirect'?302:failure==='status'?503:200;
+    callback(response);
+    const record=serving?responses.get(decodeURIComponent(options.path.slice(1))):payload;
+    const body=rawBody || Buffer.from(failure==='json'?'invalid':JSON.stringify(record));
+    for(let offset=0;offset<body.length && !destroyed;offset+=65536){
+      response.emit('data',body.subarray(offset,offset+65536));
+    }
+    if(!destroyed)response.emit('end');
   });return req;
 }};
 const tls={connect(options){assert.deepEqual(options,{socket,servername:'registry.npmjs.org',rejectUnauthorized:true});return socket;}};
-const m={exports:{}};
-new Function('require','module',fs.readFileSync(path,'utf8'))(
-  name=>({'node:http':http,'node:https':https,'node:tls':tls}[name]||require(name)),m);
-const adapter=m.exports;
+const timers={setTimeout(callback,delay){
+  assert.equal(delay,5000);timerDelays.push(delay);return activeTimer={callback,cleared:false};
+},clearTimeout(timer){timer.cleared=true;}};
+function load(worker=process){
+  const m={exports:{}};
+  new Function('require','module','process','setTimeout','clearTimeout',fs.readFileSync(path,'utf8'))(
+    name=>({'node:http':http,'node:https':https,'node:tls':tls}[name]||require(name)),m,
+    worker,timers.setTimeout,timers.clearTimeout);
+  return m.exports;
+}
+const adapter=load();
 (async()=>{
   for(const name of ['example','@scope/example']){
     payload={name,versions:{'1.2.3':{name,version:'1.2.3',dist:{fixture:'unaltered'}}}};
@@ -83,8 +108,66 @@ const adapter=m.exports;
     await assert.rejects(adapter.metadata(12345,name),/official-registry-unavailable/);
     payload={name,versions:[]};
     await assert.rejects(adapter.metadata(12345,name),/official-registry-unavailable/);
-    failure='redirect';await assert.rejects(adapter.metadata(12345,name),/official-registry-unavailable/);failure=null;
+    payload={name,versions:{'1.2.3':{name,version:'1.2.3'}}};
+    for(failure of ['redirect','status','json','timeout']){
+      await assert.rejects(adapter.metadata(12345,name),error=>{
+        assert.equal(error.message,'official-registry-unavailable');return true;
+      });
+      assert(activeTimer.cleared || failure==='timeout');
+    }
+    failure=null;
   }
+  // #812: generated all-version install-v1 shape, not a live registry measurement.
+  const name='example', cap=32*1024*1024;
+  payload={name,'dist-tags':{latest:'1.4999.0'},versions:Object.fromEntries(
+    Array.from({length:5000},(_,i)=>{
+      const version='1.'+i+'.0';
+      return [version,{name,version,dependencies:{transitive:'^1.0.0'},
+        dist:{tarball:'https://registry.npmjs.org/example/-/example-'+version+'.tgz',
+          integrity:'sha512-'+'A'.repeat(86)+'=='}}];
+    }))};
+  assert(Buffer.byteLength(JSON.stringify(payload))>65536);
+  assert.deepEqual(await adapter.metadata(12345,name),payload);
+  const counts={metadata:0,denied:0};
+  const cold=()=>adapter.metadataHandler(12345,new Map(),counts);
+  await cold()({method:'GET',url:'/example'},{writeHead(code){assert.equal(code,200);},
+    end(body){assert.deepEqual(JSON.parse(body),payload);}});
+  // Valid JSON padded with whitespace tests received bytes, independently of JSON shape.
+  payload={name,versions:{'1.0.0':{name,version:'1.0.0'}}};
+  const encoded=Buffer.from(JSON.stringify(payload));
+  for(const size of [65537,cap-1,cap,cap+1]){
+    rawBody=Buffer.concat([encoded,Buffer.alloc(size-encoded.length,32)]);
+    if(size<=cap)assert.deepEqual(await adapter.metadata(12345,name),payload);
+    else await assert.rejects(adapter.metadata(12345,name),error=>{
+      assert.equal(error.message,'official-registry-unavailable');return true;
+    });
+    // The cold handler is the transitive path; it must apply the same byte limit.
+    await cold()({method:'GET',url:'/example'},{writeHead(code){assert.equal(code,size<=cap?200:502);},
+      end(body){if(size<=cap)assert.deepEqual(JSON.parse(body),payload);else assert.equal(body,undefined);}});
+  }
+  rawBody=null;
+  // Six exact top-level dependencies are fetched sequentially before the ready message.
+  const dependencies={'@cloudflare/vitest-plugin':'1.3.6',eslint:'10.10.0',typescript:'6.0.3',
+    'typescript-eslint':'8.71.0',vitest:'4.1.11',wrangler:'4.146.0'};
+  for(const [name,version] of Object.entries(dependencies)){
+    responses.set(name,{name,versions:{[version]:{name,version}}});
+  }
+  serving=true;calls=[];timerDelays=[];
+  const worker=new EventEmitter(), messages=[];
+  worker.send=(record,done)=>{messages.push(record);if(done)done();};
+  worker.disconnect=()=>{};worker.exit=()=>assert.fail('worker failed');
+  const serverAdapter=load(worker);
+  await serverAdapter.serve(12345,dependencies);
+  assert.deepEqual(messages,[{port:23456}]);
+  assert.deepEqual(calls.filter(c=>c.method!=='CONNECT').map(c=>c.path),
+    Object.keys(dependencies).map(adapter.metadataPath));
+  assert.equal(calls.length,12);assert.deepEqual(timerDelays,Array(6).fill(5000));
+  worker.emit('message','stop');assert.deepEqual(messages[1],{metadata:0,denied:0});
+  // A later prefetch failure never publishes readiness or retries.
+  responses.set('typescript',{name:'wrong',versions:{}});calls=[];messages.length=0;
+  await assert.rejects(serverAdapter.serve(12345,dependencies));
+  assert.deepEqual(messages,[]);assert.equal(calls.length,6);
+  serving=false;
   for(const name of ['../x','https://example.invalid','example/-/x.tgz','@scope/example/extra','x?token=y']){
     assert.throws(()=>adapter.metadata(12345,name));
   }
@@ -101,8 +184,8 @@ provenance = {**hashes, 'node_source': str(node), 'npm_source': str(npm),
 def rejected(call):
     try:
         call()
-    except (validator.Rejected, OSError, AssertionError, KeyError, TypeError, ValueError):
-        return
+    except (validator.Rejected, OSError, AssertionError, KeyError, TypeError, ValueError) as error:
+        return error
     raise AssertionError('unsafe bootstrap accepted')
 
 
@@ -177,6 +260,11 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-test-') as temporary:
         assert record['bootstrap_dependencies'] == validator.manifest_dependencies(
             validator.parse((root / 'runtime/manifest.json').read_bytes()))
         generation = root.parent
+        if fault in ('metadata-exit', 'npm-exit', 'candidate-exit', 'cleanup-exit'):
+            code = {'metadata-exit': 20, 'npm-exit': 21, 'candidate-exit': 22, 'cleanup-exit': 23}[fault]
+            raise AssertionError((code, 'STDOUT_CANARY package registry path', 'STDERR_CANARY env'))
+        if fault == 'unknown-exception':
+            raise RuntimeError('EXCEPTION_CANARY /private/path ENV_CANARY PACKAGE_CANARY REGISTRY_CANARY')
         if fault in ('unavailable', 'generation'):
             raise AssertionError('generation failed')
         if fault == 'unavailable-claim':
@@ -282,10 +370,25 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-test-') as temporary:
             assert helper.read_pair(workspace) == before and not list(trusted.iterdir())
             for fault in ('runtime-source', 'unavailable', 'unavailable-claim', 'generation', 'post-snapshot',
                           'malformed', 'source', 'integrity', 'mutation', 'manifest', 'runtime',
-                          'trusted-manifest', 'workspace', 'generation-cleanup', 'proxy-stop', 'proxy-cleanup', 'output-cleanup'):
+                          'trusted-manifest', 'workspace', 'generation-cleanup', 'proxy-stop', 'proxy-cleanup', 'output-cleanup',
+                          'metadata-exit', 'npm-exit', 'candidate-exit', 'cleanup-exit', 'unknown-exception'):
                 service_stopped = False
                 events.clear()
-                rejected(attempt)
+                error = rejected(attempt)
+                expected_reason = {'metadata-exit': 'metadata_prefetch', 'npm-exit': 'npm_generation',
+                    'candidate-exit': 'candidate_validation', 'cleanup-exit': 'generation_cleanup',
+                    'generation-cleanup': 'generation_cleanup', 'proxy-stop': 'generation_cleanup',
+                    'proxy-cleanup': 'generation_cleanup', 'runtime-source': 'internal',
+                    'unknown-exception': 'internal', 'unavailable': 'internal', 'generation': 'internal',
+                    'post-snapshot': 'candidate_validation', 'malformed': 'candidate_validation',
+                    'source': 'candidate_validation', 'integrity': 'candidate_validation',
+                    'mutation': 'candidate_validation', 'manifest': 'candidate_validation',
+                    'runtime': 'candidate_validation', 'trusted-manifest': 'candidate_validation',
+                    'unavailable-claim': 'candidate_validation'}
+                if fault in expected_reason:
+                    assert type(error) is runtime.GenerationFailure
+                    assert error.bootstrap_reason == expected_reason[fault], fault
+                    assert error.args == (expected_reason[fault],), fault
                 if fault == 'output-cleanup':
                     for path in trusted.iterdir():
                         real_rmtree(path)  # The mocked deletion failed; success must still be rejected.
@@ -324,6 +427,29 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-test-') as temporary:
                         rejected(handoff.verify)
                 rejected(handoff.verify)
             assert not list(trusted.iterdir())
+            # Cleanup-complete host/workspace/handoff rechecks remain fail-closed.
+            for target, name, injection in (
+                    (registry, 'snapshot', ['before', 'changed']),
+                    (runtime, 'workspace_state', ['before', 'changed'])):
+                service_stopped = False
+                with patch.object(target, name, side_effect=injection):
+                    error = rejected(attempt)
+                assert type(error) is runtime.GenerationFailure
+                assert error.bootstrap_reason == 'post_integrity'
+                assert not list(trusted.iterdir())
+            real_handoff = runtime.verify_handoff
+            for failure_index in (2, 3):
+                service_stopped = False
+                count = [0]
+                def verify_fault(*args):
+                    count[0] += 1
+                    if count[0] == failure_index:
+                        raise AssertionError('HANDOFF_CANARY /private/path')
+                    return real_handoff(*args)
+                with patch.object(runtime, 'verify_handoff', side_effect=verify_fault):
+                    error = rejected(attempt)
+                assert error.bootstrap_reason == 'post_integrity'
+                assert not list(trusted.iterdir())
             # Empty dependency root uses the same command and canonical acceptance.
             service_stopped = False
             (workspace / 'package.json').write_bytes(b'{"name":"empty","version":"1.0.0"}')
@@ -396,7 +522,9 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-official-workspace-') as work
          patch.object(runtime, 'load', side_effect=formal_load), \
          patch.object(formal_registry, 'start_proxy', side_effect=stopped_proxy):
         with helper.prepare(workspace, trusted, node, npm) as input_handle:
-            rejected(lambda: helper.bootstrap(input_handle, trusted).__enter__())
+            error = rejected(lambda: helper.bootstrap(input_handle, trusted).__enter__())
+            assert type(error) is runtime.GenerationFailure
+            assert error.bootstrap_reason == 'metadata_prefetch'
     assert not list(trusted.iterdir()) and helper.read_pair(workspace) == (official, None)
 print('bootstrap: official repeated generation/proxy unavailable/validated artifact/workspace unchanged/cleanup runtime passed')
 PY

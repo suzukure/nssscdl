@@ -16,6 +16,36 @@ WORKFLOW = '.github/workflows/trusted-main-npm-bootstrap.yml'
 HELPER = '.github/scripts/trusted-main-npm-bootstrap.py'
 MAX_SUMMARY = 32 * 1024
 ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'GIT_NO_REPLACE_OBJECTS': '1'}
+STAGES = frozenset(('internal', 'candidate_manifest', 'prepare_input', 'bootstrap_enter',
+                    'bootstrap_verify', 'bootstrap_cleanup', 'summary', 'export_verify',
+                    'export_cleanup', 'authority_recheck'))
+REASONS = frozenset(('metadata_prefetch', 'npm_generation', 'candidate_validation',
+                     'generation_cleanup', 'post_integrity', 'internal'))
+# Rejected codes unique to generated artifacts / lock validation in this entry.
+# Input/root checks (including codes shared with post-generation checks) are opaque.
+CANDIDATE_REJECTIONS = frozenset(('artifact-path-mismatch', 'source-identity-mismatch',
+    'artifact-identity-mismatch', 'unsafe-handoff-directory', 'unsafe-handoff-file',
+    'unexpected-handoff-artifact', 'provenance-mismatch', 'invalid-handoff-identity',
+    'handoff-hash-mismatch', 'handoff-mutated', 'unsafe-lock-path', 'invalid-locked-version',
+    'unsupported-lock-entry', 'locked-name-mismatch', 'non-registry-source',
+    'missing-integrity', 'invalid-integrity', 'invalid-locked-dependencies',
+    'non-registry-dependency', 'manifest-lock-mismatch', 'unsupported-lock-version',
+    'missing-lock-root', 'invalid-legacy-lock'))
+
+
+def failure_reason(error):
+    # Only the finite shared-runtime projection, never arbitrary nested reasons.
+    reason = vars(error).get('bootstrap_reason')
+    return reason if type(reason) is str and reason in REASONS else 'internal'
+
+
+class Diagnostic:
+    """Entry boundaries plus fixed shared-runtime failure reason (#795/#809)."""
+    def __init__(self):
+        self.stage = 'internal'
+
+    def code(self):
+        return self.stage if type(self.stage) is str and self.stage in STAGES else 'internal'
 
 
 def require(condition):
@@ -132,12 +162,15 @@ def verify_export(path, pair, summary, orchestrator):
     require(orchestrator.read_pair(path) == pair)
 
 
-def export_bootstrap(repo, sha, candidate, output, orchestrator):
+def export_bootstrap(repo, sha, candidate, output, orchestrator, diagnostic=None):
+    diagnostic = diagnostic if diagnostic is not None else Diagnostic()
+    diagnostic.stage = 'candidate_manifest'
     require(exact_sha(candidate) and not output.exists() and not output.is_symlink())
     candidate = candidate.lower()
     snapshot = candidate_manifest(repo, candidate, orchestrator.validator)
     published = False
     try:
+        diagnostic.stage = 'prepare_input'
         # Default /tmp, outside repository and RUNNER_TEMP, with disjoint private roots.
         with tempfile.TemporaryDirectory(prefix='trusted-npm-bootstrap-', dir='/tmp') as temporary:
             base = Path(temporary)
@@ -148,16 +181,23 @@ def export_bootstrap(repo, sha, candidate, output, orchestrator):
             (workspace / 'package.json').chmod(0o400)
             with orchestrator.prepare(workspace, trusted, Path('unused'), Path('unused')) as input_handle:
                 require(input_handle.verify()['status'] == 'bootstrap-required')
+                diagnostic.stage = 'bootstrap_enter'
                 with orchestrator.bootstrap(input_handle, trusted) as validated:
+                    diagnostic.stage = 'bootstrap_verify'
                     provenance = validated.verify()
                     pair = orchestrator.read_pair(Path(provenance['artifact_path']))
                     require(pair[0] == snapshot and pair[1] is not None)
+                    diagnostic.stage = 'summary'
                     summary = summary_record(candidate, sha, pair, provenance, orchestrator)
+                    diagnostic.stage = 'bootstrap_verify'
                     require(validated.verify() == provenance)
+                    diagnostic.stage = 'bootstrap_cleanup'
             # No handoff if any bootstrap/context cleanup raised or left artifacts.
             require(not list(trusted.iterdir()) and orchestrator.read_pair(workspace) == (snapshot, None))
         require(not base.exists())
+        diagnostic.stage = 'authority_recheck'
         authority(repo, sha)
+        diagnostic.stage = 'export_verify'
         # Staging is private and excluded from the upload's exact file list.
         with tempfile.TemporaryDirectory(prefix='npm-bootstrap-export-', dir=output.parent) as temporary:
             staged = Path(temporary) / 'artifact'
@@ -171,29 +211,43 @@ def export_bootstrap(repo, sha, candidate, output, orchestrator):
             staged.rename(output)
             published = True
             verify_export(output, pair, summary, orchestrator)
+            diagnostic.stage = 'export_cleanup'
         require(not Path(temporary).exists())
+        diagnostic.stage = 'authority_recheck'
         authority(repo, sha)
+        diagnostic.stage = 'export_verify'
         verify_export(output, pair, summary, orchestrator)
-    except BaseException:
+    except BaseException as error:
         if published:
             shutil.rmtree(output)
+        # Only unambiguous generated-candidate rejection codes are projected.
+        # Pre-generation and ambiguous rejections never imply service success.
+        if diagnostic.code() == 'bootstrap_enter' and isinstance(error, orchestrator.validator.Rejected):
+            code = error.args[0] if len(error.args) == 1 else None
+            error.bootstrap_reason = ('candidate_validation' if type(code) is str
+                                      and code in CANDIDATE_REJECTIONS else 'internal')
         raise
 
 
 def main():
     # Fixed environment-only interface; never reflect exception text or helper logs.
+    diagnostic = Diagnostic()
     try:
         with open(os.environ['GITHUB_EVENT_PATH']) as stream:
             sha, candidate = source_gate(os.environ, json.load(stream))
         repo = Path(__file__).absolute().parents[2]
+        diagnostic.stage = 'authority_recheck'
         authority(repo, sha)
+        diagnostic.stage = 'internal'
         output = Path(os.environ['RUNNER_TEMP']) / 'product-npm-bootstrap-artifact'
         with open(os.devnull, 'w') as sink, redirect_stdout(sink), redirect_stderr(sink):
-            export_bootstrap(repo, sha, candidate, output, load_orchestrator())
+            export_bootstrap(repo, sha, candidate, output, load_orchestrator(), diagnostic)
         print('trusted-main npm bootstrap: 検証済み artifact の生成完了')
         return 0
-    except Exception:
-        print('trusted-main npm bootstrap: 検証または cleanup が失敗しました')
+    except Exception as error:
+        reason = ' reason=' + failure_reason(error) if diagnostic.code() == 'bootstrap_enter' else ''
+        print('trusted-main npm bootstrap: 検証または cleanup が失敗しました'
+              + ' (stage=' + diagnostic.code() + reason + ')')
         return 1
 
 
