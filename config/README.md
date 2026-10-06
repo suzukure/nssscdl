@@ -17,7 +17,22 @@ Non-secret project configuration belongs here. Secrets and credentials must not 
 | Worker HTTP integration test | Cloudflareの現行integration harness、Production Worker buildを経由 |
 
 Node.jsをApplication Runtimeとして扱わない。旧 `@cloudflare/vitest-pool-workers` は新規採用しない。
-Packageのexact version、互換性、現行test APIは実際の依存取得時に確認し、npmが生成したlockfileで固定する。
+Packageのexact versionはrootの [`package.json`](../package.json) を正本とする。
+2026-10-06のIssue #638再開契約に従い、初期devDependenciesを次で固定する。
+
+| Package | Candidate version |
+| --- | --- |
+| `@cloudflare/vitest-plugin` | `1.3.6` |
+| `vitest` | `4.1.11` |
+| `wrangler` | `4.146.0` |
+| `typescript` | `6.0.3` |
+| `eslint` | `10.10.0` |
+| `typescript-eslint` | `8.71.0` |
+
+選定根拠は同再開契約の公開package / upstream照合記録とする。
+Plugin 1.3.6のVitest関連peer rangeは `^4.1.0`、typescript-eslintのTypeScript support rangeは
+`>=4.8.4 <6.1.0` で、ESLint 10もsupport range内の候補である。
+この段階では実際の依存取得・互換性検証・現行test API確認は未実施であり、lockfileでの固定は後段で行う。
 
 ## Bootstrapの実装状況
 
@@ -26,9 +41,17 @@ Product API、業務Command、Scheduled Handler、外部Provider呼出し、DB b
 このentrypointはProduct APIのError contractや提供済み機能を定義せず、Productionへdeployしない。
 
 依存packageを取得できない制限環境ではlockfileやCloudflareのAPIを推測して作らない。
-現時点では `package.json` / `package-lock.json`、TypeScript / Wrangler / lint / Vitest設定、
-local D1 harness、smoke testsは未実装であり、下記コマンドはまだ実行可能なnpm scriptではない。
+現時点ではroot `package.json` のcandidate manifestまで作成済みである。
+`private: true` とES modules形式、Node 24のtooling host条件を宣言し、依存はdevDependenciesに限定する。
+`package-lock.json`、TypeScript / Wrangler / lint / Vitest設定、local D1 harness、smoke testsは未実装である。
+下記コマンド名は既存契約を維持するが、npm scriptsは設定・harness実装後に定義する。
 本IssueのDone条件は未達で、後続CIが利用する前に残りのbootstrapとローカル検証を完了する必要がある。
+
+今回の停止点はcandidate manifest成立までとし、lockfileは手編集・推測生成しない。
+Workflowがcommit / pushしたexact 40-hex candidate SHAを#795へ渡し、
+[trusted-main npm bootstrapの既存手順](../.github/README.md#trusted-main-npm-bootstrap-792)で
+validated artifactを生成・照合してから、通常PR差分としてlockfileを取り込む。
+Artifact受領前に依存付きtestやD1 harnessを完成扱いしない。
 
 ## 標準コマンドの実装契約
 
