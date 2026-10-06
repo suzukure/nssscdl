@@ -124,6 +124,19 @@ Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、
 | `SERVICE_UNAVAILABLE` | 503 | Maintenance、環境identity / feature exposureのfail-closed、D1障害等。`later`。 |
 | `INTEGRITY_STATE_UNAVAILABLE` | 503 | 永続化済みInvariant違反等の整合性異常。`later`。 |
 
+#831の人間判断で確定した、Schedule Query HTTP統合に使用する利用者向け`message`は以下とする。既存code / HTTP / retry / 認可・fail-closedの意味は変更しない。
+
+| code | message |
+| --- | --- |
+| `INVALID_REQUEST` | 入力内容を確認してください。 |
+| `UNAUTHENTICATED` | 認証が必要です。 |
+| `FORBIDDEN` | この操作は利用できません。 |
+| `SCHEDULE_MONTH_NOT_AVAILABLE` | 指定された月の予定は利用できません。 |
+| `SERVICE_UNAVAILABLE` | 現在サービスを利用できません。時間をおいて再度お試しください。 |
+| `INTEGRITY_STATE_UNAVAILABLE` | 現在予定情報を利用できません。時間をおいて再度お試しください。 |
+
+404では未公開と不存在を区別せず、401ではSession失効理由を説明しない。503ではD1障害内容や永続化Invariantの具体的異常を説明しない。
+
 `FORBIDDEN`の利用者向け`message`は「この操作は利用できません。」とし、内部Role、lifecycle、Resourceの存在を説明しない。Security Suspensionや削除等でSessionが失効した場合は`UNAUTHENTICATED`を使い、403のために失効Sessionを有効扱いしない。Confirmではtokenと最新Snapshotが異なる場合に`RESERVATION_STATE_CHANGED`を使う。Preview時点から予約不可なら`RESERVATION_NOT_AVAILABLE`、開始済みなら`RESERVATION_WINDOW_CLOSED`を使う。認証・利用可否などのGuardを先に評価し、token一致だけで確定しない。409では安全に導出できるときだけ`error.latestSlot`（§4の本人向けSlot itemと同形）または再Previewに必要な本人向け情報を付けられる。これは完全な競合列挙を保証しない。SQL Error、Constraint / Table / Column名、内部Invariant code、他生徒の識別子・個人情報を返さない。内部診断は技術Log / Monitoringへ分離する。
 
 ## 9. UI / API FlowとTraceability

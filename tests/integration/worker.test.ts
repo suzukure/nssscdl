@@ -9,3 +9,11 @@ it("[bootstrap #638] integration: returns the unavailable response over HTTP", a
   expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
   expect(response.headers.get("cache-control")).toBe("no-store");
 });
+
+it("[#831 activation boundary] default Worker cannot reach the Slot View endpoint", async () => {
+  const response = await exports.default.fetch("https://nssscdl.test/api/me/schedule-months/2026-11");
+  expect(response.status).toBe(503);
+  expect(await response.text()).toBe("Application is not available.");
+  expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+});
