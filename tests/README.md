@@ -37,6 +37,16 @@ FKで保存できない参照欠落／Slot不一致は、test-only source adapte
 TC ID付きtestは引き続きAPI/read-model **partial evidence** とし、HTTP認可・UI・Production D1、
 System / Acceptance TC全体のPassを証明しない。
 
+`integration/schedule-month.test.ts` は#831のHTTP Adapter → test-only fake Guard → Serviceを
+Workers runtime内で直接構成し、月・Method・Query検証、毎RequestのGuard、本人ID、
+400 / 401 / 403 / 404 / 503の安全なenvelope / message / retryを検証する。
+`d1/schedule-month-http.test.ts` は同じHTTP Adapter / fake Guardと実D1 Adapterを既存isolated
+fixtureで構成し、成功wire、本人情報限定、4種View、安定順序、未公開／不存在、整合性異常と
+D1実行失敗のpartial evidenceを得る。既存TC IDを保持し、System / Acceptance TC全体のPassには算入しない。
+Production Session / Account / Role / access / lifecycle、UI、Production D1は証明範囲外。
+`integration/worker.test.ts` は実default WorkerへのHTTPで新Endpointにも既存503を返すことを確認する。
+Product moduleの統合とpublic activationの到達不能確認を同じ既存標準コマンドで実行する。
+
 #638の基盤smokeには `[bootstrap #638]` をtest nameに付け、業務TCのPass件数へ算入しない。
 業務を実装したテストでは、上記prefixに代えて対応する既存TC IDをtest nameへ保持する（例: `[TC-F-003-01] ...`）。
 未実装業務のTCを基盤smokeへ割り当てない。

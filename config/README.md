@@ -41,7 +41,7 @@ Phase B / Cではdependency/versionとlockfileのbytesを変更しない。
 ## Bootstrapの実装状況
 
 `src/index.ts` はES modules形式の最小entrypointで、すべてのRequestにHTTP 503を返す。
-Product API、業務Command、Scheduled Handler、外部Provider呼出し、DB bindingは未実装である。
+Product APIとDB bindingはentrypointへ未接続。業務Command、Scheduled Handler、外部Provider呼出しは未実装である。
 このentrypointはProduct APIのError contractや提供済み機能を定義せず、Productionへdeployしない。
 
 Phase Bではroot `package.json` とvalidated `package-lock.json`、下記設定、Worker smoke testsを実装済みである。
