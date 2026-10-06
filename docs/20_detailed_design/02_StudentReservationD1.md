@@ -207,7 +207,7 @@ Cloudflare D1実環境でのFK enforcement / `PRAGMA foreign_key_check`、Server
 | 設計 | 要求・基本設計 | 確認観点 |
 | --- | --- | --- |
 | §2〜4 Slot / Preview / 履歴 | REQ-001 / 002 / 003 / 005、BR-015 / 017 / 050〜059 / 066〜068、AC-001 / 002 / 003 / 005 | 公開・占有View、本人月間分類、取消履歴と安定Page |
-| §2.1・§3〜4 管理占有詳細参照 | BR-017 / 067、REQ-001 / 002、AC-001-002〜003、`02_DataModel.md` §4.6 | #834 isolated D1 fixtureでvalid / missing / wrong / both-detail、PK / FK、隔離を検証。既存TC全体のSystem / Acceptance Passとはしない |
+| §2.1・§3〜4 管理占有詳細参照 | BR-017 / 067、REQ-001 / 002、AC-001-002〜003、`02_DataModel.md` §4.6 | #834 isolated D1 fixtureでvalid / missing / wrong / both-detail、PK / FK、隔離を検証。#830の`tests/d1/schedule-query.test.ts`で実Adapter / Serviceの未来fail-closed・開始済みViewも検証する。既存TC全体のSystem / Acceptance Passとはしない |
 | §5 原子的Confirm | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
 | §2 設定主体・派生変更監査 | BR-056 / 058 / 132、REQ-940、AC-940-001〜002、`04_ReservationModel.md` §12.1、`05_BookingAndConcurrency.md` §12.2 | `updated_by` mapping、予約成立Auditから全再分類before / afterを追跡 |
 | §1・§3・§5 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | §1の認証Guard接続・隔離試験fixture境界を参照し、同一Transactionで最新認証状態を再照合 |

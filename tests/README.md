@@ -16,7 +16,7 @@ HTTP認可・D1整合性検査の実統合およびUIはこのunit testの証明
 read sliceだけを保持し、`students(id)`はtest-only FK parentとする。
 月・Slot・Reservation・OccupancyのFK / CHECK / UNIQUE、read index、`PRAGMA foreign_key_check`と
 同じIDを使う別test file間の隔離を確認する。Test nameの `[#829 D1 fixture]` はSchema制約の証拠であり、
-業務TC全体のPassへ算入しない。Production auth / migration、Repository Adapterは含まない。
+業務TC全体のPassへ算入しない。Production auth / migrationは含まない。Adapter検証は下記#830のtestを参照する。
 既存bootstrap smokeも引き続き同じ標準D1コマンドで実行する。
 
 `d1/management-occupancy.test.ts` / `d1/management-occupancy-isolation.test.ts` は#834のisolated詳細参照検証。
@@ -25,7 +25,17 @@ read sliceだけを保持し、`students(id)`はtest-only FK parentとする。
 `d1/management-occupancy-fixture.ts`のIntegrity Queryは同節のSQLと一致し、3種占有ごとの全4詳細組合せ、
 有効な詳細、orphan FK拒否、同種重複拒否、confirmed参照条件、FK確認と別file間の隔離を検証する。
 `[#834 D1 fixture]`はSchema / Integrity Queryの証拠であり、System / Acceptance TC全体のPassへ算入しない。
-未来Slotのerror / 開始済みSlotのViewへのD1実統合は#830に残し、Production有効化・管理Commandは含まない。
+未来Slotのerror / 開始済みSlotのViewへのAdapter統合は下記#830で検証し、Production有効化・管理Commandは含まない。
+
+`d1/schedule-query.test.ts` は#830の実Adapterと#828 Serviceのcomposition検証。
+既存#829 / #834 fixtureに、#611 §2の既定DDLと一致するtest-only
+`fixtures/d1/migrations/0008_reservation_read_integrity.sql`（欠席・回数除外・分類Override）を追加する。
+公開月、安定順序、4種View、本人情報だけの投影、未来不整合のfail-closedと開始済みViewを確認する。
+FKで保存できない参照欠落／Slot不一致は、test-only source adapterでReservation read sourceを変更し、
+実Queryをlocal D1で実行する破損read fixtureとして検証する（FK無効化なし）。
+`unit/d1-schedule-query.test.ts` はDB実行失敗の安全な抽象化と単一statement／bindを確認する。
+TC ID付きtestは引き続きAPI/read-model **partial evidence** とし、HTTP認可・UI・Production D1、
+System / Acceptance TC全体のPassを証明しない。
 
 #638の基盤smokeには `[bootstrap #638]` をtest nameに付け、業務TCのPass件数へ算入しない。
 業務を実装したテストでは、上記prefixに代えて対応する既存TC IDをtest nameへ保持する（例: `[TC-F-003-01] ...`）。
