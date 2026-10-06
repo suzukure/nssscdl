@@ -5,6 +5,27 @@ skinparam linetype ortho
 
 entity students {
   * id : TEXT PK
+  * lifecycle : TEXT (active / deleted)
+  deleted_at : INTEGER
+}
+entity student_security_access {
+  * student_id : TEXT PK, FK
+  * access_state : TEXT (active / suspended)
+  * updated_at : INTEGER
+}
+entity student_accounts {
+  * id : TEXT PK
+  * student_id : TEXT UNIQUE, FK
+  * role_scope : TEXT (student)
+}
+entity student_sessions {
+  * id : TEXT PK
+  * account_id : TEXT FK
+  * role_scope : TEXT (student)
+  * token_hash : TEXT UNIQUE
+  * created_at : INTEGER
+  * expires_at : INTEGER
+  revoked_at : INTEGER
 }
 entity schedule_months {
   * id : TEXT PK
@@ -70,6 +91,9 @@ entity business_audit_logs {
   * target_id : TEXT
 }
 
+students ||--|| student_security_access
+students ||--o| student_accounts
+student_accounts ||--o{ student_sessions : "(account_id, role_scope) FK"
 students ||--o{ student_reservations
 students ||--o{ student_monthly_lesson_configs
 students ||--o{ notification_intents
@@ -86,6 +110,12 @@ student_reservations ||--o| reservation_classification_overrides
 student_reservations ||--o{ notification_intents
 notification_intents ||--o| notification_outbox
 
+note bottom of student_sessions
+  student_session_access_v1 is the shared guard view (02 section 8).
+  Request and atomic Write recheck current session / access / lifecycle.
+  Suspension / deletion revoke all Student sessions in the same batch.
+  Clearing suspension never clears revoked_at. No raw token stored.
+end note
 note bottom of business_audit_logs
   Actor / target IDs reference a polymorphic audit subject.
   Confirm inserts one success row in the same batch.

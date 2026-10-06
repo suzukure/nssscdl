@@ -9,4 +9,4 @@
 ## 文書一覧
 
 - [01_StudentReservationApplication.md](01_StudentReservationApplication.md) — 単一予約のApplication Component、生徒向け4 APIのwire / View Model / Error、画面Flow。C4 Level 3とSequenceの正本は `../diagrams/plantuml/c4-student-reservation-components.puml` および `../diagrams/plantuml/student-reservation-sequence.puml`。
-- [02_StudentReservationD1.md](02_StudentReservationD1.md) — 同じ価値単位のD1 Table / Index、Migration順序、read set、Confirm Transaction Guardと通知pickup境界。物理ERの正本は `../diagrams/plantuml/student-reservation-d1-er.puml`。
+- [02_StudentReservationD1.md](02_StudentReservationD1.md) — 同じ価値単位のD1 Table / Index、Migration順序、read set、Confirm Transaction Guardと通知pickup境界。§8は#636のStudent lifecycle / SecurityAccess / Account / opaque Session、共有View / write predicate、失効・発行・fixture境界とactivation Gateの正本。物理ERの正本は `../diagrams/plantuml/student-reservation-d1-er.puml`。

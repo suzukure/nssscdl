@@ -48,8 +48,8 @@ UI --> Student: Show time, classification and all changes
 Student -> UI: Confirm reviewed preview
 UI -> HTTP: POST /api/me/reservations {slotId, expectedStateToken}
 HTTP -> Guard: Validate this request
-Guard --> HTTP: Resolved student
-HTTP -> Confirm: Confirm for student
+Guard --> HTTP: Resolved student + server-internal session context
+HTTP -> Confirm: Confirm for student with internal session context
 Confirm -> Repo: Read and guard latest committed state
 Repo -> D1: Primary read set + server time T0
 D1 --> Repo: State
@@ -60,15 +60,19 @@ alt token matches and all guards hold
   Confirm -> Audit: Include booking audit obligation
   Confirm -> Intent: Include confirmation and needed change intents
   Confirm -> Repo: Commit reservation, occupancy, reclassification, audit, intents
-  Repo -> D1: batch: capture T, assert read set and guards
+  Repo -> D1: batch: capture T, assert read set and Student Write predicate
   Repo -> D1: insert reservation / occupancy, reclassify
-  Repo -> D1: insert audit / intents / outbox; final time guard
+  Repo -> D1: insert audit / intents / outbox; final time and session guard
   D1 --> Repo: Committed result
   Repo --> Confirm: Confirmed state
   Confirm -> Intent: Schedule delivery kick after commit (no provider wait)
   Confirm --> HTTP: Reservation, slot and classification changes
   HTTP --> UI: 201 JSON; no delivery result
   UI --> Student: Show confirmed business state
+else session / authorization fails
+  Repo -> D1: Rollback; fresh Primary session lookup
+  Confirm --> HTTP: 401 / 403; lookup failure is 503
+  HTTP --> UI: Safe error without latest reservation / slot details
 else state changed or a booking guard fails
   Repo -> D1: Safe Primary reread after guard failure
   Confirm --> HTTP: 409 safe application error
