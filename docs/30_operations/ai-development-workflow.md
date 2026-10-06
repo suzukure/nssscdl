@@ -39,6 +39,10 @@ formal Claude reviewがまだない初回reviewでは、trusted conversation全�
 
 本節は新しい仕事をActiveへ入れるかを判断する上流の運用契約である。admissionしたIssueには、既存の[Issueの分割単位](#issueの分割単位)と、AI開発環境Issueの場合は #549 由来の[semantic/runtime scope確認](#ai開発環境issueのruntime-scope確認)を適用する。これらの分割基準を置き換えない。
 
+実装・admission前に、変更が消費する外部連携 / runtime / handoffの直接関連条件として、対象入力の特性・規模、外部応答の性質、処理順序、サイズ / 時間上限の根拠を既存Issueの判断へ短く記録する。根拠の照合は[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)に従い、全repo探索や全Issueへの形式的な項目追加は要求しない。
+
+credential隔離、source / integrity、権限等の安全条件と、サイズ / 時間等の運用上限の目的・根拠を区別して評価する。運用上限にも安全目的がある場合は維持すべき安全条件を明記し、運用という理由で緩和しない。変更前に直接関連するcaller / helperを照合し、逐次処理の累積時間、内側deadlineに対する外側margin、cleanup時間の整合を確認する。具体値を推測で決めず、確認できない範囲は未検証とする。
+
 ### findingの分類とBlocking判定
 
 作業中に新しいfindingを発見したら、現在契約と未対応の影響を照合し、少なくとも次のQ1〜Q3を確認する。
@@ -98,6 +102,8 @@ Blockerのみ、現在Issueを停止した上で例外的に先行対応でき�
 
 Follow-upやIdeaは発見時点で優先順位を深掘りせず、現在Issueの完了へ復帰する。現在のIssue / 価値単位 / milestone等の区切りで、未着手候補の必要性・価値・依存・scope・Doneをfresh評価し、次にadmissionする対象を選ぶ。発見順、Issue番号順、Claude / Astra等の指摘順を着手順の根拠にしない。
 
+親Issue / 価値単位の自然なcheckpointでは、子Issue、CI往復、再レビュー、残る不確実性と確認できる費用 / 人間負担を成果全体として短く見直し、継続 / 単純化 / 保留を判断する。unknown費用を0とせず、固定回数の自動停止、新台帳、定期job、毎PRの横断監査は追加しない。
+
 ### Claude Reviewと横断監査への適用
 
 Claudeの `blocking_findings` は現PRのmerge gateであり、既存契約どおり対応する。対応の責務境界は本節の分類で確認し、独立したBlockerを無断で現Issueへ取り込まない。`non_blocking_findings` は現PRのDoneへ自動追加せず、Follow-up / Idea候補として人間判断または既存契約に従って扱う。非Blockingという理由だけで必ずIssue化せず、指摘されたことを同じPRで直す自動拡張の根拠にしない。承認後の延期判断・記録・再レビュー条件は[承認後の非Blocking改善](#承認後の非blocking改善)を維持する。
@@ -153,6 +159,8 @@ AI開発環境Issueを通常の `/codex develop` へ投入する前に、上記�
 | C0 | same target mode / same trust boundaryでlatest main上formal proof済み。 |
 | C1 | pure / dormant / synthetic / prepared等のnarrower modeではproof済みだが、target modeでは未実証。 |
 | C2 | prerequisite Contract自体が未定義、または着手前に新しいcontract decisionが必要。 |
+
+C0 / C1の判断では、same target mode / trust boundaryに加えて、既存証拠が対象入力の特性・規模をどこまで裏付けるかを明示する。小fixtureの安全性proofを実入力全体のcompatibility / performance proofへ一般化しない。Cの機械値・閾値を変更せず、全変更への負荷試験、全既存fixtureの改修、prepared変更への普遍的な実統合proofを新しいDoneとして追加しない。
 
 Issue自身がContractだけを定義/proofする独立単位は、その新規Contractを理由にC2扱いにしない。消費するcritical cross-boundary prerequisite Contractがなければ、Green条件上はC0相当とする。そのContractを同じIssueで即downstream consumerまで消費する場合は、下記の強制分割候補として扱う。
 
@@ -225,6 +233,10 @@ Issue #125で、細かな関連修正ごとのClaude呼び出しを減らすた�
 
 Issueを確定する際は、対象ファイル・節・IDに加え、同じ判断に伴う参照、用語、追跡表、図、検証範囲を洗い出して本文へ記録する。既存の別Issueを無断で取り込まず、範囲を広げる場合は人間の決定を先にIssue本文へ反映する。
 
+同一原因・確定scopeのcaller / helper / fixture / docs修正は不可分なcoherent changeとして揃えてからreviewを要求する。集約時も既存の分割条件、diff上限、scope decisionを維持し、診断変更の整理は[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)を参照する。
+
+今後変更する外部連携 / handoff / cleanup等では、failure時に既存log / exit code / summaryから次の判断が可能か確認する。不足する場合だけ、確定scopeで必要最小の非機密な固定code等を実装と一緒に検討し、安全なraw出力抑制を維持する。実装 / fixture追加は当該実装IssueでWAC / scope判断し、全コードへの遡及diagnostic追加、網羅taxonomy、汎用基盤は作らない。
+
 ### Issue本文におけるcurrent implementation contract
 
 [Work Admission Control](#work-admission-control)に従い、投入後のDoD拡張と新規findingの着手を制御する。
@@ -290,6 +302,8 @@ Project Sources、Project instructions、チャット分割条件、モデル選
 Codexはスコープ外影響を発見した場合、その安全性・正確性・要求整合性への影響を調査して報告する。Claudeは、対応を後継Issueへ分離する妥当性と、その後継Issueを確認する。後継Issueの存在だけでblockingを解除してはならない。
 
 後継対応へ分離できるのは、元PRを先にマージしても安全性・正確性・要求整合性を損なわない場合に限る。確定した決定はclosing Issue本文を正本とし、残るスコープ外影響、今回のPRを先にマージできる理由、後継Issue番号、後継Issueの変更範囲・完了条件、および対応時期または順序を記録する。PR本文にはその要約と元Issue・後継Issueへのリンクを記載する。Issueコメントで決定した内容も、確定後はclosing Issue本文へ反映する。
+
+既知riskを安全に後継へ送る場合は、この記録へ問題が顕在化する利用条件と、利用前に再評価する責任先 / 時点を含める。Issue番号の存在だけで解決済みと扱わず、現在mergeが安全かの判断を維持する。新しいfollow-up runtime gateや全non-blockingの強制Issue化は導入しない。
 
 IssueとPRの新規記録では `## スコープ外影響と後継Issue` 見出しを使用する。各same-repository後継Issueは `- 後継Issue: #<number>` の1行で明示し、対象がなければ `none` とする。review context生成はPR本文とclosing Issue本文のこの定型欄と、既存の英語形式 `## Scope-out impact and follow-up` / `- Follow-up Issue: #<number>` だけを読み、closing Issueと重複しない後継Issueを再帰せずに取得する。PRとclosing Issueから抽出した異なる後継Issueの合計に適用する上限値の正本は `build-review-context.sh` の `follow_up_issue_limit` であり、現在は5件である。6件以上が抽出された場合は切り捨てずreview context生成をfail-closedで停止する。後継Issueを整理・分割するか、人間レビューへ切り替えて復旧する。後継Issueの番号・タイトル・state・本文はuntrusted data境界内のsnapshotとしてClaudeへ渡す。定型欄外の通常の番号参照は後継Issueとして扱わない。明示された後継Issueを取得できない場合も、存在しないと推測せずreview context生成をfail-closedで停止する。
 
