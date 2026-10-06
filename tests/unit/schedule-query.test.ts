@@ -64,6 +64,16 @@ describe("[TC-F-001-01 / TC-F-002-02] API/read-model partial evidence: Slot View
     expect(result.slots[0]).not.toHaveProperty("reservationId");
   });
 
+  it.each([
+    ["admin_hold", { occupancies: [occupancy("admin_hold")] }],
+    ["group_lesson", { occupancies: [occupancy("group_lesson")] }],
+    ["own reservation", { occupancies: [occupancy()], reservations: [reservation()] }],
+    ["other student's reservation", { occupancies: [occupancy()], reservations: [reservation({ studentId: "other-student" })] }],
+  ] satisfies [string, Partial<SlotReadState>][])("returns disabled + valid %s as unavailable without reservation fields", async (_name, overrides) => {
+    const result = await service(month([slot({ ...overrides, availability: "disabled" })])).execute("2026-11", studentId);
+    expect(result.slots[0]).toEqual({ slotId: "slot-1", startsAt: "2026-11-01T10:00:00+09:00", endsAt: "2026-11-01T11:30:00+09:00", view: "unavailable" });
+  });
+
   it.each([0, 1, 90 * 60])("returns started Slots as unavailable at start + %s seconds", (offset) => {
     for (const input of [slot(), slot({ occupancies: [occupancy()], reservations: [reservation()] }), slot({ occupancies: [occupancy("group_lesson")] })]) {
       const result = mapSlotView(input, studentId, start + offset);
@@ -105,13 +115,14 @@ describe("#828 BR-067: future integrity fail-closed", () => {
     ["wrong reservation ID", { occupancies: [{ ...occupancy(), reservationId: "wrong-reservation" }], reservations: [reservation()] }],
     ["duplicate occupancy", { occupancies: [occupancy("admin_hold"), occupancy("group_lesson")] }],
     ["duplicate confirmed reservations", { occupancies: [occupancy()], reservations: [reservation(), reservation({ reservationId: "second-reservation" })] }],
-    ["disabled occupied Slot", { availability: "disabled", occupancies: [occupancy("admin_hold")] }],
     ["management occupancy with reservation reference", { occupancies: [{ ...occupancy("group_lesson"), reservationId: "reservation-me" }] }],
     ["management occupancy with orphan reservation", { occupancies: [occupancy("admin_hold")], reservations: [reservation()] }],
     ["missing reservation owner", { occupancies: [occupancy()], reservations: [reservation({ studentId: "" })] }],
   ];
   it.each(cases)("rejects %s without returning a partial month", async (_name, overrides) => {
-    await expect(service(month([slot(), slot(overrides)])).execute("2026-11", studentId)).rejects.toMatchObject({ code: "INTEGRITY_STATE_UNAVAILABLE", message: "INTEGRITY_STATE_UNAVAILABLE" });
+    for (const availability of ["enabled", "disabled"] as const) {
+      await expect(service(month([slot(), slot({ ...overrides, availability })])).execute("2026-11", studentId)).rejects.toMatchObject({ code: "INTEGRITY_STATE_UNAVAILABLE", message: "INTEGRITY_STATE_UNAVAILABLE" });
+    }
   });
   it("allows cancelled history with no current occupancy", () => {
     expect(mapSlotView(slot({ reservations: [reservation({ status: "student_cancelled", classification: null })] }), studentId, start - 1).view).toBe("bookable");

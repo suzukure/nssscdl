@@ -108,7 +108,7 @@ function assertFutureIntegrity(slot: SlotReadState): void {
     if (confirmed.length !== 0) integrityFailure();
     return;
   }
-  if (slot.availability !== "enabled" || occupancy.slotId !== slot.slotId) integrityFailure();
+  if (occupancy.slotId !== slot.slotId) integrityFailure();
   if (occupancy.type === "student_reservation") {
     const references = slot.reservations.filter((reservation) => reservation.reservationId === occupancy.reservationId);
     const reservation = references[0];
