@@ -53,9 +53,12 @@ async function directDeny(input) {
   });
 }
 
-function workerReady(child) {
+function workerReady(child, dependencyCount = 1) {
+  assert(Number.isInteger(dependencyCount) && dependencyCount >= 0);
+  // #812: sequential upstream requests retain 5s each; the outer envelope stays bounded.
+  const readinessMs = Math.max(8000, Math.min(31000, dependencyCount * 5000 + 1000));
   return new Promise((resolve, reject) => {
-    const deadline = setTimeout(() => reject(Error('adapter readiness timeout')), 8000);
+    const deadline = setTimeout(() => reject(Error('adapter readiness timeout')), readinessMs);
     const exited = () => { clearTimeout(deadline); reject(Error('official-registry-unavailable')); };
     child.once('exit', exited);
     child.once('error', exited);
@@ -130,7 +133,8 @@ async function probe(input) {
   let readinessFailed = false;
   let failureCode = 20;
   try {
-    try { port = await workerReady(child); }
+    try { port = await workerReady(child, input.bootstrap === true ?
+      Object.keys(input.bootstrap_dependencies).length : 1); }
     catch (error) {
       readinessFailed = true;
       if (input.expect_unavailable !== true) throw new ProbeFailure(20);

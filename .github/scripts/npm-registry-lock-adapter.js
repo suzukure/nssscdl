@@ -5,6 +5,7 @@ const https = require('node:https');
 const tls = require('node:tls');
 const assert = require('node:assert/strict');
 const host = 'registry.npmjs.org';
+const metadataByteLimit = 32 * 1024 * 1024; // #812: received bytes with Accept-Encoding: identity.
 
 function metadataPath(name) {
   // HTTP route boundary only; manifest/source policy remains #645's validator.
@@ -41,7 +42,7 @@ function metadata(proxyPort, name) {
         const chunks = [];
         result.on('data', chunk => {
           size += chunk.length;
-          if (size > 65536) finish(true); else chunks.push(chunk);
+          if (size > metadataByteLimit) finish(true); else chunks.push(chunk);
         });
         result.on('error', () => finish(true));
         result.on('end', () => {

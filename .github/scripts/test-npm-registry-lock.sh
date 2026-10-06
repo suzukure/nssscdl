@@ -68,7 +68,7 @@ async function adapterTests() {
         if (fault==='tls-error') return request.emit('error',Error());
         const response = new EventEmitter(); response.statusCode = fault==='redirect'?302:200;
         callback(response);
-        const body = fault==='body-large'?'x'.repeat(65537):fault==='body-json'?'invalid':
+        const body = fault==='body-large'?'x'.repeat(32*1024*1024+1):fault==='body-json'?'invalid':
           JSON.stringify({name:fault==='identity'?'other':'is-number',version:'7.0.0',dist:{fixture:'unchanged'}});
         response.emit('data',Buffer.from(body)); response.emit('end');
       });
@@ -95,10 +95,11 @@ async function integrationTests() {
   const project=root+'/project', unit='npm-filesystem-probe-'+token+'.service';
   const digest=crypto.createHash('sha256').update(fs.readFileSync(project+'/package.json')).digest('hex');
   const input={token,unit,manifest_hash:digest,proxy_uid:1000,proxy_port:12345,address:'192.0.2.1',direct_port:12346,hidden:{}};
-  let fault='', calls=[], workers=0, udpCalls=0, kills=0, stops=0;
+  let fault='', calls=[], workers=0, udpCalls=0, kills=0, stops=0, readinessDelays=[];
   const readinessFaults=['readiness-exit','readiness-kill','readiness-unconfirmed'];
   const timers={setTimeout(callback,delay){
-    if(readinessFaults.includes(fault) && [8000,3000].includes(delay))
+    if([8000,11000,16000,21000,26000,31000].includes(delay))readinessDelays.push(delay);
+    if(readinessFaults.includes(fault) && [8000,31000,3000].includes(delay))
       return {immediate:setImmediate(callback)};
     return setTimeout(callback,delay);
   },clearTimeout(timer){if(timer?.immediate)clearImmediate(timer.immediate);else clearTimeout(timer);}};
@@ -187,6 +188,14 @@ async function integrationTests() {
   for(const error of [Error('EXCEPTION_CANARY'), {code:20}, {code:'20'}, null]) {
     assert.equal(probe.failureExitCode(error),1);
   }
+  for(const [count,delay] of [[0,8000],[1,8000],[2,11000],[3,16000],[4,21000],
+                            [5,26000],[6,31000],[7,31000],[100,31000]]){
+    readinessDelays=[];
+    const child=new EventEmitter();
+    const ready=probe.workerReady(child,count);
+    child.emit('message',{port:23456});
+    assert.equal(await ready,23456);assert.deepEqual(readinessDelays,[delay]);
+  }
   // Run the real workerReady deadline and stopWorker, with an accelerated clock.
   // IPC stop may be ignored before metadata prefetch registers its handler.
   for(fault of readinessFaults){
@@ -209,10 +218,27 @@ async function integrationTests() {
   input.bootstrap=true;input.bootstrap_dependencies={'is-number':'7.0.0'};
   input.manifest_hash=crypto.createHash('sha256').update(changed).digest('hex');
   try {
-    const evidence=await probe.probe(input);
-    assert.equal(evidence.manifest_hash,input.manifest_hash);
-    assert.deepEqual(evidence.command,initial.command('lock',23456));
-    assert.equal(calls.length,2);assert.equal(evidence.tarball_requests,0);
+    for(const count of [1,6,7]){
+      input.bootstrap_dependencies=Object.fromEntries(Array.from({length:count},(_,i)=>['example-'+i,'1.0.0']));
+      const bytes=Buffer.from(JSON.stringify({...JSON.parse(changed),dependencies:input.bootstrap_dependencies}));
+      fs.writeFileSync(project+'/package.json',bytes);fs.writeFileSync(root+'/runtime/manifest.json',bytes);
+      input.manifest_hash=crypto.createHash('sha256').update(bytes).digest('hex');
+      calls=[];readinessDelays=[];
+      const evidence=await probe.probe(input);
+      assert.equal(evidence.manifest_hash,input.manifest_hash);
+      assert.deepEqual(evidence.command,initial.command('lock',23456));
+      assert.equal(calls.length,2);assert.equal(evidence.tarball_requests,0);
+      assert.deepEqual(readinessDelays,[count===1?8000:31000]);
+      fs.rmSync(project+'/package-lock.json',{force:true});
+    }
+    for(fault of readinessFaults){
+      calls=[];readinessDelays=[];kills=stops=0;
+      await assert.rejects(probe.probe(input),error=>{
+        assert.equal(probe.failureExitCode(error),fault==='readiness-unconfirmed'?23:20);return true;
+      });
+      assert.deepEqual(readinessDelays,[31000]);assert.equal(calls.length,0);
+      assert.equal(stops,1);assert.equal(kills,fault==='readiness-exit'?0:1);
+    }
   } finally {
     fs.writeFileSync(project+'/package.json',original);fs.writeFileSync(root+'/runtime/manifest.json',original);
     fs.rmSync(project+'/package-lock.json',{force:true});
