@@ -24,8 +24,8 @@ Net Shogi School向けのスケジュールシステムです。
 
 技術選定とbootstrapの実装状況は [config/README.md](config/README.md) を正本とする。
 Node.js 24はbuild / test tooling hostであり、ApplicationのRuntimeはCloudflare Workersである。
-現在は最小Worker entrypointとroot `package.json` のcandidate manifestまで作成済み。
-#795のvalidated lockfile artifact受領と残りのbootstrap実装を待つ段階で、再現可能なnpm install / build / test基盤は未完了。
+Phase Bとしてvalidated lockfile、TypeScript / Wrangler / ESLint / Vitest設定、Worker unit / HTTP integration smokeを実装済み。
+標準コマンドと検証条件は上記正本を参照する。依存付き実行のformal proofは#639、local D1 harnessはPhase Cに残るため、#638全体は未完了。
 
 ## 文書のライフサイクル
 

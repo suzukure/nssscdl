@@ -14,13 +14,13 @@ Non-secret project configuration belongs here. Secrets and credentials must not 
 | Package manager / lockfile | npm / `package-lock.json` |
 | Worker bundle / local D1 CLI | Wrangler |
 | Unit / Worker-runtime test | Vitest / `@cloudflare/vitest-plugin` |
-| Worker HTTP integration test | Cloudflareの現行integration harness、Production Worker buildを経由 |
+| Worker HTTP integration test | `cloudflare:workers` の `exports.default.fetch()` によるWorkers runtimeのHTTP境界 |
 
 Node.jsをApplication Runtimeとして扱わない。旧 `@cloudflare/vitest-pool-workers` は新規採用しない。
 Packageのexact versionはrootの [`package.json`](../package.json) を正本とする。
 2026-10-06のIssue #638再開契約に従い、初期devDependenciesを次で固定する。
 
-| Package | Candidate version |
+| Package | Exact version |
 | --- | --- |
 | `@cloudflare/vitest-plugin` | `1.3.6` |
 | `vitest` | `4.1.11` |
@@ -32,7 +32,10 @@ Packageのexact versionはrootの [`package.json`](../package.json) を正本と
 選定根拠は同再開契約の公開package / upstream照合記録とする。
 Plugin 1.3.6のVitest関連peer rangeは `^4.1.0`、typescript-eslintのTypeScript support rangeは
 `>=4.8.4 <6.1.0` で、ESLint 10もsupport range内の候補である。
-この段階では実際の依存取得・互換性検証・現行test API確認は未実施であり、lockfileでの固定は後段で行う。
+現行test APIは2026-10-06のIssue本文 `Phase B final implementation authority` の公式資料照合を根拠とする。
+依存graphは#795のvalidated artifactから採用したroot `package-lock.json` で固定する。
+LockfileのSHA-256は `63bf449c44e83296d705eb20add21e3ac5b0228a698e75f94a69c2f9c381a703`。
+Phase Bではdependency/versionとlockfileのbytesを変更しない。
 
 ## Bootstrapの実装状況
 
@@ -40,37 +43,40 @@ Plugin 1.3.6のVitest関連peer rangeは `^4.1.0`、typescript-eslintのTypeScri
 Product API、業務Command、Scheduled Handler、外部Provider呼出し、DB bindingは未実装である。
 このentrypointはProduct APIのError contractや提供済み機能を定義せず、Productionへdeployしない。
 
-依存packageを取得できない制限環境ではlockfileやCloudflareのAPIを推測して作らない。
-現時点ではroot `package.json` のcandidate manifestまで作成済みである。
+Phase Bではroot `package.json` とvalidated `package-lock.json`、下記設定、Worker smoke testsを実装済みである。
 `private: true` とES modules形式、Node 24のtooling host条件を宣言し、依存はdevDependenciesに限定する。
-`package-lock.json`、TypeScript / Wrangler / lint / Vitest設定、local D1 harness、smoke testsは未実装である。
-下記コマンド名は既存契約を維持するが、npm scriptsは設定・harness実装後に定義する。
-本IssueのDone条件は未達で、後続CIが利用する前に残りのbootstrapとローカル検証を完了する必要がある。
 
-今回の停止点はcandidate manifest成立までとし、lockfileは手編集・推測生成しない。
-Workflowがcommit / pushしたexact 40-hex candidate SHAを#795へ渡し、
-[trusted-main npm bootstrapの既存手順](../.github/README.md#trusted-main-npm-bootstrap-792)で
-validated artifactを生成・照合してから、通常PR差分としてlockfileを取り込む。
-Artifact受領前に依存付きtestやD1 harnessを完成扱いしない。
+| 設定 | Phase Bの責務 |
+| --- | --- |
+| [`tsconfig.json`](../tsconfig.json) | `src/**/*.ts` のstrict / noEmit、ES modules / bundler resolution、標準Web型。Tests / toolingのtypecheckは含まない |
+| [`wrangler.jsonc`](../wrangler.jsonc) | `src/index.ts`、compatibility date `2026-10-06`。Binding / route / account / remote resourceを定義しない |
+| [`vitest.config.ts`](../vitest.config.ts) | `cloudflareTest()` と `defineConfig()`、同じWrangler設定でunit / integrationを実行 |
+| [`eslint.config.mjs`](../eslint.config.mjs) | Direct dependency `typescript-eslint` のflat recommended config |
+
+Build outputの `dist/` は既存ignore対象で、commitしない。
+Local D1 harness / fixture migrationと最終test aggregateはPhase Cへ分離する。
+Phase Bの設定・test sourceは上記Issue authorityに従って実装し、AI内で依存を取得できなくても推測したlockfileやAPIへ置き換えない。
+依存付き実行のformal proofは後続#639のcurrent-head Product CIで行う。
+#638全体のDone（D1 smokeを含む）はまだ未達である。
 
 ## 標準コマンドの実装契約
 
 本体のローカル実行と後続PR CI（#639）、AI Developer runtime適合（#538）は、
 次の同一コマンドを使う構成とする。CI専用の別実装は作らない。
 
-| 用途 | 実装するコマンド | 条件 |
+| 用途 | 標準コマンド | Phase / 条件 |
 | --- | --- | --- |
-| Clean / reproducible install | `npm ci` | npmが生成したpackage / lockfile整合を検証 |
-| Worker build | `npm run build` | Bundleを検証し、deployしない |
-| Typecheck | `npm run typecheck` | ApplicationはWorkers、toolingはNodeとして型検証 |
-| Lint | `npm run lint` | 必要最小限のlint設定 |
-| Unit / Worker-runtime test | `npm run test:unit` | Worker unit smokeを含む |
-| HTTP integration test | `npm run test:integration` | Production buildのHTTP境界を検証 |
-| Local D1 migration / setup | `npm run d1:local` | Wranglerの `--local` 経路のみ |
-| Local D1 smoke | `npm run test:d1` | Binding、migration適用、初期化・隔離を検証 |
-| 全テスト | `npm test` | Unit / integration / D1 smokeをすべて実行 |
+| Clean / reproducible install | `npm ci` | Phase B。Validated package / lockfileを使用 |
+| Worker build | `npm run build` | Phase B。`wrangler deploy --dry-run --outdir dist`、deployなし |
+| Typecheck | `npm run typecheck` | Phase B。`tsc --noEmit`、Application sourceのみ |
+| Lint | `npm run lint` | Phase B。`src/`、unit / integration tests、Vitest設定のTSをESLintで検証 |
+| Unit / Worker-runtime test | `npm run test:unit` | Phase B。`vitest run tests/unit`、Worker moduleのhandlerを直接呼ぶ |
+| HTTP integration test | `npm run test:integration` | Phase B。`vitest run tests/integration`、上記current pluginのHTTP境界を検証 |
+| Local D1 migration / setup | `npm run d1:local` | Phase Cで追加。Wranglerの `--local` 経路のみ |
+| Local D1 smoke | `npm run test:d1` | Phase Cで追加。Binding、migration適用、初期化・隔離を検証 |
+| 全テスト | `npm test` | Phase Cで追加。Unit / integration / D1 smokeをすべて実行 |
 
-Local D1は各test / runで決定的に初期化し、Production DBへ接続しない。
+Phase CのLocal D1は各test / runで決定的に初期化し、Production DBへ接続しない。
 Harness検証用migrationは `tests/` 内のfixture専用とし、Production正本の `migrations/` に置かない。
 #636の認証schemaや#611の予約Production migrationを推測して実装しない。
 将来#608のServer Clock、Provider Stub、Concurrency Barrierを注入する業務境界は、
