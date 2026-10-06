@@ -261,7 +261,7 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
                 return original(*args, **kwargs)
             return invoke
 
-        def main_result(expected=None):
+        def main_result(expected=None, reason="internal"):
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 result = entry.main()
@@ -276,7 +276,9 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
             else:
                 assert result == 1, expected
                 assert out.getvalue() == ('trusted-main npm bootstrap: 検証または cleanup が失敗しました'
-                                          + ' (stage=' + expected + ')\n'), expected
+                                          + ' (stage=' + expected
+                                          + (' reason=' + reason if expected == 'bootstrap_enter' else '')
+                                          + ')\n'), expected
                 assert not output.exists(), expected
 
         seen = set()
@@ -314,8 +316,61 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
             for fault, stage in (('unavailable', 'bootstrap_enter'), ('hash', 'bootstrap_enter'),
                                  ('source', 'bootstrap_enter'), ('cleanup', 'bootstrap_cleanup'),
                                  ('export-mutation', 'export_verify')):
-                main_result(stage)
+                main_result(stage, 'candidate_validation' if fault in ('hash', 'source')
+                            else 'internal')
             fault = None
+            # Entry projection accepts only finite, unambiguous generated codes.
+            for code in sorted(entry.CANDIDATE_REJECTIONS):
+                error = validator.Rejected(code)
+                with patch.object(helper.ValidatedBootstrap, 'verify', side_effect=error):
+                    main_result('bootstrap_enter', 'candidate_validation')
+            for args in (('trusted-bootstrap-handle-required',), ('bootstrap-input-required',),
+                         ('trusted-manifest-mismatch',), ('overlapping-trusted-root',),
+                         ('run-root-changed',), ('workspace-input-mutated',),
+                         ('unsafe-trusted-directory',), ('official-registry-unavailable',),
+                         (canary,), ({'reason': 'handoff-hash-mismatch'},),
+                         ('handoff-hash-mismatch', canary), ()):
+                error = validator.Rejected(*args)
+                error.bootstrap_reason = 'candidate_validation'  # Must be overwritten.
+                original_require = helper.require
+                def reject_input(condition, code):
+                    target = args[0] if args and type(args[0]) is str and args[0] in (
+                        'trusted-bootstrap-handle-required', 'bootstrap-input-required',
+                        'trusted-manifest-mismatch', 'overlapping-trusted-root', 'run-root-changed') \
+                        else 'trusted-bootstrap-handle-required'
+                    if code == target:
+                        raise error
+                    return original_require(condition, code)
+                calls.clear()
+                with patch.object(helper, 'require', side_effect=reject_input):
+                    main_result('bootstrap_enter')
+                assert 'generate' not in calls
+            original_input_verify = helper.Handoff.verify
+            count = 0
+            def reject_input_verify(handle, *args, **kwargs):
+                global count
+                count += 1
+                if count == 3:  # prepare, entry, then bootstrap's input recheck.
+                    raise validator.Rejected('workspace-input-mutated')
+                return original_input_verify(handle, *args, **kwargs)
+            calls.clear()
+            with patch.object(helper.Handoff, 'verify', side_effect=reject_input_verify, autospec=True):
+                main_result('bootstrap_enter')
+            assert count == 3 and 'generate' not in calls
+            assert entry.REASONS == runtime.REASONS
+            for reason in (*sorted(entry.REASONS), 'CANARY_UNKNOWN', None, {},
+                           {'reason': 'metadata_prefetch'}):
+                error = runtime.GenerationFailure(reason)
+                with patch.object(runtime, 'generate_validated', side_effect=error):
+                    main_result('bootstrap_enter', reason if type(reason) is str and
+                                reason in entry.REASONS else 'internal')
+            # Even a forged/malformed reason attribute must pass the entry allowlist.
+            for reason in ('EXCEPTION_CANARY', '/private/absolute-canary', None, {},
+                           {'reason': 'npm_generation'}):
+                error = RuntimeError(canary)
+                error.bootstrap_reason = reason
+                with patch.object(runtime, 'generate_validated', side_effect=error):
+                    main_result('bootstrap_enter')
             main_result()
         assert seen == entry.STAGES
 

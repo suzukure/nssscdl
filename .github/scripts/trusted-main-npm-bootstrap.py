@@ -19,10 +19,28 @@ ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'GIT_NO_REPLACE_OBJECTS': '1'}
 STAGES = frozenset(('internal', 'candidate_manifest', 'prepare_input', 'bootstrap_enter',
                     'bootstrap_verify', 'bootstrap_cleanup', 'summary', 'export_verify',
                     'export_cleanup', 'authority_recheck'))
+REASONS = frozenset(('metadata_prefetch', 'npm_generation', 'candidate_validation',
+                     'generation_cleanup', 'post_integrity', 'internal'))
+# Rejected codes unique to generated artifacts / lock validation in this entry.
+# Input/root checks (including codes shared with post-generation checks) are opaque.
+CANDIDATE_REJECTIONS = frozenset(('artifact-path-mismatch', 'source-identity-mismatch',
+    'artifact-identity-mismatch', 'unsafe-handoff-directory', 'unsafe-handoff-file',
+    'unexpected-handoff-artifact', 'provenance-mismatch', 'invalid-handoff-identity',
+    'handoff-hash-mismatch', 'handoff-mutated', 'unsafe-lock-path', 'invalid-locked-version',
+    'unsupported-lock-entry', 'locked-name-mismatch', 'non-registry-source',
+    'missing-integrity', 'invalid-integrity', 'invalid-locked-dependencies',
+    'non-registry-dependency', 'manifest-lock-mismatch', 'unsupported-lock-version',
+    'missing-lock-root', 'invalid-legacy-lock'))
+
+
+def failure_reason(error):
+    # Only the finite shared-runtime projection, never arbitrary nested reasons.
+    reason = vars(error).get('bootstrap_reason')
+    return reason if type(reason) is str and reason in REASONS else 'internal'
 
 
 class Diagnostic:
-    """Entry boundaries only; shared runtime internals remain opaque (#795)."""
+    """Entry boundaries plus fixed shared-runtime failure reason (#795/#809)."""
     def __init__(self):
         self.stage = 'internal'
 
@@ -199,9 +217,15 @@ def export_bootstrap(repo, sha, candidate, output, orchestrator, diagnostic=None
         authority(repo, sha)
         diagnostic.stage = 'export_verify'
         verify_export(output, pair, summary, orchestrator)
-    except BaseException:
+    except BaseException as error:
         if published:
             shutil.rmtree(output)
+        # Only unambiguous generated-candidate rejection codes are projected.
+        # Pre-generation and ambiguous rejections never imply service success.
+        if diagnostic.code() == 'bootstrap_enter' and isinstance(error, orchestrator.validator.Rejected):
+            code = error.args[0] if len(error.args) == 1 else None
+            error.bootstrap_reason = ('candidate_validation' if type(code) is str
+                                      and code in CANDIDATE_REJECTIONS else 'internal')
         raise
 
 
@@ -220,9 +244,10 @@ def main():
             export_bootstrap(repo, sha, candidate, output, load_orchestrator(), diagnostic)
         print('trusted-main npm bootstrap: 検証済み artifact の生成完了')
         return 0
-    except Exception:
+    except Exception as error:
+        reason = ' reason=' + failure_reason(error) if diagnostic.code() == 'bootstrap_enter' else ''
         print('trusted-main npm bootstrap: 検証または cleanup が失敗しました'
-              + ' (stage=' + diagnostic.code() + ')')
+              + ' (stage=' + diagnostic.code() + reason + ')')
         return 1
 
 

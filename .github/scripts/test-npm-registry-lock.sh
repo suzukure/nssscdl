@@ -34,10 +34,10 @@ javascript = r'''
 const fs = require('node:fs'), assert = require('node:assert/strict'), crypto = require('node:crypto');
 const {EventEmitter} = require('node:events');
 const [scripts, root, token] = process.argv.slice(1);
-function load(name, imports, processOverride=process) {
+function load(name, imports, processOverride=process, timers={setTimeout,clearTimeout}) {
   const m = {exports:{}};
-  new Function('require','module','process',fs.readFileSync(scripts+'/'+name,'utf8'))(
-    name => imports[name] || require(name),m,processOverride);
+  new Function('require','module','process','setTimeout','clearTimeout',fs.readFileSync(scripts+'/'+name,'utf8'))(
+    name => imports[name] || require(name),m,processOverride,timers.setTimeout,timers.clearTimeout);
   return m.exports;
 }
 async function adapterTests() {
@@ -95,7 +95,13 @@ async function integrationTests() {
   const project=root+'/project', unit='npm-filesystem-probe-'+token+'.service';
   const digest=crypto.createHash('sha256').update(fs.readFileSync(project+'/package.json')).digest('hex');
   const input={token,unit,manifest_hash:digest,proxy_uid:1000,proxy_port:12345,address:'192.0.2.1',direct_port:12346,hidden:{}};
-  let fault='', calls=[], workers=0, udpCalls=0;
+  let fault='', calls=[], workers=0, udpCalls=0, kills=0, stops=0;
+  const readinessFaults=['readiness-exit','readiness-kill','readiness-unconfirmed'];
+  const timers={setTimeout(callback,delay){
+    if(readinessFaults.includes(fault) && [8000,3000].includes(delay))
+      return {immediate:setImmediate(callback)};
+    return setTimeout(callback,delay);
+  },clearTimeout(timer){if(timer?.immediate)clearImmediate(timer.immediate);else clearTimeout(timer);}};
   const translate=p=>p.replace(/^\/project/,project).replace(/^\/runtime/,root+'/runtime');
   const fakeFs={...fs,lstatSync(p){
     if(p.endsWith(unit+'.json'))return {isFile:()=>true,uid:fault==='snapshot-owner'?65534:0,mode:0o100444};
@@ -113,6 +119,7 @@ async function integrationTests() {
     calls.push(args);assert.equal(command,'/runtime/node');assert.equal(options.cwd,'/project');
     assert.deepEqual(options.env,{PATH:'/runtime',HOME:'/project',LC_ALL:'C'});
     const config=args.includes('config');
+    if(fault==='unknown')throw Error('EXCEPTION_CANARY /private/path ENV_CANARY PACKAGE_CANARY');
     if((config && fault==='config') || (!config && fault==='lock'))return {status:1,signal:null};
     if(!config){
       fs.writeFileSync(project+'/package-lock.json',JSON.stringify({lockfileVersion:3,packages:{'node_modules/is-number':{
@@ -127,17 +134,25 @@ async function integrationTests() {
     assert.equal(options.execPath,'/runtime/node');assert.deepEqual(options.execArgv,[]);
     assert.deepEqual(options.env,{PATH:'/runtime',HOME:'/project',LC_ALL:'C'});
     const child=new EventEmitter();child.exitCode=null;child.signalCode=null;
-    child.kill=()=>assert.fail('unexpected force kill');
+    child.kill=signal=>{
+      assert.equal(signal,'SIGKILL');assert(readinessFaults.includes(fault));kills++;
+      if(fault!=='readiness-unconfirmed')process.nextTick(()=>{
+        child.signalCode=signal;child.emit('exit',null,signal);
+      });
+    };
       child.send=message=>{
-      assert.equal(message,'stop');process.nextTick(()=>{
+      assert.equal(message,'stop');stops++;
+      if(['readiness-kill','readiness-unconfirmed'].includes(fault))return;
+      process.nextTick(()=>{
         child.emit('message',{metadata:1,denied:fault==='content'?1:0});
         if(fault==='post-generation')fs.appendFileSync(project+'/package-lock.json',' ');
-        child.exitCode=0;child.emit('exit',0,null);
+        child.exitCode=['adapter-cleanup','readiness-exit'].includes(fault)?1:0;
+        child.emit('exit',child.exitCode,null);
       });
     };
     process.nextTick(()=>{
       if(fault==='unavailable'){child.exitCode=1;child.emit('exit',1,null);}
-      else child.emit('message',{port:23456});
+      else if(!readinessFaults.includes(fault))child.emit('message',{port:23456});
     });return child;
   }};
   const initial=load('npm-initial-lock-probe.js',{'node:fs':fakeFs,'node:child_process':fakeCp,
@@ -148,22 +163,40 @@ async function integrationTests() {
       assert.equal(address,input.address);assert.equal(port,input.direct_port);
       done(fault==='direct'?null:Object.assign(Error(),{code:'EPERM'}));},close(){}};}},
     'node:net':{isIPv4:()=>true,connect(options){const s=new EventEmitter();s.destroy=()=>{};
-      process.nextTick(()=>s.emit('error',Object.assign(Error(),{code:options.host==='127.0.0.1'?'ECONNREFUSED':'EPERM'})));return s;}}},
-    {...process,getuid:()=>65534});
+      process.nextTick(()=>s.emit('error',Object.assign(Error(),{code:options.host==='127.0.0.1'?(fault==='closed-cleanup'?'EPERM':'ECONNREFUSED'):'EPERM'})));return s;}}},
+    {...process,getuid:()=>65534},timers);
   for (fault of ['boundary','runtime-owner','runtime-mode','runtime-writable','manifest',
-    'snapshot-owner','snapshot-unit','direct','unavailable','config','lock','marker','mutation','content','post-generation','']) {
+    'snapshot-owner','snapshot-unit','direct','unavailable','unknown','config','lock','marker','mutation','content','post-generation','adapter-cleanup','closed-cleanup','']) {
     calls=[];workers=udpCalls=0;
     try{
-      if(fault)await assert.rejects(probe.probe(input));
+      if(fault)await assert.rejects(probe.probe(input),error=>{
+        const expected=fault==='unavailable'?20:['config','lock','marker','mutation','content'].includes(fault)?21:
+          fault==='post-generation'?22:['adapter-cleanup','closed-cleanup'].includes(fault)?23:1;
+        assert.equal(probe.failureExitCode(error),expected);return true;
+      });
       else{const evidence=await probe.probe(input);assert.equal(evidence.candidate,'package-lock.json');
         assert.equal(evidence.lock_hash,crypto.createHash('sha256').update(fs.readFileSync(project+'/package-lock.json')).digest('hex'));
         assert.deepEqual(evidence.command,initial.command('lock',23456));assert.equal(evidence.tarball_requests,0);}
       const early=['boundary','runtime-owner','runtime-mode','runtime-writable','manifest','snapshot-owner','snapshot-unit','direct'];
       assert.equal(workers,early.includes(fault)?0:1);
-      assert.equal(calls.length,early.includes(fault)||fault==='unavailable'?0:fault==='config'?1:2);
+      assert.equal(calls.length,early.includes(fault)||fault==='unavailable'?0:['config','unknown'].includes(fault)?1:2);
     } finally{
       for(const name of ['package-lock.json','unexpected','markers/executed'])fs.rmSync(project+'/'+name,{force:true});
     }
+  }
+  for(const error of [Error('EXCEPTION_CANARY'), {code:20}, {code:'20'}, null]) {
+    assert.equal(probe.failureExitCode(error),1);
+  }
+  // Run the real workerReady deadline and stopWorker, with an accelerated clock.
+  // IPC stop may be ignored before metadata prefetch registers its handler.
+  for(fault of readinessFaults){
+    calls=[];kills=stops=0;
+    await assert.rejects(probe.probe(input),error=>{
+      assert.equal(probe.failureExitCode(error),fault==='readiness-unconfirmed'?23:20);return true;
+    });
+    assert.equal(calls.length,0,'npm started before metadata readiness');
+    assert.equal(stops,1);assert.equal(kills,fault==='readiness-exit'?0:1);
+    fs.rmSync(project+'/package-lock.json',{force:true});
   }
   fault='unavailable';calls=[];
   assert.deepEqual(await probe.probe({...input,expect_unavailable:true}),{
@@ -589,6 +622,49 @@ for name in ('npm-registry-lock-runtime.py','npm-registry-lock-probe.js',
         assert name not in workflow.read_text(), ('production wiring',str(workflow))
 assert 'npm-registry-lock' not in (scripts/'prepare-product-npm.py').read_text()
 assert 'fixtures=(.github/scripts/test-*.sh)' in (repo/'.github/workflows/ai-workflow-regression.yml').read_text()
+
+# Only the exact shared-service nonzero shape and finite codes are admitted.
+for code, reason in fixture.PROBE_EXIT_REASONS.items():
+    assert fixture.service_failure_reason(AssertionError((code, 'STDOUT_CANARY', 'STDERR_CANARY'))) == reason
+for error in (RuntimeError('EXCEPTION_CANARY'), AssertionError((1, 'canary', 'canary')),
+              AssertionError(('20', 'canary', 'canary')), AssertionError((True, '', '')),
+              AssertionError((20, {}, [])), AssertionError((20, '', '', 'extra')),
+              AssertionError({'reason': 'metadata_prefetch'}), AssertionError('metadata_prefetch')):
+    assert fixture.service_failure_reason(error) == 'internal'
+assert fixture.service_failure_reason(AssertionError(('unit cleanup unconfirmed', 'canary', 'canary'))) == 'generation_cleanup'
+assert fixture.service_failure_reason(AssertionError('property observer cleanup failed')) == 'generation_cleanup'
+# Malformed CLI JSON and preflight exceptions do not emit raw traceback/streams.
+cli = r"""
+const fs=require('node:fs'), m={exports:{}}, fakeProcess={argv:['node','probe','EXCEPTION_CANARY']};
+const loader=name=>['./filesystem-probe.js','./initial-lock-probe.js'].includes(name)?{}:require(name);
+loader.main=m;
+new Function('require','module','process',fs.readFileSync(process.argv[1],'utf8'))(loader,m,fakeProcess);
+setImmediate(()=>{require('node:assert/strict').equal(fakeProcess.exitCode,1);});
+"""
+result = subprocess.run([str(node), '-e', cli, str(scripts / 'npm-registry-lock-probe.js')],
+                        capture_output=True, env=fixture.ENV)
+assert result.returncode == 0 and result.stdout == result.stderr == b''
+
+# Exercise the actual unchanged #654 service rejection and cleanup precedence.
+for code in (*fixture.PROBE_EXIT_REASONS, 1, 99):
+    for cleanup_failure in (False, True):
+        commands = []
+        def rejected_service(command, **kwargs):
+            commands.append(command)
+            if '--property=LoadState' in command:
+                return subprocess.CompletedProcess(command, 0, 'loaded' if cleanup_failure else 'not-found', 'CLEANUP_CANARY')
+            return subprocess.CompletedProcess(command, code, 'STDOUT_CANARY /private/path', 'STDERR_CANARY PACKAGE_CANARY')
+        with patch.object(boundary, 'command', return_value=['isolated-command']), \
+             patch.object(boundary.subprocess, 'run', side_effect=rejected_service):
+            try:
+                boundary.service(repo, Path('/root'), {'token': token})
+            except AssertionError as error:
+                assert fixture.service_failure_reason(error) == ('generation_cleanup' if cleanup_failure
+                    else fixture.PROBE_EXIT_REASONS.get(code, 'internal'))
+            else:
+                raise AssertionError('nonzero service accepted')
+        assert any('stop' in command for command in commands)
+        assert any('--property=LoadState' in command for command in commands)
 
 # #662 trusted validation is local-only, including the real #660 constructor.
 # Retain expectations in parent memory, not in files a workload can edit.

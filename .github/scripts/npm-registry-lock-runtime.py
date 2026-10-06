@@ -17,6 +17,38 @@ ENV = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
 TOOLCACHE_ROOT = Path('/opt/hostedtoolcache/node')
 SERVICE_UID = SERVICE_GID = 65534
 
+REASONS = frozenset(('metadata_prefetch', 'npm_generation', 'candidate_validation',
+                     'generation_cleanup', 'post_integrity', 'internal'))
+PROBE_EXIT_REASONS = {20: 'metadata_prefetch', 21: 'npm_generation',
+                      22: 'candidate_validation', 23: 'generation_cleanup'}
+
+
+class GenerationFailure(AssertionError):
+    """#809 bounded diagnostic only; never serialize the underlying exception."""
+    def __init__(self, reason, error=None):
+        if error is not None and not isinstance(error, (AssertionError, OSError,
+                subprocess.SubprocessError, ValueError, TypeError, KeyError)) and not (
+                type(error).__module__ == 'prepare-product-npm' and type(error).__name__ == 'Rejected'):
+            reason = 'internal'
+        self.bootstrap_reason = reason if type(reason) is str and reason in REASONS else 'internal'
+        super().__init__(self.bootstrap_reason)
+
+
+def service_failure_reason(error):
+    # #654 retains nonzero returncode as (code, stdout, stderr). Neither stream
+    # nor nested exception/reason text is parsed or reflected.
+    if type(error) is AssertionError and len(error.args) == 1:
+        record = error.args[0]
+        if type(record) is tuple and len(record) == 3 and type(record[0]) is int \
+                and all(type(value) is str for value in record[1:]):
+            return PROBE_EXIT_REASONS.get(record[0], 'internal')
+        if type(record) is tuple and len(record) == 3 and type(record[0]) is str \
+                and record[0] == 'unit cleanup unconfirmed':
+            return 'generation_cleanup'
+        if type(record) is str and record == 'property observer cleanup failed':
+            return 'generation_cleanup'
+    return 'internal'
+
 
 def load(repo, name):
     spec = importlib.util.spec_from_file_location(name, repo / '.github/scripts' / (name + '.py'))
@@ -385,6 +417,7 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
     token = uuid.uuid4().hex
     trusted_run = None
     artifact = expected = None
+    phase = 'internal'
     try:
         if run_root is None:
             trusted_run = tempfile.TemporaryDirectory(prefix='npm-validated-handoff-')
@@ -426,8 +459,12 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
             record['bootstrap'] = True
             record['bootstrap_dependencies'] = validator.manifest_dependencies(validator.parse(manifest_snapshot))
         accepts = servers.accepted
-        evidence = boundary.service(repo, root, record, observer=lambda unit, done:
-            registry.observe_properties(unit, root / 'runtime', network, done))
+        try:
+            evidence = boundary.service(repo, root, record, observer=lambda unit, done:
+                registry.observe_properties(unit, root / 'runtime', network, done))
+        except Exception as error:
+            raise GenerationFailure(service_failure_reason(error)) from None
+        phase = 'candidate_validation'
         assert staged_snapshot(root, token, digest, provenance) == staged_hashes
         assert servers.accepted == accepts, 'direct/fallback reached trusted listener'
         assert (root / 'project/package.json').read_bytes() == (root / 'runtime/manifest.json').read_bytes()
@@ -444,25 +481,48 @@ def run_fixture(repo, node, npm, registry, network, servers, port, provenance, u
                                                   manifest_snapshot, trusted, evidence)
         print(json.dumps({**evidence, 'runtime_source': provenance, 'staged_runtime_hashes': staged_hashes}), flush=True)
         return (artifact, expected) if bootstrap else str(staged)
+    except GenerationFailure:
+        raise
+    except Exception as error:
+        raise GenerationFailure(phase, error) from None
     finally:
+        cleanup_phase = 'generation_cleanup'
         try:
             subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)], check=True, timeout=10, env=ENV)
             assert not staged.exists(), 'registry lock root cleanup failed'
+            cleanup_phase = 'post_integrity'
             if artifact is not None:
                 # This is the #645 acceptance handoff, after generation cleanup.
                 validator = load(repo, 'prepare-product-npm')
                 print(json.dumps(verify_handoff(validator, artifact, expected), sort_keys=True), flush=True)
-        except BaseException:
+        except BaseException as error:
             if artifact is not None:
-                shutil.rmtree(artifact)
+                try:
+                    shutil.rmtree(artifact)
+                except Exception as error:
+                    raise GenerationFailure('generation_cleanup', error) from None
+            if isinstance(error, Exception):
+                raise GenerationFailure(cleanup_phase, error) from None
             raise
         finally:
             if trusted_run is not None:
-                trusted_run.cleanup()
-                assert not Path(trusted_run.name).exists(), 'handoff cleanup failed'
+                try:
+                    trusted_run.cleanup()
+                    assert not Path(trusted_run.name).exists(), 'handoff cleanup failed'
+                except Exception as error:
+                    raise GenerationFailure('generation_cleanup', error) from None
 
 
 def generate_validated(repo, manifest_snapshot, run_root):
+    try:
+        return _generate_validated(repo, manifest_snapshot, run_root)
+    except GenerationFailure:
+        raise
+    except Exception:
+        raise GenerationFailure('internal') from None
+
+
+def _generate_validated(repo, manifest_snapshot, run_root):
     """#691 explicit dormant entry: exact bytes, existing generation/freeze only.
 
     Caller owns a private, run-local output root. No candidate bytes are returned;
@@ -501,20 +561,26 @@ def generate_validated(repo, manifest_snapshot, run_root):
         assert network.udp(addresses[0], servers.port) == {'result': 'received'}
     finally:
         try:
-            if proxy is not None:
-                registry.stop_proxy(proxy)
-                registry.verify_proxy_stopped(port)
-        finally:
             try:
-                if servers is not None:
-                    servers.close()
+                if proxy is not None:
+                    registry.stop_proxy(proxy)
+                    registry.verify_proxy_stopped(port)
             finally:
-                subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)],
-                               check=True, timeout=10, env=ENV)
-                assert not staged.exists(), 'trusted proxy source cleanup failed'
-    assert registry.snapshot(repo) == before, 'host socket/resolver integrity changed'
-    assert workspace_state(repo) == workspace, 'workspace changed'
-    verify_handoff(validator, *result)
+                try:
+                    if servers is not None:
+                        servers.close()
+                finally:
+                    subprocess.run(['sudo', '-n', 'rm', '-rf', '--', str(staged)],
+                                   check=True, timeout=10, env=ENV)
+                    assert not staged.exists(), 'trusted proxy source cleanup failed'
+        except Exception as error:
+            raise GenerationFailure('generation_cleanup', error) from None
+    try:
+        assert registry.snapshot(repo) == before, 'host socket/resolver integrity changed'
+        assert workspace_state(repo) == workspace, 'workspace changed'
+        verify_handoff(validator, *result)
+    except Exception as error:
+        raise GenerationFailure('post_integrity', error) from None
     return result
 
 
