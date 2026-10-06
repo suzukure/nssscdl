@@ -20,6 +20,14 @@ Net Shogi School向けのスケジュールシステムです。
 - `config/` — プロジェクト設定
 - `.github/` — CI/CDおよびGitHub関連設定
 
+## 本体の開発基盤
+
+技術選定とbootstrapの実装状況は [config/README.md](config/README.md) を正本とする。
+Node.js 24はbuild / test tooling hostであり、ApplicationのRuntimeはCloudflare Workersである。
+Validated lockfile、TypeScript / Wrangler / ESLint / Vitest設定、Worker unit / HTTP integration smoke、
+Phase Cのtest-only local D1 harnessと全テストコマンドを実装済み。
+標準コマンドと検証条件は上記正本を参照する。依存付き実行のformal proofは#639で確認するため、#638全体のDoneはまだ未実証。
+
 ## 文書のライフサイクル
 
 ChatGPTやローカルワークスペースは作業領域として利用できるが、このリポジトリへCommitされた内容をプロジェクトの正式な記録とする。
