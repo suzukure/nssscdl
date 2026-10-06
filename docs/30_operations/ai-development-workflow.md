@@ -619,6 +619,20 @@ default branchに次を適用する。
 
 `PR Traceability / Linked Issue` のcheck名はmain上で観測済みで、default branch rulesetのrequired status check `Linked Issue` として有効化済みである。自動マージ処理自身も同じclosing Issue条件を再検証するため、このrequired checkに加えてmerge gateでも条件を迂回しない。
 
+### Product CI required-check適合と設定境界（#640）
+
+`.github/workflows/product-ci.yml` は全PRの `opened / synchronize / reopened` で単一job `Product CI` を生成する。exact event headを全履歴付きでcheckoutし、trusted event base/headのmerge-baseからNUL-safeなdiffでPR固有のProduct差分を判定する。対象pathの機械正本は同workflowの適用判定とする。Product差分がある場合だけ#639のNode準備・標準9コマンドを実行し、差分なしは判定stepが `not applicable` と報告して同じjobが成功する。workflow/job全体はskipしない。SHA・checkout・merge-base・diff・出力の検証／取得不能はjob failureとし、fallbackしない。AI Workflow RegressionはProduct CIの代替証拠としない。
+
+#640の供給済み2026-10-06 inventoryでは、`main-protection`（ID `21908706`、default branch対象、bypassなし）のrequired checkは `Linked Issue` / GitHub Actions App ID `15368` のみで、strict policyはfalse、repositoryのauto merge featureはdisabled。PR #818 / Product CI Run #37435294868ではcheck name `Product CI` / 同App IDのsuccessが観測済みである。これは変更後の全PR起動やrequired-check有効化の証拠ではない。branch protection RESTは当該Appから403で取得不能だったため、設定確認は人間／trusted orchestrationがread可能なRuleset APIで行う。
+
+本適合をmainへ反映し、Product差分／非Product差分の自然なPR runでcurrent headに同じcheck identityが生成されることを確認した後、人間の明示承認を得てRulesetの `required_status_checks` を `[{context: "Linked Issue", integration_id: 15368}]` から `[{context: "Linked Issue", integration_id: 15368}, {context: "Product CI", integration_id: 15368}]` へ変更する。他rule・strict policy・review条件は維持し、Secrets / Variables / App権限を追加しない。Codexは設定変更や検証用PR作成を行わない。
+
+目的はProduct CIのfailure / cancelled / missing / pendingをmerge条件へ反映すること。非Product PRは軽い適用判定successを条件とし、job-level skippedをその証拠に使わない。Product CI successだけでClaudeのformal approve、trusted baseの `verify-pr-gates.sh`、protected-pathの人間Code Owner merge、PR／closing Issueの `human-review-required`、既存Ruleset review条件を迂回しない。
+
+設定反映後、人間／trusted orchestrationはProduct success時のmerge可否、failure・cancelled・missing／skipped相当時のmerge阻止、Claude未承認・停止ラベル時の自動merge阻止を安全なfixture／temporary PR等で確認し、head SHA・run／check identity・設定証跡を#640へ記録する。local fixture成功を実効merge条件の実証と扱わず、この証跡と承認付き設定反映まで#640および親#536の該当Doneは未完了とする。
+
+rollbackは同Rulesetのrequired checksから `Product CI` / `15368` だけを削除して `Linked Issue` と他ruleを維持する。adapterはread-only CIとして残せる。workflowを#639形へ戻す場合はrequired設定を先にrollbackした上で別PRで行う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ## 人間エスカレーション
 
 次のいずれかで `human-review-required` を付け、自動修正と自動マージを停止する。
