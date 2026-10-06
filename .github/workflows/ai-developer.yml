@@ -578,6 +578,14 @@ jobs:
           Unverified matters
           Keep the entire final report within 16 KiB UTF-8, each field within 1 KiB UTF-8, and the rendered human report within 8 KiB. Retain only minimum observations; omit raw tool output, JSONL, token/secret/credential values, environment dumps, absolute runner/toolcache paths, and numeric UID/GID or other runner internals. Use repository-relative paths and abstract non-secret descriptions. These labels validate human evidence only; they do not classify the decision or authorize resume.
           Preserve the Product requirement change / unresolved upstream decision escalation in AGENTS.base.md. If that escalation applies, output only [REQUIREMENTS_CHANGE_REQUIRED] as the decision marker; otherwise use the scope marker for the scope/Contract decision above. Never output both decision markers in one final response.
+          Reusing an existing current Issue/main Contract unchanged through an existing Port/interface, test-only fake/fixture adapter, isolated fixture, or existing error contract is not by itself a Product requirement change.
+          If a Product requirement/specification or unresolved upstream phase decision itself needs change or clarification, use the requirements marker. If no Product requirement change is needed but a new cross-boundary Contract / trust / ownership / failure semantics decision exceeds Issue authority, use the existing scope marker. If neither is needed, continue normal implementation.
+          Only when emitting the requirements marker, include each exact label below once, at the start of a separate single plain-text line, followed by ": " and a nonempty Japanese explanation. No bullets, Markdown formatting, or multiline values in these four lines; separate them from other report text with blank lines:
+          Requirement/upstream decision
+          Why current Issue cannot complete
+          Affected identifiers
+          Blocked downstream work
+          The same 16 KiB final / 1 KiB per field / 8 KiB rendered report UTF-8 limits and omission of raw output, credentials, environment dumps, absolute runner/toolcache paths and UID/GID apply. The marker alone controls machine classification; these four fields are human evidence only.
           Human scope decisions must be recorded in the Issue body before the existing /ai resume develop path can resume. Do not automatically split Issues, convert them to parents, or retry.
           Write the final report for humans on GitHub in Japanese. Preserve exact machine markers, identifiers, commands, paths, and external error text where required.
           The trusted contract sets maximum changed files, total changed lines (additions + deletions), and new files; keep every metric at or below its maximum.
@@ -1378,7 +1386,105 @@ jobs:
           fi
           case "$classification" in
             requirements_change)
-              pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
+              requirements_report="$(mktemp "$RUNNER_TEMP/requirements-report.XXXXXX" 2>/dev/null)" || requirements_report=''
+              trap 'if [ -n "$requirements_report" ]; then rm -f -- "$requirements_report"; fi' EXIT
+              requirements_detail='Codexが要件変更の必要性を報告しました。人間の判断があるまで自動開発を停止します。'
+              requirements_report_valid=false
+              # Trusted inline gate: human fields never determine machine reason.
+              if python3 -I -B - "$CODEX_FINAL" "$requirements_report" <<'PY'
+          import html
+          import os
+          import re
+          import stat
+          import sys
+          import unicodedata
+
+          try:
+              fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as source:
+                  if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                      raise ValueError
+                  raw = source.read(16 * 1024 + 1)
+              if not raw or len(raw) > 16 * 1024:
+                  raise ValueError
+              report = raw.decode("utf-8", "strict").replace("\r\n", "\n")
+              if any(unicodedata.category(c) in ("Cc", "Cf", "Cs", "Zl", "Zp")
+                     for c in report if c != "\n"):
+                  raise ValueError
+              labels = (
+                  "Requirement/upstream decision", "Why current Issue cannot complete",
+                  "Affected identifiers", "Blocked downstream work",
+              )
+              fields = {}
+              previous_field = False
+              for line in report.split("\n"):
+                  matched = False
+                  for label in labels:
+                      if line.startswith(label + ":"):
+                          if label in fields or not line.startswith(label + ": "):
+                              raise ValueError
+                          value = line[len(label) + 2:]
+                          if not value.strip() or len(value.encode("utf-8")) > 1024:
+                              raise ValueError
+                          fields[label] = value
+                          matched = True
+                  # Reject a continued value; other report prose must be separated.
+                  if previous_field and line.strip() and not matched:
+                      raise ValueError
+                  previous_field = matched
+              if set(fields) != set(labels):
+                  raise ValueError
+              # Reject obvious credential/raw diagnostic shapes, never echo matches.
+              unsafe = re.compile(
+                  r"-----BEGIN[ A-Z]*PRIVATE KEY-----|\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+"
+                  r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bBearer\s+\S+"
+                  r"|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+                  r"|https?://[^\s]*(?:webhooks?/|[?&](?:token|key|secret)=)"
+                  r"|\b(?:token|secret|password|credential|api[_ -]?key)\s*[:=]\s*\S+"
+                  r"|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\s*=\s*\S+"
+                  r"|\b(?:HOME|USER|LOGNAME|PATH|SHELL)\s*=\s*\S+"
+                  r"|\b(?:uid|gid|userId|primaryGroupId|supplementaryGroupIds)\b[^\n]{0,16}\d"
+                  r"|/(?:home|opt|tmp|var|run|proc|sys|etc|usr|mnt|Users|private|__w|_work|_temp)(?:/|\b)"
+                  r"|\b[A-Za-z]:[\\/]|(?:hostedtoolcache|/toolcache/|/_actions/|/_temp/)"
+                  r'|"(?:type|environment|env)"\s*:',
+                  re.IGNORECASE,
+              )
+              if any(unsafe.search(value) for value in fields.values()):
+                  raise ValueError
+              def escape(value):
+                  # Display model text literally; suppress HTML/Markdown and mentions.
+                  value = html.escape(value, quote=True).replace("@", "&#64;")
+                  return re.sub(r"([\\`*_{}\[\]()!|])", r"\\\1", value)
+              rendered = "### 要件・上流判断の理由（Codexの報告）\n\n"
+              rendered += "以下は人間向けの判断材料です。停止・再開の制御は既存pause recordを正本とします。\n\n"
+              rendered += "\n".join("- " + label + ": " + escape(fields[label]) for label in labels) + "\n"
+              if len(rendered.encode("utf-8")) > 8 * 1024:
+                  raise ValueError
+              fd = os.open(sys.argv[2], os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "wb") as output:
+                  if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
+                      raise ValueError
+                  output.write(rendered.encode("utf-8"))
+          except Exception:
+              # No traceback, input bytes, paths, or environment in diagnostics.
+              sys.exit(1)
+          PY
+              then
+                requirements_report_valid=true
+              else
+                requirements_detail='要件・上流判断理由を安全な形式・上限内で検証できませんでした。raw内容は公開せずrequirements_changeの停止を維持します。人間による確認が必要です。'
+              fi
+              pause_for_human requirements_change "$requirements_detail"
+              if [ "$requirements_report_valid" != true ]; then
+                echo '要件・上流判断理由の検証に失敗しました。自動開発は停止しています。' >&2
+                exit 1
+              fi
+              # Machine pause and generic comment already exist before human evidence.
+              if ! gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body-file "$requirements_report" >/dev/null 2>&1; then
+                echo '要件・上流判断理由の投稿を確認できませんでした。停止を維持し、自動再試行しません。' >&2
+                exit 1
+              fi
               ;;
             none) echo 'continue=true' >> "$GITHUB_OUTPUT" ;;
             scope_decision)

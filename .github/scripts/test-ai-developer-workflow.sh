@@ -682,6 +682,16 @@ for scope_rule in \
   'Do not automatically split Issues, convert them to parents, or retry.'; do
   grep -Fq "$scope_rule" "$prompt_step"
 done
+for label in 'Requirement/upstream decision' 'Why current Issue cannot complete' \
+  'Affected identifiers' 'Blocked downstream work'; do
+  [ "$(grep -Fxc "          $label" "$prompt_step")" -eq 1 ]
+  grep -Fq "$label" "$operations_doc"
+done
+for rule in 'Port/interface, test-only fake/fixture adapter, isolated fixture' \
+  'Product requirement/specification or unresolved upstream phase decision itself' \
+  'these four fields are human evidence only' 'If neither is needed, continue normal implementation'; do
+  grep -Fq "$rule" "$prompt_step"
+done
 test "$(grep -Fxc '          [SCOPE_DECISION_REQUIRED]' "$prompt_step")" -eq 1
 for label in 'Observed fact' 'Missing/new Contract category' \
   'Why Done is impossible under the current contract' 'R/C/P/B change' \
@@ -2168,7 +2178,8 @@ for gate in "$issue_requirements" "$issue_diff_guard"; do
 done
 grep -Fq "pause_for_human developer_execution_failed 'Codexの最終報告がありません" "$issue_requirements"
 grep -Fq "pause_for_human developer_execution_failed 'decision markerの分類に失敗しました" "$issue_requirements"
-grep -Fq "pause_for_human requirements_change 'Codexが要件変更の必要性を報告しました" "$issue_requirements"
+grep -Fq "requirements_detail='Codexが要件変更の必要性を報告しました" "$issue_requirements"
+grep -Fq 'pause_for_human requirements_change "$requirements_detail"' "$issue_requirements"
 grep -Fq 'local options=(--failed-action develop)' "$issue_requirements"
 grep -Fq '[ "$classification_status" -ne 0 ]' "$issue_requirements"
 grep -Fq 'case "$classification" in' "$issue_requirements"
@@ -2208,7 +2219,7 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GATE_CALLS"
 case "$1 $2" in
   'pr list')
-    if [ "$SCENARIO" = scope_pr ]; then
+    if [[ "$SCENARIO" == scope_pr || "$SCENARIO" == requirements_pr ]]; then
       printf '[{"number":37,"headRefName":"ai/issue-169","isCrossRepository":false}]\n'
     else printf '[]\n'; fi ;;
   'pr view') printf '{"closingIssuesReferences":[{"number":169,"url":"https://github.com/owner/repo/issues/169"}]}\n' ;;
@@ -2229,7 +2240,7 @@ case "$1 $2" in
       [ -s "$PAUSE_RECORD" ]
       grep -Fq 'issue comment 169 --repo owner/repo --body ' "$GATE_CALLS"
       cp "$7" "$SCOPE_COMMENT"
-      if [ "$SCENARIO" = scope_comment_failure ]; then
+      if [[ "$SCENARIO" == scope_comment_failure || "$SCENARIO" == requirements_comment_failure ]]; then
         echo 'COMMENT_API_RAW_CANARY' >&2
         echo 'COMMENT_API_RAW_CANARY'
         exit 7
@@ -2254,7 +2265,8 @@ chmod +x "$requirements_case/bin/gh" "$requirements_case/bin/curl"
 cat > "$requirements_case/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$SCENARIO" = scope_temp_failure ] && [[ "$*" == *scope-report.XXXXXX* ]]; then
+if [[ "$SCENARIO" == scope_temp_failure || "$SCENARIO" == requirements_temp_failure ]] &&
+   [[ "$*" == *-report.XXXXXX* ]]; then
   echo 'TEMP_FILE_RAW_CANARY' >&2
   exit 7
 fi
@@ -2272,19 +2284,29 @@ body = '対象範囲\r\n\nline\n\n'
 (directory / 'expected-fingerprint').write_text('sha256:' + hashlib.sha256(body.encode()).hexdigest())
 PY
 for scenario in missing empty marker marker_crlf absent free_text scope scope_crlf scope_pr both \
+  requirements requirements_crlf requirements_pr requirements_fields_only \
+  requirements_missing_field requirements_duplicate requirements_empty_field requirements_bad_label \
+  requirements_multiline requirements_utf8 requirements_nul requirements_control requirements_bare_cr \
+  requirements_bidi requirements_final_limit requirements_final_oversize requirements_field_limit \
+  requirements_field_oversize requirements_render_oversize requirements_symlink requirements_directory \
+  requirements_token requirements_private_key requirements_aws requirements_bearer requirements_jwt \
+  requirements_webhook requirements_secret requirements_env requirements_home requirements_uid \
+  requirements_gid requirements_toolcache requirements_runner requirements_raw_jsonl \
+  requirements_comment_failure requirements_temp_failure requirements_escaped \
   scope_missing_field scope_duplicate scope_empty_field scope_bad_label scope_utf8 scope_nul \
   scope_control scope_bare_cr scope_bidi scope_final_limit scope_final_oversize \
   scope_field_limit scope_field_oversize scope_render_oversize scope_symlink \
   scope_token scope_private_key scope_aws scope_bearer scope_jwt scope_webhook \
   scope_secret scope_env scope_home scope_uid scope_gid scope_toolcache scope_runner \
   scope_raw_jsonl scope_comment_failure scope_temp_failure scope_escaped \
-  classifier_missing requirements_helper_missing missing_scope_helper helper_failure \
+  classifier_missing missing_requirements_helper missing_scope_helper helper_failure \
   classifier_nonzero classifier_nonzero_with_valid_output unknown_output empty_output \
   multiple_output whitespace_output valid_output_stderr; do
   : > "$requirements_case/output"
   : > "$requirements_case/pause-calls"
   : > "$requirements_case/gate-calls"
   printf '[]\n' > "$requirements_case/comments.json"
+  rm -rf "$requirements_case/final"
   rm -f "$requirements_case/record.md" "$requirements_case/notification.json" "$requirements_case/scope-comment.md" "$requirements_case/final"
   for helper in classify-ai-developer-decision-marker has-requirements-change-marker has-scope-decision-marker; do
     cp "$repo_root/.github/scripts/$helper.sh" "$requirements_case/runner/$helper.sh"
@@ -2302,7 +2324,7 @@ for scenario in missing empty marker marker_crlf absent free_text scope scope_cr
     scope_pr) printf '[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
     both) printf '[REQUIREMENTS_CHANGE_REQUIRED]\n[SCOPE_DECISION_REQUIRED]\n' > "$requirements_case/final" ;;
     classifier_missing) rm "$requirements_case/runner/classify-ai-developer-decision-marker.sh" ;;
-    requirements_helper_missing) rm "$requirements_case/runner/has-requirements-change-marker.sh" ;;
+    missing_requirements_helper) rm "$requirements_case/runner/has-requirements-change-marker.sh" ;;
     missing_scope_helper) rm "$requirements_case/runner/has-scope-decision-marker.sh" ;;
     helper_failure) printf 'exit 7\n' > "$requirements_case/runner/has-scope-decision-marker.sh" ;;
     classifier_nonzero) classifier_exit=1 ;;
@@ -2312,17 +2334,25 @@ for scenario in missing empty marker marker_crlf absent free_text scope scope_cr
     whitespace_output) classifier_stdout=' none ' ;;
     valid_output_stderr) classifier_stdout=none ;;
   esac
-  if [[ "$scenario" == scope* ]]; then
+  if [[ "$scenario" == scope* || "$scenario" == requirements* ]]; then
     python3 - "$scenario" "$requirements_case/final" <<'PY_SCOPE'
 from pathlib import Path
 import sys
 scenario, filename = sys.argv[1:]
+is_requirements = scenario.startswith('requirements')
+if is_requirements:
+    scenario = scenario.replace('requirements', 'scope', 1)
 labels = ('Observed fact', 'Missing/new Contract category',
           'Why Done is impossible under the current contract', 'R/C/P/B change',
           'Proposed split/prerequisite', 'Product impact', 'Unverified matters')
 values = ['観測した事実', '未定義の境界契約', '現在契約では下流を接続できない',
           'R=1 / C=C0 → C2 / P=P1 / B=2', '前提の契約判断を先行する',
           'POL / BR / REQ / AC / TC / CON / OOS: none', '外部事実は未検証']
+if is_requirements:
+    labels = ('Requirement/upstream decision', 'Why current Issue cannot complete',
+              'Affected identifiers', 'Blocked downstream work')
+    values = ['既存仕様と上流判断の明確化が必要', '判断が未確定のため現Issueを完了できない',
+              'POL / BR / REQ / AC / TC / CON / OOS: 影響なし', '判断に依存する下流実装']
 unsafe = {
     'scope_token': 'sk-test_credential_canary',
     'scope_private_key': '-----BEGIN RSA PRIVATE KEY-----',
@@ -2344,7 +2374,7 @@ if scenario in unsafe:
 if scenario == 'scope_escaped':
     values[0] = '<script>canary</script> @owner [リンク](https://example.invalid) *文字*'
 if scenario in ('scope_field_limit', 'scope_field_oversize', 'scope_render_oversize'):
-    values = [('あ' * 341 + 'x') if scenario != 'scope_render_oversize' else '<' * 1024] * 7
+    values = [('あ' * 341 + 'x') if scenario != 'scope_render_oversize' else '<' * 1024] * len(labels)
     if scenario == 'scope_field_oversize':
         values[0] += 'x'
 lines = [label + ': ' + value for label, value in zip(labels, values)]
@@ -2356,9 +2386,12 @@ if scenario == 'scope_empty_field':
     lines[0] = labels[0] + ':  '
 if scenario == 'scope_bad_label':
     lines[0] = labels[0] + ':値'
-raw = ('[SCOPE_DECISION_REQUIRED]\n' + '\n'.join(lines) + '\n').encode()
+if scenario == 'scope_multiline':
+    lines.insert(1, '  続きの値 MULTILINE_CANARY')
+marker = '[REQUIREMENTS_CHANGE_REQUIRED]' if is_requirements else '[SCOPE_DECISION_REQUIRED]'
+raw = ((marker + '\n' if scenario != 'scope_fields_only' else '') + '\n'.join(lines) + '\n').encode()
 # Outside the seven fields: the whole final must never be copied to GitHub.
-raw += b'FINAL_OUTSIDE_FIELDS_CANARY\n'
+raw += b'\nFINAL_OUTSIDE_FIELDS_CANARY\n'
 if scenario == 'scope_crlf':
     raw = raw.replace(b'\n', b'\r\n')
 for name, suffix in [('scope_utf8', b'\xff'), ('scope_nul', b'\x00'),
@@ -2371,7 +2404,10 @@ if scenario in ('scope_final_limit', 'scope_final_oversize'):
     if scenario == 'scope_final_oversize':
         raw += b'x'
 path = Path(filename)
-if scenario == 'scope_symlink':
+if scenario == 'scope_directory':
+    path.unlink()
+    path.mkdir()
+elif scenario == 'scope_symlink':
     path.unlink()
     target = path.with_name('symlink-source')
     target.write_bytes(raw)
@@ -2379,6 +2415,9 @@ if scenario == 'scope_symlink':
 else:
     path.write_bytes(raw)
 PY_SCOPE
+  fi
+  if [ "$scenario" = requirements_directory ]; then
+    printf 'echo requirements_change\n' > "$requirements_case/runner/classify-ai-developer-decision-marker.sh"
   fi
   case "$scenario" in
     classifier_nonzero*|*_output|valid_output_stderr)
@@ -2408,17 +2447,17 @@ EOF
       GITHUB_REPOSITORY=owner/repo ISSUE_NUMBER=169 APP_SLUG=dev \
       bash "$requirements_run"
   ) > "$requirements_case/stdout" 2> "$requirements_case/stderr" || gate_status=$?
-  if [[ "$scenario" == absent || "$scenario" == free_text || "$scenario" == valid_output_stderr ]]; then
+  if [[ "$scenario" == absent || "$scenario" == free_text || "$scenario" == valid_output_stderr || "$scenario" == requirements_fields_only ]]; then
     grep -Fxq 'continue=true' "$requirements_case/output"
     [ ! -s "$requirements_case/pause-calls" ]
     [ ! -s "$requirements_case/gate-calls" ]
   else
     grep -Fxq 'continue=false' "$requirements_case/output"
     case "$scenario" in
-      marker|marker_crlf|scope*)
+      marker|marker_crlf|scope*|requirements*)
         reason=requirements_change pr_number=- target=issue:169
         if [[ "$scenario" == scope* ]]; then reason=scope_decision; fi
-        if [ "$scenario" = scope_pr ]; then pr_number=37; target=pr:37; fi
+        if [[ "$scenario" == scope_pr || "$scenario" == requirements_pr ]]; then pr_number=37; target=pr:37; fi
         grep -Fq "create owner/repo 169 $pr_number 123 $reason" "$requirements_case/pause-calls"
         expected="$(cat "$requirements_case/expected-fingerprint")"
         grep -Fq -- "--issue-body-fingerprint $expected" "$requirements_case/pause-calls"
@@ -2431,7 +2470,7 @@ EOF
           .payload.issue_body_fingerprint == $fp
         ' <<< "$record" >/dev/null
         grep -Fq 'issue edit 169 --repo owner/repo --add-label human-review-required' "$requirements_case/gate-calls"
-        if [ "$scenario" = scope_pr ]; then
+        if [[ "$scenario" == scope_pr || "$scenario" == requirements_pr ]]; then
           grep -Fq 'issue edit 37 --repo owner/repo --add-label human-review-required' "$requirements_case/gate-calls"
         fi
         jq -e --arg reason "$reason" '.allowed_mentions == {parse: []} and
@@ -2439,6 +2478,8 @@ EOF
         if [[ "$scenario" == scope* ]]; then
           jq -e '.content | contains("スコープの判断が必要") and contains("対象範囲をIssueに記録してください。")' \
             "$requirements_case/notification.json" >/dev/null
+        fi
+        if [[ "$scenario" == scope* || "$scenario" == requirements* || "$scenario" == marker* ]]; then
           context="$(jq -cn --argjson record "$record" --arg fp "$expected" '
             {command:{result:"accepted",actor:"suzukure",action:"develop"},target:$record.target,
              closing_issue:{number:169,state:"open",body_fingerprint:$fp},
@@ -2451,10 +2492,10 @@ EOF
           updated="sha256:$(printf '対象範囲を更新\n' | sha256sum | cut -d' ' -f1)"
           jq -c --arg fp "$updated" '.closing_issue.body_fingerprint=$fp' <<< "$context" |
             bash "$repo_root/.github/scripts/prepare-ai-resume.sh" |
-            jq -e --arg old "$expected" --arg new "$updated" --arg target "$target" '
+            jq -e --arg old "$expected" --arg new "$updated" --arg target "$target" --arg reason "$reason" '
               .result == "prepared" and .dispatch ==
                 {version:1,target:$target,action:"develop",actor:"suzukure",source_pause_id:"101",
-                 reason:"scope_decision",closing_issue_number:169,
+                 reason:$reason,closing_issue_number:169,
                  pr_number:(if $target == "pr:37" then 37 else null end),paused_head:null,
                  prepared_head:(if $target == "pr:37" then "a"*40 else null end),
                  pause_issue_body_fingerprint:$old,prepared_issue_body_fingerprint:$new,follow_up_issue:null}
@@ -2483,6 +2524,40 @@ EOF
     esac
   fi
   case "$scenario" in
+    requirements|requirements_crlf|requirements_pr|requirements_final_limit|requirements_field_limit|requirements_escaped)
+      [ "$gate_status" -eq 0 ]
+      python3 - "$requirements_case/scope-comment.md" "$scenario" <<'PY_REQUIREMENTS'
+from pathlib import Path
+import sys
+report = Path(sys.argv[1]).read_bytes()
+assert len(report) <= 8192
+text = report.decode('utf-8')
+for label in ('Requirement/upstream decision', 'Why current Issue cannot complete',
+              'Affected identifiers', 'Blocked downstream work'):
+    assert text.count('- ' + label + ': ') == 1
+assert 'FINAL_OUTSIDE_FIELDS_CANARY' not in text
+assert '[REQUIREMENTS_CHANGE_REQUIRED]' not in text
+if sys.argv[2] == 'requirements_escaped':
+    assert '<script>' not in text and '@owner' not in text
+    assert '&lt;script&gt;' in text and '&#64;owner' in text
+    assert '\\[リンク\\]\\(' in text
+else:
+    assert '判断に依存する下流実装' in text or 'あ' * 341 in text
+PY_REQUIREMENTS
+      ;;
+    requirements_comment_failure)
+      [ "$gate_status" -ne 0 ]
+      [ -s "$requirements_case/scope-comment.md" ]
+      grep -Fq '要件・上流判断理由の投稿を確認できませんでした。' "$requirements_case/stderr"
+      ;;
+    marker|marker_crlf|requirements_fields_only|requirements*)
+      [ "$scenario" = requirements_fields_only ] || [ "$gate_status" -ne 0 ]
+      [ ! -e "$requirements_case/scope-comment.md" ]
+      if [ "$scenario" != requirements_fields_only ]; then
+        grep -Fq '要件・上流判断理由の検証に失敗しました。' "$requirements_case/stderr"
+        grep -Fq '要件・上流判断理由を安全な形式・上限内で検証できませんでした。' "$requirements_case/record.md"
+      fi
+      ;;
     scope|scope_crlf|scope_pr|scope_final_limit|scope_field_limit|scope_escaped)
       [ "$gate_status" -eq 0 ]
       python3 - "$requirements_case/scope-comment.md" "$scenario" <<'PY_SCOPE'
@@ -2522,28 +2597,30 @@ PY_SCOPE
       ;;
   esac
   # Compare logs/comments with actual unsafe input: no raw rejection or API error.
-  if [[ "$scenario" == scope* ]]; then
+  if [[ "$scenario" == scope* || "$scenario" == requirements* || "$scenario" == marker* ]]; then
     python3 - "$requirements_case" "$scenario" <<'PY_SCOPE'
 from pathlib import Path
 import sys
 root, scenario = Path(sys.argv[1]), sys.argv[2]
 public = ''.join((root / name).read_text() for name in
-                 ('stdout', 'stderr', 'gate-calls', 'pause-calls', 'record.md'))
+                 ('stdout', 'stderr', 'gate-calls', 'pause-calls', 'record.md') if (root / name).exists())
 if (root / 'scope-comment.md').exists():
     public += (root / 'scope-comment.md').read_text()
 for canary in ('FINAL_OUTSIDE_FIELDS_CANARY', 'COMMENT_API_RAW_CANARY', 'TEMP_FILE_RAW_CANARY',
                'test_credential_canary', 'test_environment_canary', 'test_runner_canary',
-               '/opt/hostedtoolcache/canary', '/home/runner/work/_temp/canary', 'RAW_JSONL_CANARY'):
+               '/opt/hostedtoolcache/canary', '/home/runner/work/_temp/canary', 'RAW_JSONL_CANARY', 'MULTILINE_CANARY'):
     assert canary not in public, (scenario, canary)
 PY_SCOPE
     # The real Actions conditions above require success and continue=true.
-    # Sentinels model all downstream writes; no stopped scope case can run them.
+    # Sentinels model all downstream writes; no stopped decision case can run them.
     : > "$requirements_case/downstream"
     if [ "$gate_status" -eq 0 ] && grep -Fxq 'continue=true' "$requirements_case/output"; then
       printf 'diff guard\ncommit\npush\nPR write\n' > "$requirements_case/downstream"
     fi
-    [ ! -s "$requirements_case/downstream" ]
-    [ -z "$(find "$requirements_case/runner" -maxdepth 1 -name 'scope-report.*' -print)" ]
+    if [ "$scenario" != requirements_fields_only ]; then
+      [ ! -s "$requirements_case/downstream" ]
+    fi
+    [ -z "$(find "$requirements_case/runner" -maxdepth 1 -name '*-report.*' -print)" ]
   fi
   [ "$(wc -l < "$requirements_case/output")" -eq 1 ]
   if grep -Eq '^(pr create|pr comment|pr ready) ' "$requirements_case/gate-calls"; then
@@ -2552,7 +2629,7 @@ PY_SCOPE
   fi
 done
 
-echo 'Scope report persistence, bounded rejection, pause ordering and write failure fixtures passed.'
+echo 'Requirements/scope report persistence, bounded rejection, pause ordering and write failure fixtures passed.'
 
 # Execute the workflow's hash snippet on a body with a terminal newline.
 fingerprint_code="$test_dir/issue-body-fingerprint.py"
