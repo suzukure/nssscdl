@@ -120,7 +120,12 @@ async function integrationTests() {
     calls.push(args);assert.equal(command,'/runtime/node');assert.equal(options.cwd,'/project');
     assert.deepEqual(options.env,{PATH:'/runtime',HOME:'/project',LC_ALL:'C'});
     const config=args.includes('config');
+    assert.equal(options.timeout,config?10000:30000);
+    assert.equal(options.killSignal,'SIGKILL');
+    assert(args.includes('--fetch-timeout=8000') && args.includes('--fetch-retries=0'));
     if(fault==='unknown')throw Error('EXCEPTION_CANARY /private/path ENV_CANARY PACKAGE_CANARY');
+    if((config && fault==='config-timeout') || (!config && fault==='lock-timeout'))
+      return {error:Object.assign(Error(),{code:'ETIMEDOUT'}),status:null,signal:'SIGKILL'};
     if((config && fault==='config') || (!config && fault==='lock'))return {status:1,signal:null};
     if(!config){
       fs.writeFileSync(project+'/package-lock.json',JSON.stringify({lockfileVersion:3,packages:{'node_modules/is-number':{
@@ -167,11 +172,11 @@ async function integrationTests() {
       process.nextTick(()=>s.emit('error',Object.assign(Error(),{code:options.host==='127.0.0.1'?(fault==='closed-cleanup'?'EPERM':'ECONNREFUSED'):'EPERM'})));return s;}}},
     {...process,getuid:()=>65534},timers);
   for (fault of ['boundary','runtime-owner','runtime-mode','runtime-writable','manifest',
-    'snapshot-owner','snapshot-unit','direct','unavailable','unknown','config','lock','marker','mutation','content','post-generation','adapter-cleanup','closed-cleanup','']) {
+    'snapshot-owner','snapshot-unit','direct','unavailable','unknown','config','lock','config-timeout','lock-timeout','marker','mutation','content','post-generation','adapter-cleanup','closed-cleanup','']) {
     calls=[];workers=udpCalls=0;
     try{
       if(fault)await assert.rejects(probe.probe(input),error=>{
-        const expected=fault==='unavailable'?20:['config','lock','marker','mutation','content'].includes(fault)?21:
+        const expected=fault==='unavailable'?20:['config','lock','config-timeout','lock-timeout','marker','mutation','content'].includes(fault)?21:
           fault==='post-generation'?22:['adapter-cleanup','closed-cleanup'].includes(fault)?23:1;
         assert.equal(probe.failureExitCode(error),expected);return true;
       });
@@ -180,7 +185,7 @@ async function integrationTests() {
         assert.deepEqual(evidence.command,initial.command('lock',23456));assert.equal(evidence.tarball_requests,0);}
       const early=['boundary','runtime-owner','runtime-mode','runtime-writable','manifest','snapshot-owner','snapshot-unit','direct'];
       assert.equal(workers,early.includes(fault)?0:1);
-      assert.equal(calls.length,early.includes(fault)||fault==='unavailable'?0:['config','unknown'].includes(fault)?1:2);
+      assert.equal(calls.length,early.includes(fault)||fault==='unavailable'?0:['config','config-timeout','unknown'].includes(fault)?1:2);
     } finally{
       for(const name of ['package-lock.json','unexpected','markers/executed'])fs.rmSync(project+'/'+name,{force:true});
     }
