@@ -106,6 +106,8 @@ main反映後の自然実行と#638へのhandoffは次の手順で行う。
 
 #809のfailure診断は既存入口の固定 `stage` を維持し、`bootstrap_enter` だけに固定allowlistの `reason` を付加する。reasonの機械正本は入口の `REASONS` とし、`metadata_prefetch`（npm開始前のadapter ready失敗）、`npm_generation`（ready後のconfig/lock/metadata service失敗）、`candidate_validation`（生成後のcandidate/evidence/freeze/canonical検証）、`generation_cleanup`（worker/proxy/listener/staging cleanup）、`post_integrity`（cleanup後のhost/workspace/source/handoff再検証）、`internal`（分類不能）に限る。restricted probeは固定exit codeだけを返し、trusted runtimeは既存serviceの非ゼロ終了値を有限reasonへ変換する。入口でも再allowlist検証し、未知値・不正型・nested reasonを `internal` へ縮約する。raw例外・stdout/stderr・path・env・registry/package contentは反射せず、success artifact/schema、security・fail-closed・cleanup条件は維持する。
 
+readiness timeout後はnpmを開始せず、workerの終了（既存のSIGKILL後の終了確認を含む）が確認できれば `metadata_prefetch` を維持する。worker終了未確認や既存service/proxy/listener/staging cleanup失敗は `generation_cleanup` を優先し、成功へ昇格しない。入口のorchestrator `Rejected` は `CANDIDATE_REJECTIONS` の固定集合で生成後と特定できる場合だけ `candidate_validation` とする。生成前のinput/root再検証、生成前後で共用される拒否理由、未知・不正値は `internal` へ縮約する。
+
 #809反映後の再実証は#795で同じexact candidate `e5e20f31abb47dc0b27556606d822a70fc205edb` を1回だけ使用する。失敗時は固定reasonをcheckpointし、blind retryしない。新しいcross-boundary Contractやruntime redesignが必要なら人間のscope判断へ戻す。本変更自身ではnatural runを行わない。
 
 PR上のローカル検証は `bash .github/scripts/test-trusted-main-npm-bootstrap.sh` とcommon production-unreachable guardで行う。mock/canonical fixtureの成功は実runnerでのcandidate取得・registry到達・lock生成の証拠ではなく、上記post-merge validationは別途必要である。AI Developer / Claude follow-up production wiringを変更せず、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。

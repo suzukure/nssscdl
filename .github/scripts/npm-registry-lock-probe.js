@@ -66,15 +66,23 @@ function workerReady(child) {
   });
 }
 
-async function stopWorker(child) {
+async function stopWorker(child, readinessFailed = false) {
   if (child.exitCode !== null || child.signalCode !== null) return null;
   return new Promise((resolve, reject) => {
     let counts = null;
-    const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(new ProbeFailure(23)); }, 3000);
+    let killedDeadline;
+    const deadline = setTimeout(() => {
+      // A pre-ready worker may not yet handle IPC. Keep the primary failure
+      // only after confirming exit, including after the existing forced kill.
+      if (readinessFailed) killedDeadline = setTimeout(() => reject(new ProbeFailure(23)), 3000);
+      child.kill('SIGKILL');
+      if (!readinessFailed) reject(new ProbeFailure(23));
+    }, 3000);
     child.once('message', record => { counts = record; });
     child.once('exit', (code, signal) => {
       clearTimeout(deadline);
-      if (code === 0 && signal === null) resolve(counts); else reject(new ProbeFailure(23));
+      clearTimeout(killedDeadline);
+      if (readinessFailed || code === 0 && signal === null) resolve(counts); else reject(new ProbeFailure(23));
     });
     child.send('stop');
   });
@@ -119,10 +127,12 @@ async function probe(input) {
     execPath: '/runtime/node', execArgv: [], env: initial.npmEnv, stdio: ['ignore','ignore','ignore','ipc'],
   });
   let counts, port, candidateBytes;
+  let readinessFailed = false;
   let failureCode = 20;
   try {
     try { port = await workerReady(child); }
     catch (error) {
+      readinessFailed = true;
       if (input.expect_unavailable !== true) throw new ProbeFailure(20);
       assert(child.exitCode === 1 && error.message === 'official-registry-unavailable');
       assert.deepEqual(initial.inventory(), before);
@@ -152,7 +162,7 @@ async function probe(input) {
     throw new ProbeFailure(failureExitCode(error) === 1 ? (known ? failureCode : 1) : failureExitCode(error));
   } finally {
     try {
-      counts = await stopWorker(child);
+      counts = await stopWorker(child, readinessFailed);
       if (port !== undefined) await verifyClosed(port);
     } catch (error) { throw new ProbeFailure(failureExitCode(error)); }
   }

@@ -21,6 +21,16 @@ STAGES = frozenset(('internal', 'candidate_manifest', 'prepare_input', 'bootstra
                     'export_cleanup', 'authority_recheck'))
 REASONS = frozenset(('metadata_prefetch', 'npm_generation', 'candidate_validation',
                      'generation_cleanup', 'post_integrity', 'internal'))
+# Rejected codes unique to generated artifacts / lock validation in this entry.
+# Input/root checks (including codes shared with post-generation checks) are opaque.
+CANDIDATE_REJECTIONS = frozenset(('artifact-path-mismatch', 'source-identity-mismatch',
+    'artifact-identity-mismatch', 'unsafe-handoff-directory', 'unsafe-handoff-file',
+    'unexpected-handoff-artifact', 'provenance-mismatch', 'invalid-handoff-identity',
+    'handoff-hash-mismatch', 'handoff-mutated', 'unsafe-lock-path', 'invalid-locked-version',
+    'unsupported-lock-entry', 'locked-name-mismatch', 'non-registry-source',
+    'missing-integrity', 'invalid-integrity', 'invalid-locked-dependencies',
+    'non-registry-dependency', 'manifest-lock-mismatch', 'unsupported-lock-version',
+    'missing-lock-root', 'invalid-legacy-lock'))
 
 
 def failure_reason(error):
@@ -210,10 +220,12 @@ def export_bootstrap(repo, sha, candidate, output, orchestrator, diagnostic=None
     except BaseException as error:
         if published:
             shutil.rmtree(output)
-        # Shared bootstrap's initial handoff checks run before context yield.
-        # Canonical rejection is validation; unknown exceptions stay internal.
+        # Only unambiguous generated-candidate rejection codes are projected.
+        # Pre-generation and ambiguous rejections never imply service success.
         if diagnostic.code() == 'bootstrap_enter' and isinstance(error, orchestrator.validator.Rejected):
-            error.bootstrap_reason = 'candidate_validation'
+            code = error.args[0] if len(error.args) == 1 else None
+            error.bootstrap_reason = ('candidate_validation' if type(code) is str
+                                      and code in CANDIDATE_REJECTIONS else 'internal')
         raise
 
 
