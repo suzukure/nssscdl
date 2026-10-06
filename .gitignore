@@ -29,6 +29,7 @@ Thumbs.db
 .idea/
 
 # Runtime / local databases
+.wrangler/
 *.sqlite
 *.sqlite3
 *.db

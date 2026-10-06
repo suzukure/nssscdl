@@ -11,5 +11,8 @@
 Phase Bでは `unit/worker.test.ts` でWorker moduleのhandlerを直接呼び、
 `integration/worker.test.ts` でWorkers runtimeの `cloudflare:workers` / `exports.default.fetch()` を使う。
 両方とも既存503応答のstatus / body / headersを確認する。
-Local D1 smokeはPhase Cで実装する。実装・隔離条件と標準コマンドは
+Phase Cの `d1/migration.test.ts` と `d1/isolation.test.ts` はtest-only migrationを適用し、
+両ファイルが空のtableへ同じ主キーをinsert / selectできることを確認する。
+Storage共有時には失敗する構成とし、手動DELETEで隔離の不具合を隠さない。
+これらも業務TCのPass件数へ算入しない。実装・隔離条件と標準コマンドは
 [config/README.md](../config/README.md) を正本とする。
