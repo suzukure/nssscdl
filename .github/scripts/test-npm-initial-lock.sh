@@ -97,9 +97,9 @@ const fakeCp = {spawnSync(cmd,args,options) {
   assert.equal(cmd,'/runtime/node');
   assert.equal(options.cwd,'/project');
   assert.deepEqual(options.env,{PATH:'/runtime',HOME:'/project',LC_ALL:'C'});
-  assert.equal(options.timeout,10000);
-  assert.equal(options.killSignal,'SIGKILL');
   const operation = args.includes('config') ? 'config' : 'lock';
+  assert.equal(options.timeout,operation === 'config' ? 10000 : 30000);
+  assert.equal(options.killSignal,'SIGKILL');
   if (operation === phase) {
     if (fault === 'timeout') return {error:Error(),signal:'SIGKILL',status:null};
     if (fault === 'signal') return {signal:'SIGTERM',status:null};
@@ -124,7 +124,13 @@ const fixtureRequire = name => ({'node:fs':fakeFs,'node:path':path,'node:child_p
   'node:assert/strict':assert,'./filesystem-probe.js':{isolationPreflight(){assert(!isolationBad);}}}[name]);
 new Function('require','module',fs.readFileSync(source,'utf8'))(fixtureRequire,fixtureModule);
 const probe = fixtureModule.exports, good = probe.command('lock',port);
-assert.deepEqual(good.slice(-3),['install','--package-lock-only','--json']);
+const flags = ['/runtime/npm/bin/npm-cli.js','--ignore-scripts','--package-lock=true',
+  '--lockfile-version=3','--audit=false','--fund=false','--update-notifier=false',
+  '--workspaces=false','--include=dev','--include=optional','--include=peer',
+  '--fetch-retries=0','--fetch-timeout=8000',`--registry=http://127.0.0.1:${port}/`,
+  '--userconfig=/project/empty.npmrc','--globalconfig=/project/global.npmrc','--cache=/project/cache'];
+assert.deepEqual(good,[...flags,'install','--package-lock-only','--json']);
+assert.deepEqual(probe.command('config',port),[...flags,'config','get','ignore-scripts']);
 for (const args of [good.filter(a=>a!=='--ignore-scripts'),[...good,'--ignore-scripts=false'],
   [...good,'--ignore-scripts'],good.map(a=>a==='--ignore-scripts'?'--no-ignore-scripts':a),
   good.filter(a=>a!=='--package-lock-only'),[...good,'--package-lock=false'],
@@ -132,7 +138,9 @@ for (const args of [good.filter(a=>a!=='--ignore-scripts'),[...good,'--ignore-sc
   good.map(a=>a.startsWith('--registry=')?'--registry=https://example.invalid/':a),
   good.map(a=>a.startsWith('--userconfig=')?'--userconfig=/host/config':a),
   good.map(a=>a.startsWith('--globalconfig=')?'--globalconfig=/host/config':a),
-  [...good,'--fetch-retries=1'],null,'install']) {
+  [...good,'--fetch-retries=1'],[...good,'--fetch-timeout=300000'],
+  good.map(a=>a==='--fetch-timeout=8000'?'--fetch-timeout=5000':a),
+  [...good,'--timeout=300000'],null,'install']) {
   assert.throws(()=>probe.runNpm('lock',port,args));
 }
 for (const operation of ['pack','rebuild','run','unknown','__proto__',null])
@@ -141,6 +149,8 @@ for (const badPort of [0,80,65536,'12345',null]) assert.throws(()=>probe.runNpm(
 const inherited = {GITHUB_TOKEN:'fixture-only',GH_TOKEN:'fixture-only',NODE_AUTH_TOKEN:'fixture-only',
   NPM_TOKEN:'fixture-only',AWS_SECRET_ACCESS_KEY:'fixture-only',NODE_OPTIONS:'--require=/host/config',
   npm_config_ignore_scripts:'false',NPM_CONFIG_IGNORE_SCRIPTS:'false',
+  npm_config_fetch_timeout:'300000',NPM_CONFIG_FETCH_TIMEOUT:'300000',
+  npm_config_timeout:'300000',NPM_CONFIG_TIMEOUT:'300000',
   npm_config_userconfig:'/host/config',HTTPS_PROXY:'fixture-only'};
 for (const [name,value] of Object.entries(inherited))
   assert.throws(()=>probe.runNpm('lock',port,good,{...probe.npmEnv,[name]:value}));
@@ -185,7 +195,8 @@ for (phase of ['config','lock']) {
   }
 }
 fault = ''; calls = []; changed = candidate = artifact = false;
-const evidence = probe.probe({token,port});
+// Workload fields cannot override either operation's trusted spawn deadline.
+const evidence = probe.probe({token,port,timeout:300000,configTimeout:300000,lockTimeout:300000});
 assert.equal(calls.length,2);
 assert.equal(evidence.candidate,'package-lock.json');
 assert.deepEqual(evidence.command,good);
