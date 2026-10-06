@@ -261,7 +261,7 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
                 return original(*args, **kwargs)
             return invoke
 
-        def main_result(expected=None):
+        def main_result(expected=None, reason="internal"):
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 result = entry.main()
@@ -276,7 +276,9 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
             else:
                 assert result == 1, expected
                 assert out.getvalue() == ('trusted-main npm bootstrap: 検証または cleanup が失敗しました'
-                                          + ' (stage=' + expected + ')\n'), expected
+                                          + ' (stage=' + expected
+                                          + (' reason=' + reason if expected == 'bootstrap_enter' else '')
+                                          + ')\n'), expected
                 assert not output.exists(), expected
 
         seen = set()
@@ -314,8 +316,23 @@ with tempfile.TemporaryDirectory(prefix='manual-bootstrap-fixture-') as temporar
             for fault, stage in (('unavailable', 'bootstrap_enter'), ('hash', 'bootstrap_enter'),
                                  ('source', 'bootstrap_enter'), ('cleanup', 'bootstrap_cleanup'),
                                  ('export-mutation', 'export_verify')):
-                main_result(stage)
+                main_result(stage, 'candidate_validation' if fault in ('unavailable', 'hash', 'source')
+                            else 'internal')
             fault = None
+            assert entry.REASONS == runtime.REASONS
+            for reason in (*sorted(entry.REASONS), 'CANARY_UNKNOWN', None, {},
+                           {'reason': 'metadata_prefetch'}):
+                error = runtime.GenerationFailure(reason)
+                with patch.object(runtime, 'generate_validated', side_effect=error):
+                    main_result('bootstrap_enter', reason if type(reason) is str and
+                                reason in entry.REASONS else 'internal')
+            # Even a forged/malformed reason attribute must pass the entry allowlist.
+            for reason in ('EXCEPTION_CANARY', '/private/absolute-canary', None, {},
+                           {'reason': 'npm_generation'}):
+                error = RuntimeError(canary)
+                error.bootstrap_reason = reason
+                with patch.object(runtime, 'generate_validated', side_effect=error):
+                    main_result('bootstrap_enter')
             main_result()
         assert seen == entry.STAGES
 

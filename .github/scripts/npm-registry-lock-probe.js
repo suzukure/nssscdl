@@ -70,11 +70,11 @@ async function stopWorker(child) {
   if (child.exitCode !== null || child.signalCode !== null) return null;
   return new Promise((resolve, reject) => {
     let counts = null;
-    const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(Error('adapter cleanup timeout')); }, 3000);
+    const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(new ProbeFailure(23)); }, 3000);
     child.once('message', record => { counts = record; });
     child.once('exit', (code, signal) => {
       clearTimeout(deadline);
-      if (code === 0 && signal === null) resolve(counts); else reject(Error('adapter failed'));
+      if (code === 0 && signal === null) resolve(counts); else reject(new ProbeFailure(23));
     });
     child.send('stop');
   });
@@ -83,13 +83,21 @@ async function stopWorker(child) {
 async function verifyClosed(port) {
   await new Promise((resolve, reject) => {
     const socket = net.connect({ host: '127.0.0.1', port });
-    const deadline = setTimeout(() => { socket.destroy(); reject(Error('adapter cleanup unconfirmed')); }, 2000);
-    socket.once('connect', () => { clearTimeout(deadline); socket.destroy(); reject(Error('adapter still reachable')); });
+    const deadline = setTimeout(() => { socket.destroy(); reject(new ProbeFailure(23)); }, 2000);
+    socket.once('connect', () => { clearTimeout(deadline); socket.destroy(); reject(new ProbeFailure(23)); });
     socket.once('error', error => {
       clearTimeout(deadline); socket.destroy();
-      if (error.code === 'ECONNREFUSED') resolve(); else reject(Error('adapter cleanup unconfirmed'));
+      if (error.code === 'ECONNREFUSED') resolve(); else reject(new ProbeFailure(23));
     });
   });
+}
+
+// #809: only finite exit codes cross the existing service boundary.
+class ProbeFailure extends Error {
+  constructor(code) { super('registry-lock integration failed'); this.code = code; }
+}
+function failureExitCode(error) {
+  return error instanceof ProbeFailure && [20, 21, 22, 23].includes(error.code) ? error.code : 1;
 }
 
 async function probe(input) {
@@ -111,14 +119,16 @@ async function probe(input) {
     execPath: '/runtime/node', execArgv: [], env: initial.npmEnv, stdio: ['ignore','ignore','ignore','ipc'],
   });
   let counts, port, candidateBytes;
+  let failureCode = 20;
   try {
     try { port = await workerReady(child); }
     catch (error) {
-      assert(input.expect_unavailable === true && child.exitCode === 1 &&
-        error.message === 'official-registry-unavailable');
+      if (input.expect_unavailable !== true) throw new ProbeFailure(20);
+      assert(child.exitCode === 1 && error.message === 'official-registry-unavailable');
       assert.deepEqual(initial.inventory(), before);
       return { status: 'pass', fail_closed: 'official-registry-unavailable', npm_started: false };
     }
+    failureCode = 21;
     assert(input.expect_unavailable !== true, 'unavailable proxy unexpectedly succeeded');
     assert.equal(initial.runNpm('config', port).trim(), 'true');
     assert.deepEqual(initial.inventory(), before);
@@ -127,6 +137,7 @@ async function probe(input) {
     for (const name of ['added','removed','changed']) assert.equal(result[name], 0);
     assert.deepEqual(initial.inventory(true), before);
     manifest(input);
+    failureCode = 22;
     candidateBytes = fs.readFileSync('/project/package-lock.json');
     const lock = JSON.parse(candidateBytes);
     assert.equal(lock.lockfileVersion, 3);
@@ -135,14 +146,24 @@ async function probe(input) {
       assert.equal(lock.packages['node_modules/is-number'].resolved,
         'https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz');
     }
+  } catch (error) {
+    const known = error instanceof assert.AssertionError || error instanceof SyntaxError ||
+      ['ENOENT', 'EACCES', 'EPERM', 'EIO'].includes(error?.code);
+    throw new ProbeFailure(failureExitCode(error) === 1 ? (known ? failureCode : 1) : failureExitCode(error));
   } finally {
-    counts = await stopWorker(child);
-    if (port !== undefined) await verifyClosed(port);
+    try {
+      counts = await stopWorker(child);
+      if (port !== undefined) await verifyClosed(port);
+    } catch (error) { throw new ProbeFailure(failureExitCode(error)); }
   }
-  assert(counts && (counts.metadata > 0 || input.bootstrap === true &&
-    Object.keys(input.bootstrap_dependencies).length === 0 && counts.metadata === 0) &&
-    counts.denied === 0, 'content/unsupported request detected');
-  assert.deepEqual(fs.readFileSync('/project/package-lock.json'), candidateBytes, 'generated candidate mutated');
+  try {
+    assert(counts && (counts.metadata > 0 || input.bootstrap === true &&
+      Object.keys(input.bootstrap_dependencies).length === 0 && counts.metadata === 0) &&
+      counts.denied === 0, 'content/unsupported request detected');
+  } catch { throw new ProbeFailure(21); }
+  try {
+    assert.deepEqual(fs.readFileSync('/project/package-lock.json'), candidateBytes, 'generated candidate mutated');
+  } catch { throw new ProbeFailure(22); }
   return { status: 'pass', candidate: 'package-lock.json', manifest_hash: input.manifest_hash,
     lock_hash: crypto.createHash('sha256').update(candidateBytes).digest('hex'),
     command: initial.command('lock', port), node: process.version,
@@ -150,7 +171,7 @@ async function probe(input) {
     markers: [], node_modules: false, metadata_requests: counts.metadata,
     tarball_requests: 0, dependency_execution_path: 'not-entered', direct_udp: 'EPERM' };
 }
-module.exports = { probe, manifest, snapshot, directDeny, workerReady, stopWorker, verifyClosed };
-if (require.main === module) probe(JSON.parse(process.argv[2])).then(result => {
+module.exports = { probe, manifest, snapshot, directDeny, workerReady, stopWorker, verifyClosed, failureExitCode };
+if (require.main === module) Promise.resolve().then(() => probe(JSON.parse(process.argv[2]))).then(result => {
   console.log(JSON.stringify(result));
-}).catch(() => { console.error('registry-lock integration failed'); process.exitCode = 1; });
+}).catch(error => { process.exitCode = failureExitCode(error); });

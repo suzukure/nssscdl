@@ -104,6 +104,10 @@ main反映後の自然実行と#638へのhandoffは次の手順で行う。
 3. run成功とcandidate object取得、上記3ファイルを確認する。summaryのcandidate SHA・trusted main SHAを入力・runのexact source SHAと照合し、candidate root manifestとのbytes一致、artifact manifest/lockのSHA-256とsummaryの一致、runtime/source/helper identityを確認する。失敗時は成功扱い・自動retry・writebackを行わない。
 4. 保持期間内にartifactを取得し、run ID / attempt・artifact名・candidate/main SHA・manifest/lock hash・summaryを#638の通常PRレビューで追跡できる形で受け渡す。採用するmanifest/lockは通常PR diffへ含める。Product dependency/version・standard command / D1 harnessは#638、Product PR CIは#639、required-check governanceは#640の責務とする。
 
+#809のfailure診断は既存入口の固定 `stage` を維持し、`bootstrap_enter` だけに固定allowlistの `reason` を付加する。reasonの機械正本は入口の `REASONS` とし、`metadata_prefetch`（npm開始前のadapter ready失敗）、`npm_generation`（ready後のconfig/lock/metadata service失敗）、`candidate_validation`（生成後のcandidate/evidence/freeze/canonical検証）、`generation_cleanup`（worker/proxy/listener/staging cleanup）、`post_integrity`（cleanup後のhost/workspace/source/handoff再検証）、`internal`（分類不能）に限る。restricted probeは固定exit codeだけを返し、trusted runtimeは既存serviceの非ゼロ終了値を有限reasonへ変換する。入口でも再allowlist検証し、未知値・不正型・nested reasonを `internal` へ縮約する。raw例外・stdout/stderr・path・env・registry/package contentは反射せず、success artifact/schema、security・fail-closed・cleanup条件は維持する。
+
+#809反映後の再実証は#795で同じexact candidate `e5e20f31abb47dc0b27556606d822a70fc205edb` を1回だけ使用する。失敗時は固定reasonをcheckpointし、blind retryしない。新しいcross-boundary Contractやruntime redesignが必要なら人間のscope判断へ戻す。本変更自身ではnatural runを行わない。
+
 PR上のローカル検証は `bash .github/scripts/test-trusted-main-npm-bootstrap.sh` とcommon production-unreachable guardで行う。mock/canonical fixtureの成功は実runnerでのcandidate取得・registry到達・lock生成の証拠ではなく、上記post-merge validationは別途必要である。AI Developer / Claude follow-up production wiringを変更せず、Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ## Failure evidence packet（#686 / #687）

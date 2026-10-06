@@ -101,8 +101,8 @@ provenance = {**hashes, 'node_source': str(node), 'npm_source': str(npm),
 def rejected(call):
     try:
         call()
-    except (validator.Rejected, OSError, AssertionError, KeyError, TypeError, ValueError):
-        return
+    except (validator.Rejected, OSError, AssertionError, KeyError, TypeError, ValueError) as error:
+        return error
     raise AssertionError('unsafe bootstrap accepted')
 
 
@@ -177,6 +177,11 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-test-') as temporary:
         assert record['bootstrap_dependencies'] == validator.manifest_dependencies(
             validator.parse((root / 'runtime/manifest.json').read_bytes()))
         generation = root.parent
+        if fault in ('metadata-exit', 'npm-exit', 'candidate-exit', 'cleanup-exit'):
+            code = {'metadata-exit': 20, 'npm-exit': 21, 'candidate-exit': 22, 'cleanup-exit': 23}[fault]
+            raise AssertionError((code, 'STDOUT_CANARY package registry path', 'STDERR_CANARY env'))
+        if fault == 'unknown-exception':
+            raise RuntimeError('EXCEPTION_CANARY /private/path ENV_CANARY PACKAGE_CANARY REGISTRY_CANARY')
         if fault in ('unavailable', 'generation'):
             raise AssertionError('generation failed')
         if fault == 'unavailable-claim':
@@ -282,10 +287,25 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-test-') as temporary:
             assert helper.read_pair(workspace) == before and not list(trusted.iterdir())
             for fault in ('runtime-source', 'unavailable', 'unavailable-claim', 'generation', 'post-snapshot',
                           'malformed', 'source', 'integrity', 'mutation', 'manifest', 'runtime',
-                          'trusted-manifest', 'workspace', 'generation-cleanup', 'proxy-stop', 'proxy-cleanup', 'output-cleanup'):
+                          'trusted-manifest', 'workspace', 'generation-cleanup', 'proxy-stop', 'proxy-cleanup', 'output-cleanup',
+                          'metadata-exit', 'npm-exit', 'candidate-exit', 'cleanup-exit', 'unknown-exception'):
                 service_stopped = False
                 events.clear()
-                rejected(attempt)
+                error = rejected(attempt)
+                expected_reason = {'metadata-exit': 'metadata_prefetch', 'npm-exit': 'npm_generation',
+                    'candidate-exit': 'candidate_validation', 'cleanup-exit': 'generation_cleanup',
+                    'generation-cleanup': 'generation_cleanup', 'proxy-stop': 'generation_cleanup',
+                    'proxy-cleanup': 'generation_cleanup', 'runtime-source': 'internal',
+                    'unknown-exception': 'internal', 'unavailable': 'internal', 'generation': 'internal',
+                    'post-snapshot': 'candidate_validation', 'malformed': 'candidate_validation',
+                    'source': 'candidate_validation', 'integrity': 'candidate_validation',
+                    'mutation': 'candidate_validation', 'manifest': 'candidate_validation',
+                    'runtime': 'candidate_validation', 'trusted-manifest': 'candidate_validation',
+                    'unavailable-claim': 'candidate_validation'}
+                if fault in expected_reason:
+                    assert type(error) is runtime.GenerationFailure
+                    assert error.bootstrap_reason == expected_reason[fault], fault
+                    assert error.args == (expected_reason[fault],), fault
                 if fault == 'output-cleanup':
                     for path in trusted.iterdir():
                         real_rmtree(path)  # The mocked deletion failed; success must still be rejected.
@@ -324,6 +344,29 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-test-') as temporary:
                         rejected(handoff.verify)
                 rejected(handoff.verify)
             assert not list(trusted.iterdir())
+            # Cleanup-complete host/workspace/handoff rechecks remain fail-closed.
+            for target, name, injection in (
+                    (registry, 'snapshot', ['before', 'changed']),
+                    (runtime, 'workspace_state', ['before', 'changed'])):
+                service_stopped = False
+                with patch.object(target, name, side_effect=injection):
+                    error = rejected(attempt)
+                assert type(error) is runtime.GenerationFailure
+                assert error.bootstrap_reason == 'post_integrity'
+                assert not list(trusted.iterdir())
+            real_handoff = runtime.verify_handoff
+            for failure_index in (2, 3):
+                service_stopped = False
+                count = [0]
+                def verify_fault(*args):
+                    count[0] += 1
+                    if count[0] == failure_index:
+                        raise AssertionError('HANDOFF_CANARY /private/path')
+                    return real_handoff(*args)
+                with patch.object(runtime, 'verify_handoff', side_effect=verify_fault):
+                    error = rejected(attempt)
+                assert error.bootstrap_reason == 'post_integrity'
+                assert not list(trusted.iterdir())
             # Empty dependency root uses the same command and canonical acceptance.
             service_stopped = False
             (workspace / 'package.json').write_bytes(b'{"name":"empty","version":"1.0.0"}')
@@ -396,7 +439,9 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-official-workspace-') as work
          patch.object(runtime, 'load', side_effect=formal_load), \
          patch.object(formal_registry, 'start_proxy', side_effect=stopped_proxy):
         with helper.prepare(workspace, trusted, node, npm) as input_handle:
-            rejected(lambda: helper.bootstrap(input_handle, trusted).__enter__())
+            error = rejected(lambda: helper.bootstrap(input_handle, trusted).__enter__())
+            assert type(error) is runtime.GenerationFailure
+            assert error.bootstrap_reason == 'metadata_prefetch'
     assert not list(trusted.iterdir()) and helper.read_pair(workspace) == (official, None)
 print('bootstrap: official repeated generation/proxy unavailable/validated artifact/workspace unchanged/cleanup runtime passed')
 PY
