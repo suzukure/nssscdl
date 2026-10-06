@@ -103,6 +103,70 @@ export -f gh
 
 grep -Fq 'normal_followup_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
+# #639: static Product CI contract / trigger fixtures only. These assertions do
+# not emulate Actions conclusions or substitute for the natural PR command run.
+python3 -B - "$repo_root" <<'PY'
+from fnmatch import fnmatchcase
+from pathlib import Path
+import subprocess
+import sys
+import yaml
+
+repo = Path(sys.argv[1])
+ci = yaml.safe_load((repo / '.github/workflows/product-ci.yml').read_text())
+# PyYAML's YAML 1.1 loader treats the Actions key "on" as boolean True.
+assert set(ci) == {'name', True, 'permissions', 'jobs'}
+assert ci['name'] == 'Product CI' and ci['permissions'] == {'contents': 'read'}
+assert set(ci[True]) == {'pull_request'}
+trigger = ci[True]['pull_request']
+assert set(trigger) == {'types', 'paths'}
+assert trigger['types'] == ['opened', 'synchronize', 'reopened']
+paths = trigger['paths']
+assert len(paths) == len(set(paths)) == 12
+assert set(paths) == {
+    'package.json', 'package-lock.json', '.node-version', 'src/**', 'tests/**',
+    'migrations/**', 'tsconfig.json', 'wrangler.jsonc', 'vitest.config.ts',
+    'vitest.d1.config.ts', 'eslint.config.mjs', '.github/workflows/product-ci.yml'}
+# Include nested application/test/migration changes and the introduction PR.
+required = (
+    'package.json', 'package-lock.json', '.node-version', 'src/index.ts',
+    'src/booking/handler.ts', 'tests/unit/worker.test.ts',
+    'tests/integration/worker.test.ts', 'tests/d1/migration.test.ts',
+    'tests/fixtures/d1/wrangler.jsonc', 'tests/fixtures/d1/migrations/0001_bootstrap.sql',
+    'migrations/0001.sql', 'migrations/nested/0002.sql', 'tsconfig.json',
+    'wrangler.jsonc', 'vitest.config.ts', 'vitest.d1.config.ts', 'eslint.config.mjs',
+    '.github/workflows/product-ci.yml')
+excluded = (
+    '.github/scripts/test-ai-workflow.sh', '.github/scripts/prepare-product-npm.py',
+    '.github/scripts/fixtures/failure-evidence-654.json',
+    '.github/workflows/ai-workflow-regression.yml', 'README.md',
+    'docs/30_operations/ai-development-workflow.md', 'config/README.md')
+assert all(any(fnmatchcase(path, pattern) for pattern in paths) for path in required)
+assert not any(fnmatchcase(path, pattern) for path in excluded for pattern in paths)
+assert list(ci['jobs']) == ['product-ci']
+job = ci['jobs']['product-ci']
+# Closed shapes reject job/step skipping, success overrides, matrices, helpers,
+# credentials and extra provider/deploy commands without running synthetic failures.
+assert set(job) == {'name', 'runs-on', 'env', 'steps'}
+assert job['name'] == 'Product CI' and job['runs-on'] == 'ubuntu-latest'
+assert job['env'] == {'WRANGLER_SEND_METRICS': 'false'}
+checkout, setup, *commands = job['steps']
+assert set(checkout) == set(setup) == {'name', 'uses', 'with'}
+assert checkout['uses'] == 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
+assert checkout['with'] == {
+    'ref': '${{ github.event.pull_request.head.sha }}', 'persist-credentials': False}
+assert setup['uses'] == 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+assert setup['with'] == {'node-version-file': '.node-version', 'package-manager-cache': False}
+assert all(set(step) == {'name', 'run'} for step in commands)
+assert [step['run'] for step in commands] == [
+    'npm ci', 'npm run build', 'npm run typecheck', 'npm run lint',
+    'npm run test:unit', 'npm run test:integration', 'npm run d1:local',
+    'npm run test:d1', 'npm test']
+for step in commands:
+    subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
+print('Product CI: 構成・起動path・exact head・標準9コマンド・既定failure伝播の静的fixture成功。実Actions proofは別途必要です。')
+PY
+
 regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
 test -f "$regression_workflow"
 grep -Fxq 'name: AI Workflow Regression' "$regression_workflow"
