@@ -102,26 +102,31 @@ CLI stateから作り直す場合は、このtest-only directoryだけを削除�
 
 ## Product PR CI（#639）
 
-[`.github/workflows/product-ci.yml`](../.github/workflows/product-ci.yml) は本体専用の
-`Product CI` workflow / 単一jobで、`pull_request` の `opened / synchronize / reopened` に起動する。
-merge refではなく `github.event.pull_request.head.sha` をcheckoutし、credentialを保持しない。
+[`.github/workflows/product-ci.yml`](../.github/workflows/product-ci.yml) は本体検証用の
+`Product CI` workflowで、#640の適合により全PRの `pull_request` の
+`opened / synchronize / reopened` で単一job `Product CI` を生成する。
+merge refではなく `github.event.pull_request.head.sha` を全履歴付きでcheckoutし、credentialを保持しない。
 GitHub-hosted `ubuntu-latest`、`contents: read` のみ、root `.node-version` を使用し、npm cache最適化は行わない。
-上記の全9標準コマンドを表の順序どおり独立stepとして実行する。`npm test` による再実行も省略しない。
+Product差分がある場合だけNode準備と上記の全9標準コマンドを表の順序どおり独立stepとして実行する。
+`npm test` による再実行も省略しない。
 Buildはdry-run、D1はtest-only local設定を使い、Production / remote Provider / Secretsを使用しない。
 Wranglerのmetrics送信も無効にする。
 
-起動pathの機械正本はworkflowの `on.pull_request.paths` とする。
-root `package.json / package-lock.json / .node-version`、`src/** / tests/** / migrations/**`、
-`tsconfig.json / wrangler.jsonc / vitest.config.ts / vitest.d1.config.ts / eslint.config.mjs`、
-およびProduct CI workflow自身の変更を対象とする。
-AI workflowのhelper / fixtureと本体path外のdocsだけの変更では起動しない。
-将来本体のroot/pathを増やすIssueはこの境界も同期する。
-導入PRもworkflow自身の変更で自然起動する。
+Product対象pathの機械正本はworkflowの適用判定step（`applicability`）とする。
+trusted event base/headのmerge-baseからNUL-safeなdiffでPR固有のProduct差分を判定する。
+将来本体のroot/pathを増やすIssueは同stepのexact集合とprefixの境界も同期する。
+非Product差分（AI workflowのhelper / fixtureや本体path外のdocsだけの変更を含む）では
+Node/npm stepだけをskipし、判定stepが `not applicable` と報告して同じjobがsuccessになる。
+workflow/job全体はskipしない。SHA・checkout・merge-base・diff・出力の検証／取得不能は
+fail-closedでjob failureとし、fallbackしない。
+required-check設定・検証順序・人間承認・rollbackの正本は
+[`Product CI required-check適合と設定境界（#640）`](../docs/30_operations/ai-development-workflow.md#product-ci-required-check適合と設定境界640) とする。
 
-job / stepに条件分岐や `continue-on-error` を置かず、GitHub Actions標準の失敗伝播を使う。
-command失敗で後続stepがskippedになってもjobはfailureであり、全9コマンド完了だけがsuccessになる。
-cancelled runをsuccessへ補完せず、path不一致で未起動ならProduct CI success evidenceは存在しない。
-matrix / aggregate helper / retryは追加しない。required-check設定とmissing時の実効merge阻止は#640の責務である。
+条件分岐はProduct適用時のNode/npm stepだけに置き、`continue-on-error` を使わず
+GitHub Actions標準の失敗伝播を使う。Product差分ありではcommand失敗で後続stepがskippedになっても
+jobはfailureであり、全9コマンド完了だけがsuccessになる。
+非Product差分の `not applicable` successはProductコマンド実行の証拠にしない。
+cancelled runやmissing checkをsuccessへ補完せず、matrix / aggregate helper / retryは追加しない。
 
 test stdoutは加工・抑制せず通常のActions logへ保持する。TC IDの命名規約は
 [`tests/README.md`](../tests/README.md) を参照し、stdoutに含まれるIDを追跡する。
@@ -129,7 +134,7 @@ test stdoutは加工・抑制せず通常のActions logへ保持する。TC ID�
 今後#608で追加するunit / integration / D1 testも同じ標準コマンドで実行する。
 専用artifact / parser / indexerは追加しない。
 
-workflow構成と起動pathのfixtureは既存 `bash .github/scripts/test-ai-workflow.sh` で検証する。
+workflow構成と適用判定・fail-closedのfixtureは既存 `bash .github/scripts/test-ai-workflow.sh` で検証する。
 このfixtureはAI Workflow Regressionで実行されるが、そのsuccessもCodexのローカル報告も
 Product CIのformal proofの代用にはしない。導入PRのfinal current HEADに対する
 Product CIのsuccessをGitHub Actionsで確認するまでは、#638の依存付き実行と#639のnatural proofは未確認である。
