@@ -99,3 +99,37 @@ CLI stateから作り直す場合は、このtest-only directoryだけを削除�
 外部接続できないAI内ではoffline installの結果を記録し、依存取得不能時のcommandは未実施とする。
 未実施は成功と扱わず、Codexのローカル自己申告とformal current-head CI証跡を区別する。
 本選定は既存POL / BR / REQ / AC / TC / CON / OOS、基本設計および#609〜#611の製品契約を変更しない。
+
+## Product PR CI（#639）
+
+[`.github/workflows/product-ci.yml`](../.github/workflows/product-ci.yml) は本体専用の
+`Product CI` workflow / 単一jobで、`pull_request` の `opened / synchronize / reopened` に起動する。
+merge refではなく `github.event.pull_request.head.sha` をcheckoutし、credentialを保持しない。
+GitHub-hosted `ubuntu-latest`、`contents: read` のみ、root `.node-version` を使用し、npm cache最適化は行わない。
+上記の全9標準コマンドを表の順序どおり独立stepとして実行する。`npm test` による再実行も省略しない。
+Buildはdry-run、D1はtest-only local設定を使い、Production / remote Provider / Secretsを使用しない。
+Wranglerのmetrics送信も無効にする。
+
+起動pathの機械正本はworkflowの `on.pull_request.paths` とする。
+root `package.json / package-lock.json / .node-version`、`src/** / tests/** / migrations/**`、
+`tsconfig.json / wrangler.jsonc / vitest.config.ts / vitest.d1.config.ts / eslint.config.mjs`、
+およびProduct CI workflow自身の変更を対象とする。
+AI workflowのhelper / fixtureと本体path外のdocsだけの変更では起動しない。
+将来本体のroot/pathを増やすIssueはこの境界も同期する。
+導入PRもworkflow自身の変更で自然起動する。
+
+job / stepに条件分岐や `continue-on-error` を置かず、GitHub Actions標準の失敗伝播を使う。
+command失敗で後続stepがskippedになってもjobはfailureであり、全9コマンド完了だけがsuccessになる。
+cancelled runをsuccessへ補完せず、path不一致で未起動ならProduct CI success evidenceは存在しない。
+matrix / aggregate helper / retryは追加しない。required-check設定とmissing時の実効merge阻止は#640の責務である。
+
+test stdoutは加工・抑制せず通常のActions logへ保持する。TC IDの命名規約は
+[`tests/README.md`](../tests/README.md) を参照し、stdoutに含まれるIDを追跡する。
+既存 `[bootstrap #638]` smokeを未実装REQ / ACや業務TCのPass証拠に算入しない。
+今後#608で追加するunit / integration / D1 testも同じ標準コマンドで実行する。
+専用artifact / parser / indexerは追加しない。
+
+workflow構成と起動pathのfixtureは既存 `bash .github/scripts/test-ai-workflow.sh` で検証する。
+このfixtureはAI Workflow Regressionで実行されるが、そのsuccessもCodexのローカル報告も
+Product CIのformal proofの代用にはしない。導入PRのfinal current HEADに対する
+Product CIのsuccessをGitHub Actionsで確認するまでは、#638の依存付き実行と#639のnatural proofは未確認である。
