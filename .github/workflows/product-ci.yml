@@ -3,19 +3,6 @@ name: Product CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    paths:
-      - 'package.json'
-      - 'package-lock.json'
-      - '.node-version'
-      - 'src/**'
-      - 'tests/**'
-      - 'migrations/**'
-      - 'tsconfig.json'
-      - 'wrangler.jsonc'
-      - 'vitest.config.ts'
-      - 'vitest.d1.config.ts'
-      - 'eslint.config.mjs'
-      - '.github/workflows/product-ci.yml'
 
 permissions:
   contents: read
@@ -32,36 +19,96 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Product差分の適用判定
+        id: applicability
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], stderr=subprocess.DEVNULL)
+
+          try:
+              base, head = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+              if not all(re.fullmatch(r'[0-9a-f]{40}', sha) for sha in (base, head)):
+                  raise ValueError('sha_invalid')
+              if git('rev-parse', 'HEAD').strip() != head.encode():
+                  raise ValueError('head_mismatch')
+              if git('rev-parse', '--verify', base + '^{commit}').strip() != base.encode():
+                  raise ValueError('base_unavailable')
+              merge = git('merge-base', base, head).strip()
+              if not re.fullmatch(rb'[0-9a-f]{40}', merge):
+                  raise ValueError('merge_base_invalid')
+              changed = git('diff', '--no-renames', '--name-only', '-z', merge.decode(), head)
+              if changed and not changed.endswith(b'\0'):
+                  raise ValueError('diff_framing_invalid')
+              paths = changed.split(b'\0')[:-1] if changed else []
+              if not all(paths):
+                  raise ValueError('path_invalid')
+              exact = {b'package.json', b'package-lock.json', b'.node-version',
+                       b'tsconfig.json', b'wrangler.jsonc', b'vitest.config.ts',
+                       b'vitest.d1.config.ts', b'eslint.config.mjs',
+                       b'.github/workflows/product-ci.yml'}
+              applicable = any(path in exact or path.startswith((b'src/', b'tests/', b'migrations/'))
+                               for path in paths)
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='ascii') as output:
+                  output.write('applicable=' + ('true' if applicable else 'false') + '\n')
+          except Exception:
+              print('Product差分を判定できないため、fail-closedで停止します。', file=sys.stderr)
+              sys.exit(1)
+          print('Product差分あり: 標準9コマンドを実行します。' if applicable else
+                'Product差分なし: not applicable（Node/npmコマンドは実行しません）。')
+          PY
 
       - name: 標準Nodeを準備
+        if: steps.applicability.outputs.applicable == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
 
       - name: Clean install
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm ci
 
       - name: Build（deployなし）
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run build
 
       - name: Typecheck
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run typecheck
 
       - name: Lint
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run lint
 
       - name: Unit tests
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:unit
 
       - name: Integration tests
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:integration
 
       - name: Local D1 migrations
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run d1:local
 
       - name: Local D1 smoke
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
 
       - name: 全テスト
+        if: steps.applicability.outputs.applicable == 'true'
         run: npm test

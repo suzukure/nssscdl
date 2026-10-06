@@ -103,13 +103,16 @@ export -f gh
 
 grep -Fq 'normal_followup_reason' "$repo_root/.github/scripts/evaluate-followup-gate.sh"
 
-# #639: static Product CI contract / trigger fixtures only. These assertions do
-# not emulate Actions conclusions or substitute for the natural PR command run.
+# #639 / #640: stable check shape and actual applicability block fixtures.
+# These do not emulate Actions conclusions or replace natural PR/settings proof.
 python3 -B - "$repo_root" <<'PY'
-from fnmatch import fnmatchcase
+import base64
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import yaml
 
 repo = Path(sys.argv[1])
@@ -119,14 +122,8 @@ assert set(ci) == {'name', True, 'permissions', 'jobs'}
 assert ci['name'] == 'Product CI' and ci['permissions'] == {'contents': 'read'}
 assert set(ci[True]) == {'pull_request'}
 trigger = ci[True]['pull_request']
-assert set(trigger) == {'types', 'paths'}
+assert set(trigger) == {'types'}
 assert trigger['types'] == ['opened', 'synchronize', 'reopened']
-paths = trigger['paths']
-assert len(paths) == len(set(paths)) == 12
-assert set(paths) == {
-    'package.json', 'package-lock.json', '.node-version', 'src/**', 'tests/**',
-    'migrations/**', 'tsconfig.json', 'wrangler.jsonc', 'vitest.config.ts',
-    'vitest.d1.config.ts', 'eslint.config.mjs', '.github/workflows/product-ci.yml'}
 # Include nested application/test/migration changes and the introduction PR.
 required = (
     'package.json', 'package-lock.json', '.node-version', 'src/index.ts',
@@ -141,30 +138,104 @@ excluded = (
     '.github/scripts/fixtures/failure-evidence-654.json',
     '.github/workflows/ai-workflow-regression.yml', 'README.md',
     'docs/30_operations/ai-development-workflow.md', 'config/README.md')
-assert all(any(fnmatchcase(path, pattern) for pattern in paths) for path in required)
-assert not any(fnmatchcase(path, pattern) for path in excluded for pattern in paths)
 assert list(ci['jobs']) == ['product-ci']
 job = ci['jobs']['product-ci']
-# Closed shapes reject job/step skipping, success overrides, matrices, helpers,
-# credentials and extra provider/deploy commands without running synthetic failures.
+# Only heavy steps may skip; default success() retains failure propagation.
 assert set(job) == {'name', 'runs-on', 'env', 'steps'}
 assert job['name'] == 'Product CI' and job['runs-on'] == 'ubuntu-latest'
 assert job['env'] == {'WRANGLER_SEND_METRICS': 'false'}
-checkout, setup, *commands = job['steps']
-assert set(checkout) == set(setup) == {'name', 'uses', 'with'}
+checkout, applicability, setup, *commands = job['steps']
+assert set(checkout) == {'name', 'uses', 'with'}
+assert set(setup) == {'name', 'if', 'uses', 'with'}
 assert checkout['uses'] == 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
 assert checkout['with'] == {
-    'ref': '${{ github.event.pull_request.head.sha }}', 'persist-credentials': False}
+    'ref': '${{ github.event.pull_request.head.sha }}', 'persist-credentials': False,
+    'fetch-depth': 0}
+assert set(applicability) == {'name', 'id', 'env', 'shell', 'run'}
+assert applicability['id'] == 'applicability' and applicability['shell'] == 'bash'
+assert applicability['env'] == {
+    'BASE_SHA': '${{ github.event.pull_request.base.sha }}',
+    'HEAD_SHA': '${{ github.event.pull_request.head.sha }}'}
 assert setup['uses'] == 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
 assert setup['with'] == {'node-version-file': '.node-version', 'package-manager-cache': False}
-assert all(set(step) == {'name', 'run'} for step in commands)
+assert all(set(step) == {'name', 'if', 'run'} for step in commands)
+assert all(step['if'] == "steps.applicability.outputs.applicable == 'true'"
+           for step in [setup, *commands])
 assert [step['run'] for step in commands] == [
     'npm ci', 'npm run build', 'npm run typecheck', 'npm run lint',
     'npm run test:unit', 'npm run test:integration', 'npm run d1:local',
     'npm run test:d1', 'npm test']
 for step in commands:
     subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
-print('Product CI: 構成・起動path・exact head・標準9コマンド・既定failure伝播の静的fixture成功。実Actions proofは別途必要です。')
+block = applicability['run']
+subprocess.run(['bash', '-n'], input=block.encode(), check=True)
+base, head, merge = 'a' * 40, 'b' * 40, 'c' * 40
+with tempfile.TemporaryDirectory() as temporary:
+    tmp = Path(temporary)
+    mock = tmp / 'git'
+    mock.write_text('''#!/usr/bin/env python3
+import base64, json, os, sys
+args = sys.argv[1:]
+with open(os.environ['GIT_LOG'], 'a') as log:
+    log.write(json.dumps(args) + '\\n')
+if os.environ.get('GIT_FAILURE') == args[0]: sys.exit(1)
+base, head, merge = 'a' * 40, 'b' * 40, 'c' * 40
+if args == ['rev-parse', 'HEAD']:
+    print(os.environ.get('MOCK_HEAD', head))
+elif args == ['rev-parse', '--verify', base + '^{commit}']:
+    print(os.environ.get('MOCK_BASE', base))
+elif args == ['merge-base', base, head]:
+    print(os.environ.get('MOCK_MERGE', merge))
+elif args == ['diff', '--no-renames', '--name-only', '-z', merge, head]:
+    sys.stdout.buffer.write(base64.b64decode(os.environ['CHANGED_B64']))
+elif args == ['diff', '--no-renames', '--name-only', '-z', base, head]:
+    # Base-only Product change must not make a docs PR applicable.
+    sys.stdout.buffer.write(base64.b64decode(os.environ['CHANGED_B64']) + b'src/base-only.ts\\0')
+else: sys.exit(90)
+''')
+    mock.chmod(0o755)
+    output, log = tmp / 'output', tmp / 'git-log'
+    env = {**os.environ, 'PATH': str(tmp) + ':' + os.environ['PATH'],
+           'BASE_SHA': base, 'HEAD_SHA': head, 'GITHUB_OUTPUT': str(output),
+           'GIT_LOG': str(log)}
+
+    def run(data, expected, overrides=None):
+        output.unlink(missing_ok=True)
+        log.unlink(missing_ok=True)
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', block],
+                                env={**env, 'CHANGED_B64': base64.b64encode(data).decode(),
+                                     **(overrides or {})}, capture_output=True)
+        if expected is None:
+            assert result.returncode != 0 and not output.exists(), result.stderr
+            assert 'fail-closed'.encode() in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            assert output.read_text() == f'applicable={expected}\n'
+            assert ('not applicable'.encode() in result.stdout) == (expected == 'false')
+            assert [json.loads(line) for line in log.read_text().splitlines()] == [
+                ['rev-parse', 'HEAD'], ['rev-parse', '--verify', base + '^{commit}'],
+                ['merge-base', base, head],
+                ['diff', '--no-renames', '--name-only', '-z', merge, head]]
+
+    for path in required:
+        run(path.encode() + b'\0', 'true')
+    run(b'\0'.join(path.encode() for path in excluded) + b'\0', 'false')
+    run(b'README.md\0src/space name\nline-\xff.ts\0', 'true')
+    run(b'docs/src/fake.ts\0src-other/fake.ts\0package.json.bak\0', 'false')
+    # --no-renames observes both rename endpoints, including deleted Product paths.
+    run(b'src/deleted.ts\0docs/moved.md\0', 'true')
+    run(b'docs/deleted.md\0tests/moved.ts\0', 'true')
+    run(b'', 'false')
+    for data in (b'bad-framing', b'\0', b'README.md\0\0'):
+        run(data, None)
+    for overrides in ({'BASE_SHA': 'invalid'}, {'HEAD_SHA': head.upper()},
+                      {'MOCK_HEAD': base}, {'MOCK_BASE': head},
+                      {'GIT_FAILURE': 'rev-parse'}, {'GIT_FAILURE': 'merge-base'},
+                      {'MOCK_MERGE': ''}, {'MOCK_MERGE': 'invalid'},
+                      {'MOCK_MERGE': merge + '\n' + base}, {'GIT_FAILURE': 'diff'},
+                      {'GITHUB_OUTPUT': str(tmp)}):
+        run(b'README.md\0', None, overrides)
+print('Product CI: 全PR check構成・NUL-safe適用判定・fail-closed・標準9コマンドfixture成功。実Actions/settings proofは別途必要です。')
 PY
 
 regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
