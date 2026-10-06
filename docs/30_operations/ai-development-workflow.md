@@ -662,9 +662,19 @@ Issue起点post-Codex gateのclassifierが `scope_decision` を返した場合�
 
 最終応答は16 KiB、各fieldは1 KiB UTF-8、renderしたcommentは8 KiBを上限とする。通常fileのbounded read、strict UTF-8、CRLF以外の不正control文字、required field欠落・重複・空値・不正形式、入力／field／render上限を検証する。promptでraw tool output / JSONL、token / secret / credential / environment dump、absolute runner/toolcache path、numeric UID/GID等のrunner内部情報を禁止し、validatorでも明白なcredential prefix・private key・Bearer/JWT・webhook・機密値代入・environment dump・runner path・UID/GID・raw JSON形状を拒否する。全finalの転載やraw stream保存は行わず、検証済み7項目だけをHTML / Markdown / mentionをescapeして表示する。この形状検査は任意の未知secretの完全検出を保証せず、producerはraw値を持ち込まない責務を維持する。
 
-順序はreport検証、既存machine pause成立、既存generic pause comment、bounded human report commentとする。既存pause recordの `reason` / fingerprint / lifecycleは変更せず、`payload.detail` へmodel free textを埋め込まない。scope分類後のreport検証・一時file保存失敗はraw内容を反射せず固定診断の `scope_decision` pauseを成立させ、step failureで停止する。human report comment API失敗・応答不明も固定診断でstep failureとし、成立済みpauseを維持する。どちらもdiff guard・commit・push・PR writeへ進まず、理由再取得のpaid retryや自動再送を行わない。最終応答欠落・空、classifier異常・両marker曖昧性は従来の `developer_execution_failed` を維持し、markerなし・requirements-only・Claude Blocking follow-upへ保存を一般化しない。一時report fileはgate終了時に削除する。
+順序はreport検証、既存machine pause成立、既存generic pause comment、bounded human report commentとする。既存pause recordの `reason` / fingerprint / lifecycleは変更せず、`payload.detail` へmodel free textを埋め込まない。scope分類後のreport検証・一時file保存失敗はraw内容を反射せず固定診断の `scope_decision` pauseを成立させ、step failureで停止する。human report comment API失敗・応答不明も固定診断でstep failureとし、成立済みpauseを維持する。どちらもdiff guard・commit・push・PR writeへ進まず、理由再取得のpaid retryや自動再送を行わない。最終応答欠落・空、classifier異常・両marker曖昧性は従来の `developer_execution_failed` を維持し、このscope reporterをmarkerなし・requirements-only・Claude Blocking follow-upへ一般化しない。requirements-onlyの保存は次節の独立した4項目検証を正本とする。一時report fileはgate終了時に削除する。
 
 検証は既存 `test-ai-developer-workflow.sh` で実gateを抽出し、synthetic scope reportと実common pause helper・mock GitHub writeを合成する。7項目の投稿・pause先行・fingerprint/resume不変、正常／上限境界／不正UTF-8・control・field・oversize・credential/runner形状・file異常、固定診断の非反射、comment failure、後続write不達を確認する。正式current-headの証拠は自然なAI Workflow Regressionで確認し、外部サービスへ診断目的の実アクセスは行わない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### requirements_changeの人間向け判断理由保存（#826）
+
+Issue起点post-Codex gateのclassifierが `requirements_change` を返した場合だけ、最終応答から exact label `Requirement/upstream decision`、`Why current Issue cannot complete`、`Affected identifiers`、`Blocked downstream work` の4項目を検証し、pause成立後に別のhuman evidence commentとして保存する。形式の正本は `.github/workflows/ai-developer.yml` のIssue-origin fixed promptと `Gate requirement changes` とする。各labelは行頭から1回だけ `Label: 値` のplain-text単独行とし、日本語の非空説明を記載する。他の報告文とは空行で区切り、値の次行への継続は拒否する。
+
+既存scope reporterと同じ通常file・bounded read・strict UTF-8・control文字・unsafe shape検査、最終応答16 KiB / 各field 1 KiB / render後8 KiBの上限、HTML / Markdown / mention escapeを適用する。4項目以外のraw final / JSONL / tool outputを転載せず、任意の未知secretの完全検出を保証しない。検証・一時file保存失敗時も固定の日本語診断で `requirements_change` pauseを成立させてstep failureとする。既存machine pause recordとgeneric pause commentを先に成立させ、その後だけ `gh issue comment --body-file` で理由を投稿する。投稿失敗・応答不明は固定診断でstep failureとし、pauseを維持し、diff guard・commit・push・PR writeへ進まない。一時reportはgate終了時に削除する。
+
+markerだけをmachine分類に使い、4項目だけではpauseしない。reason / schema / fingerprint / notification / `/ai resume develop`、両marker時の `developer_execution_failed`、scopeの7項目、Claude Blocking follow-upは変更しない。model free textをpause recordへ入れず、新しい永続artifact・paid diagnostic・自動再送を追加しない。既存Port/interface、test-only fake/fixture adapter、isolated fixture、既存error contractでcurrent Issue/mainのContractをそのまま再利用できることだけをProduct要求変更の理由としない。Product要求・仕様・未決の上流判断自体の変更／明確化が必要ならrequirements marker、Product要求変更を伴わずIssue authority外の新しいcross-boundary Contract / trust / ownership / failure semantics判断が必要なら既存scope markerとし、どちらも不要なら通常実装を継続する。
+
+検証は既存 `test-ai-developer-workflow.sh` で実gate、実common pause helperとmock GitHub writeを合成し、正常4項目、markerなし、欠落／重複／空／multiline／上限／unsafe shape／file異常、literal表示、pause先行、投稿失敗、fingerprint/resumeと後続write不達を確認する。正式current-head AI Workflow Regressionは独立した証拠として確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
 ### human pause record のschema契約
 
