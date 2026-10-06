@@ -761,6 +761,18 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 * follow-upはinner `RuntimeMaxSec=700s`、step 12分、job 15分で有限時間に収束させる。Issue起点developerと同じtrusted Action blob / localhost Responses proxy検証、runner UID + nobody GID + clear groups + no-new-privs + capabilities zero、generic AF_UNIX許可と13 fixed socketのservice-local mask、residual `/run` writable root-owned UNIX socket fail-closed scanを使う。service終了後のunit限定journal回収、rc=0時のexact preflight success marker検証、exit 51の切り分けも「Issue起点developerのCodex実行境界」を正本として同一契約を使う。workloadの前後ではread-only socket / systemd-resolved / DNS integrity observerがrepository write前に不変を確認する。OpenAI API keyはsetup Actionだけに渡し、native serviceの`env -i` allowlistには渡さない。failure時のrequirement gate、trusted diff guard、repository-write fail-closed順序とautomatic retryなしの契約は維持する。
 * timeout / failure後に同jobでrepository writeへ進む例外は設けない。developer stepがsuccessしない限り、requirement gate、diff guard、commit、push、PR作成へ進まない。
 
+#### 変更前の証拠照合と診断変更の集約
+
+トラブル調査の開始時には、人間/ChatGPT上の開発補助が次の順で既存証拠を照合する。本手順は上記の異常終了診断と[Claude review失敗の分類と再実行](#claude-review失敗の分類と再実行)を具体化し、新しいツール・paid AI診断経路を作らない。
+
+1. **変更前に照合する**：current main/対象HEAD、run ID/attempt、失敗step、既存の非機密log/summary/artifactを確認し、失敗領域に直接関連するcaller/helper、既存fixture、contractをcall chainに沿って照合する。外部挙動が判断を左右する場合は既存実例や公式仕様を根拠にし、確認できない事項は未検証として残す。全repo探索、raw機密情報の転載、新しいpaid AI診断、探索目的の追加runは要求しない。
+2. **調査結果を記録する**：観測事実、確認済み/除外可能な仮説、残る仮説、次の観測で区別したい事項を既存Issueへ短く記録する。静的分析やsynthetic fixtureを実runnerでの成功証拠へ昇格させず、[検証結果の出所](#検証結果の出所)に従う。変更・commit・PRが不要な調査/結果記録は人間/開発補助のIssueコメントで完結し、レビュー用PRを作らない。CodexのGitHub/API禁止は維持する。既存workflowの再実行可否は各経路の現行の許可・前提・retry契約と[人間エスカレーション](#人間エスカレーション)の停止/再開に従う。
+3. **必要な診断変更を一度に整理する**：既存証拠で判断できない場合は、次の観測で区別する原因領域、必要最小の固定非機密code、直接変更対象、既存fixture、review後の再検証条件をまとめ、[current implementation contract](#issue本文におけるcurrent-implementation-contract)と[Work Admission Control](#work-admission-control)のscope判断へ渡す。入口stageの追加だけではcall chain内部が再び判別不能にならないかも、変更前に確認する。
+4. **確定scope内で集約する**：同一原因・同じ確定scopeの直接関連診断変更を集約する。一度にまとめることを理由にscope/security boundary/diff上限を越えず、範囲外helperの変更が必要なら実装前に[既存scope decision](#issue起点開発中のdynamic-scope-decision)へ戻す。汎用診断基盤、retry loop、永続cache、新台帳は作らない。
+5. **変更PRの独立reviewを維持する**：mainへ残す実行コード、安全境界、token、cleanup、成功判定、証明fixtureを変更するPRには[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)の既存独立reviewを適用する。検証実行/ログ確認だけと変更PRのreviewを区別し、review承認を自然run成功の代用にしない。非Blockingの扱いは[Work Admission Control](#work-admission-control)を正本とする。
+
+費用削減額、原因特定の成功、全診断を1PRへ収束できることは保証しない。本運用はIssue #808の承認時点から適用し、文書mergeを #795 のread-only調査の前提にしない。
+
 #### Issue起点developerのCodex実行境界
 
 Issue Developer / `/ai resume develop` はIssue単位のwriter concurrency内で、Codex runtime準備前に `origin/main` を明示fetchし、そのcommitをcurrent trusted base SHAとしてhelper blob、`AGENTS.md`、diff guard contractに使用する。canonical `ai/issue-N` branchが存在しない場合だけこのSHAから作成する。既存branchはremote HEADを取得し、current mainがbranch HEADのancestorである場合だけCodexへ進む。stale branch、fetch失敗、ancestry検証失敗ではremote branchへのwriteやpaid Codexを行わずfail-closedし、remote HEADがpre-write snapshotから不変なら既存failure handlerの `developer_execution_failed`（`failed_action=develop`）pauseへ進む。branchの自動merge / rebase / resetは行わず、Codex diff guardは今回のstaged diffだけを計測する。#484 / #487のpaused PRは自動同期せずsuperseded候補として保持し、pause解除やPR normalizationは#229 / #483 / #485の正本に従う。
