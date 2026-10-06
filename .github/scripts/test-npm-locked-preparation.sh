@@ -458,6 +458,29 @@ for name in ('npm-locked-preparation', 'product-npm-orchestrator'):
 assert 'validator.prepare(' not in (scripts / 'product-npm-orchestrator.py').read_text()
 print('locked preparation: mandatory #649/transport/partial failure/export/cleanup/no host fallback mocks passed')
 
+# Use the existing explicit CommonJS loader for checkout sources, whose package
+# scope may be ESM. Keep the actual adapter bytes and require.main guard intact.
+adapter_loader = """const fs = require('node:fs'), m = {exports:{}};
+new Function('require','module',fs.readFileSync(process.argv[1],'utf8'))(require,m);
+"""
+with tempfile.TemporaryDirectory(prefix='locked-adapter-esm-') as temporary:
+    package = Path(temporary)
+    (package / 'package.json').write_text('{"type":"module"}')
+    adapter = package / 'adapter.js'
+    adapter.write_bytes((scripts / 'npm-registry-lock-adapter.js').read_bytes())
+    assert adapter.read_bytes() == (scripts / 'npm-registry-lock-adapter.js').read_bytes()
+    # Invalid port rejects before any socket/timer is created; no registry call.
+    assertions = """const assert = require('node:assert/strict');
+assert.deepEqual(Object.keys(m.exports).sort(),
+  ['handler','metadata','metadataHandler','metadataPath','serve']);
+for (const value of Object.values(m.exports)) assert.equal(typeof value,'function');
+assert.equal(m.exports.metadataPath('@scope/example'),'/@scope%2fexample');
+assert.throws(() => m.exports.metadata(0), error => error.code === 'ERR_ASSERTION');
+"""
+    subprocess.run([shutil.which('node'), '-e', adapter_loader + assertions, str(adapter)],
+                   check=True, timeout=10, cwd=package, env=helper.ENV)
+print('locked preparation: actual CommonJS adapter loading in type=module package passed (offline)')
+
 if 'codex-' in Path('/proc/self/cgroup').read_text():
     print('SKIP locked preparation runtime: inherited Codex boundary; independent systemd runner required')
     sys.exit(0)
@@ -481,7 +504,7 @@ try:
         subprocess.run(['sudo', '-n', 'install', '-m', '0444', str(scripts / name),
                         str(proxy_root / name)], check=True, timeout=5)
     process, port = registry.start_proxy(proxy_root)
-    javascript = ("require(process.argv[1]).metadata(Number(process.argv[2]))"
+    javascript = (adapter_loader + "m.exports.metadata(Number(process.argv[2]))"
                   ".then(v=>console.log(JSON.stringify(v))).catch(()=>process.exit(1));")
     metadata = json.loads(subprocess.check_output([str(node), '-e', javascript,
         str(scripts / 'npm-registry-lock-adapter.js'), str(port)], timeout=10, env=helper.ENV))
