@@ -139,7 +139,7 @@ it("[#829 D1 fixture] allows unpublished months, disabled Slots, cancellation hi
   }
 });
 it("[#829 D1 fixture] accepts non-reservation occupancy shapes at the DB constraint level", async () => {
-  // Shape evidence only; AdminHold / GroupLesson detail invariants are outside this read fixture.
+  // Shape evidence only; #834 management-occupancy.test.ts checks the multi-row detail invariant.
   for (const [type, slot] of [["admin_hold", "slot-b"], ["group_lesson", "slot-c"]]) {
     const result = await env.TEST_DB.prepare(
       `INSERT INTO slot_occupancies (id, slot_id, occupancy_type, reservation_id, created_at, created_by)

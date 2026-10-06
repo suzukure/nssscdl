@@ -39,6 +39,12 @@ entity slot_occupancies {
   reservation_id : TEXT UNIQUE, FK
   * occupancy_type : TEXT
 }
+entity admin_holds {
+  * occupancy_id : TEXT PK, FK
+}
+entity group_lessons {
+  * occupancy_id : TEXT PK, FK
+}
 entity reservation_absences {
   * reservation_id : TEXT PK, FK
 }
@@ -71,6 +77,8 @@ schedule_months ||--o{ lesson_slots
 schedule_months ||--o{ student_monthly_lesson_configs
 lesson_slots ||--o{ student_reservations
 lesson_slots ||--o| slot_occupancies : "slot_id UNIQUE"
+slot_occupancies ||--o| admin_holds : "occupancy_id PK, FK"
+slot_occupancies ||--o| group_lessons : "occupancy_id PK, FK"
 student_reservations |o--o| slot_occupancies : "(reservation_id, slot_id) FK"
 student_reservations ||--o| reservation_absences
 student_reservations ||--o| reservation_monthly_count_overrides

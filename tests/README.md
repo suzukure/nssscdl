@@ -16,8 +16,16 @@ HTTP認可・D1整合性検査の実統合およびUIはこのunit testの証明
 read sliceだけを保持し、`students(id)`はtest-only FK parentとする。
 月・Slot・Reservation・OccupancyのFK / CHECK / UNIQUE、read index、`PRAGMA foreign_key_check`と
 同じIDを使う別test file間の隔離を確認する。Test nameの `[#829 D1 fixture]` はSchema制約の証拠であり、
-業務TC全体のPassへ算入しない。Production auth / migration、Repository Adapter、管理占有の詳細行・
-複数行Invariant検査は含まない。既存bootstrap smokeも引き続き同じ標準D1コマンドで実行する。
+業務TC全体のPassへ算入しない。Production auth / migration、Repository Adapterは含まない。
+既存bootstrap smokeも引き続き同じ標準D1コマンドで実行する。
+
+`d1/management-occupancy.test.ts` / `d1/management-occupancy-isolation.test.ts` は#834のisolated詳細参照検証。
+`fixtures/d1/migrations/0007_management_details.sql`は上記物理設計 §2.1の
+`admin_holds(occupancy_id PK/FK)` / `group_lessons(occupancy_id PK/FK)`だけを追加する。
+`d1/management-occupancy-fixture.ts`のIntegrity Queryは同節のSQLと一致し、3種占有ごとの全4詳細組合せ、
+有効な詳細、orphan FK拒否、同種重複拒否、confirmed参照条件、FK確認と別file間の隔離を検証する。
+`[#834 D1 fixture]`はSchema / Integrity Queryの証拠であり、System / Acceptance TC全体のPassへ算入しない。
+未来Slotのerror / 開始済みSlotのViewへのD1実統合は#830に残し、Production有効化・管理Commandは含まない。
 
 #638の基盤smokeには `[bootstrap #638]` をtest nameに付け、業務TCのPass件数へ算入しない。
 業務を実装したテストでは、上記prefixに代えて対応する既存TC IDをtest nameへ保持する（例: `[TC-F-003-01] ...`）。
