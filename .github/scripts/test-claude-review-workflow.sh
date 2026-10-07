@@ -121,7 +121,7 @@ gh() {
         printf '%s\n' '{"state":"DRAFT","labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
-        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"changedFiles":1,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
         ;;
     esac
   elif [ "$1" = api ]; then
@@ -169,7 +169,7 @@ gh() {
     if [[ "$*" == *'--name-only'* ]]; then
       printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
     elif [ "${MOCK_FULL_DIFF:-false}" = true ]; then
-      printf '%s\n' 'diff --git a/x b/x'
+      printf '%s\n' 'diff --git a/x b/x' 'new file mode 100644' '--- /dev/null' '+++ b/x' '@@ -0,0 +1 @@' '+changed'
     else
       echo "Unexpected PR diff invocation: $*" >&2
       return 2
