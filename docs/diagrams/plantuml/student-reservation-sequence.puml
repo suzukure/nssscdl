@@ -34,6 +34,7 @@ Student -> UI: Select slot and request preview
 UI -> HTTP: POST /api/me/reservations/preview {slotId}
 HTTP -> Guard: Validate this request
 Guard --> HTTP: Resolved student
+HTTP -> HTTP: Validate Origin / Session CSRF before POST preview
 HTTP -> Preview: Preview for student
 Preview -> Repo: Read latest slot, month and student reservations
 Repo -> D1: Read
@@ -49,6 +50,7 @@ Student -> UI: Confirm reviewed preview
 UI -> HTTP: POST /api/me/reservations {slotId, expectedStateToken}
 HTTP -> Guard: Validate this request
 Guard --> HTTP: Resolved student + server-internal session context
+HTTP -> HTTP: Validate Origin / Session CSRF before POST confirm
 HTTP -> Confirm: Confirm for student with internal session context
 Confirm -> Repo: Read and guard latest committed state
 Repo -> D1: Primary read set + server time T0

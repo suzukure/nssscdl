@@ -9,7 +9,7 @@ ContainerDb(db, "Main Database", "Cloudflare D1", "Authoritative business state;
 
 Container_Boundary(worker, "Application Worker - one Cloudflare Worker deploy unit") {
   Component(ui, "Web/UI Presentation", "Web UI", "Calendar/list, preview confirmation, result and history.")
-  Component(router, "HTTP Router / API Adapter", "HTTP / JSON", "Validates wire and maps application results.")
+  Component(router, "HTTP Router / API Adapter", "HTTP / JSON", "Validates wire, Origin / Session CSRF and maps application results. Auth HTTP contract: Application section 10.")
   Component(guard, "Student Session / Authorization Guard", "Application", "Validates each request and resolves the student.")
   Component(authrepo, "Student Session D1 Adapter (design)", "Infrastructure", "Hash lookup / internal request context; physical contract in 02 section 8. Production wiring remains disabled.")
   Component(schedule, "Schedule Query Application Service", "Application", "Builds one student slot view.")
