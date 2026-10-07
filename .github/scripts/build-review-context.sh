@@ -7,6 +7,7 @@ output="${3:?output path is required}"
 trusted_logins_csv="${4:-}"
 reviewer_logins_csv="${5:-}"
 summary_path="${6:-}" # Explicit opt-in; other callers retain their policy.
+ci_head="${7:-}" # Opt-in snapshot, bound to the caller's reviewed head SHA.
 follow_up_issue_limit=5
 
 mkdir -p "$(dirname "$output")"
@@ -290,6 +291,108 @@ for issue_number in "${follow_up_issues[@]}"; do
   fi
 done
 
+if [ -n "$ci_head" ]; then
+  [[ "$ci_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'CI対象head SHAが不正です。' >&2; exit 1; }
+  [ "$(jq -r .headRefOid "$metadata")" = "$ci_head" ] &&
+    [ "$(git rev-parse HEAD)" = "$ci_head" ] || {
+      echo 'CI対象headとPR metadata / checkoutが一致しません。' >&2; exit 1;
+    }
+  # No polling, retries, logs or artifacts. API failure stays on the existing
+  # context-generation error path, before any paid review is reachable.
+  gh api "repos/${repo}/pulls/${pr_number}" > "$issue_dir/ci-before.json"
+  jq -e --arg repo "$repo" --arg head "$ci_head" --argjson number "$pr_number" '
+    .number == $number and .head.sha == $head and
+    .head.repo.full_name == $repo and .base.repo.full_name == $repo
+  ' "$issue_dir/ci-before.json" > /dev/null || {
+    echo 'CI取得前のPR head / repositoryが一致しません。' >&2; exit 1;
+  }
+  ci_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  gh api --paginate --slurp "repos/${repo}/actions/runs?head_sha=${ci_head}&per_page=100" > "$issue_dir/ci-pages.json"
+  gh api "repos/${repo}/pulls/${pr_number}" > "$issue_dir/ci-after.json"
+  ci_fetched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  python3 -I -B - "$repo" "$pr_number" "$ci_head" "$ci_started_at" "$ci_fetched_at" "$issue_dir" <<'PYTHON' > "$issue_dir/ci.md"
+from collections import Counter
+import json
+from pathlib import Path
+import sys
+
+repo, number, head, started, fetched, directory = sys.argv[1:]
+directory = Path(directory)
+workflows = {
+    ".github/workflows/product-ci.yml": "Product CI",
+    ".github/workflows/traceability-check.yml": "PR Traceability",
+    ".github/workflows/ai-workflow-regression.yml": "AI Workflow Regression",
+}
+
+def require(condition):
+    if not condition:
+        raise ValueError("invalid_ci_snapshot")
+
+def positive(value):
+    return type(value) is int and value > 0
+
+try:
+    for name in ("ci-before.json", "ci-after.json"):
+        pr = json.loads((directory / name).read_bytes())
+        require(pr["number"] == int(number) and pr["head"]["sha"] == head
+                and pr["head"]["repo"]["full_name"] == repo
+                and pr["base"]["repo"]["full_name"] == repo)
+    pages = json.loads((directory / "ci-pages.json").read_bytes())
+    require(type(pages) is list and len(pages) > 0)
+    total = pages[0]["total_count"]
+    require(type(total) is int and total >= 0)
+    runs = []
+    for page in pages:
+        require(page["total_count"] == total and type(page["workflow_runs"]) is list
+                and len(page["workflow_runs"]) <= 100)
+        runs.extend(page["workflow_runs"])
+    require(len(runs) == total)
+    seen = set()
+    for run in runs:
+        require(positive(run["id"]) and run["id"] not in seen)
+        seen.add(run["id"])
+        require(run["head_sha"] == head and run["repository"]["full_name"] == repo
+                and run["head_repository"]["full_name"] == repo)
+        require(type(run["path"]) is str)
+        if run["path"] not in workflows:
+            continue
+        require(positive(run["run_attempt"]) and positive(run["run_number"]))
+        require(type(run["name"]) is str and len(run["name"]) > 0)
+        require(run["html_url"] == f"https://github.com/{repo}/actions/runs/{run['id']}")
+        require(run["status"] in ("queued", "in_progress", "completed", "waiting", "requested", "pending"))
+        require((run["status"] == "completed" and run["conclusion"] in
+                 ("success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"))
+                or (run["status"] != "completed" and run["conclusion"] is None))
+except (KeyError, TypeError, ValueError, OSError):
+    sys.exit("CI証拠のhead / repository / 状態 / 全ページの完全性を確認できないため、レビュー文脈を生成しません。")
+
+lines = ["## Same-head CI snapshot", "", "--- BEGIN CI SNAPSHOT DATA ---",
+         f"取得開始: {started}; 取得完了: {fetched}; head SHA: {head}",
+         "取得時点の証拠でありmerge gateを代替しません。各runの現在attemptのみを取得（過去attemptの結果は未取得）。",
+         "各workflowの最新runと直近の先行成功を表示し、全取得runの状態別件数を併記します。"]
+for path, workflow in workflows.items():
+    matching = sorted((run for run in runs if run["path"] == path),
+                      key=lambda run: (run["run_number"], run["id"]), reverse=True)
+    lines.append(f"{workflow} ({path}): {len(matching)} run(s)")
+    if not matching:
+        lines.append("対象結果なし")
+        continue
+    counts = Counter(f"{run['status']}/{run['conclusion'] or 'null'}" for run in matching)
+    lines.append("状態別件数: " + ", ".join(f"{state}={count}" for state, count in sorted(counts.items())))
+    selected = [("最新run", matching[0])]
+    prior = next((run for run in matching[1:] if run["status"] == "completed" and run["conclusion"] == "success"), None)
+    if prior:
+        selected.append(("先行成功（最新runの成功を意味しません）", prior))
+    for label, run in selected:
+        # JSON quoting keeps API-controlled names inside a single DATA line.
+        lines.append(f"{label}: name={json.dumps(run['name'], ensure_ascii=False)}; "
+                     f"run ID={run['id']}; URL={run['html_url']}; attempt={run['run_attempt']}; "
+                     f"status={run['status']}; conclusion={run['conclusion'] or 'null'}")
+print("\n".join(lines[:3] + ["DATA| " + line for line in lines[3:]]
+                + ["--- END CI SNAPSHOT DATA ---", ""]))
+PYTHON
+fi
+
 {
   echo '# Pull request review context'
   echo
@@ -428,6 +531,10 @@ done
   fi
 
   echo
+  if [ -n "$ci_head" ]; then
+    cat "$issue_dir/ci.md"
+    echo
+  fi
   echo '## Pull request diff'
   echo
   echo '--- BEGIN DIFF DATA ---'
@@ -454,12 +561,15 @@ sections = [
     (b"Existing conversation", "採用した既存会話"),
     (b"Linked Issue snapshots", "closing Issue snapshots"),
     (b"Follow-up Issue snapshots", "follow-up Issue snapshots"),
+    (b"Same-head CI snapshot", "同一head CI証拠"),
     (b"Pull request diff", "レビューへ渡す差分（SVG縮約後）"),
 ]
 boundaries = list(re.finditer(rb"(?m)^## ([^\n]+)\n", raw))
 names = [match[1] for match in boundaries]
 expected = [name for name, _ in sections]
-if names not in (expected, expected[:5] + expected[6:]):
+if names != [name for name in expected if name in names] or any(
+    name not in names for name in expected if name not in (b"Follow-up Issue snapshots", b"Same-head CI snapshot")
+):
     raise ValueError("unexpected context sections")
 labels = dict(sections)
 overhead = sections[0][1]
@@ -472,7 +582,7 @@ if sum(sizes.values()) != len(raw) or context_path.stat().st_size != len(raw):
     raise ValueError("context byte totals differ")
 rows = ["\n### Claudeレビューcontextサイズ（UTF-8 bytes）\n",
         "各sectionは見出し・DATA prefix・境界marker・末尾の空行を含みます。",
-        "冒頭書式・PR metadata・変更ファイル一覧はその他へ計上します。未出力の後継sectionは0です。",
+        "冒頭書式・PR metadata・変更ファイル一覧はその他へ計上します。未出力の後継・CI sectionは0です。",
         "bytesはtoken数・費用の推定値ではありません。\n",
         "| 項目 | UTF-8 bytes |", "|---|---:|"]
 rows.extend(f"| {label} | {sizes[label]} |" for label in dict.fromkeys(

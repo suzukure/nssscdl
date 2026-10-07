@@ -19,6 +19,24 @@ gh() {
         ;;
     esac) | jq 'if has("changedFiles") then . else . + {changedFiles:(.files | length)} end'
   elif [ "$1" = 'api' ]; then
+    if [ -n "${MOCK_CI_HEAD:-}" ] && [[ "$*" == *'/actions/runs?'* ]]; then
+      [ "$*" = "api --paginate --slurp repos/owner/repo/actions/runs?head_sha=${MOCK_CI_HEAD}&per_page=100" ]
+      [ "${MOCK_CI_API_FAIL:-false}" != true ] || return 1
+      cat "$MOCK_CI_PAGES"
+      return
+    fi
+    if [ -n "${MOCK_CI_HEAD:-}" ] && [ "$2" = repos/owner/repo/pulls/37 ]; then
+      printf '%s\n' pr >> "$MOCK_CI_READS"
+      [ "${MOCK_CI_PR_FAIL_AT:-0}" != "$(wc -l < "$MOCK_CI_READS")" ] || return 1
+      local head="$MOCK_CI_HEAD"
+      if [ "${MOCK_CI_HEAD_UPDATE:-false}" = before ] ||
+        { [ "${MOCK_CI_HEAD_UPDATE:-false}" = true ] && [ "$(wc -l < "$MOCK_CI_READS")" -gt 1 ]; }; then
+        head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      fi
+      jq -cn --arg head "$head" '
+        {number:37,head:{sha:$head,repo:{full_name:"owner/repo"}},base:{repo:{full_name:"owner/repo"}}}'
+      return
+    fi
     if [ "${MOCK_API_FAIL:-false}" = 'true' ]; then
       return 1
     fi
@@ -614,6 +632,111 @@ fi
 [ ! -e "$test_dir/failed-summary.md" ]
 unset MOCK_API_FAIL
 
+# #858: Actions snapshots are opt-in, fully paginated and tied to the caller,
+# checkout and fresh before/after PR reads. No real API or paid call is used.
+MOCK_CASE=conversation
+MOCK_CI_HEAD="$(git -C "$repo_root" rev-parse HEAD)"
+MOCK_METADATA="$(jq -c --arg head "$MOCK_CI_HEAD" '.headRefOid = $head' <<< "$valid_metadata")"
+MOCK_CI_PAGES="$test_dir/ci-pages.json"
+MOCK_CI_READS="$test_dir/ci-reads.log"
+export MOCK_CASE MOCK_METADATA MOCK_CI_HEAD MOCK_CI_PAGES MOCK_CI_READS
+python3 - "$MOCK_CI_HEAD" "$MOCK_CI_PAGES" <<'CI'
+import json, sys
+from pathlib import Path
+head, path = sys.argv[1:]
+def run(number, status, conclusion, workflow="product-ci.yml", attempt=1):
+    return dict(id=number, run_number=number, run_attempt=attempt,
+                name="API workflow name", path=f".github/workflows/{workflow}",
+                repository={"full_name":"owner/repo"}, head_repository={"full_name":"owner/repo"},
+                head_sha=head, html_url=f"https://github.com/owner/repo/actions/runs/{number}",
+                status=status, conclusion=conclusion)
+# Success is on the second page; unrelated workflows fill the first page.
+runs = [run(110, "in_progress", None, attempt=2),
+        run(120, "completed", "failure", "traceability-check.yml"),
+        run(130, "completed", "cancelled", "ai-workflow-regression.yml")]
+runs += [run(i, "completed", "skipped", "unrelated.yml") for i in range(1, 98)]
+runs += [run(100, "completed", "success")]
+Path(path).write_text(json.dumps([{"total_count":101,"workflow_runs":runs[:100]},
+                                {"total_count":101,"workflow_runs":runs[100:]}]))
+CI
+cp "$MOCK_CI_PAGES" "$test_dir/ci-good.json"
+ci_context() {
+  : > "$MOCK_CI_READS"
+  (cd "$repo_root"; bash .github/scripts/build-review-context.sh owner/repo 37 "$1" dev review "$1.summary.md" "$MOCK_CI_HEAD")
+}
+ci_context "$test_dir/ci.md"
+grep -Fq 'URL=https://github.com/owner/repo/actions/runs/100; attempt=1; status=completed; conclusion=success' "$test_dir/ci.md"
+grep -Fq 'URL=https://github.com/owner/repo/actions/runs/110; attempt=2; status=in_progress; conclusion=null' "$test_dir/ci.md"
+grep -Fq '先行成功（最新runの成功を意味しません）' "$test_dir/ci.md"
+grep -Fq 'status=completed; conclusion=failure' "$test_dir/ci.md"
+grep -Fq 'status=completed; conclusion=cancelled' "$test_dir/ci.md"
+grep -Fq "head SHA: $MOCK_CI_HEAD" "$test_dir/ci.md"
+grep -Eq '取得開始: [0-9TZ:-]+; 取得完了: [0-9TZ:-]+' "$test_dir/ci.md"
+[ "$(wc -l < "$MOCK_CI_READS")" -eq 2 ]
+! grep -Fq unrelated.yml "$test_dir/ci.md"
+for status in failure skipped cancelled success; do
+  jq --arg status "$status" '.[0].workflow_runs[0].status = "completed" | .[0].workflow_runs[0].conclusion = $status' "$test_dir/ci-good.json" > "$MOCK_CI_PAGES"
+  ci_context "$test_dir/ci-$status.md"
+  grep -Fq "run ID=110; URL=https://github.com/owner/repo/actions/runs/110; attempt=2; status=completed; conclusion=$status" "$test_dir/ci-$status.md"
+  grep -Fq 'run ID=100;' "$test_dir/ci-$status.md"
+done
+for status in queued pending waiting requested; do
+  jq --arg status "$status" '.[0].workflow_runs[0].status = $status' "$test_dir/ci-good.json" > "$MOCK_CI_PAGES"
+  ci_context "$test_dir/ci-$status.md"
+  grep -Fq "attempt=2; status=$status; conclusion=null" "$test_dir/ci-$status.md"
+  grep -Fq 'run ID=100;' "$test_dir/ci-$status.md"
+done
+MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #86' ci_context "$test_dir/ci-follow-up.md"
+grep -Fq '## Follow-up Issue snapshots' "$test_dir/ci-follow-up.md"
+grep -Fq '## Same-head CI snapshot' "$test_dir/ci-follow-up.md"
+printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' > "$MOCK_CI_PAGES"
+ci_context "$test_dir/ci-empty.md"
+[ "$(grep -c '^DATA| 対象結果なし$' "$test_dir/ci-empty.md")" -eq 3 ]
+
+ci_rejected() {
+  rm -f "$test_dir/ci-rejected.md" "$test_dir/ci-rejected.md.summary.md"
+  if ci_context "$test_dir/ci-rejected.md" > /dev/null 2> "$test_dir/ci-rejected.err"; then
+    echo 'Expected invalid CI snapshot to stop context generation.' >&2; exit 1
+  fi
+  [ ! -e "$test_dir/ci-rejected.md" ]
+  [ ! -e "$test_dir/ci-rejected.md.summary.md" ]
+}
+for mutation in \
+  '.[0].workflow_runs[0].head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' \
+  '.[0].workflow_runs[0].repository.full_name = "other/repo"' \
+  '.[0].workflow_runs[0].head_repository.full_name = "other/repo"' \
+  '.[0].workflow_runs[0].html_url = "https://github.com/other/repo/actions/runs/110"' \
+  '.[0].workflow_runs[0].run_attempt = 0' \
+  '.[0].workflow_runs[0].status = "unknown"' \
+  '.[0].workflow_runs[0].conclusion = "success"' \
+  '.[0].workflow_runs[0].status = "completed"' \
+  '.[0].workflow_runs[0].id = 120' \
+  '.[0].total_count = 102' \
+  '.[0].workflow_runs |= .[1:]' \
+  '.[0:1]' \
+  '[]'; do
+  jq "$mutation" "$test_dir/ci-good.json" > "$MOCK_CI_PAGES"
+  ci_rejected
+done
+printf '%s\n' invalid-json > "$MOCK_CI_PAGES"
+ci_rejected
+cp "$test_dir/ci-good.json" "$MOCK_CI_PAGES"
+MOCK_CI_API_FAIL=true ci_rejected
+MOCK_CI_PR_FAIL_AT=1 ci_rejected
+MOCK_CI_PR_FAIL_AT=2 ci_rejected
+MOCK_CI_HEAD_UPDATE=before ci_rejected
+MOCK_CI_HEAD_UPDATE=true ci_rejected
+MOCK_METADATA="$(jq 'del(.headRefOid)' <<< "$MOCK_METADATA")" ci_rejected
+MOCK_CI_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ci_rejected
+MOCK_METADATA="$(jq '.headRefOid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$MOCK_METADATA")" \
+  MOCK_CI_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ci_rejected
+# No opt-in means neither Actions reads nor new evidence, even with Summary.
+: > "$MOCK_CI_READS"
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/ci-disabled.md" dev review "$test_dir/ci-disabled.md.summary.md"
+[ ! -s "$MOCK_CI_READS" ]
+! grep -Fq '## Same-head CI snapshot' "$test_dir/ci-disabled.md"
+unset MOCK_CI_HEAD MOCK_CI_PAGES MOCK_CI_READS
+
 # Independently partition each actual file using its literal emitted headings.
 # Exact Summary shape also proves that evidence bodies never enter the Summary.
 python3 - "$test_dir" <<'SIZES'
@@ -624,9 +747,9 @@ import sys
 directory = Path(sys.argv[1])
 headings = ["Pull request metadata", "Pull request body", "Changed files",
             "Existing conversation", "Linked Issue snapshots",
-            "Follow-up Issue snapshots", "Pull request diff"]
+            "Follow-up Issue snapshots", "Same-head CI snapshot", "Pull request diff"]
 labels = ["PR本文", "採用した既存会話", "closing Issue snapshots",
-          "follow-up Issue snapshots", "レビューへ渡す差分（SVG縮約後）",
+          "follow-up Issue snapshots", "同一head CI証拠", "レビューへ渡す差分（SVG縮約後）",
           "その他の書式・PR metadata・変更ファイル一覧", "最終review.md総bytes"]
 for summary_path in directory.glob("*.md.summary.md"):
     context_path = Path(str(summary_path).removesuffix(".summary.md"))
@@ -639,13 +762,14 @@ for summary_path in directory.glob("*.md.summary.md"):
         sizes[heading] = len(raw[start:end].decode("utf-8").encode("utf-8"))
     expected = [sizes["Pull request body"], sizes["Existing conversation"],
                 sizes["Linked Issue snapshots"], sizes.get("Follow-up Issue snapshots", 0),
+                sizes.get("Same-head CI snapshot", 0),
                 sizes["Pull request diff"], starts[0][1] + sizes["Pull request metadata"]
                 + sizes["Changed files"], len(raw)]
     summary = summary_path.read_text(encoding="utf-8")
     rows = re.findall(r"^\| ([^|]+) \| ([0-9]+) \|$", summary, re.M)
     assert rows == list(zip(labels, map(str, expected))), context_path.name
     assert sum(expected[:-1]) == expected[-1] == context_path.stat().st_size
-    assert len(summary.splitlines()) == 16, context_path.name
+    assert len(summary.splitlines()) == 17, context_path.name
     assert not re.search(r"DATA\||BEGIN .* DATA|採用する会話|要件の本文|large-generated-xml", summary)
 for name in ("initial", "selected", "fallback", "utf8-sizes", "empty-sizes",
              "follow-up-review", "bilingual-review", "trusted-svg", "small-human-svg"):
@@ -655,6 +779,10 @@ assert len(utf8.encode("utf-8")) > len(utf8)
 assert "採用する会話📝" in utf8
 assert "| follow-up Issue snapshots | 0 |" in (directory / "empty-sizes.md.summary.md").read_text()
 assert len((directory / "trusted-svg.md").read_bytes()) < 400000
+ci_bytes = (directory / "ci.md").read_bytes()
+start = ci_bytes.index(b"## Same-head CI snapshot\n")
+end = ci_bytes.index(b"## Pull request diff\n")
+print(f"CI snapshot fixture increment: {end - start} UTF-8 bytes.")
 SIZES
 
 echo 'Build review context fixture tests passed.'

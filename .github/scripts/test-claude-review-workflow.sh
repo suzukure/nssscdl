@@ -128,6 +128,10 @@ gh() {
     if [ "${MOCK_API_FAIL:-false}" = true ]; then
       return 1
     fi
+    if [ "$*" = "api --paginate --slurp repos/owner/repo/actions/runs?head_sha=${expected_head}&per_page=100" ]; then
+      printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]'
+      return
+    fi
     if [ "$2" = 'repos/owner/repo/pulls/37' ]; then
       if [ -n "${MOCK_SOURCE_PR_JSON:-}" ]; then
         printf '%s\n' "$MOCK_SOURCE_PR_JSON"
@@ -614,6 +618,9 @@ git() {
       esac
       ;;
     cat-file) return 0 ;;
+    rev-parse)
+      if [ "$*" = 'rev-parse HEAD' ]; then printf '%s\n' "$expected_head"; else command git "$@"; fi
+      ;;
     *) command git "$@" ;;
   esac
 }
@@ -631,6 +638,7 @@ export repo_root
   RUNNER_TEMP="$workflow_bootstrap_dir" \
   BASE_REF=main \
   SOURCE_BASE_SHA="$current_base_tip_sha" \
+  REVIEWED_HEAD_SHA="$expected_head" \
   EVENT_BASE_SHA="$stale_event_base_sha" \
   PR_NUMBER=37 \
   TRUSTED_LOGINS=dev \
@@ -640,6 +648,12 @@ grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-c
 grep -Fq '### Claudeレビューcontextサイズ（UTF-8 bytes）' "$test_dir/context-size-summary.md"
 grep -Fq "| 最終review.md総bytes | $(wc -c < "$workflow_step_cwd/.ai-context/review.md" | tr -d ' ') |" "$test_dir/context-size-summary.md"
 ! grep -Eq 'DATA[|]|Closes #36|requirements' "$test_dir/context-size-summary.md"
+grep -Fq '## Same-head CI snapshot' "$workflow_step_cwd/.ai-context/review.md"
+[ "$(grep -c '^DATA| 対象結果なし$' "$workflow_step_cwd/.ai-context/review.md")" -eq 3 ]
+grep -Fq '| 同一head CI証拠 |' "$test_dir/context-size-summary.md"
+# Ordinary review alone opts in; other callers keep their existing contracts.
+grep -Fq '"${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA"' "$workflow"
+grep -Fq 'REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}' "$workflow"
 grep -Fqx main "$workflow_base_ref_log"
 grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
 if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
