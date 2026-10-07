@@ -29,9 +29,11 @@ C4 図では PlantUML 同梱の C4 Standard Library を使用する。外部 URL
 
 `workflow_dispatch` による手動生成も非 main ブランチ限定とし、main / tag 等は job 条件でスキップする。checkout が detached HEAD または対象ブランチと不一致なら書込み前に失敗する。生成中にブランチが進んで push が競合した場合は失敗とし、force push や自動 retry は行わない。
 
-checkout / push には既存 developer App の token 発行方式を再利用し、発行 token の権限は Contents write に限定する。既定の `GITHUB_TOKEN` による生成 push へ依存せず、生成後の PR 検証につなげる。App 権限・Ruleset・Secrets / Variables は変更しない。
+checkout / push には ephemeral な `GITHUB_TOKEN` だけを、Workflow の `contents: write` 権限内で使用する。Render workflow は `DEV_APP_PRIVATE_KEY` / `DEV_APP_CLIENT_ID` / Developer App token を使用しない。App 権限・Ruleset・Secrets / Variables は変更しない。
 
-人間は PlantUML / renderer contract 変更 PR を Ready にする前に、Render workflow の成功、生成コミット反映済みの current head、同 head の AI Workflow Regression / Product CI / Traceability 等を確認する。Render failure 中は Ready / merge しない。実 PR diff で SVG XML 本文が展開されず、3 SVG 変更を含む場合も Claude Review の 400,000-byte 上限を十分下回ることを確認する。GitHub の実 PR diff が `-diff` を反映しない場合は停止し、review-context の例外追加へ拡張しない。ローカル fixture は GitHub 上の表示・diff 取得・生成 push 後の checks 起動を実証するものではない。
+`GITHUB_TOKEN` による生成 push は後続 workflow の trigger を期待しない。人間は PlantUML / renderer contract 変更 PR を Ready にする前に、Render workflow の成功、生成コミット反映済みの current head、実 PR diff の binary 表示とサイズを確認する。Render failure 中は Ready / merge しない。SVG XML 本文が展開されず、3 SVG 変更を含む場合も Claude Review の 400,000-byte 上限を十分下回ることを確認する。GitHub の実 PR diff が `-diff` を反映しない場合は停止し、review-context の例外追加へ拡張しない。
+
+生成コミットが current head になった後の人間の `ready_for_review` event を、同 head の Product CI / AI Workflow Regression / PR Traceability / Claude Review の明示的な開始点とする。Ready 後に各 check / review の対象 head と結果を確認してから、既存の merge 条件に従う。ローカル fixture は GitHub 上の表示・diff 取得・Ready event による current-head checks 起動を実証するものではない。#845 の移行時に残った SVG 同期と、base main への `.gitattributes` 反映後の binary diff / Ready lifecycle の自然実証は、一回限りの後継 #848 で確認する。
 
 PlantUML のバージョンは Workflow 内で固定し、更新は意図的に行う。
 

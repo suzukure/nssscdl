@@ -117,7 +117,10 @@ import yaml
 
 repo = Path(sys.argv[1])
 # #845 / #562: generated SVG writeback is confined to the current non-main branch.
-render = yaml.safe_load((repo / '.github/workflows/render-plantuml.yml').read_text())
+render_source = (repo / '.github/workflows/render-plantuml.yml').read_text()
+assert 'actions/create-github-app-token@' not in render_source
+assert 'DEV_APP_' not in render_source and 'secrets.' not in render_source
+render = yaml.safe_load(render_source)
 assert set(render) == {'name', True, 'permissions', 'jobs'}
 assert render[True] == {
     'push': {'branches-ignore': ['main'], 'paths': [
@@ -131,14 +134,10 @@ assert set(render_job) == {'if', 'runs-on', 'steps'}
 assert render_job['if'] == (
     "startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && "
     "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')")
-token, checkout, guard, java, graphviz, download, generate, commit = render_job['steps']
-assert token['id'] == 'dev-token'
-assert token['uses'] == 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1'
-assert token['with'] == {'client-id': '${{ vars.DEV_APP_CLIENT_ID }}',
-                         'private-key': '${{ secrets.DEV_APP_PRIVATE_KEY }}',
-                         'permission-contents': 'write'}
+checkout, guard, java, graphviz, download, generate, commit = render_job['steps']
+assert checkout['uses'] == 'actions/checkout@v4'
 assert checkout['with'] == {'ref': '${{ github.ref }}',
-                            'token': '${{ steps.dev-token.outputs.token }}'}
+                            'token': '${{ github.token }}'}
 assert guard['env'] == commit['env'] == {'TARGET_REF': '${{ github.ref }}'}
 assert java['with'] == {'distribution': 'temurin', 'java-version': '21'}
 assert 'v1.2026.6/plantuml-1.2026.6.jar' in download['run']
@@ -245,7 +244,21 @@ assert ci['name'] == 'Product CI' and ci['permissions'] == {'contents': 'read'}
 assert set(ci[True]) == {'pull_request'}
 trigger = ci[True]['pull_request']
 assert set(trigger) == {'types'}
-assert trigger['types'] == ['opened', 'synchronize', 'reopened']
+assert trigger['types'] == ['opened', 'synchronize', 'reopened', 'ready_for_review']
+regression = yaml.safe_load((repo / '.github/workflows/ai-workflow-regression.yml').read_text())
+assert regression[True]['pull_request']['types'] == trigger['types']
+for name in ('traceability-check', 'claude-review'):
+    workflow = yaml.safe_load((repo / f'.github/workflows/{name}.yml').read_text())
+    assert 'ready_for_review' in workflow[True]['pull_request']['types']
+# Keep the documented human Ready boundary aligned with the token/trigger contract.
+diagrams = (repo / 'docs/diagrams/README.md').read_text()
+assert '`GITHUB_TOKEN` による生成 push は後続 workflow の trigger を期待しない。' in diagrams
+assert 'Ready にする前に、Render workflow の成功、生成コミット反映済みの current head' in diagrams
+assert '人間の `ready_for_review` event を、同 head の Product CI / AI Workflow Regression / PR Traceability / Claude Review の明示的な開始点' in diagrams
+assert 'Ready 後に各 check / review の対象 head と結果を確認' in diagrams
+operations = (repo / 'docs/30_operations/ai-development-workflow.md').read_text()
+assert '生成push後のcurrent-head formal checksは人間Ready eventを開始点' in operations
+assert '全PRの `opened / synchronize / reopened / ready_for_review`' in operations
 # Include nested application/test/migration changes and the introduction PR.
 required = (
     'package.json', 'package-lock.json', '.node-version', 'src/index.ts',
@@ -363,7 +376,7 @@ PY
 regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
 test -f "$regression_workflow"
 grep -Fxq 'name: AI Workflow Regression' "$regression_workflow"
-grep -Fq 'types: [opened, synchronize, reopened]' "$regression_workflow"
+grep -Fq 'types: [opened, synchronize, reopened, ready_for_review]' "$regression_workflow"
 grep -Fq -- "- '.github/scripts/**'" "$regression_workflow"
 grep -Fq -- "- '.github/workflows/**'" "$regression_workflow"
 grep -Fq -- "- '**/AGENTS.md'" "$regression_workflow"
