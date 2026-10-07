@@ -24,5 +24,6 @@ HTTP / Guard / binding / dispatch / Production migrationは追加しない。
 `GET /api/me/schedule-months/{month}` の暦月形式・Method・未定義Queryを検証する。
 `application/student-access-guard.ts` のStudentAccessGuard Port成功結果だけを本人IDとして
 Serviceへ渡し、成功Viewと既存Application Errorを上記詳細設計 §4 / §8のJSONへ変換する。
-GuardのProduction実装は#636責務で、test-only fakeは `tests/integration/` に限定する。
+GuardのProduction物理契約は#636で詳細設計 `02_StudentReservationD1.md` §8へ確定した。
+Production実装・接続は後続実装で行い、test-only fakeは `tests/integration/` に限定する。
 `index.ts` / default Workerからの接続、Production binding / migration、認可迂回switchは追加しない。
