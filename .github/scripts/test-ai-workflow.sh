@@ -116,6 +116,63 @@ import tempfile
 import yaml
 
 repo = Path(sys.argv[1])
+# #562: generated SVG writeback is confined to post-merge main, including dispatch.
+render = yaml.safe_load((repo / '.github/workflows/render-plantuml.yml').read_text())
+assert set(render) == {'name', True, 'permissions', 'jobs'}
+assert render[True] == {
+    'push': {'branches': ['main'], 'paths': [
+        'docs/diagrams/plantuml/**/*.puml', '.github/workflows/render-plantuml.yml']},
+    'workflow_dispatch': None}
+assert render['permissions'] == {'contents': 'write'}
+assert list(render['jobs']) == ['render']
+render_job = render['jobs']['render']
+assert set(render_job) == {'if', 'runs-on', 'steps'}
+assert render_job['if'] == (
+    "github.ref == 'refs/heads/main' && "
+    "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')")
+checkout, java, graphviz, download, generate, commit = render_job['steps']
+assert checkout['with'] == {'ref': 'main'}
+assert java['with'] == {'distribution': 'temurin', 'java-version': '21'}
+assert 'v1.2026.6/plantuml-1.2026.6.jar' in download['run']
+assert '89948f14c93756c7a3fb7b69078ff37e8489fd79dd430c582b931e2f65358690' in download['run']
+assert "src_root='docs/diagrams/plantuml'" in generate['run']
+assert "dst_root='docs/diagrams/rendered'" in generate['run']
+assert commit['shell'] == 'bash'
+for step in (graphviz, download, generate, commit):
+    subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
+# Execute the actual commit block with a test-only git fake; no repository writes.
+with tempfile.TemporaryDirectory() as temporary:
+    log = Path(temporary) / 'git-log'
+    fake_git = '''git() {
+  printf '%s\\n' "$*" >> "$GIT_LOG"
+  case "$1" in
+    add|config|commit) return 0 ;;
+    diff) return "$DIFF_STATUS" ;;
+    push) return "$PUSH_STATUS" ;;
+    *) return 90 ;;
+  esac
+}
+'''
+    for changed, push_status in ((False, 0), (True, 0), (True, 1)):
+        log.unlink(missing_ok=True)
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c',
+                                 fake_git + commit['run']], capture_output=True,
+                                env={**os.environ, 'GIT_LOG': str(log),
+                                     'DIFF_STATUS': str(int(changed)),
+                                     'PUSH_STATUS': str(push_status)})
+        assert (result.returncode == 0) == (push_status == 0)
+        calls = log.read_text().splitlines()
+        assert calls[:2] == ['add docs/diagrams/rendered', 'diff --cached --quiet']
+        if changed:
+            assert calls[2:] == [
+                'config user.name github-actions[bot]',
+                'config user.email 41898282+github-actions[bot]@users.noreply.github.com',
+                'commit -m Render PlantUML diagrams [skip ci]',
+                'push origin HEAD:main']
+        else:
+            assert len(calls) == 2
+print('PlantUML: main限定trigger・dispatch guard・生成先/pin・no-op・non-force push失敗伝播fixture成功。')
+
 ci = yaml.safe_load((repo / '.github/workflows/product-ci.yml').read_text())
 # PyYAML's YAML 1.1 loader treats the Actions key "on" as boolean True.
 assert set(ci) == {'name', True, 'permissions', 'jobs'}
