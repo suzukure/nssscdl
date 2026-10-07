@@ -78,3 +78,18 @@ Phase Cの `d1/migration.test.ts` と `d1/isolation.test.ts` はtest-only migrat
 Storage共有時には失敗する構成とし、手動DELETEで隔離の不具合を隠さない。
 これらも業務TCのPass件数へ算入しない。実装・隔離条件と標準コマンドは
 [config/README.md](../config/README.md) を正本とする。
+
+#863の `d1/reservation-preview.test.ts` / `d1/reservation-preview-isolation.test.ts` は、
+`reservation-preview-fixture.ts` から既存isolated `AUTH_DB` の認証migration／共有Viewへ、
+既存予約fixture migration `0003`〜`0008` と新規test-only `0009_monthly_lesson_configs.sql` を適用する。
+FK用Student fixture `0002` は適用せず、認証Schema・共有Viewの契約をそのまま再利用する。
+Production migrationの追加・変更、Production相当共有環境への昇格、新bindingはない。
+単一Primary SELECTとD1時刻T0、最新操作可否、設定行欠損と明示N、本人当月全予約の安定順、
+欠席／取消／算入除外／分類Override、開始済み／未開始、管理詳細・占有異常のfail-closed、
+他生徒情報非投影、同一状態の決定性、既存coreへのcompositionを確認する。
+時刻境界／FKで保存できない破損状態はtest-only source adapterから実SQLへ注入し、
+FKを無効化せず、実D1 Server時刻の検証とは分ける。同一IDの別file seedでstorage isolationを確認する。
+`unit/d1-reservation-preview.test.ts` は単一SELECT／bind／Primary／T0と型・値異常、安全なDB errorを検証する。
+`TC-F-003-01 / TC-F-003-02` はD1/Preview readの **partial evidence** のみ。
+HTTP／CSRF／Origin／Browser／Confirm Commit／Session認可・race／実環境D1／TC全体のPassは証明しない。
+公開有効化Gateは詳細設計D1 §8.6を維持し、default Workerは503のままとする。
