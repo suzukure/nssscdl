@@ -4,7 +4,7 @@
 
 `01_StudentReservationApplication.md` の4予約EndpointのRepository Adapterを対象とする。#840のStudent Provider Flow保存・Session発行合成は§9で定義する。wire、分類規則、通知義務は同書、`../10_basic_design/04_ReservationModel.md`、`../10_basic_design/05_BookingAndConcurrency.md` §3〜5・§13を正とする。本書の物理名はlower_snake_case、IDはWorker生成のopaque TEXT、時刻はUTC Unix秒のINTEGER、月は日本時間の暦月を表す`YYYY-MM` TEXTとする。API出力だけをAsia/TokyoのRFC 3339へ変換する。Unix秒は整数として比較し、開始境界は`T < starts_at`で判定する。D1のforeign key enforcementは既定で有効であることを前提とし、通常Query / Migrationを接続ごとの`PRAGMA foreign_keys = ON`設定に依存させない。ApplicationからenforcementをOFFへ切り替えない。FK違反は§3のMigration / integrity validationで検出する。
 
-`Student`、`StudentSecurityAccess`、Student Session / Accountの認証物理契約は#636により本書§8で確定する。`students(id)`は予約FKのProduction接続点である。Guard Portは本人の有効Session、Student role、最新lifecycle / accessと予約操作可否を解決し、Confirmでは§8.3の同じ正本をTransaction内で再照合する。ProductionおよびProduction相当の共有環境での予約Migration適用・予約Adapter有効化条件は§8.6を正とする。本Issueは詳細設計のみであり、Production migration file / auth Adapter / routeは実装・接続しない。
+`Student`、`StudentSecurityAccess`、Student Session / Accountの認証物理契約は#636により本書§8で確定する。`students(id)`は予約FKのProduction接続点である。Guard Portは本人の有効Session、Student role、最新lifecycle / accessと予約操作可否を解決し、Confirmでは§8.3の同じ正本をTransaction内で再照合する。ProductionおよびProduction相当の共有環境での予約Migration適用・予約Adapter有効化条件は§8.6を正とする。#611 / #636は詳細設計のみであり、後続#841の認証基盤migration実装は§8.6を参照する。auth Adapter / routeは未接続とする。
 
 #608のlocal / isolated test・操作評価では、同じGuard Port契約を満たすtest auth fixtureを利用し、隔離したEvaluation D1へ予約Schemaを適用してよい。fixtureとProduction adapterの境界・検証範囲は§8.5を正とする。
 
@@ -398,7 +398,7 @@ fixtureはtest entrypointからだけ注入する。Production entrypointからt
 
 ### 8.6 Migration依存順とactivation Gate
 
-§3 step (1)の内側は、(a) `students`、(b) `student_security_access`、(c) `student_accounts`、(d) `student_sessions`・Index・失効Trigger、(e) `student_session_access_v1`、(f) §2で定義した共有`command_guards`の順とする。発行・停止・削除のCHECK assertもこの共有Tableを使うため、予約Schemaの導入を待たず認証基盤側で作成する。予約migrationは同じTableを再作成せず、§3 step (6)で定義一致を検証する。その後に§3の予約Schemaを適用する。versioned migrationを後続実装で追加し、既適用migrationを書き換えない。isolated test-only migration番号をProduction番号として流用しない。
+§3 step (1)の内側は、(a) `students`、(b) `student_security_access`、(c) `student_accounts`、(d) `student_sessions`・Index・失効Trigger、(e) `student_session_access_v1`、(f) §2で定義した共有`command_guards`の順とする。発行・停止・削除のCHECK assertもこの共有Tableを使うため、予約Schemaの導入を待たず認証基盤側で作成する。予約migrationは同じTableを再作成せず、§3 step (6)で定義一致を検証する。その後に§3の予約Schemaを適用する。#841の実装は[`migrations/0001`〜`0006`](../../migrations/README.md)でこの順序を保持し、§8.1の不変binding・Session属性・削除後非復活もTriggerで強制する。既適用migrationを書き換えず、isolated test-only migration番号をProduction番号として流用しない。
 
 認証migrationの完了確認はFK check 0行、全StudentにSecurityAccessがちょうど1行、Account / Sessionのrole・本人接続、hash形式・一意性・期限制約、View定義と上記predicateの整合、解除後非復活Triggerを含む。既存データの欠落・矛盾は自動的にactiveへbackfillせず、検証できなければ有効化を停止する。
 
@@ -409,7 +409,7 @@ ProductionおよびProduction相当の共有環境では、予約migrationの前
 - #536の検証経路でD1のFK enforcement、Server時刻、`withSession('first-primary').batch()`の原子性・先行Commit状態の照合・Trigger拒否を対象環境で確認する。未検証・失敗なら有効化しない。
 - `01_SystemArchitecture.md` §6の環境identity / binding、未完成機能のserver-side gateを満たし、fixtureがProduction artifact / routeへ入らない。§3の予約Integrity validationも成功する。
 
-本Issueは新しい実環境検証基盤・Provider接続・activationを導入しない。#608の隔離評価は§8.5で先行できるが、実D1検証およびProduction auth Adapter / migrationの実装・有効化は既存後続責務として残る。削除Command全体、Provider flow、Admin認証、Cookie / CSRF HTTPの未実装境界をこの設計で完了した扱いにしない。
+本設計と#841は新しい実環境検証基盤・Provider接続・activationを導入しない。#841のmigration・Integrity Queryと隔離local D1 testは物理契約の局所検証であり、#608の隔離評価は§8.5で先行できるが、実D1検証およびProduction auth Adapterの実装・有効化は既存後続責務として残る。削除Command全体、Provider flow、Admin認証、Cookie / CSRF HTTPの未実装境界をこの設計で完了した扱いにしない。
 
 ## 9. Student Provider Flowの保存・発行合成契約（#840）
 

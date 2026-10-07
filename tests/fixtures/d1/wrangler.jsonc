@@ -8,6 +8,12 @@
       "database_name": "nssscdl-bootstrap-test",
       "database_id": "00000000-0000-0000-0000-000000000001",
       "migrations_dir": "./migrations"
+    },
+    {
+      "binding": "AUTH_DB",
+      "database_name": "nssscdl-student-auth-test",
+      "database_id": "00000000-0000-0000-0000-000000000002",
+      "migrations_dir": "../../../migrations"
     }
   ]
 }

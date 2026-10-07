@@ -91,7 +91,12 @@ Pluginのper-test-file storage isolationを使用し、各ファイルが空のt
 Wrangler CLI stateはgitignore対象の `.wrangler/d1-bootstrap-test` に限る。
 `d1:local` は適用済みmigrationを再適用しないlocal setupであり、Vitestのisolated storageとは独立する。
 CLI stateから作り直す場合は、このtest-only directoryだけを削除して `npm run d1:local` を再実行する。
-#636の認証schemaや#611の予約Production migrationを推測して実装しない。
+#841は確定済み#636契約のProduction migration `migrations/0001`〜`0006`とIntegrity Queryを追加する。
+同じtest-only Wrangler設定へ別DBの`AUTH_DB`（`nssscdl-student-auth-test`・固定dummy UUID）を追加し、Production設定は未接続のままとする。
+`d1:local`は既存fixture適用後にこのlocal DBへroot migrationを適用し、CLI stateは同じignore対象directory内に限る。
+`vitest.d1.config.ts`はroot migrationを`AUTH_MIGRATIONS`、read-only Integrity Queryを`AUTH_INTEGRITY_SQL`へ渡し、setupが別DBへ適用する。
+検証範囲は[tests/README.md](../tests/README.md)、適用順とactivation Gateは[migrations/README.md](../migrations/README.md)と詳細設計 §8.6を参照する。
+#611の予約Production migrationは追加しない。
 将来#608のServer Clock、Provider Stub、Concurrency Barrierを注入する業務境界は、
 既存の詳細設計を正とし、本bootstrapで業務fixtureや新しい業務契約を確定しない。
 
