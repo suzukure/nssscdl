@@ -55,6 +55,19 @@ FK / 一意性 / hash / 30日期限境界 / 本人接続、固定binding・Sessi
 HTTP / Provider / Admin・削除Command全体 / 実環境D1 / System・Acceptance TC全体のPassを証明しない。
 既存予約fixtureの`TEST_DB`と適用履歴を共有せず、Production entrypointへ接続しない。
 
+#842の `unit/d1-student-access-guard.test.ts` はProduction GuardのCookie形式・重複・purpose、
+hash bind / Primary / 単一SELECT、D1時刻の期限等値、結果評価順と安全なDB / Integrity異常を検証する。
+`integration/production-student-access.test.ts` は同Guardを既存HTTP / Serviceへ注入し、
+毎Request再照合・401 Cookie除去・403 / 503でCookie維持・内部情報非露出を検証する。
+`integration/student-session-fixture.ts` の合成read sourceはtestからだけimportする。
+`d1/student-access-guard.test.ts` は既存`AUTH_DB`とProduction migrationをそのまま使い、
+実Guardの本人解決・内部Contextと既存Write predicateの接続、失効・停止・削除の次Request反映、
+停止解除後旧Session非復活、新Session、期限非延長、SecurityAccess欠落のfail-closedを確認する。
+read-only HTTP consumerは既存Repository Portのfixtureへ接続し、予約Production schemaを追加しない。
+`TC-F-003-06` / `TC-F-207-02〜03` / `TC-F-211-02〜03` / `TC-F-311-02` / `TC-NF-914-04`は
+Guard / HTTP / local D1の **partial evidence**。重要Write batch / race、Provider・Browser、
+実環境D1、System / Acceptance TC全体のPassは証明しない。公開有効化Gateは詳細設計 §8.6を維持する。
+
 業務を実装したテストでは、上記prefixに代えて対応する既存TC IDをtest nameへ保持する（例: `[TC-F-003-01] ...`）。
 未実装業務のTCを基盤smokeへ割り当てない。
 Phase Bでは `unit/worker.test.ts` でWorker moduleのhandlerを直接呼び、

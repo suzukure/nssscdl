@@ -308,6 +308,8 @@ Requestでは`DB.withSession('first-primary')`の単一SELECTでhashに対応す
 
 既存`src/application/student-access-guard.ts`の`authorize(request)`と3結果はread-only HTTP Portとして維持する。Production Guardはこの解決を実装し、D1 / Invariant障害はHTTP Adapterの既存503境界へ渡す。認可結果をRequest間でcacheしない。
 
+#842の実装は`src/infrastructure/d1-student-access-guard.ts`を参照する。共有`resolve(request)`が同一Requestの内部Contextを返し、`authorize(request)`はhash / Session IDを除いた既存結果だけを返す。`StudentAccessError`でDB / Invariantの2つの既存503を区別する。read-only HTTP consumerの401 Cookie除去・503 Cookie維持はApplication §10.2に従う。unsafe HTTP consumerのCSRF / Originと重要Writeのbatch再照合は本解決を使うだけでは完了しない。
+
 Write用compositionは同じRequestの解決で得た`session_id / token_hash / student_id`をServer内部の認証ContextとしてTransaction Adapterへ渡す。これはClient入力、Expected State Token、外部API結果、または再利用可能な認可ticketではない。既存read-only Portの`studentId`だけではSession失効を再照合できないため、それだけでWrite Guardを成立させない。Write Adapter実装時にはこのContextを内部で保持する解決処理を共有し、read-only Portのwire / resultを拡張してhashを外へ出さない。
 
 Student Write predicateは以下の`EXISTS`全体である。`:session_id / :token_hash / :student_id`は上記Context、`:guard_id`は当該batchでINSERTした`command_guards.id`。`:student_id`は予約INSERT / Actorにも同じ値をbindする。
@@ -383,6 +385,8 @@ WHERE revoked_at IS NULL AND account_id IN (
 既存`tests/integration/student-access-guard-fixture.ts`はread-only HTTP consumerの3結果mappingを検証する固定fakeであり、Session / race Guardの証明には使わない。Write評価は別途stateful fixtureとTransaction内assertを要し、固定`authenticated` fakeやFK用`students(id)`だけのbootstrap fixtureでProduction認可を証明した扱いにしない。
 
 fixtureはtest entrypointからだけ注入する。Production entrypointからtest modulesをimportせず、HTTPの特殊header / query / cookie、環境switch、fixture token allowlist、認可迂回Endpoint、常時許可GuardをProductionへ持ち込まない。共有Production相当環境も実Guard / migrationを使う。既存default Workerの503と#831 read-only Adapterの未接続状態を維持する。
+
+#842のunit / integration / local D1検証の範囲と既存TCへのpartial evidence対応は[`tests/README.md`](../../tests/README.md)を参照する。既存`AUTH_DB`へProduction migrationを適用し、実Guardと#831 consumerをtest entrypointから明示compositionする。default Worker / public routeへの接続はなく、§8.6の実環境検証・activation Gateは維持する。
 
 以下は本物理契約の検証観点であり、既存TCの意味・受入範囲を変更しない。
 
