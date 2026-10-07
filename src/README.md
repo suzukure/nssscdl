@@ -25,5 +25,17 @@ HTTP / Guard / binding / dispatch / Production migrationは追加しない。
 `application/student-access-guard.ts` のStudentAccessGuard Port成功結果だけを本人IDとして
 Serviceへ渡し、成功Viewと既存Application Errorを上記詳細設計 §4 / §8のJSONへ変換する。
 GuardのProduction物理契約は#636で詳細設計 `02_StudentReservationD1.md` §8へ確定した。
-Production実装・接続は後続実装で行い、test-only fakeは `tests/integration/` に限定する。
+Production Guard実装は下記#842を参照し、test-only fakeは `tests/integration/` に限定する。
 `index.ts` / default Workerからの接続、Production binding / migration、認可迂回switchは追加しない。
+
+`infrastructure/d1-student-access-guard.ts` は#842のProduction Guard Adapter。
+Student専用Cookieの重複・canonical token形式を検査し、Server側SHA-256 hashをbindして
+毎Requestの `withSession('first-primary')` 単一SELECTから共有ViewとD1時刻を読む。
+期限・失効→関連行Invariant→lifecycle / SecurityAccess→Student roleの順に判定する。
+既存read-only Portの3結果は維持し、`StudentAccessError` のDB / Integrity異常は
+HTTPの既存503へ安全に変換する。401では設計 §10.2のSession Cookie除去、503では維持する。
+`resolve(request)` は同一RequestのWrite用内部Contextだけを返す共有解決処理であり、
+HTTP Viewへ渡さない。将来のunsafe consumerは §10.3のCSRF / Origin検証と
+D1 §8.3のTransaction内初期・最終再照合を別途必須とする。
+Guard / HTTP / Serviceは明示注入でcomposition可能だが、default Workerは引き続き503。
+Production設定・Provider callback・Session発行・Reservation Confirm・Admin authは未接続。

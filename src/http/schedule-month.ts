@@ -1,5 +1,5 @@
 import { ScheduleQueryError, ScheduleQueryService } from "../application/schedule-query";
-import type { StudentAccessGuard } from "../application/student-access-guard";
+import { StudentAccessError, type StudentAccessGuard } from "../application/student-access-guard";
 
 // #610 §8. Fixed public messages; never serialize an exception or its cause.
 const errors = {
@@ -18,7 +18,7 @@ function errorResponse(code: keyof typeof errors): Response {
   });
 }
 
-// Endpoint-only adapter. No default Worker dispatch, bindings or auth adapter.
+// Endpoint-only adapter. Guard composition is explicit; no default dispatch.
 export class ScheduleMonthHttpAdapter {
   constructor(private readonly guard: StudentAccessGuard, private readonly service: ScheduleQueryService) {}
 
@@ -37,12 +37,16 @@ export class ScheduleMonthHttpAdapter {
     }
     try {
       const access = await this.guard.authorize(request);
-      if (access.status === "unauthenticated") return errorResponse("UNAUTHENTICATED");
+      if (access.status === "unauthenticated") {
+        const response = errorResponse("UNAUTHENTICATED");
+        response.headers.set("set-cookie", "__Host-student_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+        return response;
+      }
       if (access.status === "forbidden") return errorResponse("FORBIDDEN");
       const view = await this.service.execute(month, access.studentId);
       return Response.json(view, { headers: { "cache-control": "no-store" } });
     } catch (error) {
-      if (error instanceof ScheduleQueryError) return errorResponse(error.code);
+      if (error instanceof ScheduleQueryError || error instanceof StudentAccessError) return errorResponse(error.code);
       // Includes the existing D1 SERVICE_UNAVAILABLE boundary and unexpected
       // internal failures. Never turn a failed Guard into an authorized request.
       return errorResponse("SERVICE_UNAVAILABLE");
