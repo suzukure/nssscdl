@@ -262,6 +262,7 @@ AI Developerの投稿またはjob successだけでは、別のmachine-generated 
 - Codex-reported validationを自己申告の証拠として確認し、current headに適用されるGitHub Actions/checksをformal evidenceとして別に確認している。failure、未実施、未確認事項を隠さず、PR本文または最新コメントに`passed`とあることだけをformal evidenceとして扱わない。
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
+- PlantUML / renderer contract 変更では、[図のレンダリング手順](../diagrams/README.md#レンダリング)に従い、Render成功・生成コミット反映済みcurrent head・実PR diffのbinary表示とサイズを確認している。Render failure中はReady / mergeしない。
 
 Ready前には、人間/ChatGPT上の開発補助が次の対象箇所と証拠を照合する。既存の準備確認を具体化する手順であり、新しいレビュー段階・ツール・paid diagnosticを追加しない。
 

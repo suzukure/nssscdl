@@ -116,29 +116,41 @@ import tempfile
 import yaml
 
 repo = Path(sys.argv[1])
-# #562: generated SVG writeback is confined to post-merge main, including dispatch.
+# #845 / #562: generated SVG writeback is confined to the current non-main branch.
 render = yaml.safe_load((repo / '.github/workflows/render-plantuml.yml').read_text())
 assert set(render) == {'name', True, 'permissions', 'jobs'}
 assert render[True] == {
-    'push': {'branches': ['main'], 'paths': [
-        'docs/diagrams/plantuml/**/*.puml', '.github/workflows/render-plantuml.yml']},
+    'push': {'branches-ignore': ['main'], 'paths': [
+        'docs/diagrams/plantuml/**/*.puml', '.github/workflows/render-plantuml.yml',
+        '.gitattributes']},
     'workflow_dispatch': None}
 assert render['permissions'] == {'contents': 'write'}
 assert list(render['jobs']) == ['render']
 render_job = render['jobs']['render']
 assert set(render_job) == {'if', 'runs-on', 'steps'}
 assert render_job['if'] == (
-    "github.ref == 'refs/heads/main' && "
+    "startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && "
     "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')")
-checkout, java, graphviz, download, generate, commit = render_job['steps']
-assert checkout['with'] == {'ref': 'main'}
+token, checkout, guard, java, graphviz, download, generate, commit = render_job['steps']
+assert token['id'] == 'dev-token'
+assert token['uses'] == 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1'
+assert token['with'] == {'client-id': '${{ vars.DEV_APP_CLIENT_ID }}',
+                         'private-key': '${{ secrets.DEV_APP_PRIVATE_KEY }}',
+                         'permission-contents': 'write'}
+assert checkout['with'] == {'ref': '${{ github.ref }}',
+                            'token': '${{ steps.dev-token.outputs.token }}'}
+assert guard['env'] == commit['env'] == {'TARGET_REF': '${{ github.ref }}'}
 assert java['with'] == {'distribution': 'temurin', 'java-version': '21'}
 assert 'v1.2026.6/plantuml-1.2026.6.jar' in download['run']
 assert '89948f14c93756c7a3fb7b69078ff37e8489fd79dd430c582b931e2f65358690' in download['run']
 assert "src_root='docs/diagrams/plantuml'" in generate['run']
 assert "dst_root='docs/diagrams/rendered'" in generate['run']
+assert "find \"$dst_root\" -type f -name '*.svg' -delete" in generate['run']
+assert "find \"$src_root\" -type f -name '*.puml' -print0" in generate['run']
+assert 'sudo apt-get install -y graphviz' in graphviz['run']
+assert '[skip ci]' not in commit['run']
 assert commit['shell'] == 'bash'
-for step in (graphviz, download, generate, commit):
+for step in (guard, graphviz, download, generate, commit):
     subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
 # Execute the actual commit block with a test-only git fake; no repository writes.
 with tempfile.TemporaryDirectory() as temporary:
@@ -146,6 +158,8 @@ with tempfile.TemporaryDirectory() as temporary:
     fake_git = '''git() {
   printf '%s\\n' "$*" >> "$GIT_LOG"
   case "$1" in
+    check-ref-format) return 0 ;;
+    symbolic-ref) printf '%s\\n' "$CHECKOUT_REF"; return "$SYMBOLIC_STATUS" ;;
     add|config|commit) return 0 ;;
     diff) return "$DIFF_STATUS" ;;
     push) return "$PUSH_STATUS" ;;
@@ -153,25 +167,76 @@ with tempfile.TemporaryDirectory() as temporary:
   esac
 }
 '''
+    branch = 'refs/heads/ai/issue-845'
+    env = {**os.environ, 'GIT_LOG': str(log), 'TARGET_REF': branch,
+           'CHECKOUT_REF': branch, 'SYMBOLIC_STATUS': '0'}
+    for block in (guard['run'], commit['run']):
+        for target, checkout_ref, symbolic_status in (
+                ('refs/heads/main', 'refs/heads/main', '0'),
+                ('refs/tags/v1', 'refs/tags/v1', '0'), ('', '', '0'),
+                (branch, 'refs/heads/other', '0'), (branch, '', '1')):
+            log.unlink(missing_ok=True)
+            result = subprocess.run(['bash', '-c', fake_git + block], capture_output=True,
+                                    env={**env, 'TARGET_REF': target,
+                                         'CHECKOUT_REF': checkout_ref,
+                                         'SYMBOLIC_STATUS': symbolic_status})
+            assert result.returncode != 0
+            calls = log.read_text().splitlines() if log.exists() else []
+            assert not any(call.startswith(('add ', 'commit ', 'push ')) for call in calls)
     for changed, push_status in ((False, 0), (True, 0), (True, 1)):
         log.unlink(missing_ok=True)
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c',
                                  fake_git + commit['run']], capture_output=True,
-                                env={**os.environ, 'GIT_LOG': str(log),
+                                env={**env,
                                      'DIFF_STATUS': str(int(changed)),
                                      'PUSH_STATUS': str(push_status)})
         assert (result.returncode == 0) == (push_status == 0)
         calls = log.read_text().splitlines()
-        assert calls[:2] == ['add docs/diagrams/rendered', 'diff --cached --quiet']
+        assert calls[:4] == [f'check-ref-format {branch}', 'symbolic-ref --quiet HEAD',
+                             'add docs/diagrams/rendered', 'diff --cached --quiet']
         if changed:
-            assert calls[2:] == [
+            assert calls[4:] == [
                 'config user.name github-actions[bot]',
                 'config user.email 41898282+github-actions[bot]@users.noreply.github.com',
-                'commit -m Render PlantUML diagrams [skip ci]',
-                'push origin HEAD:main']
+                'commit -m Render PlantUML diagrams',
+                f'push origin HEAD:{branch}']
         else:
-            assert len(calls) == 2
-print('PlantUML: main限定trigger・dispatch guard・生成先/pin・no-op・non-force push失敗伝播fixture成功。')
+            assert len(calls) == 4
+# Real Git attribute/diff proof using only a temporary index; no commit or remote.
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    env = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
+
+    def git(*args):
+        return subprocess.run(['git', '-C', str(root), *args], env=env,
+                              capture_output=True, check=True).stdout
+
+    git('init', '--quiet')
+    (root / '.gitattributes').write_bytes((repo / '.gitattributes').read_bytes())
+    svg_paths = ['docs/diagrams/rendered/root.svg',
+                 'docs/diagrams/rendered/nested/one.svg',
+                 'docs/diagrams/rendered/nested/deeper/two.svg']
+    text_paths = ['docs/diagrams/plantuml/root.puml',
+                  'docs/diagrams/plantuml/nested/source.puml', 'outside.svg',
+                  'docs/diagrams/rendered/data.txt', 'docs/diagrams/rendered-other/x.svg']
+    for path in svg_paths + text_paths:
+        file = root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text('<svg>old XML</svg>\n' if path.endswith('.svg') else 'old text\n')
+    git('add', '.')
+    for path in svg_paths:
+        assert git('check-attr', 'diff', '--', path).decode().strip() == f'{path}: diff: unset'
+        (root / path).write_text('<svg>' + 'XML_BODY_SENTINEL' * 30000 + '</svg>\n')
+    for path in text_paths:
+        assert git('check-attr', 'diff', '--', path).decode().strip() == f'{path}: diff: unspecified'
+        (root / path).write_text('new text\n')
+    patch = git('diff').decode()
+    assert patch.count('Binary files ') == 3 and 'XML_BODY_SENTINEL' not in patch
+    assert len(patch.encode()) < 10000  # Three large SVG changes stay well below 400,000 bytes.
+    for path in text_paths:
+        diff = git('diff', '--', path).decode()
+        assert '@@' in diff and '+new text' in diff and 'Binary files ' not in diff
+print('PlantUML: 非main/current branch guard・pin・no-op・non-force push失敗伝播・SVG binary/text diff fixture成功。GitHub natural proofは別途必要です。')
 
 ci = yaml.safe_load((repo / '.github/workflows/product-ci.yml').read_text())
 # PyYAML's YAML 1.1 loader treats the Actions key "on" as boolean True.
