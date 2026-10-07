@@ -1,8 +1,8 @@
-# 単一予約 Application Component・API 詳細設計
+# 生徒 Application Component・予約API・認証HTTP 詳細設計
 
 ## 1. 適用範囲と正本
 
-初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§8、§10〜11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセル、認証Providerは本書の対象外である。D1物理Table / Index / SQL / migrationは `02_StudentReservationD1.md` を正とする。
+初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§8、§10〜11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセルは本書の対象外である。#840のStudent認証HTTP / Provider Flowは§10で定義する。D1物理Table / Index / SQL / migrationは `02_StudentReservationD1.md` を正とする。
 
 図の正本は `../diagrams/plantuml/c4-student-reservation-components.puml` と `../diagrams/plantuml/student-reservation-sequence.puml`。C4 Level 3は `01_SystemArchitecture.md` の単一Application Worker内の論理責務を示し、別Deploy Unitを意味しない。
 
@@ -141,7 +141,7 @@ Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、
 
 ## 9. UI / API FlowとTraceability
 
-Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。Scheduleを取得しSlotを選択、Previewの日時・新規分類・既存予約への差分を確認した後だけConfirmを送る。`201`では確定状態を表示する。`409`では最新の安全なSlot Viewまたは再取得案内を示し、再Preview・再確認へ戻す。履歴は確定状態の参照手段とする。Google / Magic Linkの認証実装は本書では定義しない。
+Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。Scheduleを取得しSlotを選択、Previewの日時・新規分類・既存予約への差分を確認した後だけConfirmを送る。`201`では確定状態を表示する。`409`では最新の安全なSlot Viewまたは再取得案内を示し、再Preview・再確認へ戻す。履歴は確定状態の参照手段とする。Google / Magic Linkの認証HTTP / Provider Flowは§10、永続化・Session発行合成はD1正本§9を参照する。
 
 | 詳細設計箇所 | 上位識別子 | 既存要求ベースTest |
 | --- | --- | --- |
@@ -151,3 +151,143 @@ Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。S
 | §8 Error / Audit | REQ-914 / 940、POL-014、BR-111 | `03_NonFunctionalTestSpecification.md` の対応TC |
 
 `REQ-911 / 914 / 940`、`OOS-001 / 002`を含む既存POL→BR→REQ→AC→TCの関係は変更しない。予約確認のwireに月間回数・料金は含めず、管理者代理予約を導入しない。D1物理Schema / migration / Transaction Guardは `02_StudentReservationD1.md` で確定する。単一予約Application実装は、詳細設計・基盤確定後に#608配下の後続実装Issueとして切り出す。#536は本体build / test / PR CI基盤、#537は操作評価環境、#538はAI Developer runtime適合を扱う。
+
+## 10. Student認証HTTP・Provider Flow契約（#840）
+
+### 10.1 適用範囲・Component・入力
+
+本節は`../10_basic_design/06_APIOverview.md` §10のStudent境界を具体化する。Session物理正本・共有predicateは`02_StudentReservationD1.md` §8、Provider flowの永続化・原子的合成は同書§9を正とする。Admin認証、認証方法の明示追加／統合、プロフィール変更、Invitation管理Command全体は定義しない。新規登録に必要な氏名・所有確認済み連絡先と登録許可の接続だけを含む。Production migration / Adapter / route activationは行わない。
+
+| Component / Port | 入力・出力と責務 |
+| --- | --- |
+| Student Auth HTTP Adapter | wire、Cookie、CSRF / Originを検証し、安全なApplication結果だけを返す。Clientの`studentId / accountId / role / providerResult`を受け付けない。 |
+| Student Auth Application Service | Login / Registration / Logoutを制御し、検証済みidentity、既存binding、登録許可をD1 Transaction Portで再照合する。 |
+| Google OIDC Port / Adapter | Server保持のcode verifier / nonce、callback codeから検証済み`{issuer, subject, verifiedEmail}`または§10.8の分類を返す。raw tokenをApplicationへ返さない。 |
+| Magic Link Mail Port / Adapter | Commit済みChallengeの宛先と短期リンクだけを送る。Provider受付／結果不明／失敗を抽象化し、AccountやSessionを作成しない。 |
+| Turnstile Port / Adapter | tokenと信頼する送信元から`verified / rejected / unavailable`を返す。Clientの成功flagを信用しない。 |
+| Auth Transaction Port / D1 Adapter | Rate Limit予約、pre-auth / Challenge、binding、登録、Session発行・失効を同一業務D1で処理する。 |
+| Student Session / Authorization Guard | §2およびD1 §8.3のRequest解決を担当する。Auth成功のResponseを次Requestの認可ticketにしない。 |
+
+外部credential、endpoint、client ID、canonical Application originは環境ごとにServer設定から与え、Request Host / forwarded header / Client redirect URLから作らない。未設定・環境不一致は503でfail-closedする。Provider設定変更・Secrets投入は本Issueでは行わない。Google / Turnstile / Resendの実Provider compatibilityは§10.10の未検証事項とし、Adapter実装で公式契約を確認する。
+
+### 10.2 Cookie・Session発行／削除
+
+| Cookie | 属性と寿命 |
+| --- | --- |
+| `__Host-student_session` | opaque token（D1 §8.2）。`Secure; HttpOnly; SameSite=Lax; Path=/`、Domainなし。`Max-Age = max(0, expires_at - Response時のServer UTC秒)`、最大2592000秒。 |
+| `__Host-student_preauth` | 独立した32 byte乱数のcanonical base64url 43文字。`Secure; HttpOnly; SameSite=Lax; Path=/`、Domainなし。最大1800秒、D1の固定expiryに合わせ残秒を設定する。SessionでもActorでもない。 |
+
+`Lax`はGoogleのcross-site top-level GET callbackを受けるために選択し、CSRF対策は§10.3を併用する。Student Cookieだけを読む。Admin CookieからStudent Actorを導出せず、同名Cookieが複数ある場合は曖昧に選択しない（Sessionは401、pre-authはflow失敗）。本契約のHTTPはHTTPSのみとし、local / isolated fixtureでもSecureを弱めてProduction契約へ混入させない。
+
+新Session CookieはD1の発行Commit成功後だけ設定する。通常Request、CSRF取得、Idle経過で更新・延長しない。再Loginは新Sessionを作り、同Browserが提示した期限切れ等の旧Student Sessionがある場合は新発行と同じbatchでその旧Sessionだけを失効させる。他BrowserのSessionは維持する。pre-auth tokenをSessionへ昇格しない。
+
+Cookie削除は同じname / Path、Domainなし、`Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`で行う。Sessionが期限切れ・失効・利用不能なら401でSession Cookieを削除する。D1障害・判定不能の503では削除しない。LogoutはServer失効が確定した後だけCookieを除去して成功とする。pre-auth CookieはLogin / Registration成功、期限切れ・明示的なflow終了で除去する。callbackのstate / browser不一致だけで他の正当なflowを失効させない。停止・削除時は他BrowserのCookieを直接消せないため、Server一括失効を正本とし次Requestで除去する。
+
+### 10.3 CSRF・Origin・共通wire
+
+認証関連Page / API / callbackは`Cache-Control: no-store`と`Referrer-Policy: no-referrer`を返す。CORSによる他originへのcredential / CSRF公開は行わない。JSON Requestは`Content-Type: application/json`、objectの未定義field・重複key・Query parameterの重複を400で拒否する。記載したfieldは必須、`?`付きfieldだけ任意で、省略とnullを混同しない。Request bodyはUTF-8で最大8192 byteとし、超過は400。token / Cookie / code / state / nonce / verifier / email / Provider本文をアクセスLog、Audit、URL診断、エラーへ反射しない。
+
+Session-bound CSRF tokenは`base64url(SHA-256(UTF8("student-csrf-v1:" + rawSessionToken)))`（paddingなし43文字）とする。pre-auth用は独立domain `student-preauth-csrf-v1:`とraw pre-auth tokenから同様に導出する。DB保存のSession hashからは生成しない。tokenを`GET /api/auth/student/csrf`で`{"csrfToken":"…","scope":"session"}`または`scope:"preauth"`として返し、UIはmemoryだけに保持する。Sessionが提示された場合はD1 §8.3を評価し、有効ならsession用、不正／失効なら401を返す。Cookieなしの場合は有効pre-authを再利用し、なければ新規pre-authをCommitしてCookieとtokenを返す。pre-auth期限を延長しない。
+
+CSRF取得GETは設定originと一致するOrigin、またはOrigin欠損かつ`Sec-Fetch-Site: same-origin`を要求する。cross-site、null Origin、その他の欠損は403。通常Page navigationはこのAPIの代替ではなく、Pageからsame-origin fetchで取得する。
+
+`POST / PUT / PATCH / DELETE`等、GET / HEAD / OPTIONS以外の全Student Cookie利用Request（業務QueryのPOST Previewを含む）では、設定originとの完全一致Originと`X-CSRF-Token`を必須とする。tokenはcanonical形式を検査してconstant-time比較する。`Sec-Fetch-Site`が存在してsame-origin以外なら拒否する。Originのsuffix一致、Referer fallback、Host由来allowlistを使わない。認証済み業務操作はSession検証→CSRF→業務認可、匿名Login開始・Magic要求／consume・登録はpre-auth検証→CSRFの順とする。Google callback GETはこのheader検証の例外で、§10.5のstate / nonce / PKCE / browser bindingを必須とする。Magic Link bearerはpre-auth CSRFを置き換えない。OPTIONS / HEAD / GETでSession発行・Logout・Magic consumeを実行しない（検証済みGoogle callbackだけは別契約）。
+
+### 10.4 EndpointとUI wire
+
+認証入口Pageは`/student/login`、Magic着地Pageは`/student/login/magic`、登録Pageは`/student/register`とする。Page GETでMagic / Invitationをconsumeしない。認証後は`/student`へ進み、Client指定return URLは受け付けない。
+
+| Method / path | Request | 成功Response |
+| --- | --- | --- |
+| `GET /api/auth/student/csrf` | body / Queryなし | §10.3の200 JSON。必要時pre-auth Cookie。 |
+| `POST /api/auth/student/google/start` | `{invitationToken?: string}`、pre-auth CSRF | `200 {"authorizationUrl":"…"}`。UIがtop-level navigationする。 |
+| `GET /api/auth/student/google/callback` | `code` + `state`、または`error` + `state`。Provider補助parameterはAdapterだけで扱う | 成功時Session Cookie + `303 Location: /student`、新規時`303 Location: /student/register`（proofはServer保持）。 |
+| `POST /api/auth/student/magic/request` | `{email: string, turnstileToken: string, invitationToken?: string}`、pre-auth CSRF | `202 {"status":"accepted"}`。配送・登録有無は返さない。 |
+| `POST /api/auth/student/magic/preview` | `{token: string}`、現在Browserのpre-auth CSRF | 未消費の有効Challengeから`200 {"email":"…"}`。consumeせず確認対象だけを返す。 |
+| `POST /api/auth/student/magic/consume` | `{token: string}`、現在Browserのpre-auth CSRF | 既存Login: Session Cookie + `200 {"next":"student"}`。新規: `200 {"next":"registration"}`（proofはServer保持）。 |
+| `GET /api/auth/student/registration` | pre-auth Cookie、§10.3のsame-origin GET検証 | 有効proofから`200 {"email":"…"}`。生Provider token、内部IDを返さない。 |
+| `POST /api/auth/student/registration` | `{name: string}`、pre-auth CSRF | Session Cookie + `201 {"next":"student"}`。nameはtrim後1〜100 Unicode code point、制御文字不可。本人識別根拠にはしない。 |
+| `POST /api/auth/student/logout` | `{}`、Session CSRF | 当該Session失効Commit + Cookie除去、`204`。 |
+
+Magic LinkのメールURLは設定originの`/student/login/magic#token=<opaque>`とする。UIはfragmentをmemoryへ取り込んで直ちに`history.replaceState`でURLから除去し、外部resourceを読まず、preview POSTで有効Challengeの認証先emailを表示し、「このメールで認証する」確認操作後にだけconsume POSTを送る。previewは期限／purpose／未消費／非supersededをPrimaryで検証し、Account IDや登録有無を返さず、consume時には同じ条件を再検証する。メールscannerのGETでは認証しない。要求元Browserへbindingせず別Browserで受け取れるが、consume先Browserの新しいpre-auth CSRFを必要とする。Invitation入口も`/student/login#invitation=<opaque>`で同じURL除去を行い、選んだGoogle start / Magic requestへだけ渡す。Invitationのメール送信／管理EndpointとAdmin認証は別責務。
+
+同BrowserではGoogle start / Magic consumeでpre-auth内の古い登録proofをsupersedeする。Magic consumeは同じbatchで当該Browserの未完了Google flow（claimedを含む）もsupersedeし、遅れて戻るGoogle callbackが新proofを上書きしない。既存Student Sessionを持つBrowserは匿名認証flow開始前にLogoutを完了する。匿名Endpointへ有効Student Sessionを併送した場合は`AUTH_FLOW_INVALID`を返し、Account切替・統合を暗黙に行わない。
+
+### 10.5 Google OIDC Authorization Code Flow
+
+1. startはpre-auth / CSRF / Originと送信元Rate Limitを検証する。Serverは独立した32 byte乱数のstate、nonce、code verifierを生成する（各canonical base64url 43文字）。D1でpre-auth hash、purpose `student_google_login`、state hash、nonce hash、verifier、固定callback URI、任意Invitation hash、開始時刻と600秒期限を保存する。任意招待はStudent招待表で照合し、有効行だけのhashを保持する。未知／期限切れ／使用済み／supersededはNULLへ解決し、既存Loginの条件にしない。旧未完了Google flowを同BrowserでsupersedeしてからCommitする。
+2. Google OIDC AdapterはServer設定のauthorization endpointへ`response_type=code`、`client_id`、固定`redirect_uri=<origin>/api/auth/student/google/callback`、`scope=openid email`、state、nonce、`code_challenge=base64url(SHA-256(ASCII(verifier)))`、`code_challenge_method=S256`を付ける。offline access / refresh token / profile scopeを要求しない。authorization URLのoriginもServer設定と照合する。
+3. callbackはstate / codeまたはerrorの形を検証し、pre-auth Cookie hashとstate hash、purpose、期限、未claim / 未消費 / 非supersededをPrimaryで照合する。codeとerrorの併存、state欠損／重複、不正Browserは`AUTH_FLOW_INVALID`。callback失敗のProvider messageは使わない。正当に対応するflowだけをD1条件付き更新＋`changes() = 1` CHECK assertで一度claimする。
+4. claim Commit後、Adapterだけがtoken endpointへHTTPS formで`grant_type=authorization_code`、code、同じredirect URI / client ID、保存verifierとServer secretの`client_secret`（client_secret_post）を送る。credentialをauthorization URLへ付けない。D1 Transactionを外部呼出中に保持しない。code交換・Google Loginを自動Retryしない。失敗／応答不明／途中終了のclaimを未使用へ戻さず、利用者はstartから再操作する。
+5. ID tokenの署名（許可algorithmはRS256のみ、Server設定のtrusted issuerの鍵）、issの設定値との完全一致、audへの当該client ID包含、azpがある場合の当該client ID一致（aud複数ならazp必須）、整数exp / iat（`iat <= now < exp`）、nbfがあれば`nbf <= now`、nonce hash一致、非空stable sub、email、`email_verified = true`をAdapterが検証する。鍵取得先をtokenのURL fieldから選ばず、署名未検証claimを使わない。時刻はServer UTC、期限等値を無効とし許容clock skewは0秒とする。access / refresh / ID tokenと不要claimは業務DBへ保存せず処理後破棄する。署名／nonce／claim不成立は認証拒否、鍵取得不能等は利用不能として分ける。
+6. 検証済み`{issuer, subject, verifiedEmail}`とServerのflow IDをApplicationへ渡し、§10.7のbindingを実行する。既存Accountならflow消費・bindingの最終再照合・§8.4 Session発行を同じPrimary batchでCommitする。新規ならServer pre-authに登録proofを保存してflowを消費する。proofの期限は元Google flowとpre-authの期限の小さい方で、Sessionはまだ発行しない。
+
+stateを知るだけ、Google成功flag、ClientからPOSTされたID tokenではこのFlowを成立させない。error callbackもvalid state / browser照合後に当該flowを終端化する。callback errorは§10.8の安全なcodeだけを持つ`303 /student/login?error=<code>`とし、code / state / Provider error本文をLocationへ付けない。
+
+### 10.6 Magic Link・悪用防止・配送
+
+emailは単一のaddr-spec文字列とし、display name、制御文字、内部空白を拒否する。前後空白を除き、domainはWHATWG URLのhostname変換によるIDNA ASCII lowercase、local-partはそのまま保持して一致keyを作る。Provider固有のdot除去・plus除去・alias統合・local-partのcase foldingは行わない。全認証・連絡先一意性・Rate Limitの照合はこの同じ規則を使う。表示／配送先の原文と一致keyを区別し、任意email入力だけでは所有確認済みにしない。
+
+requestの順序はwire / pre-auth CSRF / Origin→送信元Rate Limit→Turnstile検証→送信先Rate Limit予約→Challenge保存→Commit後Mail Portである。送信元はplatformから得る信頼する接続元であり、Clientの`X-Forwarded-For`等を使用しない。Turnstile AdapterはServer secretに加え設定hostname / action `student_magic_request`への一致を検証する。Turnstile失敗・利用不能なら送らない。
+
+送信先制限は`AC-210-002`の60秒1回・rolling 3600秒5回・rolling 86400秒10回（設定可能）。送信元は初期rolling 60秒20回・3600秒100回、Google start / callbackは送信元rolling 60秒30回とし、環境設定で変更可能、Account恒久lockにしない。Request予約はD1時刻Tで`T-window < accepted_at <= T`を数え、同じbatchで上限assertと新行保存を行う。メール制限keyは`SHA-256(UTF8("student-magic-destination-v1:" + email_key))`、送信元は`SHA-256(UTF8("student-auth-source-v1:" + platform正本のIP文字列))`をlowercase hexにした値とし、bucketを別列で区別して平文をRate Limit表へ保存しない。IPv6はplatformのcanonical表現を使い、表現の違いで同一送信元制限を分割しない。登録有無を調べる前に同じ予約を行い、配送抑止／失敗でも予約を返還しない。
+
+送信先制限、未登録Invitation Only、有効でない招待、停止・削除済みAccount、配送失敗／結果不明でもrequestは同じ202 / JSONとする。送信元制限だけ429、Turnstile拒否は400、Turnstile／D1共通障害は503（Account lookupより前の共通処理）。登録有無によりstatus、header、body、配送待ち時間を変えない。Responseはメール送信を待たず、Commit後の1回のbest-effort送信をWorkerのpost-response実行へ渡す。durable Delivery RecoveryをこのFlowの前提にせず、途中終了・配送失敗は公開再要求で回復する。登録有無によるレスポンス時間傾向は実装時の比較検証対象とする。
+
+Challenge tokenはSessionと独立した32 byte乱数（canonical base64url 43文字）。DBはASCII tokenのSHA-256 lowercase hexだけを保存し、`purpose = student_magic_login | student_magic_register`、Student scope、正規化配送先、既存ならaccount IDと現在login address、任意Invitation hash、D1発行時刻と900秒期限をbindingする。新要求は同じ宛先・Student scopeの古い未使用Magic Challengeをpurposeに関係なくsupersedeし、Google / Invitation / メール変更purposeを失効させない。
+
+consumeはtoken hash、purpose、`created_at <= T < expires_at`、未消費／非supersededを同じPrimary batchでassertする。login purposeは保存accountと現在Magic login addressの一致もassertし、メール変更後の旧リンクで認証しない。Challenge消費・binding／利用可否Guard・Session発行を同じbatchに合成する。register purposeは新規所有確認proofを現在Browserのpre-authへ保存しChallengeを消費する。proof期限は元Challengeとpre-authの期限の小さい方で延長しない。未知／期限切れ／使用済み／superseded／purpose不一致はいずれも`AUTH_FLOW_INVALID`とし、Tokenを復活・別purposeへ転用しない。
+
+Mail AdapterはProvider受理／結果不明／最終失敗を内部で区別し、公開202にProvider message IDを出さない。安全かつ冪等と公式契約で確認した一時障害だけREQ-912の最大3回・exponential backoff / Retry-Afterを適用できる。受理後・結果不明・Permanent Errorを盲目的再送せず、未検証なら自動Retryしない。生tokenは送信処理memoryだけに置き、永続outboxや通常予約通知へ入れず処理終了時に破棄する。Magic配送失敗は通常Dashboard／管理者手動再送対象外とする。
+
+### 10.7 Binding・Registration・Session issuance内部Context
+
+Googleは`(issuer, subject)`のStudent bindingを最優先する。既存bindingが停止／削除等で利用不能なら新規登録へfallbackしない。未bindingの場合だけ、一意なActive Studentの同一正規化verified連絡先emailへ自動linkする。既存bindingのStudentとemail一致先が別Studentでもmerge・付替え・連絡先の上書きをしない。未verified emailをlinkに使わない。Magic loginは現在連絡先と同期したStudent Magic login addressを使い、Client emailからActorを直接生成しない。
+
+登録proofはServer検証済みidentityとその所有確認email、元flow ID / purpose / 期限、pre-auth hash、任意Invitation hashを保持する。Registration GETはこのemailを返し、Clientにemail / subject / roleの編集権を与えない。登録POSTの同じbatchで最新binding／verified連絡先を再読込し、既存一意Accountへ解決できればそちらを利用して重複作成しない。異なるemailのAccount統合は行わず`AUTH_FLOW_INVALID`。同じidentity / emailへの並行登録はUNIQUEとCHECK Guardで一方のみ確定し、Rollback後のPrimary再照合で再操作を案内する。
+
+新Studentが必要な場合だけ最新Registration modeを読む。Openなら所有確認済みemailから作成、Invitation Onlyなら`purpose = student_invitation`、72時間期限、未消費／非supersededの招待が必要。同じbatchで招待を消費する。Openでは招待を登録許可として使わず消費もしない。Invitation emailは登録許可／配送先でありGoogle認証emailとの一致条件にしない。新連絡先はProvider flowで所有確認したemailとする。招待は既存StudentのLogin条件には使わず、既存Login成功時にconsumeしない。招待管理側は再発行時に同じInvitationの旧Tokenをsupersedeし、期限を新発行から72時間として新hashを渡す。
+
+新規の場合は新しいStudent ID / Account ID、active lifecycle、SecurityAccess active、氏名とverified連絡先、Student専用AuthMethodを同じbatchで作成する。削除済みの同emailは個人情報削除・匿名化完了と一意性解放後だけ再利用し、旧ID／履歴／Sessionへ再接続しない。proof消費、必要な招待消費、binding、§8.4 Session発行のどれかが不成立なら全Rollbackする。
+
+Session issuanceへ渡す内部型は`{accountId, roleScope: "student", sourceFlowId, sourcePurpose}`とする。`accountId`は同じbatchで作成または既存bindingから解決した`student_accounts.id`、残りはServer永続flowから得る。Account IDだけのClient入力やProvider tokenを受け付けない。発行AdapterはD1 §8.4のpredicateを初期／最終assertし、flow消費／binding再照合も同じ成功境界で確認する。以後の業務Request ContextはD1 §8.3の`session_id / token_hash / student_id`へ収束し、source flowを認可ticketに使わない。
+
+### 10.8 Error・失効・Logout
+
+§8のJSON envelopeとretry値を再利用する。新auth codeのmessageは以下の固定文とし、Provider Adapterの生errorは公開しない。
+
+| code | HTTP / retry | message・適用 |
+| --- | --- | --- |
+| `AUTH_FLOW_INVALID` | 400 / none | 認証を完了できませんでした。認証操作を最初からやり直してください。Token／state／binding／登録許可不成立を区別しない。 |
+| `CSRF_INVALID` | 403 / reload | 操作を確認できませんでした。画面を再読み込みしてください。Origin / CSRF不成立。 |
+| `AUTH_RATE_LIMITED` | 429 / later | 要求が多すぎます。時間をおいて再度お試しください。送信元制限だけ。`Retry-After`は超過した送信元windowが解放されるまでの秒数（複数なら最大、最小1）を返す。 |
+| `AUTH_PROVIDER_UNAVAILABLE` | 503 / later | この認証方法を利用できません。別の認証方法を使うか、時間をおいて再度お試しください。Google経路の到達不能・鍵取得不能等。 |
+| `AUTH_CHALLENGE_REJECTED` | 400 / reload | 確認を完了できませんでした。画面を再読み込みしてください。Turnstile拒否。 |
+
+不正JSON等は既存`INVALID_REQUEST`、D1 / Turnstile障害・環境Gateは既存`SERVICE_UNAVAILABLE`（代替経路が必ず解決するとは案内しない）、永続化Invariant異常は既存`INTEGRITY_STATE_UNAVAILABLE`。Mail障害だけはrequestの202へ隠蔽し内部観測する。code検証不成立／Google利用者取消は`AUTH_FLOW_INVALID`、Google利用不能は`AUTH_PROVIDER_UNAVAILABLE`へAdapterで分類する。HTTP status／生Provider文字列だけからAccount状態や原因を推測しない。
+
+業務RequestはD1 §8.3の順序で、欠損／未知／失効／期限切れ／停止／削除は401 `UNAUTHENTICATED`、有効な認証済みSessionに操作権限がない場合だけ403 `FORBIDDEN`、判定不能は503とする。Student専用Cookieに未知tokenやAdmin tokenを入れた場合はStudent lookup不存在の401であり、Admin認証が成功したことにしない。停止・解除後の古いSessionを403のために復活させない。
+
+Logoutでは有効SessionとCSRFを確認し、Primary batchのD1時刻で当該id / hashを失効させ、同じbatchの最終assertで失効を確認する。並行Logout／停止ですでに失効していれば非復活を保ったまま204、他Sessionは失効させない。Request開始時から未知／失効Sessionの場合は401とCookie除去（Logout成功とは表示しない）。batch／再照合が失敗・応答不明なら503として成功を推測せず、Server失効確認後にだけCookieを除去する。
+
+### 10.9 Traceability・後続実装の検証観点
+
+以下は既存AC / TCを具体化する設計検証観点であり、新しいProduct要求・TC identifierを導入しない。
+
+| 設計 | 上位識別子・既存TC | 確認観点 |
+| --- | --- | --- |
+| §10.2〜3・§10.8 | POL-006、REQ-207 / 211、AC-207-002〜003 / AC-211-001〜005、TC-F-207-02〜03 / TC-F-211-02〜03 | Cookie属性・30日等値・非延長、Session/pre-auth CSRF非互換、Origin欠損／null／cross-site、POST Preview適用、失効後401、503でCookie維持、Logoutの両Commit順。 |
+| §10.5・§10.7 | BR-090 / 097 / 121、REQ-202 / 205、AC-202-001〜002 / AC-205-001〜002、TC-F-202-01〜02 / TC-F-205-01〜02 | state／nonce／PKCE不成立・callback replay／wrong Browser、Google取消／障害、同email link、stable binding優先・異email非merge、raw token／不要claim非保存、Admin非昇格。 |
+| §10.6 | BR-094〜095 / 114、REQ-203 / 210、AC-203-001〜004 / AC-210-001〜007、TC-F-203-01〜03 / TC-F-210-01〜06 | 900秒等値、single-use／supersede／purpose、scanner GET無変更、別Browser consume、メール変更後旧リンク拒否、Rate Limit並行予約、Turnstile / Provider呼出順、登録済／未登録／停止／配送失敗の公開応答と時間傾向の同等性。 |
+| §10.7 | BR-091 / 096 / 127、REQ-201 / 204 / 319、AC-201-001〜003 / AC-204-001〜003 / AC-319-001、TC-F-201-01〜02 / TC-F-204-01〜03 / TC-F-319-01 | 登録mode再検証、招待72時間等値／再発行、Google異email許可、既存Login不変、並行登録、一意性・削除後新ID、proof／招待／Sessionの全Rollback。 |
+| §10.1・§10.8 | POL-007 / 014、REQ-209 / 912 / 914 / 934 / 935 / 940 / 951、AC-209-001〜002 / AC-912-003〜005 / AC-914-004〜005 / AC-934-001 / AC-935-001 / AC-951-001、TC-F-209-01〜02、TC-NF-912-02〜04 / TC-NF-914-03〜04 / TC-NF-934-01 / TC-NF-935-01 / TC-NF-940-01〜04 / TC-NF-951-01 | Provider交換Port、Google自動Retryなし、結果不明非再送、共通障害503、安全な固定error、token非反射・個人情報最小化、24時間削除優先。 |
+
+既存POL→BR→REQ→AC→TC、CON-001〜003 / 006、OOS-006 / 009の意味は変更しない。図の正本は`../diagrams/plantuml/c4-student-auth-components.puml`と`../diagrams/plantuml/student-auth-sequence.puml`。
+
+### 10.10 Handoff・未検証事項
+
+#841はD1 §8のProduction migration、#842は本HTTP契約と#841のD1正本へのProduction StudentAccessGuard接続を担当する。§9のProvider flow保存契約のmigration／実装も、有効化する認証flowに先行して揃える（§8だけでProvider flow完成としない）。#843は削除Command全体、#844はAdmin認証詳細を担当する。実装担当が本契約のpure部分・isolated fixtureを始めるための追加Product判断はない。
+
+本Issueは文書・PlantUML正本のみで、実Provider通信・対象D1検証・route activationをしない。Googleの設定issuer／endpoint／RS256・鍵取得・client_secret_post・S256対応、Turnstile hostname / action、Resendの受付／結果不明／安全なRetry根拠は実Providerで未検証。これらをProviderが保証するという記述ではなく、Adapterが満たす検証契約とする。設定・互換性を確認できない経路はfail-closedし、外部事実と本契約が矛盾する場合は推測で変更せず人間判断へ戻す。
+
+#840 / #841 / #842とD1 §8.6の対象環境検証が完了するまではProduction / Production相当Reservation Adapter / public routeを有効化しない。隔離試験の結果を実D1・実Provider・Browser System / Acceptance試験のPassへ読み替えない。
