@@ -48,6 +48,13 @@ Production Session / Account / Role / access / lifecycle、UI、Production D1は
 Product moduleの統合とpublic activationの到達不能確認を同じ既存標準コマンドで実行する。
 
 #638の基盤smokeには `[bootstrap #638]` をtest nameに付け、業務TCのPass件数へ算入しない。
+`d1/student-auth-migration.test.ts`は#841のProduction `migrations/0001`〜`0006`を別のisolated local D1 `AUTH_DB`へそのまま適用する。
+FK / 一意性 / hash / 30日期限境界 / 本人接続、固定binding・Session属性、失効不可逆、停止解除後の旧Session非復活、削除後非復活、
+共有View / Index / CHECK・Trigger失敗時のPrimary batch全Rollback、read-only Integrity Queryによる欠落・未失効検出を確認する。
+`TC-F-003-06` / `TC-F-207-02〜03` / `TC-F-211-02〜03` / `TC-F-311-02`付きtestはDB物理契約の **partial evidence** である。
+HTTP / Provider / Admin・削除Command全体 / 実環境D1 / System・Acceptance TC全体のPassを証明しない。
+既存予約fixtureの`TEST_DB`と適用履歴を共有せず、Production entrypointへ接続しない。
+
 業務を実装したテストでは、上記prefixに代えて対応する既存TC IDをtest nameへ保持する（例: `[TC-F-003-01] ...`）。
 未実装業務のTCを基盤smokeへ割り当てない。
 Phase Bでは `unit/worker.test.ts` でWorker moduleのhandlerを直接呼び、

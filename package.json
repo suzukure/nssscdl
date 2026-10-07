@@ -11,7 +11,7 @@
     "lint": "eslint \"src/**/*.ts\" \"tests/unit/**/*.ts\" \"tests/integration/**/*.ts\" \"tests/d1/**/*.ts\" vitest.config.ts vitest.d1.config.ts",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "d1:local": "wrangler d1 migrations apply nssscdl-bootstrap-test --config tests/fixtures/d1/wrangler.jsonc --local --persist-to .wrangler/d1-bootstrap-test",
+    "d1:local": "wrangler d1 migrations apply nssscdl-bootstrap-test --config tests/fixtures/d1/wrangler.jsonc --local --persist-to .wrangler/d1-bootstrap-test && wrangler d1 migrations apply nssscdl-student-auth-test --config tests/fixtures/d1/wrangler.jsonc --local --persist-to .wrangler/d1-bootstrap-test",
     "test:d1": "vitest run --config vitest.d1.config.ts",
     "test": "npm run test:unit && npm run test:integration && npm run test:d1"
   },
