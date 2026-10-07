@@ -39,3 +39,18 @@ HTTP Viewへ渡さない。将来のunsafe consumerは §10.3のCSRF / Origin検
 D1 §8.3のTransaction内初期・最終再照合を別途必須とする。
 Guard / HTTP / Serviceは明示注入でcomposition可能だが、default Workerは引き続き503。
 Production設定・Provider callback・Session発行・Reservation Confirm・Admin authは未接続。
+
+`application/reservation-preview.ts` は#860の単一予約Preview pure core。
+Guard解決済み本人・確定Preview read state・Server UTC秒から新規分類と本人の未開始予約の
+実効分類差分を導出する。開始済み自動分類、算入除外、明示Overrideは既存設計に従う。
+`createPreviewPlan` は内部canonical Snapshot、`expectedStateToken` はWeb標準SHA-256による
+`v1.` tokenを生成し、後続Preview / Confirmから同じ計算を再利用できる。
+`previewReservation` のViewは詳細設計Application §5の4 fieldだけとし、Snapshot・N・本人IDを公開しない。
+canonical v1のfield順・値型・Tokyo日時・予約順は明示projectionとunit assertionで固定し、
+実時刻は含めず対象／各予約の開始境界を含める。D1正本 §4の当月全Reservationを含み、
+設定行欠損はnull（N=3）、明示設定はobjectとして区別する。Repositoryは完全なread setと
+投影外Invariantを検証し、未検証ならintegrityをinconsistentとして渡す責務を持つ。
+`tests/unit/reservation-preview.test.ts` は `TC-F-003-01 / TC-F-003-02` のApplication/Preview
+**partial evidence**であり、HTTP / Browser / Confirm CommitやTC全体のPassを意味しない。
+D1 Adapter・HTTP・CSRF / Origin・Confirm writeは未実装で、default Workerは引き続き503。
+tokenは認可ticketでもSlot確保でもなく、Confirmは本人再解決・最新再計算・Transaction Guardを必須とする。
