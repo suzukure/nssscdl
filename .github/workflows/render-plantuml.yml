@@ -2,10 +2,11 @@ name: Render PlantUML diagrams
 
 on:
   push:
-    branches: [main]
+    branches-ignore: [main]
     paths:
       - 'docs/diagrams/plantuml/**/*.puml'
       - '.github/workflows/render-plantuml.yml'
+      - '.gitattributes'
   workflow_dispatch:
 
 permissions:
@@ -13,14 +14,28 @@ permissions:
 
 jobs:
   render:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
+          token: ${{ github.token }}
+
+      - name: Verify writable branch
+        shell: bash
+        env:
+          TARGET_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_REF" in
+            refs/heads/main) exit 1 ;;
+            refs/heads/*) git check-ref-format "$TARGET_REF" ;;
+            *) exit 1 ;;
+          esac
+          test "$(git symbolic-ref --quiet HEAD)" = "$TARGET_REF"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -61,8 +76,17 @@ jobs:
 
       - name: Commit rendered SVG files
         shell: bash
+        env:
+          TARGET_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+
+          case "$TARGET_REF" in
+            refs/heads/main) exit 1 ;;
+            refs/heads/*) git check-ref-format "$TARGET_REF" ;;
+            *) exit 1 ;;
+          esac
+          test "$(git symbolic-ref --quiet HEAD)" = "$TARGET_REF"
 
           git add docs/diagrams/rendered
 
@@ -73,5 +97,5 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Render PlantUML diagrams [skip ci]'
-          git push origin HEAD:main
+          git commit -m 'Render PlantUML diagrams'
+          git push origin "HEAD:$TARGET_REF"
