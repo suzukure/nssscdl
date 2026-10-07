@@ -378,6 +378,8 @@ Security Suspensionの論理状態も、将来の物理SchemaをそのままAPI 
 
 ## 10. 認証・Session設計との境界
 
+StudentのHTTP / Cookie / CSRF / Google / Magic Link / 登録接続の詳細は`../20_detailed_design/01_StudentReservationApplication.md` §10、Provider保存・発行合成は`../20_detailed_design/02_StudentReservationD1.md` §9、Session物理Guardは同書§8を正とする（#840 / #636）。Admin詳細・認証方法管理・プロフィール所有確認の全詳細は別責務として残る。
+
 Application Workerは `01_SystemArchitecture.md` §2.1のD1正本opaque Server-side SessionをCookieで扱う。Student Account / Admin AccountとSessionはRole scopeごとに分離し、同一Sessionで権限を混在させない。各Requestで期限、失効、Account / Role、Studentの最新access state / lifecycleを検証する。Adminはabsolute最大7日・Idle 12時間（request時にlast activityを評価）、Studentはabsolute最大30日・Idleなしとする。Session bearer tokenをlocalStorage等へ保持しない。
 
 生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、管理者APIのActor / Target決定Ruleは **4.2 管理者向けAPIのActor / Target Scope原則** を正とする。本節では重複定義しない。
@@ -1441,7 +1443,7 @@ Callbackは受信環境のProvider credential / callback設定と既知Attempt�
 
 ## 20. 詳細設計へ送る事項
 
-以下は基本原則ではなく詳細設計で確定する。
+以下は基本原則ではなく詳細設計で確定する。Student認証に関する項目は§10で参照した#840正本に確定済みであり、Admin・method-management・プロフィール変更等の未確定範囲だけを後続へ送る。
 
 - 全Endpoint一覧
 - Request / Response JSON Schema

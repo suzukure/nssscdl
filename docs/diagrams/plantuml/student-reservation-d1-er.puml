@@ -112,6 +112,8 @@ notification_intents ||--o| notification_outbox
 
 note bottom of student_sessions
   student_session_access_v1 is the shared guard view (02 section 8).
+  Provider flows / contacts / binding are defined separately in 02 section 9.
+  They compose consume and issuance; this diagram shows the reservation FK slice.
   Request and atomic Write recheck current session / access / lifecycle.
   Suspension / deletion revoke all Student sessions in the same batch.
   Clearing suspension never clears revoked_at. No raw token stored.

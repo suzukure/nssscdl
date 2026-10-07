@@ -1,8 +1,8 @@
-# 単一予約 D1物理設計・Transaction Guard
+# 生徒予約・認証 D1物理設計・Transaction Guard
 
 ## 1. 範囲と前提
 
-`01_StudentReservationApplication.md` の4 EndpointのRepository Adapterを対象とする。wire、分類規則、通知義務は同書、`../10_basic_design/04_ReservationModel.md`、`../10_basic_design/05_BookingAndConcurrency.md` §3〜5・§13を正とする。本書の物理名はlower_snake_case、IDはWorker生成のopaque TEXT、時刻はUTC Unix秒のINTEGER、月は日本時間の暦月を表す`YYYY-MM` TEXTとする。API出力だけをAsia/TokyoのRFC 3339へ変換する。Unix秒は整数として比較し、開始境界は`T < starts_at`で判定する。D1のforeign key enforcementは既定で有効であることを前提とし、通常Query / Migrationを接続ごとの`PRAGMA foreign_keys = ON`設定に依存させない。ApplicationからenforcementをOFFへ切り替えない。FK違反は§3のMigration / integrity validationで検出する。
+`01_StudentReservationApplication.md` の4予約EndpointのRepository Adapterを対象とする。#840のStudent Provider Flow保存・Session発行合成は§9で定義する。wire、分類規則、通知義務は同書、`../10_basic_design/04_ReservationModel.md`、`../10_basic_design/05_BookingAndConcurrency.md` §3〜5・§13を正とする。本書の物理名はlower_snake_case、IDはWorker生成のopaque TEXT、時刻はUTC Unix秒のINTEGER、月は日本時間の暦月を表す`YYYY-MM` TEXTとする。API出力だけをAsia/TokyoのRFC 3339へ変換する。Unix秒は整数として比較し、開始境界は`T < starts_at`で判定する。D1のforeign key enforcementは既定で有効であることを前提とし、通常Query / Migrationを接続ごとの`PRAGMA foreign_keys = ON`設定に依存させない。ApplicationからenforcementをOFFへ切り替えない。FK違反は§3のMigration / integrity validationで検出する。
 
 `Student`、`StudentSecurityAccess`、Student Session / Accountの認証物理契約は#636により本書§8で確定する。`students(id)`は予約FKのProduction接続点である。Guard Portは本人の有効Session、Student role、最新lifecycle / accessと予約操作可否を解決し、Confirmでは§8.3の同じ正本をTransaction内で再照合する。ProductionおよびProduction相当の共有環境での予約Migration適用・予約Adapter有効化条件は§8.6を正とする。本Issueは詳細設計のみであり、Production migration file / auth Adapter / routeは実装・接続しない。
 
@@ -217,7 +217,7 @@ Cloudflare D1実環境でのFK enforcement / `PRAGMA foreign_key_check`、Server
 
 ## 8. Student Session・利用可否のD1物理Guard契約（#636）
 
-入力は`01_SystemArchitecture.md` §2.1、`02_DataModel.md` §2.1、`05_BookingAndConcurrency.md` §3.8 / §9、`06_APIOverview.md` §10 / §16〜17である。以下は認証済みStudentを予約価値単位へ接続する最小物理契約であり、Google / Magic Link / Invitation / Open RegistrationのProvider flow、Admin認証、プロフィール属性・所有確認、削除Command全体の物理設計は対象外とする。それらの実装をこのDDLだけで有効化してよい意味ではない。
+入力は`01_SystemArchitecture.md` §2.1、`02_DataModel.md` §2.1、`05_BookingAndConcurrency.md` §3.8 / §9、`06_APIOverview.md` §10 / §16〜17である。以下は認証済みStudentを予約価値単位へ接続する最小物理契約であり、この§8ではProvider flow、Admin認証、プロフィール属性・所有確認、削除Command全体の物理設計は対象外とする。#840のStudent Provider flowはApplication正本§10と本書§9で定義する。それらの実装をこのDDLだけで有効化してよい意味ではない。
 
 ### 8.1 正本とDDL
 
@@ -292,7 +292,7 @@ Admin Account / Sessionは別の物理境界とし、このStudent専用Tableへ
 
 発行Adapterは暗号学的乱数32 byteを生成し、paddingなしbase64urlの43文字をopaque tokenとする。受信はcanonicalな同形式（decode後32 byte、再encode一致）だけを受け付け、Worker内でそのASCII tokenのSHA-256を計算してlowercase hex 64文字を`token_hash`に保存・検索する。高entropy tokenの照合用hashであり、Password hashingやProvider credentialの保存方式ではない。生token、Cookie、hashをLog / Audit / View / Expected State Tokenへ入れない。DBから生tokenを復元・発行しない。token_hash UNIQUE衝突時は発行失敗とし、既存SessionをUPSERTで上書きしない。
 
-Browserへの新CookieはSession発行batchの正常Commit後だけ返し、Secure / HttpOnlyと`06_APIOverview.md` §10のCookie / CSRF境界を適用する。Cookie名・SameSite / Path / prefixおよびCSRF wireは認証HTTP詳細設計の責務であり、本Issueではrouteを接続しない。ClientのStudent ID / Account ID / Role headerをSession検索の代替にしない。
+Browserへの新CookieはSession発行batchの正常Commit後だけ返し、Secure / HttpOnlyと`06_APIOverview.md` §10のCookie / CSRF境界を適用する。Cookie名・SameSite / Path / prefixおよびCSRF wireは`01_StudentReservationApplication.md` §10を正とし、route接続は後続実装の責務である。ClientのStudent ID / Account ID / Role headerをSession検索の代替にしない。
 
 ### 8.3 Request解決と重要Student Writeのstable predicate
 
@@ -410,3 +410,138 @@ ProductionおよびProduction相当の共有環境では、予約migrationの前
 - `01_SystemArchitecture.md` §6の環境identity / binding、未完成機能のserver-side gateを満たし、fixtureがProduction artifact / routeへ入らない。§3の予約Integrity validationも成功する。
 
 本Issueは新しい実環境検証基盤・Provider接続・activationを導入しない。#608の隔離評価は§8.5で先行できるが、実D1検証およびProduction auth Adapter / migrationの実装・有効化は既存後続責務として残る。削除Command全体、Provider flow、Admin認証、Cookie / CSRF HTTPの未実装境界をこの設計で完了した扱いにしない。
+
+## 9. Student Provider Flowの保存・発行合成契約（#840）
+
+### 9.1 正本・最小保存面
+
+HTTP / Cookie / CSRF / Provider validationは`01_StudentReservationApplication.md` §10を正とする。以下は同じ業務D1に保存する認証flowのDDL契約であり、Production migrationではない。§8のTable / View / predicateを変更せず、Profile変更・Invitation管理・削除Command全体の実装を追加しない。§8のAccountへ接続するbinding／所有確認／登録許可を定義する。
+
+```sql
+CREATE TABLE student_contacts (
+  student_id TEXT PRIMARY KEY NOT NULL REFERENCES students(id),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  email_key TEXT NOT NULL UNIQUE,
+  verified_at INTEGER NOT NULL
+);
+CREATE TABLE student_google_bindings (
+  account_id TEXT NOT NULL REFERENCES student_accounts(id),
+  issuer TEXT NOT NULL, subject TEXT NOT NULL,
+  PRIMARY KEY (issuer, subject)
+);
+CREATE INDEX ix_google_bindings_account ON student_google_bindings(account_id);
+CREATE TABLE student_registration_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  mode TEXT NOT NULL CHECK (mode IN ('open','invitation_only'))
+);
+CREATE TABLE student_auth_preauth (
+  token_hash TEXT PRIMARY KEY NOT NULL CHECK (length(token_hash) = 64 AND token_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  CHECK (expires_at = created_at + 1800)
+);
+CREATE TABLE student_invitations (
+  token_hash TEXT PRIMARY KEY NOT NULL CHECK (length(token_hash) = 64 AND token_hash NOT GLOB '*[^0-9a-f]*'),
+  invitation_id TEXT NOT NULL,
+  purpose TEXT NOT NULL CHECK (purpose = 'student_invitation'),
+  recipient_email TEXT NOT NULL,
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  consumed_at INTEGER, superseded_at INTEGER,
+  CHECK (expires_at = created_at + 259200)
+);
+CREATE UNIQUE INDEX ux_student_invitation_pending ON student_invitations(invitation_id)
+  WHERE consumed_at IS NULL AND superseded_at IS NULL;
+CREATE TABLE student_google_flows (
+  id TEXT PRIMARY KEY NOT NULL,
+  preauth_hash TEXT NOT NULL REFERENCES student_auth_preauth(token_hash)
+    CHECK (length(preauth_hash) = 64 AND preauth_hash NOT GLOB '*[^0-9a-f]*'),
+  purpose TEXT NOT NULL CHECK (purpose = 'student_google_login'),
+  state_hash TEXT NOT NULL UNIQUE CHECK (length(state_hash) = 64 AND state_hash NOT GLOB '*[^0-9a-f]*'),
+  nonce_hash TEXT NOT NULL CHECK (length(nonce_hash) = 64 AND nonce_hash NOT GLOB '*[^0-9a-f]*'),
+  code_verifier TEXT, redirect_uri TEXT NOT NULL,
+  invitation_hash TEXT REFERENCES student_invitations(token_hash)
+    CHECK (invitation_hash IS NULL OR (length(invitation_hash) = 64 AND invitation_hash NOT GLOB '*[^0-9a-f]*')),
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  claimed_at INTEGER, consumed_at INTEGER, superseded_at INTEGER,
+  CHECK (expires_at = created_at + 600)
+);
+CREATE UNIQUE INDEX ux_student_google_pending ON student_google_flows(preauth_hash)
+  WHERE claimed_at IS NULL AND consumed_at IS NULL AND superseded_at IS NULL;
+CREATE TABLE student_magic_challenges (
+  token_hash TEXT PRIMARY KEY NOT NULL CHECK (length(token_hash) = 64 AND token_hash NOT GLOB '*[^0-9a-f]*'),
+  purpose TEXT NOT NULL CHECK (purpose IN ('student_magic_login','student_magic_register')),
+  account_id TEXT REFERENCES student_accounts(id),
+  email TEXT NOT NULL, email_key TEXT NOT NULL,
+  invitation_hash TEXT REFERENCES student_invitations(token_hash)
+    CHECK (invitation_hash IS NULL OR (length(invitation_hash) = 64 AND invitation_hash NOT GLOB '*[^0-9a-f]*')),
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  consumed_at INTEGER, superseded_at INTEGER,
+  CHECK (expires_at = created_at + 900),
+  CHECK ((purpose = 'student_magic_login' AND account_id IS NOT NULL) OR
+         (purpose = 'student_magic_register' AND account_id IS NULL))
+);
+CREATE UNIQUE INDEX ux_student_magic_pending ON student_magic_challenges(email_key)
+  WHERE consumed_at IS NULL AND superseded_at IS NULL;
+CREATE TABLE student_registration_proofs (
+  preauth_hash TEXT PRIMARY KEY NOT NULL REFERENCES student_auth_preauth(token_hash)
+    CHECK (length(preauth_hash) = 64 AND preauth_hash NOT GLOB '*[^0-9a-f]*'),
+  source_flow_id TEXT NOT NULL,
+  source_purpose TEXT NOT NULL CHECK (source_purpose IN ('student_google_login','student_magic_register')),
+  issuer TEXT, subject TEXT,
+  email TEXT NOT NULL, email_key TEXT NOT NULL,
+  invitation_hash TEXT REFERENCES student_invitations(token_hash)
+    CHECK (invitation_hash IS NULL OR (length(invitation_hash) = 64 AND invitation_hash NOT GLOB '*[^0-9a-f]*')),
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  CHECK (expires_at > created_at),
+  CHECK ((source_purpose = 'student_google_login' AND issuer IS NOT NULL AND subject IS NOT NULL) OR
+         (source_purpose = 'student_magic_register' AND issuer IS NULL AND subject IS NULL))
+);
+CREATE TABLE student_auth_rate_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  bucket TEXT NOT NULL CHECK (bucket IN ('magic_source','magic_destination','google_source')),
+  key_hash TEXT NOT NULL CHECK (length(key_hash) = 64 AND key_hash NOT GLOB '*[^0-9a-f]*'),
+  accepted_at INTEGER NOT NULL
+);
+CREATE INDEX ix_student_auth_rate_window
+  ON student_auth_rate_events(bucket, key_hash, accepted_at);
+```
+
+ID / 時刻は§1、hashは§8.2と同じ64文字lowercase hexとする。Invitation / Magic tokenも独立32 byte乱数のcanonical43文字で、生tokenはDBへ入れない。`state_hash / nonce_hash / preauth_hash`も受信ASCII値のSHA-256。PKCE verifierはcode交換に必要な短期秘密であり、Google flowだけに保持し、claim後の処理終了／期限でNULLにする。raw Provider ID / access / refresh token、callback codeは保存しない。
+
+`student_contacts`は氏名・現在の所有確認済み連絡先の正本とし、logical Magic AuthMethodのlogin addressはこの行から導出する。別のMagic address列を作ってずらさない。`email_key`はApplication §10.6の単一正規化関数の結果であり、Student role scopeだけの一意性。Google bindingはstable `(issuer, subject)`だけをAccountへ結び、Google emailを連絡先変更の入力にしない。既存bindingを別AccountへUPDATE / UPSERTしない。個人情報削除完了まではdeletedの連絡先keyも予約され、Cleanupが当該行を削除／匿名化してkeyを解放した後だけ再登録可能となる。
+
+登録modeの行は既存環境設定から明示的に1行を作り、欠損をopenと推測しない。Invitation管理側は新version発行と同じbatchで同じ`invitation_id`の旧未使用行をsupersedeして新hashを保存する。対象環境・Student purpose以外の招待をこの表へ入れない。Admin管理API／監査／配送の全設計をここで完了した扱いにしない。
+
+全flowの期限／消費／supersedeは不可逆とする。`consumed_at / superseded_at / claimed_at`はNULLからServer時刻へ一度だけ遷移し、非NULLをNULLや別時刻へ戻さない。この更新規則はAdapterの条件付きUPDATEとCHECK assertで強制し、Tableを直接更新する別callerを認めない。期限行をpending UNIQUEから自動的に外す必要はなく、新発行batchで旧行をsupersedeしてからINSERTする。
+
+### 9.2 原子的flow／binding／Session発行
+
+事前Primary SELECTからbinding／mode／Challengeの候補を読み、Workerが新ID／Session hashとprepared statement planを作る。選択した既存Account IDは初期batch Guardで同じidentity／連絡先に現在も対応することをassertする。新Account IDもWorker生成で、ClientやProviderから受け取らない。事前読取を発行許可にせず、batch内でread setと条件を再照合する。
+
+全Commandは§5と同じ`DB.withSession('first-primary').batch()`、prepared statements、共有`command_guards`のCHECK assertを使う。0件の条件付きUPDATEだけを成功としない。外部Provider呼出はbatch外で行う。Server内部のprovider検証結果は当該Requestだけで使用し、Clientから再受付しない。
+
+**Google claim:** 同じbatchでTを採取し、pre-auth有効、state hash／browser／purpose一致、`created_at <= T < expires_at`、未claim／未消費／非supersededをassertする。`UPDATE student_google_flows SET claimed_at = :T WHERE id = :id AND claimed_at IS NULL AND consumed_at IS NULL AND superseded_at IS NULL`直後に`changes() = 1`をCHECK assertする。claimはGoogle呼出より先にCommitする。以後の最終batchはclaimed行と同じpre-auth、期限、非supersededを再確認し、state再利用を許さない。古いclaimed flowの応答が新start後に戻る場合も、新startが旧claimed行をsupersedeするため成立しない。
+
+**Magic request:** 送信元Rate Limit上限検査と予約を1 batchで行い、Turnstile外部検証後に送信先予約とChallenge判断を別の1 batchで行う。Accountの存在／最新連絡先／利用可否と登録mode／招待から送信可否とpurposeを決める。既存停止・削除行を見つけたらregisterへfallbackしない。送信可能な場合だけ同宛先の旧未使用Challengeをsupersedeし新hashを保存する。任意Invitationは有効行だけをhashとして保持し、無効ならNULLとする。招待が必要なのに欠損／無効なら登録Challengeを作らない。送信しない場合も公開202と予約を維持する。正常Commit後だけmemoryのtokenをMail Portへ渡す。Provider障害はこのCommitを戻さない。
+
+**Magic consumeのBrowser切替Guard:** 同じ成功batchで、当該pre-authの未完了Google flow（claimedも含む）をsupersedeし古い登録proofを除去する。previewだけでは変更しない。古いGoogle callbackはその最終Guardで不成立となる。
+
+**既存Login:** Googleはvalidated identityとclaimed flow、Magicはtoken hashとpurposeを初期assertする。現在のbinding／連絡先／Accountを再解決し、AccountがactiveでSecurityAccess activeであることを§8.4でassertする。Google未bindingかつ一意verified連絡先一致ならGoogle bindingをINSERTする。Magicは保存accountと現連絡先keyが一致しなければ拒否する。flowを条件付きUPDATEで消費し、直後に`changes() = 1`をassertする。新Sessionを§8.4に従いINSERT、同Browser旧Sessionがあればそのid / hashだけを失効させる。最終Guardでflow消費、binding／Magic連絡先一致、新Sessionと最新lifecycle / access / 期限を再assertする。正常CommitだけがCookie発行可能となる。
+
+**新規所有確認:** 対象Google / Magic flowと現在Browser pre-authの有効性を同様にassertする。flow消費と`student_registration_proofs`への保存を同じbatchで行う。Server検証済みemail / issuer / subjectと元flow期限を保存し、proof expiryを元flowとpre-authの期限の小さい方にする。古いproofは同Browserの新しい明示flowだけが置換可能とし、Session発行・Actor生成はまだ行わない。source IDはGoogleなら`student_google_flows.id`、Magicなら`student_magic_challenges.token_hash`。proofのsource列が指す消費済みflowのpurpose／元期限を保存・再利用時にassertする。Magicではsourceのemail keyとの一致もassertする。Googleのemail / issuer / subjectは当該claim後にAdapterが検証した結果だけをproofへ保存し、Google flow表へ不要に複製しない。
+
+**登録確定:** pre-auth／proof／元flowの対応と期限をassertし、Application §10.7の順序で既存binding／verified連絡先を再照合する。既存一意Accountへ接続する場合は必要なbindingだけを追加し、mode／招待をLogin条件にしない。新規時は最新modeを同じbatchで読み、Invitation Onlyなら招待purpose／期限／未使用／非supersededをassert、consume UPDATE後`changes() = 1`をassertする。新Student、SecurityAccess active、Account、contacts、必要なGoogle bindingをINSERTする。Magic AuthMethodはverified contactsから利用可能となる。新／既存Accountの§8.4 issuance predicateをassertし、proofをDELETEして`changes() = 1`をassert、新SessionをINSERTする。最終Guardでproof不在、必要招待消費、現在binding / contact / access / lifecycle、新Sessionの期限を再assertし、pre-authを削除する。Google / Magic source行は最終Guardまでconsumedを保ち、復活させない。
+
+成功Loginでも当該pre-authと不要proofを削除する。FKの参照順を守り、最終Guard後に当該pre-authを参照する全Google flowを先に削除し、その後pre-authを削除する。再利用不能性はflowが不存在である場合も維持する。Magic source行はpre-auth FKを持たず単回consume状態を保つ。登録proofが残る間はそのsource行をCleanupしない。
+
+全assertは最終D1時刻でもpre-auth／元flow／proof／招待の必要期限を再評価する（保存時刻はTのまま）。proof DELETE前にその期限／sourceをGuard行の`expected_read_set`へ捕捉して初期assertで照合し、DELETE後の最終時刻比較にもその検証済み期限を使う。期限到達や一意競合、途中INSERT失敗ではbinding／新Student／招待消費／Sessionの部分Commitを認めない。Google claimだけは外部呼出前の独立成功境界なので、後続Rollbackで未claimへ戻さない。
+
+既知のraceはRollback後にPrimary再照合し、flow失効／mode変更／binding競合を`AUTH_FLOW_INVALID`、Session失効を401へ抽象化する。未知constraint、参照欠落・矛盾は`INTEGRITY_STATE_UNAVAILABLE`、D1読取不能は`SERVICE_UNAVAILABLE`。失敗SQLの原文で分類せず、Response不明でも新Sessionを再発行・blind retryしない。生tokenを復元できないため、Cookie未到達／結果不明は新Login操作で回復する。
+
+### 9.3 Cleanup・後続migration・検証
+
+flow／proof／pre-auth／Rate Limit一時行は有効期限／最大時間窓を超えて利用せず、Cleanupで参照順に除去する。hashをAuditへ複製しない。Student削除ではcontacts、Google binding、当該AccountのMagic Challengeと該当identityを含む登録proof／短期flowも直接・間接識別子として24時間以内削除・匿名化対象にする。具体削除Command全体／Recovery Purgeは#843で既存要求に従い合成し、本節だけでは有効化しない。未完了・結果不明flowも個人情報削除を理由に保持延長しない。
+
+§8 migration後、contacts / binding / 登録mode、pre-auth / Invitation、Google / Magic flow、proof、Rate Limitの順で必要なschemaを追加する。#841の§8 Guard migrationだけでは本節のProvider flowを有効化しない。適用済みmigrationや`student_session_access_v1`の意味を変えず、flow実装前に各追加保存面のmigration・一意性・FK・CHECK assertを揃える。対象環境の原子性・Server時刻・先行Commit可視性は引き続き§8.6のGateとする。
+
+検証はApplication §10.9の既存AC / TCへ対応付ける。追加確認はclaim replay／old claimed callback、Magic同宛先並行再要求とconsume、登録mode／招待再発行race、同identity／同email並行登録、メール変更後旧Challenge、停止・削除／Loginの両Commit順、最終期限到達と全Rollbackである。local SQLiteのDDL／fixture検証はこの契約の局所検証であり、実D1／Provider／Browser試験の証明にはしない。

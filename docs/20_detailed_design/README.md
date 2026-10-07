@@ -8,5 +8,5 @@
 
 ## 文書一覧
 
-- [01_StudentReservationApplication.md](01_StudentReservationApplication.md) — 単一予約のApplication Component、生徒向け4 APIのwire / View Model / Error、画面Flow。C4 Level 3とSequenceの正本は `../diagrams/plantuml/c4-student-reservation-components.puml` および `../diagrams/plantuml/student-reservation-sequence.puml`。
-- [02_StudentReservationD1.md](02_StudentReservationD1.md) — 同じ価値単位のD1 Table / Index、Migration順序、read set、Confirm Transaction Guardと通知pickup境界。§8は#636のStudent lifecycle / SecurityAccess / Account / opaque Session、共有View / write predicate、失効・発行・fixture境界とactivation Gateの正本。物理ERの正本は `../diagrams/plantuml/student-reservation-d1-er.puml`。
+- [01_StudentReservationApplication.md](01_StudentReservationApplication.md) — 単一予約のApplication Component、生徒向け4 APIのwire / View Model / Error、画面Flow。§10は#840のStudent認証HTTP / Cookie / CSRF / Google OIDC / Magic Link / Registration / Session issuance接続の正本。認証図は `../diagrams/plantuml/c4-student-auth-components.puml` と `../diagrams/plantuml/student-auth-sequence.puml`。C4 Level 3とSequenceの正本は `../diagrams/plantuml/c4-student-reservation-components.puml` および `../diagrams/plantuml/student-reservation-sequence.puml`。
+- [02_StudentReservationD1.md](02_StudentReservationD1.md) — 同じ価値単位のD1 Table / Index、Migration順序、read set、Confirm Transaction Guardと通知pickup境界。§8は#636のStudent lifecycle / SecurityAccess / Account / opaque Session、共有View / write predicate、失効・発行・fixture境界とactivation Gateの正本。§9は#840のStudent Provider flow保存・binding・登録許可・原子的consume / issuance合成の正本。物理ERの正本は `../diagrams/plantuml/student-reservation-d1-er.puml`。
