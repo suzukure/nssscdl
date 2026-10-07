@@ -1,2 +1,1 @@
 docs/diagrams/rendered/**/*.svg -diff
-# #848 one-time review-context validation trigger; remove before PR
