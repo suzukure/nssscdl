@@ -1,1 +1,2 @@
 docs/diagrams/rendered/**/*.svg -diff
+# #848 one-time renderer validation trigger; remove before opening PR
