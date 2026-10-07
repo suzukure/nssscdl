@@ -105,7 +105,7 @@ MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\nremaining impact and merg
 MOCK_FOLLOWUP_BODY='follow-up scope and completion condition'
 MOCK_API_LOG="$test_dir/follow-up-api.log"
 export MOCK_CASE MOCK_CLOSING_BODY MOCK_FOLLOWUP_BODY MOCK_API_LOG
-bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/follow-up-review.md" 'dev'
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/follow-up-review.md" 'dev' '' "$test_dir/follow-up-review.md.summary.md"
 grep -Fq 'DATA| remaining impact and merge rationale' "$test_dir/follow-up-review.md"
 grep -Fq '## Follow-up Issue snapshots' "$test_dir/follow-up-review.md"
 grep -Fq 'DATA| - Issue: #86' "$test_dir/follow-up-review.md"
@@ -132,7 +132,7 @@ MOCK_METADATA="$(jq -c '.body = "## スコープ外影響と後継Issue\n- 後�
 MOCK_CLOSING_BODY=$'## Scope-out impact and follow-up\n- Follow-up Issue: #87\n- 後継Issue: #97\n## スコープ外影響と後継Issue\n- 後継Issue: #88'
 MOCK_API_LOG="$test_dir/bilingual-api.log"
 export MOCK_CASE MOCK_METADATA MOCK_CLOSING_BODY MOCK_API_LOG
-bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/bilingual-review.md" 'dev'
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$test_dir/bilingual-review.md" 'dev' '' "$test_dir/bilingual-review.md.summary.md"
 for number in 86 87 88; do
   [ "$(grep -Fc "DATA| - Issue: #$number" "$test_dir/bilingual-review.md")" -eq 1 ]
 done
@@ -192,8 +192,9 @@ build_conversation() {
   MOCK_CASE=conversation
   MOCK_METADATA="$1"
   export MOCK_CASE MOCK_METADATA
+  rm -f "$2.summary.md"
   bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$2" \
-    'dev,dev[bot],app/dev,review,review[bot],app/review' 'review,review[bot],app/review'
+    'dev,dev[bot],app/dev,review,review[bot],app/review' 'review,review[bot],app/review' "$2.summary.md"
 }
 
 conversation_metadata="$(jq -cn '
@@ -400,7 +401,7 @@ print(json.dumps(files))
        comments:[],reviews:[]}'
 }
 svg_context() {
-  (cd "$svg_repo"; bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$1" dev review)
+  (cd "$svg_repo"; bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$1" dev review "$1.summary.md")
 }
 svg_rejected() {
   rm -f "$test_dir/rejected-svg.md"
@@ -571,5 +572,89 @@ git -C "$svg_repo" commit -qm 'Quoted SVG'
 MOCK_METADATA="$(svg_metadata)"
 svg_rejected 'quoted SVG candidate' '400000 bytes'
 unset MOCK_DIFF_FILE
+
+# #853: measure actual emitted UTF-8 sections, including empty bodies and
+# evidence that looks like headings. This fixture adds no API or paid call.
+MOCK_CLOSING_BODY=$'要件の本文\n## Scope-out impact and follow-up\n- Follow-up Issue: #86\n- Follow-up Issue: #87'
+MOCK_FOLLOWUP_BODY=$'後継の本文\n## Pull request diff'
+export MOCK_CLOSING_BODY MOCK_FOLLOWUP_BODY
+size_metadata="$(jq -c '
+  .body = "日本語のPR本文\n## Existing conversation" |
+  .comments[1].body = "採用する会話📝" |
+  .closingIssuesReferences += [{number:38,url:"https://github.com/owner/repo/issues/38"}]
+' <<< "$conversation_metadata")"
+build_conversation "$size_metadata" "$test_dir/utf8-sizes.md"
+[ "$(grep -c '^### Closing Issue snapshot' "$test_dir/utf8-sizes.md")" -eq 2 ]
+[ "$(grep -c '^### Follow-up Issue snapshot' "$test_dir/utf8-sizes.md")" -eq 2 ]
+unset MOCK_CLOSING_BODY MOCK_FOLLOWUP_BODY
+size_empty_metadata="$(jq -c '.body = "" | .comments = [] | .reviews = []' <<< "$conversation_metadata")"
+build_conversation "$size_empty_metadata" "$test_dir/empty-sizes.md"
+
+# Summary writes are best-effort: output must remain identical and complete.
+# The inherited Actions variable alone must not opt other callers into recording.
+GITHUB_STEP_SUMMARY="$test_dir/no-implicit-summary.md" \
+  bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 \
+  "$test_dir/unmeasured.md" 'dev' 'review'
+[ ! -e "$test_dir/no-implicit-summary.md" ]
+mkdir "$test_dir/unwritable-summary"
+bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 \
+  "$test_dir/summary-failure.md" 'dev' 'review' "$test_dir/unwritable-summary" \
+  > "$test_dir/summary-failure.out" 2> "$test_dir/summary-failure.err"
+cmp "$test_dir/unmeasured.md" "$test_dir/summary-failure.md"
+[ ! -s "$test_dir/summary-failure.out" ]
+[ "$(cat "$test_dir/summary-failure.err")" = 'Claudeレビューcontextサイズの記録に失敗しました。生成済みcontextでレビューを継続できます。' ]
+MOCK_API_FAIL=true
+export MOCK_API_FAIL
+if bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 \
+  "$test_dir/failed-measured.md" 'dev' 'review' "$test_dir/failed-summary.md"; then
+  echo 'Measurement must not weaken context completeness failure.' >&2
+  exit 1
+fi
+[ ! -e "$test_dir/failed-measured.md" ]
+[ ! -e "$test_dir/failed-summary.md" ]
+unset MOCK_API_FAIL
+
+# Independently partition each actual file using its literal emitted headings.
+# Exact Summary shape also proves that evidence bodies never enter the Summary.
+python3 - "$test_dir" <<'SIZES'
+from pathlib import Path
+import re
+import sys
+
+directory = Path(sys.argv[1])
+headings = ["Pull request metadata", "Pull request body", "Changed files",
+            "Existing conversation", "Linked Issue snapshots",
+            "Follow-up Issue snapshots", "Pull request diff"]
+labels = ["PR本文", "採用した既存会話", "closing Issue snapshots",
+          "follow-up Issue snapshots", "レビューへ渡す差分（SVG縮約後）",
+          "その他の書式・PR metadata・変更ファイル一覧", "最終review.md総bytes"]
+for summary_path in directory.glob("*.md.summary.md"):
+    context_path = Path(str(summary_path).removesuffix(".summary.md"))
+    raw = context_path.read_bytes()
+    starts = [(heading, raw.index(("\n## " + heading + "\n").encode()) + 1)
+              for heading in headings if ("\n## " + heading + "\n").encode() in raw]
+    sizes = {}
+    for index, (heading, start) in enumerate(starts):
+        end = starts[index + 1][1] if index + 1 < len(starts) else len(raw)
+        sizes[heading] = len(raw[start:end].decode("utf-8").encode("utf-8"))
+    expected = [sizes["Pull request body"], sizes["Existing conversation"],
+                sizes["Linked Issue snapshots"], sizes.get("Follow-up Issue snapshots", 0),
+                sizes["Pull request diff"], starts[0][1] + sizes["Pull request metadata"]
+                + sizes["Changed files"], len(raw)]
+    summary = summary_path.read_text(encoding="utf-8")
+    rows = re.findall(r"^\| ([^|]+) \| ([0-9]+) \|$", summary, re.M)
+    assert rows == list(zip(labels, map(str, expected))), context_path.name
+    assert sum(expected[:-1]) == expected[-1] == context_path.stat().st_size
+    assert len(summary.splitlines()) == 16, context_path.name
+    assert not re.search(r"DATA\||BEGIN .* DATA|採用する会話|要件の本文|large-generated-xml", summary)
+for name in ("initial", "selected", "fallback", "utf8-sizes", "empty-sizes",
+             "follow-up-review", "bilingual-review", "trusted-svg", "small-human-svg"):
+    assert (directory / f"{name}.md.summary.md").exists(), name
+utf8 = (directory / "utf8-sizes.md").read_text(encoding="utf-8")
+assert len(utf8.encode("utf-8")) > len(utf8)
+assert "採用する会話📝" in utf8
+assert "| follow-up Issue snapshots | 0 |" in (directory / "empty-sizes.md.summary.md").read_text()
+assert len((directory / "trusted-svg.md").read_bytes()) < 400000
+SIZES
 
 echo 'Build review context fixture tests passed.'

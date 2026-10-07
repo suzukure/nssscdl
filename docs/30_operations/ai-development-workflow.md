@@ -33,6 +33,14 @@ Claude Reviewのreview contextでは、reviewer Appによる最新のformal revi
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
 
+## Claude Reviewの読込順序とcontextサイズ記録
+
+#853の読込順序は `CLAUDE.md` のreview sourcesを正本とする。収録済み差分・Issue snapshotを再利用し、関連文書は検索から必要な節・依存契約へ進み、矛盾・証拠不足・境界をまたぐ影響があれば範囲を拡大する。全差分、closing / 明示follow-up Issue、scope-out、traceability、security、fail-closed、Blocking基準を維持する。
+
+サイズ記録の機械正本は `build-review-context.sh` とし、通常 `claude-review.yml` だけが任意の第6引数に既存Job Summary出力先を渡して有効化する。引数未指定のauto-rereview / AI Developer follow-upの生成contextと計測policyは維持する。生成成功後の実ファイルからPR本文、採用した既存会話、closing Issue snapshots、follow-up Issue snapshots、SVG縮約後のreview diff、最終 `review.md` のUTF-8 bytesを計測する。各sectionは見出し・DATA prefix・境界marker・次の見出し直前までの空行を含め、冒頭書式・PR metadata・変更ファイル一覧は「その他」へ計上する。未出力のfollow-up sectionは0とし、内訳合計と最終ファイルbytesを照合する。Summaryへ本文・credentials・生ログを出さず、bytesをtoken数・費用推定や制御判断・verdict・budget・切捨て条件に使用しない。記録だけの失敗は非致命としpaid reviewの再実行を要求せず、既存context完全性のfail-closedと400,000-byte diff gateを維持する。
+
+費用効果は実装Done・計測可能性と分け、十分な自然runが集まるまでは未検証とする。追加のpaid A/Bを行わず、同一model / risk classかつ近い変更規模・類型で、既存usageのcost、turns、duration、input/output、cache creation/readと併せて評価する。同じ変更目的の全子PRと失敗・再レビューを含め、有効なverdictと必要な承認へ至る総費用を見る。bytes減少だけで成功とせず、不要なBlocking、根拠不足、見逃しを示す後続修正、再実行増加も確認し、品質・総費用悪化時には読込指示を再評価する。main反映後の通常runで内訳とusageの取得を確認する。Product POL / BR / REQ / AC / TC / CON / OOSの意味とtraceabilityに変更はない。
+
 ## Claude Reviewの生成SVG差分
 
 #850では `build-review-context.sh` を機械正本とし、GitHub raw PR diffを取得してから、trusted generated SVGだけのunified-diff blockをpath・renderer commit SHA・変更ありの短い要約へ置き換える。`.puml`、renderer workflow、その他の差分は全文保持する。400,000-byte hard stopは縮約後のreview diffへ適用し、非生成差分だけで上限を超える場合も停止する。

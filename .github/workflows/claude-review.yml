@@ -436,7 +436,7 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
-          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}"
+          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}"
 
       - name: Gate Claude review entry
         if: steps.build-review-context.outcome == 'success'

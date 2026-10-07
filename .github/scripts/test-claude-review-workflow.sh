@@ -626,6 +626,7 @@ export repo_root
   MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
   MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
   GITHUB_OUTPUT="$test_dir/build-context.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/context-size-summary.md" \
   GITHUB_REPOSITORY=owner/repo \
   RUNNER_TEMP="$workflow_bootstrap_dir" \
   BASE_REF=main \
@@ -636,6 +637,9 @@ export repo_root
   bash "$build_context_step_script"
 )
 grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
+grep -Fq '### Claudeレビューcontextサイズ（UTF-8 bytes）' "$test_dir/context-size-summary.md"
+grep -Fq "| 最終review.md総bytes | $(wc -c < "$workflow_step_cwd/.ai-context/review.md" | tr -d ' ') |" "$test_dir/context-size-summary.md"
+! grep -Eq 'DATA[|]|Closes #36|requirements' "$test_dir/context-size-summary.md"
 grep -Fqx main "$workflow_base_ref_log"
 grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
 if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then

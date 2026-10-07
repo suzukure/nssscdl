@@ -6,6 +6,7 @@ pr_number="${2:?pull request number is required}"
 output="${3:?output path is required}"
 trusted_logins_csv="${4:-}"
 reviewer_logins_csv="${5:-}"
+summary_path="${6:-}" # Explicit opt-in; other callers retain their policy.
 follow_up_issue_limit=5
 
 mkdir -p "$(dirname "$output")"
@@ -433,3 +434,54 @@ done
   sed 's/^/DATA| /' "$diff_file"
   echo '--- END DIFF DATA ---'
 } > "$output"
+
+# Observe only successfully emitted context. Recording is non-fatal and never
+# feeds gates, verdicts, budgets, truncation or retry decisions. Keep this local
+# to the trusted single-file builder, including when staged outside the repo.
+if [ -n "$summary_path" ]; then
+  if ! python3 -I -B - "$output" "$summary_path" 2> /dev/null <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+
+context_path, summary_path = map(Path, sys.argv[1:])
+raw = context_path.read_bytes()
+raw.decode("utf-8", errors="strict")
+sections = [
+    (b"Pull request metadata", "その他の書式・PR metadata・変更ファイル一覧"),
+    (b"Pull request body", "PR本文"),
+    (b"Changed files", "その他の書式・PR metadata・変更ファイル一覧"),
+    (b"Existing conversation", "採用した既存会話"),
+    (b"Linked Issue snapshots", "closing Issue snapshots"),
+    (b"Follow-up Issue snapshots", "follow-up Issue snapshots"),
+    (b"Pull request diff", "レビューへ渡す差分（SVG縮約後）"),
+]
+boundaries = list(re.finditer(rb"(?m)^## ([^\n]+)\n", raw))
+names = [match[1] for match in boundaries]
+expected = [name for name, _ in sections]
+if names not in (expected, expected[:5] + expected[6:]):
+    raise ValueError("unexpected context sections")
+labels = dict(sections)
+overhead = sections[0][1]
+sizes = {label: 0 for _, label in sections}
+sizes[overhead] = boundaries[0].start()
+for index, match in enumerate(boundaries):
+    end = boundaries[index + 1].start() if index + 1 < len(boundaries) else len(raw)
+    sizes[labels[match[1]]] += end - match.start()
+if sum(sizes.values()) != len(raw) or context_path.stat().st_size != len(raw):
+    raise ValueError("context byte totals differ")
+rows = ["\n### Claudeレビューcontextサイズ（UTF-8 bytes）\n",
+        "各sectionは見出し・DATA prefix・境界marker・末尾の空行を含みます。",
+        "冒頭書式・PR metadata・変更ファイル一覧はその他へ計上します。未出力の後継sectionは0です。",
+        "bytesはtoken数・費用の推定値ではありません。\n",
+        "| 項目 | UTF-8 bytes |", "|---|---:|"]
+rows.extend(f"| {label} | {sizes[label]} |" for label in dict.fromkeys(
+    [label for _, label in sections if label != overhead] + [overhead]))
+rows.append(f"| 最終review.md総bytes | {len(raw)} |")
+with summary_path.open("a", encoding="utf-8") as summary:
+    summary.write("\n".join(rows) + "\n")
+PYTHON
+  then
+    echo 'Claudeレビューcontextサイズの記録に失敗しました。生成済みcontextでレビューを継続できます。' >&2
+  fi
+fi
