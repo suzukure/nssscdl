@@ -52,5 +52,16 @@ canonical v1のfield順・値型・Tokyo日時・予約順は明示projectionと
 投影外Invariantを検証し、未検証ならintegrityをinconsistentとして渡す責務を持つ。
 `tests/unit/reservation-preview.test.ts` は `TC-F-003-01 / TC-F-003-02` のApplication/Preview
 **partial evidence**であり、HTTP / Browser / Confirm CommitやTC全体のPassを意味しない。
-D1 Adapter・HTTP・CSRF / Origin・Confirm writeは未実装で、default Workerは引き続き503。
+HTTP・CSRF / Origin・Confirm writeは未実装で、default Workerは引き続き503。
 tokenは認可ticketでもSlot確保でもなく、Confirmは本人再解決・最新再計算・Transaction Guardを必須とする。
+
+`infrastructure/d1-reservation-preview.ts` は#863の未接続・read-only D1 Repository Adapter。
+Guard解決済み本人とSlotからPrimary起点の単一SELECTでD1時刻T0、共有認証Viewの最新操作可否、
+対象月・Slot・占有、N、本人同月の全Reservationと例外状態を取得する。
+`readPreview` は `{ state: PreviewReadState, evaluatedAt }` を返し、後続Confirm事前readでも再利用できる。
+日時・型・分類／取消・未開始占有・両管理詳細のInvariantを検査し、異常は既存
+`ReservationPreviewError` の `INTEGRITY_STATE_UNAVAILABLE`、D1実行失敗は `SERVICE_UNAVAILABLE`。
+他生徒占有はSQL内で検証して安全な既存拒否へ抽象化し、他生徒ID・予約IDをApplication stateへ投影しない。
+分類plan・canonical Snapshot・tokenは既存pure coreだけを再利用する。
+Production migration・binding・HTTP・Confirm writeへの接続はなく、isolated検証範囲は
+[`tests/README.md`](../tests/README.md) を参照する。
