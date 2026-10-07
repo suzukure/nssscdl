@@ -33,6 +33,16 @@ Claude Reviewのreview contextでは、reviewer Appによる最新のformal revi
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
 
+## Claude Reviewの生成SVG差分
+
+#850では `build-review-context.sh` を機械正本とし、GitHub raw PR diffを取得してから、trusted generated SVGだけのunified-diff blockをpath・renderer commit SHA・変更ありの短い要約へ置き換える。`.puml`、renderer workflow、その他の差分は全文保持する。400,000-byte hard stopは縮約後のreview diffへ適用し、非生成差分だけで上限を超える場合も停止する。
+
+対象は `docs/diagrams/rendered/**/*.svg`（直下を含む）だけとする。trusted PR metadataのbase/head SHAをcheckout・利用可能なbase identityと照合し、全対象を最後に変更したcommitが同一で、author/committerとsubjectが既存Render workflowの生成commit契約に一致すること、生成後current headまでに正本またはrenderer workflowの変更がないこと、対象SVGのtree objectが生成commitと一致することを確認する。履歴不足・merge等の曖昧さ、quoted SVG path・予期しないboundaryなどで証明できなければ全raw diffを保持し、上限超過時は停止する。`.gitattributes`は縮約の信頼根拠にしない。
+
+raw diffの完全性はAPIのchanged-file総数・全pathの一覧・hunk件数で照合し、不足・不正・取得失敗ではreview contextを生成しない。縮約前には隔離したobject store/indexでpatchを再適用し、照合済みheadのtreeへ一致することも確認し、再適用失敗・tree不一致ならcontext生成を停止する。opaque binary blockはreviewに残し、再適用の検証に限ってlocal binary patchを使う。builderのコードは既存callerがbaseから取得する単一script内に保持し、PR headからhelperをロードしない。paid AI call・retryは追加しない。
+
+#848 / PR #849のraw diffがSVG 3ファイルで369,980 bytes、XML text展開ありだった事実を入力規模の根拠とする。既存fixtureでは3 SVG合計500,000 bytes超、正本/renderer全文保持、identity・生成後変更・SHA不一致・不完全なdiff・quoted boundary・非生成差分上限を検証する。local fixtureはGitHub実応答やcurrent-head checksの自然実証ではなく、merge後の #848 再実施、通常PRでのSVG同期、親 #562 への結果返却は人間/workflow側に残る。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ## Work Admission Control
 
 問題・改善点は無制限に発見してよい。発見（Discovery）と着手（Execution）を分離し、現在Issueを完了するために必要でないものは現在scopeへ取り込まず、同一の自律実行チェーンから新たに着手しない。AI Developer、Claude Review、ChatGPT上の開発補助、横断監査等に共通して本節を適用する。
@@ -262,7 +272,7 @@ AI Developerの投稿またはjob successだけでは、別のmachine-generated 
 - Codex-reported validationを自己申告の証拠として確認し、current headに適用されるGitHub Actions/checksをformal evidenceとして別に確認している。failure、未実施、未確認事項を隠さず、PR本文または最新コメントに`passed`とあることだけをformal evidenceとして扱わない。
 - 未解決のBlockingや上流判断がなく、延期する影響はclosing Issue本文に既存の後継Issue契約どおり記録されている。
 - PRとclosing Issueが停止中でなく、追加開発やpushが進行中でない。
-- PlantUML / renderer contract 変更では、[図のレンダリング手順](../diagrams/README.md#レンダリング)に従い、Render成功・生成コミット反映済みcurrent head・実PR diffのbinary表示とサイズを確認している。生成push後のcurrent-head formal checksは人間Ready eventを開始点とし、Ready後に対象headと結果を確認する。Render failure中はReady / mergeしない。
+- PlantUML / renderer contract 変更では、[図のレンダリング手順](../diagrams/README.md#レンダリング)に従い、Render成功・生成コミット反映済みcurrent head・raw PR diffとreview contextの内容・サイズを確認している。生成push後のcurrent-head formal checksは人間Ready eventを開始点とし、Ready後に対象headと結果を確認する。Render failure中はReady / mergeしない。
 
 Ready前には、人間/ChatGPT上の開発補助が次の対象箇所と証拠を照合する。既存の準備確認を具体化する手順であり、新しいレビュー段階・ツール・paid diagnosticを追加しない。
 

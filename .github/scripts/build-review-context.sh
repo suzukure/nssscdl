@@ -16,10 +16,191 @@ trap 'rm -f "$metadata" "$diff_file"; rm -rf "$issue_dir"' EXIT
 
 gh pr view "$pr_number" \
   --repo "$repo" \
-  --json number,title,body,url,author,baseRefName,headRefName,isDraft,files,commits,reviews,comments,closingIssuesReferences \
+  --json number,title,body,url,author,baseRefName,headRefName,baseRefOid,headRefOid,changedFiles,isDraft,files,commits,reviews,comments,closingIssuesReferences \
   > "$metadata"
 
 gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
+# The API file inventory and hunk counts must cover the entire raw response.
+# Keep the implementation embedded: callers materialize only this trusted base
+# script, so no code is loaded from the PR worktree.
+python3 -I -B - "$metadata" "$diff_file" <<'PYTHON'
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+
+class RawDiffInvalid(Exception):
+    pass
+
+
+def git(*args, data=None, env=None):
+    return subprocess.run(
+        ["git", *args], input=data, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, check=True, env=env,
+    ).stdout
+
+
+def numstat(patch):
+    fields = git("apply", "--numstat", "-z", data=patch).split(b"\0")
+    result = []
+    while fields and fields[0]:
+        added, deleted, path = fields.pop(0).split(b"\t", 2)
+        if not path:  # A rename has NUL-framed old and new paths.
+            fields.pop(0)
+            path = fields.pop(0)
+        result.append((path.decode("utf-8"), added, deleted))
+    if fields != [b""]:
+        raise ValueError("invalid_numstat")
+    return result
+
+
+def complete_blocks(metadata, raw):
+    files = metadata["files"]
+    count = metadata["changedFiles"]
+    if type(count) is not int or count < 0 or not isinstance(files, list) or len(files) != count:
+        raise ValueError("incomplete_inventory")
+    inventory = {}
+    for item in files:
+        path, added, deleted = item["path"], item["additions"], item["deletions"]
+        if not isinstance(path, str) or path in inventory or any(type(n) is not int or n < 0 for n in (added, deleted)):
+            raise ValueError("invalid_inventory")
+        inventory[path] = (added, deleted)
+    if not raw:
+        if count:
+            raise ValueError("empty_diff")
+        return []
+    if not raw.startswith(b"diff --git ") or not raw.endswith(b"\n"):
+        raise ValueError("invalid_boundary")
+    blocks = re.split(rb"(?m)(?=^diff --git )", raw)[1:]
+    seen = set()
+    parsed = []
+    for block in blocks:
+        stats = numstat(block)
+        if len(stats) != 1:
+            raise ValueError("invalid_block")
+        path, added, deleted = stats[0]
+        if path in seen or path not in inventory:
+            raise ValueError("unexpected_path")
+        seen.add(path)
+        if (added, deleted) == (b"-", b"-"):
+            if inventory[path] != (0, 0):
+                raise ValueError("invalid_binary_counts")
+        elif (int(added), int(deleted)) != inventory[path]:
+            raise ValueError("incomplete_hunks")
+        parsed.append((path, block))
+    if seen != set(inventory):
+        raise ValueError("missing_blocks")
+    return parsed
+
+
+def compact(metadata, blocks):
+    # Proof failures preserve the *whole* raw diff. Quoted paths, renames and
+    # unusual boundaries are never candidates for XML-body removal.
+    candidates = []
+    for path, block in blocks:
+        if re.fullmatch(r"docs/diagrams/rendered/(?:[^/]+/)*[^/]+\.svg", path):
+            if not re.fullmatch(r"[A-Za-z0-9_./-]+", path):
+                return None
+            header = f"diff --git a/{path} b/{path}\n".encode()
+            if not block.startswith(header) or b"\n@@ " not in block:
+                return None
+            candidates.append(path)
+    if not candidates:
+        return None
+    base, head = metadata["baseRefOid"], metadata["headRefOid"]
+    if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base, head)):
+        return None
+    for key in ("SOURCE_BASE_SHA", "BASE_SHA"):
+        if os.environ.get(key) and os.environ[key] != base:
+            return None
+    if git("rev-parse", "HEAD").strip().decode() != head:
+        return None
+    merge_bases = git("merge-base", "--all", base, head).splitlines()
+    if len(merge_bases) != 1:
+        return None
+    ancestor = merge_bases[0].decode()
+    if git("rev-parse", "--is-shallow-repository").strip() != b"false":
+        return None
+    # First-parent history is deliberately conservative around merges. Do not
+    # accept ambiguous histories or path-limited simplification as provenance.
+    commits = git("rev-list", "--parents", f"{ancestor}..{head}").splitlines()
+    last = {}
+    for entry in commits:
+        parts = entry.split()
+        if len(parts) != 2:
+            return None
+        commit = parts[0].decode()
+        paths = git("diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit).split(b"\0")
+        for path in candidates:
+            if path.encode() in paths and path not in last:
+                last[path] = commit
+    if set(last) != set(candidates) or len(set(last.values())) != 1:
+        return None
+    renderer = next(iter(last.values()))
+    identity = git("show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce%x00%s", renderer).rstrip(b"\n").split(b"\0")
+    bot = b"github-actions[bot]"
+    email = b"41898282+github-actions[bot]@users.noreply.github.com"
+    if identity != [bot, email, bot, email, b"Render PlantUML diagrams"]:
+        return None
+    for entry in git("rev-list", f"{renderer}..{head}").splitlines():
+        paths = git("diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", entry.decode()).split(b"\0")
+        if any(path == b".github/workflows/render-plantuml.yml" or
+               (path.startswith(b"docs/diagrams/plantuml/") and path.endswith(b".puml")) for path in paths):
+            return None
+    for path in candidates:
+        # Compare tree objects without filters, textconv or attributes.
+        if git("ls-tree", renderer, "--", path) != git("ls-tree", head, "--", path):
+            return None
+    # Replay the complete patch in an isolated object store/index to bind raw
+    # bytes to these SHAs as well as the API inventory. Never change checkout.
+    objects = os.path.abspath(git("rev-parse", "--git-path", "objects").strip().decode())
+    with tempfile.TemporaryDirectory() as directory:
+        git("init", "--bare", directory)
+        env = dict(os.environ, GIT_DIR=directory, GIT_ALTERNATE_OBJECT_DIRECTORIES=objects)
+        env.pop("GIT_WORK_TREE", None)
+        env.pop("GIT_INDEX_FILE", None)
+        git("read-tree", ancestor, env=env)
+        proof_blocks = []
+        for path, block in blocks:
+            if re.search(rb"(?m)^Binary files .* differ$", block):
+                # Opaque binary blocks remain visible in review. Only use the
+                # local binary patch to verify the resulting tree.
+                block = git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", ancestor, head, "--", path)
+            proof_blocks.append(block)
+        try:
+            git("apply", "--cached", "--binary", "--whitespace=nowarn", data=b"".join(proof_blocks), env=env)
+        except subprocess.SubprocessError:
+            raise RawDiffInvalid from None
+        if git("write-tree", env=env).strip() != git("rev-parse", f"{head}^{{tree}}").strip():
+            raise RawDiffInvalid
+    return b"".join(
+        (f"Generated SVG changed: {path}\nRenderer commit: {renderer}\n".encode()
+         if path in candidates else block)
+        for path, block in blocks
+    )
+
+
+metadata_path, diff_path = map(Path, sys.argv[1:])
+try:
+    metadata = json.loads(metadata_path.read_bytes())
+    raw = diff_path.read_bytes()
+    blocks = complete_blocks(metadata, raw)
+except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+    sys.exit("raw PR diffの完全性を確認できないため、レビュー文脈を生成しません。")
+try:
+    reduced = compact(metadata, blocks)
+except RawDiffInvalid:
+    sys.exit("raw PR diffと照合済みheadが一致しないため、レビュー文脈を生成しません。")
+except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+    reduced = None
+if reduced is not None:
+    diff_path.write_bytes(reduced)
+PYTHON
+
 diff_bytes="$(wc -c < "$diff_file")"
 if [ "$diff_bytes" -gt 400000 ]; then
   echo "PR差分は${diff_bytes} bytesです。自動AIレビューの上限は400000 bytesです。" >&2
