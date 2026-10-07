@@ -125,6 +125,7 @@ jobs:
           PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
           BASE_REF: ${{ steps.review-source.outputs.base_ref }}
           SOURCE_BASE_SHA: ${{ steps.review-source.outputs.base_sha }}
+          REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}
           TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],app/${{ steps.dev-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
           REVIEWER_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
         shell: bash
@@ -436,7 +437,7 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
-          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}"
+          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA"
 
       - name: Gate Claude review entry
         if: steps.build-review-context.outcome == 'success'
