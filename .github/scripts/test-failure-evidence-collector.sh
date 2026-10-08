@@ -420,6 +420,60 @@ for issue_body, status in [(body.replace('## Security boundary', '## Other'), 'i
     values = snapshot()
     values[prefix + '/issues/654']['body'] = issue_body
     refused(values, status)
+# #890: reconstruct #696's supplied heading structure, not its full fetched body.
+# Runtime scope is admission evidence, while 実装境界 is the implementation scope.
+# Run/PR/Issue identities and all transport responses remain synthetic fixtures.
+implementation_scope = '## 実装境界\n\n- collectorのexact Issue section parserとfixtureのみ。\n\n'
+production_impact = 'Product POL / BR / REQ / AC / TC / CON / OOS impact: none。'
+production_body = (
+    '## Goal\n\n自然failureの必要証拠をbounded packetへ収集する。\n\n'
+    '## Runtime scope\n\nR=1 / C=C0 / P=P1 / B=1、Green。\n\n'
+    + implementation_scope
+    + '## Security\n\nuntrusted evidence、read-only、fail-closedを維持する。\n\n'
+    '## Non-goals\n\npaid call、source retry、GitHub write、Product仕様変更。\n\n'
+    '## Done\n\n必要証拠のcomplete packetと拒否回帰を確認する。\n'
+    + production_impact + '\n')
+for make_snapshot in [snapshot, sharded]:
+    values = make_snapshot()
+    values[prefix + '/issues/654']['body'] = production_body
+    packet = accepted(values)
+    scope = packet['contract']['issue']['scope']
+    start = production_body.splitlines().index('## 実装境界') + 1
+    assert scope['text'] == implementation_scope and not scope['truncated']
+    assert scope['provenance'] == 'untrusted_issue'
+    assert scope['locator'] == dict(
+        repository=repo, ref='main', sha='a' * 40, path='issue/654/body',
+        line_start=start, line_end=start + len(implementation_scope.splitlines()) - 1,
+        issue_number=654, pr_number=657, run_id=None, run_attempt=None, job_id=None, step=None)
+    impact = packet['contract']['issue']['product_impact']
+    assert impact['text'] == production_impact + '\n' and not impact['truncated']
+    assert impact['provenance'] == 'untrusted_issue'
+    impact_start = production_body.splitlines().index(production_impact) + 1
+    assert impact['locator'] == scope['locator'] | dict(line_start=impact_start, line_end=impact_start)
+    assert production_impact in packet['contract']['issue']['done']['text']
+
+# Fixed refusals reuse existing mandatory/ambiguity/full-source secret contracts.
+for issue_body, status, reason in [
+        (production_body.replace(implementation_scope, ''), 'incomplete', 'issue_section_missing'),
+        (production_body.replace(implementation_scope, '## 実装境界\n\n'),
+         'incomplete', 'issue_section_missing'),
+        (production_body.replace('## Security\n', '## Other\n'),
+         'incomplete', 'issue_section_missing'),
+        (production_body.replace('## 実装境界\n', '## Runtime Scope\n'),
+         'incomplete', 'issue_section_missing'),
+        (production_body + '\n## Scope\nsecond scope\n', 'conflict', 'issue_section_ambiguous'),
+        (production_body + '\n' + implementation_scope, 'conflict', 'issue_section_ambiguous'),
+        (production_body + production_impact + '\n', 'conflict', 'issue_section_ambiguous'),
+        (production_body + '\n## Product impact\nnone。\n', 'conflict', 'issue_section_ambiguous'),
+        (production_body.replace('R=1 /', 'token: fixture-sensitive-value\nR=1 /'),
+         'incomplete', 'issue_body_invalid')]:
+    values = snapshot()
+    values[prefix + '/issues/654']['body'] = issue_body
+    result, calls = refused(values, status)
+    assert result['reason'] == reason
+    assert not any(args[1:3] == ['run', 'view'] for args in calls)
+    assert 'fixture-sensitive-value' not in json.dumps(result)
+
 # Every documented exact heading alias is accepted; unknown headings are not inferred.
 for key, current in [('goal', 'Goal'), ('scope', 'Scope'), ('security', 'Security boundary'),
                      ('non_goals', 'Non-goals'), ('done', 'Done')]:
@@ -564,5 +618,5 @@ assert '    name: Fixtures\n' in regression
 assert all('    name: ' + name + '\n' in regression
            for name in ['Fixture shard 1', 'Fixture shard 2', 'Regression Result'])
 assert '      - name: Normalize shard results\n' in regression
-print('failure evidence collector: single failure and #751 prepared exact sharded aggregate selection, order independence, identity/log binding, fail-closed topology; 7 synthetic #654 packets, masked credentials, secret rejection, aliases, stale, pagination, bounded logs, cap, inert evidence, read-only wiring passed')
+print('failure evidence collector: single failure and #751 prepared exact sharded aggregate selection, order independence, identity/log binding, fail-closed topology; 7 synthetic #654 packets, #890 synthetic #696 headings/locators and fixed refusals, masked credentials, secret rejection, aliases, stale, pagination, bounded logs, cap, inert evidence, read-only wiring passed')
 PY

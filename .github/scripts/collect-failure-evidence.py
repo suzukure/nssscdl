@@ -32,7 +32,7 @@ LOG_CAP = 16 * 1024 * 1024
 # Exact headings only; never infer a missing contract from prose/model output.
 HEADINGS = {
     'goal': {'目的', 'Goal', '利用者、完了する業務、価値'},
-    'scope': {'対象', 'Scope', '実装・DB・テスト・運用の範囲', '対象IDと設計'},
+    'scope': {'対象', 'Scope', '実装境界', '実装・DB・テスト・運用の範囲', '対象IDと設計'},
     'security': {'Security', 'Security boundary', 'Permissions', 'セキュリティ境界'},
     'non_goals': {'Non-goals', '対象外', '依存関係と対象外'},
     'done': {'完了条件', 'Done', '完了条件と残課題'},
