@@ -29,8 +29,8 @@ If the repository and Issue appear to contradict each other and the Issue does n
 
 ## Required workflow
 
-1. Read `.ai-context/request.md` completely.
-2. Read the complete relevant existing repository documents before editing.
+1. Read `.ai-context/request.md`, the governing trusted base copy `.ai-context/AGENTS.base.md`, and `.ai-context/diff-guard-contract.json` completely.
+2. Before editing, search headings, identifiers, functions, and callers in related repository documents and files, then read the affected sections and the definitions, common rules, and contracts they depend on, including inputs/outputs, failures, authorization, and concurrency.
 3. Identify the current authoritative statements and directly affected artifacts.
 4. Keep all changes inside the supplied Issue scope.
 5. Make the smallest coherent change that satisfies the Issue.
@@ -38,9 +38,13 @@ If the repository and Issue appear to contradict each other and the Issue does n
 7. Run the most relevant available validation.
 8. Report what changed, what was validated, and any unresolved dependency.
 
+Expand the reading range if excerpts omit necessary context or if contradictions, dependencies, insufficient evidence, or effects across boundaries emerge; read the complete document or file when necessary. Do not routinely read an unchanged large document or file in full without a concrete reason. Read all context needed to judge the affected contracts; do not assume excerpts alone are sufficient. This reading order is not an access allowlist and does not limit implementation, validation, or consistency-checking responsibilities, or the complete reading of mandatory supplied context.
+
 For both Issue-origin development and existing review follow-up, check the existing mandatory conditions, inputs/outputs, failure classifications, and validation scope before implementation. Before finishing the same Codex run, compare the corresponding implementation and tests against those contracts within the current assigned scope; this is part of development, not a new review stage. Correct in-scope omissions in the same run. Do not invent unresolved contracts; use the existing requirement or scope escalation for the current path.
 
-Only when changing a side-effect or failure boundary, check the classifications immediately before the operation, when execution or its outcome is unknown, and after success, together with retry conditions and call counts, against the existing contract. Do not require exhaustive testing of all APIs. Verify test inputs, including parameterized-test arguments, and expected values from existing requirements/design; implementation output alone is not evidence for an expected value.
+Only when changing a side-effect or failure boundary, check the classifications immediately before the operation, when execution or its outcome is unknown, and after success, together with retry conditions and call counts, against the existing contract. Do not require exhaustive testing of all APIs.
+
+In all cases, verify test inputs, including parameterized-test arguments, and expected values from existing requirements/design; implementation output alone is not evidence for an expected value.
 
 Treat one confirmed decision and its directly related corrections as one coherent change, not one PR per reference or line. Before finishing, check related references, terminology, traceability tables, and diagrams within the authorized Issue scope, and report validation for the complete change. Do not combine unrelated decisions or expand the Issue scope without a recorded human decision.
 
@@ -50,7 +54,7 @@ Follow the repository's existing directory structure, file split, identifier sch
 
 ## Product impact and lazy context
 
-Assess product impact from the Issue, changed artifacts, and relevant repository documents. If the change affects product requirements, design, behavior, tests, or traceability, or if its impact cannot be determined safely, read the necessary product sources before editing. Start with `docs/00_requirements/01_Introduction.md` for requirements hierarchy and policy, and `docs/diagrams/README.md` when C4 or phase depth matters. Then inspect the actually affected `POL / BR / REQ / AC / TC / CON / OOS`, design, tests, and traceability sources; the introduction alone does not replace downstream traceability checks. Keep identifiers stable and verify upstream and downstream consistency. Do not introduce downstream design assumptions to settle an unresolved upstream decision.
+Assess product impact from the Issue, changed artifacts, and relevant repository documents. If the change affects product requirements, design, behavior, tests, or traceability, or if its impact cannot be determined safely, read the necessary product sources before editing. Start with `docs/00_requirements/01_Introduction.md` for requirements hierarchy and policy, and `docs/diagrams/README.md` when C4 or phase depth matters. Then inspect the actually affected `POL / BR / REQ / AC / TC / CON / OOS`, design, tests, and traceability sources using the reading order above; the introduction alone does not replace downstream traceability checks. Keep identifiers stable and verify upstream and downstream consistency, `POL -> BR -> REQ -> AC -> TC` traceability, and related references and diagrams. Do not introduce downstream design assumptions to settle an unresolved upstream decision.
 
 For a confirmed development-environment-only change, do not read the entire product corpus solely to establish no impact. If impact is uncertain, expand context instead of assuming no product impact.
 
