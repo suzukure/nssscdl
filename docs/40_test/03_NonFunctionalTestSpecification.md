@@ -4,6 +4,8 @@
 本書は非機能要求 `REQ-901`〜`REQ-952` に対するTest Case / Test Procedure Specificationである。
 性能、復旧、監視、Privacy等は単一画面の合否ではなく、測定値・復旧結果・設定・Log等の証跡で判定する。
 
+#894のread-only UIに対応する `TC-NF-903-01 / TC-NF-907-01 / TC-NF-914-03〜04` のpartial evidenceと証明範囲は `../../tests/README.md` を参照する。実320px・実keyboard / screen reader・Browser timezone別評価とSystem / Acceptance全体Passを代替しない。
+
 ## 2. テストケース
 
 ### REQ-901 対応Browser

@@ -36,3 +36,13 @@ it("[#872 activation boundary] default Worker cannot reach Confirm or its write 
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(response.headers.get("set-cookie")).toBeNull();
 });
+
+it("[#894 activation boundary] default Worker cannot serve student UI, assets or read-only history", async () => {
+  for (const path of ["/student", "/student/", "/student/student.js", "/student/student.css", "/api/me/reservations"]) {
+    const response = await exports.default.fetch(`https://nssscdl.test${path}`);
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe("Application is not available.");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  }
+});
