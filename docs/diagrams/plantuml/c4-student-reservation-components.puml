@@ -2,16 +2,17 @@
 !include <C4/C4_Component>
 
 LAYOUT_WITH_LEGEND()
-title Student Single Reservation - C4 Level 3 Application Worker
+title Student Single Reservation - C4 Level 3; isolated evaluation design (#892)
 
 Person(student, "Student", "Checks schedule, previews and confirms one reservation, views history.")
-ContainerDb(db, "Main Database", "Cloudflare D1", "Authoritative business state; single reservation physical adapter in 02_StudentReservationD1.md.")
+ContainerDb(db, "Isolated Evaluation Database", "Local D1 / approved remote D1", "Test-owned state; production migrations 0001-0012; single reservation physical adapter in 02_StudentReservationD1.md.")
 
-Container_Boundary(worker, "Application Worker - one Cloudflare Worker deploy unit") {
-  Component(ui, "Web/UI Presentation", "Web UI", "Calendar/list, preview confirmation, result and history.")
+Container_Boundary(worker, "Evaluation Application Worker - dedicated entrypoint/config; default Worker remains 503") {
+  Component(ui, "Web/UI Presentation", "HTML / CSS / Browser JS", "/student: calendar/list, 4 views, explicit confirm, 201 result, self history. Memory-only CSRF/token.")
   Component(router, "HTTP Router / API Adapter", "HTTP / JSON", "Validates wire, Origin / Session CSRF and maps application results. Auth HTTP contract: Application section 10.")
+  Component(csrf, "Student CSRF HTTP Adapter (design)", "HTTP / JSON", "Session-first isolated GET; shared pure digest with POST validation. Full session/preauth production contract retained.")
   Component(guard, "Student Session / Authorization Guard", "Application", "Validates each request and resolves the student.")
-  Component(authrepo, "Student Session D1 Adapter (design)", "Infrastructure", "Hash lookup / internal request context; physical contract in 02 section 8. Production wiring remains disabled.")
+  Component(authrepo, "Production Student Session D1 Adapter", "Infrastructure", "Hash lookup / internal request context; physical contract in 02 section 8. Default/public wiring remains disabled.")
   Component(schedule, "Schedule Query Application Service", "Application", "Builds one student slot view.")
   Component(preview, "Reservation Preview Application Service", "Application", "Computes confirmation view and state token.")
   Component(confirm, "Reservation Confirm Application Service", "Application", "Revalidates and commits one booking.")
@@ -23,7 +24,9 @@ Container_Boundary(worker, "Application Worker - one Cloudflare Worker deploy un
 }
 
 Rel(student, ui, "Uses", "HTTPS")
-Rel(ui, router, "Calls four /api/me endpoints", "JSON")
+Rel(ui, router, "Same-origin fetch: four /api/me endpoints and CSRF GET", "HTTPS / JSON")
+Rel(router, csrf, "Routes /api/auth/student/csrf; exact origin / Fetch Metadata")
+Rel(csrf, guard, "Resolves valid session; missing session fails closed")
 Rel(router, guard, "Checks every request")
 Rel(guard, authrepo, "Resolves current Student session")
 Rel(authrepo, db, "Reads student_session_access_v1", "D1 binding")
@@ -43,6 +46,14 @@ Rel(confirm, intent, "Adds notification intent obligation")
 Rel(repo, db, "Reads state; asserts section 8 Student Write predicate in atomic batch", "D1 binding")
 Rel(audit, repo, "Participates in same transaction")
 Rel(intent, repo, "Participates in same transaction")
+
+note bottom of worker
+  Test setup: operator-only isolated seed + test-owned BrowserContext cookie.
+  No HTTP login / identity bypass / fake Guard. Cursor key is server-only.
+  Static import/config proof + runtime default 503 / isolation assertions required.
+  No production Provider / Scheduled side effects; fake delivery is separate from commit.
+  Local Browser evidence is not remote D1 / Release / Production readiness proof.
+end note
 
 SHOW_LEGEND()
 @enduml

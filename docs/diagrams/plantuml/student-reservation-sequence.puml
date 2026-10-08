@@ -1,10 +1,11 @@
 @startuml
-title Student single reservation - schedule, preview, confirm and history
+title Student single reservation - isolated Browser flow (#892)
 
 actor Student
 participant "Web/UI" as UI
 participant "HTTP Router" as HTTP
-participant "Session / Authorization Guard" as Guard
+participant "Student CSRF Adapter (design)" as CSRF
+participant "Production Session / Authorization Guard" as Guard
 participant "Schedule Query" as Schedule
 participant "Preview Service" as Preview
 participant "Confirm Service" as Confirm
@@ -13,9 +14,37 @@ participant "Reservation / Classification Domain" as Domain
 participant "Repository / Transaction Port" as Repo
 participant "Audit Port" as Audit
 participant "Notification Intent Port" as Intent
-database "Main D1" as D1
+database "Isolated D1" as D1
 
-Student -> UI: Open published month
+note over UI,D1
+  Operator-only seed + test-owned Secure / HttpOnly Session cookie.
+  Dedicated HTTPS entrypoint/config; default Worker stays 503.
+  No production Provider / Scheduled activation.
+end note
+Student -> UI: Open /student and choose YYYY-MM
+UI -> HTTP: GET /api/auth/student/csrf (same-origin fetch)
+HTTP -> HTTP: Check canonical origin / Fetch Metadata
+note over HTTP,UI: Origin rejection is 403; stop and retain cookie
+HTTP -> CSRF: Exact GET; no query/body
+CSRF -> Guard: Resolve this Session
+alt valid Session
+  Guard --> CSRF: Valid Session; internal context stays server-side
+  CSRF -> CSRF: Shared pure session digest with unsafe POST validator
+  CSRF --> HTTP: csrfToken + scope: session
+  HTTP --> UI: 200 no-store JSON
+  UI -> UI: Keep CSRF in memory only
+else missing / invalid / expired Session
+  CSRF --> HTTP: 401; no preauth token in partial evaluation
+  HTTP --> UI: Safe authentication notice; clear Session cookie
+  UI --> Student: Stop; return to trusted setup
+else resolution unavailable
+  CSRF --> HTTP: 503
+  HTTP --> UI: Safe error; retain cookie; stop
+end
+
+opt CSRF acquisition succeeded
+
+Student -> UI: Request selected month (no published-month list API)
 UI -> HTTP: GET /api/me/schedule-months/{month}
 HTTP -> Guard: Validate session, role, access, lifecycle
 Guard --> HTTP: Resolved student
@@ -28,7 +57,8 @@ Schedule -> Domain: Derive one view per slot
 Domain --> Schedule: bookable / reserved_by_me / group_lesson / unavailable
 Schedule --> HTTP: Month view
 HTTP --> UI: 200 JSON
-UI --> Student: Calendar / list
+UI --> Student: Calendar / list; 4 labeled views
+note over HTTP,UI: Unpublished/absent month: existing 404; choose another month
 
 Student -> UI: Select slot and request preview
 UI -> HTTP: POST /api/me/reservations/preview {slotId}
@@ -44,9 +74,11 @@ Preview -> Domain: Check eligibility and compute classification effects
 Domain --> Preview: Preview result and canonical business snapshot
 Preview --> HTTP: Preview view + opaque state token
 HTTP --> UI: 200 JSON
-UI --> Student: Show time, classification and all changes
+UI --> Student: Start/end, classification, all dated before/after changes
+UI --> Student: Additional may be reclassified before start; no prices/N
 
-Student -> UI: Confirm reviewed preview
+Student -> UI: Explicitly confirm reviewed preview
+UI -> UI: Disable duplicate confirm while pending
 UI -> HTTP: POST /api/me/reservations {slotId, expectedStateToken}
 HTTP -> Guard: Validate this request
 Guard --> HTTP: Resolved student + server-internal session context
@@ -67,7 +99,8 @@ alt token matches and all guards hold
   Repo -> D1: insert audit / intents / outbox; final time and session guard
   D1 --> Repo: Committed result
   Repo --> Confirm: Confirmed state
-  Confirm -> Intent: Schedule delivery kick after commit (no provider wait)
+  note over Confirm,Intent: Post-commit delivery responsibility; isolated fake only.
+  note over Repo,D1: Intent/outbox commit does not prove Provider delivery.
   Confirm --> HTTP: Reservation, slot and classification changes
   HTTP --> UI: 201 JSON; no delivery result
   UI --> Student: Show confirmed business state
@@ -75,12 +108,24 @@ else session / authorization fails
   Repo -> D1: Rollback; fresh Primary session lookup
   Confirm --> HTTP: 401 / 403; lookup failure is 503
   HTTP --> UI: Safe error without latest reservation / slot details
+  UI -> UI: Discard confirmation; 401 clears CSRF and stops (403 retains cookie)
 else state changed or a booking guard fails
   Repo -> D1: Safe Primary reread after guard failure
   Confirm --> HTTP: 409 safe application error
   HTTP --> UI: Error, optional safe latestSlot
-  UI --> Student: Explain change; reload and repreview
+  UI -> UI: Discard expected token / confirmation state
+  UI --> Student: Explain change; fresh schedule + preview + human reconfirm
+else unavailable / outcome unknown
+  Confirm --> HTTP: 503; no automatic write retry
+  HTTP --> UI: Safe error; retain cookie
+  UI -> UI: Discard token / confirmation state; stop
+  UI --> Student: Do not claim success; no automatic Confirm resend
 end
+note over UI,HTTP
+  Lost response discards confirmation and never resends Confirm automatically.
+  Safe Schedule/history reread observes current state, not a write retry.
+  Month/slot change discards token; stale response cannot enable Confirm.
+end note
 
 Student -> UI: Open reservation history
 UI -> HTTP: GET /api/me/reservations?limit=50
@@ -93,6 +138,8 @@ D1 --> Repo: Rows
 Repo --> History: Student page
 History --> HTTP: items and nextCursor
 HTTP --> UI: 200 JSON
-UI --> Student: Show reservation, attendance, classification separately
+UI --> Student: Show reservation, attendance, current classification separately
+note over UI,History: nextCursor pages; refresh from first page for current state
+end
 
 @enduml

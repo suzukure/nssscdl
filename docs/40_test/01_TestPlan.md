@@ -130,6 +130,17 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 `REQ-902` のスマートフォン確認は別に行う。日常CIにはviewport / device emulationを利用できるが、Release前はCloud上の実iPhone Safari / Android Chrome等で主要Must業務を確認する。Desktopの `REQ-901` baselineはこの確認を免除しない。
 
+### 7.1 #608初回隔離評価のGate（#892）
+
+構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。現時点ではWeb UI / CSRF取得GET / Browser評価compositionは未実装であり、以下は後続検証の責務である。
+
+| Gate | 検証範囲と証拠の限界 |
+| --- | --- |
+| A: local操作評価 | local HTTPS Worker + local D1 + test-owned Sessionで実画面の正常・409再確認・401失効・403拒否・503 / 結果不明非再送を確認する。keyboard / focus / narrow viewportとdefault到達不可も検証する。fake Providerの結果とTransaction内Reservation / Audit / Intent / outboxのCommitを別々に観察する。local成功は実Provider配送・対象環境D1・System / Acceptance TC全体のPassではない。 |
+| B: remote対象環境proof | A後に必要性を判断し、#537で具体差分・費用・復旧 / 撤収方法の人間事前承認を得た隔離環境だけを用いる。D1正本§8.6のFK enforcement、D1 Server時刻T0、Primary batch原子性、競合・先行Commit可視性、Trigger拒否を正式検証する。local fixtureで代替せず、未検証 / 失敗ならactivationへ進めない。 |
+| C: Release readiness | §7のChrome / Edge / Firefox / Safari current / previous Stable、REQ-902実mobile、#537のdeploy / rollback / Backup-Restore検証を保持する。AのBrowser smokeは正式互換性証跡ではない。 |
+| D: Production readiness / Business Cutover | 基本設計 `01_SystemArchitecture.md` §6、§10のExit Criteria、#534の判定に従う。設計main反映・A〜Cの個別成功だけでProduction公開済みとしない。 |
+
 ## 8. Entry Criteria
 
 - 対象BuildがTest環境へDeploy済み
@@ -146,6 +157,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 実施Issueの完了には変更内容に応じた設計整合とAC→TC対応、現在PR headの該当CI証跡を確認する。実装を含むIssueでは対象AC→TC→自動テストと実行結果の対応、該当するDB / API結合・競合・外部依存失敗の検証、影響する既存機能の回帰を確認する。TDD対象の重要業務ロジックは失敗確認・最小実装・構造改善後の再実行を記録する。未実施・失敗を成功と扱わず、Defectと残課題をIssueに記録する。
 
 価値単位の完了は、実施Issueの検証を統合した業務シナリオで確認し、実際の画面を用いる探索的な操作評価で利用者が目的を達成できるか、手順の分かりにくさや既存の具体例にない問題がないかを判定する。Build / Commit、環境、Actor、操作、観察結果、必要な画面・Response / Audit証跡、Defect、改善判断をIssueに残す。複数PRで構成しても統合評価を省略しない。操作評価環境・手順の具体化は #537、CIとテスト基盤は #536 に従う。
+
+#892の完了は詳細設計の正本・PlantUML同期と後続責務の引継ぎであり、Gate A〜Dを実行したことを意味しない。後続#608操作評価は§12の証跡へTC / AC、source commit SHA、migration revision、binding / config identity（secret値なし）、実行日時、Actor、架空test data区分、正常 / 409 / 401 / 403 / 503、画面と安全な業務状態、観察 / Defect / 制約を紐付ける。TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-003-01〜09 / TC-F-005-01と、追補 `04a_RequirementsTestTraceability_v1.6_v1.7.md` のAC-003-021対応を既存仕様に照合し、部分証拠とTC全体Passを分離する。deploy / migration / check / rollback / cleanupのexact手順と実行結果は#537の後続で正式化し、Worker rollbackとDB復旧を区別する。
 
 この単位の完了は初期リリースの判定ではない。次節の全REQ / AC対応、P0 / P1、欠陥、非機能・Browser等のExit Criteriaは維持する。
 
