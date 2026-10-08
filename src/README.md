@@ -58,7 +58,8 @@ tokenは認可ticketでもSlot確保でもなく、Confirmは本人再解決・�
 `infrastructure/d1-reservation-preview.ts` は#863の未接続・read-only D1 Repository Adapter。
 Guard解決済み本人とSlotからPrimary起点の単一SELECTでD1時刻T0、共有認証Viewの最新操作可否、
 対象月・Slot・占有、N、本人同月の全Reservationと例外状態を取得する。
-`readPreview` は `{ state: PreviewReadState, evaluatedAt }` を返し、後続Confirm事前readでも再利用できる。
+`readPreview` は `{ state: PreviewReadState, evaluatedAt }` を返す。#869の`readConfirm`は同じ内部captureから
+これらとSQL生成の`canonicalRawReadSet`を返し、Preview Port / wireにはrawを追加しない。
 日時・型・分類／取消・未開始占有・両管理詳細のInvariantを検査し、異常は既存
 `ReservationPreviewError` の `INTEGRITY_STATE_UNAVAILABLE`、D1実行失敗は `SERVICE_UNAVAILABLE`。
 他生徒占有はSQL内で検証して安全な既存拒否へ抽象化し、他生徒ID・予約IDをApplication stateへ投影しない。
@@ -78,3 +79,16 @@ HTTPS origin完全一致とFetch metadata、domain付きSHA-256 tokenのcanonica
 既存Schedule HTTPと`http/application-error.ts`を共用する。
 `GET /api/auth/student/csrf`、Provider flow、Confirm、Production migration / binding / routeは未接続。
 default Workerは全Requestで503を維持し、対象環境D1・Browser・public activationの証明とはしない。
+
+`application/reservation-confirm.ts` は#869のwrite前preparation Service。
+Guard解決済み`PreviewIdentity`、`slotId`、Previewから保持したtokenだけを入力とし、
+exact v1 SHA-256 base64url（paddingなし・未使用bitが0）をread前に検証する。
+共有captureのD1 T0を既存`createPreviewPlan` / `expectedStateToken`へ渡し、現在の業務拒否を優先し、
+fingerprint不一致は`RESERVATION_STATE_CHANGED`、形式不正は`INVALID_REQUEST`とする。
+成功時だけ本人・Slot日時・T0・canonical raw read set・新規automatic / effective分類・
+未開始算入対象の全`classificationPlan`・実効差分をコピーしてfreezeしたserver-only prepared stateを返す。
+内部分類planは既存計算結果を保持し、Overrideで実効値が不変でもautomatic before / afterを含む。
+Preview wire / v1 Snapshotの意味は変更しない。共有`reservationCaptureSql(timeSql)`の時刻式はServer内部SQLだけとし、
+後続Guardも同じtemplate / 本人・Slotのbind順でraw JSONを再計算できる。
+preparation成功はCommitや認可ticketではなく、後続Transaction Guardの再照合は必須。
+batch / write / Confirm HTTP / route activationは未実装で、default Workerは503を維持する。

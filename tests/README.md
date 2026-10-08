@@ -115,3 +115,14 @@ exact入力・重複key・UTF-8 byte上限、Session→CSRF→業務認可順、
 `TC-F-003-01 / TC-F-003-02 / TC-F-207-03 / TC-NF-914-04`はHTTP / isolated D1の
 **partial evidence**のみで、新TC・Product要求の意味変更はない。
 Browser、CSRF token取得、Confirm Commit / race、実環境D1、Production activation、TC全体のPassは証明しない。
+
+#869の`unit/reservation-confirm.test.ts` / `d1/reservation-confirm.test.ts`はwrite前preparationの検証。
+既存#863のisolated fixture / Guard解決済み本人 / Primary read-only Portを再利用し、
+canonical token形式とread前拒否、Preview token再照合、最新業務拒否を優先するmismatch、
+重要状態変更、D1 T0、raw JSONの決定性・欠損／NULL・安定順、共有SQLの時刻引数／bind順を確認する。
+Overrideでautomaticだけ変化する全内部分類planと実効値だけのwire差分、prepared stateのfreeze、
+成功・malformed・mismatch・業務拒否・DB error時の予約／Guard等の非更新を検証する。
+`unit/d1-reservation-preview.test.ts`は共通query / mappingとPreview Port非露出も固定する。
+`TC-F-003-01 / TC-F-003-02`はApplication / isolated D1の**partial evidence**のみ。
+Transaction Guard / Commit / race、Confirm HTTP / Browser、実環境D1、TC全体のPassは証明しない。
+新TC・Production migration / bindingは追加せず、既存Workerの503回帰を維持する。

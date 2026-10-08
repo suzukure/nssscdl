@@ -7,6 +7,7 @@ import {
 } from "../application/reservation-preview";
 import { mapSlotView, toTokyoDateTime, type SlotReadState } from "../application/schedule-query";
 import type { ScheduleQueryD1 } from "./d1-schedule-query";
+import type { CapturedConfirmRead, ReservationConfirmPreparationRepository } from "../application/reservation-confirm";
 
 export interface ReservationPreviewD1 {
   withSession(constraint: "first-primary"): ScheduleQueryD1;
@@ -14,9 +15,14 @@ export interface ReservationPreviewD1 {
 
 // One SELECT, including D1 T0, access, N, all own monthly rows and the integrity
 // of their Slots. Other owners are examined only by SQL predicates, never output.
-const readPreviewSql = `
+// Server-owned SQL expression only (never request data). A later batch Guard
+// supplies its captured T here, retaining the same template and student/Slot
+// bind order. The final SELECT also exposes canonical_raw_read_set for reuse
+// as a scalar SELECT in that Guard; this module does not implement any writes.
+export function reservationCaptureSql(timeSql = "CAST(strftime('%s','now') AS INTEGER)"): string {
+  return `
 WITH input AS (
-  SELECT ? AS student_id, ? AS slot_id, CAST(strftime('%s','now') AS INTEGER) AS t0
+  SELECT ? AS student_id, ? AS slot_id, ${timeSql} AS t0
 ), target AS (
   SELECT s.*, m.month_key, m.published_at
   FROM lesson_slots AS s LEFT JOIN schedule_months AS m ON m.id = s.schedule_month_id
@@ -78,19 +84,22 @@ WITH input AS (
       ELSE 1
     END
   )
-)
+), captured AS (
 SELECT i.t0 AS evaluated_at,
        (SELECT id FROM students WHERE id = i.student_id) AS student_id,
        (SELECT json_group_array(json_object(
-         'lifecycle', lifecycle, 'deletedAt', deleted_at, 'accessState', access_state)) FROM access) AS access_json,
+         'lifecycle', lifecycle, 'deletedAt', deleted_at, 'accessState', access_state))
+        FROM (SELECT * FROM access ORDER BY lifecycle, deleted_at, access_state)) AS access_json,
        (SELECT json_object(
          'slotId', id, 'month', month_key, 'publishedAt', published_at,
          'startsAt', starts_at, 'endsAt', ends_at, 'lessonDate', lesson_date,
-         'startTime', start_time, 'endTime', end_time, 'availability', availability_status)
+         'startTime', start_time, 'endTime', end_time, 'availability', availability_status,
+         'beforeStart', i.t0 < starts_at)
         FROM target) AS target_json,
        (SELECT json_group_array(json_object('standardCount', standard_count, 'updatedAt', updated_at))
-        FROM student_monthly_lesson_configs
-        WHERE student_id = i.student_id AND schedule_month_id = (SELECT schedule_month_id FROM target)) AS config_json,
+        FROM (SELECT * FROM student_monthly_lesson_configs
+        WHERE student_id = i.student_id AND schedule_month_id = (SELECT schedule_month_id FROM target)
+        ORDER BY student_id, schedule_month_id)) AS config_json,
        (SELECT json_group_array(json_object(
          'reservationId', id, 'studentId', student_id, 'slotId', lesson_slot_id,
          'startsAt', starts_at, 'endsAt', ends_at, 'month', month_key,
@@ -99,7 +108,8 @@ SELECT i.t0 AS evaluated_at,
          'automaticClassification', automatic_classification, 'classification', classification,
          'absent', absence_id IS NOT NULL, 'recordedAt', recorded_at,
          'monthlyCountOverride', override_mode, 'countPresent', count_id IS NOT NULL,
-         'classificationOverride', override_classification, 'overridePresent', override_id IS NOT NULL))
+         'classificationOverride', override_classification, 'overridePresent', override_id IS NOT NULL,
+         'beforeStart', i.t0 < starts_at))
         FROM (SELECT * FROM own ORDER BY starts_at, id)) AS reservations_json,
        EXISTS (SELECT 1 FROM bad_future_slots) AS bad_future,
        EXISTS (SELECT 1 FROM slot_occupancies AS o
@@ -108,10 +118,18 @@ SELECT i.t0 AS evaluated_at,
        (SELECT json_group_array(json_object(
          'slotId', o.slot_id, 'type', o.occupancy_type,
          'reservationId', CASE WHEN r.student_id = i.student_id THEN o.reservation_id ELSE NULL END))
-        FROM slot_occupancies AS o LEFT JOIN student_reservations AS r ON r.id = o.reservation_id
-        WHERE o.slot_id = i.slot_id) AS occupancies_json
+        FROM (SELECT * FROM slot_occupancies WHERE slot_id = i.slot_id ORDER BY slot_id, id) AS o
+        LEFT JOIN student_reservations AS r ON r.id = o.reservation_id) AS occupancies_json
 FROM input AS i
+)
+SELECT captured.*, json_object(
+  'studentId', student_id, 'access', json(access_json), 'target', json(target_json),
+  'standardCountConfig', json(config_json), 'reservations', json(reservations_json),
+  'occupancies', json(occupancies_json), 'foreignOccupied', foreign_occupied,
+  'badFuture', bad_future) AS canonical_raw_read_set
+FROM captured
 `;
+}
 
 type ObjectRow = Record<string, unknown>;
 function fail(): never { throw new ReservationPreviewError("INTEGRITY_STATE_UNAVAILABLE"); }
@@ -176,15 +194,24 @@ function reservation(row: ObjectRow, studentId: string, month: string, now: numb
   };
 }
 
-export class D1ReservationPreviewRepository implements ReservationPreviewRepository {
+export class D1ReservationPreviewRepository implements ReservationPreviewRepository, ReservationConfirmPreparationRepository {
   constructor(private readonly database: ReservationPreviewD1) {}
 
   async readPreview(identity: PreviewIdentity, slotId: string): Promise<CapturedPreviewRead> {
+    const { state, evaluatedAt } = await this.capture(identity, slotId);
+    return { state, evaluatedAt };
+  }
+
+  async readConfirm(identity: PreviewIdentity, slotId: string): Promise<CapturedConfirmRead> {
+    return this.capture(identity, slotId);
+  }
+
+  private async capture(identity: PreviewIdentity, slotId: string): Promise<CapturedConfirmRead> {
     if (!identity.studentId || !slotId) fail();
     let rows: unknown[];
     try {
       const result = await this.database.withSession("first-primary")
-        .prepare(readPreviewSql).bind(identity.studentId, slotId).all<unknown>();
+        .prepare(reservationCaptureSql()).bind(identity.studentId, slotId).all<unknown>();
       if (!result.success || !Array.isArray(result.results)) throw new Error();
       rows = result.results;
     } catch {
@@ -194,6 +221,8 @@ export class D1ReservationPreviewRepository implements ReservationPreviewReposit
     try {
       if (rows.length !== 1) fail();
       const row = object(rows[0]);
+      const canonicalRawReadSet = id(row.canonical_raw_read_set);
+      object(JSON.parse(canonicalRawReadSet));
       const now = integer(row.evaluated_at);
       if (row.student_id !== identity.studentId) fail();
       const access = array(row.access_json);
@@ -238,7 +267,7 @@ export class D1ReservationPreviewRepository implements ReservationPreviewReposit
         integrity: "consistent",
       };
       mapSlotView(slot, identity.studentId, now);
-      return { evaluatedAt: now, state: {
+      return { evaluatedAt: now, canonicalRawReadSet, state: {
         studentId: identity.studentId,
         reservationOperationAllowed: current.lifecycle === "active" && current.accessState === "active",
         month, publishedAt: target.publishedAt as number | null, slot,

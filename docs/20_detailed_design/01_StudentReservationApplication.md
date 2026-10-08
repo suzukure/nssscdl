@@ -87,6 +87,14 @@ Clientはtokenをそのまま保持し、Confirmでは`slotId`とtokenのみ送�
 
 ## 6. `POST /api/me/reservations`
 
+#869の実装範囲はwrite前preparationのみ。Guard解決済み本人・Slot・Expected State Tokenから、
+read前のcanonical v1形式検証、共有Primary captureと既存Preview計算による最新token再照合を行う。
+現在の業務拒否を優先し、一致時だけimmutableなserver-only prepared stateを返す。
+内部分類planは未開始算入対象の全automatic / effective before / afterを保持し、
+§5のwire差分は実効値が変化するものだけを維持する。実装・検証範囲は
+[`src/README.md`](../../src/README.md) / [`tests/README.md`](../../tests/README.md)を参照する。
+以下のHTTP / Transaction Commitは後続実装であり、preparation成功を予約成立と扱わない。
+
 Requestは`{"slotId":"opaque-id","expectedStateToken":"v1.opaque"}`。正常時HTTP `201 Created`。Response例:
 
 ```json
