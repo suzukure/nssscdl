@@ -43,7 +43,7 @@
 ### REQ-005 予約履歴
 | TC ID | 対応AC | P | 技法 | 前提・手順 | 期待結果 | 自動化 |
 |---|---|:---:|---|---|---|---|
-| `TC-F-005-01` | AC-005-001, AC-005-002 | P1 | 同値分割 | S1に予約済み、生徒キャンセル、スクール都合キャンセル、欠席、standard/additionalの履歴を用意。予約履歴を表示する。 | 各予約状態を識別でき、対象Reservationの現在のstandard/additional区分を確認できる。 | 自動化候補 |
+| `TC-F-005-01` | AC-005-001, AC-005-002 | P1 | 同値分割 | S1に予約済み、生徒キャンセル、スクール都合キャンセル、欠席、standard/additionalの履歴を用意。予約履歴を表示する。 | 各予約状態を識別でき、対象Reservationの現在のstandard/additional区分を確認できる。 | #888 Application / D1 / HTTP partial evidence自動化。System / Acceptance全体Passには算入しない |
 
 ### REQ-006 グループレッスン表示
 | TC ID | 対応AC | P | 技法 | 前提・手順 | 期待結果 | 自動化 |

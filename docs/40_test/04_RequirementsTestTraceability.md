@@ -70,6 +70,10 @@ POL/BRを本書へ重複転記しないことで、要求変更時の二重管�
 | AC-005-001 | `TC-F-005-01` |
 | AC-005-002 | `TC-F-005-01` |
 
+#888の`tests/unit/reservation-history.test.ts`、`tests/integration/reservation-history.test.ts`、
+`tests/d1/reservation-history.test.ts`はApplication / D1 / isolated HTTPのpartial evidence。
+本人履歴の状態・実効分類とpagination / security / integrityを検証する。System / Acceptance全体Passは未確認。
+
 ### REQ-006 グループレッスン表示
 | AC | Test Case |
 |---|---|

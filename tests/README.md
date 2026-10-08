@@ -174,3 +174,10 @@ exact `REVALIDATION_REQUIRED`だけfresh解決し、fresh本人・現在業務�
 Application / HTTP / isolated D1 **partial evidence**のみであり、新TC IDやProduct要求の意味変更はない。
 既存#865 Preview、#873 Guard / race / rollback、#874 verifier / Portとdefault Workerの503は同じ標準suiteで回帰する。
 Browser / 実環境D1 / Provider配送 / public activation / TC全体のPassは証明しない。
+
+#888の`unit/reservation-history.test.ts`、`integration/reservation-history.test.ts`、
+`d1/reservation-history.test.ts`は`TC-F-005-01`のApplication / D1 / isolated HTTP **partial evidence**。
+状態・欠席・実効分類の分離、本人限定、DESC順とcursor継続、不正入力 / MAC / 別本人拒否、
+D1 / integrity失敗、no-store / 401 Cookie除去、read-onlyと既存indexのquery planを検証する。
+D1試験はProduction migration・Guardをlocalで合成し、cancelled / absence行は保存Schema fixtureで用意する。
+取消 / 欠席Command、Production鍵provisioning、public route、Browser、実D1、System / Acceptance全体Passは証明しない。

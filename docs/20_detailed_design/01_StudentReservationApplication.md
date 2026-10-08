@@ -135,6 +135,14 @@ Requestは`{"slotId":"opaque-id","expectedStateToken":"v1.opaque"}`。正常時H
 
 ## 7. `GET /api/me/reservations`
 
+#888のisolated `ReservationHistoryHttpAdapter` はHTTPS / exact GET・Path / bodyなしを検査し、
+未定義・重複Queryを拒否する。`limit`はdecimal digitsのみで既定50、1〜100。
+毎Requestで既存`StudentAccessGuard.authorize()`を使い、本人IDだけをQuery Serviceへ渡す。
+GETではSession CSRFを要求せず、401 Cookie除去と全Responseの`Cache-Control: no-store`は既存HTTP共通処理を再利用する。
+ApplicationはD1正本§4の順序・`limit + 1`・cursorを使い、型・件数・重複・日時・enum異常を
+`INTEGRITY_STATE_UNAVAILABLE`、不正cursorを`INVALID_REQUEST`、D1 / signing利用不能を`SERVICE_UNAVAILABLE`とする。
+`TC-F-005-01`はApplication / D1 / HTTP partial evidenceのみ。default Worker / public routeは未接続で503を維持する。
+
 Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、opaque string）のみ。`startsAt DESC`、同値はopaque `reservationId`に対応するServer内部の安定tie-breakerで全順序とし、sort keyをwireに露出しない。Cursorはその全順序における直前Page末尾の位置を表す。初回はcursorなし、次Pageは返された`nextCursor`をそのまま送る。不正なcursorは`INVALID_REQUEST`。Page間に状態が変化した場合のSnapshot固定は約束しない。
 
 ```json

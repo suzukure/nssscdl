@@ -126,3 +126,9 @@ ID / plan再生成・write retry・Session情報のverification渡し・raw caus
 401 / 403 / 409 / 503へ分類し、still-validなら503へfail-closedする。ID / plan再生成・write retryは行わない。
 `http/application-error.ts`に正本§8の`RESERVATION_STATE_CHANGED`（409 / repreview）を追加し、内部codeを公開しない。
 Production binding / schema / public route / default Workerへの接続はなく、503とD1 §8.6のactivation Gateを維持する。
+
+#888の`application/reservation-history.ts`、`infrastructure/d1-reservation-history.ts`、
+`infrastructure/reservation-history-cursor.ts`、`http/reservation-history.ts`は本人履歴のread-only縦切り。
+Guardのread-only本人解決、Primary SELECT、状態分離、Tokyo日時、limit+1と本人にbindしたHMAC cursorを合成する。
+鍵はserver-only CryptoKey注入のみ。規則の正本は詳細設計Application §7 / §8、D1 §4。
+default Workerは503、Production鍵・binding・公開routeは未接続。
