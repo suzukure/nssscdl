@@ -62,10 +62,11 @@ export class D1ReservationConfirmExecutor {
     // #872 already recursively freezes the generated plan. Do not copy it,
     // generate IDs, retain Context in the attempt, or regenerate after failure.
     const attempt: ReservationCommitAttempt = Object.freeze({ plan });
+    let session: ReturnType<ReservationConfirmD1["withSession"]>;
+    const statements: ReservationConfirmStatement[] = [];
     try {
-      const session = this.database.withSession("first-primary");
+      session = this.database.withSession("first-primary");
       const statement = (query: string, ...values: unknown[]) => session.prepare(query).bind(...values);
-      const statements: ReservationConfirmStatement[] = [];
       const append = (query: string, ...values: unknown[]) => statements.push(statement(query, ...values));
       const actor = [context.sessionId, context.tokenHash, context.studentId];
       const reservation = plan.reservation;
@@ -180,7 +181,12 @@ export class D1ReservationConfirmExecutor {
       audit.id, audit.action, audit.actorType, audit.actorId, audit.targetType, audit.targetId,
       audit.beforeJson, audit.afterJson, audit.result, reservation.id, plan.commandId);
       append("DELETE FROM command_guards WHERE id = ?", plan.commandId);
+    } catch {
+      // No batch invocation means no write attempt or ambiguous Commit.
+      throw new ReservationPreviewError("SERVICE_UNAVAILABLE");
+    }
 
+    try {
       const results = await session.batch(statements);
       if (!Array.isArray(results) || results.length !== statements.length || results.some((result) => !result.success)) {
         throw new Error();

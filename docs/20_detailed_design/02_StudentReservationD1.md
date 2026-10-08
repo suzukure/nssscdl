@@ -218,7 +218,9 @@ Application正本§6のcommitted result projectionもpure生成するが、batch
 prepared / plan Reservation / Contextの本人一致とprepared / planのSlot・raw read set一致をwrite前に検査する。
 正常batch応答時だけ同一`plan.committedResult`を返す。batch前に1回作るimmutable `ReservationCommitAttempt`は
 `{ plan }`だけを保持し、Session ID / tokenHashを含めず、回復用raw read setの別コピーも公開しない。
-正常応答を確認できない場合はexact code `RESERVATION_COMMIT_OUTCOME_UNKNOWN`の
+Primary Session生成と全Statementのprepare / bindはbatch呼出し前に完了し、その間の失敗は
+既存`SERVICE_UNAVAILABLE`へfail-closedする（batch 0回、応答不明handoffなし）。
+batch呼出し後に正常応答を確認できない場合はexact code `RESERVATION_COMMIT_OUTCOME_UNKNOWN`の
 `ReservationCommitOutcomeUnknownError`へ同一attempt.planを渡す。raw DB error / SQL / causeを保持せず、
 attemptは内部handoff専用の非列挙propertyとする。公開401 / 403 / 409 / 503を推測せず、write retry・ID再生成は行わない。
 #874のread-only Primary verificationと`COMMITTED / NOT_APPLIED / INCONSISTENT`分類は本Adapterへ含めない。

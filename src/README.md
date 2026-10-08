@@ -103,7 +103,8 @@ DB・Session・HTTP capabilityを持たず、時刻は後続batchのCommand Tへ
 `infrastructure/d1-reservation-confirm.ts` は#873の未接続・server-only atomic executor。
 prepared・同一immutable `ReservationConfirmWritePlan`・same-request `StudentSessionContext`から、
 詳細設計D1 §5 / §8.3の初期・最終Guardと全Writeを1回のPrimary batchへ渡す。
-成功時は同一`plan.committedResult`を返す。応答不明は同一planだけを保持するimmutable attempt付きの
+成功時は同一`plan.committedResult`を返す。Primary Session生成・全Statementのprepare / bindの失敗は
+batchを呼ばず既存`SERVICE_UNAVAILABLE`とする。batch呼出し後の応答不明は同一planだけを保持するimmutable attempt付きの
 `ReservationCommitOutcomeUnknownError`（`RESERVATION_COMMIT_OUTCOME_UNKNOWN`）とし、
 raw DB causeを保持せず、attemptはJSON列挙から除外する。自動write retry・ID再生成は行わない。
 Primary verification / outcome分類は#874、HTTP / public activationは後続責務とする。

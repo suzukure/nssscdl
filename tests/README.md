@@ -144,6 +144,8 @@ Audit / Intent / Outbox INSERT失敗、exact projection / 件数異常、最終S
 時刻・race・応答欠落はtest-only D1 interface adapterから注入し、実SQLを同じPrimary batchで実行する。
 成功時の共通Command T・Guard cleanup・同一result、Commit後の応答欠落とRollbackの双方で
 同一immutable attempt.plan・ID非再生成・batch 1回・raw error / Session情報非露出を検査する。
+Session生成・prepare / bindの失敗は既存`SERVICE_UNAVAILABLE`でbatch 0回、永続化不変、
+attempt / raw cause非保持・ID非再生成となることを同じfixtureで検査する。
 `TC-F-003-01 / TC-F-003-04 / TC-F-003-05〜06`、`TC-NF-911-01`の内部Command / local D1 **partial evidence**とし、
 Audit / Intentの観点は既存`TC-F-101-01 / TC-F-104-01 / TC-NF-940-01〜02`へ対応する。
 Session / lifecycleの観点は既存`TC-F-207-02〜03 / TC-F-211-02 / TC-F-311-02`へ対応する。

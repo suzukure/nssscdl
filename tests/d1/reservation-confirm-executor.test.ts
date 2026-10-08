@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReservationPreviewService } from "../../src/application/reservation-preview";
 import { ReservationConfirmPreparationService } from "../../src/application/reservation-confirm";
+import { ReservationPreviewError } from "../../src/application/reservation-preview";
 import { createReservationConfirmWritePlan, generateReservationConfirmIds } from "../../src/application/reservation-confirm-plan";
 import {
   D1ReservationConfirmExecutor, ReservationCommitOutcomeUnknownError,
@@ -66,6 +67,7 @@ async function prepare(slotId = "target", time = now) {
 // Every mutation still executes in a real local D1 atomic Primary batch.
 function executor(options: {
   finalTime?: number; realTime?: boolean; loseResponse?: boolean; failResponse?: boolean;
+  preBatchFailure?: "session" | "prepare" | "bind";
   invalidResponse?: "failed" | "incomplete";
   transform?: (query: string) => string;
   injectBefore?: string; injectSql?: readonly string[];
@@ -75,13 +77,21 @@ function executor(options: {
   const batch = vi.fn();
   const source: ReservationConfirmD1 = { withSession(constraint) {
     primary(constraint);
+    if (options.preBatchFailure === "session") throw new Error("private session diagnostic");
     const session = db.withSession(constraint);
     return {
       prepare(query) {
         queries.push(query);
+        // Fail on the last statement to prove partial preparation never writes.
+        const last = query.startsWith("DELETE FROM command_guards");
+        if (last && options.preBatchFailure === "prepare") throw new Error("private prepare diagnostic");
         const time = query.startsWith("INSERT INTO command_guards") ? now : options.finalTime ?? now;
         const transformed = options.realTime ? query : query.replaceAll(nowSql, String(time));
-        return session.prepare(options.transform?.(transformed) ?? transformed);
+        const prepared = session.prepare(options.transform?.(transformed) ?? transformed);
+        return { bind(...values) {
+          if (last && options.preBatchFailure === "bind") throw new Error("private bind diagnostic");
+          return prepared.bind(...values);
+        } };
       },
       async batch(statements) {
         batch();
@@ -312,6 +322,27 @@ describe("[TC-F-003-01 / TC-F-003-04 / TC-F-003-05 / TC-NF-911-01 partial D1] #8
 
   it("does not expose DB diagnostics or retry a failed batch response", async () => {
     await rollback({ failResponse: true });
+  });
+
+  it.each(["session", "prepare", "bind"] as const)("%s failure before batch is SERVICE_UNAVAILABLE with no write attempt", async (mode) => {
+    const { prepared, plan, generator } = await prepare();
+    const before = await persisted();
+    const count = generator.generateId.mock.calls.length;
+    const run = executor({ preBatchFailure: mode });
+    let failure: unknown;
+    try { await run.service.execute(prepared, plan, context); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ReservationPreviewError);
+    expect(failure).not.toBeInstanceOf(ReservationCommitOutcomeUnknownError);
+    expect(failure).toMatchObject({ code: "SERVICE_UNAVAILABLE", message: "SERVICE_UNAVAILABLE" });
+    expect(failure).not.toHaveProperty("attempt");
+    expect(failure).not.toHaveProperty("cause");
+    expect(failure).not.toHaveProperty("status");
+    expect(JSON.stringify(failure)).toBe(JSON.stringify(new ReservationPreviewError("SERVICE_UNAVAILABLE")));
+    expect(run.primary).toHaveBeenCalledExactlyOnceWith("first-primary");
+    expect(run.batch).not.toHaveBeenCalled();
+    expect(generator.generateId.mock.calls.length).toBe(count);
+    expect(await persisted()).toEqual(before);
+    expect((await sql("SELECT * FROM command_guards").all()).results).toEqual([]);
   });
 
   it("[TC-F-003-06 partial] rejects a different student's Context before any batch", async () => {
