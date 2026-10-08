@@ -9,7 +9,10 @@
 - `03_ScheduleModel.md` — 月間公開、具体的なレッスン枠日時、枠利用可否モデル
 - `04_ReservationModel.md` — 予約履歴、現在の枠占有、キャンセル、再予約モデル
 - `05_BookingAndConcurrency.md` — 予約・キャンセル・再分類のTransaction境界と競合設計。`OI-BD-006` で確定済み
-- `06_APIOverview.md` — Application APIの基本原則、Command / Query境界、Identity / Role境界、認証・Session、Preview / Confirm、Conflict・Error方針、生徒・管理者向け主要API Flow。一括予約の専用Preview / Confirm API契約（Issue #66）を含む。API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008`、管理者向けAPI基本形は `OI-BD-009`、認証・Sessionは `OI-BD-010` で確定済み
+- [06a_APICommonPrinciples.md](06a_APICommonPrinciples.md) — API概要設計 — 通常判断・共通原則（§1〜10）。Application API、Command / Query、Identity / Role、認証・Session、Preview / Confirm、Commit再検証、成功Response、Conflict・Error、保存／表示モデルの共通原則。API基本原則は `OI-BD-007`、Actor / Target Scopeは `OI-BD-009`、認証・Sessionは `OI-BD-010` で確定済み
+- [06_APIOverview.md](06_APIOverview.md) — API概要設計 — 個別APIの実行・復旧計画（§11〜22）。生徒・管理者向けEndpoint、実行・Transaction・競合・復旧／再送、詳細設計への引継ぎ、関連要求・設計判断記録。一括予約の専用Preview / Confirm API契約（Issue #66）を含む。生徒向けAPI基本形は `OI-BD-008`、管理者向けAPI基本形は `OI-BD-009` で確定済み
+
+通常判断は共通原則の関連節から始め、個別APIの実装・検討では [生徒向け§11](06_APIOverview.md#11-生徒向けapi基本形) または [管理者向け§12〜19](06_APIOverview.md#12-管理者向けschedule-api基本形) の関連個別節と、その節が依存する共通原則・関連正本へ進む。作業に必要な範囲を読み、両文書の常時全文読込みは求めない。
 
 ## 基本設計の残件と引継ぎ
 
