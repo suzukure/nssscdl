@@ -55,6 +55,14 @@ FK / 一意性 / hash / 30日期限境界 / 本人接続、固定binding・Sessi
 HTTP / Provider / Admin・削除Command全体 / 実環境D1 / System・Acceptance TC全体のPassを証明しない。
 既存予約fixtureの`TEST_DB`と適用履歴を共有せず、Production entrypointへ接続しない。
 
+#867の `d1/reservation-migration.test.ts` は、共通setupの認証 `0001`〜`0006`の後に
+Production予約 `0007`〜`0012`のbytesを同じfile-isolated `AUTH_DB`へ順次適用する。
+認証Table / View / Trigger / 共有Guard定義・既存Guard行の保持、各段階のTable / Index依存順、
+生徒FK・予約制約・JSON・partial UNIQUE、FK / authの各0行とreservationの独立read-only scans全ての合計0行を検証する。
+DDLでは防げない永続化異常の検出と非修復も確認する。DB/migration **partial evidence**のみであり、
+Confirm / Transaction Write Adapter / HTTP / 実D1 / System・Acceptance TC全体のPassを証明しない。
+既存Preview suiteは認証migrationと独立した予約fixture履歴を維持し、新bindingやpublic activationはない。
+
 #842の `unit/d1-student-access-guard.test.ts` はProduction GuardのCookie形式・重複・purpose、
 hash bind / Primary / 単一SELECT、D1時刻の期限等値、結果評価順と安全なDB / Integrity異常を検証する。
 `integration/production-student-access.test.ts` は同Guardを既存HTTP / Serviceへ注入し、
