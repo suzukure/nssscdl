@@ -21,6 +21,7 @@
 | Repository / Transaction Port | 確定業務状態の読取と単一予約Commandの原子的Commitを提供する。Guard失敗・Invariant異常では部分Commitしない。D1 Adapterの物理方式は `02_StudentReservationD1.md`。 |
 | Audit Port | `REQ-940` に従う予約確定Audit義務を同じ業務Transactionへ渡す。 |
 | Notification Intent Port | `REQ-101 / REQ-104` に従う予約確認および必要な区分変更Intentを同じ業務Transactionへ渡す。配送はCommit後の別責務。 |
+| Student CSRF HTTP Adapter（設計、未実装） | §10.3〜4の取得GETを担当する。初回隔離評価のsession branchとProduction全契約の境界は§9.2。生成とunsafe POST検証は同じ純粋関数を共有する。 |
 
 RouterはGuardを経ずにServiceへ本人対象を渡さない。Repository / Audit / Notificationの予約Confirm物理D1境界は `02_StudentReservationD1.md` を参照する。
 
@@ -201,11 +202,65 @@ Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、
 
 Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。Scheduleを取得しSlotを選択、Previewの日時・新規分類・既存予約への差分を確認した後だけConfirmを送る。`201`では確定状態を表示する。`409`では最新の安全なSlot Viewまたは再取得案内を示し、再Preview・再確認へ戻す。履歴は確定状態の参照手段とする。Google / Magic Linkの認証HTTP / Provider Flowは§10、永続化・Session発行合成はD1正本§9を参照する。
 
+### 9.1 #608初回Browser presentationと状態遷移（#892）
+
+対象は `/student` の公開月確認→単一Preview→明示Confirm→本人履歴である。標準HTML / CSS / Browser JavaScriptと既存TypeScript / Workers構成を最小選択とし、新SPA framework、router、状態管理package、汎用design system、E2E専用基盤を先行導入しない。配信・buildのexact方式は、既存CIで新Browser sourceのbuild / lint / testが可能なことを後続実装Issueが確認して定める。本設計は未検証の配信方式を固定しない。
+
+| Browser状態 / 操作 | 表示・遷移と送信条件 |
+| --- | --- |
+| 月選択・読込 | 指定した `YYYY-MM` に§4のGETを行う。公開月一覧APIは追加しない。404は§8の案内を表示し別月選択へ戻す。calendar / listは同じSlot Viewを用い、4値を文字で区別し、`bookable`だけを新規予約選択対象とする。 |
+| 枠選択・Preview中 | 選択Slotに§5のPOSTを送る。選択だけでConfirmしない。読込中は確定操作を無効にする。 |
+| Preview確認 | 開始・終了日時をAsia/Tokyoで表示し、`previewClassification`、`classificationChanges`全件の日時とbefore / afterを提示する。差分は省略せず、追加はAC-003-008の説明を含め、継続を妨げない。内容を確認してからだけ明示Confirmを可能にする。 |
+| Confirm中 | §6の `slotId / expectedStateToken` のみを送る。二重操作を抑止し、同じ確認からの自動再送をしない。UIの抑止はServerのTransaction Guardを代替しない。 |
+| 201確定 | Commit済みResponseの日時・予約状態・分類・区分変更を表示する。NotificationIntent commitと配送成功を混同しない。Scheduleを更新し、§7の本人履歴へ進める。 |
+| 履歴 | 予約状態、欠席、現在の実効分類を分離し、返された `nextCursor` で次Pageを読む。最新状態の確認はcursorなしの再取得とし、Page間Snapshot固定は主張しない。 |
+| 月 / 枠変更、409、Session失効 | 保持したExpected State Tokenと確認状態を破棄し、fresh Schedule→必要なPreview→人間再確認へ戻す。古い非同期Responseを新しい月 / 枠の確認として採用しない。失効時は下記401の停止を優先する。 |
+
+Expected State TokenはUI memoryに保持し、内部Snapshotを復元・表示しない。失効はServerのSession / Guard判定に従い、tokenの独自TTLやClient時刻によるCommit可否を追加しない。画面には他生徒PII、料金、月間標準回数N、内部Session / hash / Snapshotを出さない。日時・分類・差分は色だけに依存せず、月選択・表示切替・枠選択・Preview・Confirm・履歴をkeyboardで操作でき、focusが見えることを最小受入条件とする。Preview / 結果 / エラーへのfocus移動で現在状態を把握でき、320 CSS px以上の狭幅でも全差分と確定操作を確認できることを検証する。通常Page全体の横scrollを避け、calendar / table内部の局所scrollはREQ-902に従う。
+
+エラーは§8 / §10.8のcode / message / retryを使用する。401は確認状態・memory CSRFを破棄し認証が必要と案内して停止する（隔離評価ではtrusted setupへ戻り、未実装loginを成功扱いしない）。403は操作不可、`CSRF_INVALID`は再読込・CSRF再取得と再確認を案内する。401以外はCookieを除去しない。409は安全な最新Viewを案内して上表へ戻す。503、通信断、応答不明は予約成立と表示せず、確認状態とExpected State Tokenを破棄して停止し、Confirmを自動再送しない。安全に本人履歴 / Scheduleを再取得できても、それはread-onlyの状態確認であり書込み再試行ではない。201を受け取らなかった操作の成功を推測せず、履歴では取得した現在状態だけを表示する。
+
+### 9.2 Browser Session / CSRFと隔離composition
+
+Session Cookieと取得GET / unsafe POSTのProduction正本は§10.2〜4、D1 Guard / Write predicateはD1正本§8、履歴cursor署名は同書§4を参照する。UIはHttpOnly Cookieを読まず、全APIをHTTPSの同一originへsame-origin fetchする。canonical originはServer設定の完全一致値とし、Request Hostから作らない。CSRF取得GETのsame-origin検証とunsafe POSTのOrigin / `X-CSRF-Token` / Fetch Metadataを省略しない。
+
+初回評価では有効Sessionから `GET /api/auth/student/csrf` の `scope: "session"` を取得し、CSRF tokenをmemoryだけに保持する。storage / URL / Logへ保存しない。後続CSRF実装は#865 `src/http/student-session-csrf.ts` の生成式を一つの純粋関数へ抽出し、取得と検証で共有する（domain separationを変更しない）。**Productionのsession / preauth双方の契約は維持する**。先行session branchは評価専用入口に限定し、Sessionなしではtokenを返さず401へfail-closed、不正 / 失効Sessionも401、判定不能は既存503とする。preauthの発行 / 再利用やAuth flowの完了は証明せず、Production取得Endpointへの接続は全契約実装・検証後の別責務とする。
+
+| composition案 | 初回評価への判断 |
+| --- | --- |
+| default Workerをflagで評価用に切り替える | 採用しない。通常 `src/index.ts` の503と `wrangler.jsonc` のremote binding / routeなしを維持し、fixture / 評価routeへの到達を開かない。 |
+| 評価専用entrypoint / configで既存Adapterを明示合成する | 採用する。HTTPS local Worker / 隔離local D1へ既存4 API、Production StudentAccessGuardとProduction Repository / Transaction Adapterを接続する。exact file / command、cert / origin整合は後続で実証する。 |
+| 固定fake Guard / HTTP debug loginでBrowser操作する | 採用しない。D1本人解決・失効・Write predicateの証明にならず、認可迂回になる。既存単体mapping fixtureの用途をBrowser評価へ昇格しない。 |
+
+operator / trusted test setupだけが隔離DBへ架空Student / Account / Session / 公開Slotをseedする。Production migrations `0001〜0012`と既存Self Scope / single-batch Guardを再利用し、test-only番号をProduction番号として流用しない。Session tokenの生成・hash保存はD1 §8.2を満たし、test-owned BrowserContextへ§10.2属性のCookieを設定する。通常HTTPにseed / login入口を設けず、identity header / query / env、token allowlist、allow-all Guardで本人を注入しない。実利用者data・Production resource / credentialは使わない。
+
+cursor用鍵はoperator / trusted server setupでWeb CryptoのHMAC-SHA-256署名鍵を生成し、評価環境専用のserver-only `CryptoKey`を既存Codec constructorへ注入する。localではtest lifecycle内で保持し、Browserへ渡さず終了時に破棄する。remote provisioningは#537の承認済みsecret store手順の責務で、通常vars / Request / Query由来の鍵、source hardcode、Production鍵共有、client bundleへの混入を禁止する。setup権限を通常Student / Admin Roleに渡さない。Session / CSRF / HMAC key、メール・PIIをURL、Log、Screenshot / trace等のArtifact、証跡に残さない。
+
+後続compositionのproofは、(1) default entrypointのimport / build artifact / route / configから評価fixtureへ到達不可、(2) defaultへの `/student` / CSRF / 4 APIを含む実Requestが503、(3) 評価側が実GuardとProduction D1 Adapterを使い、seedはtest entrypointに限定され、任意identity入力で迂回不可、(4) config / binding / secret identity不一致でfail-closed、(5) Production Provider・Scheduled side effectへ接続不可、を静的検査とruntime assertionで確認する。UI非表示だけをproofとしない。fake Providerの観察とReservation / Audit / Intent / outboxのCommit観察は分離し、実配送を主張しない。
+
+### 9.3 評価Gateと後続責務
+
+Gateの証跡・完了判定は `../40_test/01_TestPlan.md` §7 / §9 / §12、deploy / migration / rollback / cleanupの共通正本は `../10_basic_design/01_SystemArchitecture.md` §6とする。順序はA: local HTTPS Browser + isolated D1、B: 必要性と人間承認後の隔離remote対象環境D1 proof、C: #537の正式Browser Matrix / 実mobile / deploy・rollback / Backup-Restore、D: Production readiness / #534 Business Cutoverである。Aの成功をB〜DのPassへ読み替えない。
+
+| 後続の責務単位 | 依存・Doneの引継ぎ |
+| --- | --- |
+| #608 read-only presentation | §9.1の月選択 / calendar・list / 4 View / 本人履歴。既存wireとAC→TCを維持し、配信・build方式の既存CI適合、keyboard / focus / narrow viewportを検証する。 |
+| #537 CSRF取得 | §9.2の共有生成関数・session branch・preauth fail-closedを局所検証する。Production全契約は§10.3〜4を維持し、未実装分と非公開proofを明示する。 |
+| #537 trusted seed / isolated runtime composition | CSRF取得と既存Adapterに依存し、HTTPS / cert / exact origin、実Guard、Production migrations、専用entrypoint / config / key、静的・runtime隔離proofを揃える。UI実装を同じrunへ詰め込まない。 |
+| #608 Preview / Confirm interaction | read-only presentationとCSRF取得に依存し、確認state・全差分・二重操作抑止・201 / 409 / 401 / 403 / 503・結果不明からの回復を既存TCで検証する。実画面での合成評価は次の責務。 |
+| #537 local Browser / 実画面操作評価 | UI interactionと隔離compositionに依存し、Gate Aの正常・競合・失効・障害・fake ProviderとCommitの分離、利用者による探索的評価を証跡化して#608 / #537へcheckpointする。 |
+| #537 必要時remote deploy / rollback proof | Gate A後、具体差分・費用・復旧 / 撤収方法の人間承認に依存する。Gate BのD1証拠とdeploy / migration / check / rollback / cleanup手順・実行identityを残す。Gate C / Dは別判定のまま保持する。 |
+
+後続Issueは本設計のmain反映後にfresh R/C/P/Bと実績から独立単位・依存順・受入条件を確定して起票する。本設計で起票・実装・承認・deploy済みとはしない。§10の残Auth flow / preauth全実装は#537の認証後続責務へ引き渡し、session先行実装をProduction readinessとしない。
+
+### 9.4 Traceability
+
 | 詳細設計箇所 | 上位識別子 | 既存要求ベースTest |
 | --- | --- | --- |
-| §2〜4 Schedule / Self Scope | REQ-001 / 002、AC-001-001〜004 / AC-002-001〜002、BR-015 / 017 / 067 / 068 / 090 | `docs/40_test/02_FunctionalTestSpecification.md` の対応TC |
-| §5〜6 Preview / Confirm | REQ-003 / 101 / 911、AC-003-001〜008 / 016〜021、AC-101-001〜002、BR-050〜059 / 066〜068 / 112 | 同上、および `02a_ReservationOwnershipTestSpecification.md` |
-| §7 履歴 | REQ-005、AC-005-001〜002、BR-066 | `02_FunctionalTestSpecification.md` の対応TC |
+| §2〜4・§9.1 Schedule / Self Scope | REQ-001 / 002、AC-001-001〜004 / AC-002-001〜002、BR-015 / 017 / 067 / 068 / 090 | `docs/40_test/02_FunctionalTestSpecification.md` の対応TC |
+| §5〜6・§9.1 Preview / Confirm | REQ-003 / 101 / 911、AC-003-001〜008 / 016〜021、AC-101-001〜002、BR-050〜059 / 066〜068 / 112 | 同上、および `02a_ReservationOwnershipTestSpecification.md` / `02b_RequirementsV1.6V1.7TestSpecification.md`（TC-F-003-08〜09） |
+| §7・§9.1 履歴 | REQ-005、AC-005-001〜002、BR-066 | `02_FunctionalTestSpecification.md` の対応TC |
+| §9.1 Browser操作・日時表示 | REQ-902 / 903 / 907、AC-902-001〜003 / AC-903-001 / AC-907-001〜002 | `03_NonFunctionalTestSpecification.md` のTC-NF-902-01〜02 / TC-NF-903-01 / TC-NF-907-01〜02（初回対象の部分証拠） |
 | §8 Error / Audit | REQ-914 / 940、POL-014、BR-111 | `03_NonFunctionalTestSpecification.md` の対応TC |
 
 `REQ-911 / 914 / 940`、`OOS-001 / 002`を含む既存POL→BR→REQ→AC→TCの関係は変更しない。予約確認のwireに月間回数・料金は含めず、管理者代理予約を導入しない。D1物理Schema / migration / Transaction Guardは `02_StudentReservationD1.md` で確定する。単一予約Application実装は、詳細設計・基盤確定後に#608配下の後続実装Issueとして切り出す。#536は本体build / test / PR CI基盤、#537は操作評価環境、#538はAI Developer runtime適合を扱う。
@@ -347,5 +402,7 @@ Logoutでは有効SessionとCSRFを確認し、Primary batchのD1時刻で当該
 #841はD1 §8のProduction migration、#842は本HTTP契約と#841のD1正本へのProduction StudentAccessGuard接続を担当する。§9のProvider flow保存契約のmigration／実装も、有効化する認証flowに先行して揃える（§8だけでProvider flow完成としない）。#843は削除Command全体、#844はAdmin認証詳細を担当する。実装担当が本契約のpure部分・isolated fixtureを始めるための追加Product判断はない。
 
 本Issueは文書・PlantUML正本のみで、実Provider通信・対象D1検証・route activationをしない。Googleの設定issuer／endpoint／RS256・鍵取得・client_secret_post・S256対応、Turnstile hostname / action、Resendの受付／結果不明／安全なRetry根拠は実Providerで未検証。これらをProviderが保証するという記述ではなく、Adapterが満たす検証契約とする。設定・互換性を確認できない経路はfail-closedし、外部事実と本契約が矛盾する場合は推測で変更せず人間判断へ戻す。
+
+#892初回評価のsession CSRF取得先行・未対応preauth fail-closedと非公開compositionの境界は§9.2を参照する。これは本節のProduction認証契約の縮小やAuth flow完了を意味しない。
 
 #840 / #841 / #842とD1 §8.6の対象環境検証が完了するまではProduction / Production相当Reservation Adapter / public routeを有効化しない。隔離試験の結果を実D1・実Provider・Browser System / Acceptance試験のPassへ読み替えない。
