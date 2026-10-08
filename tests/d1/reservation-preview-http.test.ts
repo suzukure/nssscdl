@@ -56,7 +56,7 @@ it("[TC-F-003-01 / TC-F-003-02 partial D1/HTTP] composes real Guard, read and co
     const view = await response.json();
     expect(view).toEqual(await previewReservation(identity, captured.state, captured.evaluatedAt));
     expect(view).toMatchObject({ previewClassification: n === 1 ? "additional" : "standard",
-      classificationChanges: n === 2 ? [{ reservationId: "later-r", startsAt: "2026-11-22T10:00:00+09:00", before: "standard", after: "additional" }] : [] });
+      classificationChanges: n === 1 || n === 2 ? [{ reservationId: "later-r", startsAt: "2026-11-22T10:00:00+09:00", before: "standard", after: "additional" }] : [] });
     expect((await sql("SELECT * FROM student_reservations ORDER BY id").all()).results).toEqual(before);
     for (const value of [token, await hashToken(), "private-other", "canonicalSnapshot", '"studentId"', "standardCount"]) {
       expect(JSON.stringify(view)).not.toContain(value);
