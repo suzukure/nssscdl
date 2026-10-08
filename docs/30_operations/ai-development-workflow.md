@@ -302,6 +302,14 @@ Ready前には、人間/ChatGPT上の開発補助が次の対象箇所と証拠�
 
 照合結果はPRの既存`レビュー準備`欄または最新コメントへ、確認したIssueと節、該当する後継番号、current HEAD、formal checkのrunリンク/結果、未確認事項を短く記録する。チェックボックスや「PASS」という宣言自体を証拠にせず、出所は上記「検証結果の出所」に従う。CodexのGitHub/APIアクセス禁止は維持し、[Issue本文におけるcurrent implementation contract](#issue本文におけるcurrent-implementation-contract)のIssue起点の本文同期規約をClaude review follow-upの新runtime義務へ拡張しない。
 
+Codex自身の同じ実行内での契約照合は `AGENTS.md` のRequired workflow / Validation / Final responseを正本とし、Issue-originと既存follow-upの現在担当scopeに適用する。Ready前の人間/ChatGPT上の開発補助は、差し戻す場合、既存契約の根拠箇所、実装/テスト上の不一致、現在のDoneに修正が必要な理由を既存Issue/PRへ短く記録する。
+
+差し戻し根拠では、CI待ち、CI failure、情報不足、既存契約違反、未決仕様判断、任意改善を区別する。CI failureは製品コードだけに原因を寄せず、テスト入力・期待値や検証環境の証拠も照合する。コード不備がないCI待ち/metadata不足だけを理由にpaid Codexを再実行しない。契約に明記のない判断は明記不足として扱い、重要な未決判断は既存の人間裁定・本文同期・停止/再開契約に従ってから進める。安全性・正確性・要求整合性に必要な検証は省略しない。
+
+任意のfindingを後付けDoneへ昇格させず、[Work Admission Control](#work-admission-control)で分類する。同一原因・確定scopeの確認済み修正はまとめて渡し、小刻みな再Codexを避ける。開発補助を新たな独立レビュー段階にせず、根拠を特定できない意味判定は未確認として記録し、明確なBlockerは既存安全条件どおり停止する。
+
+#882の効果観測はmerge後の通常PR最大5件について、レビュー前再Codexの理由/回数と確認可能な初回時間を人間/開発補助が同Issueへ短く追記する。観測専用run/台帳は作らず、費用不明はunknownとし、初回時間増と再実行減を合わせて評価する。観測終了は本指示・文書変更のmerge条件にしない。
+
 `ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とする。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。通常のClaude Reviewはpaid実行前とverdict投稿直前に、trusted APIから取得したPRのopen/Ready状態、current head、停止ラベルを確認し、event headと一致しない場合は実行・投稿・人間エスカレーションを抑止する。取得不能時も停止し、診断を残す。競合を完全には排除できないためmerge時の`--match-head-commit`は維持する。Ready後にheadが変わったreviewの`REQUEST_CHANGES`はfollow-up対象にせず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
 Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。通常の追加作業をレビュー前にまとめ直す場合も、人間が追加pushより前にDraftへ戻す。Draftへ戻す操作だけで開始済みのAPI呼び出しを取り消せるとは扱わない。Draftか非Draftかを問わず、単なるpushの`synchronize`はClaude Reviewを起動しない。
