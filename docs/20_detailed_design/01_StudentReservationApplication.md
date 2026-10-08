@@ -240,7 +240,7 @@ Expected State TokenはUI memoryに保持し、内部Snapshotを復元・表示�
 
 Session Cookieと取得GET / unsafe POSTのProduction正本は§10.2〜4、D1 Guard / Write predicateはD1正本§8、履歴cursor署名は同書§4を参照する。UIはHttpOnly Cookieを読まず、全APIをHTTPSの同一originへsame-origin fetchする。canonical originはServer設定の完全一致値とし、Request Hostから作らない。CSRF取得GETのsame-origin検証とunsafe POSTのOrigin / `X-CSRF-Token` / Fetch Metadataを省略しない。
 
-初回評価では有効Sessionから `GET /api/auth/student/csrf` の `scope: "session"` を取得し、CSRF tokenをmemoryだけに保持する。storage / URL / Logへ保存しない。後続CSRF実装は#865 `src/http/student-session-csrf.ts` の生成式を一つの純粋関数へ抽出し、取得と検証で共有する（domain separationを変更しない）。**Productionのsession / preauth双方の契約は維持する**。先行session branchは評価専用入口に限定し、Sessionなしではtokenを返さず401へfail-closed、不正 / 失効Sessionも401、判定不能は既存503とする。preauthの発行 / 再利用やAuth flowの完了は証明せず、Production取得Endpointへの接続は全契約実装・検証後の別責務とする。
+初回評価では有効Sessionから `GET /api/auth/student/csrf` の `scope: "session"` を取得し、CSRF tokenをmemoryだけに保持する。storage / URL / Logへ保存しない。#896は#865 `src/http/student-session-csrf.ts` の生成式を一つの純粋関数 `createStudentSessionCsrfToken` へ抽出し、取得と検証で共有する（domain separationを変更しない）。未公開の `src/http/student-session-csrf-get.ts` は既存 `StudentSessionResolver` を注入し、実Session解決後だけ生成する。**Productionのsession / preauth双方の契約は維持する**。先行session branchは評価専用入口に限定し、Sessionなしではtokenを返さず401へfail-closed、不正 / 失効Sessionも401、判定不能は既存503とする。preauthの発行 / 再利用やAuth flowの完了は証明せず、Production取得Endpointへの接続は全契約実装・検証後の別責務とする。評価専用HTTPS入口・trusted seed・Browser compositionは未実装である。
 
 | composition案 | 初回評価への判断 |
 | --- | --- |
@@ -319,6 +319,8 @@ Cookie削除は同じname / Path、Domainなし、`Secure; HttpOnly; SameSite=La
 Session-bound CSRF tokenは`base64url(SHA-256(UTF8("student-csrf-v1:" + rawSessionToken)))`（paddingなし43文字）とする。pre-auth用は独立domain `student-preauth-csrf-v1:`とraw pre-auth tokenから同様に導出する。DB保存のSession hashからは生成しない。tokenを`GET /api/auth/student/csrf`で`{"csrfToken":"…","scope":"session"}`または`scope:"preauth"`として返し、UIはmemoryだけに保持する。Sessionが提示された場合はD1 §8.3を評価し、有効ならsession用、不正／失効なら401を返す。Cookieなしの場合は有効pre-authを再利用し、なければ新規pre-authをCommitしてCookieとtokenを返す。pre-auth期限を延長しない。
 
 CSRF取得GETは設定originと一致するOrigin、またはOrigin欠損かつ`Sec-Fetch-Site: same-origin`を要求する。cross-site、null Origin、その他の欠損は403。通常Page navigationはこのAPIの代替ではなく、Pageからsame-origin fetchで取得する。
+
+#896の非公開session branchは§9.2の限定実装とする。Fetch Metadataが明示された場合は`same-origin`以外を403で拒否し、HTTPS / canonical設定originとRequest URLの不一致・設定異常は既存503、exact Method / Path・Query / body条件の不成立は400とする。成功・失敗とも本節のno-store / no-referrerと§10.2のCookie規則を適用し、既存unsafe POSTの検証契約は変更しない。preauth-only / Cookieなしも401であり、上記Production preauth契約の実装・公開を意味しない。
 
 `POST / PUT / PATCH / DELETE`等、GET / HEAD / OPTIONS以外の全Student Cookie利用Request（業務QueryのPOST Previewを含む）では、設定originとの完全一致Originと`X-CSRF-Token`を必須とする。tokenはcanonical形式を検査してconstant-time比較する。`Sec-Fetch-Site`が存在してsame-origin以外なら拒否する。Originのsuffix一致、Referer fallback、Host由来allowlistを使わない。認証済み業務操作はSession検証→CSRF→業務認可、匿名Login開始・Magic要求／consume・登録はpre-auth検証→CSRFの順とする。Google callback GETはこのheader検証の例外で、§10.5のstate / nonce / PKCE / browser bindingを必須とする。Magic Link bearerはpre-auth CSRFを置き換えない。OPTIONS / HEAD / GETでSession発行・Logout・Magic consumeを実行しない（検証済みGoogle callbackだけは別契約）。
 

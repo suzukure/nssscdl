@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { StudentSessionCsrf } from "../../src/http/student-session-csrf";
+import { createStudentSessionCsrfToken, StudentSessionCsrf } from "../../src/http/student-session-csrf";
 import { isCanonicalToken } from "../../src/infrastructure/student-session-cookie";
 
 const origin = "https://nssscdl.test";
@@ -42,4 +42,25 @@ it("[#865 config failure] rejects undefined origin before digest", async () => {
     await expect(new StudentSessionCsrf(undefined).validate(request())).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
     expect(digest).not.toHaveBeenCalled();
   } finally { digest.mockRestore(); }
+});
+
+it("[#896 shared derivation] preserves the independent vector and rejects malformed raw input", async () => {
+  expect(await createStudentSessionCsrfToken(raw)).toBe(expected);
+  for (const value of ["", "A".repeat(42), "A".repeat(42) + "B", raw + "="]) {
+    await expect(createStudentSessionCsrfToken(value)).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+  }
+});
+
+it("[#896 shared validation] accepts issued tokens and rejects wrong, old and malformed values", async () => {
+  const validator = new StudentSessionCsrf(origin);
+  expect(await validator.validate(request(await createStudentSessionCsrfToken(raw)))).toBe(true);
+  const next = "B".repeat(42) + "A";
+  const nextRequest = request();
+  nextRequest.headers.set("cookie", `__Host-student_session=${next}`);
+  expect(await validator.validate(nextRequest)).toBe(false);
+  nextRequest.headers.set("x-csrf-token", await createStudentSessionCsrfToken(next));
+  expect(await validator.validate(nextRequest)).toBe(true);
+  for (const value of [raw, expected + "=", expected.slice(1), "A".repeat(42) + "B"]) {
+    expect(await validator.validate(request(value))).toBe(false);
+  }
 });

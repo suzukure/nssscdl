@@ -80,6 +80,18 @@ HTTPS origin完全一致とFetch metadata、domain付きSHA-256 tokenのcanonica
 `GET /api/auth/student/csrf`、Provider flow、Production migration / binding / routeは未接続。Confirm合成は下記#880を参照する。
 default Workerは全Requestで503を維持し、対象環境D1・Browser・public activationの証明とはしない。
 
+`http/student-session-csrf-get.ts` は#896の未公開・Session branch専用HTTP Adapter。
+既存 `StudentSessionResolver` に `D1StudentAccessGuard` を明示注入し、HTTPS / canonical設定originと
+Request URL一致、exact GET / Path・Query / bodyなし、Origin / Fetch Metadataを検証する。
+毎Requestの実Session解決後だけ、`http/student-session-csrf.ts` の共有pure生成関数
+`createStudentSessionCsrfToken` から200の `csrfToken / scope: "session"` を返す。
+既存Preview / Confirmのdomain separation・SHA-256・canonical形式・固定長比較は維持する。
+Cookieなし / preauth-only / invalid Sessionは401でSession Cookie除去、有効な別roleは403、
+D1 / crypto / 設定異常・integrity不明は既存503でCookie維持。
+全Responseにno-store / no-referrerを付け、200でもCookie発行・延長やpreauth生成 / 再利用はしない。
+設計正本はApplication §9.2 / §10.2〜4 / §10.8。default Worker / web / Provider入口へのimportはなく、
+評価HTTPS入口・trusted seed / config・実Browser合成、Production preauth全契約・公開は後続責務とする。
+
 `application/reservation-confirm.ts` は#869のwrite前preparation Service。
 Guard解決済み`PreviewIdentity`、`slotId`、Previewから保持したtokenだけを入力とし、
 exact v1 SHA-256 base64url（paddingなし・未使用bitが0）をread前に検証する。
