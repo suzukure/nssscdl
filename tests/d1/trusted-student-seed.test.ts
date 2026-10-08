@@ -26,7 +26,7 @@ const request = (path: string, owner: "self" | "other" = "self") => {
 };
 // Never feed secret-bearing rows to an assertion diff or artifact.
 const snapshot = async () => {
-  const rows = (await sql("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+  const rows = (await sql("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('d1_migrations', '_cf_METADATA') ORDER BY name")
     .all<{ name: string }>()).results;
   const data = await Promise.all(rows.map(async ({ name }) => (await sql(`SELECT * FROM ${name} ORDER BY rowid`).all()).results));
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(data))));
