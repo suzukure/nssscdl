@@ -8,6 +8,8 @@
 各テストケースは `01_TestPlan.md` の標準Actor、時刻、Reservation、Provider Stubを使用する。
 同一テストケースで複数ACを検証する場合でも、`04_RequirementsTestTraceability.md` からAC単位で追跡できる。
 
+#894のread-only UIに対応する `TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01` のmodel / structural DOM partial evidenceは `../../tests/README.md` を参照する。以下のSystem / Acceptance手順・期待結果と全体Pass条件は維持する。
+
 ## 2. テストケース
 
 ### REQ-001 初期画面・スケジュール確認

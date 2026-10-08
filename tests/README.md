@@ -181,3 +181,14 @@ Browser / 実環境D1 / Provider配送 / public activation / TC全体のPassは�
 D1 / integrity失敗、no-store / 401 Cookie除去、read-onlyと既存indexのquery planを検証する。
 D1試験はProduction migration・Guardをlocalで合成し、cancelled / absence行は保存Schema fixtureで用意する。
 取消 / 欠席Command、Production鍵provisioning、public route、Browser、実D1、System / Acceptance全体Passは証明しない。
+
+
+#894の `unit/student-read.test.ts` はCalendar / List / 4 Slot View・選択・本人履歴の
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01` と
+`TC-NF-903-01 / TC-NF-907-01 / TC-NF-914-03〜04` の **partial evidence**。
+Gregorian曜日・閏年・月年境界、+09:00表示、4状態、本人状態軸、cursor継続/最新、GET限定、
+401 / 403 / 404 / 503・通信失敗・不正応答非反射、並行readの古い応答排除・401双方無効化を検証する。
+test-only structural DOM adapterでlabel・button / 非活性説明・切替focus維持・status focus・
+複数/大量枠の非省略を確認する。実DOM、layout計測、実keyboard / screen reader / Browser互換性の証明ではない。
+`integration/worker.test.ts` は `/student` / UI資産 / 本人履歴へのdefault HTTPが503 / no-storeのままなことを回帰する。
+320px overflow、端末timezone別実Browser、HTTPS / asset serving、Gate A〜DとTC全体Passは#537へ保持する。

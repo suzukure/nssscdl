@@ -1,0 +1,25 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #17212b; background: #fff; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 76rem; margin: auto; padding: 1rem; min-width: 0; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.25rem; }
+section { min-width: 0; margin-block: 1.5rem; }
+form, .controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-block: .5rem; }
+button, input { font: inherit; max-width: 100%; min-height: 2.75rem; padding: .5rem; }
+button { color: #17212b; background: #fff; border: 2px solid #506070; border-radius: .25rem; cursor: pointer; }
+button:disabled { cursor: default; opacity: .65; }
+:focus-visible, [role="status"]:focus { outline: 3px solid #6633cc; outline-offset: 3px; }
+button[aria-pressed="true"] { border-color: #17212b; background: #d8eaff; box-shadow: inset 0 0 0 1px #17212b; }
+[role="status"] { overflow-wrap: anywhere; }
+.calendar-scroll { max-width: 100%; overflow-x: auto; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 56rem; gap: .25rem; }
+.calendar-day { min-width: 0; border: 1px solid #7a8794; padding: .25rem; }
+.calendar-day h3 { margin: .25rem; font-size: 1rem; }
+.slot { display: block; width: 100%; margin-block: .5rem; padding: .5rem; overflow-wrap: anywhere; text-align: left; }
+.bookable { border-color: #14643a; }
+.reserved_by_me { border-left: 4px solid #164f99; }
+.group_lesson { border-left: 4px double #68421a; }
+.unavailable { border-left: 4px dashed #506070; }
+ul, ol { padding-left: 1.5rem; }
+li { overflow-wrap: anywhere; }

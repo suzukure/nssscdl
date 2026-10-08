@@ -206,6 +206,22 @@ Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。S
 
 対象は `/student` の公開月確認→単一Preview→明示Confirm→本人履歴である。標準HTML / CSS / Browser JavaScriptと既存TypeScript / Workers構成を最小選択とし、新SPA framework、router、状態管理package、汎用design system、E2E専用基盤を先行導入しない。配信・buildのexact方式は、既存CIで新Browser sourceのbuild / lint / testが可能なことを後続実装Issueが確認して定める。本設計は未検証の配信方式を固定しない。
 
+#894のread-only実装は `src/web/` の標準HTML / CSS Grid / TypeScriptを採用する。今回限定の人間判断による総作業量比較は次のとおりであり、実測工数やlibraryの品質評価ではない。
+
+| 候補 | 再利用と今回追加になる責務 | 判断 |
+| --- | --- | --- |
+| FullCalendar Standard 6.1.21 Vanilla global（MIT） | month / list / navを再利用できるが、固定bundleと日本語localeの供給・整合値・same-origin配信・更新、UTC-coercion補正、個別a11y・履歴が必要。 | 今回見送り |
+| EventCalendar standalone（MIT） | dayGrid / listを再利用できるが、bundle / style / version / 権利・配信・時刻mapping・個別a11y・履歴が必要。 | 今回見送り |
+| HTML / CSS Grid / Browser APIs + 既存TypeScript | button / Gridを再利用し、小さい月暦・4状態・本人履歴だけを実装する。third-party供給・更新・framework / bundle pipelineを増やさない。 | 採用 |
+
+`npm run build` は既存Worker dry-run後に `tsc -p src/web/tsconfig.json` でBrowser ES modulesを `dist/student/` へ生成し、HTML / CSSを同directoryへコピーする。server moduleをBrowser buildへimportしない。配信/buildのexact方式を後続Issueで確認する責務は維持し、#537の隔離専用entrypoint / configからだけ参照する。通常 `wrangler.jsonc` のassets / route、`src/index.ts` の全503は変更しない。HTTPS / asset serving / Browser統合はこのbuildで成立したと扱わない。
+
+Calendarの日位置・曜日は `YYYY-MM` とUTC getterによる決定的な暦演算で求め、業務時刻をUTCと解釈しない。APIのRFC3339 `+09:00` を厳密検査・投影して端末timezoneによらない日本時間表示を行う。4 Viewは同じSlot投影を使い、`bookable`だけnative buttonで選択できる。他Viewは非活性の説明であり、内部占有理由を表示しない。選択はUI memoryだけで、Preview / Confirmを送信しない。
+
+月GETと履歴GETはsame-origin / no-storeで個別の要求世代を照合する。月変更・再取得の開始時に前の表示・選択を破棄し、古い応答で新しい表示を上書きしない。履歴は返されたcursorをそのまま次Pageへ送り、最新再取得はcursorなしとする。Pageは置換し、Snapshot固定を主張しない。error bodyのmessageや内部詳細は表示せず、§8のcode / HTTPの組合せから固定の認証・操作不可・別月案内を出す。503 / 通信断 / 不正応答は状態不明として停止し、明示read-only再取得を案内する。401は要求世代によらず認証停止を優先し、本人表示・選択を破棄して双方の未完了応答を無効化し、認証後の画面再開始を案内する。
+
+native controlの順序・label・可視focus・状態のlive region、切替buttonのfocus維持、取得完了/失敗時のstatusへのfocusを用いる。Calendarは局所scroll領域、Listは折返しとし、複数枠を省略しない。DOM adapter / 暦 / API取得のunit証拠は `tests/README.md` を参照する。320pxの実layout、実keyboard / screen reader、Browser timezone差とGate A〜Dは#537で検証する。
+
 | Browser状態 / 操作 | 表示・遷移と送信条件 |
 | --- | --- |
 | 月選択・読込 | 指定した `YYYY-MM` に§4のGETを行う。公開月一覧APIは追加しない。404は§8の案内を表示し別月選択へ戻す。calendar / listは同じSlot Viewを用い、4値を文字で区別し、`bookable`だけを新規予約選択対象とする。 |

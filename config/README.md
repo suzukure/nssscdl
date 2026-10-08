@@ -55,6 +55,12 @@ Phase Bではroot `package.json` とvalidated `package-lock.json`、下記設定
 | [`eslint.config.mjs`](../eslint.config.mjs) | Direct dependency `typescript-eslint` のflat recommended config |
 
 Build outputの `dist/` は既存ignore対象で、commitしない。
+#894のread-only UIは既存TypeScriptだけで `src/web/tsconfig.json` に従い `src/web/` を
+`dist/student/` へcompileし、HTML / CSSを同directoryへコピーする。追加package / bundlerはない。
+`src/**/*.ts` のtypecheck / lintと既存unit suiteに含める。exact commandはroot `package.json` を正とする。
+通常Workerにimport / assetsを追加せず、後続#537の隔離配信専用entrypoint / configからだけ参照する。
+Browser build成功をHTTPS / static serving / Browser評価完了とは扱わない。
+
 Phase Cとしてtest-only Local D1 harness / fixture migrationと最終test aggregateも実装済み。
 設定・test sourceは上記Issue authorityに従って実装し、AI内で依存を取得できなくても推測したlockfileやAPIへ置き換えない。
 依存付き実行のformal proofは後続#639のcurrent-head Product CIで行う。
@@ -68,7 +74,7 @@ Phase Cとしてtest-only Local D1 harness / fixture migrationと最終test aggr
 | 用途 | 標準コマンド | Phase / 条件 |
 | --- | --- | --- |
 | Clean / reproducible install | `npm ci` | Phase B。Validated package / lockfileを使用 |
-| Worker build | `npm run build` | Phase B。`wrangler deploy --dry-run --outdir dist`、deployなし |
+| Worker / Browser build | `npm run build` | Worker dry-run後に#894のBrowser ES modules / HTML / CSSを生成。deployなし。下記参照 |
 | Typecheck | `npm run typecheck` | Phase B。`tsc --noEmit`、Application sourceのみ |
 | Lint | `npm run lint` | `src/`、unit / integration / D1 testsとsetup、両Vitest設定のTSをESLintで検証 |
 | Unit / Worker-runtime test | `npm run test:unit` | Phase B。`vitest run tests/unit`、Worker moduleのhandlerを直接呼ぶ |
