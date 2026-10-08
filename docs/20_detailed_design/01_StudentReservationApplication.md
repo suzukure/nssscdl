@@ -95,7 +95,9 @@ read前のcanonical v1形式検証、共有Primary captureと既存Preview計算
 [`src/README.md`](../../src/README.md) / [`tests/README.md`](../../tests/README.md)を参照する。
 #872はprepared stateからDB副作用のないserver-only Transaction write planと、以下の成功Viewのprojectionを生成する。
 ID生成・本人一致・全分類Guard対象と実更新対象の分離・Audit / Intent exact encodingはD1正本§2 / §5を参照する。
-以下のHTTP / Transaction Commitは後続実装であり、preparation / plan生成成功を予約成立と扱わない。
+#873はD1正本§5の内部single-batch executorを実装する。preparation / plan生成成功を予約成立と扱わず、
+正常batch応答でのみ成功projectionを返す。応答不明の内部handoffはD1正本§5を参照する。
+以下のHTTP接続と応答不明時のPrimary verificationは後続実装とする。
 
 Requestは`{"slotId":"opaque-id","expectedStateToken":"v1.opaque"}`。正常時HTTP `201 Created`。Response例:
 

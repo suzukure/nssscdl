@@ -194,7 +194,8 @@ Expected State Token v1のcanonical read setは、Guardが解決したstudent ID
 `reservationCaptureSql(timeSql)`はD1 T0またはServer内部のGuard時刻式を使う同一templateで、
 本人・Slotのbind順を固定し、決定的な`canonical_raw_read_set`をSQLで生成する。
 Preview Portは従来のstate / evaluatedAtだけ、Confirm preparation Portだけがraw JSONを保持する。
-既存v1 Snapshot / token生成規則・Schemaは変更せず、下記batch / writeは未実装。
+既存v1 Snapshot / token生成規則・Schemaは変更せず、capture自身はread-onlyを維持する。
+下記batch / writeの内部executorは#873で実装する。
 検証範囲は[`tests/README.md`](../../tests/README.md)の#869を参照する。
 
 #872の[`reservation-confirm-plan.ts`](../../src/application/reservation-confirm-plan.ts)は、
@@ -206,11 +207,25 @@ Preview Portは従来のstate / evaluatedAtだけ、Confirm preparation Portだ�
 `classificationGuardTargets`はpreparedの分類plan全itemを`startsAt, reservationId`の既存安定順で保持し、
 automatic / effective before / after、`updateRequired`、`effectiveChange`を持つ。
 そのうちautomaticまたはeffectiveが変わるitemだけを同じ順で`reclassificationWrites`へ抽出する。
-変更なしitemもGuard対象に残し、後続#873の最終Guardは全targetの`final D1 now < starts_at`を必ず検査する。
+変更なしitemもGuard対象に残し、#873の最終Guardは全targetの`final D1 now < starts_at`を必ず検査する。
 Audit / Intent JSONは§2のexact projection、Outbox planは各Intentと同じ`intentId`を保持する。
 保存時刻・`due_at`はplanに固定せず後続batchのCommand Tを使用する。Session ID / tokenHashはpure planへ渡さず§8.3のWrite predicate専用とする。
 Application正本§6のcommitted result projectionもpure生成するが、batch正常Commit確認後にだけ成功結果として利用する。
 本段階はSQL / batch / persistence / HTTP接続を行わず、default Workerの503と§8.6の有効化Gateを維持する。
+
+#873の[`d1-reservation-confirm.ts`](../../src/infrastructure/d1-reservation-confirm.ts)は、下記single-batchを実行する内部Adapter。
+入力はprepared、#872の同一immutable `ReservationConfirmWritePlan`、#842のsame-request `StudentSessionContext`とし、
+prepared / plan Reservation / Contextの本人一致とprepared / planのSlot・raw read set一致をwrite前に検査する。
+正常batch応答時だけ同一`plan.committedResult`を返す。batch前に1回作るimmutable `ReservationCommitAttempt`は
+`{ plan }`だけを保持し、Session ID / tokenHashを含めず、回復用raw read setの別コピーも公開しない。
+Primary Session生成と全Statementのprepare / bindはbatch呼出し前に完了し、その間の失敗は
+既存`SERVICE_UNAVAILABLE`へfail-closedする（batch 0回、応答不明handoffなし）。
+batch呼出し後に正常応答を確認できない場合はexact code `RESERVATION_COMMIT_OUTCOME_UNKNOWN`の
+`ReservationCommitOutcomeUnknownError`へ同一attempt.planを渡す。raw DB error / SQL / causeを保持せず、
+attemptは内部handoff専用の非列挙propertyとする。公開401 / 403 / 409 / 503を推測せず、write retry・ID再生成は行わない。
+#874のread-only Primary verificationと`COMMITTED / NOT_APPLIED / INCONSISTENT`分類は本Adapterへ含めない。
+Guard・競合・変更なしitemを含む開始境界・rollbackのfixtureは#873自身で保持し、検証範囲は
+[`tests/README.md`](../../tests/README.md)を参照する。HTTP / route / Provider / schemaの変更と§8.6のactivationは行わない。
 
 `DB.withSession('first-primary')`でPrimary起点のSessionを作る。Previewおよび事前準備SELECTは同じcanonical read-set queryを使い、D1の`CAST(strftime('%s','now') AS INTEGER)`を同じSELECTの時刻引数`T0`として取得する。Workerはその結果から分類planと必要なIntent payloadを作る。Confirmではrequest tokenの形式／versionを検証し、本人・Slot・事前read setから再生成したtokenと比較する。ここで不一致なら409とし、D1書込みを開始しない。この事前SELECTはCommit判定ではない。
 

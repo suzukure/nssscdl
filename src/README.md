@@ -52,7 +52,7 @@ canonical v1のfield順・値型・Tokyo日時・予約順は明示projectionと
 投影外Invariantを検証し、未検証ならintegrityをinconsistentとして渡す責務を持つ。
 `tests/unit/reservation-preview.test.ts` は `TC-F-003-01 / TC-F-003-02` のApplication/Preview
 **partial evidence**であり、HTTP / Browser / Confirm CommitやTC全体のPassを意味しない。
-HTTP・Session CSRF / Originの統合は下記#865を参照し、Confirm writeは未実装で、default Workerは引き続き503。
+HTTP・Session CSRF / Originの統合は下記#865、内部Confirm writeは下記#873を参照し、default Workerは引き続き503。
 tokenは認可ticketでもSlot確保でもなく、Confirmは本人再解決・最新再計算・Transaction Guardを必須とする。
 
 `infrastructure/d1-reservation-preview.ts` は#863の未接続・read-only D1 Repository Adapter。
@@ -91,7 +91,7 @@ fingerprint不一致は`RESERVATION_STATE_CHANGED`、形式不正は`INVALID_REQ
 Preview wire / v1 Snapshotの意味は変更しない。共有`reservationCaptureSql(timeSql)`の時刻式はServer内部SQLだけとし、
 後続Guardも同じtemplate / 本人・Slotのbind順でraw JSONを再計算できる。
 preparation成功はCommitや認可ticketではなく、後続Transaction Guardの再照合は必須。
-batch / write / Confirm HTTP / route activationは未実装で、default Workerは503を維持する。
+内部batch / writeは下記#873を参照する。Confirm HTTP / route activationは未実装で、default Workerは503を維持する。
 
 `application/reservation-confirm-plan.ts` は#872のserver-only pure Transaction write plan。
 既存prepared・Guard解決済み本人・Server生成ID集合から、Reservation / Occupancy、全分類Guard対象、
@@ -99,3 +99,13 @@ batch / write / Confirm HTTP / route activationは未実装で、default Worker�
 ID generator Portの既定はWeb標準UUID。同一Command内の重複・本人不一致はfail-closedする。
 物理encodingと全Guard対象保持の正本は詳細設計D1 §2 / §5を参照する。
 DB・Session・HTTP capabilityを持たず、時刻は後続batchのCommand Tへ委ねる。
+
+`infrastructure/d1-reservation-confirm.ts` は#873の未接続・server-only atomic executor。
+prepared・同一immutable `ReservationConfirmWritePlan`・same-request `StudentSessionContext`から、
+詳細設計D1 §5 / §8.3の初期・最終Guardと全Writeを1回のPrimary batchへ渡す。
+成功時は同一`plan.committedResult`を返す。Primary Session生成・全Statementのprepare / bindの失敗は
+batchを呼ばず既存`SERVICE_UNAVAILABLE`とする。batch呼出し後の応答不明は同一planだけを保持するimmutable attempt付きの
+`ReservationCommitOutcomeUnknownError`（`RESERVATION_COMMIT_OUTCOME_UNKNOWN`）とし、
+raw DB causeを保持せず、attemptはJSON列挙から除外する。自動write retry・ID再生成は行わない。
+Primary verification / outcome分類は#874、HTTP / public activationは後続責務とする。
+isolated検証の範囲は[`tests/README.md`](../tests/README.md)を参照し、Schema・default Workerの503は維持する。
