@@ -2,7 +2,7 @@
 
 ## 1. 適用範囲と正本
 
-初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06_APIOverview.md` §2〜5、§8、§10〜11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセルは本書の対象外である。#840のStudent認証HTTP / Provider Flowは§10で定義する。D1物理Table / Index / SQL / migrationは `02_StudentReservationD1.md` を正とする。
+初期リリースの生徒本人による月間Schedule取得、単一予約Preview / Confirm、予約履歴Queryの4 Endpointを定義する。`docs/10_basic_design/06a_APICommonPrinciples.md` §2〜5、§8、§10、`docs/10_basic_design/06_APIOverview.md` §11、`05_BookingAndConcurrency.md` §4〜5、`03_ScheduleModel.md`、`04_ReservationModel.md`の業務境界を入力とする。一括予約、キャンセルは本書の対象外である。#840のStudent認証HTTP / Provider Flowは§10で定義する。D1物理Table / Index / SQL / migrationは `02_StudentReservationD1.md` を正とする。
 
 図の正本は `../diagrams/plantuml/c4-student-reservation-components.puml` と `../diagrams/plantuml/student-reservation-sequence.puml`。C4 Level 3は `01_SystemArchitecture.md` の単一Application Worker内の論理責務を示し、別Deploy Unitを意味しない。
 
@@ -12,7 +12,7 @@
 | --- | --- |
 | Web/UI Presentation | 月間Calendar / List、Preview確認、確定状態、競合時の再確認、本人履歴を表示する。追加区分には `AC-003-008` の再分類可能性を示し、金額と配送成功を表示しない。 |
 | HTTP Router / API Adapter | Path、Method、JSON / Queryの形と型を検証し、Application View / ErrorをHTTPへ変換する。本人Identityや業務状態をRequest値から決定しない。 |
-| Student Session / Authorization Guard | 各Requestで`06_APIOverview.md` §10のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。Session失効は401、有効な認証済みSessionにStudent操作権限がない場合は403とする。D1正本・Request解決・Write内部Contextは`02_StudentReservationD1.md` §8を参照する。 |
+| Student Session / Authorization Guard | 各Requestで`06a_APICommonPrinciples.md` §10のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。Session失効は401、有効な認証済みSessionにStudent操作権限がない場合は403とする。D1正本・Request解決・Write内部Contextは`02_StudentReservationD1.md` §8を参照する。 |
 | Schedule Query Application Service | 公開月と本人の確定状態から、各Slotにつき矛盾しない単一Viewを導出する。 |
 | Reservation Preview Application Service | 対象Slot、公開、開始境界、占有、本人月間分類と既存未開始Reservationの区分差分を評価し、確認用ViewとExpected State Tokenを返す。業務状態は変更しない。 |
 | Reservation Confirm Application Service | 最新確定状態を再評価し、Expected State一致と業務Guard成立時だけ予約Commandを確定する。結果はCommit済みのViewで返す。 |
@@ -206,7 +206,7 @@ Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。S
 
 ### 10.1 適用範囲・Component・入力
 
-本節は`../10_basic_design/06_APIOverview.md` §10のStudent境界を具体化する。Session物理正本・共有predicateは`02_StudentReservationD1.md` §8、Provider flowの永続化・原子的合成は同書§9を正とする。Admin認証、認証方法の明示追加／統合、プロフィール変更、Invitation管理Command全体は定義しない。新規登録に必要な氏名・所有確認済み連絡先と登録許可の接続だけを含む。Production migration / Adapter / route activationは行わない。
+本節は`../10_basic_design/06a_APICommonPrinciples.md` §10のStudent境界を具体化する。Session物理正本・共有predicateは`02_StudentReservationD1.md` §8、Provider flowの永続化・原子的合成は同書§9を正とする。Admin認証、認証方法の明示追加／統合、プロフィール変更、Invitation管理Command全体は定義しない。新規登録に必要な氏名・所有確認済み連絡先と登録許可の接続だけを含む。Production migration / Adapter / route activationは行わない。
 
 | Component / Port | 入力・出力と責務 |
 | --- | --- |

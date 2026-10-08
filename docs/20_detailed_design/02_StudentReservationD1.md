@@ -301,7 +301,7 @@ Cloudflare D1実環境でのFK enforcement / `PRAGMA foreign_key_check`、Server
 
 ## 8. Student Session・利用可否のD1物理Guard契約（#636）
 
-入力は`01_SystemArchitecture.md` §2.1、`02_DataModel.md` §2.1、`05_BookingAndConcurrency.md` §3.8 / §9、`06_APIOverview.md` §10 / §16〜17である。以下は認証済みStudentを予約価値単位へ接続する最小物理契約であり、この§8ではProvider flow、Admin認証、プロフィール属性・所有確認、削除Command全体の物理設計は対象外とする。#840のStudent Provider flowはApplication正本§10と本書§9で定義する。それらの実装をこのDDLだけで有効化してよい意味ではない。
+入力は`01_SystemArchitecture.md` §2.1、`02_DataModel.md` §2.1、`05_BookingAndConcurrency.md` §3.8 / §9、`06a_APICommonPrinciples.md` §10、`06_APIOverview.md` §16〜17である。以下は認証済みStudentを予約価値単位へ接続する最小物理契約であり、この§8ではProvider flow、Admin認証、プロフィール属性・所有確認、削除Command全体の物理設計は対象外とする。#840のStudent Provider flowはApplication正本§10と本書§9で定義する。それらの実装をこのDDLだけで有効化してよい意味ではない。
 
 ### 8.1 正本とDDL
 
@@ -376,7 +376,7 @@ Admin Account / Sessionは別の物理境界とし、このStudent専用Tableへ
 
 発行Adapterは暗号学的乱数32 byteを生成し、paddingなしbase64urlの43文字をopaque tokenとする。受信はcanonicalな同形式（decode後32 byte、再encode一致）だけを受け付け、Worker内でそのASCII tokenのSHA-256を計算してlowercase hex 64文字を`token_hash`に保存・検索する。高entropy tokenの照合用hashであり、Password hashingやProvider credentialの保存方式ではない。生token、Cookie、hashをLog / Audit / View / Expected State Tokenへ入れない。DBから生tokenを復元・発行しない。token_hash UNIQUE衝突時は発行失敗とし、既存SessionをUPSERTで上書きしない。
 
-Browserへの新CookieはSession発行batchの正常Commit後だけ返し、Secure / HttpOnlyと`06_APIOverview.md` §10のCookie / CSRF境界を適用する。Cookie名・SameSite / Path / prefixおよびCSRF wireは`01_StudentReservationApplication.md` §10を正とし、route接続は後続実装の責務である。ClientのStudent ID / Account ID / Role headerをSession検索の代替にしない。
+Browserへの新CookieはSession発行batchの正常Commit後だけ返し、Secure / HttpOnlyと`06a_APICommonPrinciples.md` §10のCookie / CSRF境界を適用する。Cookie名・SameSite / Path / prefixおよびCSRF wireは`01_StudentReservationApplication.md` §10を正とし、route接続は後続実装の責務である。ClientのStudent ID / Account ID / Role headerをSession検索の代替にしない。
 
 ### 8.3 Request解決と重要Student Writeのstable predicate
 
