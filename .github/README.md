@@ -147,11 +147,13 @@ Issue contractは以下のexact `## <heading>` 対応表にある6節から取�
 | packet key | 受理するheading |
 | --- | --- |
 | `goal` | `目的` / `Goal` / `利用者、完了する業務、価値` |
-| `scope` | `対象` / `Scope` / `実装・DB・テスト・運用の範囲` / `対象IDと設計` |
+| `scope` | `対象` / `Scope` / `実装境界` / `実装・DB・テスト・運用の範囲` / `対象IDと設計` |
 | `security` | `Security` / `Security boundary` / `Permissions` / `セキュリティ境界` |
 | `non_goals` | `Non-goals` / `対象外` / `依存関係と対象外` |
 | `done` | `完了条件` / `Done` / `完了条件と残課題` |
 | `product_impact` | `Product impact` / `Product impact / traceability` / `Product影響` |
+
+#890では#696の実見出し構造に合わせ、`実装境界` だけを `scope` のexact aliasへ追加する。`Runtime scope` は実行規模・admissionの記述であり `scope` の代替にはしない。`実装境界` と `Scope` の併記も既存の重複拒否対象となる。collector fixtureで同見出し構造とDone内のProduct impact単独行をsyntheticに再構成し、single failure / #769相当aggregateのcomplete packet、原文・provenance・locator、必須節欠落・空値・重複・secret-like evidenceの拒否を確認する。productionの成功証拠はdefault branch反映後の最初の自然failureで別途確認し、人工failureやsource retryは追加しない。
 
 `product_impact` はheadingの代わりに、行頭の `Product POL / BR / REQ / AC / TC / CON / OOS impact: <value>` / `Product POL / BR / REQ / AC / TC / CON / OOS 影響: <value>`、または上表の `done` 節内だけの `Product影響: <value>` を受理する。各行は任意の `- ` prefixを許可し、#654で報告された `- Product影響: none。` を原文・行番号付きで保持する。valueは空白以外を必須とし意味を推測しない。fenced code block内のheading / inline行は契約宣言にしない。delimiterの種類・長さを照合し、未閉鎖blockは `incomplete` とする。headingとinlineの併記を含む重複は、同値でも `conflict`、欠落・空値は `incomplete` とする。
 
