@@ -134,3 +134,18 @@ Audit / Intent JSONのbyte一致・field順、automatic-only監査、両方向�
 `TC-F-003-01 / TC-F-003-02 / TC-F-101-01 / TC-F-104-01 / TC-NF-940-01 / TC-NF-940-02`の
 Application plan **partial evidence**のみであり、DB Commit / final Guard / 配送 / HTTP / Browser / 実D1は証明しない。
 既存標準unit suiteとWorkerの503回帰を使用し、新しいproof infrastructureやpublic activationは追加しない。
+
+#873の`d1/reservation-confirm-executor.test.ts`は内部single-batch executorの検証。
+既存file-isolated `AUTH_DB`へProduction予約migrationをそのまま適用し、実preparation / pure planを入力とする。
+初期raw read-set / Student Write predicate、先行Commit保持・占有UNIQUE、再分類before値・更新件数、
+Audit / Intent / Outbox INSERT失敗、exact projection / 件数異常、最終Session / 開始境界と全Rollbackを確認する。
+変更あり・automatic-only・変更なしの全`classificationGuardTargets`の開始境界を検査し、
+既存予約の開始境界試験では新規Slotをより後に置いてtarget guardによる隠蔽を防ぐ。
+時刻・race・応答欠落はtest-only D1 interface adapterから注入し、実SQLを同じPrimary batchで実行する。
+成功時の共通Command T・Guard cleanup・同一result、Commit後の応答欠落とRollbackの双方で
+同一immutable attempt.plan・ID非再生成・batch 1回・raw error / Session情報非露出を検査する。
+`TC-F-003-01 / TC-F-003-04 / TC-F-003-05〜06`、`TC-NF-911-01`の内部Command / local D1 **partial evidence**とし、
+Audit / Intentの観点は既存`TC-F-101-01 / TC-F-104-01 / TC-NF-940-01〜02`へ対応する。
+Session / lifecycleの観点は既存`TC-F-207-02〜03 / TC-F-211-02 / TC-F-311-02`へ対応する。
+HTTP / CSRF / Browser、#874のPrimary verification、実環境D1、配送、TC全体のPassは証明しない。
+schema変更・public activation・新しいproof infrastructureは追加せず、既存標準D1 suiteで実行する。
