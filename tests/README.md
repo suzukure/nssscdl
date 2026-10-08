@@ -116,6 +116,22 @@ exact入力・重複key・UTF-8 byte上限、Session→CSRF→業務認可順、
 **partial evidence**のみで、新TC・Product要求の意味変更はない。
 Browser、CSRF token取得、Confirm Commit / race、実環境D1、Production activation、TC全体のPassは証明しない。
 
+#896の `unit/student-session-csrf.test.ts` は取得 / 検証の共有生成関数について、既存独立digest vector、
+生成tokenの受入れ・旧Session / 誤token / noncanonical形式拒否と固定長比較を回帰する。
+`integration/student-session-csrf-get.test.ts` はProduction `D1StudentAccessGuard` と既存test-only read sourceを使い、
+exact 200 JSON、Origin有無 / Metadata、HTTPS / origin設定 / Method / Path / Query / bodyのfail-closed、
+Cookie欠損 / 重複 / malformed / 失効 / 停止 / 削除 / role、DB / integrity / crypto障害を検証する。
+`d1/student-session-csrf-get.test.ts` は既存file-isolated `AUTH_DB` / Production auth migrationで実Guardを解決し、
+独立vector・期限等値 / 失効 / 停止 / 削除の次Request反映、Cookie非更新、DB行の非更新、
+関連行欠落・実SQL失敗の安全な503を検証する。fixtureはtests側だけで、Production認証全体のproofとしない。
+全Responseのno-store / no-referrer、401 Cookie除去・503維持・200 Cookie未発行、CORSなし、
+preauth-only / Cookieなしの401とpreauth生成 / 再利用なしを確認する。
+`integration/worker.test.ts` の既存CSRF GETを含む全routeの503試験と既存POST Preview / Confirmを回帰対象とする。
+`TC-F-207-02〜03 / TC-F-211-02〜03 / TC-NF-914-03〜04`に関するSession / 認証安全性の
+**partial evidence**であり、既存POL→BR→REQ→AC→TC、CON / OOSの意味やidentifierは変更しない。
+実環境D1・HTTPS実Browser・trusted seed / dedicated evaluation Worker、full auth / preauth flow・
+Production activation・Gate A〜D・System / Acceptance TC全体Passを証明しない。
+
 #869の`unit/reservation-confirm.test.ts` / `d1/reservation-confirm.test.ts`はwrite前preparationの検証。
 既存#863のisolated fixture / Guard解決済み本人 / Primary read-only Portを再利用し、
 canonical token形式とread前拒否、Preview token再照合、最新業務拒否を優先するmismatch、
