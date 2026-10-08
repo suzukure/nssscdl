@@ -126,6 +126,8 @@ export function createReservationConfirmWritePlan(
   }));
   const reclassificationWrites = Object.freeze(classificationGuardTargets.filter((item) => item.updateRequired));
   const effectiveChanges = classificationGuardTargets.filter((item) => item.effectiveChange);
+  if (ids === null || typeof ids !== "object" || Array.isArray(ids) ||
+      !Array.isArray(ids.classificationChangeIntentIds)) fail();
   if (ids.classificationChangeIntentIds.length !== effectiveChanges.length) fail();
   const allIds = [ids.commandId, ids.reservationId, ids.occupancyId, ids.auditId,
     ids.reservationConfirmationIntentId, ...ids.classificationChangeIntentIds];

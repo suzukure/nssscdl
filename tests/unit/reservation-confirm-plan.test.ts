@@ -120,9 +120,32 @@ describe("[TC-F-003-01 / TC-F-003-02 / TC-F-101-01 / TC-F-104-01 / TC-NF-940-01 
       }
     }
   });
-  it.each([[], ["only"], ["one", "two", "extra"]])("rejects incorrect change ID cardinality %j", (changeIds) => {
+  it.each([{ changeIds: [] }, { changeIds: ["only"] }, { changeIds: ["one", "two", "extra"] }])
+  ("rejects incorrect change ID cardinality $changeIds", ({ changeIds }) => {
     expect(() => createReservationConfirmWritePlan(prepared(), "student", { ...ids(), classificationChangeIntentIds: changeIds }))
       .toThrowError("INTEGRITY_STATE_UNAVAILABLE");
+  });
+  it.each([
+    { changeIds: undefined }, { changeIds: null }, { changeIds: "ab" },
+    { changeIds: { length: 2 } }, { changeIds: ["change-a", undefined] },
+    { changeIds: ["change-a", ""] }, { changeIds: ["change-a", 42] },
+    { changeIds: new Array(2) },
+  ])("rejects malformed change ID arrays $changeIds", ({ changeIds }) => {
+    const generated = { ...ids(), classificationChangeIntentIds: changeIds } as unknown as ReservationConfirmIds;
+    expect(() => createReservationConfirmWritePlan(prepared(), "student", generated))
+      .toThrowError("INTEGRITY_STATE_UNAVAILABLE");
+  });
+  it.each([undefined, null, "ids", [], {}].map((generated) => ({ generated })))
+  ("rejects malformed ID sets $generated", ({ generated }) => {
+    expect(() => createReservationConfirmWritePlan(prepared(), "student", generated as unknown as ReservationConfirmIds))
+      .toThrowError("INTEGRITY_STATE_UNAVAILABLE");
+  });
+  it.each(["commandId", "reservationId", "occupancyId", "auditId", "reservationConfirmationIntentId"] as const)
+  ("rejects missing or malformed scalar ID %s", (key) => {
+    for (const value of [undefined, null, "", 42, {}]) {
+      expect(() => createReservationConfirmWritePlan(prepared(), "student", { ...ids(), [key]: value }))
+        .toThrowError("INTEGRITY_STATE_UNAVAILABLE");
+    }
   });
   it("rejects empty IDs and abstracts generator failure", () => {
     expect(() => createReservationConfirmWritePlan(prepared(), "student", { ...ids(), commandId: "" }))

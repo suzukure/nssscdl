@@ -199,7 +199,7 @@ Preview Portは従来のstate / evaluatedAtだけ、Confirm preparation Portだ�
 
 #872の[`reservation-confirm-plan.ts`](../../src/application/reservation-confirm-plan.ts)は、
 `PreparedReservationConfirm`・Guard解決済み`studentId`・Server生成ID集合からimmutableなpure write planを作る。
-`prepared.studentId !== studentId`、空ID、同一Command内のID重複、実効変更とIntent ID件数の不一致は
+`prepared.studentId !== studentId`、ID集合・配列の欠落／型不正、空ID、同一Command内のID重複、実効変更とIntent ID件数の不一致は
 既存`INTEGRITY_STATE_UNAVAILABLE`へfail-closedする。ID集合はcommand / reservation / occupancy / audit / 予約確認Intentと、
 `classificationPlan`順の実効変更Intent IDを含む。最小ID generator Portの既定はWeb標準`crypto.randomUUID()`で、
 生成機能の利用不能は`SERVICE_UNAVAILABLE`。Client由来IDやpayloadは受け付けず、DB既存ID衝突・retryは後続write責務とする。
