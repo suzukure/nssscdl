@@ -38,6 +38,10 @@ If the repository and Issue appear to contradict each other and the Issue does n
 7. Run the most relevant available validation.
 8. Report what changed, what was validated, and any unresolved dependency.
 
+For both Issue-origin development and existing review follow-up, check the existing mandatory conditions, inputs/outputs, failure classifications, and validation scope before implementation. Before finishing the same Codex run, compare the corresponding implementation and tests against those contracts within the current assigned scope; this is part of development, not a new review stage. Correct in-scope omissions in the same run. Do not invent unresolved contracts; use the existing requirement or scope escalation for the current path.
+
+Only when changing a side-effect or failure boundary, check the classifications immediately before the operation, when execution or its outcome is unknown, and after success, together with retry conditions and call counts, against the existing contract. Do not require exhaustive testing of all APIs. Verify test inputs, including parameterized-test arguments, and expected values from existing requirements/design; implementation output alone is not evidence for an expected value.
+
 Treat one confirmed decision and its directly related corrections as one coherent change, not one PR per reference or line. Before finishing, check related references, terminology, traceability tables, and diagrams within the authorized Issue scope, and report validation for the complete change. Do not combine unrelated decisions or expand the Issue scope without a recorded human decision.
 
 Do not create convenience documents such as `handoff.md`, `latest_discussion.md`, ad-hoc supplements, or parallel specifications merely to avoid updating the authoritative documents.
@@ -128,6 +132,8 @@ Do not hide or reinterpret failed validation as success.
 
 If validation cannot be run, state why.
 
+Distinguish unavailable standard validation, supplementary local checks, and workflow-side CI that has not been verified. Supplementary success does not establish formal CI success; use the existing validation-evidence policy in the AI development workflow.
+
 ## Prohibited actions
 
 Do not:
@@ -160,5 +166,7 @@ Summarize:
 - linked or newly required decisions;
 - any requirement change or upstream-phase blocker;
 - any external-system fact that still requires verification.
+
+Within this existing report, briefly identify repository-relative implementation/test locations for the important contracts checked and any unverified matters. Do not add a long mapping of every AC, new report files, machine markers/schemas, or a separate reporting stage.
 
 If no repository change was appropriate, state that clearly and explain why.
