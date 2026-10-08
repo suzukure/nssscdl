@@ -153,15 +153,20 @@ WHERE (o.occupancy_type = 'student_reservation' AND
 ORDER BY o.slot_id, o.id;
 ```
 
-#834の有効化範囲は本書の物理契約と`tests/fixtures/d1/migrations/0007_management_details.sql`のisolated test-only migrationまでとする。root Production migrationは追加せず、Production / Production相当共有環境へ有効化しない。#830 Schedule Query D1 Adapterは本契約のmain反映後に実装する。
+#834の有効化範囲は本書の物理契約と`tests/fixtures/d1/migrations/0007_management_details.sql`のisolated test-only migrationまでとする。後続#867で確定済みの同じ詳細参照DDLをProduction `0010_management_details.sql`へ追加するが、Adapter / 管理Command / Production環境への有効化は行わない。#830 Schedule Query D1 Adapterは本契約を再利用する。
 
 ## 3. Migration順序
 
-`migrations/`のversioned fileを番号順に一度だけ適用し、適用済みファイルを書き換えない。予約価値単位の導入順は (1) 認証基盤の`students(id)`とGuard Portの正本・共有`command_guards`、(2) `schedule_months`・`lesson_slots`、(3) `student_monthly_lesson_configs`・`student_reservations`・3例外Table、(4) `slot_occupancies`、(5) `business_audit_logs`・`notification_intents`・`notification_outbox`、(6) 作成済み共有`command_guards`の定義確認、(7) 上記Index、(8) FK確認・Integrity Queryの順。各段階を別の単調増加versionにし、依存関係を逆転させない。既存データがある環境ではFK確認、月／日時整合、現在占有一意性、未来confirmedと占有の一致を検証してからAdapterを公開する。違反を自動修復してMigration成功扱いにしない。後続のcancel / admin機能はこのSchemaを拡張し、既存制約を弱めず、移行とCommandを同時に設計する。
+`migrations/`のversioned fileを番号順に一度だけ適用し、適用済みファイルを書き換えない。予約価値単位の導入順は (1) 認証基盤の`students(id)`とGuard Portの正本・共有`command_guards`、(2) `schedule_months`・`lesson_slots`、(3) `student_monthly_lesson_configs`・`student_reservations`・3例外Table、(4) `slot_occupancies`と依存作成後の§2.1詳細Table、(5) `business_audit_logs`・`notification_intents`・`notification_outbox`、(6) 作成済み共有`command_guards`の定義確認、(7) 上記Index、(8) FK確認・Integrity Queryの順。各段階を別の単調増加versionにし、依存関係を逆転させない。既存データがある環境ではFK確認、月／日時整合、現在占有一意性、未来confirmedと占有の一致を検証してからAdapterを公開する。違反を自動修復してMigration成功扱いにしない。後続のcancel / admin機能はこのSchemaを拡張し、既存制約を弱めず、移行とCommandを同時に設計する。
 
 導入順(1)の認証基盤内の順序・接続条件は§8.6、隔離試験fixtureの境界は§8.5を正本とする。Migration / integrity validationでは環境を問わず`PRAGMA foreign_key_check`が0行であることを確認し、違反または検証不能なら適用完了・Adapter公開へ進まない。月CHECKは`01`〜`12`をDBで保証し、`lesson_date`の所属月およびUTCの`starts_at / ends_at`との多列整合は引き続きCommand Guard / Integrity Queryで検証する。
 
-§2.1のtest-only詳細Tableは`slot_occupancies`作成後に追加し、既存fixture migrationを書き換えない。詳細参照と型一致の検査もFK確認と合わせて行う。有効化境界は§2.1を正本とする。
+§2.1の詳細Tableは`slot_occupancies`作成後、Audit / Intent / Outboxより前に追加し、既存fixture migrationを書き換えない。詳細参照と型一致の検査もFK確認と合わせて行う。有効化境界は§2.1を正本とする。
+
+#867のProduction実装は[`migrations/0007`〜`0012`](../../migrations/README.md)に依存順を保って分割する。
+共有`command_guards`は既存`0006`を変更せず、[`validation/reservation.sql`](../../migrations/validation/reservation.sql)で定義を確認する。
+同read-only scanとFK / 認証scanは正常時0行を必須とし、既存不整合を補完・修復しない。
+検証範囲は[`tests/README.md`](../../tests/README.md)の#867を参照し、§8.6のactivation Gateは維持する。
 
 ## 4. Read setとQuery
 
@@ -208,6 +213,7 @@ Cloudflare D1実環境でのFK enforcement / `PRAGMA foreign_key_check`、Server
 | --- | --- | --- |
 | §2〜4 Slot / Preview / 履歴 | REQ-001 / 002 / 003 / 005、BR-015 / 017 / 050〜059 / 066〜068、AC-001 / 002 / 003 / 005 | 公開・占有View、本人月間分類、取消履歴と安定Page |
 | §2.1・§3〜4 管理占有詳細参照 | BR-017 / 067、REQ-001 / 002、AC-001-002〜003、`02_DataModel.md` §4.6 | #834 isolated D1 fixtureでvalid / missing / wrong / both-detail、PK / FK、隔離を検証。#830の`tests/d1/schedule-query.test.ts`で実Adapter / Serviceの未来fail-closed・開始済みViewも検証する。既存TC全体のSystem / Acceptance Passとはしない |
+| §2〜3 Production予約migration | 上記Slot / 分類 / 詳細参照および通知の既存要求・設計 | #867の`tests/d1/reservation-migration.test.ts`でProduction DDL・Index・FK・制約とread-only integrityのDB/migration partial evidenceを検証。Command成功・実D1・System / Acceptance TC全体のPassではない |
 | §5 原子的Confirm | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
 | §2 設定主体・派生変更監査 | BR-056 / 058 / 132、REQ-940、AC-940-001〜002、`04_ReservationModel.md` §12.1、`05_BookingAndConcurrency.md` §12.2 | `updated_by` mapping、予約成立Auditから全再分類before / afterを追跡 |
 | §1・§3・§5・§8 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | §8の認証Guard接続・隔離試験fixture境界を参照し、同一Transactionで最新認証状態を再照合 |
