@@ -8,6 +8,8 @@ import { HmacReservationHistoryCursorCodec } from "../../src/infrastructure/rese
 import { D1StudentAccessGuard } from "../../src/infrastructure/d1-student-access-guard";
 import { hashToken, token } from "../integration/student-session-fixture";
 
+// Canonical 32-byte base64url: the final character has zero unused bits.
+const otherToken = "B".repeat(42) + "A";
 const db = env.AUTH_DB;
 const sql = (query: string) => db.prepare(query);
 const start = Date.parse("2026-11-01T10:00:00+09:00") / 1000;
@@ -29,7 +31,7 @@ beforeAll(async () => {
     sql(`INSERT INTO student_sessions VALUES ('session', 'account', 'student', ?, ${now}, ${now}+86400, NULL)`)
       .bind(await hashToken()),
     sql(`INSERT INTO student_sessions VALUES ('other-session', 'other-account', 'student', ?, ${now}, ${now}+86400, NULL)`)
-      .bind(await hashToken("B".repeat(43))),
+      .bind(await hashToken(otherToken)),
     sql("INSERT INTO schedule_months VALUES ('month', '2026-11', 0, 0, 0)"),
     sql("INSERT INTO lesson_slots VALUES ('slot', 'month', '2026-11-01', '10:00', '11:00', ?, ?, 'enabled')")
       .bind(start, start + 3600),
@@ -80,10 +82,12 @@ describe("[TC-F-005-01] real D1 + Production Guard + isolated HTTP partial evide
   });
   it("never mixes another owner and rejects cursor substitution at HTTP", async () => {
     const first = await (await adapter.fetch(request("?limit=1"))).json() as ReservationHistoryView;
-    const other = await adapter.fetch(request(`?cursor=${first.nextCursor}`, "B".repeat(43)));
+    const other = await adapter.fetch(request(`?cursor=${first.nextCursor}`, otherToken));
     expect(other.status).toBe(400);
     expect(await other.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
-    const view = await (await adapter.fetch(request("", "B".repeat(43)))).json() as ReservationHistoryView;
+    const response = await adapter.fetch(request("", otherToken));
+    expect(response.status).toBe(200);
+    const view = await response.json() as ReservationHistoryView;
     expect(view.items.map((item) => item.reservationId)).toEqual(["private-reservation"]);
   });
   it("maps real unauthenticated Session to 401 and cookie deletion", async () => {
