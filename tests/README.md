@@ -162,3 +162,15 @@ read / decode不能と内容不整合のcode分離、最終errorの内部情報�
 `TC-F-003-01 / TC-NF-911-01 / TC-NF-914-04`のApplication / local D1 **partial evidence**とし、
 HTTP / fresh revalidation / CSRF / Browser / 実D1 / 配送 / TC全体のPassは証明しない。
 default Workerの503回帰・既存Product CI / PR Traceability経路を維持し、新しいproof infrastructureは追加しない。
+
+#880の`integration/reservation-confirm.test.ts`は実Guard / CSRF / preparationとtest-only Transaction Portを合成し、
+二項目strict wire・順序・same-request Context・exact 201 / error・401 Cookie除去・内部情報非反射を検証する。
+exact `REVALIDATION_REQUIRED`だけfresh解決し、fresh本人・現在業務拒否優先・still-validの503、commit最大1回を確認する。
+`d1/reservation-confirm-http.test.ts`は既存file-isolated `AUTH_DB` / Production migration / D1 interfaceを再利用し、
+実Guard→HTTP→実preparation→最終Transaction Port→executor / verifierでCommit・応答喪失回収、
+未適用後のfresh Primary分類・Rollback・Audit / Intent同一Commit、ID生成1回・write非再試行を検証する。
+時刻・race・応答喪失は既存interfaceのtest-only adapterから注入し、新しいproof infrastructureは追加しない。
+`TC-F-003-01 / TC-F-003-05〜06 / TC-F-207-03 / TC-NF-911-01 / TC-NF-914-04`の
+Application / HTTP / isolated D1 **partial evidence**のみであり、新TC IDやProduct要求の意味変更はない。
+既存#865 Preview、#873 Guard / race / rollback、#874 verifier / Portとdefault Workerの503は同じ標準suiteで回帰する。
+Browser / 実環境D1 / Provider配送 / public activation / TC全体のPassは証明しない。

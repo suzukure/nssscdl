@@ -272,7 +272,7 @@ SQL実行・decode・closed projection構築不能は3分類を作らず`SERVICE
 最終Portのerrorは`ReservationConfirmTransactionError`の上記3 codeのみとし、
 raw SQL / D1 cause / attempt / Session情報 / canonical raw read setを保持・露出せず、HTTP status / messageへ変換しない。
 `REVALIDATION_REQUIRED`をPreview / Preparation errorへ追加しない。401 / 403 / 409 / 503への分類は
-後続HTTP compositionのfresh Primary revalidation責務。#873のGuard意味・競合契約と試験は変更せず回帰する。
+Application正本§6の#880 HTTP compositionによるfresh Primary revalidation責務。#873のGuard意味・競合契約と試験は変更せず回帰する。
 検証範囲は[`tests/README.md`](../../tests/README.md)を参照し、default Workerの503と§8.6のactivation Gateを維持する。
 
 ## 6. エラー境界と配送pickup

@@ -35,10 +35,10 @@ Student専用Cookieの重複・canonical token形式を検査し、Server側SHA-
 既存read-only Portの3結果は維持し、`StudentAccessError` のDB / Integrity異常は
 HTTPの既存503へ安全に変換する。401では設計 §10.2のSession Cookie除去、503では維持する。
 `resolve(request)` は同一RequestのWrite用内部Contextだけを返す共有解決処理であり、
-HTTP Viewへ渡さない。将来のunsafe consumerは §10.3のCSRF / Origin検証と
+HTTP Viewへ渡さない。unsafe consumerは §10.3のCSRF / Origin検証と
 D1 §8.3のTransaction内初期・最終再照合を別途必須とする。
 Guard / HTTP / Serviceは明示注入でcomposition可能だが、default Workerは引き続き503。
-Production設定・Provider callback・Session発行・Reservation Confirm・Admin authは未接続。
+Production設定・Provider callback・Session発行・Admin authは未接続。Confirmのisolated HTTP合成は下記#880を参照する。
 
 `application/reservation-preview.ts` は#860の単一予約Preview pure core。
 Guard解決済み本人・確定Preview read state・Server UTC秒から新規分類と本人の未開始予約の
@@ -77,7 +77,7 @@ raw tokenをApplication Contextへ追加しない。`http/student-session-csrf.t
 HTTPS origin完全一致とFetch metadata、domain付きSHA-256 tokenのcanonical形式・固定長比較を検証する。
 設定／digest利用不能は503、不成立は`CSRF_INVALID`。error envelopeと401 Cookie除去は
 既存Schedule HTTPと`http/application-error.ts`を共用する。
-`GET /api/auth/student/csrf`、Provider flow、Confirm、Production migration / binding / routeは未接続。
+`GET /api/auth/student/csrf`、Provider flow、Production migration / binding / routeは未接続。Confirm合成は下記#880を参照する。
 default Workerは全Requestで503を維持し、対象環境D1・Browser・public activationの証明とはしない。
 
 `application/reservation-confirm.ts` は#869のwrite前preparation Service。
@@ -91,7 +91,7 @@ fingerprint不一致は`RESERVATION_STATE_CHANGED`、形式不正は`INVALID_REQ
 Preview wire / v1 Snapshotの意味は変更しない。共有`reservationCaptureSql(timeSql)`の時刻式はServer内部SQLだけとし、
 後続Guardも同じtemplate / 本人・Slotのbind順でraw JSONを再計算できる。
 preparation成功はCommitや認可ticketではなく、後続Transaction Guardの再照合は必須。
-内部batch / writeは下記#873を参照する。Confirm HTTP / route activationは未実装で、default Workerは503を維持する。
+内部batch / writeは下記#873を参照する。Confirm HTTPは下記#880を参照し、route activationは未実装で、default Workerは503を維持する。
 
 `application/reservation-confirm-plan.ts` は#872のserver-only pure Transaction write plan。
 既存prepared・Guard解決済み本人・Server生成ID集合から、Reservation / Occupancy、全分類Guard対象、
@@ -100,14 +100,14 @@ ID generator Portの既定はWeb標準UUID。同一Command内の重複・本人�
 物理encodingと全Guard対象保持の正本は詳細設計D1 §2 / §5を参照する。
 DB・Session・HTTP capabilityを持たず、時刻は後続batchのCommand Tへ委ねる。
 
-`infrastructure/d1-reservation-confirm.ts` は#873の未接続・server-only atomic executor。
+`infrastructure/d1-reservation-confirm.ts` は#873のserver-only atomic executor。
 prepared・同一immutable `ReservationConfirmWritePlan`・same-request `StudentSessionContext`から、
 詳細設計D1 §5 / §8.3の初期・最終Guardと全Writeを1回のPrimary batchへ渡す。
 成功時は同一`plan.committedResult`を返す。Primary Session生成・全Statementのprepare / bindの失敗は
 batchを呼ばず既存`SERVICE_UNAVAILABLE`とする。batch呼出し後の応答不明は同一planだけを保持するimmutable attempt付きの
 `ReservationCommitOutcomeUnknownError`（`RESERVATION_COMMIT_OUTCOME_UNKNOWN`）とし、
 raw DB causeを保持せず、attemptはJSON列挙から除外する。自動write retry・ID再生成は行わない。
-Primary verification / outcome分類は下記#874、HTTP / public activationは後続責務とする。
+Primary verification / outcome分類は下記#874、HTTPは下記#880、public activationは後続責務とする。
 isolated検証の範囲は[`tests/README.md`](../tests/README.md)を参照し、Schema・default Workerの503は維持する。
 
 #874の`application/reservation-commit-verification.ts`はclosed read model・pure classifier・最終Transaction Port型を定義する。
@@ -116,4 +116,13 @@ isolated検証の範囲は[`tests/README.md`](../tests/README.md)を参照し、
 正常応答はverificationを省略し、exact outcome-unknownだけread-only verificationを行う。
 成功回収、未適用の`REVALIDATION_REQUIRED`、read済み不整合の`INTEGRITY_STATE_UNAVAILABLE`、
 read / decode失敗の`SERVICE_UNAVAILABLE`を区別する。規則の正本は詳細設計D1 §5.1。
-ID / plan再生成・write retry・Session情報のverification渡し・raw cause保持を行わず、HTTP / routeは未接続。
+ID / plan再生成・write retry・Session情報のverification渡し・raw cause保持を行わず、HTTP合成は下記#880を参照し、public routeは未接続。
+
+`http/reservation-confirm.ts` は#880のisolated Confirm HTTP Adapter。
+詳細設計Application §6のstrict二項目Request→Session→CSRF / Origin→forbidden→preparation→
+最終Transaction Portを合成し、同一Requestの完全なContextを1回のcommitへそのまま渡す。
+`http/reservation-json.ts`のbounded UTF-8 reader / string grammarだけをPreviewと共有する。
+成功はexact committed resultの201。internal `REVALIDATION_REQUIRED`だけfresh Session / read-only preparationで
+401 / 403 / 409 / 503へ分類し、still-validなら503へfail-closedする。ID / plan再生成・write retryは行わない。
+`http/application-error.ts`に正本§8の`RESERVATION_STATE_CHANGED`（409 / repreview）を追加し、内部codeを公開しない。
+Production binding / schema / public route / default Workerへの接続はなく、503とD1 §8.6のactivation Gateを維持する。
