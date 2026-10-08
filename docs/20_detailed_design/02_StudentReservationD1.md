@@ -184,7 +184,19 @@ Schedule Queryの詳細一致検査では、種別を問わず`admin_holds` / `g
 
 Expected State Token v1のcanonical read setは、Guardが解決したstudent ID、対象Slot・月の全予約可否列、公開時刻、現在占有の種別と参照先、対象生徒の現在の予約操作可否、標準回数行（欠損は既定3）、同一生徒・同一月の**全**ReservationのID・Slot日時・status・自動／実効分類・欠席・回数除外・分類Overrideを含む。集合は`starts_at, reservation.id`順に固定し、欠損とNULLを区別する。これから`04_ReservationModel.md` §9に従い、開始済み算入自動standard数、未開始算入集合、新規分類、各既存未開始Reservationのbefore / afterを計算する。Tokenはこのraw read setと計算結果をfield順・型・時刻表現を固定したJSONへcanonical化し、`v1.`+SHA-256 base64url fingerprintにする。内部JSONをwireへ出さない。時刻そのものではなく、対象と本人月間Reservationごとの`T < starts_at`判定を入れるため、同じ業務状態・同じ開始境界でtokenは同じになる。
 
-予約履歴は`student_reservations`を本人IDで絞り、Slot PK Joinから日時を得る。`ORDER BY starts_at DESC, reservation.id DESC`で`limit + 1`件を取り、次Pageは`(starts_at < ? OR (starts_at = ? AND reservation.id < ?))`を加える。cursorにはversion、本人ID、最後の内部sort keyを署名付きopaque値として格納し、別本人・改ざん・不正versionを拒否する。表示時の欠席は`reservation_absences`、分類対象外はNULLから導出する。`ix_reservations_student_slot`とSlot PKを初期経路とし、日時順のsort costをローカル実行計画で検証する。必要なら日時の正本を保ったままmaterialized keyを移行で追加する。
+予約履歴は`student_reservations`を本人IDで絞り、Slot PK Joinから日時を得る。`ORDER BY starts_at DESC, reservation.id DESC`で`limit + 1`件を取り、次Pageは`(starts_at < ? OR (starts_at = ? AND reservation.id < ?))`を加える。cursorはversion、本人へのbind、最後の内部sort keyを署名付きopaque値として扱い、別本人・改ざん・不正versionを拒否する。具体方式は以下の#888契約を正とする。表示時の欠席は`reservation_absences`、分類対象外はNULLから導出する。`ix_reservations_student_slot`とSlot PKを初期経路とし、日時順のsort costをローカル実行計画で検証する。必要なら日時の正本を保ったままmaterialized keyを移行で追加する。
+
+#888の`D1ReservationHistoryRepository`は`withSession("first-primary")`の単一read-only SELECTを使う。
+Slot PKとabsenceをLEFT JOINし、欠損Slotの日時異常、absence件数・参照先、本人一致、型・enum・順序を検査する。
+追加index / migration / Reservationへの日時重複保存は行わない。
+server-only `ReservationHistoryCursorCodec` の具体AdapterはWeb Crypto HMAC-SHA-256。
+署名専用`CryptoKey`をconstructorへ注入し、Request / Query / envから鍵を導出しない。
+wireは`v1.<base64url payload>.<base64url MAC>`（paddingなし・canonical encoding）とする。
+payloadは空白なし・field順固定の`{version:1, startsAt:整数UTC秒, reservationId:opaque string}` JSONをUTF-8化する。
+署名入力は`["reservation-history-v1", Guard解決済み本人ID, encoded payload]`の空白なしUTF-8 JSON。
+本人IDはpayloadに含めず、全tag比較でMACを検査後、version / exact payload / sort位置を検査する。
+malformed / 改ざん / 別本人 / 不正versionは400、鍵・crypto利用不能は503とし、内部情報をResponse / errorへ出さない。
+Production鍵のprovisioningとroute activationは#537の人間判断に残す。
 
 ローカルSQLiteの`EXPLAIN QUERY PLAN`では、Scheduleは`month_key` UNIQUEと`ix_slots_month_start`、履歴は`ix_reservations_student_slot`とSlot PKを使用し、履歴の日時順には一時sortが残る。初期約20生徒の本人候補集合に対するsortとして許容し、実データ規模で再測定する。履歴のためだけにSlot日時をReservationへ重複保存しない。
 
