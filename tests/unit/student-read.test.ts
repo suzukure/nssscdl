@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StudentReadController } from "../../src/web/controller";
 import { monthDays, moveMonth, validDateTime, parseSchedule, parseHistory, intervalLabel } from "../../src/web/model";
 import { mountStudent } from "../../src/web/view";
@@ -200,7 +200,12 @@ class TestElement {
   activate() { if (!this.disabled) { this.focus(); this.events.get("click")?.({ preventDefault() {} }); } }
   all(): TestElement[] { return [this, ...this.children.flatMap(node => node.all())]; }
 }
-async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+async function waitForInitialReads(controller: StudentReadController) {
+  await vi.waitFor(() => {
+    expect(controller.state.scheduleLoading).toBe(false);
+    expect(controller.state.historyLoading).toBe(false);
+  }, { timeout: 3000 });
+}
 
 describe("TC-F-001-01 / TC-F-001-02 / TC-F-005-01 / TC-NF-903-01 [#894 structural DOM partial evidence]", () => {
   it("renders labels, four Views, button-only selection, stable toggle focus and separate history states", async () => {
@@ -208,7 +213,8 @@ describe("TC-F-001-01 / TC-F-001-02 / TC-F-005-01 / TC-NF-903-01 [#894 structura
     const controller = mountStudent(root as unknown as HTMLElement, "2026-12", fetcher);
     const slots = fourSlots().map(value => value.view === "reserved_by_me" ? { ...value, classification: "additional" } : value);
     calls[0].request.resolve(response({ month: "2026-12", slots: slots.map(value => ({ ...value, name: "private-canary" })) }));
-    calls[1].request.resolve(response({ items: [item("school_cancelled", "absent", "not_applicable")], nextCursor: "cursor" })); await settle();
+    calls[1].request.resolve(response({ items: [item("school_cancelled", "absent", "not_applicable")], nextCursor: "cursor" }));
+    await waitForInitialReads(controller);
     expect(root.textContent).not.toContain("private-canary");
     for (const label of ["予約可能", "本人予約済み", "グループレッスン（予約不可）", "予約不可", "予約状態：スクール都合キャンセル", "欠席状態：欠席", "現在の区分：対象外"]) expect(root.textContent).toContain(label);
     const slotButtons = root.all().filter(node => node.tag === "button" && node.className.includes("slot"));
@@ -221,7 +227,11 @@ describe("TC-F-001-01 / TC-F-001-02 / TC-F-005-01 / TC-NF-903-01 [#894 structura
     expect(root.all().find(node => node.tag === "label")?.textContent).toContain("YYYY-MM");
     const more = root.all().find(node => node.textContent === "履歴の次ページ")!; more.activate();
     expect(more.disabled).toBe(true);
-    calls[2].request.resolve(response({ items: [item("system_cancelled", "none", "standard")], nextCursor: null })); await settle();
+    calls[2].request.resolve(response({ items: [item("system_cancelled", "none", "standard")], nextCursor: null }));
+    await vi.waitFor(() => {
+      expect(controller.state.historyLoading).toBe(false);
+      expect(root.textContent).toContain("予約状態：システムキャンセル");
+    }, { timeout: 3000 });
     expect(doc.activeElement?.id).toBe("history-status"); expect(root.textContent).toContain("予約状態：システムキャンセル");
     expect(root.textContent).toContain("欠席状態：なし"); expect(root.textContent).toContain("現在の区分：標準");
     expect(more.disabled).toBe(true); expect(calls).toHaveLength(3);
@@ -230,7 +240,8 @@ describe("TC-F-001-01 / TC-F-001-02 / TC-F-005-01 / TC-NF-903-01 [#894 structura
     const { fetcher, calls } = harness(); const doc = new TestDocument(), root = doc.createElement("main");
     const controller = mountStudent(root as unknown as HTMLElement, "2026-12", fetcher);
     calls[0].request.resolve(response({ month: "2026-12", slots: busyMonth() }));
-    calls[1].request.resolve(response({ items: [], nextCursor: null })); await settle();
+    calls[1].request.resolve(response({ items: [], nextCursor: null }));
+    await waitForInitialReads(controller);
     expect(root.all().filter(node => node.className === "slot bookable")).toHaveLength(97);
     const scroll = root.all().find(node => node.className === "calendar-scroll")!;
     expect(scroll.tabIndex).toBe(0); expect(scroll.attributes.get("aria-label")).toContain("2026-12");
