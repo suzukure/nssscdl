@@ -225,3 +225,22 @@ export async function previewReservation(identity: PreviewIdentity, state: Previ
     expectedStateToken: await expectedStateToken(plan.canonicalSnapshot),
   };
 }
+
+// Shared read contract for Preview and later Confirm preparation.
+export interface CapturedPreviewRead {
+  readonly state: PreviewReadState;
+  readonly evaluatedAt: number;
+}
+
+export interface ReservationPreviewRepository {
+  readPreview(identity: PreviewIdentity, slotId: string): Promise<CapturedPreviewRead>;
+}
+
+export class ReservationPreviewService {
+  constructor(private readonly repository: ReservationPreviewRepository) {}
+
+  async execute(slotId: string, identity: PreviewIdentity): Promise<PreviewView> {
+    const { state, evaluatedAt } = await this.repository.readPreview(identity, slotId);
+    return previewReservation(identity, state, evaluatedAt);
+  }
+}

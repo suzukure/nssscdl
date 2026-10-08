@@ -1,22 +1,6 @@
+import { errorResponse } from "./application-error";
 import { ScheduleQueryError, ScheduleQueryService } from "../application/schedule-query";
 import { StudentAccessError, type StudentAccessGuard } from "../application/student-access-guard";
-
-// #610 §8. Fixed public messages; never serialize an exception or its cause.
-const errors = {
-  INVALID_REQUEST: { status: 400, message: "入力内容を確認してください。", retry: "none" },
-  UNAUTHENTICATED: { status: 401, message: "認証が必要です。", retry: "none" },
-  FORBIDDEN: { status: 403, message: "この操作は利用できません。", retry: "none" },
-  SCHEDULE_MONTH_NOT_AVAILABLE: { status: 404, message: "指定された月の予定は利用できません。", retry: "none" },
-  SERVICE_UNAVAILABLE: { status: 503, message: "現在サービスを利用できません。時間をおいて再度お試しください。", retry: "later" },
-  INTEGRITY_STATE_UNAVAILABLE: { status: 503, message: "現在予定情報を利用できません。時間をおいて再度お試しください。", retry: "later" },
-} as const;
-
-function errorResponse(code: keyof typeof errors): Response {
-  const { status, message, retry } = errors[code];
-  return Response.json({ error: { code, message, retry } }, {
-    status, headers: { "cache-control": "no-store" },
-  });
-}
 
 // Endpoint-only adapter. Guard composition is explicit; no default dispatch.
 export class ScheduleMonthHttpAdapter {
@@ -38,9 +22,7 @@ export class ScheduleMonthHttpAdapter {
     try {
       const access = await this.guard.authorize(request);
       if (access.status === "unauthenticated") {
-        const response = errorResponse("UNAUTHENTICATED");
-        response.headers.set("set-cookie", "__Host-student_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
-        return response;
+        return errorResponse("UNAUTHENTICATED");
       }
       if (access.status === "forbidden") return errorResponse("FORBIDDEN");
       const view = await this.service.execute(month, access.studentId);

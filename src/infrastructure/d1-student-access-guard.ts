@@ -1,3 +1,4 @@
+import { studentSessionToken } from "./student-session-cookie";
 import {
   StudentAccessError,
   type StudentAccessGuard,
@@ -38,20 +39,6 @@ interface AccessRow {
   evaluated_at: number;
 }
 
-function sessionToken(request: Request): string | null {
-  const matches = (request.headers.get("cookie") ?? "").split(";")
-    .map((part) => part.trim())
-    .filter((part) => part.split("=", 1)[0] === "__Host-student_session");
-  if (matches.length !== 1) return null;
-  const token = matches[0].slice("__Host-student_session=".length);
-  if (matches[0] !== `__Host-student_session=${token}` || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  // Re-encoding rejects aliases with nonzero unused base64 bits.
-  const encoded = token.replace(/-/g, "+").replace(/_/g, "/");
-  const bytes = atob(encoded + "=");
-  return bytes.length === 32 && btoa(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") === token
-    ? token : null;
-}
-
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
@@ -69,7 +56,7 @@ export class D1StudentAccessGuard implements StudentAccessGuard {
   // Application §10.3 CSRF/Origin before business authorization / Write.
   async resolve(request: Request): Promise<StudentSessionResolution> {
     if (new URL(request.url).protocol !== "https:") throw new StudentAccessError("SERVICE_UNAVAILABLE");
-    const token = sessionToken(request);
+    const token = studentSessionToken(request);
     if (token === null) return { status: "unauthenticated" };
 
     let tokenHash: string;

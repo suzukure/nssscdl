@@ -310,6 +310,10 @@ Requestでは`DB.withSession('first-primary')`の単一SELECTでhashに対応す
 
 #842の実装は`src/infrastructure/d1-student-access-guard.ts`を参照する。共有`resolve(request)`が同一Requestの内部Contextを返し、`authorize(request)`はhash / Session IDを除いた既存結果だけを返す。`StudentAccessError`でDB / Invariantの2つの既存503を区別する。read-only HTTP consumerの401 Cookie除去・503 Cookie維持はApplication §10.2に従う。unsafe HTTP consumerのCSRF / Originと重要Writeのbatch再照合は本解決を使うだけでは完了しない。
 
+#865の単一予約Preview HTTPはこの`resolve(request)`と既存Preview read / coreを明示compositionし、
+Application §5 / §10.3のSession→CSRF / Origin→業務認可順を実装する。
+Cookie parserの共用以外に本View / predicate / 内部Contextを変更せず、重要Write・public activationは未接続とする。
+
 Write用compositionは同じRequestの解決で得た`session_id / token_hash / student_id`をServer内部の認証ContextとしてTransaction Adapterへ渡す。これはClient入力、Expected State Token、外部API結果、または再利用可能な認可ticketではない。既存read-only Portの`studentId`だけではSession失効を再照合できないため、それだけでWrite Guardを成立させない。Write Adapter実装時にはこのContextを内部で保持する解決処理を共有し、read-only Portのwire / resultを拡張してhashを外へ出さない。
 
 Student Write predicateは以下の`EXISTS`全体である。`:session_id / :token_hash / :student_id`は上記Context、`:guard_id`は当該batchでINSERTした`command_guards.id`。`:student_id`は予約INSERT / Actorにも同じ値をbindする。
