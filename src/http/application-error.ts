@@ -4,6 +4,7 @@ const errors = {
   UNAUTHENTICATED: { status: 401, message: "認証が必要です。", retry: "none" },
   FORBIDDEN: { status: 403, message: "この操作は利用できません。", retry: "none" },
   CSRF_INVALID: { status: 403, message: "操作を確認できませんでした。画面を再読み込みしてください。", retry: "reload" },
+  RESERVATION_STATE_CHANGED: { status: 409, message: "表示後に状態が変更されました。内容を再確認してください。", retry: "repreview" },
   RESERVATION_NOT_AVAILABLE: { status: 409, message: "この枠は現在予約できません。予定を再読み込みしてください。", retry: "reload" },
   RESERVATION_WINDOW_CLOSED: { status: 409, message: "この枠の予約受付は終了しました。予定を再読み込みしてください。", retry: "reload" },
   SCHEDULE_MONTH_NOT_AVAILABLE: { status: 404, message: "指定された月の予定は利用できません。", retry: "none" },

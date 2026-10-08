@@ -1,41 +1,19 @@
 import { ReservationPreviewError, ReservationPreviewService } from "../application/reservation-preview";
 import { StudentAccessError, type StudentSessionResolver } from "../application/student-access-guard";
 import { errorResponse } from "./application-error";
+import { jsonString, readReservationJson } from "./reservation-json";
 import { StudentSessionCsrf } from "./student-session-csrf";
 
-// Only this exact object grammar is accepted. JSON.parse decodes escaped keys
-// and strings after syntax matching; no duplicate key can pass this grammar.
-const jsonString = '"(?:[^"\\\\\\u0000-\\u001f]|\\\\(?:["\\\\/bfnrt]|u[0-9a-fA-F]{4}))*"';
+// Exact one-field object grammar excludes duplicate keys.
 const slotObject = new RegExp(`^[\\x20\\t\\r\\n]*\\{[\\x20\\t\\r\\n]*(${jsonString})[\\x20\\t\\r\\n]*:[\\x20\\t\\r\\n]*(${jsonString})[\\x20\\t\\r\\n]*\\}[\\x20\\t\\r\\n]*$`);
 
 async function readSlotId(request: Request): Promise<string | null> {
-  if (!request.body) return null;
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  let size = 0;
-  let text = "";
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > 8192) {
-        // Cancellation cannot delay the bounded rejection.
-        void reader.cancel().catch(() => {});
-        return null;
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-    const match = slotObject.exec(text);
-    if (!match || JSON.parse(match[1]) !== "slotId") return null;
-    const slotId: string = JSON.parse(match[2]);
-    return slotId.length > 0 ? slotId : null;
-  } catch {
-    return null;
-  } finally {
-    reader.releaseLock();
-  }
+  const text = await readReservationJson(request);
+  if (text === null) return null;
+  const match = slotObject.exec(text);
+  if (!match || JSON.parse(match[1]) !== "slotId") return null;
+  const slotId: string = JSON.parse(match[2]);
+  return slotId.length > 0 ? slotId : null;
 }
 
 // Endpoint-only composition. No entrypoint dispatch, binding or write.

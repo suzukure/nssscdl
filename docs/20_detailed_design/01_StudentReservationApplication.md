@@ -98,7 +98,26 @@ ID生成・本人一致・全分類Guard対象と実更新対象の分離・Audi
 #873はD1正本§5の内部single-batch executorを実装する。preparation / plan生成成功を予約成立と扱わず、
 正常batch応答でのみ成功projectionを返す。応答不明の内部handoffはD1正本§5を参照する。
 #874は応答不明時のread-only Primary verificationと最終server-only Transaction Portを実装する。
-内部3分類と専用error codeはD1正本§5.1を参照する。以下のHTTP接続・fresh revalidationによるHTTP分類は後続実装とする。
+内部3分類と専用error codeはD1正本§5.1を参照する。HTTP接続・fresh revalidationによるHTTP分類は以下の#880を参照する。
+
+#880のisolated `ReservationConfirmHttpAdapter` はexact `POST /api/me/reservations`、Queryなし、
+`Content-Type: application/json`、UTF-8 body最大8192 byteを受け付ける。
+Requestは非空stringの`slotId` / `expectedStateToken`の2 fieldだけとし、field順は問わない。
+欠損・null・型不正・extra field・duplicate key・不正JSON／UTF-8・超過は400 `INVALID_REQUEST`、
+非HTTPSは503 `SERVICE_UNAVAILABLE`とし、いずれもSession解決前に拒否する。
+§10.3のSession解決→Session-bound CSRF / exact Origin・Fetch metadata→forbidden判定を経て、
+#869 `prepare(slotId, expectedStateToken, { studentId })`を1回、成功時だけ#874 `commit(prepared, context)`を1回呼ぶ。
+Contextは同じRequestの解決結果をそのまま渡す。tokenのcanonical形式検証と現在業務拒否の優先順位は#869を維持する。
+成功時は最終Portのexact committed resultだけを201で返し、全Responseは`Cache-Control: no-store`。
+401だけ§10.2のCookieを除去し、内部error / Session / raw read setを公開しない。
+
+exact internal `REVALIDATION_REQUIRED`の場合だけ、同じRequestでfresh Primary Session解決を1回行う。
+失効は401、forbiddenは403、DB / integrity失敗は既存503とし、認証成功後だけ同じ入力とfresh本人で
+read-only preparationを1回行う。安全に確定した`RESERVATION_NOT_AVAILABLE` / `RESERVATION_WINDOW_CLOSED`は409 / reload、
+`RESERVATION_STATE_CHANGED`は409 / repreview、DB / integrity失敗は既存503へ変換する。
+再preparation成功で業務理由を証明できなければ503 `SERVICE_UNAVAILABLE`へfail-closedする。
+CSRF再検証・write retry・ID / plan再生成は行わず、その他のTransaction errorではfresh revalidationもしない。
+実装・partial evidenceは上記READMEを参照する。default Worker / public routeは未接続、Schema変更はない。
 
 Requestは`{"slotId":"opaque-id","expectedStateToken":"v1.opaque"}`。正常時HTTP `201 Created`。Response例:
 
