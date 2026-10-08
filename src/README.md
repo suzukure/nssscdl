@@ -107,5 +107,13 @@ prepared・同一immutable `ReservationConfirmWritePlan`・same-request `Student
 batchを呼ばず既存`SERVICE_UNAVAILABLE`とする。batch呼出し後の応答不明は同一planだけを保持するimmutable attempt付きの
 `ReservationCommitOutcomeUnknownError`（`RESERVATION_COMMIT_OUTCOME_UNKNOWN`）とし、
 raw DB causeを保持せず、attemptはJSON列挙から除外する。自動write retry・ID再生成は行わない。
-Primary verification / outcome分類は#874、HTTP / public activationは後続責務とする。
+Primary verification / outcome分類は下記#874、HTTP / public activationは後続責務とする。
 isolated検証の範囲は[`tests/README.md`](../tests/README.md)を参照し、Schema・default Workerの503は維持する。
+
+#874の`application/reservation-commit-verification.ts`はclosed read model・pure classifier・最終Transaction Port型を定義する。
+`infrastructure/d1-reservation-commit-verification.ts`はsame immutable planのgenerated IDを使う単一Primary read、
+`infrastructure/d1-reservation-confirm-transaction.ts`は#872 / #873の1回ずつの合成を実装する。
+正常応答はverificationを省略し、exact outcome-unknownだけread-only verificationを行う。
+成功回収、未適用の`REVALIDATION_REQUIRED`、read済み不整合の`INTEGRITY_STATE_UNAVAILABLE`、
+read / decode失敗の`SERVICE_UNAVAILABLE`を区別する。規則の正本は詳細設計D1 §5.1。
+ID / plan再生成・write retry・Session情報のverification渡し・raw cause保持を行わず、HTTP / routeは未接続。
