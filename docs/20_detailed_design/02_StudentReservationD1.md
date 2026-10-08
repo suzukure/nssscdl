@@ -242,6 +242,39 @@ Prepared Statementだけからなる**1回の**`session.batch([...])`に次を�
 
 read-set比較に使うSQLは、対象月行、Slot、Occupancy、本人月間Reservationと各例外をPK / FK Joinし、`json_object` / `json_group_array`へ**明示した安定順**で直列化する。事前readとbatch Guardは同一SQL template・同一bind順を使用し、Guard行のTだけを時刻引数へ渡す。HashはWorkerで計算するが、DB Guardはhashだけを比較せずcanonical raw JSON全体を比較する。生徒・月の別Slotへの同時予約、公開／availability変更、Nや欠席・Override変更もread-set差としてGuard失敗になる。Guard SQL、INSERT、UPDATEのいずれかで失敗したbatchにReservation・Occupancy・再分類・Audit・Intentの部分Commitを認めない。
 
+### 5.1 応答不明verificationと最終Transaction Port（#874）
+
+[`d1-reservation-confirm-transaction.ts`](../../src/infrastructure/d1-reservation-confirm-transaction.ts)は
+`ReservationConfirmTransactionPort.commit(prepared, context)`を実装するserver-only composition。
+既存`generateReservationConfirmIds`、`createReservationConfirmWritePlan`、#873 executorを各1回だけ呼ぶ。
+正常応答ならverificationを行わず`plan.committedResult`を返す。
+exact `ReservationCommitOutcomeUnknownError(code="RESERVATION_COMMIT_OUTCOME_UNKNOWN")`の場合だけ、
+同一immutable `error.attempt.plan`をverifierへ渡す。Session ID / tokenHash / raw tokenは渡さず、
+新ID生成・plan再生成・write再実行を行わない。
+
+[`d1-reservation-commit-verification.ts`](../../src/infrastructure/d1-reservation-commit-verification.ts)は
+`withSession("first-primary")`の1本のread-only SQL statementで、generated Reservation / Occupancy / Audit、
+plan内の全Intent / Outbox、`reclassificationWrites`対象の現在automatic / effective分類、command guard有無を取得する。
+集合はreclassificationが`startsAt, reservationId`順、Intent / Outboxがplanで固定した順。
+SQL結果はRepository内で型検証・freezeしたclosed `ReservationCommitReadModel`へ変換し、raw rowを上位へ渡さない。
+
+pure classifierの正常read結果はexact `COMMITTED | NOT_APPLIED | INCONSISTENT`。
+`COMMITTED`はplanの新規Reservation・Occupancy・Auditの全内容、全再分類after値、全Intentのrecipient / reservation /
+exact payload / valid義務と対応Outbox、command guard不存在が一致する場合だけとする。
+保存時刻は新規Reservationのcreated / updated、Occupancy created、Audit / Intent occurred、再分類updated、
+Outbox dueが同一Command Tとして一致し、取消・失効・claim列は初期NULL状態を照合する。
+#873と同じ新規予約Audit / Intent件数も照合し、成功時はsame planのcommitted resultを回収する。
+`NOT_APPLIED`は全generated Reservation / Occupancy / Audit / Intent / Outboxとcommand guardが不存在、
+全再分類対象がbefore値のままである場合だけ。最終Portは専用internal `REVALIDATION_REQUIRED`をthrowする。
+read成功だがいずれも証明できなければ必ず`INCONSISTENT`で、最終Portは`INTEGRITY_STATE_UNAVAILABLE`。
+SQL実行・decode・closed projection構築不能は3分類を作らず`SERVICE_UNAVAILABLE`。
+
+最終Portのerrorは`ReservationConfirmTransactionError`の上記3 codeのみとし、
+raw SQL / D1 cause / attempt / Session情報 / canonical raw read setを保持・露出せず、HTTP status / messageへ変換しない。
+`REVALIDATION_REQUIRED`をPreview / Preparation errorへ追加しない。401 / 403 / 409 / 503への分類は
+後続HTTP compositionのfresh Primary revalidation責務。#873のGuard意味・競合契約と試験は変更せず回帰する。
+検証範囲は[`tests/README.md`](../../tests/README.md)を参照し、default Workerの503と§8.6のactivation Gateを維持する。
+
 ## 6. エラー境界と配送pickup
 
 認証Guard不成立ではRollback後に§8.3の順序で本人をPrimary再照合し、Session失効は401、認証済みだが操作権限なしは403とする。認証不成立時に予約の最新Viewを返さない。Guardのread-set不一致、最終時刻Guard、`slot_occupancies.slot_id UNIQUE`の既知競合はRollback後のPrimary再読込により、`01_StudentReservationApplication.md` §8の`RESERVATION_STATE_CHANGED`、`RESERVATION_NOT_AVAILABLE`、`RESERVATION_WINDOW_CLOSED`へ安全に変換する。Preview前から不成立なら同書の初期拒否規則を使う。未知のConstraint / FK / CHECK、更新件数不一致、未来Slot invariant異常は競合と決めつけず`INTEGRITY_STATE_UNAVAILABLE`またはD1障害なら`SERVICE_UNAVAILABLE`とする。生SQL、Table名、他生徒情報は公開しない。Rollback後のreadも失敗すれば503とし、409の最新Viewを推測で作らない。
@@ -259,7 +292,7 @@ Cloudflare D1実環境でのFK enforcement / `PRAGMA foreign_key_check`、Server
 | §2〜4 Slot / Preview / 履歴 | REQ-001 / 002 / 003 / 005、BR-015 / 017 / 050〜059 / 066〜068、AC-001 / 002 / 003 / 005 | 公開・占有View、本人月間分類、取消履歴と安定Page |
 | §2.1・§3〜4 管理占有詳細参照 | BR-017 / 067、REQ-001 / 002、AC-001-002〜003、`02_DataModel.md` §4.6 | #834 isolated D1 fixtureでvalid / missing / wrong / both-detail、PK / FK、隔離を検証。#830の`tests/d1/schedule-query.test.ts`で実Adapter / Serviceの未来fail-closed・開始済みViewも検証する。既存TC全体のSystem / Acceptance Passとはしない |
 | §2〜3 Production予約migration | 上記Slot / 分類 / 詳細参照および通知の既存要求・設計 | #867の`tests/d1/reservation-migration.test.ts`でProduction DDL・Index・FK・制約とread-only integrityのDB/migration partial evidenceを検証。Command成功・実D1・System / Acceptance TC全体のPassではない |
-| §5 原子的Confirm | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
+| §5〜5.1 原子的Confirm・応答不明verification | POL-003 / 008、REQ-003 / 911 / 940、AC-003-005〜007 / 016〜021、AC-911-001〜002、AC-940-001〜005 | Guard失敗で全Rollback、Actorと時刻、再分類 |
 | §2 設定主体・派生変更監査 | BR-056 / 058 / 132、REQ-940、AC-940-001〜002、`04_ReservationModel.md` §12.1、`05_BookingAndConcurrency.md` §12.2 | `updated_by` mapping、予約成立Auditから全再分類before / afterを追跡 |
 | §1・§3・§5・§8 認証Guard接続 | BR-068 / 099 / 123、AC-003-019〜020 / AC-207-003 / AC-211-001〜003、`05_BookingAndConcurrency.md` §3.8 | §8の認証Guard接続・隔離試験fixture境界を参照し、同一Transactionで最新認証状態を再照合 |
 | §2・§5〜6 通知 | REQ-101 / 104 / 914、BR-112 / 115 / 133、AC-101-001〜002 / AC-104-001〜003 / AC-914-004〜005 | 必須Intent同一Commit、配送分離、安全なError |

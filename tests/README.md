@@ -151,3 +151,14 @@ Audit / Intentの観点は既存`TC-F-101-01 / TC-F-104-01 / TC-NF-940-01〜02`�
 Session / lifecycleの観点は既存`TC-F-207-02〜03 / TC-F-211-02 / TC-F-311-02`へ対応する。
 HTTP / CSRF / Browser、#874のPrimary verification、実環境D1、配送、TC全体のPassは証明しない。
 schema変更・public activation・新しいproof infrastructureは追加せず、既存標準D1 suiteで実行する。
+
+#874の`unit/reservation-confirm-transaction.test.ts` / `d1/reservation-commit-verification.test.ts`は
+最終server-only Transaction Portとambiguous outcome verificationの検証。
+正常応答のread省略、exact handoff限定、same immutable plan / ID、generator / executor各1回、write retryなし、
+local D1でのCommit後応答喪失と成功回収、未適用、部分生成・Audit / Intent / Outbox欠落、payload / 内容 / 時刻不一致、
+部分再分類、残存guard、単一read-only Primary statement・stable collection ordering・closed projectionを確認する。
+read / decode不能と内容不整合のcode分離、最終errorの内部情報非露出も検査する。
+#873のGuard / race / rollback suiteは変更・複製せず、既存標準D1 suiteで回帰する。
+`TC-F-003-01 / TC-NF-911-01 / TC-NF-914-04`のApplication / local D1 **partial evidence**とし、
+HTTP / fresh revalidation / CSRF / Browser / 実D1 / 配送 / TC全体のPassは証明しない。
+default Workerの503回帰・既存Product CI / PR Traceability経路を維持し、新しいproof infrastructureは追加しない。
