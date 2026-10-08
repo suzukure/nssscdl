@@ -5,6 +5,13 @@ Application source code will live here. Planned areas include web/UI, API, appli
 `index.ts` はApplication Workerの最小ES modules entrypointで、現在はすべてのRequestにHTTP 503を返す。
 公開業務Endpointは未接続。開発基盤の技術契約と残りのbootstrapは [config/README.md](../config/README.md) を参照する。
 
+#899の評価用3 GET合成は `tests/fixtures/read-only-student-service.ts` に限定する。
+同一隔離D1を実Guard / Schedule / Historyへ明示注入し、Session CSRF GETとserver-only HMAC codecを再利用する。
+canonical HTTPS origin・non-exportable署名鍵・binding不備と未対応Path / Methodは503へfail-closedする。
+`src/` / default Worker / 通常configからのimport・公開接続はなく、HTTPS listener / Browser assets / unsafe POSTは未実装。
+設計正本はApplication §9.2〜3 / D1 §4・§8、local D1 / 構造試験の部分証拠と未検証範囲は
+[`tests/README.md`](../tests/README.md) を参照する。
+
 `application/schedule-query.ts` は#828のpure Schedule Query coreで、Guard解決済みの本人IDと
 Repositoryの確定read stateから4種Slot Viewを導出する。Repository Port / Clockを注入し、
 未来Slotの不整合は `INTEGRITY_STATE_UNAVAILABLE`、未公開・存在しない月は
