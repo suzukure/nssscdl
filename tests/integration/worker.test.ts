@@ -27,3 +27,12 @@ it("[#865 activation boundary] default Worker cannot reach Preview or CSRF issua
     expect(response.headers.get("set-cookie")).toBeNull();
   }
 });
+
+it("[#872 activation boundary] default Worker cannot reach Confirm or its write plan", async () => {
+  const response = await exports.default.fetch("https://nssscdl.test/api/me/reservations", {
+    method: "POST", body: JSON.stringify({ slotId: "slot", expectedStateToken: "v1.opaque" }),
+  });
+  expect(response.status).toBe(503);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("set-cookie")).toBeNull();
+});

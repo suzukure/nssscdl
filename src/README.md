@@ -92,3 +92,10 @@ Preview wire / v1 Snapshotの意味は変更しない。共有`reservationCaptur
 後続Guardも同じtemplate / 本人・Slotのbind順でraw JSONを再計算できる。
 preparation成功はCommitや認可ticketではなく、後続Transaction Guardの再照合は必須。
 batch / write / Confirm HTTP / route activationは未実装で、default Workerは503を維持する。
+
+`application/reservation-confirm-plan.ts` は#872のserver-only pure Transaction write plan。
+既存prepared・Guard解決済み本人・Server生成ID集合から、Reservation / Occupancy、全分類Guard対象、
+実更新対象、Audit / Intent exact JSON、対応Outbox、Commit後だけ利用する成功View projectionを生成する。
+ID generator Portの既定はWeb標準UUID。同一Command内の重複・本人不一致はfail-closedする。
+物理encodingと全Guard対象保持の正本は詳細設計D1 §2 / §5を参照する。
+DB・Session・HTTP capabilityを持たず、時刻は後続batchのCommand Tへ委ねる。

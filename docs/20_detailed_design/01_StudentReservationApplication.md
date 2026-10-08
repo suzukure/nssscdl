@@ -93,7 +93,9 @@ read前のcanonical v1形式検証、共有Primary captureと既存Preview計算
 内部分類planは未開始算入対象の全automatic / effective before / afterを保持し、
 §5のwire差分は実効値が変化するものだけを維持する。実装・検証範囲は
 [`src/README.md`](../../src/README.md) / [`tests/README.md`](../../tests/README.md)を参照する。
-以下のHTTP / Transaction Commitは後続実装であり、preparation成功を予約成立と扱わない。
+#872はprepared stateからDB副作用のないserver-only Transaction write planと、以下の成功Viewのprojectionを生成する。
+ID生成・本人一致・全分類Guard対象と実更新対象の分離・Audit / Intent exact encodingはD1正本§2 / §5を参照する。
+以下のHTTP / Transaction Commitは後続実装であり、preparation / plan生成成功を予約成立と扱わない。
 
 Requestは`{"slotId":"opaque-id","expectedStateToken":"v1.opaque"}`。正常時HTTP `201 Created`。Response例:
 
