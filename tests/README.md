@@ -93,3 +93,17 @@ FKを無効化せず、実D1 Server時刻の検証とは分ける。同一IDの�
 `TC-F-003-01 / TC-F-003-02` はD1/Preview readの **partial evidence** のみ。
 HTTP／CSRF／Origin／Browser／Confirm Commit／Session認可・race／実環境D1／TC全体のPassは証明しない。
 公開有効化Gateは詳細設計D1 §8.6を維持し、default Workerは503のままとする。
+
+#865の `unit/student-session-csrf.test.ts` は独立SHA-256 vector、canonical token、
+固定43文字全体の比較と設定欠損fail-closedを検証する。
+`integration/reservation-preview.test.ts` は実Production Guardとtest-only read sourceを構成し、
+exact入力・重複key・UTF-8 byte上限、Session→CSRF→業務認可順、本人ID、固定View / Error、
+401のみCookie除去、Guard / digest / read障害・整合性異常の503と内部情報非反射を確認する。
+`d1/reservation-preview-http.test.ts` は#863のisolated `AUTH_DB` / migration / read fixtureをそのまま再利用し、
+実Guard→HTTP→実Repository→coreでstandard / additional・本人分類差分・token、
+失効／停止・CSRF不成立時read未実行、409 / 503・Cookie維持、予約非更新を確認する。
+時刻境界は既存Portのtest-only source adapterで注入し、実D1 T0の経路は別testとする。
+`integration/worker.test.ts` はPreview / CSRF取得にもdefault Workerが503を維持することを確認する。
+`TC-F-003-01 / TC-F-003-02 / TC-F-207-03 / TC-NF-914-04`はHTTP / isolated D1の
+**partial evidence**のみで、新TC・Product要求の意味変更はない。
+Browser、CSRF token取得、Confirm Commit / race、実環境D1、Production activation、TC全体のPassは証明しない。

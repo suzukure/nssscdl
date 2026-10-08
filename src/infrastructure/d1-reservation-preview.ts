@@ -2,19 +2,14 @@ import {
   ReservationPreviewError,
   type MonthlyReservationReadState,
   type PreviewIdentity,
-  type PreviewReadState,
+  type CapturedPreviewRead,
+  type ReservationPreviewRepository,
 } from "../application/reservation-preview";
 import { mapSlotView, toTokyoDateTime, type SlotReadState } from "../application/schedule-query";
 import type { ScheduleQueryD1 } from "./d1-schedule-query";
 
 export interface ReservationPreviewD1 {
   withSession(constraint: "first-primary"): ScheduleQueryD1;
-}
-
-// Reusable by Preview and later Confirm preparation. No writes or HTTP wiring.
-export interface CapturedPreviewRead {
-  readonly state: PreviewReadState;
-  readonly evaluatedAt: number;
 }
 
 // One SELECT, including D1 T0, access, N, all own monthly rows and the integrity
@@ -181,7 +176,7 @@ function reservation(row: ObjectRow, studentId: string, month: string, now: numb
   };
 }
 
-export class D1ReservationPreviewRepository {
+export class D1ReservationPreviewRepository implements ReservationPreviewRepository {
   constructor(private readonly database: ReservationPreviewD1) {}
 
   async readPreview(identity: PreviewIdentity, slotId: string): Promise<CapturedPreviewRead> {

@@ -58,6 +58,16 @@ Response例:
 
 Requestは`{"slotId":"opaque-id"}`。Responseは次の形とする。
 
+#865のHTTP実装はexact `POST /api/me/reservations/preview`、Queryなし、
+`Content-Type: application/json`、UTF-8 body最大8192 byte、非空stringの`slotId`だけを受け付ける。
+欠損・null・未定義field・重複key・不正JSON／UTF-8・超過bodyは`INVALID_REQUEST`。
+HTTPSとRequest shapeの検査後、D1 §8.3のSession解決→§10.3のSession-bound CSRF / Origin→
+業務認可の順とし、有効なforbidden SessionもCSRF検証後だけ403を返す。
+Guard失敗・503またはCSRF不成立ではPreview read / coreへ進まない。
+成功時は既存D1 read / pure coreから以下のViewだけを返し、全Responseは`Cache-Control: no-store`。
+401だけ§10.2のSession Cookieを除去する。実装とisolated検証範囲は
+[`src/README.md`](../../src/README.md) / [`tests/README.md`](../../tests/README.md)を参照し、public routeは有効化しない。
+
 ```json
 {
   "slot": {"slotId":"opaque-id","startsAt":"2026-11-01T10:00:00+09:00","endsAt":"2026-11-01T11:00:00+09:00"},
@@ -134,6 +144,14 @@ Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、
 | `SCHEDULE_MONTH_NOT_AVAILABLE` | 指定された月の予定は利用できません。 |
 | `SERVICE_UNAVAILABLE` | 現在サービスを利用できません。時間をおいて再度お試しください。 |
 | `INTEGRITY_STATE_UNAVAILABLE` | 現在予定情報を利用できません。時間をおいて再度お試しください。 |
+
+#608の人間判断を#865で同期した、単一予約Previewの409固定messageは以下とする。
+既存code / HTTP / retryの意味は変更しない。`CSRF_INVALID`の固定messageは§10.8を参照する。
+
+| code | message |
+| --- | --- |
+| `RESERVATION_NOT_AVAILABLE` | この枠は現在予約できません。予定を再読み込みしてください。 |
+| `RESERVATION_WINDOW_CLOSED` | この枠の予約受付は終了しました。予定を再読み込みしてください。 |
 
 404では未公開と不存在を区別せず、401ではSession失効理由を説明しない。503ではD1障害内容や永続化Invariantの具体的異常を説明しない。
 

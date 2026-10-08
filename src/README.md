@@ -52,7 +52,7 @@ canonical v1のfield順・値型・Tokyo日時・予約順は明示projectionと
 投影外Invariantを検証し、未検証ならintegrityをinconsistentとして渡す責務を持つ。
 `tests/unit/reservation-preview.test.ts` は `TC-F-003-01 / TC-F-003-02` のApplication/Preview
 **partial evidence**であり、HTTP / Browser / Confirm CommitやTC全体のPassを意味しない。
-HTTP・CSRF / Origin・Confirm writeは未実装で、default Workerは引き続き503。
+HTTP・Session CSRF / Originの統合は下記#865を参照し、Confirm writeは未実装で、default Workerは引き続き503。
 tokenは認可ticketでもSlot確保でもなく、Confirmは本人再解決・最新再計算・Transaction Guardを必須とする。
 
 `infrastructure/d1-reservation-preview.ts` は#863の未接続・read-only D1 Repository Adapter。
@@ -65,3 +65,16 @@ Guard解決済み本人とSlotからPrimary起点の単一SELECTでD1時刻T0、
 分類plan・canonical Snapshot・tokenは既存pure coreだけを再利用する。
 Production migration・binding・HTTP・Confirm writeへの接続はなく、isolated検証範囲は
 [`tests/README.md`](../tests/README.md) を参照する。
+
+`http/reservation-preview.ts` は#865のEndpoint専用HTTP Adapter。
+`application/reservation-preview.ts` の最小Repository Port / Serviceに、既存
+`D1ReservationPreviewRepository`を注入し、`D1StudentAccessGuard.resolve()`と明示compositionする。
+HTTPS / exact Method・Path / Queryなし / JSONのexact object / UTF-8最大8192 byteを検査し、
+Session→Session-bound CSRF / Origin→業務認可→read / pure coreの順を維持する。
+Cookie parserは`infrastructure/student-session-cookie.ts`をGuardとCSRFで共用し、
+raw tokenをApplication Contextへ追加しない。`http/student-session-csrf.ts`はServer設定のcanonical
+HTTPS origin完全一致とFetch metadata、domain付きSHA-256 tokenのcanonical形式・固定長比較を検証する。
+設定／digest利用不能は503、不成立は`CSRF_INVALID`。error envelopeと401 Cookie除去は
+既存Schedule HTTPと`http/application-error.ts`を共用する。
+`GET /api/auth/student/csrf`、Provider flow、Confirm、Production migration / binding / routeは未接続。
+default Workerは全Requestで503を維持し、対象環境D1・Browser・public activationの証明とはしない。

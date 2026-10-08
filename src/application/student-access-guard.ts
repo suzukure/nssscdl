@@ -30,3 +30,8 @@ export class StudentAccessError extends Error {
     this.name = "StudentAccessError";
   }
 }
+
+// Unsafe HTTP adapters resolve Session first, then enforce CSRF before role denial.
+export interface StudentSessionResolver {
+  resolve(request: Request): Promise<StudentSessionResolution>;
+}
