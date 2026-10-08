@@ -46,7 +46,7 @@ async function setup(applicationOrigin: string | undefined = origin) {
     slot: { slotId: "target", startsAt: "2026-11-15T10:00:00+09:00", endsAt: "2026-11-15T11:00:00+09:00", view: "reserved_by_me" },
     classificationChanges: [],
   } as const;
-  const commit = vi.fn(async (_prepared: PreparedReservationConfirm, _context: StudentSessionContext) => committed);
+  const commit = vi.fn<(prepared: PreparedReservationConfirm, context: StudentSessionContext) => Promise<typeof committed>>(async () => committed);
   const http = new ReservationConfirmHttpAdapter(guard, service, { commit }, applicationOrigin);
   const body = JSON.stringify({ slotId: "target", expectedStateToken });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("student-csrf-v1:" + token));
