@@ -117,7 +117,15 @@ CREATE TABLE command_guards (
 
 `business_audit_logs`は予約Confirmの成功監査を同一Transactionに保存し、失敗の技術Logを混ぜない。`payload_json`は送信に必要な確定事実だけを保持する。予約確認は新規ReservationのID・日時・確定時分類、区分変更は既存ReservationのID・日時・before / afterを持つ。月間回数、料金、email、氏名は含めない。`notification_intents`は論理宛先、`notification_outbox`は初回配送pickupのdurable workであり、実宛先・Provider結果・Delivery Attemptは後続のDelivery詳細設計側へ分離する。
 
-単一予約ConfirmのAuditは1業務Commandにつき1行とし、`target_type = 'student_reservation'`、`target_id = 新規Reservation ID`、`before_json = NULL`とする。`after_json`はversion 1のJSON objectとして`{"version":1,"reservation":{"id":"…","automatic_classification":"standard","classification":"standard"},"derived_changes":[]}`の形で保存する。`derived_changes`には同一Commandで自動分類または実効分類を更新した**全既存Reservation**について、`reservation_id`、`before` / `after`（各objectに`automatic_classification`と`classification`）を含め、Slotの`starts_at, reservation.id`順に固定する。実効分類がOverrideで維持され自動分類だけが変わる場合も含め、変更なしは`[]`とする。§5の検証済みplanから同じbatchへ保存し、予約成立Auditから派生変更の対象・変更前後・因果関係を追跡できるようにする。氏名・email・月間回数・料金を複製しない。
+単一予約ConfirmのAuditは1業務Commandにつき1行とし、`action = 'reservation_confirm'`、`actor_type = 'student'`、`actor_id = Guard解決済みStudent ID`、`target_type = 'student_reservation'`、`target_id = 新規Reservation ID`、`before_json = NULL`、`result = 'committed'`とする。`after_json`はversion 1のJSON objectとして`{"version":1,"reservation":{"id":"…","automatic_classification":"standard","classification":"standard"},"derived_changes":[]}`の形で保存する。`derived_changes`には同一Commandで自動分類または実効分類を更新した**全既存Reservation**について、`reservation_id`、`before` / `after`（各objectに`automatic_classification`と`classification`）を含め、Slotの`starts_at, reservation.id`順に固定する。実効分類がOverrideで維持され自動分類だけが変わる場合も含め、変更なしは`[]`とする。§5の検証済みplanから同じbatchへ保存し、予約成立Auditから派生変更の対象・変更前後・因果関係を追跡できるようにする。氏名・email・月間回数・料金を複製しない。
+
+#608のhuman decisionを#872で同期したAudit / Intentの物理JSON v1は、空白なし・以下のfield順に固定する。
+Auditの`derived_changes` itemは`{"reservation_id":"opaque-id","before":{"automatic_classification":"standard","classification":"standard"},"after":{"automatic_classification":"additional","classification":"standard"}}`の順とする。
+`reservation_confirmation.payload_json`は`{"version":1,"reservation":{"id":"opaque-id","startsAt":"2026-11-01T10:00:00+09:00","endsAt":"2026-11-01T11:00:00+09:00","classification":"standard"}}`。
+`classification_change.payload_json`は`{"version":1,"reservation":{"id":"opaque-id","startsAt":"2026-11-08T10:00:00+09:00","before":"standard","after":"additional"}}`。
+日時はApplication正本§3のTokyo RFC 3339とし、両方向の実効変更に同じshapeを使う。
+各Intentの`recipient_student_id`はpreparedの本人ID、予約確認は新規Reservationに必ず1件、区分変更は実効値が変わる既存Reservationだけ各1件とする。
+automatic-only変更はAuditだけへ含める。氏名・email・月間回数・料金・raw Session情報は全JSONへ含めず、Provider文面・宛先・Deliveryは#637へ分離する。
 
 論理→物理の対応は`ScheduleMonth → schedule_months`（`year` / `month`は`month_key`へ一意符号化）、`LessonSlot → lesson_slots`、`StudentMonthlyLessonConfig → student_monthly_lesson_configs`、`StudentReservation → student_reservations`、`SlotOccupancy → slot_occupancies`、`AdminHold → admin_holds`、`GroupLesson → group_lessons`、3例外Entity → 同名の`reservation_*` Table、`AuditLog → business_audit_logs`、`NotificationIntent → notification_intents`である。`notification_outbox`と`command_guards`は業務Entityではなく配送／Transaction内部の物理補助Tableである。
 
@@ -189,6 +197,21 @@ Preview Portは従来のstate / evaluatedAtだけ、Confirm preparation Portだ�
 既存v1 Snapshot / token生成規則・Schemaは変更せず、下記batch / writeは未実装。
 検証範囲は[`tests/README.md`](../../tests/README.md)の#869を参照する。
 
+#872の[`reservation-confirm-plan.ts`](../../src/application/reservation-confirm-plan.ts)は、
+`PreparedReservationConfirm`・Guard解決済み`studentId`・Server生成ID集合からimmutableなpure write planを作る。
+`prepared.studentId !== studentId`、ID集合・配列の欠落／型不正、空ID、同一Command内のID重複、実効変更とIntent ID件数の不一致は
+既存`INTEGRITY_STATE_UNAVAILABLE`へfail-closedする。ID集合はcommand / reservation / occupancy / audit / 予約確認Intentと、
+`classificationPlan`順の実効変更Intent IDを含む。最小ID generator Portの既定はWeb標準`crypto.randomUUID()`で、
+生成機能の利用不能は`SERVICE_UNAVAILABLE`。Client由来IDやpayloadは受け付けず、DB既存ID衝突・retryは後続write責務とする。
+`classificationGuardTargets`はpreparedの分類plan全itemを`startsAt, reservationId`の既存安定順で保持し、
+automatic / effective before / after、`updateRequired`、`effectiveChange`を持つ。
+そのうちautomaticまたはeffectiveが変わるitemだけを同じ順で`reclassificationWrites`へ抽出する。
+変更なしitemもGuard対象に残し、後続#873の最終Guardは全targetの`final D1 now < starts_at`を必ず検査する。
+Audit / Intent JSONは§2のexact projection、Outbox planは各Intentと同じ`intentId`を保持する。
+保存時刻・`due_at`はplanに固定せず後続batchのCommand Tを使用する。Session ID / tokenHashはpure planへ渡さず§8.3のWrite predicate専用とする。
+Application正本§6のcommitted result projectionもpure生成するが、batch正常Commit確認後にだけ成功結果として利用する。
+本段階はSQL / batch / persistence / HTTP接続を行わず、default Workerの503と§8.6の有効化Gateを維持する。
+
 `DB.withSession('first-primary')`でPrimary起点のSessionを作る。Previewおよび事前準備SELECTは同じcanonical read-set queryを使い、D1の`CAST(strftime('%s','now') AS INTEGER)`を同じSELECTの時刻引数`T0`として取得する。Workerはその結果から分類planと必要なIntent payloadを作る。Confirmではrequest tokenの形式／versionを検証し、本人・Slot・事前read setから再生成したtokenと比較する。ここで不一致なら409とし、D1書込みを開始しない。この事前SELECTはCommit判定ではない。
 
 Prepared Statementだけからなる**1回の**`session.batch([...])`に次を順序どおり渡す。`BEGIN` / `COMMIT`文字列を送らない。各Guardは0件の条件付きUPDATEで済ませず、`command_guards.ok CHECK(ok = 1)`違反としてbatch全体を失敗させる。
@@ -197,9 +220,9 @@ Prepared Statementだけからなる**1回の**`session.batch([...])`に次を�
 2. その行を`UPDATE`し、`ok = CASE WHEN (同一canonical read-set SQLを現在のD1状態とGuard行のTで再実行した結果 = expected_read_set) AND (§8.3のStudent Write predicateが成立) AND (対象は公開済み・enabled・非占有・T < starts_at) AND (未来Slot Invariantが成立) THEN 1 ELSE 0 END`とする。read-set SQLはPreview用と単一実装とし、JSON配列の行順を明示して正規化する。時刻境界によるplan差異も比較対象に含める。分類planの計算結果は事前read setが一致した場合だけ有効となる。
 3. `student_reservations`へ新規confirmed行をINSERT。`student_id`はRequestではなくGuard結果をbindし、分類はplanの新規値、時刻はGuard行のTをSELECTして設定する。
 4. `slot_occupancies`へstudent_reservation占有をINSERT。`slot_id UNIQUE`および複合FK違反は全体Rollback。先行占有を上書きするUPSERTは使用しない。
-5. planに列挙した既存未開始ReservationをIDごとに`UPDATE ... WHERE student_id = ? AND status = 'confirmed' AND automatic_classification = ? AND classification IS ? AND (SELECT starts_at FROM lesson_slots WHERE id = lesson_slot_id) > (SELECT captured_at FROM command_guards WHERE id = ?)`で更新する。NULL可の`classification`の変更前値・最終値のGuard比較には`IS ?`によるNULL安全な比較を用い、NOT NULLの`automatic_classification`には通常の`= ?`を用いる。Overrideは保持し、実効値はplanで計算した結果とする。集合UPDATEまたは固定順のprepared statementsとし、後続Guardでplan中の全IDと最終値を照合する。変更なしなら書き込まない。
+5. `reclassificationWrites`に列挙した既存未開始ReservationをIDごとに`UPDATE ... WHERE student_id = ? AND status = 'confirmed' AND automatic_classification = ? AND classification IS ? AND (SELECT starts_at FROM lesson_slots WHERE id = lesson_slot_id) > (SELECT captured_at FROM command_guards WHERE id = ?)`で更新する。NULL可の`classification`の変更前値・最終値のGuard比較には`IS ?`によるNULL安全な比較を用い、NOT NULLの`automatic_classification`には通常の`= ?`を用いる。Overrideは保持し、実効値はplanで計算した結果とする。集合UPDATEまたは固定順のprepared statementsとし、後続Guardで`classificationGuardTargets`の全IDと最終値を照合する。変更なしなら書き込まない。
 6. `business_audit_logs`を1件INSERTし、Actor、予約対象、確定時刻、§2の新規予約と`derived_changes`を含む`after_json`を記録する。`notification_intents`へ予約確認を1件、実効分類が両方向のstandard/additional間で変わった既存Reservationごとに区分変更を1件INSERTし、各Intentと同じIDの`notification_outbox`をINSERTする。新規予約に区分変更Intentを作らない。必要件数／payloadをplanから固定し、どのINSERT失敗もbatch全体をRollbackする。
-7. 最終Guardを`UPDATE command_guards SET ok = CASE WHEN ... THEN 1 ELSE 0 END`で実行する。検査対象は、対象Slotがまだ同じ占有を指すこと、plan中の各Reservationの最終分類、事前生成したIDによるAudit 1件・Intentとoutbox必要件数、§8.3のStudent Write predicate（最終D1時刻で再評価）、`CAST(strftime('%s','now') AS INTEGER) <`対象Slotとplan中で未開始扱いした各Slotの`starts_at`。最終時刻検査でLesson開始境界を越えたbatchはRollbackする。`T`は同一Commandの全保存時刻・分類基準として維持する。
+7. 最終Guardを`UPDATE command_guards SET ok = CASE WHEN ... THEN 1 ELSE 0 END`で実行する。検査対象は、対象Slotがまだ同じ占有を指すこと、`classificationGuardTargets`の各Reservationの最終分類、事前生成したIDによるAudit 1件・Intentとoutbox必要件数、§8.3のStudent Write predicate（最終D1時刻で再評価）、`CAST(strftime('%s','now') AS INTEGER) <`対象Slotと`classificationGuardTargets`全件（変更なしを含む）の各Slotの`starts_at`。最終時刻検査でLesson開始境界を越えたbatchはRollbackする。`T`は同一Commandの全保存時刻・分類基準として維持する。
 8. Guard行をDELETEしてbatchを正常終了する。D1のatomic batch成功だけを`201`とする。`201`のViewは確定済みplanから生成し、曖昧なbatch応答では再実行せずPrimaryを再読込する。
 
 read-set比較に使うSQLは、対象月行、Slot、Occupancy、本人月間Reservationと各例外をPK / FK Joinし、`json_object` / `json_group_array`へ**明示した安定順**で直列化する。事前readとbatch Guardは同一SQL template・同一bind順を使用し、Guard行のTだけを時刻引数へ渡す。HashはWorkerで計算するが、DB Guardはhashだけを比較せずcanonical raw JSON全体を比較する。生徒・月の別Slotへの同時予約、公開／availability変更、Nや欠席・Override変更もread-set差としてGuard失敗になる。Guard SQL、INSERT、UPDATEのいずれかで失敗したbatchにReservation・Occupancy・再分類・Audit・Intentの部分Commitを認めない。

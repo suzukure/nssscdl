@@ -126,3 +126,11 @@ Overrideでautomaticだけ変化する全内部分類planと実効値だけのwi
 `TC-F-003-01 / TC-F-003-02`はApplication / isolated D1の**partial evidence**のみ。
 Transaction Guard / Commit / race、Confirm HTTP / Browser、実環境D1、TC全体のPassは証明しない。
 新TC・Production migration / bindingは追加せず、既存Workerの503回帰を維持する。
+
+#872の`unit/reservation-confirm-plan.test.ts`はpure Transaction write planの検証。
+Audit / Intent JSONのbyte一致・field順、automatic-only監査、両方向の実効変更Intent、
+変更なしを含む全Guard対象と実更新対象の安定順、本人不一致・全ID組合せの重複拒否、
+最小UUID Port、PII / Session / 保存時刻の非投影、immutable copyと#869 preparation再利用を確認する。
+`TC-F-003-01 / TC-F-003-02 / TC-F-101-01 / TC-F-104-01 / TC-NF-940-01 / TC-NF-940-02`の
+Application plan **partial evidence**のみであり、DB Commit / final Guard / 配送 / HTTP / Browser / 実D1は証明しない。
+既存標準unit suiteとWorkerの503回帰を使用し、新しいproof infrastructureやpublic activationは追加しない。
