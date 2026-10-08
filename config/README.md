@@ -97,7 +97,7 @@ CLI stateから作り直す場合は、このtest-only directoryだけを削除�
 `vitest.d1.config.ts`はroot認証 `0001`〜`0006`を`AUTH_MIGRATIONS`、read-only Integrity Queryを`AUTH_INTEGRITY_SQL`へ渡し、setupが別DBへ適用する。
 検証範囲は[tests/README.md](../tests/README.md)、適用順とactivation Gateは[migrations/README.md](../migrations/README.md)と詳細設計 §8.6を参照する。
 #867は#611の予約Production `0007`〜`0012`を追加し、同じ設定で`RESERVATION_MIGRATIONS`と
-`RESERVATION_INTEGRITY_SQL`を渡す。予約migration testだけが既存file-isolated `AUTH_DB`へ追加適用し、
+`RESERVATION_INTEGRITY_SCANS`へ独立statementの配列を渡す。全scanの合計0行を必須とする。予約migration testだけが既存file-isolated `AUTH_DB`へ追加適用し、
 auth-only / Preview fixture suiteの適用履歴を維持する。Production bindingや新しいproof infrastructureは追加しない。
 将来#608のServer Clock、Provider Stub、Concurrency Barrierを注入する業務境界は、
 既存の詳細設計を正とし、本bootstrapで業務fixtureや新しい業務契約を確定しない。

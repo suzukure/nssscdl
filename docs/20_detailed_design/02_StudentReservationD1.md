@@ -165,7 +165,7 @@ ORDER BY o.slot_id, o.id;
 
 #867のProduction実装は[`migrations/0007`〜`0012`](../../migrations/README.md)に依存順を保って分割する。
 共有`command_guards`は既存`0006`を変更せず、[`validation/reservation.sql`](../../migrations/validation/reservation.sql)で定義を確認する。
-同read-only scanとFK / 認証scanは正常時0行を必須とし、既存不整合を補完・修復しない。
+同fileのread-only scansは意味ごとのstatementとして独立実行し、全scanの合計0行とFK / 認証scanの各0行を必須とする。巨大なcompound SELECTへ再結合せず、各scanは`{violation, entity_id}`形で返し、既存不整合を補完・修復しない。
 検証範囲は[`tests/README.md`](../../tests/README.md)の#867を参照し、§8.6のactivation Gateは維持する。
 
 ## 4. Read setとQuery

@@ -80,13 +80,24 @@ beforeEach(async () => {
   ]);
 });
 
+async function reservationIntegrity(scans: string[] = env.RESERVATION_INTEGRITY_SCANS) {
+  const rows: { violation: string; entity_id: string }[] = [];
+  // Run every scan independently; only aggregate the safe results in memory.
+  for (const scan of scans) {
+    rows.push(...(await sql(scan).all<{ violation: string; entity_id: string }>()).results);
+  }
+  return rows;
+}
+
 async function integrity() {
   expect((await sql("PRAGMA foreign_key_check").all()).results).toEqual([]);
   expect((await sql(env.AUTH_INTEGRITY_SQL).all()).results).toEqual([]);
-  return (await sql(env.RESERVATION_INTEGRITY_SQL).all()).results;
+  return reservationIntegrity();
 }
 
 it("[#867 DB/migration partial evidence] preserves Production schema, indexes and healthy zero-row scans", async () => {
+  expect(env.RESERVATION_INTEGRITY_SCANS).toHaveLength(12);
+  for (const scan of env.RESERVATION_INTEGRITY_SCANS) expect(scan).not.toMatch(/^\s*UNION\b/im);
   for (const [name, columns] of Object.entries(indexes)) {
     expect((await sql(`PRAGMA index_info('${name}')`).all<{ name: string }>()).results.map((r) => r.name))
       .toEqual(columns);
@@ -104,6 +115,20 @@ it("[#867 DB/migration partial evidence] leaves expired pending work to the exis
   await sql("UPDATE notification_intents SET obligation_state = 'expired', expired_at = 1, expiry_reason = 'student_deleted' WHERE id = 'intent'").run();
   expect(await integrity()).toEqual([]);
   expect(await sql("SELECT COUNT(*) AS n FROM notification_outbox").first("n")).toBe(1);
+});
+
+it("[#867 integrity partial evidence] aggregates safe results from independent scans without repair", async () => {
+  await db.batch([
+    sql("UPDATE lesson_slots SET start_time = '09:00' WHERE id = 'slot'"),
+    sql("UPDATE notification_intents SET recipient_student_id = 'other' WHERE id = 'intent'"),
+  ]);
+  expect(await integrity()).toEqual([
+    { violation: "slot_datetime", entity_id: "slot" },
+    { violation: "intent_recipient", entity_id: "intent" },
+  ]);
+  expect(await sql("SELECT start_time FROM lesson_slots WHERE id = 'slot'").first("start_time")).toBe("09:00");
+  expect(await sql("SELECT recipient_student_id FROM notification_intents WHERE id = 'intent'")
+    .first("recipient_student_id")).toBe("other");
 });
 
 it.each([
@@ -234,8 +259,9 @@ it("[#867 integrity partial evidence] requires occupancy strictly before the sta
   await sql("DELETE FROM slot_occupancies WHERE id = 'occupancy'").run();
   const start = await sql("SELECT starts_at FROM lesson_slots WHERE id = 'slot'").first<number>("starts_at");
   for (const delta of [-1, 0, 1]) {
-    const scan = env.RESERVATION_INTEGRITY_SQL.replace("CAST(strftime('%s','now') AS INTEGER)", String(start! + delta));
-    const rows = (await sql(scan).all()).results;
+    const scans = env.RESERVATION_INTEGRITY_SCANS.map((scan: string) =>
+      scan.replace("CAST(strftime('%s','now') AS INTEGER)", String(start! + delta)));
+    const rows = await reservationIntegrity(scans);
     expect(rows).toEqual(delta < 0 ? [{ violation: "future_confirmed_occupancy", entity_id: "reservation" }] : []);
   }
 });

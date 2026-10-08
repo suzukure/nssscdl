@@ -25,7 +25,9 @@ Production D1 schemaの正本は番号順に一度だけ適用するversioned mi
 完了確認は`PRAGMA foreign_key_check`と[`validation/student_auth.sql`](validation/student_auth.sql)の両方が0行であることを必須とする。
 後者はread-onlyのIntegrity Queryで、versioned migrationではない。欠落・矛盾をactiveへ自動補完しない。
 制約・Index・View・Triggerの確認は`tests/d1/student-auth-migration.test.ts`に含む。
-予約migrationの完了確認には[`validation/reservation.sql`](validation/reservation.sql)も0行であることを必須とする。
+予約migrationの完了確認には[`validation/reservation.sql`](validation/reservation.sql)の全read-only scanの合計が0行であることを必須とする。
+同fileのセミコロンで区切られた各statementを独立実行し、巨大なcompound SELECTへ再結合しない。
+各scanは同じ`{violation, entity_id}`形を返し、FK確認・認証scanも別途0行を必須とする。
 月・日本時間日時、未来confirmedと現在占有、詳細参照、分類・欠席・例外、Intent宛先・義務状態・Outbox claim整合、
 共有Guard定義をread-onlyで検査する。正常な取消履歴やpickup後のOutbox欠損を異常にしない。
 失効Intentの残存Outboxから削除義務を推測せず、pickup時の通知義務Guardは詳細設計 §6に従う。
