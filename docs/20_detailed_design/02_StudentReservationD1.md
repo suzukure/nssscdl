@@ -182,6 +182,13 @@ Expected State Token v1のcanonical read setは、Guardが解決したstudent ID
 
 ## 5. ConfirmのD1 batch
 
+#869では`D1ReservationPreviewRepository`の内部captureをPreview / Confirm事前SELECTで共有する。
+`reservationCaptureSql(timeSql)`はD1 T0またはServer内部のGuard時刻式を使う同一templateで、
+本人・Slotのbind順を固定し、決定的な`canonical_raw_read_set`をSQLで生成する。
+Preview Portは従来のstate / evaluatedAtだけ、Confirm preparation Portだけがraw JSONを保持する。
+既存v1 Snapshot / token生成規則・Schemaは変更せず、下記batch / writeは未実装。
+検証範囲は[`tests/README.md`](../../tests/README.md)の#869を参照する。
+
 `DB.withSession('first-primary')`でPrimary起点のSessionを作る。Previewおよび事前準備SELECTは同じcanonical read-set queryを使い、D1の`CAST(strftime('%s','now') AS INTEGER)`を同じSELECTの時刻引数`T0`として取得する。Workerはその結果から分類planと必要なIntent payloadを作る。Confirmではrequest tokenの形式／versionを検証し、本人・Slot・事前read setから再生成したtokenと比較する。ここで不一致なら409とし、D1書込みを開始しない。この事前SELECTはCommit判定ではない。
 
 Prepared Statementだけからなる**1回の**`session.batch([...])`に次を順序どおり渡す。`BEGIN` / `COMMIT`文字列を送らない。各Guardは0件の条件付きUPDATEで済ませず、`command_guards.ok CHECK(ok = 1)`違反としてbatch全体を失敗させる。

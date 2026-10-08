@@ -48,6 +48,12 @@ export interface ClassificationChange {
   readonly after: Classification;
 }
 
+// Server-only full computation, including automatic-only changes under Override.
+export interface ReservationClassificationPlan extends ClassificationChange {
+  readonly automaticBefore: Classification;
+  readonly automaticAfter: Classification;
+}
+
 export interface PreviewView {
   readonly slot: { readonly slotId: string; readonly startsAt: string; readonly endsAt: string };
   readonly previewClassification: Classification;
@@ -114,6 +120,7 @@ export interface PreviewPlan {
   readonly previewClassification: Classification;
   readonly classificationChanges: readonly ClassificationChange[];
   readonly canonicalSnapshot: string;
+  readonly classificationPlan: readonly ReservationClassificationPlan[];
 }
 
 /** Shared deterministic computation for Preview and later Confirm re-read.
@@ -202,7 +209,7 @@ export function createPreviewPlan(identity: PreviewIdentity, state: PreviewReadS
     affectedReservations: affected,
     classificationChanges,
   });
-  return { slot, previewClassification, classificationChanges, canonicalSnapshot };
+  return { slot, previewClassification, classificationChanges, canonicalSnapshot, classificationPlan: affected };
 }
 
 /** Web-standard SHA-256; the token is a comparison value, not authorization. */

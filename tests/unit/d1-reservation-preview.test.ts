@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { ReservationPreviewError } from "../../src/application/reservation-preview";
-import { D1ReservationPreviewRepository, type ReservationPreviewD1 } from "../../src/infrastructure/d1-reservation-preview";
+import { D1ReservationPreviewRepository, reservationCaptureSql, type ReservationPreviewD1 } from "../../src/infrastructure/d1-reservation-preview";
 
 const identity = { studentId: "student" };
 const target = { slotId: "target", month: "2026-11", publishedAt: 0,
@@ -9,7 +9,7 @@ function source() {
   const row = { evaluated_at: 1794272400, student_id: "student",
     access_json: JSON.stringify([{ lifecycle: "active", deletedAt: null, accessState: "active" }]),
     target_json: JSON.stringify(target), config_json: "[]", reservations_json: "[]",
-    bad_future: 0, foreign_occupied: 0, occupancies_json: "[]" };
+    bad_future: 0, foreign_occupied: 0, occupancies_json: "[]", canonical_raw_read_set: "{}" };
   const all = vi.fn(async () => ({ success: true, results: [row] }));
   const bind = vi.fn(() => ({ all }));
   const prepare = vi.fn<(query: string) => { bind: typeof bind }>(() => ({ bind }));
@@ -29,6 +29,17 @@ it("[#863 coherent read] uses one Primary SELECT with bound identity/Slot and in
   expect(query).toContain("FROM student_session_access_v1");
   expect(query).toContain("ORDER BY starts_at, id");
   expect(query).not.toMatch(/\b(INSERT|UPDATE|DELETE|PRAGMA)\b/);
+});
+it("[#869 shared capture] Preview and Confirm share one query/mapping and only Confirm exposes raw read set", async () => {
+  const fake = source();
+  const repo = new D1ReservationPreviewRepository(fake.database);
+  const preview = await repo.readPreview(identity, "target");
+  const confirm = await repo.readConfirm(identity, "target");
+  expect(confirm).toEqual({ ...preview, canonicalRawReadSet: "{}" });
+  expect(preview).not.toHaveProperty("canonicalRawReadSet");
+  expect(fake.prepare.mock.calls.map(([query]) => query)).toEqual([reservationCaptureSql(), reservationCaptureSql()]);
+  expect(fake.bind.mock.calls).toEqual([["student", "target"], ["student", "target"]]);
+  expect(fake.all).toHaveBeenCalledTimes(2);
 });
 it("[#863 bind boundary] does not interpolate client-shaped values into SQL", async () => {
   const fake = source();
@@ -65,6 +76,7 @@ it.each([
   ["target_json", "{}"], ["target_json", "malformed"], ["config_json", '[{"standardCount":0.5,"updatedAt":0}]'],
   ["config_json", '[{"standardCount":3,"updatedAt":0},{"standardCount":3,"updatedAt":0}]'],
   ["reservations_json", "null"], ["bad_future", null], ["bad_future", 1], ["foreign_occupied", 2],
+  ["canonical_raw_read_set", null], ["canonical_raw_read_set", "malformed"], ["canonical_raw_read_set", "[]"],
   ["occupancies_json", '[{"slotId":"target","type":"unknown","reservationId":null}]'],
 ])("[#863 mapping integrity] rejects malformed %s = %s", async (key, value) => {
   const fake = source();
