@@ -141,6 +141,12 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 | C: Release readiness | §7のChrome / Edge / Firefox / Safari current / previous Stable、REQ-902実mobile、#537のdeploy / rollback / Backup-Restore検証を保持する。AのBrowser smokeは正式互換性証跡ではない。 |
 | D: Production readiness / Business Cutover | 基本設計 `01_SystemArchitecture.md` §6、§10のExit Criteria、#534の判定に従う。設計main反映・A〜Cの個別成功だけでProduction公開済みとしない。 |
 
+#898は `tests/fixtures/d1/trusted-student-seed.ts` と独立した `tests/d1/trusted-student-seed*.test.ts`で、
+全Production migrations適用済みの専用空local D1へ架空Student / Account / active Access / 独立Session・公開未来枠・予約占有を準備する。
+schema / 空条件・FK / 既存validation scans、実Guard + Read Adapterの4 View・本人履歴・他人非公開・失効fail-closedを部分証拠とする。
+Session生tokenはtrusted test processの専用返却値だけで保持し、DB / Log / Artifactへ残さない。
+既存TCとの対応・停止条件は `../../tests/README.md`を参照する。HTTPS Worker / BrowserContext注入・操作評価は含まず、Gate A〜DやAuth / Confirm全体のPassを証明しない。
+
 ## 8. Entry Criteria
 
 - 対象BuildがTest環境へDeploy済み

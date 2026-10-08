@@ -5,6 +5,24 @@
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。
 自動テストを要求テストへ対応付ける場合は、test name / tag / metadataに `TC-F-...` または `TC-NF-...` のTC IDを保持する。
 
+#898の `fixtures/d1/trusted-student-seed.ts` はoperator / trusted test process専用のseed helper。
+Callerが専用の空local D1へProduction `0001`〜`0012`を一度適用し、既存validation SQLを渡す。
+Table / Index / View / Triggerの定義fingerprint、未知schema、全業務Tableの空条件と既存Integrity scansを確認する。
+seed時も同一batch内で空条件を再照合し、非空・不正schema・batch失敗では固定errorで停止し、修復・reset・retryしない。
+失敗・応答不明時はtrusted setupで専用DBを調査・破棄し、同DBへの自動再実行はしない。
+架空生徒2人・active Access・student Account・独立した1日期限Session、次の東京暦月15日の公開未来5枠、
+本人/他人のconfirmed standard予約と占有、Group/Admin詳細だけを準備する（既定N=3、Provider送信なし）。
+CSPRNG 32byteのcanonical tokenはDBにはSHA-256 lowercase hashだけ保存する。
+返却 `sessions.self/other.cookie()` だけが生tokenとSecure / HttpOnly / SameSite=Lax / Path=/ / Domainなしの属性を渡す。
+Session返却objectのJSON化は生tokenを含まないが、`cookie()`の結果は秘密値としてmemory内だけで扱い、Log / Artifactへ出さない。
+実BrowserContext・HTTPS origin設定・runtime接続は後続責務。
+`d1/trusted-student-seed.test.ts` / `d1/trusted-student-seed-failures.test.ts` は既存file-isolated `AUTH_DB`で
+全12migration、FK / auth / reservation scans各0行、実Production Guard + Read Repositoryの4 View・本人履歴・
+他生徒情報非公開、Session role/owner/expiry/hash、失効後401、GET非更新、非空・未知/不正schema・競合・Rollbackを検証する。
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-NF-914-04`のlocal D1 **partial evidence**であり、
+Auth flow・Browser・Confirm atomicity全体、Gate A〜D、System / Acceptance TC全体のPassには算入しない。
+通常 `src/` / Worker / Browser bundle / `wrangler.jsonc`にはseedをimport・接続しない。
+
 `unit/schedule-query.test.ts` は#828のfake Repository / deterministic Clockによるpure core検証。
 `TC-F-001-01` / `TC-F-001-02` / `TC-F-002-01` / `TC-F-002-02` は
 API/read-model **partial evidence** としてtest nameに記し、System/Acceptance TC全体のPassへ算入しない。
