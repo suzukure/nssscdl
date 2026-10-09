@@ -23,6 +23,22 @@ Session返却objectのJSON化は生tokenを含まないが、`cookie()`の結果
 Auth flow・Browser・Confirm atomicity全体、Gate A〜D、System / Acceptance TC全体のPassには算入しない。
 通常 `src/` / Worker / Browser bundle / `wrangler.jsonc`にはseedをimport・接続しない。
 
+#899の `fixtures/read-only-student-service.ts` は非公開のRequest serviceであり、listener / runnable mainを持たない。
+trusted runtimeが単一の隔離D1 binding、canonical HTTPS origin、non-exportable HMAC-SHA-256署名専用`CryptoKey`を渡し、
+実Production Guardと既存Schedule / History / Session CSRF GET Adapterを一箇所で合成する。
+設定不備、異なるRequest URL origin / protocol、未対応Path / Methodは既存safe errorの503。
+3 GET内の400 / 401（Cookie除去）/ 403 / 月不存在・未公開404 / 503、no-store、CSRFのno-referrerは既存契約を維持する。
+`d1/read-only-student-service.test.ts` は#898 seedと既存file-isolated `AUTH_DB` / Production migrationsを用い、
+本人履歴・cursor継続 / 別本人 / 別鍵 / 改ざん拒否、Origin拒否、任意identity非採用、read-only / Primary readとsafe errorを検査する。
+有効な別roleの403は既存D1 Portのtest-only row projectionで実Guardを通す（Student専用SchemaへAdmin行を保存しない）。
+`integration/read-only-student-isolation.test.ts` は全Product sourceの参照先が`src/`内に閉じ、評価fixtureをimportしないことを検査し、
+既存 `integration/worker.test.ts` がdefault Workerの3 GET / POST / UI資産の全503を回帰する。
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04` の
+HTTP / local D1 **partial evidence**のための試験であり、Product要求・AC→TCの意味を変更しない。
+標準Product CIによるcurrent-head証跡はworkflow側で別に確認し、ローカル自己申告をformal CI successと扱わない。
+HTTPS runtime / cert・key provisioning / cleanup、Browser assets配信・Cookie接続、unsafe POST、Provider / remote D1、
+Gate A〜D、System / Acceptance TC全体のPassは未接続・未証明のまま後続#537 / #608へ残す。
+
 `unit/schedule-query.test.ts` は#828のfake Repository / deterministic Clockによるpure core検証。
 `TC-F-001-01` / `TC-F-001-02` / `TC-F-002-01` / `TC-F-002-02` は
 API/read-model **partial evidence** としてtest nameに記し、System/Acceptance TC全体のPassへ算入しない。
