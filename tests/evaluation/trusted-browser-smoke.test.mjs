@@ -720,6 +720,18 @@ test("#914 related group/session children allow only missing HOME; explicit diff
   const foreign = ownershipFixture(); foreign.setRows([foreign.main, foreign.child,
     { ...foreign.child, pid: 44, parent: 1, group: 99, session: 99, uid: 8 }]);
   assert.equal(foreign.run().length, 2); // Different UID/group/session is unrelated.
+  // A valid Linux stat can report PGRP or SID 0 for unrelated processes.
+  // Parsing them must not weaken the attested root or related-child checks.
+  for (const [group, session] of [[0, 0], [0, 99], [99, 0]]) {
+    const unrelated = ownershipFixture();
+    unrelated.setRows([unrelated.main, unrelated.child,
+      { ...unrelated.child, pid: 44, parent: 1, group, session, uid: 7, argv: [], env: "" }]);
+    assert.deepEqual(unrelated.run().map((entry) => entry.pid), [42, 43]);
+  }
+  const badRootZero = ownershipFixture(); badRootZero.main.group = 0;
+  failsOwnership(badRootZero, "root-unverified", true);
+  const badChildZero = ownershipFixture(); badChildZero.child.group = 0;
+  failsOwnership(badChildZero, "group-mismatch");
 });
 
 test("#914 identity rereads, parent contradictions and tracked drift never transfer ownership or discard unknown residue", () => {

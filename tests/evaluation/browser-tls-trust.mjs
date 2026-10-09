@@ -144,7 +144,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       const match = /^(\d+) \(.*\) (.*)$/.exec(text.trim());
       const fields = match?.[2].split(/\s+/);
       if (!fields || Number(match[1]) !== pid || !/^\d+$/.test(fields[1]) || !/^\d+$/.test(fields[19]) || !/^[RSDZTtXxKWIP]$/.test(fields[0]) ||
-        !/^[1-9]\d*$/.test(fields[2]) || !/^[1-9]\d*$/.test(fields[3])) return { status: "unknown" };
+        !/^(0|[1-9]\d*)$/.test(fields[2]) || !/^(0|[1-9]\d*)$/.test(fields[3])) return { status: "unknown" };
       // proc_pid_stat(5): 3=state, 4=PPID, 5=PGRP, 6=SID, 22=starttime (comm excluded).
       return { status: "read", pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), session: Number(fields[3]), identity: fields[19] };
     } catch (error) { return { status: ["ENOENT", "ESRCH"].includes(error.code) ? "vanished" : "unreadable" }; }
