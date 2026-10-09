@@ -306,11 +306,18 @@ Ready前には、人間/ChatGPT上の開発補助が次の対象箇所と証拠�
 
 Codex自身の同じ実行内での契約照合は `AGENTS.md` のRequired workflow / Validation / Final responseを正本とし、Issue-originと既存follow-upの現在担当scopeに適用する。Ready前の人間/ChatGPT上の開発補助は、差し戻す場合、既存契約の根拠箇所、実装/テスト上の不一致、現在のDoneに修正が必要な理由を既存Issue/PRへ短く記録する。
 
-差し戻し根拠では、CI待ち、CI failure、情報不足、既存契約違反、未決仕様判断、任意改善を区別する。CI failureは製品コードだけに原因を寄せず、テスト入力・期待値や検証環境の証拠も照合する。コード不備がないCI待ち/metadata不足だけを理由にpaid Codexを再実行しない。契約に明記のない判断は明記不足として扱い、重要な未決判断は既存の人間裁定・本文同期・停止/再開契約に従ってから進める。安全性・正確性・要求整合性に必要な検証は省略しない。
+差し戻しやBlockingを受けてpaid実装の再実行を要求する前に、人間/ChatGPT上の開発補助は次の順で「repository差分の修正が本当に必要か」を確認する。コード不備がないCI待ち/metadata不足だけを理由にpaid Codexを再実行しない既存規約を、この判断へ適用する。
+
+1. **現在の証拠を照合する**：current main/PR HEAD、既存指摘の対象HEADと根拠、current-head CIのrun/attempt・結果、直接関連する既存契約と差分を照合する。model実行前のcontext構築失敗、CI待ち、CI failure、情報不足、未決仕様判断、実装欠陥による既存契約違反、任意改善を区別する。CI failureはテスト入力・期待値や検証環境も確認し、失敗やBlockingという名称だけで実装変更が必要と決めない。契約に明記のない判断は明記不足として扱い、根拠を確認できないものは未確認として残す。
+2. **差分不要なら記録・証拠で解消する**：確定済み判断のIssue/PR本文同期、既存の定型欄による後継snapshot供給、current-head CIの完了待ち・結果確認等を行う。必要な正式CIや再レビューは各経路の既存契約に従い、実装再実行と区別する。古い承認を新HEADへ流用しない。未決のsafe deferralやDone変更をmetadata修正として無断確定せず、重要な未決判断は既存の人間裁定・本文同期契約へ戻す。記録を整えても既存契約違反が残る場合は停止を維持する。
+3. **停止・再開の成立条件を確認する**：active pause、accepted record、実行中writerがある場合は[人間エスカレーション](#人間エスカレーション)の現行契約と現在状態を照合し、ラベル解除だけで機械状態を迂回しない。差分不要の正式な復旧経路が未成立なら既存担当Issueへ記録して停止を維持し、no-diffの有料resumeを独断で代替しない。#224 / #227 / #229 / #548等の復旧経路をこの手順で実装・有効化せず、その完成を文書改善の前提にしない。
+4. **差分が必要なら根拠を揃えて依頼する**：既存契約の根拠箇所、差分上の不一致、現在のDoneに修正が必要な理由を既存Issue/PRへ短く記録し、同一原因・確定scopeの修正を集約してpaid実装へ渡す。情報不足だけで修正scopeを推測せず、新たな判断が必要なら[Work Admission Control](#work-admission-control)と既存停止/再開契約へ戻す。安全性・正確性・要求整合性に必要な修正、正式CI、独立レビューは省略しない。
 
 任意のfindingを後付けDoneへ昇格させず、[Work Admission Control](#work-admission-control)で分類する。同一原因・確定scopeの確認済み修正はまとめて渡し、小刻みな再Codexを避ける。開発補助を新たな独立レビュー段階にせず、根拠を特定できない意味判定は未確認として記録し、明確なBlockerは既存安全条件どおり停止する。
 
 #882の効果観測はmerge後の通常PR最大5件について、レビュー前再Codexの理由/回数と確認可能な初回時間を人間/開発補助が同Issueへ短く追記する。観測専用run/台帳は作らず、費用不明はunknownとし、初回時間増と再実行減を合わせて評価する。観測終了は本指示・文書変更のmerge条件にしない。
+
+#910では反映後の次の自然な3件のBlocking/再実行判断をPR番号で重複排除し、人間/開発補助が既存Issueコメントへ記録して観測結果の完了判断まで追跡する。差分要否の判断、実際のpaid再実行有無、再レビュー、人間介入を区別し、unknown費用を0にしない。人工runは追加せず、観測待ちは文書mergeをblockしない。過去の同一code HEADでの解消例から削減額や将来成功率を外挿しない。
 
 `ready_for_review`後は既存のClaudeレビュー・停止・マージ条件を適用する。Claude ReviewはReady eventのheadを対象とする。trusted Codex follow-upはpush後に期待SHAを固定し、GitHub上のPR headがそのSHAへ反映されたことをboundedに確認してからReady化する。反映待ちの上限内に一致しない場合、または別SHAが観測された場合はReady化せず停止する。通常のClaude Reviewはpaid実行前とverdict投稿直前に、trusted APIから取得したPRのopen/Ready状態、current head、停止ラベルを確認し、event headと一致しない場合は実行・投稿・人間エスカレーションを抑止する。取得不能時も停止し、診断を残す。競合を完全には排除できないためmerge時の`--match-head-commit`は維持する。Ready後にheadが変わったreviewの`REQUEST_CHANGES`はfollow-up対象にせず、そのheadを人間または明示的なtrusted経路で再びReady化してレビュー要求する。Draftはマージできず、Ready化は承認やマージを意味しない。新規PR作成の`--draft`は[GitHub CLI仕様](https://cli.github.com/manual/gh_pr_create)、DraftとReadyの扱いは[GitHub公式説明](https://docs.github.com/en/pull-requests/reference/pull-requests#draft-pull-requests)を参照する。
 
@@ -842,7 +849,7 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 
 #### 変更前の証拠照合と診断変更の集約
 
-トラブル調査の開始時には、人間/ChatGPT上の開発補助が次の順で既存証拠を照合する。本手順は上記の異常終了診断と[Claude review失敗の分類と再実行](#claude-review失敗の分類と再実行)を具体化し、新しいツール・paid AI診断経路を作らない。
+トラブル調査の開始時には、人間/ChatGPT上の開発補助が次の順で既存証拠を照合する。本手順は上記の異常終了診断と[Claude review失敗の分類と再実行](#claude-review失敗の分類と再実行)を具体化し、新しいツール・paid AI診断経路を作らない。paid実装の再実行を要求する前には[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)の差分要否判断を行い、context構築失敗やCI待ちを実装欠陥と混同しない。
 
 1. **変更前に照合する**：current main/対象HEAD、run ID/attempt、失敗step、既存の非機密log/summary/artifactを確認し、失敗領域に直接関連するcaller/helper、既存fixture、contractをcall chainに沿って照合する。外部挙動が判断を左右する場合は既存実例や公式仕様を根拠にし、確認できない事項は未検証として残す。全repo探索、raw機密情報の転載、新しいpaid AI診断、探索目的の追加runは要求しない。
 2. **調査結果を記録する**：観測事実、確認済み/除外可能な仮説、残る仮説、次の観測で区別したい事項を既存Issueへ短く記録する。静的分析やsynthetic fixtureを実runnerでの成功証拠へ昇格させず、[検証結果の出所](#検証結果の出所)に従う。変更・commit・PRが不要な調査/結果記録は人間/開発補助のIssueコメントで完結し、レビュー用PRを作らない。CodexのGitHub/API禁止は維持する。既存workflowの再実行可否は各経路の現行の許可・前提・retry契約と[人間エスカレーション](#人間エスカレーション)の停止/再開に従う。
