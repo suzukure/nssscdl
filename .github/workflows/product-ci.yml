@@ -81,65 +81,6 @@ jobs:
         if: steps.applicability.outputs.applicable == 'true'
         run: npm ci
 
-      # TEMPORARY #914 browser + Worker + isolated D1 formal proof. Remove before Ready / merge.
-      - name: '#914 opt-in Chrome Worker/D1 normal and intentional failure proof'
-        if: steps.applicability.outputs.applicable == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -x /usr/bin/google-chrome
-          test -x /usr/bin/certutil
-          node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs
-          normal_log="$(mktemp "$RUNNER_TEMP/issue-914-normal.XXXX")"
-          failure_log="$(mktemp "$RUNNER_TEMP/issue-914-intentional.XXXX")"
-          trap 'rm -f -- "$normal_log" "$failure_log"' EXIT
-          set +e
-          timeout --signal=TERM --kill-after=15s 240s node tests/evaluation/trusted-browser-smoke.mjs --run > "$normal_log" 2>&1
-          normal_rc=$?
-          set -e
-          if [ "$normal_rc" -ne 0 ]; then
-            printf '#914 normal diagnostic: exit=%s\n' "$normal_rc"
-            for marker in \
-              'browser=Google Chrome' \
-              'checkpoint: head=' \
-              'certificate: SHA256=' \
-              '#914: NSS P,,' \
-              'TRUSTED_BROWSER_PROOF_FAILED' \
-              'TRUSTED_BROWSER_STAGE=' \
-              'TRUSTED_EVALUATION_SEED_CLEANUP_FAILED'; do
-              if grep -Fq "$marker" "$normal_log"; then
-                printf '#914 diagnostic marker present: %s\n' "$marker"
-              else
-                printf '#914 diagnostic marker absent: %s\n' "$marker"
-              fi
-            done
-            for stage in entry seed seed-inspect tls-setup tls-preflight tls-cert tls-listener tls-browser-launch tls-positive tls-san tls-untrusted tls-consumer tls-cleanup worker-start browser-read; do
-              if grep -Fxq "TRUSTED_BROWSER_STAGE=$stage" "$normal_log"; then
-                printf '#914 safe failure stage: %s\n' "$stage"
-              fi
-            done
-            exit 1
-          fi
-          grep -Fq '#914: NSS P,, / strict browser TLS positive and two negative probes / same cert and fixed-port serial handoff passed' "$normal_log"
-          grep -Fq 'TC-F-001/002/005/207 partial: real same-origin browser fetch' "$normal_log"
-          grep -Fq 'TC-NF-914 partial: host-only Secure HttpOnly SameSite=Lax Path=/' "$normal_log"
-          grep -Fq 'TC-F-207/211 partial: Worker stopped / port closed / self-only revocation' "$normal_log"
-          grep -Fq '#914: browser processes absent before Worker stop / closed port' "$normal_log"
-          grep -Fq '#914: owned process groups stopped / port closed / owned persist and temporary files removed' "$normal_log"
-          ! grep -Eq 'TRUSTED_BROWSER_PROOF_FAILED|uncertain process|CLEANUP_FAILED' "$normal_log"
-          test ! -e .wrangler/student-read-only-evaluation
-          printf '#914 normal: real Chrome and isolated Worker/D1 evidence + cleanup checkpoint confirmed; sanitized output only\n'
-          set +e
-          timeout --signal=TERM --kill-after=15s 240s node tests/evaluation/trusted-browser-smoke.mjs --run --fail-after-positive > "$failure_log" 2>&1
-          negative_rc=$?
-          set -e
-          test "$negative_rc" -eq 1
-          grep -Fq '#914 intentional failure: positive browser GETs completed; browser/Worker/port/proxy shutdown and final inspect/secret scan confirmed' "$failure_log"
-          grep -Fq '#914: owned process groups stopped / port closed / owned persist and temporary files removed' "$failure_log"
-          ! grep -Eq 'TRUSTED_BROWSER_PROOF_FAILED|uncertain process|CLEANUP_FAILED' "$failure_log"
-          test ! -e .wrangler/student-read-only-evaluation
-          printf '#914 intentional failure: expected exit 1 + cleanup passed; no raw logs printed\n'
-
       - name: Build（deployなし）
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run build
@@ -171,4 +112,3 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
-
