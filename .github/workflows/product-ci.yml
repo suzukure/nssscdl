@@ -112,3 +112,48 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+      # TEMPORARY #914: authorized once-only normal Chrome/Worker/D1 proof; remove immediately after outcome.
+      - name: '#914 temporary normal Chrome Worker/D1 diagnosis'
+        if: steps.applicability.outputs.applicable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs
+          normal_log="$(mktemp "$RUNNER_TEMP/issue-914-normal.XXXX")"
+          trap 'rm -f -- "$normal_log"' EXIT
+          set +e
+          timeout --signal=TERM --kill-after=15s 240s node tests/evaluation/trusted-browser-smoke.mjs --run > "$normal_log" 2>&1
+          normal_rc=$?
+          set -e
+          printf '#914 normal diagnostic: exit=%s\n' "$normal_rc"
+          if [[ "$normal_rc" -ne 0 ]]; then
+            node --input-type=module - "$normal_log" <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { parseBrowserDiagnostic } from './tests/evaluation/browser-tls-trust.mjs';
+          const raw = readFileSync(process.argv[2], 'utf8');
+          const candidates = raw.split(/\r?\n/).filter((line) => line.startsWith('TRUSTED_BROWSER_STAGE='));
+          const safe = candidates.length === 1 ? parseBrowserDiagnostic(candidates[0]) : undefined;
+          if (safe) console.log('#914 fixed safe diagnostic: ' + safe);
+          else console.log('#914 fixed diagnosis missing, nonunique or invalid; no raw log output');
+          JS
+            exit 1
+          fi
+          if grep -Fq 'TRUSTED_BROWSER_STAGE=' "$normal_log"; then
+            printf '#914 success contradicted by failure diagnosis; no raw log output\n'
+            exit 1
+          fi
+          for marker in \
+            '#914: NSS P,, / strict browser TLS positive and two negative probes / same cert and fixed-port serial handoff passed' \
+            'TC-NF-914 partial: host-only Secure HttpOnly SameSite=Lax Path=/' \
+            '#914: browser processes absent before Worker stop / closed port' \
+            '#914: owned process groups stopped / port closed / owned persist and temporary files removed'; do
+            if ! grep -Fq -- "$marker" "$normal_log"; then
+              printf '#914 normal expected checkpoint absent; no raw log output\n'
+              exit 1
+            fi
+          done
+          if grep -Eq 'TRUSTED_BROWSER_PROOF_FAILED|CLEANUP_FAILED|uncertain process' "$normal_log"; then
+            printf '#914 normal conflicting failure checkpoint; no raw log output\n'
+            exit 1
+          fi
+          printf '#914 normal: real Chrome Worker/D1 and owned cleanup checkpoints confirmed (sanitized)\n'
