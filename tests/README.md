@@ -36,8 +36,9 @@ trusted runtimeが単一の隔離D1 binding、canonical HTTPS origin、non-expor
 `TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04` の
 HTTP / local D1 **partial evidence**のための試験であり、Product要求・AC→TCの意味を変更しない。
 標準Product CIによるcurrent-head証跡はworkflow側で別に確認し、ローカル自己申告をformal CI successと扱わない。
-#902の入口・local config・key生成の準備は以下を参照する。実HTTPS Listener / cert、Browser assets配信・Cookie接続、
-unsafe POST、Provider / remote D1、Gate A〜D、System / Acceptance TC全体のPassは後続#537 / #608へ残す。
+#902の入口・local config・key生成の準備と#904のopt-in runtime proofは以下を参照する。
+Browser assets配信・Cookie接続、unsafe APIの有効化、Provider / remote D1、Gate A〜D、
+System / Acceptance TC全体のPassは後続#537 / #608へ残す。
 
 ## #902 localhost HTTPS read-only入口の準備
 
@@ -58,40 +59,85 @@ cursorなしで履歴を再取得する。鍵のexport / fallback / Production�
 `TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04`の
 要求・AC→TCは変更せず、既存#898 / #899のD1部分証拠を再実装しない。
 
-開始前の別Gate（CLI / Listener）: 下記は実行候補であり、この実装runでは依存cache不足によりWrangler 4.146.0の
-help / dry-run / HTTPS Listenerを確認できていない。locked依存を準備済みの外部通信禁止環境で、
-`node_modules/.bin/wrangler --version`、`node_modules/.bin/wrangler dev --help`、
-`node_modules/.bin/wrangler deploy --help`、`node_modules/.bin/wrangler d1 migrations apply --help`を確認し、
-exact CLI flagsとdry-runの非外部deployを検証してから採用する。未確認なら開始しない。
-認証済みaccountやlogin / tunnel / remote / deployを追加して解決しない。
-Wrangler 4.146.0の`dev --help`には`--infer-origin-from-routes`が表示されなかったため、`--no-infer-origin-from-routes`は候補から除く。経路 / dev.host設定は持たず、実Request originがcanonical HTTPS originに一致することは後続#904の実Listenerで確認する。
-8788が未使用であること、設定origin / Listener / 証明書のIP SANが完全一致すること、
-専用config以外のconfig / `.dev.vars` / `.env` / Production credential・実利用者dataを取り込まないことを確認する。
+#902のlocked Wrangler 4.146.0 CLI flagsと専用configの非deploy dry-runは、
+PR #903の正式Product CI #37876452937で確認済み（供給Issue contextの証拠）。
+単一`EVALUATION_READ_DB`のみのbundleと`--dry-run: exiting now.`を確認した証拠であり、
+実Listener / TLS / 専用D1疎通を証明しない。専用entrypoint / configは#904で変更しないため、
+この証拠を再利用する。変更した場合はcurrent-headのhelp / 専用dry-runを再実施する。
+Wrangler 4.146.0の`dev --help`にない`--no-infer-origin-from-routes`を使用しない。
 
-リポジトリrootで専用configだけを指定する。local migrationは正本`migrations/0001`〜`0012`を専用DBへ適用する。
-seedは行わず、raw Session / Cookieをcommand・URL・Logへ渡さない。
+## #904 opt-in localhost HTTPS / isolated D1 runtime proof
+
+`evaluation/local-https-smoke.mjs`はoperator / trusted test process専用で、通常build / 全PRのCIからは起動しない。
+Linux、Node 24、locked Wrangler 4.146.0とlocal workerdの準備、OpenSSL、`ss` / `ps`、
+loopback listenとprocess group signalを許す外部通信禁止環境が必要。外部依存の取得・login / deploy / tunnel / remoteは行わない。
+継承credential / proxy / TLS無検証設定をchildへ渡さず、HOME / config / log / certを専用一時directoryへ隔離する。
+root / `tests/` / `tests/evaluation/`の`.env*` / `.dev.vars*`（`.env.example`を除く）、
+既存専用persist、port衝突、専用config不一致では開始しない。既存dataをreset / 再利用しない。
+
+リポジトリrootで開始する（明示`--run`が必須）。停止は同じterminalのCtrl-C。
 
 ```sh
-WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler deploy --config tests/evaluation/wrangler.jsonc --dry-run --outdir dist/evaluation-read-only
+node tests/evaluation/local-https-smoke.mjs --run
+```
+
+runnerは固定版の`dev --help`で`--https-key-path` / `--https-cert-path`だけを追加照合する。
+一時directoryへ1日期限の自己署名RSA証明書を`openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1`
+と`-subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1`で作成し、
+`openssl verify -CAfile <temporary>/server.pem -verify_ip 127.0.0.1 <temporary>/server.pem`で確認する。
+HTTPS clientはそのcertだけを明示信頼し、hostname検証を有効にする。OS trust storeは変更せず、
+`curl -k`、`NODE_TLS_REJECT_UNAUTHORIZED=0`、Browser security disableは使わない。
+key / cert / raw child logはGit / Artifact / stdoutへ出さない。
+
+実行するWrangler commandは以下の固定argv（temporaryはrunnerが作るdirectory）。
+
+```sh
 WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler d1 migrations apply nssscdl-local-read-only-evaluation --config tests/evaluation/wrangler.jsonc --local --persist-to .wrangler/student-read-only-evaluation
-WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev --config tests/evaluation/wrangler.jsonc --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to .wrangler/student-read-only-evaluation
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev --config tests/evaluation/wrangler.jsonc --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to .wrangler/student-read-only-evaluation --https-key-path <temporary>/server.key --https-cert-path <temporary>/server.pem
 ```
 
-dry-run bundleが専用entrypoint / #899 serviceだけを含み、seed / Browser / unsafe Adapter / Providerを含まず、
-外部呼出し・uploadがないことを確認する。通常buildのWorker bundleも評価moduleを含まないことを確認する。
-devはforegroundで開始し、Listenerが127.0.0.1だけであることを確認する。
-certと設定originの照合方法・TLS検証条件・exact request commandは次の実Listener Gateで記録する。
-Cookieなしで全3 GETが401（CSRFには固定originのOriginまたは`Sec-Fetch-Site: same-origin`を付ける）、
-未対応Path / POSTが503、誤origin拒否を確認し、exact command・日時・config / migration identityと安全な結果だけを残す。
-有効Sessionの200 / Browser評価には後続Issueでtrusted seed呼出し / BrowserContext / Cookie受渡しを決定する必要がある。
-実HTTPS requestを行うまで、unit / structural proofをHTTPS接続済みやGate A完了と記録しない。
+専用DBだけに正本`migrations/0001`〜`0012`を一度適用する。seed / Cookie入力はない。
+local SQLiteをread-onlyで観察し、migration履歴12件、正本DDLから独立作成したexpected schemaとの一致、
+全業務Tableの空条件、FK / `validation/student_auth.sql` / `validation/reservation.sql`の独立12 scan各0行を確認する。
+Listenerの待機だけは30秒上限、各requestは5秒、CLIは30秒上限とし、操作の自動再実行はしない。
+`ss`で8788のListenerが`127.0.0.1`の1本だけで、listener PIDが起動したprocess groupに属することを確認する。
+同じgroupのinspector / internal TCP Listenerも`127.0.0.1`だけであることを確認する。
+これはlocal smokeの停止用上限であり、Wranglerの起動時間保証ではない。
 
-停止は起動terminalのCtrl-Cで行い、processと8788のListener終了を確認してから専用local persistenceだけを破棄する。
-失敗 / 応答不明でも自動retry / 修復 / seedは行わず停止する。通常Product test DBはcleanup対象に含めない。
+実HTTPS requestの固定入力・期待値は既存service / Application Error / CSRF GET契約に従う。
+
+| 入力（Cookieなし） | 期待する証拠 |
+| --- | --- |
+| GET `/api/me/schedule-months/2026-11`、`/api/me/reservations`、`/api/auth/student/csrf`、`Sec-Fetch-Site: same-origin` | 401 / 固定safe error / Session Cookie除去のみ |
+| CSRF GET、`Origin: https://127.0.0.1:8788` | 401 |
+| CSRF GET、OriginとMetadataなし / 異Origin / 正Originと`Sec-Fetch-Site: cross-site` | 403 `CSRF_INVALID`、Cookie発行なし |
+| unknown GET / 3 GET pathへのPOST / 履歴GETの`Host: localhost:8788` | 503、Cookie発行なし（Hostからcanonical originを推測しない） |
+| TLS portへのHTTP | transport拒否または非redirectの4xx/5xx。HTTPSへの成功と扱わない |
+
+JSON全体が固定safe errorと一致し、全応答no-store / CORS公開なし、CSRFはno-referrerを確認する。
+GET/POST検査後もschema / migration履歴と全業務Tableの空条件が不変であることを確認する。
+Cookieなし401は有効SessionのD1 read、200、CSRF issuanceを証明しない。
+default Workerの全503とProductから評価moduleへ非到達の独立proofには既存試験を併用する。
 
 ```sh
-rm -rf -- .wrangler/student-read-only-evaluation dist/evaluation-read-only
+node_modules/.bin/vitest run tests/integration/evaluation-worker.test.ts tests/integration/read-only-student-isolation.test.ts tests/integration/worker.test.ts
+node --test tests/evaluation/local-https-smoke.test.mjs
 ```
+
+後者は正本migration / 不正schema・非空・履歴欠落 / safe wire / process停止 / 明示trust・誤IP SAN拒否の
+有限fixtureによる補助検査であり、Wrangler実Listenerの代用ではない。
+`try/finally`でprocess groupへSIGINTを送り、10秒内に停止しない場合はSIGKILLして失敗とする。
+CLIのtimeout / 中断でも同じ停止確認を行い、migration用childを残してcleanupへ進まない。
+さらに5秒内のprocess終了と8788閉鎖を確認した後だけ、そのrun所有の専用persistと一時cert / logを破棄する。
+process / portが不明なら専用filesを残して停止し、operatorが確認する。自動retry / 修復はしない。
+専用bundleは作成しないため、既存`dist/`、通常test DB、他runのpersistは削除しない。
+
+stdoutはcommit / UTC日時 / Node・Wrangler・OpenSSL / OS / config・binding identity、
+IP SAN、route/statusと固定safe response検査、D1整合性・無副作用、停止 / cleanupの非機密checkpointのみ。
+source SHAだけでは未commit変更の同一性やformal CIを証明しない。人間は検証対象差分とcurrent-head CIを別途確認し、
+このcheckpointを#904 / #537へ記録する。部分検証失敗 / runtime不足は未検証としてIssueをOpenに保つ。
+`TC-F-001/002/005/207/211`、`TC-NF-914`のlocal runtime **partial proof**のみで、
+業務POL→BR→REQ→AC→TC / CON / OOSの意味、Browser Gate A〜Dの判定は変更しない。
 
 ## 既存の部分証拠と標準テスト
 
