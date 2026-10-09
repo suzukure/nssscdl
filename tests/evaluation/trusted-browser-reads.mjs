@@ -109,8 +109,7 @@ export async function browserGet(page, path, signal) {
   return { ...fetched, headers };
 }
 
-export async function proveBrowserReads({ context, signal, seed, secrets, hashes, start, stop, revoke, inspect, failAfterPositive = false }) {
-  const browser = context.browser();
+export async function proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop, revoke, inspect, failAfterPositive = false }) {
   check(browser);
   const self = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
   const other = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });

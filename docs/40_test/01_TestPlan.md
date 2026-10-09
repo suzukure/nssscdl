@@ -160,7 +160,9 @@ BrowserContext・assets・unsafe業務POSTは未接続であり、Gate A〜DのP
 run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、Browser Session Cookie本人GET、
 失効401、Gate A〜D、REQ-901/902、#608や既存TC全体のPassを証明しない。
 #914 opt-in consumerは同一cert / portをNode proof listenerからWorkerへ直列handoffし、
+公開`chromium.launch()`のBrowser handleを明示引き渡す（#915単独persistent proofは維持）。
 隔離された非永続self / other / missing / foreign Contextの公式Cookie注入とsame-origin browser fetch 3 GETを検査する。
+TLS probe用Contextも同Browserの非永続Contextとし、run TMPDIR生成profile / artifacts、実HOME、main唯一性、終了後の関連process / 生成物消滅を確認する。
 Worker停止中だけselfを失効し、同cert再起動後のself 401 / other 200とbrowser先行停止 / 最終inspect / owned cleanupを確認する。
 実装・小fixture・停止条件の正本は `../../tests/README.md` の#914節とし、正式Actions実証は未確認。
 既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、

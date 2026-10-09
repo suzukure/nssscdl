@@ -1,13 +1,13 @@
 // Finite #914 fixtures, not real browser/Worker/D1 evidence.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { cleanupOwned, handoffListener, origin } from "./browser-tls-trust.mjs";
+import { checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, origin, workerBrowserProcesses } from "./browser-tls-trust.mjs";
 import { browserCookie, browserEvidence, browserFailureCheckpoint, browserGet, browserProofCheckpoint, checkCertificate, checkNonExposure, injectCookie, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 import { expectedHistory, expectedSchedule } from "./trusted-https-assertions.mjs";
 import { createCertificate } from "./local-https-smoke.mjs";
@@ -58,7 +58,7 @@ test("#914 owner accepts only exact non-secret certificate and complete normal/i
 test("#914 serial handoff: close and closed-port proof precede same-context/cert consumer; uncertainty never calls consumer", async () => {
   for (const failure of [null, "close", "port", "consumer"]) {
     const events = [];
-    const input = { context: {}, origin, certificate: { key: "owned/server.key", cert: "owned/server.pem" } };
+    const input = { browser: {}, context: {}, origin, certificate: { key: "owned/server.key", cert: "owned/server.pem" } };
     const operation = handoffListener(async () => {
       events.push("close"); if (failure === "close") throw new Error("fixture");
     }, async () => { events.push("port"); return failure !== "port"; }, async (actual) => {
@@ -145,21 +145,22 @@ function readFixture() {
       return page;
     } };
   } };
-  const input = { context: { browser: () => browser }, seed, signal: new AbortController().signal,
+  const input = { browser, context: { browser: () => { throw new Error("Context.browser must not supply the handle"); } }, seed, signal: new AbortController().signal,
     secrets: [cookie().value, seed.sessions.other.cookie().value], hashes: [],
     start: async () => { assert.ok(!live); events.push("start"); live = true; },
     stop: async () => { assert.ok(live); events.push("stop"); live = false; },
     inspect: async () => { assert.ok(!live); events.push("inspect"); },
     revoke: async () => { assert.ok(!live && !revoked); events.push("revoke"); revoked = true; } };
-  return { input, events };
+  return { input, events, count: () => created };
 }
 
 test("#914 four ephemeral contexts: browser 3 GET per owner, no Worker/proxy overlap, self-only revocation before restart", async () => {
-  const { input, events } = readFixture();
+  const { input, events, count } = readFixture();
   // Expectations derive independently from #898 seed views / Application §10.
   assert.deepEqual(expectedSchedule(input.seed, "self").slots.map((slot) => slot.view),
     ["bookable", "reserved_by_me", "unavailable", "group_lesson", "unavailable"]);
   await proveBrowserReads(input);
+  assert.equal(count(), 4);
   assert.deepEqual(events, ["cookie:self", "cookie:other", "cookie:foreign", "start",
     ...["self", "other", "missing", "foreign"].flatMap((owner) => Array(3).fill(`get:${owner}`)),
     "stop", "inspect", "revoke", "inspect", "start", ...Array(3).fill("get:self"), ...Array(3).fill("get:other")]);
@@ -204,4 +205,96 @@ test("#914 child env allowlist and default evaluation/production entry isolation
   for (const path of ["src/index.ts", "wrangler.jsonc", "tests/evaluation/worker.ts"]) {
     assert.doesNotMatch(readFileSync(path, "utf8"), /trusted-browser|browser-tls-trust|playwright|trusted-evaluation-seed/);
   }
+});
+
+test("#914 explicit public Browser launch; #915 persistent Context.browser() remains null", async () => {
+  const events = [], proof = { browser: () => null };
+  const browser = { newContext: async (options) => {
+    events.push("context");
+    assert.deepEqual(options, { ignoreHTTPSErrors: false, serviceWorkers: "block" });
+    return proof;
+  } };
+  const chromium = {
+    launchPersistentContext: async (profile, options) => {
+      events.push("persistent"); assert.equal(profile, "/fixture-home/browser-profile");
+      assert.equal(options.env.TMPDIR, "/fixture-home"); return proof;
+    },
+    launch: async (options) => {
+      events.push("launch"); assert.equal(options.env.HOME, "/fixture-home");
+      assert.equal(options.env.TMPDIR, "/fixture-run");
+      assert.equal(options.chromiumSandbox, true);
+      assert.ok(!("ignoreHTTPSErrors" in options) && !("serviceWorkers" in options));
+      return browser;
+    },
+  };
+  const standalone = await launchTlsBrowser(chromium, "/fixture-home", "/fixture-browser", false);
+  assert.equal(standalone.context.browser(), null);
+  assert.equal(standalone.browser, undefined);
+  const handoff = await launchTlsBrowser(chromium, "/fixture-home", "/fixture-browser", true, "/fixture-run");
+  assert.equal(handoff.browser, browser);
+  assert.equal(await handoff.createContext(), proof);
+  assert.deepEqual(events, ["persistent", "launch", "context"]);
+  const { input } = readFixture();
+  await assert.rejects(proveBrowserReads({ ...input, browser: undefined }), fixed);
+});
+
+test("#914 generated directories: actual private direct-child paths only; symlink / public mode / other run refused", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-generated-fixture-"));
+  const other = mkdtempSync(join(tmpdir(), "nssscdl-other-run-fixture-"));
+  try {
+    const profile = mkdtempSync(join(temporary, "playwright_chromiumdev_profile-"));
+    const artifacts = mkdtempSync(join(temporary, "playwright-artifacts-"));
+    const files = generatedBrowserFiles(temporary);
+    assert.deepEqual(new Set(files), new Set([profile, artifacts]));
+    assert.throws(() => checkOwnedDirectory(other, temporary));
+    assert.throws(() => checkGeneratedBrowserCleanup(temporary, files), /remain/);
+    chmodSync(profile, 0o755);
+    assert.throws(() => generatedBrowserFiles(temporary));
+    chmodSync(profile, 0o700);
+    const link = join(temporary, "playwright_chromiumdev_profile-link");
+    symlinkSync(other, link);
+    assert.throws(() => generatedBrowserFiles(temporary));
+    rmSync(link); rmSync(profile, { recursive: true }); rmSync(artifacts, { recursive: true });
+    checkGeneratedBrowserCleanup(temporary, files);
+    assert.ok(existsSync(other)); // No wildcard removal of another run.
+  } finally { rmSync(temporary, { recursive: true }); rmSync(other, { recursive: true }); }
+});
+
+test("#914 actual /proc profile and HOME, unique main, related process shutdown; unknown state preserves files", async () => {
+  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-owned-process-fixture-"));
+  const home = mkdtempSync(join(temporary, "tls-home-"));
+  const profile = mkdtempSync(join(temporary, "playwright_chromiumdev_profile-"));
+  const children = [];
+  const launch = async (actualHome, args = []) => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`, ...args], {
+      env: { PATH: process.env.PATH, HOME: actualHome }, stdio: "ignore",
+    });
+    const closed = new Promise((done) => child.once("close", done));
+    children.push({ child, closed });
+    await new Promise((done, reject) => { child.once("spawn", done); child.once("error", reject); });
+    return child;
+  };
+  const stopAll = async () => { for (const { child } of children) child.kill("SIGTERM"); await Promise.all(children.map(({ closed }) => closed)); };
+  try {
+    const main = await launch(home);
+    const renderer = await launch(home, ["--type=renderer"]);
+    const tracked = new Map();
+    assert.equal(checkWorkerBrowserOwnership(home, temporary, tracked).profile, profile);
+    assert.ok(tracked.has(main.pid) && tracked.has(renderer.pid));
+    let removed = 0;
+    await assert.rejects(cleanupOwned({ closeBrowser: async () => {},
+      browserStopped: async () => workerBrowserProcesses(home, temporary, tracked).length === 0,
+      closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }));
+    assert.equal(removed, 0); assert.ok(existsSync(home) && existsSync(profile));
+    await launch(home);
+    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, tracked), /unique/);
+    await launch("/fixture-wrong-home", ["--type=renderer"]);
+    assert.throws(() => workerBrowserProcesses(home, temporary, tracked), /HOME mismatch/);
+    await stopAll();
+    assert.deepEqual(workerBrowserProcesses(home, temporary, tracked), []);
+    await assert.rejects(cleanupOwned({ closeBrowser: async () => {}, browserStopped: async () => true,
+      closeServer: async () => {}, portClosed: async () => true,
+      remove: async () => { checkGeneratedBrowserCleanup(temporary, [profile]); removed++; } }), /remain/);
+    assert.equal(removed, 0); assert.ok(existsSync(home));
+  } finally { await stopAll(); rmSync(temporary, { recursive: true }); }
 });

@@ -287,6 +287,7 @@ test-only Node HTTPSは`127.0.0.1:8788`だけで固定非機密textを返す。p
 `withIsolatedBrowserTls(callback)` は正負probe後のowned context / 固定originだけをcallbackへ渡し、
 callback終了後も同じ停止・保全契約を適用する最小test helper。#914の明示`workerHandoff`だけは
 正負probe後にNode listener / socketを停止し、port閉鎖を確認して同じcontext / origin / cert pathsを渡す。
+この経路だけは公開`chromium.launch()` / `Browser.newContext()`を使い、callbackへ`browser`を明示渡す。
 default proof / CLIはWorker・Cookie・D1を接続しない。
 非秘密checkpointはHEAD / UTC / Node・browser exact version・binary / NSS tool・OpenSSL版、
 HOME相対NSS path、証明書fingerprint、固定正負結果、cleanup、未実施事項だけ。
@@ -322,7 +323,13 @@ node tests/evaluation/trusted-browser-smoke.mjs --run --fail-after-positive
 seed→proxy dispose→read-only inspect→run-owned NSS / profile / TLS正負probe→Node listenerとsocket停止 / port閉鎖→
 同じkey/cert pathsのWranglerを同じ`https://127.0.0.1:8788`へ起動する。
 証明済みbrowser process / trustは維持し、fileとlive Worker peerのfingerprint / IP SAN、loopback / process groupを照合する。
-Session用self / other / missing / foreignは同browserの別々の非永続Contextであり、persistent proof contextへCookieを入れない。
+#914だけは公開`chromium.launch()`で同一Browserを所有し、TLS probe用とSession用self / other / missing / foreignを
+別々の非永続`Browser.newContext()`として作る。TLS probe用ContextへCookieを入れない。
+#915単独CLIの`launchPersistentContext`は維持する。そのpersistent Contextの`browser()`はnullであり、consumerのBrowser取得に使わない。
+Playwright 1.64.0の`launch()`が呼出Nodeの`os.tmpdir()`へ生成する`playwright_chromiumdev_profile-*` / `playwright-artifacts-*`を、
+#906 sanitized child専用TMPDIR内の実path・所有・0700・非symlinkで確認する。Chromiumの実HOMEはrun専用TLS HOMEのまま。
+profile argvから対象processを選び、その実HOMEとmain process唯一性、関連child / crashpadを確認してprocess identityを追跡する。
+既存生成物があれば起動せず、他runのprofileを推測・glob削除しない。
 公式`addCookies`のroot `url` alternative（Domain / pathを併記しない）でhost-only / Path=/を導出し、
 実Cookie jarのSecure / HttpOnly / SameSite=Lax / root / host / session期限と`document.cookie`非露出を確認する。
 
@@ -331,7 +338,8 @@ requestの`Sec-Fetch-Site: same-origin`はbrowser engineの生成値を観察す
 `trusted-https-assertions.mjs`のexact本人5枠 / 履歴1件 / Session CSRF、200 / missing・foreign 401、
 no-store / no CORS / csrf no-referrerを再利用する。Fetchが隠す401 Set-CookieはdriverのResponse APIでmemory内だけで検査し、jar消去も確認する。
 request終了→Worker停止 / port閉鎖→selfのみ失効 / inspect / proxy dispose→同cert再起動→同Context self 401 / other 200とする。
-終了はpersistent context close（browser全体終了） / process不在→Worker停止 / port閉鎖→最終inspect / secret scan→owned files削除の順。
+終了は公開`Browser.close()` / 関連process不在→Worker停止 / port閉鎖→Playwright生成profile / artifacts消滅確認→最終inspect / secret scan→owned files削除の順。
+profile / artifacts残存も停止不明と同じ保全条件とし、手動削除や再起動で成功へ置き換えない。
 停止不明・proxy失敗では関連owned DB / HOME / NSS / profile / cert / logを保全し、自動retry / resetしない。
 Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / artifactへ出さず、trace / screenshot / storageState / network loggerを使わない。
 
@@ -340,7 +348,7 @@ browser pathだけはchild実行120秒（#908の90秒＋既存browser launch 30�
 GET / navigationは5秒、response bodyは4096文字上限を維持する。
 意図的失敗commandはpositive 3 GET直後に失敗し、確認済みcleanupの固定checkpointがある場合だけownerもowned filesを削除する。期待exitは1。
 
-標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureはhandoff順序 / Cookie属性 / Context隔離 / response非露出 / 停止契約の補助証拠のみ。
+標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureは公開Browser引渡し / persistent null境界 / 非永続4Context / TMPDIR・profile・実HOME所有 / main唯一性 / 停止・残存保全 / handoff順序 / Cookie属性 / response非露出の補助証拠のみ。
 正式Browser / Worker / D1実証は未確認。既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
 HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
 一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。

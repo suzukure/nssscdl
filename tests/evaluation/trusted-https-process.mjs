@@ -79,7 +79,7 @@ try {
       const inspectStopped = () => withStoppedProxy(proxyState, async () => {
         check(before === await inspect(seed, revokedAt));
       });
-      await withIsolatedBrowserTls(async ({ context, certificate, signal }) => {
+      await withIsolatedBrowserTls(async ({ browser, context, certificate, signal }) => {
         browserCertificate = `certificate: SHA256=${checkCertificate(certificate).fingerprint256}; SAN=127.0.0.1; same Node/Worker cert`;
         const start = async () => {
           signal.throwIfAborted();
@@ -90,7 +90,7 @@ try {
           await checkWorkerCertificate(certificate);
         };
         try {
-          await proveBrowserReads({ context, signal, seed, secrets, hashes, start, stop,
+          await proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop,
             revoke: () => withStoppedProxy(proxyState, async () => { revokedAt = await revokeSelf(seed); }),
             inspect: inspectStopped, failAfterPositive });
         } catch (error) {

@@ -86,6 +86,99 @@ export function ownedProcesses(home, profile) {
   return owned;
 }
 
+// #914 only: launch() creates its profile/artifacts in the calling Node TMPDIR.
+// Never infer an exact profile name or remove a wildcard set of directories.
+const generatedName = /^(playwright_chromiumdev_profile-|playwright-artifacts-).+/;
+export function checkOwnedDirectory(path, parent) {
+  const stat = lstatSync(path);
+  assert.ok(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700);
+  assert.equal(realpathSync(path), path, "owned directory must not be a symlink");
+  if (parent) assert.equal(dirname(path), parent, "directory outside run TMPDIR");
+}
+
+export function generatedBrowserFiles(temporary) {
+  checkOwnedDirectory(temporary);
+  return readdirSync(temporary).filter((name) => generatedName.test(name)).map((name) => {
+    const path = join(temporary, name);
+    checkOwnedDirectory(path, temporary);
+    return path;
+  });
+}
+
+// Select argv before reading environ, including run-owned crashpad and descendants.
+// Remember process start identity so a reparented child cannot disappear from proof.
+export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
+  const rows = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+    try {
+      if (lstatSync(`/proc/${entry}`).uid !== process.getuid()) {
+        assert.ok(!tracked.has(Number(entry)), "tracked browser process ownership changed");
+        continue;
+      }
+      const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      const profileArgs = argv.filter((arg) => arg.startsWith("--user-data-dir="));
+      const selected = profileArgs.some((arg) => arg.startsWith(`--user-data-dir=${temporary}/`)) ||
+        argv.some((arg) => arg.startsWith(`--database=${home}/`)) || tracked.get(Number(entry)) === fields[19];
+      rows.push({ pid: Number(entry), parent: Number(fields[1]), identity: fields[19], argv, profileArgs, selected });
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+    }
+  }
+  let changed;
+  do {
+    changed = false;
+    for (const row of rows) if (!row.selected && rows.some((parent) => parent.selected && parent.pid === row.parent)) {
+      row.selected = true; changed = true;
+    }
+  } while (changed);
+  const owned = [];
+  for (const row of rows.filter((row) => row.selected)) {
+    try {
+      const env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
+      assert.ok(env.includes(`HOME=${home}`), "browser process HOME mismatch");
+      assert.ok(row.profileArgs.length <= 1, "ambiguous profile argv");
+      const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
+      if (profile) {
+        assert.equal(dirname(profile), temporary);
+        assert.match(profile.slice(temporary.length + 1), /^playwright_chromiumdev_profile-.+/);
+      }
+      tracked.set(row.pid, row.identity);
+      owned.push({ pid: row.pid, profile, main: !!profile && !row.argv.some((arg) => arg.startsWith("--type=")) });
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+    }
+  }
+  return owned;
+}
+
+export function checkWorkerBrowserOwnership(home, temporary, tracked) {
+  const owned = workerBrowserProcesses(home, temporary, tracked);
+  const main = owned.filter((entry) => entry.main);
+  assert.equal(main.length, 1, "browser main process must be unique");
+  const profile = main[0].profile;
+  assert.ok(owned.every((entry) => !entry.profile || entry.profile === profile), "multiple browser profiles");
+  const files = generatedBrowserFiles(temporary);
+  assert.ok(files.includes(profile));
+  assert.equal(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length, 1);
+  return { profile, files };
+}
+
+export function checkGeneratedBrowserCleanup(temporary, files) {
+  assert.ok(files.every((path) => !existsSync(path)), "generated browser files remain");
+  assert.equal(generatedBrowserFiles(temporary).length, 0, "untracked browser files remain");
+}
+
+export async function launchTlsBrowser(chromium, home, binary, workerHandoff, temporary) {
+  if (!workerHandoff) return { context: await chromium.launchPersistentContext(join(home, "browser-profile"), launchOptions(home, binary)) };
+  const { ignoreHTTPSErrors, serviceWorkers, ...options } = launchOptions(home, binary);
+  // Browser launch and Context options are different public Playwright APIs.
+  const browser = await chromium.launch({ ...options, env: { ...options.env, TMPDIR: temporary } });
+  return { browser, createContext: () => browser.newContext({ ignoreHTTPSErrors, serviceWorkers }) };
+}
+
 export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove }) {
   // Any uncertainty preserves all owned files. No fallback, forced reset or retry.
   await closeBrowser();
@@ -148,7 +241,9 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
   const env = launchOptions(home, binary).env;
-  let context, server, launchAttempted = false, stage = "preflight", requests = 0;
+  let context, browser, server, launchAttempted = false, stage = "preflight", requests = 0;
+  const temporary = tmpdir(), tracked = new Map();
+  let generated = [], generatedProfile;
   const sockets = new Set();
   // CLI is bounded and has no inherited credentials, proxy, TLS override or user config.
   const command = async (file, args, cleanup = false) => (await exec(file, args, {
@@ -171,6 +266,11 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
     assert.equal(sockets.size, 0, "proof sockets still open");
   };
   try {
+    if (workerHandoff) {
+      assert.equal(process.env.TMPDIR, temporary);
+      assert.equal(process.env.HOME, temporary); // #906 dedicated sanitized child.
+      assert.equal(generatedBrowserFiles(temporary).length, 0, "preexisting generated browser files");
+    }
     assert.ok(await portClosed(), "port already occupied; stop without retry");
     const version = (await command(binary, ["--version"])).trim();
     const db = nssPath(home, version);
@@ -224,8 +324,17 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
     assert.ok(listeners[0].includes(`pid=${process.pid},`));
     stage = "browser launch/HOME";
     launchAttempted = true;
-    context = await chromium.launchPersistentContext(profile, launchOptions(home, binary));
-    assert.equal(ownedProcesses(home, profile).filter((entry) => entry.main).length, 1);
+    const launched = await launchTlsBrowser(chromium, home, binary, workerHandoff, temporary);
+    browser = launched.browser;
+    if (workerHandoff) {
+      const ownership = checkWorkerBrowserOwnership(home, temporary, tracked);
+      generatedProfile = ownership.profile;
+      generated = ownership.files;
+      context = await launched.createContext();
+    } else {
+      context = launched.context;
+      assert.equal(ownedProcesses(home, profile).filter((entry) => entry.main).length, 1);
+    }
     assert.ok(!existsSync(db === modern ? legacy : modern), "unexpected second NSS candidate");
     report("browser process: exact run HOME and dedicated profile verified via /proc");
     stage = "positive trust";
@@ -251,7 +360,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
     controller.signal.throwIfAborted();
     if (workerHandoff) {
       await handoffListener(closeProof, portClosed, use, {
-        context, origin, signal: controller.signal,
+        browser, context, origin, signal: controller.signal,
         certificate: { key: certificate.key, cert: certificate.cert, fingerprint: x509.fingerprint256 },
       });
     } else await use({ context, origin });
@@ -268,17 +377,40 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   } finally {
     try {
       await cleanupOwned({
-        closeBrowser: async () => { if (context) await bounded(context.close(), 10000); },
+        closeBrowser: async () => {
+          if (browser) {
+            // Capture children created during reads before Browser.close/reparenting.
+            // Even if ownership validation fails, still attempt public API shutdown.
+            let unknown = false;
+            try {
+              const ownership = checkWorkerBrowserOwnership(home, temporary, tracked);
+              assert.equal(ownership.profile, generatedProfile);
+              assert.deepEqual(ownership.files.slice().sort(), generated.slice().sort());
+            } catch { unknown = true; }
+            await bounded(browser.close(), 10000);
+            assert.ok(!unknown, "browser ownership changed");
+          }
+          else if (context) await bounded(context.close(), 10000);
+        },
         browserStopped: async () => {
           // Failed launch has no API-confirmed shutdown: retain files even if /proc looks empty.
-          if (launchAttempted && !context) return false;
+          if (launchAttempted && !(workerHandoff ? browser : context)) return false;
+          const processes = () => workerHandoff ? workerBrowserProcesses(home, temporary, tracked) : ownedProcesses(home, profile);
           const deadline = Date.now() + 5000;
-          while (ownedProcesses(home, profile).length && Date.now() < deadline) await wait(100);
-          return ownedProcesses(home, profile).length === 0;
+          while (processes().length && Date.now() < deadline) await wait(100);
+          return processes().length === 0;
         },
         closeServer: async () => { await closeProof(); await closeConsumer(); },
         portClosed,
-        remove: async () => { await inspectOwned(home); rmSync(home, { recursive: true }); },
+        remove: async () => {
+          if (workerHandoff && launchAttempted) {
+            assert.ok(generatedProfile, "generated profile ownership unconfirmed");
+            // Browser.close() owns Playwright cleanup. Residue is an unknown result;
+            // preserve HOME/DB/logs rather than guessing paths or deleting by glob.
+            checkGeneratedBrowserCleanup(temporary, generated);
+          }
+          await inspectOwned(home); rmSync(home, { recursive: true });
+        },
       });
       report("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
     } catch {
