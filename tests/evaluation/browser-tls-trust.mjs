@@ -224,9 +224,14 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
     controller.signal.throwIfAborted();
     await use({ context, origin });
     controller.signal.throwIfAborted();
-  } catch {
-    // Static stage label only; never expose raw browser/CLI errors or paths.
-    console.log(`failure: stage=${stage}; TLS proof incomplete; raw cause withheld`);
+  } catch (error) {
+    // Whitelisted diagnostic categories only, never raw browser/CLI errors or paths.
+    const codes = ["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID",
+      "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR", "ERR_CONNECTION_REFUSED",
+      "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT"];
+    const category = codes.find((code) => error instanceof Error && error.message.includes(`net::${code}`)) ??
+      (error instanceof Error && /Timeout|deadline/.test(error.message) ? "TIMEOUT" : "UNCLASSIFIED");
+    console.log(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld`);
     throw new Error(`BROWSER_TLS_TRUST_FAILED (${stage}); runtime proof incomplete`);
   } finally {
     try {
