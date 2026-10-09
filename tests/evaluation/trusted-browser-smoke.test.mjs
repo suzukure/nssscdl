@@ -734,6 +734,29 @@ test("#914 related group/session children allow only missing HOME; explicit diff
   failsOwnership(badChildZero, "group-mismatch");
 });
 
+test("#914 live R/S transitions preserve identity; zombie/dead transitions remain fail-closed", () => {
+  for (const pid of [42, 43]) for (const [initial, next] of [["R", "S"], ["S", "R"]]) {
+    const fixture = ownershipFixture();
+    (pid === 42 ? fixture.main : fixture.child).state = initial;
+    fixture.mutate((row, count) => { if (row.kind === "stat" && row.pid === pid && count >= 2) row.state = next; });
+    assert.deepEqual(fixture.run().map((row) => row.pid), [42, 43]);
+  }
+  const diagnostic = ownershipFixture();
+  diagnostic.child.state = "R"; diagnostic.child.env = "HOME=/private-canary\\0"; diagnostic.child.argv = [];
+  diagnostic.mutate((row, count) => {
+    if (row.kind === "stat" && row.pid === 43 && count >= 2) row.state = "S";
+  });
+  assert.throws(() => diagnostic.run(), (error) =>
+    ownershipReason(error) === "home-descendant-different-type-absent" &&
+    error.observation === "descendant,live,different,absent,stable");
+  for (const pid of [42, 43]) for (const next of ["Z", "X"]) {
+    const fixture = ownershipFixture();
+    (pid === 42 ? fixture.main : fixture.child).state = "R";
+    fixture.mutate((row, count) => { if (row.kind === "stat" && row.pid === pid && count >= 2) row.state = next; });
+    failsOwnership(fixture, pid === 42 ? "root-unverified" : "tracked-drift", pid === 42);
+  }
+});
+
 test("#914 identity rereads, parent contradictions and tracked drift never transfer ownership or discard unknown residue", () => {
   for (const [target, field] of [[43, "identity"], [43, "parent"], [43, "group"], [43, "session"], [42, "identity"]]) {
     const fixture = ownershipFixture(); fixture.run();

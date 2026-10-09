@@ -170,6 +170,7 @@ Worker停止中だけselfを失効し、同cert再起動後のself 401 / other 2
 同PGRP＋SID＋uidの関連processを安定identityで追跡し、認証済み子のみHOME欠落を単独では拒否しない。
 明示HOME異値・曖昧・不読、group/session逸脱・別UID・未知混入・tracked PID再利用・親子矛盾・読取り途中消滅はfail-closed保全とする。
 合成fixtureは唯一/複数root・偽profile・root HOME差、PGRP/SID/uid差、setproctitle模擬、identity/親リンク変化・不読・消滅を検査する。
+live階級内のR/S等の変化は安定した同一identityとして扱い、live→Z/X、PID/starttime/親/PGRP/SIDの変化はfail-closedとするfixtureを検査する。
 固定5軸とprimary / cleanup独立reason・strict parser秘密値/余剰拒否を確認し、実roleやHOME伝播を証明しない。
 close一回・pre-close不明＋close resolve＋post-close not-runの保全、close拒否・未決着、post-close残存とgenerated files残存も確認する。
 関連process全消滅・listener/port閉鎖・generated profile/artifacts消滅・最終owned inspect後だけファイル削除する順序を維持する。

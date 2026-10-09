@@ -372,6 +372,7 @@ rootの単一exact HOMEは常に必須。認証済みgroup/session内の子だ�
 HOMEはexact / missing / different / ambiguous / unreadable / unknown、typeはrenderer / zygote / gpu-process / utility / other / absent / unknown、
 整合性はstable / changed / vanished / unreadable / unknownだけを受理する。未知値は公開せずunknownへ縮退する。
 statのfield 3=state、4=PPID、5=PGRP、6=SID、22=starttimeを照合する。Zはzombie、X/xはdeadの観測であり、終了証明にはしない。
+同一live階級内のR/S等の遷移は識別情報の不一致にしないが、live→Z/XやPID/starttime/PPID/PGRP/SIDの変化・不読はfail-closed保全とする。
 可変process titleやtype=absentは所有性の証拠にせず、空白再splitは行わない。二時点一致は原子的snapshotや実HOME伝播を保証しない。
 owner parserは既存2項目形式・互換reasonを受理し、追加時は両観測の固定allowlist・固定順と全入力一致を要求する。
 cleanupの追加フィールド`PRE_CLOSE`=pass / fail / not-done、`CLOSE`=resolve / reject / not-done、`POST_CLOSE`=pass / fail / not-runは独立した実施結果とする。

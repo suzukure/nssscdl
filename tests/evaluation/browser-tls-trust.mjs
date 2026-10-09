@@ -149,6 +149,13 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       return { status: "read", pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), session: Number(fields[3]), identity: fields[19] };
     } catch (error) { return { status: ["ENOENT", "ESRCH"].includes(error.code) ? "vanished" : "unreadable" }; }
   };
+  // Scheduler R/S/etc. may change without changing process provenance.
+  // Zombie/dead transitions, identity/group/session/parent changes stay fail-closed.
+  const statePhase = (state) => /^[RSDTtKWIP]$/.test(state) ? "live" :
+    state === "Z" ? "zombie" : ["X", "x"].includes(state) ? "dead" : "unknown";
+  const sameProcess = (original, observed) => original?.status === "read" && observed?.status === "read" &&
+    statePhase(original.state) !== "unknown" && statePhase(original.state) === statePhase(observed.state) &&
+    ["pid", "identity", "parent", "group", "session"].every((key) => observed[key] === original[key]);
   const observe = (row, env, before, parentBefore) => {
     const after = snapshot(row.pid), parent = rows.find((entry) => entry.pid === row.parent);
     const parentAfter = snapshot(row.parent);
@@ -157,12 +164,10 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
     if (samples.some((entry) => entry.status !== "read")) {
       consistency = samples.some((entry) => entry.status === "vanished") ? "vanished" :
         samples.some((entry) => entry.status === "unreadable") ? "unreadable" : "unknown";
-    } else if ([before, after].some((entry) => ["pid", "identity", "state", "parent", "group", "session"].some((key) => entry[key] !== row.snapshot[key])) ||
-      [parentBefore, parentAfter].some((entry) => entry.pid !== parent.snapshot.pid || entry.identity !== parent.snapshot.identity)) consistency = "changed";
-    const childStable = [row.snapshot, before, after].every((entry) => entry.status === "read") &&
-      [before, after].every((entry) => ["pid", "identity", "state", "parent", "group", "session"].every((key) => entry[key] === row.snapshot[key]));
-    const state = !childStable ? "unknown" : row.snapshot.state === "Z" ? "zombie" :
-      ["X", "x"].includes(row.snapshot.state) ? "dead" : /^[RSDTtKWIP]$/.test(row.snapshot.state) ? "live" : "unknown";
+    } else if ([before, after].some((entry) => !sameProcess(row.snapshot, entry)) ||
+      [parentBefore, parentAfter].some((entry) => !sameProcess(parent.snapshot, entry))) consistency = "changed";
+    const childStable = [before, after].every((entry) => sameProcess(row.snapshot, entry));
+    const state = childStable ? statePhase(row.snapshot.state) : "unknown";
     const homes = env?.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
     const homeState = !childStable ? "unknown" : !homes ? "unreadable" : homes.length === 0 ? "missing" : homes.length > 1 || homes[0] === "HOME" ? "ambiguous" :
       homes[0] === `HOME=${home}` ? "exact" : "different";
@@ -235,8 +240,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
     }
   }
-  const stable = (row, sample) => sample.status === "read" &&
-    ["pid", "identity", "state", "parent", "group", "session"].every((key) => sample[key] === row.snapshot[key]);
+  const stable = (row, sample) => sameProcess(row.snapshot, sample);
   const homes = (env) => env.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
   const readHome = (row) => ownershipRead("proc-environ", () => readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0"));
   const mains = rows.filter((row) => row.profileSelected && !row.argv.some((arg) => arg.startsWith("--type=") || arg === "--type"));
