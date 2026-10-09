@@ -18,7 +18,7 @@ function readHelp(...args) {
 const version = readHelp("--version");
 assert.ok(version.includes(expected), "Locked Wrangler version differs from executable");
 const commands = [
-  { args: ["dev", "--help"], flags: ["--config", "--ip", "--port", "--local-protocol", "--persist-to", "--infer-origin-from-routes"] },
+  { args: ["dev", "--help"], flags: ["--config", "--ip", "--port", "--local-protocol", "--persist-to"] },
   { args: ["deploy", "--help"], flags: ["--config", "--dry-run", "--outdir"] },
   { args: ["d1", "migrations", "apply", "--help"], flags: ["--config", "--local", "--persist-to"] },
 ];
@@ -26,4 +26,6 @@ for (const { args, flags } of commands) {
   const help = readHelp(...args);
   for (const flag of flags) assert.ok(help.includes(flag), `Locked Wrangler ${args.join(" ")} lacks ${flag}`);
 }
-console.log(`Locked Wrangler ${expected}: dev/deploy/D1 local CLI flags verified (help only).`);
+// --infer-origin-from-routes is absent from Wrangler 4.146.0's dev --help;
+ // do not suggest the --no- form. Route-free loopback origin is proved in #904.
+console.log(`Locked Wrangler ${expected}: advertised dev/deploy/D1 local CLI flags verified (help only); infer-origin override is not asserted.`);
