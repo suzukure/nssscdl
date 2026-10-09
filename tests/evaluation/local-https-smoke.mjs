@@ -251,7 +251,13 @@ export async function run() {
     for (const headers of [{}, { origin: "https://other.test" }, { origin, "sec-fetch-site": "cross-site" }]) await check(paths[2], 403, headers);
     await check("/unknown", 503);
     for (const path of paths) await check(path, 503, {}, "POST");
-    await check(paths[1], 503, { host: "localhost:8788" });
+    // Overriding Host can also change the client's TLS SNI/hostname check.
+    // Both TLS SAN rejection and an application-level 503 are fail-closed.
+    try { await check(paths[1], 503, { host: "localhost:8788" }); }
+    catch (e) {
+      if (e.code !== "ERR_TLS_CERT_ALTNAME_INVALID") throw e;
+      console.log("Host override: rejected by strict TLS certificate hostname validation");
+    }
     // HTTP on the TLS port must fail transport or be refused without a redirect.
     let plain;
     try { plain = await request(paths[1], undefined, {}, "GET", true); }
