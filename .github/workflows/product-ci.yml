@@ -112,3 +112,12 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      # Temporary #908 real-runtime evidence step; remove before review.
+      - name: "#908 opt-in trusted HTTPS Cookie 200 proof"
+        if: github.event.pull_request.number == 909 && github.event.pull_request.head.ref == 'ai/issue-908'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/evaluation/trusted-https-smoke.test.mjs
+          node tests/evaluation/trusted-https-smoke.mjs --run
