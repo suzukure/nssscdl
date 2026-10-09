@@ -90,7 +90,8 @@ export function ownedProcesses(home, profile) {
 // Never infer an exact profile name or remove a wildcard set of directories.
 const generatedName = /^(playwright_chromiumdev_profile-|playwright-artifacts-).+/;
 const ownershipReasons = new Set(["none", "unknown", "proc-list", "proc-read", "proc-environ",
-  "tracked-owner", "home-mismatch", "profile-argv", "profile-location", "main-count", "profile-set",
+  "tracked-owner", "home-mismatch", "home-profile-main", "home-profile-child", "home-crash-db",
+  "home-tracked", "home-descendant", "home-unknown", "profile-argv", "profile-location", "main-count", "profile-set",
   "profile-missing", "profile-count", "directory-read", "directory-type", "directory-owner",
   "directory-mode", "directory-path", "generated-changed", "related-process-remains"]);
 class OwnershipFailure extends Error {
@@ -131,6 +132,20 @@ export function generatedBrowserFiles(temporary) {
 // Select argv before reading environ, including run-owned crashpad and descendants.
 // Remember process start identity so a reparented child cannot disappear from proof.
 export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
+  // Diagnostic precedence only: profile > crash database > tracked identity > descendant.
+  // Ambiguous argv cannot establish a role; it never falls through to a weaker basis.
+  const homeMismatchReason = (row) => {
+    if (row.profileSelected) {
+      const types = row.argv.filter((arg) => arg.startsWith("--type="));
+      if (row.profileArgs.length !== 1 || types.length > 1 || types[0] === "--type=") return "home-unknown";
+      return types.length ? "home-profile-child" : "home-profile-main";
+    }
+    if (row.crashSelected) {
+      return row.argv.filter((arg) => arg.startsWith("--database=")).length === 1 ? "home-crash-db" : "home-unknown";
+    }
+    if (row.trackedSelected) return "home-tracked";
+    return row.selected ? "home-descendant" : "home-unknown";
+  };
   const rows = [];
   for (const entry of ownershipRead("proc-list", () => readdirSync("/proc"))) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
@@ -143,9 +158,12 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       const profileArgs = argv.filter((arg) => arg.startsWith("--user-data-dir="));
-      const selected = profileArgs.some((arg) => arg.startsWith(`--user-data-dir=${temporary}/`)) ||
-        argv.some((arg) => arg.startsWith(`--database=${home}/`)) || tracked.get(Number(entry)) === fields[19];
-      rows.push({ pid: Number(entry), parent: Number(fields[1]), identity: fields[19], argv, profileArgs, selected });
+      const profileSelected = profileArgs.some((arg) => arg.startsWith(`--user-data-dir=${temporary}/`));
+      const crashSelected = argv.some((arg) => arg.startsWith(`--database=${home}/`));
+      const trackedSelected = tracked.get(Number(entry)) === fields[19];
+      const selected = profileSelected || crashSelected || trackedSelected;
+      rows.push({ pid: Number(entry), parent: Number(fields[1]), identity: fields[19], argv, profileArgs,
+        profileSelected, crashSelected, trackedSelected, selected });
     } catch (error) {
       if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
     }
@@ -161,7 +179,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   for (const row of rows.filter((row) => row.selected)) {
     try {
       const env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
-      requireOwnership(env.includes(`HOME=${home}`), "home-mismatch");
+      requireOwnership(env.includes(`HOME=${home}`), homeMismatchReason(row));
       requireOwnership(row.profileArgs.length <= 1, "profile-argv");
       const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
       if (profile) {

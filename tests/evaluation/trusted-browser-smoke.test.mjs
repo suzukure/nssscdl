@@ -403,7 +403,7 @@ test("#914 actual /proc profile and HOME, unique main, related process shutdown;
     await launch(home);
     assert.throws(() => checkWorkerBrowserOwnership(home, temporary, tracked), (error) => ownershipReason(error) === "main-count");
     await launch("/fixture-wrong-home", ["--type=renderer"]);
-    assert.throws(() => workerBrowserProcesses(home, temporary, tracked), (error) => ownershipReason(error) === "home-mismatch");
+    assert.throws(() => workerBrowserProcesses(home, temporary, tracked), (error) => ownershipReason(error) === "home-profile-child");
     await stopAll();
     assert.deepEqual(workerBrowserProcesses(home, temporary, tracked), []);
     await assert.rejects(cleanupOwned({ closeBrowser: async () => {}, browserStopped: async () => true,
@@ -426,6 +426,21 @@ test("#914 ownership reasons survive independent primary/cleanup and strict owne
     expected.replace("; CLEANUP_OWNERSHIP=main-count", "")]) assert.equal(parseBrowserDiagnostic(value), undefined);
   assert.equal(ownershipReason(new Error("private-canary")), "unknown");
   assert.doesNotMatch(browserDiagnostic({ ...diagnostic, ownership: "private-canary" }), /private-canary/);
+  const reasons = ["home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown"];
+  for (const reason of reasons) {
+    const independent = { primary: "none", cleanup: "none" };
+    const cleanupReason = reasons[(reasons.indexOf(reason) + 1) % reasons.length];
+    observeTlsDiagnostic(independent, `failure: stage=launch-resolved ownership; category=UNCLASSIFIED; TLS proof incomplete; raw cause withheld; ownership=${reason}`, "tls-setup");
+    observeTlsDiagnostic(independent, `cleanup failure: stage=browser-ownership; primary=failed; ownership=${cleanupReason}`, "tls-setup");
+    observeTlsDiagnostic(independent, "cleanup failure: stage=browser-ownership; primary=failed; ownership=proc-read", "tls-setup");
+    const line = `TRUSTED_BROWSER_STAGE=tls-browser-ownership; CLEANUP=browser-ownership; OWNERSHIP=${reason}; CLEANUP_OWNERSHIP=${cleanupReason}`;
+    assert.equal(browserDiagnostic(independent), line);
+    for (const ending of ["", "\n", "\r\n"]) assert.equal(parseBrowserDiagnostic(line + ending), line);
+    for (const invalid of [line + "\n\n", line + "; private-canary", line.replace(reason, "home-private-canary"),
+      line.replace(`CLEANUP_OWNERSHIP=${cleanupReason}`, "CLEANUP_OWNERSHIP=home-private-canary")]) {
+      assert.equal(parseBrowserDiagnostic(invalid), undefined);
+    }
+  }
 });
 
 test("#914 actual post-launch block diagnoses ownership, Context and NSS independently", async () => {
@@ -488,7 +503,7 @@ test("#914 actual process classifier: inaccessible proc is unknown; disappearanc
   const run = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason", "requireOwnership", "ownershipRead", "dirname",
     block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", new Map([[42, "identity"]]));');
   for (const [failure, expected] of [["list", "proc-list"], ["cmdline", "proc-read"], ["stat", "proc-read"],
-    ["environ", "proc-environ"], ["owner", "tracked-owner"], ["home", "home-mismatch"], ["gone", "none"]]) {
+    ["environ", "proc-environ"], ["owner", "tracked-owner"], ["home", "home-profile-main"], ["gone", "none"]]) {
     const denied = () => { const error = new Error("private-canary"); error.code = failure === "gone" ? "ENOENT" : "EACCES"; throw error; };
     const fields = Array(20).fill("0"); fields[1] = "1"; fields[19] = "identity";
     const operation = () => run(() => { if (failure === "list") denied(); return ["42"]; },
@@ -506,6 +521,77 @@ test("#914 actual process classifier: inaccessible proc is unknown; disappearanc
   }
 });
 
+test("#914 HOME diagnostics use selection precedence, ambiguous argv stays unknown, descendants and tracked identity remain required", () => {
+  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkWorkerBrowserOwnership"));
+  let OwnershipFailure;
+  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
+  const run = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason", "requireOwnership", "ownershipRead", "dirname", "tracked",
+    block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", tracked);');
+  const profile = "--user-data-dir=/fixture-run/playwright_chromiumdev_profile-fixture";
+  const crash = "--database=/fixture-home/.config/crashpad";
+  // Expected codes come from the Issue's requested role distinction and documented precedence.
+  const cases = [
+    [[profile], false, [], "home-profile-main"],
+    [[profile], true, [], "home-profile-main"],
+    [[profile, crash], true, [], "home-profile-main"],
+    [[profile, "--type=renderer", crash], true, [], "home-profile-child"],
+    [[crash], true, [], "home-crash-db"],
+    [[crash], false, [], "home-crash-db"],
+    [[], true, [], "home-tracked"],
+    [[], true, [{ pid: 43, parent: 1, argv: [profile] }], "home-tracked"],
+    [[], false, [{ pid: 43, parent: 1, argv: [profile] }], "home-descendant"],
+    [[], false, [{ pid: 43, parent: 44, argv: [] }, { pid: 44, parent: 1, argv: [profile] }], "home-descendant"],
+    [[profile, profile], true, [], "home-unknown", "profile-argv"],
+    [[profile, "--user-data-dir=/fixture-other", crash], true, [], "home-unknown", "profile-argv"],
+    [[profile, "--type=renderer", "--type=gpu-process"], true, [], "home-unknown"],
+    [[profile, "--type="], true, [], "home-unknown"],
+    [[crash, "--database=/fixture-other"], true, [], "home-unknown"],
+  ];
+  for (const [argv, isTracked, ancestors, expected, correctHomeFailure] of cases) {
+    // The mismatched process comes first; transitive descendant selection must still find it.
+    const rows = [{ pid: 42, parent: ancestors.length ? 43 : 1, argv }, ...ancestors];
+    for (const wrongHome of [false, true]) {
+      const tracked = new Map(isTracked ? [[42, "identity-42"]] : []);
+      const environmentReads = [];
+      const operation = () => run(() => rows.map((row) => String(row.pid)), () => ({ uid: 7 }), (path) => {
+        const pid = Number(path.split("/")[2]), kind = path.split("/").at(-1);
+        const row = rows.find((row) => row.pid === pid);
+        if (kind === "cmdline") return row.argv.join("\0") + "\0";
+        if (kind === "stat") {
+          const fields = Array(20).fill("0"); fields[1] = String(row.parent); fields[19] = `identity-${pid}`;
+          return `${pid} (fixture) ` + fields.join(" ");
+        }
+        environmentReads.push(pid);
+        return wrongHome && pid === 42 ? "HOME=/private-canary\0SECRET=private-canary\0" : "HOME=/fixture-home\0";
+      }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
+      (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
+      (_reason, operation) => operation(), (path) => path.slice(0, path.lastIndexOf("/")), tracked);
+      if (wrongHome) {
+        assert.throws(operation, (error) => {
+          assert.equal(ownershipReason(error), expected);
+          assert.equal(error.message, `browser ownership: ${expected}`);
+          assert.ok(!("cause" in error) && !("actual" in error)); return true;
+        });
+      } else if (correctHomeFailure) {
+        assert.throws(operation, (error) => ownershipReason(error) === correctHomeFailure);
+      } else {
+        assert.equal(operation().length, rows.length);
+        assert.deepEqual(environmentReads, rows.map((row) => row.pid));
+        assert.equal(tracked.get(42), "identity-42");
+      }
+    }
+  }
+  // Reused PID with a different start identity is unrelated; environ must not be read.
+  assert.deepEqual(run(() => ["42"], () => ({ uid: 7 }), (path) => {
+    if (path.endsWith("cmdline")) return "fixture\0";
+    if (path.endsWith("stat")) { const fields = Array(20).fill("0"); fields[1] = "1"; fields[19] = "new-identity"; return "42 (fixture) " + fields.join(" "); }
+    assert.fail("unrelated environ read");
+  }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
+  (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
+  (_reason, operation) => operation(), () => "", new Map([[42, "old-identity"]])), []);
+});
+
 test("#914 actual pre-close recheck still closes once, reports ownership only after resolve, never removes", async () => {
   const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
   const block = source.slice(source.indexOf("        closeBrowser: async () => {"), source.indexOf("        browserStopped: async () => {"));
@@ -518,16 +604,18 @@ test("#914 actual pre-close recheck still closes once, reports ownership only af
   `);
   let OwnershipFailure;
   try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  for (const closeFails of [false, true]) {
-    let closes = 0, removed = 0;
-    const operation = create({ OwnershipFailure, ownershipReason, requireOwnership() {}, bounded: (pending) => pending,
-      checkWorkerBrowserOwnership: () => { throw new OwnershipFailure("proc-environ"); },
-      browser: { close: async () => { closes++; if (closeFails) throw new Error("private-canary"); } } });
-    await assert.rejects(cleanupOwned({ closeBrowser: operation.close, browserStopped: async () => true,
-      closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }),
-      (error) => ownershipReason(error) === (closeFails ? "unknown" : "proc-environ"));
-    assert.equal(closes, 1); assert.equal(removed, 0);
-    assert.equal(operation.stage(), closeFails ? "browser-close" : "browser-ownership");
+  for (const reason of ["proc-environ", "home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown"]) {
+    for (const closeFails of [false, true]) {
+      let closes = 0, removed = 0;
+      const operation = create({ OwnershipFailure, ownershipReason, requireOwnership() {}, bounded: (pending) => pending,
+        checkWorkerBrowserOwnership: () => { throw new OwnershipFailure(reason); },
+        browser: { close: async () => { closes++; if (closeFails) throw new Error("private-canary"); } } });
+      await assert.rejects(cleanupOwned({ closeBrowser: operation.close, browserStopped: async () => true,
+        closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }),
+        (error) => ownershipReason(error) === (closeFails ? "unknown" : reason));
+      assert.equal(closes, 1); assert.equal(removed, 0);
+      assert.equal(operation.stage(), closeFails ? "browser-close" : "browser-ownership");
+    }
   }
 });
 

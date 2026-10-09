@@ -348,6 +348,12 @@ Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / ar
 所有判定の失敗時だけ固定`OWNERSHIP` / `CLEANUP_OWNERSHIP`をprimary / cleanupに独立して付加し、
 `/proc`列挙・読取り・environ、tracked owner、HOME、profile argv / 配置 / main数 / 一致 / 存在 / 数、
 generated directory読取り / 種別 / owner / mode / 実path、生成物変化、関連process残存を固定codeで示す。
+HOME不一致は選択根拠の優先順をprofile→run-owned Crashpad database→tracked PID/start identity→選択済み親の子孫とし、
+`home-profile-main`（profile指定・typeなし）/ `home-profile-child`（profile指定・単一の非空type）/
+`home-crash-db` / `home-tracked` / `home-descendant`で区別する。profile選択時のprofile引数複数指定・type複数指定・空値、
+database選択時のdatabase引数複数指定は`home-unknown`とし、弱い選択根拠へfallbackしない。
+これは選択根拠による診断分類であり、実Chromeのmain / child / Crashpadの原因確定や許容を意味しない。
+従来の`home-mismatch`もparser互換のため受理する。全関連processの実HOME一致条件は維持する。
 owner parserは既存2項目形式も受理し、新形式は両reasonの固定allowlistと全入力一致を要求する。
 raw path / argv / env / errorを出さず、後発cleanupは一次failureや最初のcleanup reasonを上書きしない。
 診断は所有チェック・close順序・不明時保全を緩和せず、runtime原因確定やcleanup成功の証拠としない。

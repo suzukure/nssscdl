@@ -165,6 +165,7 @@ run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、B
 TLS probe用Contextも同Browserの非永続Contextとし、run TMPDIR生成profile / artifacts、実HOME、main唯一性、終了後の関連process / 生成物消滅を確認する。
 Worker停止中だけselfを失効し、同cert再起動後のself 401 / other 200とbrowser先行停止 / 最終inspect / owned cleanupを確認する。
 小fixtureはlaunch後の所有判定 / Context生成 / NSS候補確認の段階分離と、primary / cleanup独立の固定所有reason・厳密parserも検査する。
+HOME不一致のprofile main / child・Crashpad database・tracked identity・子孫の分類、複数選択根拠の優先順、曖昧時unknown、cleanup時のclose一回・保全も小fixtureで確認する（診断分類の正本は下記#914節）。
 実装・小fixture・停止条件の正本は `../../tests/README.md` の#914節とし、正式Actions実証は未確認。
 既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、
 static assets / DOM / Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
