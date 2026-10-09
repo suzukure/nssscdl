@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { browserDiagnostic, checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, observeTlsDiagnostic, origin, parseBrowserDiagnostic, recordBrowserFailure, workerBrowserProcesses } from "./browser-tls-trust.mjs";
+import { browserDiagnostic, checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, observeTlsDiagnostic, origin, ownershipReason, parseBrowserDiagnostic, recordBrowserFailure, workerBrowserProcesses } from "./browser-tls-trust.mjs";
 import { browserCookie, browserEvidence, browserFailureCheckpoint, browserGet, browserProofCheckpoint, checkCertificate, checkNonExposure, injectCookie, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 import { expectedHistory, expectedSchedule } from "./trusted-https-assertions.mjs";
 import { createCertificate } from "./local-https-smoke.mjs";
@@ -363,11 +363,11 @@ test("#914 generated directories: actual private direct-child paths only; symlin
     assert.throws(() => checkOwnedDirectory(other, temporary));
     assert.throws(() => checkGeneratedBrowserCleanup(temporary, files), /remain/);
     chmodSync(profile, 0o755);
-    assert.throws(() => generatedBrowserFiles(temporary));
+    assert.throws(() => generatedBrowserFiles(temporary), (error) => ownershipReason(error) === "directory-mode");
     chmodSync(profile, 0o700);
     const link = join(temporary, "playwright_chromiumdev_profile-link");
     symlinkSync(other, link);
-    assert.throws(() => generatedBrowserFiles(temporary));
+    assert.throws(() => generatedBrowserFiles(temporary), (error) => ownershipReason(error) === "directory-type");
     rmSync(link); rmSync(profile, { recursive: true }); rmSync(artifacts, { recursive: true });
     checkGeneratedBrowserCleanup(temporary, files);
     assert.ok(existsSync(other)); // No wildcard removal of another run.
@@ -401,9 +401,9 @@ test("#914 actual /proc profile and HOME, unique main, related process shutdown;
       closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }));
     assert.equal(removed, 0); assert.ok(existsSync(home) && existsSync(profile));
     await launch(home);
-    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, tracked), /unique/);
+    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, tracked), (error) => ownershipReason(error) === "main-count");
     await launch("/fixture-wrong-home", ["--type=renderer"]);
-    assert.throws(() => workerBrowserProcesses(home, temporary, tracked), /HOME mismatch/);
+    assert.throws(() => workerBrowserProcesses(home, temporary, tracked), (error) => ownershipReason(error) === "home-mismatch");
     await stopAll();
     assert.deepEqual(workerBrowserProcesses(home, temporary, tracked), []);
     await assert.rejects(cleanupOwned({ closeBrowser: async () => {}, browserStopped: async () => true,
@@ -411,4 +411,141 @@ test("#914 actual /proc profile and HOME, unique main, related process shutdown;
       remove: async () => { checkGeneratedBrowserCleanup(temporary, [profile]); removed++; } }), /remain/);
     assert.equal(removed, 0); assert.ok(existsSync(home));
   } finally { await stopAll(); rmSync(temporary, { recursive: true }); }
+});
+
+
+test("#914 ownership reasons survive independent primary/cleanup and strict owner parsing", () => {
+  const diagnostic = { primary: "none", cleanup: "none" };
+  observeTlsDiagnostic(diagnostic, "failure: stage=launch-resolved ownership; category=UNCLASSIFIED; TLS proof incomplete; raw cause withheld; ownership=home-mismatch", "tls-setup");
+  observeTlsDiagnostic(diagnostic, "cleanup failure: stage=browser-ownership; primary=failed; ownership=main-count", "tls-setup");
+  observeTlsDiagnostic(diagnostic, "cleanup failure: stage=browser-ownership; primary=failed; ownership=proc-read", "tls-setup");
+  const expected = "TRUSTED_BROWSER_STAGE=tls-browser-ownership; CLEANUP=browser-ownership; OWNERSHIP=home-mismatch; CLEANUP_OWNERSHIP=main-count";
+  assert.equal(browserDiagnostic(diagnostic), expected);
+  for (const ending of ["", "\n", "\r\n"]) assert.equal(parseBrowserDiagnostic(expected + ending), expected);
+  for (const value of [expected + "\n\n", expected + "; private-canary", expected.replace("main-count", "private-canary"),
+    expected.replace("; CLEANUP_OWNERSHIP=main-count", "")]) assert.equal(parseBrowserDiagnostic(value), undefined);
+  assert.equal(ownershipReason(new Error("private-canary")), "unknown");
+  assert.doesNotMatch(browserDiagnostic({ ...diagnostic, ownership: "private-canary" }), /private-canary/);
+});
+
+test("#914 actual post-launch block diagnoses ownership, Context and NSS independently", async () => {
+  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const block = source.slice(source.indexOf('    stage = "browser launch/HOME";'), source.indexOf('    stage = "positive trust";'));
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const run = new AsyncFunction("fixture", `
+    const { launchTlsBrowser, checkWorkerBrowserOwnership, existsSync, ownedProcesses, assert, report } = fixture;
+    const chromium = {}, home = "fixture", binary = "fixture", temporary = "fixture", tracked = new Map();
+    const workerHandoff = true, db = "modern", modern = "modern", legacy = "legacy";
+    let stage, launchAttempted, browser, context, generatedProfile, generated;
+    try { ${block} } catch { return stage; }
+    return stage;
+  `);
+  for (const [failed, expected] of [["launch", "browser launch/HOME"], ["ownership", "launch-resolved ownership"],
+    ["context", "Browser.newContext"], ["nss", "NSS candidate"]]) {
+    const diagnostic = { primary: "none", cleanup: "none" };
+    const fail = (step) => { if (step === failed) throw new Error("private-canary"); };
+    const stage = await run({ assert, report() {}, ownedProcesses() {},
+      launchTlsBrowser: async () => { fail("launch"); return { browser: {}, createContext: async () => { fail("context"); return {}; } }; },
+      checkWorkerBrowserOwnership: () => { fail("ownership"); return { profile: "fixture", files: [] }; },
+      existsSync: () => failed === "nss" });
+    assert.equal(stage, expected);
+    observeTlsDiagnostic(diagnostic, `failure: stage=${stage}; category=UNCLASSIFIED; TLS proof incomplete; raw cause withheld`, "tls-setup");
+    assert.equal(diagnostic.primary, { launch: "tls-browser-launch", ownership: "tls-browser-ownership", context: "tls-browser-context", nss: "tls-browser-nss" }[failed]);
+  }
+});
+
+test("#914 profile missing/count and directory read failure remain fail-closed fixed reasons", async () => {
+  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-profile-reason-"));
+  const home = mkdtempSync(join(temporary, "tls-home-"));
+  const profile = join(temporary, "playwright_chromiumdev_profile-missing");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`], {
+    env: { PATH: process.env.PATH, HOME: home }, stdio: "ignore",
+  });
+  const closed = new Promise((done) => child.once("close", done));
+  try {
+    await new Promise((done, reject) => { child.once("spawn", done); child.once("error", reject); });
+    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, new Map()), (error) => ownershipReason(error) === "profile-missing");
+    // Existing contract requires exactly one private profile, even if no process uses the extra one.
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(profile, { mode: 0o700 });
+    mkdtempSync(join(temporary, "playwright_chromiumdev_profile-extra-"));
+    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, new Map()), (error) => ownershipReason(error) === "profile-count");
+    assert.throws(() => generatedBrowserFiles(join(temporary, "private-canary-missing")), (error) => {
+      assert.equal(ownershipReason(error), "directory-read");
+      assert.doesNotMatch(error.message, /private-canary/);
+      assert.ok(!("cause" in error) && !("actual" in error)); return true;
+    });
+  } finally { child.kill("SIGTERM"); await closed; rmSync(temporary, { recursive: true }); }
+});
+
+test("#914 actual process classifier: inaccessible proc is unknown; disappearance is not a read failure", () => {
+  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkWorkerBrowserOwnership"));
+  let OwnershipFailure;
+  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
+  const requireOwnership = (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); };
+  const ownershipRead = (reason, operation) => { try { return operation(); } catch { throw new OwnershipFailure(reason); } };
+  const run = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason", "requireOwnership", "ownershipRead", "dirname",
+    block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", new Map([[42, "identity"]]));');
+  for (const [failure, expected] of [["list", "proc-list"], ["cmdline", "proc-read"], ["stat", "proc-read"],
+    ["environ", "proc-environ"], ["owner", "tracked-owner"], ["home", "home-mismatch"], ["gone", "none"]]) {
+    const denied = () => { const error = new Error("private-canary"); error.code = failure === "gone" ? "ENOENT" : "EACCES"; throw error; };
+    const fields = Array(20).fill("0"); fields[1] = "1"; fields[19] = "identity";
+    const operation = () => run(() => { if (failure === "list") denied(); return ["42"]; },
+      () => ({ uid: failure === "owner" ? 8 : 7 }),
+      (path) => {
+        const kind = path.split("/").at(-1);
+        if (failure === kind || failure === "gone") denied();
+        if (kind === "cmdline") return "--user-data-dir=/fixture-run/playwright_chromiumdev_profile-fixture\0";
+        if (kind === "stat") return "42 (fixture) " + fields.join(" ");
+        return failure === "home" ? "HOME=/fixture-other\0" : "HOME=/fixture-home\0";
+      }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason, requireOwnership, ownershipRead,
+      (path) => path.slice(0, path.lastIndexOf("/")));
+    if (expected === "none") assert.deepEqual(operation(), []);
+    else assert.throws(operation, (error) => { assert.equal(ownershipReason(error), expected); assert.doesNotMatch(error.message, /private-canary/); return true; });
+  }
+});
+
+test("#914 actual pre-close recheck still closes once, reports ownership only after resolve, never removes", async () => {
+  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const block = source.slice(source.indexOf("        closeBrowser: async () => {"), source.indexOf("        browserStopped: async () => {"));
+  const create = new Function("fixture", `
+    const { browser, checkWorkerBrowserOwnership, ownershipReason, OwnershipFailure, requireOwnership, bounded } = fixture;
+    const home = "fixture", temporary = "fixture", tracked = new Map(), generatedProfile = "fixture", generated = [];
+    let cleanupStage = "browser-close";
+    const operation = { ${block} };
+    return { close: operation.closeBrowser, stage: () => cleanupStage };
+  `);
+  let OwnershipFailure;
+  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
+  for (const closeFails of [false, true]) {
+    let closes = 0, removed = 0;
+    const operation = create({ OwnershipFailure, ownershipReason, requireOwnership() {}, bounded: (pending) => pending,
+      checkWorkerBrowserOwnership: () => { throw new OwnershipFailure("proc-environ"); },
+      browser: { close: async () => { closes++; if (closeFails) throw new Error("private-canary"); } } });
+    await assert.rejects(cleanupOwned({ closeBrowser: operation.close, browserStopped: async () => true,
+      closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }),
+      (error) => ownershipReason(error) === (closeFails ? "unknown" : "proc-environ"));
+    assert.equal(closes, 1); assert.equal(removed, 0);
+    assert.equal(operation.stage(), closeFails ? "browser-close" : "browser-ownership");
+  }
+});
+
+test("#914 actual post-close process check reports tracked residue without cleanup or retry", async () => {
+  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const block = source.slice(source.indexOf("        browserStopped: async () => {"), source.indexOf("        closeServer: async () => {"));
+  const create = new Function("fixture", `
+    const { workerBrowserProcesses, requireOwnership, Date } = fixture;
+    const workerHandoff = true, launchAttempted = true, browser = {}, home = "fixture", temporary = "fixture", tracked = new Map();
+    const operation = { ${block} };
+    return operation.browserStopped;
+  `);
+  let OwnershipFailure;
+  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
+  let time = 0, reads = 0;
+  const stopped = create({ workerBrowserProcesses: () => { reads++; return [{ pid: 42 }]; },
+    Date: { now: () => { time += 6000; return time; } },
+    requireOwnership: (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); } });
+  await assert.rejects(stopped(), (error) => ownershipReason(error) === "related-process-remains");
+  assert.equal(reads, 2); // One loop condition and one final confirmation; no new launch/close.
 });

@@ -343,6 +343,15 @@ profile / artifacts残存も停止不明と同じ保全条件とし、手動削�
 停止不明・proxy失敗では関連owned DB / HOME / NSS / profile / cert / logを保全し、自動retry / resetしない。
 Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / artifactへ出さず、trace / screenshot / storageState / network loggerを使わない。
 
+一次失敗は`tls-browser-launch`（公開launch未完了）、`tls-browser-ownership`（launch resolve後の所有判定）、
+`tls-browser-context`（証明用Context生成）、`tls-browser-nss`（別NSS候補検査）を区別する。
+所有判定の失敗時だけ固定`OWNERSHIP` / `CLEANUP_OWNERSHIP`をprimary / cleanupに独立して付加し、
+`/proc`列挙・読取り・environ、tracked owner、HOME、profile argv / 配置 / main数 / 一致 / 存在 / 数、
+generated directory読取り / 種別 / owner / mode / 実path、生成物変化、関連process残存を固定codeで示す。
+owner parserは既存2項目形式も受理し、新形式は両reasonの固定allowlistと全入力一致を要求する。
+raw path / argv / env / errorを出さず、後発cleanupは一次failureや最初のcleanup reasonを上書きしない。
+診断は所有チェック・close順序・不明時保全を緩和せず、runtime原因確定やcleanup成功の証拠としない。
+
 browser pathだけはchild実行120秒（#908の90秒＋既存browser launch 30秒）、owner180秒とする。
 差分60秒はbrowser close 10秒 / process確認5秒 / proof server close 5秒 / Worker停止最大15秒と残余marginを確保する停止用予算であり、性能保証ではない。
 GET / navigationは5秒、response bodyは4096文字上限を維持する。

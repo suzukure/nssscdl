@@ -89,16 +89,39 @@ export function ownedProcesses(home, profile) {
 // #914 only: launch() creates its profile/artifacts in the calling Node TMPDIR.
 // Never infer an exact profile name or remove a wildcard set of directories.
 const generatedName = /^(playwright_chromiumdev_profile-|playwright-artifacts-).+/;
+const ownershipReasons = new Set(["none", "unknown", "proc-list", "proc-read", "proc-environ",
+  "tracked-owner", "home-mismatch", "profile-argv", "profile-location", "main-count", "profile-set",
+  "profile-missing", "profile-count", "directory-read", "directory-type", "directory-owner",
+  "directory-mode", "directory-path", "generated-changed", "related-process-remains"]);
+class OwnershipFailure extends Error {
+  constructor(reason) { super(`browser ownership: ${reason}`); this.reason = reason; }
+}
+function requireOwnership(condition, reason) {
+  if (!condition) throw new OwnershipFailure(reason);
+}
+// Retain only a fixed code. Never attach raw filesystem/process errors or paths.
+export function ownershipReason(error) {
+  return error instanceof OwnershipFailure && ownershipReasons.has(error.reason) ? error.reason : "unknown";
+}
+function ownershipRead(reason, operation) {
+  try { return operation(); }
+  catch (error) {
+    if (error instanceof OwnershipFailure) throw error;
+    throw new OwnershipFailure(reason);
+  }
+}
 export function checkOwnedDirectory(path, parent) {
-  const stat = lstatSync(path);
-  assert.ok(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700);
-  assert.equal(realpathSync(path), path, "owned directory must not be a symlink");
-  if (parent) assert.equal(dirname(path), parent, "directory outside run TMPDIR");
+  const stat = ownershipRead("directory-read", () => lstatSync(path));
+  requireOwnership(stat.isDirectory(), "directory-type");
+  requireOwnership(stat.uid === process.getuid(), "directory-owner");
+  requireOwnership((stat.mode & 0o777) === 0o700, "directory-mode");
+  requireOwnership(ownershipRead("directory-read", () => realpathSync(path)) === path, "directory-path");
+  if (parent) requireOwnership(dirname(path) === parent, "directory-path");
 }
 
 export function generatedBrowserFiles(temporary) {
   checkOwnedDirectory(temporary);
-  return readdirSync(temporary).filter((name) => generatedName.test(name)).map((name) => {
+  return ownershipRead("directory-read", () => readdirSync(temporary)).filter((name) => generatedName.test(name)).map((name) => {
     const path = join(temporary, name);
     checkOwnedDirectory(path, temporary);
     return path;
@@ -109,11 +132,11 @@ export function generatedBrowserFiles(temporary) {
 // Remember process start identity so a reparented child cannot disappear from proof.
 export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   const rows = [];
-  for (const entry of readdirSync("/proc")) {
+  for (const entry of ownershipRead("proc-list", () => readdirSync("/proc"))) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
     try {
       if (lstatSync(`/proc/${entry}`).uid !== process.getuid()) {
-        assert.ok(!tracked.has(Number(entry)), "tracked browser process ownership changed");
+        requireOwnership(!tracked.has(Number(entry)), "tracked-owner");
         continue;
       }
       const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
@@ -124,7 +147,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
         argv.some((arg) => arg.startsWith(`--database=${home}/`)) || tracked.get(Number(entry)) === fields[19];
       rows.push({ pid: Number(entry), parent: Number(fields[1]), identity: fields[19], argv, profileArgs, selected });
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
     }
   }
   let changed;
@@ -138,17 +161,16 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   for (const row of rows.filter((row) => row.selected)) {
     try {
       const env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
-      assert.ok(env.includes(`HOME=${home}`), "browser process HOME mismatch");
-      assert.ok(row.profileArgs.length <= 1, "ambiguous profile argv");
+      requireOwnership(env.includes(`HOME=${home}`), "home-mismatch");
+      requireOwnership(row.profileArgs.length <= 1, "profile-argv");
       const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
       if (profile) {
-        assert.equal(dirname(profile), temporary);
-        assert.match(profile.slice(temporary.length + 1), /^playwright_chromiumdev_profile-.+/);
+        requireOwnership(dirname(profile) === temporary && /^playwright_chromiumdev_profile-.+/.test(profile.slice(temporary.length + 1)), "profile-location");
       }
       tracked.set(row.pid, row.identity);
       owned.push({ pid: row.pid, profile, main: !!profile && !row.argv.some((arg) => arg.startsWith("--type=")) });
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-environ" : ownershipReason(error));
     }
   }
   return owned;
@@ -157,12 +179,12 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
 export function checkWorkerBrowserOwnership(home, temporary, tracked) {
   const owned = workerBrowserProcesses(home, temporary, tracked);
   const main = owned.filter((entry) => entry.main);
-  assert.equal(main.length, 1, "browser main process must be unique");
+  requireOwnership(main.length === 1, "main-count");
   const profile = main[0].profile;
-  assert.ok(owned.every((entry) => !entry.profile || entry.profile === profile), "multiple browser profiles");
+  requireOwnership(owned.every((entry) => !entry.profile || entry.profile === profile), "profile-set");
   const files = generatedBrowserFiles(temporary);
-  assert.ok(files.includes(profile));
-  assert.equal(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length, 1);
+  requireOwnership(files.includes(profile), "profile-missing");
+  requireOwnership(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length === 1, "profile-count");
   return { profile, files };
 }
 
@@ -180,12 +202,13 @@ export async function launchTlsBrowser(chromium, home, binary, workerHandoff, te
 }
 
 const primaryStages = new Set(["none", "unknown", "entry", "seed", "seed-inspect", "tls-setup",
-  "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch", "tls-positive", "tls-san",
+  "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch", "tls-browser-ownership", "tls-browser-context", "tls-browser-nss", "tls-positive", "tls-san",
   "tls-untrusted", "tls-consumer", "worker-start", "browser-read"]);
 const cleanupStages = new Set(["none", "unknown", "browser-close", "browser-ownership", "browser-process",
   "proof-listener", "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"]);
 const tlsStages = { preflight: "tls-preflight", "certificate/NSS": "tls-cert", listener: "tls-listener",
-  "browser launch/HOME": "tls-browser-launch", "positive trust": "tls-positive", "SAN mismatch": "tls-san",
+  "browser launch/HOME": "tls-browser-launch", "launch-resolved ownership": "tls-browser-ownership",
+  "Browser.newContext": "tls-browser-context", "NSS candidate": "tls-browser-nss", "positive trust": "tls-positive", "SAN mismatch": "tls-san",
   "unregistered certificate": "tls-untrusted", "helper callback": "tls-consumer" };
 
 export function recordBrowserFailure(diagnostic, stage) {
@@ -193,14 +216,16 @@ export function recordBrowserFailure(diagnostic, stage) {
 }
 
 export function observeTlsDiagnostic(diagnostic, line, consumerStage) {
-  const failure = /^failure: stage=([^;]+); category=(?:ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_INVALID|ERR_SSL_PROTOCOL_ERROR|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_NAME_NOT_RESOLVED|ERR_TIMED_OUT|TIMEOUT|UNCLASSIFIED); TLS proof incomplete; raw cause withheld$/.exec(line);
+  const failure = /^failure: stage=([^;]+); category=(?:ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_INVALID|ERR_SSL_PROTOCOL_ERROR|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_NAME_NOT_RESOLVED|ERR_TIMED_OUT|TIMEOUT|UNCLASSIFIED); TLS proof incomplete; raw cause withheld(?:; ownership=([a-z-]+))?$/.exec(line);
   if (failure) {
     const stage = failure[1] === "helper callback" && ["worker-start", "browser-read"].includes(consumerStage)
       ? consumerStage : Object.hasOwn(tlsStages, failure[1]) ? tlsStages[failure[1]] : "unknown";
+    if (diagnostic.primary === "none" && failure[2]) diagnostic.ownership = ownershipReasons.has(failure[2]) ? failure[2] : "unknown";
     recordBrowserFailure(diagnostic, stage);
   }
-  const cleanup = /^cleanup failure: stage=([a-z-]+); primary=(none|failed)$/.exec(line);
+  const cleanup = /^cleanup failure: stage=([a-z-]+); primary=(none|failed)(?:; ownership=([a-z-]+))?$/.exec(line);
   if (cleanup && diagnostic.cleanup === "none") {
+    if (cleanup[3]) diagnostic.cleanupOwnership = ownershipReasons.has(cleanup[3]) ? cleanup[3] : "unknown";
     diagnostic.cleanup = cleanupStages.has(cleanup[1]) && cleanup[1] !== "none" ? cleanup[1] : "unknown";
     if (cleanup[2] === "failed") recordBrowserFailure(diagnostic, "unknown");
   }
@@ -209,15 +234,18 @@ export function observeTlsDiagnostic(diagnostic, line, consumerStage) {
 export function browserDiagnostic(diagnostic) {
   const primary = primaryStages.has(diagnostic.primary) ? diagnostic.primary : "unknown";
   const cleanup = cleanupStages.has(diagnostic.cleanup) ? diagnostic.cleanup : "unknown";
-  return `TRUSTED_BROWSER_STAGE=${primary}; CLEANUP=${cleanup}`;
+  const safeReason = (value) => ownershipReasons.has(value ?? "none") ? value ?? "none" : "unknown";
+  const reasons = diagnostic.ownership !== undefined || diagnostic.cleanupOwnership !== undefined
+    ? `; OWNERSHIP=${safeReason(diagnostic.ownership)}; CLEANUP_OWNERSHIP=${safeReason(diagnostic.cleanupOwnership)}` : "";
+  return `TRUSTED_BROWSER_STAGE=${primary}; CLEANUP=${cleanup}${reasons}`;
 }
 
 export function parseBrowserDiagnostic(stderr) {
   if (typeof stderr !== "string") return undefined;
-  const match = /^TRUSTED_BROWSER_STAGE=([a-z-]+); CLEANUP=([a-z-]+)\r?\n?$/.exec(stderr);
+  const match = /^TRUSTED_BROWSER_STAGE=([a-z-]+); CLEANUP=([a-z-]+)(?:; OWNERSHIP=([a-z-]+); CLEANUP_OWNERSHIP=([a-z-]+))?\r?\n?$/.exec(stderr);
   // The match must consume everything, including extra final newlines.
-  if (!match || match[0] !== stderr || !primaryStages.has(match[1]) || !cleanupStages.has(match[2])) return undefined;
-  return browserDiagnostic({ primary: match[1], cleanup: match[2] });
+  if (!match || match[0] !== stderr || !primaryStages.has(match[1]) || !cleanupStages.has(match[2]) || (match[3] && (!ownershipReasons.has(match[3]) || !ownershipReasons.has(match[4])))) return undefined;
+  return browserDiagnostic({ primary: match[1], cleanup: match[2], ownership: match[3], cleanupOwnership: match[4] });
 }
 
 export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove, onStage = () => {} }) {
@@ -374,14 +402,17 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
     const launched = await launchTlsBrowser(chromium, home, binary, workerHandoff, temporary);
     browser = launched.browser;
     if (workerHandoff) {
+      stage = "launch-resolved ownership";
       const ownership = checkWorkerBrowserOwnership(home, temporary, tracked);
       generatedProfile = ownership.profile;
       generated = ownership.files;
+      stage = "Browser.newContext";
       context = await launched.createContext();
     } else {
       context = launched.context;
       assert.equal(ownedProcesses(home, profile).filter((entry) => entry.main).length, 1);
     }
+    if (workerHandoff) stage = "NSS candidate";
     assert.ok(!existsSync(db === modern ? legacy : modern), "unexpected second NSS candidate");
     report("browser process: exact run HOME and dedicated profile verified via /proc");
     stage = "positive trust";
@@ -420,7 +451,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
       "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT"];
     const category = codes.find((code) => error instanceof Error && error.message.includes(`net::${code}`)) ??
       (error instanceof Error && /Timeout|deadline/.test(error.message) ? "TIMEOUT" : "UNCLASSIFIED");
-    report(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld`);
+    report(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld${workerHandoff && (error instanceof OwnershipFailure || stage === "launch-resolved ownership") ? `; ownership=${ownershipReason(error)}` : ""}`);
     throw new Error(`BROWSER_TLS_TRUST_FAILED (${stage}); runtime proof incomplete`);
   } finally {
     try {
@@ -430,15 +461,15 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           if (browser) {
             // Capture children created during reads before Browser.close/reparenting.
             // Even if ownership validation fails, still attempt public API shutdown.
-            let unknown = false;
+            let unknownReason;
             try {
               const ownership = checkWorkerBrowserOwnership(home, temporary, tracked);
-              assert.equal(ownership.profile, generatedProfile);
-              assert.deepEqual(ownership.files.slice().sort(), generated.slice().sort());
-            } catch { unknown = true; }
+              requireOwnership(ownership.profile === generatedProfile &&
+                JSON.stringify(ownership.files.slice().sort()) === JSON.stringify(generated.slice().sort()), "generated-changed");
+            } catch (error) { unknownReason = ownershipReason(error); }
             await bounded(browser.close(), 10000);
             cleanupStage = "browser-ownership";
-            assert.ok(!unknown, "browser ownership changed");
+            if (unknownReason) throw new OwnershipFailure(unknownReason);
           }
           else if (context) await bounded(context.close(), 10000);
         },
@@ -448,7 +479,9 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           const processes = () => workerHandoff ? workerBrowserProcesses(home, temporary, tracked) : ownedProcesses(home, profile);
           const deadline = Date.now() + 5000;
           while (processes().length && Date.now() < deadline) await wait(100);
-          return processes().length === 0;
+          const stopped = processes().length === 0;
+          if (workerHandoff) requireOwnership(stopped, "related-process-remains");
+          return stopped;
         },
         closeServer: async () => {
           await closeProof(); cleanupStage = "worker-stop"; await closeConsumer();
@@ -469,9 +502,9 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
         },
       });
       report("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
-    } catch {
+    } catch (error) {
       // Capture the first failing cleanup operation before emergency shutdown.
-      report(`cleanup failure: stage=${cleanupStage}; primary=${primaryFailed ? "failed" : "none"}`);
+      report(`cleanup failure: stage=${cleanupStage}; primary=${primaryFailed ? "failed" : "none"}${workerHandoff && error instanceof OwnershipFailure ? `; ownership=${ownershipReason(error)}` : ""}`);
       // Stop the owned server even if browser state is uncertain; never delete its files.
       if (server?.listening) { server.close(); server.closeAllConnections(); }
       for (const socket of sockets) socket.destroy();
