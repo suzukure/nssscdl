@@ -132,7 +132,7 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 ### 7.1 #608初回隔離評価のGate（#892）
 
-構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。Preview / Confirm UI、Production preauth / Auth flow、HTTPS配信 / Browser評価compositionは未実装であり、以下は後続検証の責務である。
+構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。Preview / Confirm UI、Production preauth / Auth flow、静的WebのHTTPS配信 / Browser評価compositionは未実装であり、以下は後続検証の責務である。
 
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
@@ -150,7 +150,11 @@ Session生tokenはtrusted test processの専用返却値だけで保持し、DB 
 #902は `tests/evaluation/worker.ts` / 専用configから#899のread-only 3 GETだけを使う入口とlifetime鍵を準備する。
 既存integration topologyのhandler fetch / test-only D1 Portと構造検査を部分証拠とし、通常Workerの全503を維持する。
 CLI flags / 非外部dry-run / 実localhost HTTPS Listener・certは別Gateとして `../../tests/README.md` の開始前条件に従う。
-trusted seedのpersistent local D1 runtime proofは `../../tests/README.md` の#906 opt-inで独立検証する。Cookie / BrowserContext・assets・unsafe POSTは未接続であり、Gate A〜DのPassとしない。
+trusted seedのpersistent local D1 runtime proofは `../../tests/README.md` の#906 opt-inで独立検証する。
+#908 opt-inは同一seed済みD1の実HTTPS Listenerへtrusted Node内Session Cookieを渡し、self / otherの3 GET各200、
+本人Scope、Session-bound CSRF、安全な401 / 403 / 503、停止後のtest-owned本人失効と他本人維持、read-only不変を検査する。
+既存TC-F-001/002/005/207/211・TC-NF-914のlocal HTTPS partial evidenceだけで、正式Actions実証と補助fixtureを区別する。
+BrowserContext・assets・unsafe業務POSTは未接続であり、Gate A〜DのPassとしない。正式実証未達ならIssue Open / Draftを維持する。
 
 ## 8. Entry Criteria
 

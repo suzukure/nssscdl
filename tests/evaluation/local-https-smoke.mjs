@@ -96,7 +96,7 @@ export function checkResponse(response, status) {
   ] : undefined);
 }
 
-async function stopGroup(child) {
+export async function stopGroup(child) {
   const alive = () => { try { process.kill(-child.pid, 0); return true; } catch (e) { if (e.code === "ESRCH") return false; throw e; } };
   if (alive()) process.kill(-child.pid, "SIGINT");
   const deadline = Date.now() + 10000;
@@ -115,6 +115,51 @@ export async function stopWorker(child, command) {
   const graceful = await stopGroup(child);
   assert.equal((await command("ss", ["-H", "-ltn", "sport = :8788"])).trim(), "", "listener still open");
   return graceful;
+}
+
+// Shared only by the #904 and #908 opt-in operator proofs.
+export async function createCertificate(temporary, command) {
+  const key = join(temporary, "server.key"), cert = join(temporary, "server.pem");
+  await command("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-days", "1",
+    "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", key, "-out", cert]);
+  const ca = readFileSync(cert);
+  assert.equal(new X509Certificate(ca).checkIP("127.0.0.1"), "127.0.0.1");
+  await command("openssl", ["verify", "-CAfile", cert, "-verify_ip", "127.0.0.1", cert]);
+  return { key, cert, ca };
+}
+
+export function launchWorker(env, key, cert) {
+  const child = spawn(wrangler, ["dev", "--config", config, "--ip", "127.0.0.1", "--port", "8788",
+      "--local-protocol", "https", "--persist-to", persist, "--https-key-path", key, "--https-cert-path", cert],
+    { cwd: root, env, detached: true, stdio: "ignore" });
+  child.on("error", () => { child.spawnFailed = true; });
+  return child;
+}
+
+export async function waitForWorker(child, command, signal) {
+  const deadline = Date.now() + 30000;
+  let listeners = "";
+  while (!listeners && Date.now() < deadline) {
+    signal.throwIfAborted();
+    assert.ok(!child.spawnFailed && child.exitCode === null && child.signalCode === null);
+    listeners = (await command("ss", ["-H", "-ltnp", "sport = :8788"])).trim();
+    if (!listeners) await wait(100);
+  }
+  const lines = listeners.split("\n");
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].split(/\s+/)[3], "127.0.0.1:8788");
+  const pids = [...listeners.matchAll(/pid=(\d+)/g)].map((m) => m[1]);
+  assert.ok(pids.length > 0);
+  for (const pid of pids) assert.equal((await command("ps", ["-o", "pgid=", "-p", pid])).trim(), String(child.pid));
+  // Include inspector/internal listeners owned by this group, not just 8788.
+  const allListeners = (await command("ss", ["-H", "-ltnp"])).trim().split("\n");
+  for (const line of allListeners) {
+    for (const match of line.matchAll(/pid=(\d+)/g)) {
+      const group = (await command("ps", ["-o", "pgid=", "-p", match[1]])).trim();
+      if (group === String(child.pid)) assert.match(line.split(/\s+/)[3], /^127\.0\.0\.1:\d+$/);
+    }
+  }
+  return child;
 }
 
 export async function run() {
@@ -174,12 +219,7 @@ export async function run() {
     assert.match(openssl, /^OpenSSL [\d.]+/);
     console.log(`TLS tool=${openssl.split(" ").slice(0, 2).join(" ")}; config=${config}; binding=EVALUATION_READ_DB; local-only placeholder; migrations=0001..0012`);
     stage = "certificate";
-    const key = join(temporary, "server.key"), cert = join(temporary, "server.pem");
-    await command("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-days", "1",
-      "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", key, "-out", cert]);
-    const ca = readFileSync(cert);
-    assert.equal(new X509Certificate(ca).checkIP("127.0.0.1"), "127.0.0.1");
-    await command("openssl", ["verify", "-CAfile", cert, "-verify_ip", "127.0.0.1", cert]);
+    const { key, cert, ca } = await createCertificate(temporary, command);
     console.log("certificate: IP SAN 127.0.0.1 / explicit trust / hostname verification passed");
     stage = "migrations";
     mkdirSync(join(root, ".wrangler"), { recursive: true });
@@ -208,33 +248,8 @@ export async function run() {
     stage = "listener";
     console.log(`command: wrangler dev --config ${config} --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to ${persist} --https-key-path <temporary>/server.key --https-cert-path <temporary>/server.pem`);
     controller.signal.throwIfAborted();
-    child = spawn(wrangler, ["dev", "--config", config, "--ip", "127.0.0.1", "--port", "8788",
-      "--local-protocol", "https", "--persist-to", persist, "--https-key-path", key, "--https-cert-path", cert],
-    { cwd: root, env, detached: true, stdio: "ignore" });
-    let spawnError;
-    child.on("error", (error) => { spawnError = error; });
-    const deadline = Date.now() + 30000;
-    let listeners = "";
-    while (!listeners && Date.now() < deadline) {
-      controller.signal.throwIfAborted();
-      assert.ok(!spawnError && child.exitCode === null && child.signalCode === null);
-      listeners = (await command("ss", ["-H", "-ltnp", "sport = :8788"])).trim();
-      if (!listeners) await wait(100);
-    }
-    const lines = listeners.split("\n");
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].split(/\s+/)[3], "127.0.0.1:8788");
-    const pids = [...listeners.matchAll(/pid=(\d+)/g)].map((m) => m[1]);
-    assert.ok(pids.length > 0);
-    for (const pid of pids) assert.equal((await command("ps", ["-o", "pgid=", "-p", pid])).trim(), String(child.pid));
-    // Include inspector/internal listeners owned by this group, not just 8788.
-    const allListeners = (await command("ss", ["-H", "-ltnp"])).trim().split("\n");
-    for (const line of allListeners) {
-      for (const match of line.matchAll(/pid=(\d+)/g)) {
-        const group = (await command("ps", ["-o", "pgid=", "-p", match[1]])).trim();
-        if (group === String(child.pid)) assert.match(line.split(/\s+/)[3], /^127\.0\.0\.1:\d+$/);
-      }
-    }
+    child = launchWorker(env, key, cert);
+    await waitForWorker(child, command, controller.signal);
     console.log("listener: only 127.0.0.1:8788 / owned live process group verified");
     stage = "requests";
     const check = async (path, status, headers = {}, method = "GET") => {

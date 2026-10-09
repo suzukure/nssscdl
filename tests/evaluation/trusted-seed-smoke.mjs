@@ -7,11 +7,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { stopWorker } from "./local-https-smoke.mjs";
 import { failure, persistence, root } from "./trusted-evaluation-seed.mjs";
+import { httpsProofCheckpoint } from "./trusted-https-assertions.mjs";
 
 const exec = promisify(execFile);
 const present = (path) => { try { lstatSync(path); return true; } catch (e) { if (e.code === "ENOENT") return false; throw failure(); } };
 
-export async function run() {
+export async function run(httpsProof = false) {
+  if (typeof httpsProof !== "boolean") throw failure();
   if (process.platform !== "linux" || !/^v24\./.test(process.version)) throw failure();
   if (!existsSync(join(root, "node_modules/.bin/wrangler"))) throw new Error("TRUSTED_EVALUATION_SEED_UNAVAILABLE");
   if (present(persistence) || (present(join(root, ".wrangler")) && !lstatSync(join(root, ".wrangler")).isDirectory())) throw failure();
@@ -22,10 +24,20 @@ export async function run() {
   const interrupt = () => controller.abort();
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   let owned = false, safe = true;
-  const command = async (file, args) => {
-    const pending = exec(file, args, { cwd: root, env, detached: true, timeout: 60000,
+  const command = async (file, args, proof = false) => {
+    const pending = exec(file, args, { cwd: root, env, detached: true, timeout: httpsProof ? 120000 : 60000,
       maxBuffer: 1024 * 1024, signal: controller.signal });
-    try { await pending; }
+    try {
+      const result = await pending;
+      if (proof) {
+        if (result.stdout !== httpsProofCheckpoint + "\n" || result.stderr !== "") throw failure();
+        // Print the allowlisted literal, never child output or secret causes.
+        console.log(httpsProofCheckpoint);
+      }
+    } catch {
+      if (httpsProof) safe = false; // Unknown proxy/Worker state: retain files.
+      throw failure();
+    }
     finally {
       if (pending.child.pid) {
         try {
@@ -44,7 +56,10 @@ export async function run() {
     mkdirSync(persistence); owned = true;
     await command(join(root, "node_modules/.bin/wrangler"), ["d1", "migrations", "apply", "nssscdl-local-read-only-evaluation",
       "--config", "tests/evaluation/wrangler.jsonc", "--local", "--persist-to", ".wrangler/student-read-only-evaluation"]);
-    await command(process.execPath, ["tests/evaluation/trusted-seed-process.mjs"]);
+    if (httpsProof) {
+      console.log(`checkpoint: head=${(await exec("git", ["rev-parse", "HEAD"], { env, timeout: 5000 })).stdout.trim()}; UTC=${new Date().toISOString()}; Node=${process.version}; Wrangler=4.146.0; config=tests/evaluation/wrangler.jsonc; EVALUATION_READ_DB; local-only; migrations=0001..0012`);
+    }
+    await command(process.execPath, [...(httpsProof ? ["--disable-warning=ExperimentalWarning"] : []), httpsProof ? "tests/evaluation/trusted-https-process.mjs" : "tests/evaluation/trusted-seed-process.mjs"], httpsProof);
     controller.signal.throwIfAborted();
   } catch { throw failure(); }
   finally {
@@ -55,7 +70,7 @@ export async function run() {
     }
     if (!safe) throw new Error("TRUSTED_EVALUATION_SEED_CLEANUP_FAILED; owned persistence retained; do not retry");
   }
-  console.log("#906: Node 24 / Wrangler 4.146.0 / EVALUATION_READ_DB / CLI persist-to vs proxy v3 / 12 migrations / actual persistent seed and separate-proxy reads / hash only / repeat refusal / disposal and owned cleanup passed; local setup partial evidence only");
+  console.log(httpsProof ? "#908: owned process groups stopped / port closed / owned persist and temporary cert/log removed; local HTTPS partial evidence only; Browser/Gate A-D unverified" : "#906: Node 24 / Wrangler 4.146.0 / EVALUATION_READ_DB / CLI persist-to vs proxy v3 / 12 migrations / actual persistent seed and separate-proxy reads / hash only / repeat refusal / disposal and owned cleanup passed; local setup partial evidence only");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
