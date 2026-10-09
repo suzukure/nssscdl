@@ -240,8 +240,11 @@ HTTPは#904同様5秒 / response 4096文字上限。失敗・timeout・停止不
 通常build / test / 恒常CIからは起動しない。Cookie / Student / D1 / CSRF / UIを接続しない。
 `playwright-core@1.64.0`をdev-onlyで固定し、runner上の実在browserを明示指定する。
 browser download / global install / 外部通信 / OS trust変更は行わない。
-この差分のlockは同版の最小entryであり、offline cache不足によりregistry metadata / integrityと
-`npm ci`は未検証。正式proof準備で依存供給とlock整合を確認し、不備ならDraftのまま修正する。
+`playwright-core@1.64.0`のlock entry（SHA-512 integrity、license、bin、engines）は、
+[正式Actions #37912192152](https://github.com/suzukure/nssscdl/actions/runs/37912192152) で
+npm公式registryから取得した情報を基に生成・照合し、同runで`npm ci --ignore-scripts`が成功した。
+lockとrootのdev-only固定版は一致。恒常CIでは通常の`npm ci`を用いる。
+一時診断stepは最終差分から撤去するため、最終HEADの標準Product CIは別途確認する。
 
 前提はinstalled Chromium / Google Chrome、`/usr/bin/certutil`（Debian/Ubuntuの`libnss3-tools`）、
 OpenSSL、`ss`、読み取り可能な同一userの`/proc`、Chromium sandboxを有効にしたlocal実行環境。
