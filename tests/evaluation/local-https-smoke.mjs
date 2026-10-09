@@ -189,10 +189,17 @@ export async function run() {
     await command(wrangler, ["d1", "migrations", "apply", database, "--config", config, "--local", "--persist-to", persist]);
     stage = "migration-files";
     const files = sqliteFiles(join(root, persist));
-    if (files.length !== 1) console.log(`D1 file discovery: sqlite_count=${files.length} (expected 1; no filenames disclosed)`);
-    assert.equal(files.length, 1);
+    // Wrangler's local store may contain internal SQLite databases. Identify
+    // the target exclusively by its D1 migration ledger, not path or order.
+    const candidates = files.filter((file) => {
+      const db = new DatabaseSync(file, { readOnly: true });
+      try { return db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='d1_migrations'").get().n === 1; }
+      finally { db.close(); }
+    });
+    console.log(`D1 file discovery: total_sqlite=${files.length}, migrated_db_candidates=${candidates.length} (names withheld)`);
+    assert.equal(candidates.length, 1, "D1 target must be the unique local database with a migration ledger");
     const inspect = () => {
-      const db = new DatabaseSync(files[0], { readOnly: true });
+      const db = new DatabaseSync(candidates[0], { readOnly: true });
       try { return checkDatabase(db, names); } finally { db.close(); }
     };
     stage = "migration-schema";
