@@ -125,7 +125,27 @@ jobs:
           normal_log="$(mktemp "$RUNNER_TEMP/issue-914-normal.XXXX")"
           failure_log="$(mktemp "$RUNNER_TEMP/issue-914-intentional.XXXX")"
           trap 'rm -f -- "$normal_log" "$failure_log"' EXIT
+          set +e
           timeout --signal=TERM --kill-after=15s 240s node tests/evaluation/trusted-browser-smoke.mjs --run > "$normal_log" 2>&1
+          normal_rc=$?
+          set -e
+          if [ "$normal_rc" -ne 0 ]; then
+            printf '#914 normal diagnostic: exit=%s\n' "$normal_rc"
+            for marker in \
+              'browser=Google Chrome' \
+              'checkpoint: head=' \
+              'certificate: SHA256=' \
+              '#914: NSS P,,' \
+              'TRUSTED_BROWSER_PROOF_FAILED' \
+              'TRUSTED_EVALUATION_SEED_CLEANUP_FAILED'; do
+              if grep -Fq "$marker" "$normal_log"; then
+                printf '#914 diagnostic marker present: %s\n' "$marker"
+              else
+                printf '#914 diagnostic marker absent: %s\n' "$marker"
+              fi
+            done
+            exit 1
+          fi
           grep -Fq '#914: NSS P,, / strict browser TLS positive and two negative probes / same cert and fixed-port serial handoff passed' "$normal_log"
           grep -Fq 'TC-F-001/002/005/207 partial: real same-origin browser fetch' "$normal_log"
           grep -Fq 'TC-NF-914 partial: host-only Secure HttpOnly SameSite=Lax Path=/' "$normal_log"
