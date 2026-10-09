@@ -147,6 +147,11 @@ schema / 空条件・FK / 既存validation scans、実Guard + Read Adapterの4 V
 Session生tokenはtrusted test processの専用返却値だけで保持し、DB / Log / Artifactへ残さない。
 既存TCとの対応・停止条件は `../../tests/README.md`を参照する。HTTPS Worker / BrowserContext注入・操作評価は含まず、Gate A〜DやAuth / Confirm全体のPassを証明しない。
 
+#902は `tests/evaluation/worker.ts` / 専用configから#899のread-only 3 GETだけを使う入口とlifetime鍵を準備する。
+既存integration topologyのhandler fetch / test-only D1 Portと構造検査を部分証拠とし、通常Workerの全503を維持する。
+CLI flags / 非外部dry-run / 実localhost HTTPS Listener・certは別Gateとして `../../tests/README.md` の開始前条件に従う。
+trusted seedのruntime呼出し・Cookie / BrowserContext・assets・unsafe POSTは未接続であり、Gate A〜DのPassとしない。
+
 ## 8. Entry Criteria
 
 - 対象BuildがTest環境へDeploy済み
