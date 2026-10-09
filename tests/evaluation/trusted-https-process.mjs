@@ -7,7 +7,7 @@ import { createCertificate, launchWorker, request, stopGroup, stopWorker, waitFo
 import { checkSetup, persistence, proxyOptions, root, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
 import { checkFiles, inspect } from "./trusted-seed-process.mjs";
 import { check, checkError, checkSuccess, httpsProofCheckpoint } from "./trusted-https-assertions.mjs";
-import { withIsolatedBrowserTls } from "./browser-tls-trust.mjs";
+import { browserDiagnostic, observeTlsDiagnostic, recordBrowserFailure, withIsolatedBrowserTls } from "./browser-tls-trust.mjs";
 import { browserBinary, browserFailureCheckpoint, browserPreflight, browserProofCheckpoint, checkCertificate, checkWorkerCertificate, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 
 const exec = promisify(execFile);
@@ -25,6 +25,7 @@ let intentionalObserved = false, browserCleanupConfirmed = false;
 let browserCertificate;
 // Fixed non-secret runtime stage only; never emit original error, request or child output.
 let browserStage = "entry";
+const diagnostic = { primary: "none", cleanup: "none" };
 
 async function command(file, args, cleanup = false) {
   const pending = exec(file, args, { cwd: root, env: process.env, detached: true,
@@ -88,6 +89,7 @@ try {
         browserStage = "worker-start";
         browserCertificate = `certificate: SHA256=${checkCertificate(certificate).fingerprint256}; SAN=127.0.0.1; same Node/Worker cert`;
         const start = async () => {
+          browserStage = "worker-start";
           signal.throwIfAborted();
           check(!child && !proxyState.unknown); checkSetup();
           checkCertificate(certificate);
@@ -107,10 +109,7 @@ try {
       }, {
         workerHandoff: true, executablePath: browserBinary, signal: controller.signal,
         report: (line) => {
-          const observed = /^failure: stage=([^;]+); category=/.exec(line);
-          const stageNames = { preflight: "tls-preflight", "certificate/NSS": "tls-cert", listener: "tls-listener", "browser launch/HOME": "tls-browser-launch", "positive trust": "tls-positive", "SAN mismatch": "tls-san", "unregistered certificate": "tls-untrusted", "helper callback": "tls-consumer" };
-          if (observed && Object.hasOwn(stageNames, observed[1])) browserStage = stageNames[observed[1]];
-          if (line === "cleanup: uncertain process/port state; owned files retained for operator inspection; no retry") browserStage = "tls-cleanup";
+          observeTlsDiagnostic(diagnostic, line, browserStage);
           if (line === "cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed") browserCleanupConfirmed = true;
         }, stopConsumer: stop,
         inspectOwned: async (home) => {
@@ -122,6 +121,7 @@ try {
           check(secrets.every((value) => !JSON.stringify(process.env).includes(value) && !JSON.stringify(process.argv).includes(value)));
         },
       });
+      browserStage = "none"; // A later failure has no confirmed browser processing stage.
       return;
     }
     const { key, cert, ca } = certificate;
@@ -204,17 +204,30 @@ try {
     check(secrets.every((value) => !JSON.stringify(process.env).includes(value) && !JSON.stringify(process.argv).includes(value)));
     controller.signal.throwIfAborted();
   });
-  if (browserMode) console.log(browserCertificate);
-  console.log(browserMode ? browserProofCheckpoint : httpsProofCheckpoint);
+  if (!browserMode) console.log(httpsProofCheckpoint);
 } catch {
   process.exitCode = 1; // No raw cause, HTTP body, assertion diff or child output.
-  if (browserMode && !intentionalObserved) console.error(`TRUSTED_BROWSER_STAGE=${browserStage}`);
-  if (intentionalObserved && browserCleanupConfirmed) {
-    console.log(browserCertificate);
-    console.log(browserFailureCheckpoint);
+  if (browserMode && diagnostic.cleanup === "none") {
+    recordBrowserFailure(diagnostic, browserStage);
   }
 } finally {
-  try { await stop(); } catch { process.exitCode = 1; }
+  try { await stop(); } catch {
+    process.exitCode = 1;
+    if (browserMode && diagnostic.cleanup === "none") diagnostic.cleanup = "worker-stop";
+  }
   clearTimeout(deadline);
   process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt);
+}
+// Publish only after the last stop attempt: cleanup failure cannot look like
+// a confirmed intentional failure, nor overwrite an earlier processing stage.
+if (process.exitCode === 1) {
+  if (browserMode) {
+    if (intentionalObserved && browserCleanupConfirmed && diagnostic.cleanup === "none") {
+      console.log(browserCertificate);
+      console.log(browserFailureCheckpoint);
+    } else console.error(browserDiagnostic(diagnostic));
+  }
+} else if (browserMode) {
+  console.log(browserCertificate);
+  console.log(browserProofCheckpoint);
 }

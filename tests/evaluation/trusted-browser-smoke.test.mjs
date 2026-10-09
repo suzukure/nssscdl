@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, origin, workerBrowserProcesses } from "./browser-tls-trust.mjs";
+import { browserDiagnostic, checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, observeTlsDiagnostic, origin, parseBrowserDiagnostic, recordBrowserFailure, workerBrowserProcesses } from "./browser-tls-trust.mjs";
 import { browserCookie, browserEvidence, browserFailureCheckpoint, browserGet, browserProofCheckpoint, checkCertificate, checkNonExposure, injectCookie, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 import { expectedHistory, expectedSchedule } from "./trusted-https-assertions.mjs";
 import { createCertificate } from "./local-https-smoke.mjs";
@@ -15,6 +15,120 @@ import { createCertificate } from "./local-https-smoke.mjs";
 const cookie = (value = "A".repeat(43)) => ({ name: "__Host-student_session", value,
   path: "/", secure: true, httpOnly: true, sameSite: "Lax" });
 const fixed = (error) => error.message === "TRUSTED_HTTPS_PROOF_FAILED" && !["cause", "actual", "expected"].some((key) => key in error);
+
+test("#914 first processing failure survives callback generalization and later cleanup failures", () => {
+  for (const [helper, consumer, expected] of [
+    ["browser launch/HOME", "tls-setup", "tls-browser-launch"],
+    ["positive trust", "tls-setup", "tls-positive"],
+    ["helper callback", "worker-start", "worker-start"],
+    ["helper callback", "browser-read", "browser-read"],
+    ["helper callback", "tls-setup", "tls-consumer"],
+    ["unrecognized", "tls-setup", "unknown"],
+  ]) {
+    const diagnostic = { primary: "none", cleanup: "none" };
+    observeTlsDiagnostic(diagnostic, `failure: stage=${helper}; category=UNCLASSIFIED; TLS proof incomplete; raw cause withheld`, consumer);
+    observeTlsDiagnostic(diagnostic, "cleanup failure: stage=browser-close; primary=failed", consumer);
+    // Emergency Worker stop failure cannot replace the first cleanup failure.
+    observeTlsDiagnostic(diagnostic, "cleanup failure: stage=worker-stop; primary=failed", consumer);
+    recordBrowserFailure(diagnostic, "tls-consumer");
+    const output = `TRUSTED_BROWSER_STAGE=${expected}; CLEANUP=browser-close`;
+    assert.equal(browserDiagnostic(diagnostic), output);
+    assert.equal(parseBrowserDiagnostic(output + "\n"), output);
+  }
+});
+
+test("#914 cleanup-only and unconfirmed primary are distinct; unknown values never leak", () => {
+  const diagnostic = { primary: "none", cleanup: "none" };
+  observeTlsDiagnostic(diagnostic, "cleanup failure: stage=owned-inspect; primary=none", "browser-read");
+  assert.equal(browserDiagnostic(diagnostic), "TRUSTED_BROWSER_STAGE=none; CLEANUP=owned-inspect");
+  recordBrowserFailure(diagnostic, "private-canary");
+  assert.equal(browserDiagnostic(diagnostic), "TRUSTED_BROWSER_STAGE=unknown; CLEANUP=owned-inspect");
+  assert.equal(browserDiagnostic({ primary: "private-canary", cleanup: "private-canary" }),
+    "TRUSTED_BROWSER_STAGE=unknown; CLEANUP=unknown");
+  const unobserved = { primary: "none", cleanup: "none" };
+  observeTlsDiagnostic(unobserved, "cleanup failure: stage=browser-process; primary=failed", "browser-read");
+  assert.equal(browserDiagnostic(unobserved), "TRUSTED_BROWSER_STAGE=unknown; CLEANUP=browser-process");
+});
+
+test("#914 actual child final reporting keeps normal/intentional failure diagnostics until final stop", async () => {
+  // Execute the unchanged reporting block with isolated fake lifecycle objects;
+  // no browser, Worker, seed or runtime proof is launched by this fixture.
+  const source = readFileSync("tests/evaluation/trusted-https-process.mjs", "utf8");
+  const tail = source.slice(source.indexOf("} catch {\n  process.exitCode = 1; // No raw cause"));
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const run = new AsyncFunction("fixture", `
+    const { process, console, stop, diagnostic, intentionalObserved, browserCleanupConfirmed,
+      browserCertificate, browserFailureCheckpoint, browserProofCheckpoint, browserDiagnostic,
+      recordBrowserFailure } = fixture;
+    const browserMode = true, browserStage = "browser-read", deadline = undefined, interrupt = () => {};
+    try { if (fixture.failed) throw new Error("private-canary");
+    ${tail}
+  `);
+  for (const intentional of [false, true]) {
+    for (const cleanup of ["none", "browser-close"]) {
+      const output = [], errors = [], fakeProcess = { removeListener() {} };
+      await run({ process: fakeProcess, console: { log: (value) => output.push(value), error: (value) => errors.push(value) },
+        stop: async () => {}, diagnostic: { primary: "browser-read", cleanup }, failed: true,
+        intentionalObserved: intentional, browserCleanupConfirmed: cleanup === "none",
+        browserCertificate: "certificate-fixture", browserFailureCheckpoint, browserProofCheckpoint,
+        browserDiagnostic, recordBrowserFailure });
+      assert.equal(fakeProcess.exitCode, 1);
+      assert.deepEqual(output, intentional && cleanup === "none" ? ["certificate-fixture", browserFailureCheckpoint] : []);
+      assert.deepEqual(errors, intentional && cleanup === "none" ? [] : [`TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=${cleanup}`]);
+    }
+  }
+  const output = [], errors = [];
+  await run({ process: { removeListener() {} }, console: { log: (value) => output.push(value), error: (value) => errors.push(value) },
+    stop: async () => { throw new Error("private-canary"); }, diagnostic: { primary: "none", cleanup: "none" }, failed: false,
+    intentionalObserved: false, browserCleanupConfirmed: true, browserCertificate: "certificate-fixture",
+    browserFailureCheckpoint, browserProofCheckpoint, browserDiagnostic, recordBrowserFailure });
+  assert.deepEqual(output, []);
+  assert.deepEqual(errors, ["TRUSTED_BROWSER_STAGE=none; CLEANUP=worker-stop"]);
+});
+
+test("#914 cleanup operation diagnosis preserves existing fail-closed order and call counts", async () => {
+  const stages = ["browser-close", "browser-process", "proof-listener", "port-close", "owned-remove"];
+  for (const failed of stages) {
+    const events = [], diagnostic = { primary: "worker-start", cleanup: "none" };
+    let stage = "unknown", removed = 0;
+    const operation = async (name, returnsBoolean = false) => {
+      events.push(name);
+      if (name === failed) {
+        if (returnsBoolean) return false;
+        throw new Error("private-canary");
+      }
+      return true;
+    };
+    try {
+      await cleanupOwned({ onStage: (value) => { stage = value; },
+        closeBrowser: () => operation("browser-close"), browserStopped: () => operation("browser-process", true),
+        closeServer: () => operation("proof-listener"), portClosed: () => operation("port-close", true),
+        remove: async () => { await operation("owned-remove"); removed++; } });
+      assert.fail("cleanup uncertainty must reject");
+    } catch {
+      observeTlsDiagnostic(diagnostic, `cleanup failure: stage=${stage}; primary=failed`, "worker-start");
+    }
+    assert.deepEqual(events, stages.slice(0, stages.indexOf(failed) + 1));
+    assert.equal(removed, 0);
+    assert.equal(browserDiagnostic(diagnostic), `TRUSTED_BROWSER_STAGE=worker-start; CLEANUP=${failed}`);
+  }
+});
+
+test("#914 owner diagnostic parser accepts only complete fixed primary/cleanup codes", () => {
+  for (const cleanup of ["none", "unknown", "browser-close", "browser-ownership", "browser-process", "proof-listener",
+    "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"]) {
+    const line = `TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=${cleanup}`;
+    for (const ending of ["", "\n", "\r\n"]) assert.equal(parseBrowserDiagnostic(line + ending), line);
+  }
+  for (const value of [undefined, {}, "", "TRUSTED_BROWSER_STAGE=tls-cleanup\n",
+    "TRUSTED_BROWSER_STAGE=private-canary; CLEANUP=none\n",
+    "TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=private-canary\n",
+    "TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=none\n\n",
+    "TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=none\nprivate-canary\n",
+    "private-canary\nTRUSTED_BROWSER_STAGE=browser-read; CLEANUP=none\n"]) {
+    assert.equal(parseBrowserDiagnostic(value), undefined);
+  }
+});
 
 test("#914 stopped proxy: success opens next connection; live Worker or unknown operation/dispose suppresses new connection and cleanup inspect", async () => {
   for (const live of [false, true]) {

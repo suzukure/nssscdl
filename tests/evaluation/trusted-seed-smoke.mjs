@@ -9,6 +9,7 @@ import { stopWorker } from "./local-https-smoke.mjs";
 import { failure, persistence, root } from "./trusted-evaluation-seed.mjs";
 import { httpsProofCheckpoint } from "./trusted-https-assertions.mjs";
 import { browserBinary, browserEvidence, browserFailureCheckpoint, browserPreflight, browserProofCheckpoint } from "./trusted-browser-reads.mjs";
+import { parseBrowserDiagnostic } from "./browser-tls-trust.mjs";
 
 const exec = promisify(execFile);
 const present = (path) => { try { lstatSync(path); return true; } catch (e) { if (e.code === "ENOENT") return false; throw failure(); } };
@@ -51,10 +52,10 @@ export async function run(httpsProof = false, browserProof = false, failAfterPos
           return;
         } catch { /* unrecognized child output: preserve files below */ }
       }
-      // Never reflect unknown stderr/stdout; only this exact fixed stage is safe.
-      if (proof && browserProof && !failAfterPositive) {
-        const stage = /^TRUSTED_BROWSER_STAGE=(entry|seed|seed-inspect|tls-setup|tls-preflight|tls-cert|tls-listener|tls-browser-launch|tls-positive|tls-san|tls-untrusted|tls-consumer|tls-cleanup|worker-start|browser-read)\r?\n?$/.exec(error.stderr ?? "");
-        if (stage) console.log(`TRUSTED_BROWSER_STAGE=${stage[1]}`);
+      // Normal and intentional runs share the same strict, non-secret parser.
+      if (proof && browserProof) {
+        const diagnostic = parseBrowserDiagnostic(error.stderr);
+        console.log(diagnostic ?? "TRUSTED_BROWSER_STAGE=unknown; CLEANUP=unknown");
       }
       if (httpsProof) safe = false; // Unknown proxy/Worker state: retain files.
       throw failure();

@@ -179,12 +179,58 @@ export async function launchTlsBrowser(chromium, home, binary, workerHandoff, te
   return { browser, createContext: () => browser.newContext({ ignoreHTTPSErrors, serviceWorkers }) };
 }
 
-export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove }) {
+const primaryStages = new Set(["none", "unknown", "entry", "seed", "seed-inspect", "tls-setup",
+  "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch", "tls-positive", "tls-san",
+  "tls-untrusted", "tls-consumer", "worker-start", "browser-read"]);
+const cleanupStages = new Set(["none", "unknown", "browser-close", "browser-ownership", "browser-process",
+  "proof-listener", "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"]);
+const tlsStages = { preflight: "tls-preflight", "certificate/NSS": "tls-cert", listener: "tls-listener",
+  "browser launch/HOME": "tls-browser-launch", "positive trust": "tls-positive", "SAN mismatch": "tls-san",
+  "unregistered certificate": "tls-untrusted", "helper callback": "tls-consumer" };
+
+export function recordBrowserFailure(diagnostic, stage) {
+  if (diagnostic.primary === "none") diagnostic.primary = primaryStages.has(stage) && stage !== "none" ? stage : "unknown";
+}
+
+export function observeTlsDiagnostic(diagnostic, line, consumerStage) {
+  const failure = /^failure: stage=([^;]+); category=(?:ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_INVALID|ERR_SSL_PROTOCOL_ERROR|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_NAME_NOT_RESOLVED|ERR_TIMED_OUT|TIMEOUT|UNCLASSIFIED); TLS proof incomplete; raw cause withheld$/.exec(line);
+  if (failure) {
+    const stage = failure[1] === "helper callback" && ["worker-start", "browser-read"].includes(consumerStage)
+      ? consumerStage : Object.hasOwn(tlsStages, failure[1]) ? tlsStages[failure[1]] : "unknown";
+    recordBrowserFailure(diagnostic, stage);
+  }
+  const cleanup = /^cleanup failure: stage=([a-z-]+); primary=(none|failed)$/.exec(line);
+  if (cleanup && diagnostic.cleanup === "none") {
+    diagnostic.cleanup = cleanupStages.has(cleanup[1]) && cleanup[1] !== "none" ? cleanup[1] : "unknown";
+    if (cleanup[2] === "failed") recordBrowserFailure(diagnostic, "unknown");
+  }
+}
+
+export function browserDiagnostic(diagnostic) {
+  const primary = primaryStages.has(diagnostic.primary) ? diagnostic.primary : "unknown";
+  const cleanup = cleanupStages.has(diagnostic.cleanup) ? diagnostic.cleanup : "unknown";
+  return `TRUSTED_BROWSER_STAGE=${primary}; CLEANUP=${cleanup}`;
+}
+
+export function parseBrowserDiagnostic(stderr) {
+  if (typeof stderr !== "string") return undefined;
+  const match = /^TRUSTED_BROWSER_STAGE=([a-z-]+); CLEANUP=([a-z-]+)\r?\n?$/.exec(stderr);
+  // The match must consume everything, including extra final newlines.
+  if (!match || match[0] !== stderr || !primaryStages.has(match[1]) || !cleanupStages.has(match[2])) return undefined;
+  return browserDiagnostic({ primary: match[1], cleanup: match[2] });
+}
+
+export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove, onStage = () => {} }) {
   // Any uncertainty preserves all owned files. No fallback, forced reset or retry.
+  onStage("browser-close");
   await closeBrowser();
+  onStage("browser-process");
   assert.ok(await browserStopped(), "browser process state unknown");
+  onStage("proof-listener");
   await closeServer();
+  onStage("port-close");
   assert.ok(await portClosed(), "listener state unknown");
+  onStage("owned-remove");
   await remove();
 }
 
@@ -244,6 +290,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   let context, browser, server, launchAttempted = false, stage = "preflight", requests = 0;
   const temporary = tmpdir(), tracked = new Map();
   let generated = [], generatedProfile;
+  let primaryFailed = false, cleanupStage = "unknown";
   const sockets = new Set();
   // CLI is bounded and has no inherited credentials, proxy, TLS override or user config.
   const command = async (file, args, cleanup = false) => (await exec(file, args, {
@@ -366,6 +413,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
     } else await use({ context, origin });
     controller.signal.throwIfAborted();
   } catch (error) {
+    primaryFailed = true;
     // Whitelisted diagnostic categories only, never raw browser/CLI errors or paths.
     const codes = ["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID",
       "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR", "ERR_CONNECTION_REFUSED",
@@ -377,6 +425,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   } finally {
     try {
       await cleanupOwned({
+        onStage: (value) => { cleanupStage = value; },
         closeBrowser: async () => {
           if (browser) {
             // Capture children created during reads before Browser.close/reparenting.
@@ -388,6 +437,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
               assert.deepEqual(ownership.files.slice().sort(), generated.slice().sort());
             } catch { unknown = true; }
             await bounded(browser.close(), 10000);
+            cleanupStage = "browser-ownership";
             assert.ok(!unknown, "browser ownership changed");
           }
           else if (context) await bounded(context.close(), 10000);
@@ -400,26 +450,34 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           while (processes().length && Date.now() < deadline) await wait(100);
           return processes().length === 0;
         },
-        closeServer: async () => { await closeProof(); await closeConsumer(); },
+        closeServer: async () => {
+          await closeProof(); cleanupStage = "worker-stop"; await closeConsumer();
+        },
         portClosed,
         remove: async () => {
           if (workerHandoff && launchAttempted) {
+            cleanupStage = "generated-files";
             assert.ok(generatedProfile, "generated profile ownership unconfirmed");
             // Browser.close() owns Playwright cleanup. Residue is an unknown result;
             // preserve HOME/DB/logs rather than guessing paths or deleting by glob.
             checkGeneratedBrowserCleanup(temporary, generated);
           }
-          await inspectOwned(home); rmSync(home, { recursive: true });
+          cleanupStage = "owned-inspect";
+          await inspectOwned(home);
+          cleanupStage = "owned-remove";
+          rmSync(home, { recursive: true });
         },
       });
       report("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
     } catch {
+      // Capture the first failing cleanup operation before emergency shutdown.
+      report(`cleanup failure: stage=${cleanupStage}; primary=${primaryFailed ? "failed" : "none"}`);
       // Stop the owned server even if browser state is uncertain; never delete its files.
       if (server?.listening) { server.close(); server.closeAllConnections(); }
       for (const socket of sockets) socket.destroy();
       try { await closeConsumer(); } catch { /* preserve files; fixed error below */ }
       report("cleanup: uncertain process/port state; owned files retained for operator inspection; no retry");
-      throw new Error("BROWSER_TLS_TRUST_CLEANUP_FAILED; preserve owned files; do not retry");
+      throw new Error(`BROWSER_TLS_TRUST_CLEANUP_FAILED; primary=${primaryFailed ? tlsStages[stage] ?? "unknown" : "none"}; cleanup=${cleanupStage}; preserve owned files; do not retry`);
     } finally {
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
