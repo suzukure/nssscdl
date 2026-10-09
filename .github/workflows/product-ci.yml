@@ -112,3 +112,28 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      # TEMPORARY #915 formal proof — remove before Ready for review / merge.
+      - name: '#915 opt-in actual Chromium isolated NSS TLS proof'
+        if: steps.applicability.outputs.applicable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /usr/bin/chromium
+          test -x /usr/bin/certutil
+          node --test tests/evaluation/browser-tls-trust.test.mjs
+          export NSSSCDL_CHROMIUM_PATH=/usr/bin/chromium
+          timeout --signal=TERM --kill-after=15s 180s node tests/evaluation/browser-tls-trust.mjs --run
+          # Expected negative lifecycle probe, NOT a successful browser test.
+          failure_log="$(mktemp "$RUNNER_TEMP/issue-915-intentional.XXXX")"
+          trap 'rm -f -- "$failure_log"' EXIT
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s node tests/evaluation/browser-tls-trust.mjs --run --fail-after-positive > "$failure_log" 2>&1
+          negative_rc=$?
+          set -e
+          test "$negative_rc" -eq 1
+          grep -Fq 'positive: browser HTTPS 200 / fixed response / TLS verification enabled' "$failure_log"
+          grep -Fq 'cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed' "$failure_log"
+          grep -Fq 'BROWSER_TLS_TRUST_FAILED (positive trust); runtime proof incomplete' "$failure_log"
+          ! grep -Eq 'BROWSER_TLS_TRUST_CLEANUP_FAILED|uncertain process/port state' "$failure_log"
+          printf '#915 intentional failure after positive: expected rc=1, owned cleanup proven; no raw output printed\n'
