@@ -112,3 +112,28 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      # Temporary, diagnostic-only preflight for #915; never merge this workflow.
+      - name: '#915 diagnostic-only Chromium/NSS tool preflight'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'ISSUE_915_TOOLING_PRECHECK ubuntu=24.04 target=GitHub-Product-CI head=%s\n' "$GITHUB_SHA"
+          for tool in google-chrome google-chrome-stable chromium chromium-browser certutil openssl ss; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf 'TOOL_PRESENT %s\n' "$tool"
+              case "$tool" in
+                google-chrome|google-chrome-stable|chromium|chromium-browser|openssl)
+                  "$tool" --version 2>&1 | head -n 1
+                  ;;
+              esac
+            else
+              printf 'TOOL_MISSING %s\n' "$tool"
+            fi
+          done
+          if dpkg-query -W -f='${Version}' libnss3-tools >/dev/null 2>&1; then
+            printf 'PACKAGE_PRESENT libnss3-tools\n'
+          else
+            printf 'PACKAGE_MISSING libnss3-tools\n'
+          fi
+          printf 'ISSUE_915_TOOLING_PRECHECK_DONE\n'
