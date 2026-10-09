@@ -111,7 +111,8 @@ Listenerの待機だけは30秒上限、各requestは5秒、CLIは30秒上限と
 | GET `/api/me/schedule-months/2026-11`、`/api/me/reservations`、`/api/auth/student/csrf`、`Sec-Fetch-Site: same-origin` | 401 / 固定safe error / Session Cookie除去のみ |
 | CSRF GET、`Origin: https://127.0.0.1:8788` | 401 |
 | CSRF GET、OriginとMetadataなし / 異Origin / 正Originと`Sec-Fetch-Site: cross-site` | 403 `CSRF_INVALID`、Cookie発行なし |
-| unknown GET / 3 GET pathへのPOST / 履歴GETの`Host: localhost:8788` | 503、Cookie発行なし（Hostからcanonical originを推測しない） |
+| unknown GET / 3 GET pathへのPOST | 503、Cookie発行なし |
+| 履歴GETの`Host: localhost:8788` | TLS IP SANの厳密検証による拒否、またはWorker側の503。いずれもCookie発行なし（Hostからcanonical originを推測しない） |
 | TLS portへのHTTP | transport拒否または非redirectの4xx/5xx。HTTPSへの成功と扱わない |
 
 JSON全体が固定safe errorと一致し、全応答no-store / CORS公開なし、CSRFはno-referrerを確認する。
