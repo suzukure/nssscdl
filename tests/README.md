@@ -173,7 +173,7 @@ seed・batch失敗／結果不明にretry・修復・upgrade・DELETEは行わ�
 停止不明なら保持してoperator確認へ戻す。通常`.wrangler/d1-bootstrap-test`等は触らない。
 有限Port fixtureは正常／異常dispose・callback秘匿・batch rollback／応答不明・schema／非空拒否の補助検査で、actual proxyの代用ではない。
 
-Product CIのPR bodyへ`[evaluation-seed-proof-906]`を明示した場合だけ一時stepで両commandを実行する。
+Product CIではPR bodyの`[evaluation-seed-proof-906]`指定による一時stepで両commandを実行した。この一時stepは除去済み。
 正式成功はworkflow側の対象head / UTC実行日時 / 結果と非機密checkpointで確認し、#906 / 親#537へ記録する。
 一時stepを最終PRから除去する場合は対応workflow fixtureも同期し、実証headとfinal headの実行対象blob完全一致とfinal-head標準Product CI成功を別に確認する。
 依存欠落・offline・部分検証成功をformal successと扱わず、検証未達なら#906はOpenに保つ。
@@ -181,6 +181,58 @@ Product CIのPR bodyへ`[evaluation-seed-proof-906]`を明示した場合だけ�
 `TC-NF-914-04`の**local setup partial evidence**のみ。POL→BR→REQ→AC→TC、CON / OOSの意味は変更しない。
 秘密Cookieから実HTTPS 3 GETへの接続・200／改ざん／失効／non-public確認、BrowserContext、
 実Auth flow・Preview / Confirm、Gate A〜Dは今回の成功に含めず、供給Issueの後続責務として保持する。
+
+## #908 opt-in trusted Session / same-D1 HTTPS 3 GET
+
+`evaluation/trusted-https-smoke.mjs`は#906の所有runnerを再利用する明示opt-in入口。
+通常CI / buildからは起動せず、#904 / #906と同じLinux、Node 24、locked Wrangler 4.146.0、
+`ss` / `ps` / OpenSSL、local workerd・loopback socket・process group停止が利用可能な環境で実行する。
+
+```sh
+node --test tests/evaluation/trusted-https-smoke.test.mjs
+node tests/evaluation/trusted-https-smoke.mjs --run
+```
+
+所有runnerはcredentialを継承しない環境でfresh専用persistへ12migrationを適用し、
+`evaluation/trusted-https-process.mjs`を起動する。childが#904の一時IP SAN証明書を準備し、
+`withTrustedEvaluationSeed(callback)`のseedとproxy dispose後、同一persistの専用Workerを起動する。
+Sessionはこのchildのmemoryにだけ保持し、`TrustedSeedSession.cookie()`から固定
+`https://127.0.0.1:8788`の正規Cookie headerへ渡す。明示CA / hostname検証を維持し、
+Worker・関連Listenerのloopback限定と所有process groupを#904のhelperで確認する。
+Owner argv / env / IPC / URLへtokenを渡さず、BrowserContext / assets / unsafe業務操作は接続しない。
+
+| 実HTTPS検査 | 既存正本から導いた期待値 |
+| --- | --- |
+| self / otherそれぞれSchedule・History・CSRF | 各200。公開未来月5枠の4 View、本人のreservationIdだけ、本人confirmed履歴1件とstandard区分。JSON全体一致で他人ID / 内部個人情報 / Session hash混入を拒否 |
+| CSRFのOrigin / same-origin metadata | session scope、Application §10.3の生成式との同一Session相関、異なるSessionのCSRF不一致。値はmemory内だけで比較 |
+| Cookie欠損・偽・canonical形式の改ざん | 3 GET各401とcanonical clear Cookie。identity headerは認証の代替にならない |
+| 有効Cookie＋別Student identity header / Query | headerを無視して本人200。未定義Queryは既存HTTP Adapterどおり400で拒否し、別Studentへ切り替えない |
+| 有効Cookie＋CSRF Origin / metadata不正 | 403。Cookie新規発行なし |
+| 有効Cookie＋未知GET / 3 GETへのPOST | 503。read-only境界が開かない |
+| 停止→本人Session失効→再起動 | 閉鎖8788を確認した後だけfresh local-only proxyでselfの`revoked_at`を一度更新・dispose。同じD1で旧selfの3 GETは401、otherの3 GETは200 |
+
+全Responseはno-store / No CORS、認証CSRFは成功・失敗ともno-referrer、401以外はCookie発行なし。
+`evaluation/trusted-https-assertions.mjs`の期待値は#898 seed / #899 service / Production HTTP wireに基づき、
+実出力から生成しない。例外やsecret-bearing assertion diffはownerへ返さない。
+`evaluation/trusted-seed-process.mjs`の既存schema / migration履歴 / integrity検査を再利用し、
+Worker停止後の全Table snapshot比較はselfの検証済み`revoked_at`だけを正規化する。
+他Session / 予約・占有 / Audit / Provider等の変更は許容しない。Session expiry境界は再実装しない。
+raw Session / CSRFの所有persist・一時file内非存在、hashの一時log内非存在とargv / env非露出をmemory内で検査する。
+
+childは90秒で中断、ownerは120秒（停止10秒＋必要時5秒とmarginを含む）で打ち切る。
+HTTPは#904同様5秒 / response 4096文字上限。失敗・timeout・停止不明では固定非機密errorで終了し、
+専用persist / cert / logを保全してoperator確認へ戻す。停止の自動retry・DB resetを行わない。
+成功時はproxy dispose、Workerと所有child groupの停止・port閉鎖後に、そのrun所有filesだけをcleanupする。
+通常config / 通常test DB / 他runのfilesを変更・削除しない。
+
+補助fixtureの成功はWrangler実Listener証明ではない。正式証拠は既存Product CIのopt-in一時step等で
+上記2commandを実行し、対象HEAD / UTC日時 / versions / config / status・schema・scope / cleanupの
+固定非秘密checkpointを確認する。現在の恒常CIに本opt-in stepはない。
+一時CI変更を除去する場合はproof-headとfinal-headの実行対象Git blob完全一致、およびfinal-head標準Product CI成功を
+別々に確認する。同一HEADで実疎通した証拠と混同せず、実証未達なら#908はOpen / Draftを維持する。
+`REQ-001/002/005/207/211`の既存AC→`TC-F-001-01〜02/002-01〜02/005-01/207-02〜03/211-02`、
+`TC-NF-914-04`の**local HTTPS partial evidence**だけを追加する。POL→BR→REQ→AC→TC、CON / OOSの意味は変更しない。
+30日期限・Logout / Suspension操作全体、実Auth / Browser / Preview / Confirm / Provider / remote D1、Gate A〜Dは未検証。
 
 ## 既存の部分証拠と標準テスト
 

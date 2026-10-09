@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { checkTrustedSeedIntegrity } from "../fixtures/d1/trusted-student-seed.ts";
 import { migrations } from "./local-https-smoke.mjs";
@@ -15,7 +16,7 @@ const normalized = (rows) => JSON.stringify(rows.map((r) => [r.type, r.name, r.t
   r.sql.replace(/'[^']*(?:''[^']*)*'|\s+/g, (s) => s.startsWith("'") ? s : "").replace(/;$/, "")]));
 
 // Read-only checks on a SEPARATE actual proxy after the seed proxy is disposed.
-async function inspect(seed) {
+export async function inspect(seed, selfRevokedAt = null) {
   checkSetup();
   const { getPlatformProxy } = await import("wrangler");
   let proxy;
@@ -67,20 +68,28 @@ async function inspect(seed) {
         cookie.path === "/" && cookie.secure && cookie.httpOnly && cookie.sameSite === "Lax" && !("domain" in cookie));
       check(row && row.token_hash === digest(cookie.value) && /^[0-9a-f]{64}$/.test(row.token_hash) &&
         row.account_id === `seed-account-${owner}` && row.student_id === `seed-${owner}` && row.role_scope === "student" &&
-        row.access_state === "active" && row.lifecycle === "active" && row.revoked_at === null &&
+        row.access_state === "active" && row.lifecycle === "active" && row.revoked_at === (owner === "self" ? selfRevokedAt : null) &&
         row.created_at <= row.t && row.expires_at > row.t && row.expires_at - row.created_at === 86400);
     }
     // Secret-bearing contents are compared in memory; never assertion diffs.
     const tables = await rows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> '_cf_METADATA' ORDER BY name");
     const data = [];
     for (const { name } of tables) data.push(await rows(`SELECT * FROM "${name}" ORDER BY rowid`));
+    // #908 compares the complete read-only snapshot while allowing ONLY the
+    // explicitly verified test-owned NULL -> revoked_at change on self.
+    if (selfRevokedAt !== null) {
+      check(Number.isSafeInteger(selfRevokedAt));
+      const sessionRows = data[tables.findIndex((r) => r.name === "student_sessions")];
+      check(sessionRows.find((r) => r.id === "seed-session-self").revoked_at === selfRevokedAt);
+      sessionRows.find((r) => r.id === "seed-session-self").revoked_at = null;
+    }
     const serialized = JSON.stringify(data);
     check(tokens.every((token) => !serialized.includes(token) && !JSON.stringify(seed).includes(token)));
     return digest(serialized);
   } finally { if (proxy) await proxy.dispose(); }
 }
 
-function checkFiles(directory, tokens) {
+export function checkFiles(directory, tokens) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     check(!entry.isSymbolicLink());
     const path = resolve(directory, entry.name);
@@ -92,7 +101,7 @@ function checkFiles(directory, tokens) {
   }
 }
 
-try {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) try {
   let before;
   await withTrustedEvaluationSeed(async (seed) => {
     before = await inspect(seed);
