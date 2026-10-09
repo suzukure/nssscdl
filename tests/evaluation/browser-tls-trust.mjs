@@ -99,7 +99,7 @@ const ownershipReasons = new Set(["none", "unknown", "proc-list", "proc-read", "
   "profile-missing", "profile-count", "directory-read", "directory-type", "directory-owner",
   "directory-mode", "directory-path", "generated-changed", "related-process-remains"]);
 class OwnershipFailure extends Error {
-  constructor(reason) { super(`browser ownership: ${reason}`); this.reason = reason; }
+  constructor(reason, observation) { super(`browser ownership: ${reason}`); this.reason = reason; this.observation = observation; }
 }
 function requireOwnership(condition, reason) {
   if (!condition) throw new OwnershipFailure(reason);
@@ -136,6 +136,43 @@ export function generatedBrowserFiles(temporary) {
 // Select argv before reading environ, including run-owned crashpad and descendants.
 // Remember process start identity so a reparented child cannot disappear from proof.
 export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
+  // Observation only: never use these snapshots to select, exempt or discard a row.
+  const snapshot = (pid, raw) => {
+    try {
+      const text = raw ?? readFileSync(`/proc/${pid}/stat`, "utf8");
+      const match = /^(\d+) \(.*\) (.*)$/.exec(text.trim());
+      const fields = match?.[2].split(/\s+/);
+      if (!fields || Number(match[1]) !== pid || !/^\d+$/.test(fields[1]) || !/^\d+$/.test(fields[19])) return { status: "unknown" };
+      // proc_pid_stat(5): 3=state, 4=PPID, 22=starttime (comm excluded).
+      return { status: "read", pid, state: fields[0], parent: Number(fields[1]), identity: fields[19] };
+    } catch (error) { return { status: ["ENOENT", "ESRCH"].includes(error.code) ? "vanished" : "unreadable" }; }
+  };
+  const observe = (row, env, before, parentBefore) => {
+    const after = snapshot(row.pid), parent = rows.find((entry) => entry.pid === row.parent);
+    const parentAfter = snapshot(row.parent);
+    const samples = [row.snapshot, before, after, parent?.snapshot ?? { status: "unknown" }, parentBefore, parentAfter];
+    let consistency = "stable";
+    if (samples.some((entry) => entry.status !== "read")) {
+      consistency = samples.some((entry) => entry.status === "vanished") ? "vanished" :
+        samples.some((entry) => entry.status === "unreadable") ? "unreadable" : "unknown";
+    } else if ([before, after].some((entry) => ["pid", "identity", "state", "parent"].some((key) => entry[key] !== row.snapshot[key])) ||
+      [parentBefore, parentAfter].some((entry) => entry.pid !== parent.snapshot.pid || entry.identity !== parent.snapshot.identity)) consistency = "changed";
+    const childStable = [row.snapshot, before, after].every((entry) => entry.status === "read") &&
+      [before, after].every((entry) => ["pid", "identity", "state", "parent"].every((key) => entry[key] === row.snapshot[key]));
+    const state = !childStable ? "unknown" : row.snapshot.state === "Z" ? "zombie" :
+      ["X", "x"].includes(row.snapshot.state) ? "dead" : /^[RSDTtKWIP]$/.test(row.snapshot.state) ? "live" : "unknown";
+    const homes = env?.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
+    const homeState = !childStable ? "unknown" : !homes ? "unreadable" : homes.length === 0 ? "missing" : homes.length > 1 || homes[0] === "HOME" ? "ambiguous" :
+      homes[0] === `HOME=${home}` ? "exact" : "different";
+    const types = row.argv.filter((arg) => arg.startsWith("--type=") || arg === "--type");
+    const value = types[0]?.slice("--type=".length);
+    const type = !childStable ? "unknown" : types.length === 0 ? (state === "zombie" || state === "dead" ? "unknown" : "absent") :
+      types.length !== 1 || !value || types[0] === "--type" ? "unknown" :
+        ["renderer", "zygote", "gpu-process", "utility"].includes(value) ? value : "other";
+    const selection = row.profileSelected ? "profile" : row.crashSelected ? "Crashpad" : row.trackedSelected ? "tracked" : row.selected ? "descendant" : "unknown";
+    // Fixed axes only; no process identity, argv, path, environment or raw error.
+    return `${selection},${state},${homeState},${type},${consistency}`;
+  };
   // Diagnostic precedence only: profile > crash database > tracked identity > descendant.
   // Ambiguous argv cannot establish a role; it never falls through to a weaker basis.
   const homeMismatchReason = (row, env) => {
@@ -177,7 +214,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       const trackedSelected = tracked.get(Number(entry)) === fields[19];
       const selected = profileSelected || crashSelected || trackedSelected;
       rows.push({ pid: Number(entry), parent: Number(fields[1]), identity: fields[19], argv, profileArgs,
-        profileSelected, crashSelected, trackedSelected, selected });
+        profileSelected, crashSelected, trackedSelected, selected, snapshot: snapshot(Number(entry), stat) });
     } catch (error) {
       if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
     }
@@ -191,8 +228,10 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   } while (changed);
   const owned = [];
   for (const row of rows.filter((row) => row.selected)) {
+    const before = snapshot(row.pid), parentBefore = snapshot(row.parent);
+    let env;
     try {
-      const env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
+      env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
       if (!env.includes(`HOME=${home}`)) throw new OwnershipFailure(homeMismatchReason(row, env));
       requireOwnership(row.profileArgs.length <= 1, "profile-argv");
       const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
@@ -202,7 +241,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       tracked.set(row.pid, row.identity);
       owned.push({ pid: row.pid, profile, main: !!profile && !row.argv.some((arg) => arg.startsWith("--type=")) });
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-environ" : ownershipReason(error));
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-environ" : ownershipReason(error), observe(row, env, before, parentBefore));
     }
   }
   return owned;
@@ -243,24 +282,43 @@ const tlsStages = { preflight: "tls-preflight", "certificate/NSS": "tls-cert", l
   "Browser.newContext": "tls-browser-context", "NSS candidate": "tls-browser-nss", "positive trust": "tls-positive", "SAN mismatch": "tls-san",
   "unregistered certificate": "tls-untrusted", "helper callback": "tls-consumer" };
 
+const observationAxes = [new Set(["profile", "Crashpad", "tracked", "descendant", "unknown"]),
+  new Set(["live", "zombie", "dead", "unknown"]), new Set(["exact", "missing", "different", "ambiguous", "unreadable", "unknown"]),
+  new Set(["renderer", "zygote", "gpu-process", "utility", "other", "absent", "unknown"]),
+  new Set(["stable", "changed", "vanished", "unreadable", "unknown"])];
+const unknownObservation = "unknown,unknown,unknown,unknown,unknown";
+const validObservation = (value) => typeof value === "string" && value.split(",").length === 5 &&
+  value.split(",").every((entry, index) => observationAxes[index].has(entry));
+const safeObservation = (value) => validObservation(value) ? value : unknownObservation;
+const closeAxes = [new Set(["pass", "fail", "not-done"]), new Set(["resolve", "reject", "not-done"]), new Set(["pass", "fail", "not-run"])];
+const closeFields = (value) => `; PRE_CLOSE=${closeAxes[0].has(value.preClose) ? value.preClose : "not-done"}; CLOSE=${closeAxes[1].has(value.close) ? value.close : "not-done"}; POST_CLOSE=${closeAxes[2].has(value.postClose) ? value.postClose : "not-run"}`;
+const failureObservation = (error, fallback) => {
+  const value = error instanceof OwnershipFailure ? error.observation ?? fallback : fallback;
+  return value !== undefined ? `; observation=${safeObservation(value)}` : "";
+};
+
 export function recordBrowserFailure(diagnostic, stage) {
   if (diagnostic.primary === "none") diagnostic.primary = primaryStages.has(stage) && stage !== "none" ? stage : "unknown";
 }
 
 export function observeTlsDiagnostic(diagnostic, line, consumerStage) {
-  const failure = /^failure: stage=([^;]+); category=(?:ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_INVALID|ERR_SSL_PROTOCOL_ERROR|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_NAME_NOT_RESOLVED|ERR_TIMED_OUT|TIMEOUT|UNCLASSIFIED); TLS proof incomplete; raw cause withheld(?:; ownership=([a-z-]+))?$/.exec(line);
+  const failure = /^failure: stage=([^;]+); category=(?:ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_INVALID|ERR_SSL_PROTOCOL_ERROR|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_NAME_NOT_RESOLVED|ERR_TIMED_OUT|TIMEOUT|UNCLASSIFIED); TLS proof incomplete; raw cause withheld(?:; ownership=([a-z-]+))?(?:; observation=([A-Za-z,-]+))?$/.exec(line);
   if (failure) {
     const stage = failure[1] === "helper callback" && ["worker-start", "browser-read"].includes(consumerStage)
       ? consumerStage : Object.hasOwn(tlsStages, failure[1]) ? tlsStages[failure[1]] : "unknown";
     if (diagnostic.primary === "none" && failure[2]) diagnostic.ownership = ownershipReasons.has(failure[2]) ? failure[2] : "unknown";
+    if (diagnostic.primary === "none" && failure[3]) diagnostic.observation = safeObservation(failure[3]);
     recordBrowserFailure(diagnostic, stage);
   }
-  const cleanup = /^cleanup failure: stage=([a-z-]+); primary=(none|failed)(?:; ownership=([a-z-]+))?$/.exec(line);
+  const cleanup = /^cleanup failure: stage=([a-z-]+); primary=(none|failed)(?:; ownership=([a-z-]+))?(?:; observation=([A-Za-z,-]+))?$/.exec(line);
   if (cleanup && diagnostic.cleanup === "none") {
     if (cleanup[3]) diagnostic.cleanupOwnership = ownershipReasons.has(cleanup[3]) ? cleanup[3] : "unknown";
+    if (cleanup[4]) diagnostic.cleanupObservation = safeObservation(cleanup[4]);
     diagnostic.cleanup = cleanupStages.has(cleanup[1]) && cleanup[1] !== "none" ? cleanup[1] : "unknown";
     if (cleanup[2] === "failed") recordBrowserFailure(diagnostic, "unknown");
   }
+  const close = /^cleanup observation; PRE_CLOSE=(pass|fail|not-done); CLOSE=(resolve|reject|not-done); POST_CLOSE=(pass|fail|not-run)$/.exec(line);
+  if (close && diagnostic.closeObservation === undefined) diagnostic.closeObservation = { preClose: close[1], close: close[2], postClose: close[3] };
 }
 
 export function browserDiagnostic(diagnostic) {
@@ -269,15 +327,20 @@ export function browserDiagnostic(diagnostic) {
   const safeReason = (value) => ownershipReasons.has(value ?? "none") ? value ?? "none" : "unknown";
   const reasons = diagnostic.ownership !== undefined || diagnostic.cleanupOwnership !== undefined
     ? `; OWNERSHIP=${safeReason(diagnostic.ownership)}; CLEANUP_OWNERSHIP=${safeReason(diagnostic.cleanupOwnership)}` : "";
-  return `TRUSTED_BROWSER_STAGE=${primary}; CLEANUP=${cleanup}${reasons}`;
+  const observations = diagnostic.observation !== undefined || diagnostic.cleanupObservation !== undefined
+    ? `; OBSERVATION=${safeObservation(diagnostic.observation)}; CLEANUP_OBSERVATION=${safeObservation(diagnostic.cleanupObservation)}` : "";
+  return `TRUSTED_BROWSER_STAGE=${primary}; CLEANUP=${cleanup}${reasons}${observations}${diagnostic.closeObservation ? closeFields(diagnostic.closeObservation) : ""}`;
 }
 
 export function parseBrowserDiagnostic(stderr) {
   if (typeof stderr !== "string") return undefined;
-  const match = /^TRUSTED_BROWSER_STAGE=([a-z-]+); CLEANUP=([a-z-]+)(?:; OWNERSHIP=([a-z-]+); CLEANUP_OWNERSHIP=([a-z-]+))?\r?\n?$/.exec(stderr);
+  const match = /^TRUSTED_BROWSER_STAGE=([a-z-]+); CLEANUP=([a-z-]+)(?:; OWNERSHIP=([a-z-]+); CLEANUP_OWNERSHIP=([a-z-]+))?(?:; OBSERVATION=([A-Za-z,-]+); CLEANUP_OBSERVATION=([A-Za-z,-]+))?(?:; PRE_CLOSE=(pass|fail|not-done); CLOSE=(resolve|reject|not-done); POST_CLOSE=(pass|fail|not-run))?\r?\n?$/.exec(stderr);
   // The match must consume everything, including extra final newlines.
   if (!match || match[0] !== stderr || !primaryStages.has(match[1]) || !cleanupStages.has(match[2]) || (match[3] && (!ownershipReasons.has(match[3]) || !ownershipReasons.has(match[4])))) return undefined;
-  return browserDiagnostic({ primary: match[1], cleanup: match[2], ownership: match[3], cleanupOwnership: match[4] });
+  if (match[5] && (!validObservation(match[5]) || !validObservation(match[6]))) return undefined;
+  return browserDiagnostic({ primary: match[1], cleanup: match[2], ownership: match[3], cleanupOwnership: match[4],
+    observation: match[5], cleanupObservation: match[6],
+    closeObservation: match[7] ? { preClose: match[7], close: match[8], postClose: match[9] } : undefined });
 }
 
 export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove, onStage = () => {} }) {
@@ -350,7 +413,8 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   let context, browser, server, launchAttempted = false, stage = "preflight", requests = 0;
   const temporary = tmpdir(), tracked = new Map();
   let generated = [], generatedProfile;
-  let primaryFailed = false, cleanupStage = "unknown";
+  let primaryFailed = false, cleanupStage = "unknown", cleanupProcessObservation;
+  const closeObservation = { preClose: "not-done", close: "not-done", postClose: "not-run" };
   const sockets = new Set();
   // CLI is bounded and has no inherited credentials, proxy, TLS override or user config.
   const command = async (file, args, cleanup = false) => (await exec(file, args, {
@@ -483,7 +547,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
       "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT"];
     const category = codes.find((code) => error instanceof Error && error.message.includes(`net::${code}`)) ??
       (error instanceof Error && /Timeout|deadline/.test(error.message) ? "TIMEOUT" : "UNCLASSIFIED");
-    report(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld${workerHandoff && (error instanceof OwnershipFailure || stage === "launch-resolved ownership") ? `; ownership=${ownershipReason(error)}` : ""}`);
+    report(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld${workerHandoff && (error instanceof OwnershipFailure || stage === "launch-resolved ownership") ? `; ownership=${ownershipReason(error)}` : ""}${workerHandoff ? failureObservation(error) : ""}`);
     throw new Error(`BROWSER_TLS_TRUST_FAILED (${stage}); runtime proof incomplete`);
   } finally {
     try {
@@ -493,26 +557,35 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           if (browser) {
             // Capture children created during reads before Browser.close/reparenting.
             // Even if ownership validation fails, still attempt public API shutdown.
-            let unknownReason;
+            let unknownReason, unknownObservation;
+            closeObservation.preClose = "fail";
             try {
               const ownership = checkWorkerBrowserOwnership(home, temporary, tracked);
               requireOwnership(ownership.profile === generatedProfile &&
                 JSON.stringify(ownership.files.slice().sort()) === JSON.stringify(generated.slice().sort()), "generated-changed");
-            } catch (error) { unknownReason = ownershipReason(error); }
-            await bounded(browser.close(), 10000);
+              closeObservation.preClose = "pass";
+            } catch (error) {
+              unknownReason = ownershipReason(error); unknownObservation = error instanceof OwnershipFailure ? error.observation : undefined;
+              cleanupProcessObservation = unknownObservation;
+            }
+            await bounded(browser.close().then(() => { closeObservation.close = "resolve"; }, (error) => {
+              closeObservation.close = "reject"; throw error;
+            }), 10000);
             cleanupStage = "browser-ownership";
-            if (unknownReason) throw new OwnershipFailure(unknownReason);
+            if (unknownReason) throw new OwnershipFailure(unknownReason, unknownObservation);
           }
           else if (context) await bounded(context.close(), 10000);
         },
         browserStopped: async () => {
           // Failed launch has no API-confirmed shutdown: retain files even if /proc looks empty.
           if (launchAttempted && !(workerHandoff ? browser : context)) return false;
+          if (workerHandoff) closeObservation.postClose = "fail";
           const processes = () => workerHandoff ? workerBrowserProcesses(home, temporary, tracked) : ownedProcesses(home, profile);
           const deadline = Date.now() + 5000;
           while (processes().length && Date.now() < deadline) await wait(100);
           const stopped = processes().length === 0;
           if (workerHandoff) requireOwnership(stopped, "related-process-remains");
+          if (workerHandoff && stopped) closeObservation.postClose = "pass";
           return stopped;
         },
         closeServer: async () => {
@@ -533,10 +606,12 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           rmSync(home, { recursive: true });
         },
       });
+      if (workerHandoff) report(`cleanup observation${closeFields(closeObservation)}`);
       report("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
     } catch (error) {
       // Capture the first failing cleanup operation before emergency shutdown.
-      report(`cleanup failure: stage=${cleanupStage}; primary=${primaryFailed ? "failed" : "none"}${workerHandoff && error instanceof OwnershipFailure ? `; ownership=${ownershipReason(error)}` : ""}`);
+      if (workerHandoff) report(`cleanup observation${closeFields(closeObservation)}`);
+      report(`cleanup failure: stage=${cleanupStage}; primary=${primaryFailed ? "failed" : "none"}${workerHandoff && error instanceof OwnershipFailure ? `; ownership=${ownershipReason(error)}` : ""}${workerHandoff ? failureObservation(error, cleanupProcessObservation) : ""}`);
       // Stop the owned server even if browser state is uncertain; never delete its files.
       if (server?.listening) { server.close(); server.closeAllConnections(); }
       for (const socket of sockets) socket.destroy();

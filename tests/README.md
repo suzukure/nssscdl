@@ -358,10 +358,22 @@ knownはargvに`--type=renderer` / `--type=zygote` / `--type=gpu-process` / `--t
 type指定なしはabsent、重複・空・未知値・値指定のない`--type`はunknownに縮退する。HOME判定不能は`home-descendant-unknown`、environ不読は従来の`proc-environ`とする。
 既存`home-descendant`もparser互換として受理し、profile / database / trackedの強い選択根拠は細分化しない。
 診断は不一致時だけの補強であり、完全一致entryがある場合の既存受理条件やprocess消滅時の扱いを変更しない。
-親子閉包は従来のPID=PPID照合のまま。PID再利用・列挙競合による誤認可能性は監査観点として残り、実際の発生は未実証である。
+親子閉包による採否は従来のPID=PPID照合のまま。既に選択されたprocessの失敗時だけ、別軸の固定診断を付加する。
+`OBSERVATION` / `CLEANUP_OBSERVATION`はそれぞれ選択根拠、state、HOME entry、type、観測整合性の順のカンマ区切り5項目とする。
+選択根拠はprofile / Crashpad / tracked / descendant / unknown、stateはlive / zombie / dead / unknown、
+HOME entryはexact / missing / different / ambiguous / unreadable / unknown、typeはrenderer / zygote / gpu-process / utility / other / absent / unknown、
+整合性はstable / changed / vanished / unreadable / unknownだけを受理する。未知値は公開せずunknownへ縮退する。
+statのfield 3=state、4=PPID、22=starttimeを照合し、Zはzombie、X/xはdeadと観測する。空cmdlineのzombie/deadはtype=unknownとし、HOME免除や選択除外を行わない。
+収集時・environ前後のchild PID/starttime/state/PPIDと、観測できる親PID/starttimeを非公開で照合する。
+child観測が競合・取得不能ならstate / HOME / typeはunknownとし、一致時のHOME/typeも読取り内容の分類であって伝播元・実roleの証明ではない。
+追加読取り失敗も元の選択やHOME判定の成否を変えない。stableは二時点以上の一致だけを示し、原子的snapshotや完全な親子一貫性を保証しない。
+PID再利用・列挙競合による誤認可能性と、今回の実際の発生は未実証として残る。
 これは選択根拠による診断分類であり、実Chromeのmain / child / Crashpadの原因確定や許容を意味しない。
 従来の`home-mismatch`もparser互換のため受理する。全関連processの実HOME一致条件は維持する。
-owner parserは既存2項目形式も受理し、新形式は両reasonの固定allowlistと全入力一致を要求する。
+owner parserは既存2項目形式・互換reasonを受理し、追加時は両観測の固定allowlist・固定順と全入力一致を要求する。
+cleanupの追加フィールド`PRE_CLOSE`=pass / fail / not-done、`CLOSE`=resolve / reject / not-done、`POST_CLOSE`=pass / fail / not-runは独立した実施結果とする。
+close未決着のdeadlineはnot-doneであり、公開APIのrejectと推測しない。pre-close不確定→close resolve→browser-ownershipをthrowする既存順序を維持するため、その経路はPOST_CLOSE=not-runとなる。
+診断のために未実施のclose後消滅確認を追加せず、resolveだけをowned cleanup成功へ読み替えない。
 raw path / argv / env / errorを出さず、後発cleanupは一次failureや最初のcleanup reasonを上書きしない。
 診断は所有チェック・close順序・不明時保全を緩和せず、runtime原因確定やcleanup成功の証拠としない。
 
@@ -372,7 +384,10 @@ GET / navigationは5秒、response bodyは4096文字上限を維持する。
 
 標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureは公開Browser引渡し / persistent null境界 / 非永続4Context / TMPDIR・profile・実HOME所有 / main唯一性 / 停止・残存保全 / handoff順序 / Cookie属性 / response非露出の補助証拠のみ。
 今回の限定scopeは上記診断の静的・合成fixtureと文書同期だけで、実Chromeの再実行は別途人間判断を要する。
-HOME欠落 / 異値 / 重複、type単一 / 欠落 / 曖昧、親子閉包・選択優先順、primaryとcleanupで異なるreason、不読 / 不明の保全をfixtureで確認するが、実HOME伝播やprocess roleの証明とはしない。
+HOME欠落 / 異値 / 重複、live / Z＋空cmdline・environ、既知type4種 / other / 欠落 / 曖昧、
+child identity・state・親リンク / 親identityの二時点変化・消滅・不読・malformed stat、選択優先順、
+primaryとcleanupで異なるreason / 観測、pre-close fail＋close resolve＋post-close not-run、close reject・未決着、残存保全、厳格parser拒否をfixtureで確認する。
+実HOME伝播、process role、Chrome / Worker / D1やowned cleanup成功の証明とはしない。
 正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
 HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
 一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
