@@ -81,38 +81,6 @@ jobs:
         if: steps.applicability.outputs.applicable == 'true'
         run: npm ci
 
-      - name: Build（deployなし）
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run build
-
-      - name: Typecheck
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run typecheck
-
-      - name: Lint
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run lint
-
-      - name: Unit tests
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run test:unit
-
-      - name: Integration tests
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run test:integration
-
-      - name: Local D1 migrations
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run d1:local
-
-      - name: Local D1 smoke
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm run test:d1
-
-      - name: 全テスト
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm test
-
       # TEMPORARY #914 browser + Worker + isolated D1 formal proof. Remove before Ready / merge.
       - name: '#914 opt-in Chrome Worker/D1 normal and intentional failure proof'
         if: steps.applicability.outputs.applicable == 'true'
@@ -145,6 +113,11 @@ jobs:
                 printf '#914 diagnostic marker absent: %s\n' "$marker"
               fi
             done
+            for stage in entry seed seed-inspect tls-setup tls-preflight tls-cert tls-listener tls-browser-launch tls-positive tls-san tls-untrusted tls-consumer tls-cleanup worker-start browser-read; do
+              if grep -Fxq "TRUSTED_BROWSER_STAGE=$stage" "$normal_log"; then
+                printf '#914 safe failure stage: %s\n' "$stage"
+              fi
+            done
             exit 1
           fi
           grep -Fq '#914: NSS P,, / strict browser TLS positive and two negative probes / same cert and fixed-port serial handoff passed' "$normal_log"
@@ -166,3 +139,36 @@ jobs:
           ! grep -Eq 'TRUSTED_BROWSER_PROOF_FAILED|uncertain process|CLEANUP_FAILED' "$failure_log"
           test ! -e .wrangler/student-read-only-evaluation
           printf '#914 intentional failure: expected exit 1 + cleanup passed; no raw logs printed\n'
+
+      - name: Build（deployなし）
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run build
+
+      - name: Typecheck
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run typecheck
+
+      - name: Lint
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run lint
+
+      - name: Unit tests
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run test:unit
+
+      - name: Integration tests
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run test:integration
+
+      - name: Local D1 migrations
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run d1:local
+
+      - name: Local D1 smoke
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm run test:d1
+
+      - name: 全テスト
+        if: steps.applicability.outputs.applicable == 'true'
+        run: npm test
+
