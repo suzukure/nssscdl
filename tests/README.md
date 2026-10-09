@@ -234,6 +234,73 @@ HTTPは#904同様5秒 / response 4096文字上限。失敗・timeout・停止不
 `TC-NF-914-04`の**local HTTPS partial evidence**だけを追加する。POL→BR→REQ→AC→TC、CON / OOSの意味は変更しない。
 30日期限・Logout / Suspension操作全体、実Auth / Browser / Preview / Confirm / Provider / remote D1、Gate A〜Dは未検証。
 
+## #915 opt-in isolated Chromium TLS trust proof
+
+`evaluation/browser-tls-trust.mjs` はLinux / Node 24のtransport専用harness。
+通常build / test / 恒常CIからは起動しない。Cookie / Student / D1 / CSRF / UIを接続しない。
+`playwright-core@1.64.0`をdev-onlyで固定し、runner上の実在browserを明示指定する。
+browser download / global install / 外部通信 / OS trust変更は行わない。
+`playwright-core@1.64.0`のlock entry（SHA-512 integrity、license、bin、engines）は、
+[正式Actions #37912192152](https://github.com/suzukure/nssscdl/actions/runs/37912192152) で
+npm公式registryから取得した情報を基に生成・照合し、同runで`npm ci --ignore-scripts`が成功した。
+lockとrootのdev-only固定版は一致。恒常CIでは通常の`npm ci`を用いる。
+一時診断stepは最終差分から撤去するため、最終HEADの標準Product CIは別途確認する。
+
+前提はinstalled Chromium / Google Chrome、`/usr/bin/certutil`（Debian/Ubuntuの`libnss3-tools`）、
+OpenSSL、`ss`、読み取り可能な同一userの`/proc`、Chromium sandboxを有効にしたlocal実行環境。
+runnerにツールがない、version / HOME / NSS path / process終了が曖昧なら固定診断で停止する。
+不足ツールの導入やfallbackは行わない。browser sandbox / TLS検証を無効化しない。
+raw driver logを出さないため`DEBUG` / `PWDEBUG`設定時は開始しない。
+
+```sh
+NSSSCDL_CHROMIUM_PATH=/usr/bin/chromium node tests/evaluation/browser-tls-trust.mjs --run
+NSSSCDL_CHROMIUM_PATH=/usr/bin/chromium node tests/evaluation/browser-tls-trust.mjs --run --fail-after-positive
+node --test tests/evaluation/browser-tls-trust.test.mjs
+```
+
+第2commandは意図的失敗（exit 1）で、positive直後の停止・cleanupを正式実環境でも確認する。
+Ctrl-C / SIGTERMも停止対象で、自動retryしない。各navigationは5秒、CLIとbrowser launchは30秒、
+browser closeは10秒、process消滅確認とserver closeは各5秒の停止用上限（外部の性能保証ではない）。
+失敗時もbrowser終了を先に確証し、HTTPS listener / port閉鎖後だけowned filesを削除する。
+確認不能ならserver停止を試み、HOME / NSS / profile / cert / keyを保全して人間調査へ戻す。
+
+run専用mkdtemp HOME（0700）と独立profileを作り、child envは許可したpath設定だけを渡す。
+Chromium公式[Linux Cert Management](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/cert_management.md)
+に従いM146以降は`HOME/.local/share/pki/nssdb`、以前は`HOME/.pki/nssdb`を明示する。
+両候補が空の新HOMEだけを使用し、選ばなかった候補が出現したら停止するため、legacy優先の曖昧さを持ち込まない。
+`certutil -N --empty-password`後、#904の`createCertificate`を再利用した1日限定自己署名server cert
+（IP SAN `127.0.0.1`）1枚だけを`-A -t "P,,"`で登録する。
+listing / nickname / fingerprint / SANを確認し、ブラウザprocessの実HOMEを`/proc`で照合する。
+専用profileだけをNSS隔離の証拠にはしない。
+
+test-only Node HTTPSは`127.0.0.1:8788`だけで固定非機密textを返す。port衝突は停止する。
+同一persistent BrowserContextの実navigationで次を検査する（Node TLS client / APIRequestContext / mockを使わない）。
+
+| 入力 | 必須結果 |
+| --- | --- |
+| 登録済みcert、`https://127.0.0.1:8788/trusted` | HTTPS 200 / 固定text |
+| 同じ登録済みcert、`https://localhost:8788/san-mismatch`（resolverで127.0.0.1へ固定） | `net::ERR_CERT_COMMON_NAME_INVALID`、HTTP handler未到達 |
+| 未登録の異なる自己署名certへserver contextを切替、同じIP origin | `net::ERR_CERT_AUTHORITY_INVALID`、HTTP handler未到達 |
+
+不特定hostnameはresolverで拒否し、proxyを使わない。TLS session ticketを無効化し、応答はconnection closeとする。
+`ignoreHTTPSErrors`はfalse、無検証flag / policy / global trust変更なし。
+`withIsolatedBrowserTls(callback)` は正負probe後のowned context / 固定originだけをcallbackへ渡し、
+callback終了後も同じ停止・保全契約を適用する最小test helper。#914 consumerは未接続。
+非秘密checkpointはHEAD / UTC / Node・browser exact version・binary / NSS tool・OpenSSL版、
+HOME相対NSS path、証明書fingerprint、固定正負結果、cleanup、未実施事項だけ。
+key / cert本文 / raw browser error / child envはstdout / Artifactへ出さない。
+
+小fixtureはpath規則・env / TLS設定・証明書1枚限定・error分類・正常と意図的失敗のcleanup順序・
+状態不明時の非削除・CLI非秘密診断の**supplementary partial evidence**のみ。
+正式Actions proofは既存Product CIへ一時opt-in stepを接続して上記実browser2commandを実行し、
+成功runと意図的失敗runの終了・cleanupを記録する（後者の期待exit 1を成功probeへすり替えない）。
+一時stepは最終差分から撤去し、proof HEAD / final HEADの実行対象blob一致、final HEAD標準Product CI /
+PR Traceabilityを別途確認する。Codexのローカル報告・fixtureだけは正式実Browser証拠に算入しない。
+正式実証・レビュー未完了なら#915はOpen / PR Draft維持、#914はresumeしない。
+これは既存`TC-F-001/002/005/207/211`・`TC-NF-914`のBrowser TLS環境前提の部分証拠のみ。
+POL→BR→REQ→AC→TC、CON / OOSの意味・identifierは変更せず、Session本人GET / 失効401、
+Gate A〜D、REQ-901/902、#608全体、System / Acceptance TC全体のPassは証明しない。
+
 ## 既存の部分証拠と標準テスト
 
 `unit/schedule-query.test.ts` は#828のfake Repository / deterministic Clockによるpure core検証。

@@ -156,6 +156,10 @@ trusted seedのpersistent local D1 runtime proofは `../../tests/README.md` の#
 既存TC-F-001/002/005/207/211・TC-NF-914のlocal HTTPS partial evidenceだけで、正式Actions実証と補助fixtureを区別する。
 BrowserContext・assets・unsafe業務POSTは未接続であり、Gate A〜DのPassとしない。正式実証未達ならIssue Open / Draftを維持する。
 
+#915の隔離Chromium TLS harness / 小fixtureと正式Actions proofの区別は `../../tests/README.md` を正本とする。
+run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、Browser Session Cookie本人GET、
+失効401、Gate A〜D、REQ-901/902、#608や既存TC全体のPassを証明しない。#914 consumerは未接続。
+
 ## 8. Entry Criteria
 
 - 対象BuildがTest環境へDeploy済み
