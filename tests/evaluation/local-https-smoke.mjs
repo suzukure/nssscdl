@@ -241,6 +241,7 @@ export async function run() {
       controller.signal.throwIfAborted();
       assert.ok(child.exitCode === null && child.signalCode === null);
       const response = await request(path, ca, headers, method);
+      if (response.status !== status) console.log(`HTTP safe-status mismatch: ${method} ${path}; expected=${status}; actual=${response.status} (body withheld)`);
       checkResponse(response, status);
       if (path.endsWith("csrf")) assert.equal(response.headers["referrer-policy"], "no-referrer");
       console.log(`HTTPS ${method} ${path}: ${status} / no-store / fixed safe response (Cookie not sent)`);
