@@ -15,7 +15,7 @@ seed時も同一batch内で空条件を再照合し、非空・不正schema・ba
 CSPRNG 32byteのcanonical tokenはDBにはSHA-256 lowercase hashだけ保存する。
 返却 `sessions.self/other.cookie()` だけが生tokenとSecure / HttpOnly / SameSite=Lax / Path=/ / Domainなしの属性を渡す。
 Session返却objectのJSON化は生tokenを含まないが、`cookie()`の結果は秘密値としてmemory内だけで扱い、Log / Artifactへ出さない。
-実BrowserContext・HTTPS origin設定・runtime接続は後続責務。
+実BrowserContext・HTTPS origin設定は後続責務。seedの専用persistent D1接続は以下の#906 opt-inで検証する。
 `d1/trusted-student-seed.test.ts` / `d1/trusted-student-seed-failures.test.ts` は既存file-isolated `AUTH_DB`で
 全12migration、FK / auth / reservation scans各0行、実Production Guard + Read Repositoryの4 View・本人履歴・
 他生徒情報非公開、Session role/owner/expiry/hash、失効後401、GET非更新、非空・未知/不正schema・競合・Rollbackを検証する。
@@ -139,6 +139,48 @@ source SHAだけでは未commit変更の同一性やformal CIを証明しない�
 このcheckpointを#904 / #537へ記録する。部分検証失敗 / runtime不足は未検証としてIssueをOpenに保つ。
 `TC-F-001/002/005/207/211`、`TC-NF-914`のlocal runtime **partial proof**のみで、
 業務POL→BR→REQ→AC→TC / CON / OOSの意味、Browser Gate A〜Dの判定は変更しない。
+
+## #906 opt-in trusted seed / actual persistent local D1
+
+`evaluation/trusted-evaluation-seed.mjs`の`withTrustedEvaluationSeed(callback)`は既存#898の
+`seedTrustedStudents` / `TrustedSeedSession.cookie()`を直接使う。Node 24 / locked Wrangler 4.146.0、
+既存専用configの完全一致、credentialを継承しない専用Node環境、env filesなし、
+正本12migration適用済みの専用空persistと停止済みWorkerが前提。通常`TEST_DB` / `AUTH_DB`へ接続しない。
+`getPlatformProxy`は`configPath: tests/evaluation/wrangler.jsonc`の絶対path、`remoteBindings:false`、
+`persist.path: .wrangler/student-read-only-evaluation/v3`の絶対pathに固定する。
+CLIの`--persist-to .wrangler/student-read-only-evaluation`との対応はschema / migration履歴と
+seed後の別proxy読取りで実測する。未知schema・非空・再seed・設定不一致・remote指定は固定errorで停止する。
+
+```sh
+node --test tests/evaluation/trusted-evaluation-seed.test.mjs
+node tests/evaluation/trusted-seed-smoke.mjs --run
+```
+
+後者はLinux / Node 24 / locked依存 / local workerd / `ss`とprocess group停止を許す環境で明示opt-inする。
+所有runnerが新規専用persistを作り、#904と同じ固定CLIで12migrationを一度適用する。
+既存persist / env files / port 8788使用中では開始しない。Listener・証明書・Browserは起動しない。
+seed proxyの`dispose()`を待った後だけ同一Node processの限定async callbackへ専用Session objectを渡す。
+callback中はpersistを保持し、戻り値は破棄する。callback失敗も原因なしの`TRUSTED_EVALUATION_SEED_FAILED`。
+raw Cookieはargv / env / URL / Log / Assertion diff / snapshot / Artifact / temp fileへ渡さず、DBにはhashだけ保存する。
+callbackはtrusted caller専用であり、自由にLog・保存するuntrusted callbackを受け付ける公開入口ではない。
+
+実試験`evaluation/trusted-seed-process.mjs`は別actual proxyでschema / 全12migration履歴、FK / Auth / 12予約scan、
+Tokyo次月15日・公開未来5枠・本人/他人の予約とSession owner / hash / 1日期限を確認する。
+二度目のseed拒否後の全Table digest不変、専用persist / 一時Log内のraw値非存在をmemory内で検査する。
+seed・batch失敗／結果不明にretry・修復・upgrade・DELETEは行わない。停止はCtrl-C。
+各child command上限60秒、停止確認は#904のSIGINT 10秒＋必要時SIGKILL 5秒を再利用する（強制停止は失敗）。
+成功・失敗ともproxy破棄、全所有process groupと8788閉鎖を確認してから所有persist / 一時Logのみ削除する。
+停止不明なら保持してoperator確認へ戻す。通常`.wrangler/d1-bootstrap-test`等は触らない。
+有限Port fixtureは正常／異常dispose・callback秘匿・batch rollback／応答不明・schema／非空拒否の補助検査で、actual proxyの代用ではない。
+
+Product CIのPR bodyへ`[evaluation-seed-proof-906]`を明示した場合だけ一時stepで両commandを実行する。
+正式成功はworkflow側の対象head / UTC実行日時 / 結果と非機密checkpointで確認し、#906 / 親#537へ記録する。
+一時stepを最終PRから除去する場合は対応workflow fixtureも同期し、実証headとfinal headの実行対象blob完全一致とfinal-head標準Product CI成功を別に確認する。
+依存欠落・offline・部分検証成功をformal successと扱わず、検証未達なら#906はOpenに保つ。
+`REQ-001/002/005/207/211`の既存AC→`TC-F-001-01〜02/002-01〜02/005-01/207-02〜03/211-02`、
+`TC-NF-914-04`の**local setup partial evidence**のみ。POL→BR→REQ→AC→TC、CON / OOSの意味は変更しない。
+秘密Cookieから実HTTPS 3 GETへの接続・200／改ざん／失効／non-public確認、BrowserContext、
+実Auth flow・Preview / Confirm、Gate A〜Dは今回の成功に含めず、供給Issueの後続責務として保持する。
 
 ## 既存の部分証拠と標準テスト
 

@@ -280,6 +280,13 @@ assert set(job) == {'name', 'runs-on', 'env', 'steps'}
 assert job['name'] == 'Product CI' and job['runs-on'] == 'ubuntu-latest'
 assert job['env'] == {'WRANGLER_SEND_METRICS': 'false'}
 checkout, applicability, setup, *commands = job['steps']
+# #906 temporary opt-in stays outside the unchanged nine standard commands.
+seed_proof = commands.pop()
+assert set(seed_proof) == {'name', 'if', 'run'}
+assert seed_proof['if'] == "steps.applicability.outputs.applicable == 'true' && contains(github.event.pull_request.body, '[evaluation-seed-proof-906]')"
+assert seed_proof['run'] == ('node --test tests/evaluation/trusted-evaluation-seed.test.mjs\n'
+                             'node tests/evaluation/trusted-seed-smoke.mjs --run\n')
+subprocess.run(['bash', '-n'], input=seed_proof['run'].encode(), check=True)
 assert set(checkout) == {'name', 'uses', 'with'}
 assert set(setup) == {'name', 'if', 'uses', 'with'}
 assert checkout['uses'] == 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
