@@ -112,3 +112,38 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      # TEMPORARY one-off registry metadata inspection for PR #917. DO NOT merge.
+      - name: '#917 temporary trusted npm registry metadata (remove before review)'
+        if: steps.applicability.outputs.applicable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'PR917_REGISTRY_METADATA_START head=%s\n' "$GITHUB_SHA"
+          npm view playwright-core@1.64.0 dist.integrity dist.tarball license engines bin --json \
+            --registry=https://registry.npmjs.org/ --fetch-retries=0
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'package-lock.json';
+          const lock = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (lock.packages['node_modules/playwright-core'].version !== '1.64.0') {
+            throw new Error('unexpected dependency version');
+          }
+          delete lock.packages['node_modules/playwright-core'];
+          fs.writeFileSync(path, JSON.stringify(lock, null, 2) + '\n');
+          NODE
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund \
+            --save-dev --save-exact playwright-core@1.64.0 \
+            --registry=https://registry.npmjs.org/ --fetch-retries=0
+          node <<'NODE'
+          const fs = require('node:fs');
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const entry = lock.packages['node_modules/playwright-core'];
+          if (entry.version !== '1.64.0' || !/^sha512-[A-Za-z0-9+/]+=*$/.test(entry.integrity || '') ||
+              lock.packages[''].devDependencies['playwright-core'] !== '1.64.0') {
+            throw new Error('lock metadata validation failed');
+          }
+          console.log('PR917_GENERATED_LOCK_ENTRY=' + JSON.stringify(entry));
+          NODE
+          npm ci --ignore-scripts --no-audit --no-fund --fetch-retries=0
+          printf 'PR917_REGISTRY_LOCK_CI_OK head=%s\n' "$GITHUB_SHA"
