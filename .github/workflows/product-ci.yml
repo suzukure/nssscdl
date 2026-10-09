@@ -137,6 +137,7 @@ jobs:
               'certificate: SHA256=' \
               '#914: NSS P,,' \
               'TRUSTED_BROWSER_PROOF_FAILED' \
+              'TRUSTED_BROWSER_STAGE=' \
               'TRUSTED_EVALUATION_SEED_CLEANUP_FAILED'; do
               if grep -Fq "$marker" "$normal_log"; then
                 printf '#914 diagnostic marker present: %s\n' "$marker"
