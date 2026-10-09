@@ -311,7 +311,7 @@ Codex自身の同じ実行内での契約照合は `AGENTS.md` のRequired workf
 1. **現在の証拠を照合する**：current main/PR HEAD、既存指摘の対象HEADと根拠、current-head CIのrun/attempt・結果、直接関連する既存契約と差分を照合する。model実行前のcontext構築失敗、CI待ち、CI failure、情報不足、未決仕様判断、実装欠陥による既存契約違反、任意改善を区別する。CI failureはテスト入力・期待値や検証環境も確認し、失敗やBlockingという名称だけで実装変更が必要と決めない。契約に明記のない判断は明記不足として扱い、根拠を確認できないものは未確認として残す。
 2. **差分不要なら記録・証拠で解消する**：確定済み判断のIssue/PR本文同期、既存の定型欄による後継snapshot供給、current-head CIの完了待ち・結果確認等を行う。必要な正式CIや再レビューは各経路の既存契約に従い、実装再実行と区別する。古い承認を新HEADへ流用しない。未決のsafe deferralやDone変更をmetadata修正として無断確定せず、重要な未決判断は既存の人間裁定・本文同期契約へ戻す。記録を整えても既存契約違反が残る場合は停止を維持する。
 3. **停止・再開の成立条件を確認する**：active pause、accepted record、実行中writerがある場合は[人間エスカレーション](#人間エスカレーション)の現行契約と現在状態を照合し、ラベル解除だけで機械状態を迂回しない。差分不要の正式な復旧経路が未成立なら既存担当Issueへ記録して停止を維持し、no-diffの有料resumeを独断で代替しない。#224 / #227 / #229 / #548等の復旧経路をこの手順で実装・有効化せず、その完成を文書改善の前提にしない。
-4. **差分が必要なら根拠を揃えて依頼する**：既存契約の根拠箇所、差分上の不一致、現在のDoneに修正が必要な理由を既存Issue/PRへ短く記録し、同一原因・確定scopeの修正を集約してpaid実装へ渡す。情報不足だけで修正scopeを推測せず、新たな判断が必要なら[Work Admission Control](#work-admission-control)と既存停止/再開契約へ戻す。安全性・正確性・要求整合性に必要な修正、正式CI、独立レビューは省略しない。
+4. **差分が必要なら根拠を揃えて依頼する**：既存契約の根拠箇所、差分上の不一致、現在のDoneに修正が必要な理由を既存Issue/PRへ短く記録し、同一原因・確定scopeの修正を集約する。下記の[原因確定済みの局所修正](#原因確定済みの局所修正の直接反映)に適格なら人間承認付きで直接反映し、対象外は通常のSol実装または人間裁定へ戻す。情報不足だけで修正scopeを推測せず、新たな判断が必要なら[Work Admission Control](#work-admission-control)と既存停止/再開契約へ戻す。安全性・正確性・要求整合性に必要な修正、正式CI、独立レビューは省略しない。
 
 任意のfindingを後付けDoneへ昇格させず、[Work Admission Control](#work-admission-control)で分類する。同一原因・確定scopeの確認済み修正はまとめて渡し、小刻みな再Codexを避ける。開発補助を新たな独立レビュー段階にせず、根拠を特定できない意味判定は未確認として記録し、明確なBlockerは既存安全条件どおり停止する。
 
@@ -330,6 +330,20 @@ Claudeの`REQUEST_CHANGES`後、reviewer Appを確認したtrusted workflowはre
 有効化後のproducerは同じIssue writer ownershipの中で、trusted gate後、machine label付与後のpaid Codex直前、およびrepository write直前にcanonical target helperとcheckout HEADを再照合する。後二者ではmachine labelの存続も確認する。machine label付与をpaid Codexより先に確認し、write/no-diff確定時刻を固定してReadyへ戻し、Ready以降のcurrent HEAD checkだけを10分以内に評価する。helperが`wait`を返す間だけpollし、`ready/success`のvalidated HEADだけ固定3-field payloadで一度dispatchする。失敗時はcommon human pause recordがactiveになったことを確認してからmachine labelを除去し、dispatch成功時はconsumer acceptedまで保持する。中断・重複・stale dispatchでは既存のvalidated HEADを再利用せず、current PR / Issue / HEADとReady以降の検証を再取得する。consumer未受理のmachine labelまたはReady状態が残った場合は自動再送せず、人間がpause recordと現状態を確認して正式な復旧経路で処理する。
 
 `human-review-required`は要求・レビュー判断の停止であり、Draftによる作業準備とは別である。停止ラベルをDraft化で代替せず、追加開発や再レビューのために無断解除しない。停止中のopen PRに対する解除順序と再レビュー起動条件、merged/closed PRのstale label cleanupは「人間エスカレーション」節を正本とする。Draft PRではラベル解除だけでClaudeは起動せず、準備完了後のReady化がレビュー要求になる。
+
+### 原因確定済みの局所修正の直接反映
+
+#911は、上記の差分要否判断で修正が必要と確定した場合の経路を定める。初期対象は人間が所有する既存のOpenかつレビュー前Draft PRに限定する。原因、正しい挙動・期待値、変更path、参考となる既存実装、維持する期待値・不変条件、既存の検証方法が確定し、未知の設計判断や横断探索が主作業でない局所修正だけを候補とする。行数・ファイル数だけで適格と判断しない。
+
+修正前に人間がcurrent main/base/PR HEAD、指摘対象HEAD、review/CI evidence、AI Developerのinitial/follow-up/resume writer、active pause/accepted record、PRとclosing Issueの停止ラベル・レビュー状態をfresh確認する。実行中・待機中writerとの競合がなく、状態とownershipが確定した場合だけ進める。Draft化だけで開始済みAPI callが取り消されると扱わず、[人間エスカレーション](#人間エスカレーション)のwriter ownership・停止/再開契約に従う。
+
+Claudeのformal `CHANGES_REQUESTED` 直後はtrusted auto-follow-up writerが起動し得るため初期対象から除外する。writerの完了/停止後でも、active pauseの直接修正後の解消経路等が現行契約で明示的に成立しない場合は、無断push・ラベルだけの解除・手動Ready化を行わず既存担当へ判断を返す。[Claude review follow-upの異常終了](#claude-review-follow-upの異常終了)等の既存復旧責務を置き換えず、レビュー後への適用拡張や新resume command/state machineは別判断とする。
+
+未決の要求・設計・Contract・safe deferral・Done、認証/権限/Secrets、paid call回数、repository write/merge gate、競合、timeout/cancel/cleanup、runtime失敗分類、新外部連携、広い調査/設計修正、原因未確定、pause/accepted状態不明を扱う変更は対象外とする。文書だけの修正でも安全境界の意味判断が残る場合は対象外であり、小差分でも通常Sol/人間裁定へ戻す。#785/#811のcleanup・失敗分類をこの経路で修正しない。テスト期待値の緩和・skip、mock改変だけによる実装欠陥の隠蔽、merge gate回避を要する場合も停止する。製品仕様の判断変更は本体Projectへ返す。
+
+適格な場合は、人間がChatGPTのChatによる補助で差分と検証を確認・承認し、同一原因・確定scopeの修正を一度に既存PR branchへnon-force pushする。複数失敗の共通原因を確認し、症状だけを個別に直さない。人間の書込責務とsandbox内AI Developerの責務を分け、Chat/Codexの権限やCodex自身のGitHub書込禁止を変更・迂回しない。main直push・force push・追加paid AI診断は行わない。人間が既存Issue/PRへ根拠・差分・維持した期待値・未検証事項を短く記録し、新HEADの正式CI・適用可能な既存回帰、必要な独立Claude reviewと人間Code Owner reviewを維持する。Ready化の準備と検証結果の出所は上記手順に従い、旧HEADの承認を流用しない。
+
+PR #900のD1内部表除外とPR #895の固定microtask待機からbounded条件待機への変更は、既存期待値と製品実装を維持した過去の適格例として扱う。成功率や削減額は一般化しない。#911では反映後の次の自然な適格小修正3件について、人間/開発補助が直接修正の範囲、追加実装API実行有無、CI往復、レビュー結果、人間介入回数・可能なら実作業時間を既存Issueコメントへ記録し、観測結果の採否判断まで追跡する。Chat枠内の追加API費とレビュー・人間時間・CI費用を区別し、unknown費用を0にしない。人工replay/paid A/Bや新台帳を作らず、観測待ちは文書mergeをblockしない。人間負担増や追加修正がAPI費削減に見合わなければ人間が適用範囲縮小/保留を判断する。
 
 ### 承認後の非Blocking改善
 
