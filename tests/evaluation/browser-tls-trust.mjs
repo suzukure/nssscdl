@@ -113,14 +113,24 @@ async function probe(context, url, expectedCode, signal) {
   } finally { await bounded(page.close(), 5000); }
 }
 
-// Minimal future helper: callback lifetime is inside the proven owned context.
-// The #914 consumer is deliberately not connected here.
-export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPositive = false } = {}) {
+// #914 opt-in seam: the proven browser/trust survives a serial listener handoff.
+export async function handoffListener(close, portClosed, consume, input) {
+  await close();
+  assert.ok(await portClosed(), "handoff port state unknown");
+  await consume(input);
+}
+
+export async function withIsolatedBrowserTls(use = async () => {}, {
+  failAfterPositive = false, workerHandoff = false,
+  executablePath = process.env.NSSSCDL_CHROMIUM_PATH,
+  stopConsumer = async () => {}, inspectOwned = async () => {},
+  signal, report = console.log,
+} = {}) {
   assert.equal(process.platform, "linux");
   assert.match(process.version, /^v24\./);
   assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, "0");
   assert.ok(!process.env.DEBUG && !process.env.PWDEBUG, "driver debug logging must be unset");
-  const executablePath = process.env.NSSSCDL_CHROMIUM_PATH;
+  signal?.throwIfAborted();
   assert.ok(executablePath && isAbsolute(executablePath), "explicit browser binary required");
   assert.ok(lstatSync(executablePath).isFile() || lstatSync(executablePath).isSymbolicLink());
   const binary = realpathSync(executablePath);
@@ -134,6 +144,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
   const profile = join(home, "browser-profile");
   const controller = new AbortController();
   const interrupt = () => controller.abort();
+  signal?.addEventListener("abort", interrupt, { once: true });
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
   const env = launchOptions(home, binary).env;
@@ -145,6 +156,20 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
     ...(cleanup ? {} : { signal: controller.signal }),
   })).stdout;
   const portClosed = async () => (await command("ss", ["-H", "-ltn", "sport = :8788"], true)).trim() === "";
+  let consumerStopAttempted = false;
+  const closeConsumer = async () => {
+    if (!workerHandoff || consumerStopAttempted) return;
+    consumerStopAttempted = true; // An unknown stop is never retried.
+    await stopConsumer();
+  };
+  const closeProof = async () => {
+    if (server?.listening) await bounded(new Promise((done, reject) => {
+      server.close((error) => error ? reject(error) : done());
+      server.closeAllConnections();
+      for (const socket of sockets) socket.destroy();
+    }), 5000);
+    assert.equal(sockets.size, 0, "proof sockets still open");
+  };
   try {
     assert.ok(await portClosed(), "port already occupied; stop without retry");
     const version = (await command(binary, ["--version"])).trim();
@@ -159,9 +184,9 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
     assert.match(openssl, /^OpenSSL [\d.]+/);
     const head = (await command("git", ["rev-parse", "HEAD"])).trim();
     assert.match(head, /^[a-f0-9]{40}$/);
-    console.log(`checkpoint: HEAD=${head} UTC=${new Date().toISOString()} Node=${process.version} OS=linux`);
-    console.log(`browser=${version}; binary=${binary}; certutil(libnss3-tools)=${nssVersion}; ${openssl}`);
-    console.log(`NSS=HOME/${db.slice(home.length + 1)}; dedicated profile; origin=${origin}; no global trust write`);
+    report(`checkpoint: HEAD=${head} UTC=${new Date().toISOString()} Node=${process.version} OS=linux`);
+    report(`browser=${version}; binary=${binary}; certutil(libnss3-tools)=${nssVersion}; ${openssl}`);
+    report(`NSS=HOME/${db.slice(home.length + 1)}; dedicated profile; origin=${origin}; no global trust write`);
     stage = "certificate/NSS";
     const certificate = await createCertificate(home, command);
     const alternateDirectory = join(home, "untrusted");
@@ -177,7 +202,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
     checkTrustListing(await command(certutil, ["-L", "-d", `sql:${db}`]));
     const exported = await command(certutil, ["-L", "-d", `sql:${db}`, "-n", nickname, "-a"]);
     assert.equal(new X509Certificate(exported).fingerprint256, x509.fingerprint256);
-    console.log(`certificate: fingerprint256=${x509.fingerprint256}; IP SAN=127.0.0.1; nickname=${nickname}; trust=P,,; exactly one cert`);
+    report(`certificate: fingerprint256=${x509.fingerprint256}; IP SAN=127.0.0.1; nickname=${nickname}; trust=P,,; exactly one cert`);
     stage = "listener";
     server = createServer({ key: readFileSync(certificate.key), cert: certificate.ca,
       secureOptions: constants.SSL_OP_NO_TICKET }, (_request, response) => {
@@ -202,29 +227,34 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
     context = await chromium.launchPersistentContext(profile, launchOptions(home, binary));
     assert.equal(ownedProcesses(home, profile).filter((entry) => entry.main).length, 1);
     assert.ok(!existsSync(db === modern ? legacy : modern), "unexpected second NSS candidate");
-    console.log("browser process: exact run HOME and dedicated profile verified via /proc");
+    report("browser process: exact run HOME and dedicated profile verified via /proc");
     stage = "positive trust";
     await probe(context, origin + "/trusted", undefined, controller.signal);
     assert.ok(requests > 0);
-    console.log("positive: browser HTTPS 200 / fixed response / TLS verification enabled");
+    report("positive: browser HTTPS 200 / fixed response / TLS verification enabled");
     if (failAfterPositive) throw new Error("intentional failure");
     stage = "SAN mismatch";
     let before = requests;
     await probe(context, "https://localhost:8788/san-mismatch", "ERR_CERT_COMMON_NAME_INVALID", controller.signal);
     assert.equal(requests, before);
-    console.log("negative: trusted certificate / wrong hostname rejected (net::ERR_CERT_COMMON_NAME_INVALID)");
+    report("negative: trusted certificate / wrong hostname rejected (net::ERR_CERT_COMMON_NAME_INVALID)");
     stage = "unregistered certificate";
     server.setSecureContext({ key: readFileSync(alternate.key), cert: alternate.ca });
     before = requests;
     await probe(context, origin + "/untrusted", "ERR_CERT_AUTHORITY_INVALID", controller.signal);
     assert.equal(requests, before);
-    console.log("negative: different unregistered self-signed cert rejected (net::ERR_CERT_AUTHORITY_INVALID)");
+    report("negative: different unregistered self-signed cert rejected (net::ERR_CERT_AUTHORITY_INVALID)");
     server.setSecureContext({ key: readFileSync(certificate.key), cert: certificate.ca });
     checkTrustListing(await command(certutil, ["-L", "-d", `sql:${db}`]));
     assert.ok(!existsSync(db === modern ? legacy : modern));
     stage = "helper callback";
     controller.signal.throwIfAborted();
-    await use({ context, origin });
+    if (workerHandoff) {
+      await handoffListener(closeProof, portClosed, use, {
+        context, origin, signal: controller.signal,
+        certificate: { key: certificate.key, cert: certificate.cert, fingerprint: x509.fingerprint256 },
+      });
+    } else await use({ context, origin });
     controller.signal.throwIfAborted();
   } catch (error) {
     // Whitelisted diagnostic categories only, never raw browser/CLI errors or paths.
@@ -233,7 +263,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
       "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT"];
     const category = codes.find((code) => error instanceof Error && error.message.includes(`net::${code}`)) ??
       (error instanceof Error && /Timeout|deadline/.test(error.message) ? "TIMEOUT" : "UNCLASSIFIED");
-    console.log(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld`);
+    report(`failure: stage=${stage}; category=${category}; TLS proof incomplete; raw cause withheld`);
     throw new Error(`BROWSER_TLS_TRUST_FAILED (${stage}); runtime proof incomplete`);
   } finally {
     try {
@@ -246,29 +276,25 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
           while (ownedProcesses(home, profile).length && Date.now() < deadline) await wait(100);
           return ownedProcesses(home, profile).length === 0;
         },
-        closeServer: async () => {
-          if (server?.listening) await bounded(new Promise((done, reject) => {
-            server.close((error) => error ? reject(error) : done());
-            server.closeAllConnections();
-            for (const socket of sockets) socket.destroy();
-          }), 5000);
-        },
+        closeServer: async () => { await closeProof(); await closeConsumer(); },
         portClosed,
-        remove: async () => { rmSync(home, { recursive: true }); },
+        remove: async () => { await inspectOwned(home); rmSync(home, { recursive: true }); },
       });
-      console.log("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
+      report("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
     } catch {
       // Stop the owned server even if browser state is uncertain; never delete its files.
       if (server?.listening) { server.close(); server.closeAllConnections(); }
       for (const socket of sockets) socket.destroy();
-      console.log("cleanup: uncertain process/port state; owned files retained for operator inspection; no retry");
+      try { await closeConsumer(); } catch { /* preserve files; fixed error below */ }
+      report("cleanup: uncertain process/port state; owned files retained for operator inspection; no retry");
       throw new Error("BROWSER_TLS_TRUST_CLEANUP_FAILED; preserve owned files; do not retry");
     } finally {
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
+      signal?.removeEventListener("abort", interrupt);
     }
   }
-  console.log("#915 transport partial evidence only; formal Actions / Cookie / D1 / Gate A-D / TC full Pass not established by this log");
+  report("#915 transport partial evidence only; formal Actions / Cookie / D1 / Gate A-D / TC full Pass not established by this log");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

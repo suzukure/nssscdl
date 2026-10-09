@@ -1,5 +1,5 @@
 // Secret-owning sanitized Node child. No raw secrets leave this process except
-// the fixed loopback TLS Cookie header. No browser, IPC or owner-shell input.
+// the fixed loopback TLS Cookie header or #914's isolated official Cookie jar.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
@@ -7,16 +7,22 @@ import { createCertificate, launchWorker, request, stopGroup, stopWorker, waitFo
 import { checkSetup, persistence, proxyOptions, root, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
 import { checkFiles, inspect } from "./trusted-seed-process.mjs";
 import { check, checkError, checkSuccess, httpsProofCheckpoint } from "./trusted-https-assertions.mjs";
+import { withIsolatedBrowserTls } from "./browser-tls-trust.mjs";
+import { browserBinary, browserFailureCheckpoint, browserPreflight, browserProofCheckpoint, checkCertificate, checkWorkerCertificate, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 
 const exec = promisify(execFile);
 const origin = "https://127.0.0.1:8788";
 const controller = new AbortController();
 const interrupt = () => controller.abort();
-// Outer owner allows 120s: 90s execution + up to 15s stop + margin.
-const deadline = setTimeout(interrupt, 90000);
+const browserMode = process.argv[2] === "--browser";
+const failAfterPositive = process.argv[3] === "--fail-after-positive";
+// Browser adds the existing 30s launch budget; outer owner reserves cleanup.
+const deadline = setTimeout(interrupt, browserMode ? 120000 : 90000);
 process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
 let child;
 let stopUnknown = false;
+let intentionalObserved = false, browserCleanupConfirmed = false;
+let browserCertificate;
 
 async function command(file, args, cleanup = false) {
   const pending = exec(file, args, { cwd: root, env: process.env, detached: true,
@@ -58,12 +64,56 @@ async function revokeSelf(seed) {
 }
 
 try {
+  check(process.argv.length === 2 || (browserMode && (process.argv.length === 3 ||
+    (process.argv.length === 4 && failAfterPositive))));
   checkSetup();
-  const { key, cert, ca } = await createCertificate(process.env.TMPDIR, command);
+  if (browserMode) browserPreflight();
+  const certificate = browserMode ? undefined : await createCertificate(process.env.TMPDIR, command);
   await withTrustedEvaluationSeed(async (seed) => {
     const before = await inspect(seed);
     const secrets = [seed.sessions.self.cookie().value, seed.sessions.other.cookie().value];
     const hashes = secrets.map((value) => createHash("sha256").update(value).digest("hex"));
+    if (browserMode) {
+      let revokedAt = null;
+      const proxyState = { stopped: () => !child && !stopUnknown, unknown: false };
+      const inspectStopped = () => withStoppedProxy(proxyState, async () => {
+        check(before === await inspect(seed, revokedAt));
+      });
+      await withIsolatedBrowserTls(async ({ context, certificate, signal }) => {
+        browserCertificate = `certificate: SHA256=${checkCertificate(certificate).fingerprint256}; SAN=127.0.0.1; same Node/Worker cert`;
+        const start = async () => {
+          signal.throwIfAborted();
+          check(!child && !proxyState.unknown); checkSetup();
+          checkCertificate(certificate);
+          child = launchWorker(process.env, certificate.key, certificate.cert);
+          await waitForWorker(child, command, signal);
+          await checkWorkerCertificate(certificate);
+        };
+        try {
+          await proveBrowserReads({ context, signal, seed, secrets, hashes, start, stop,
+            revoke: () => withStoppedProxy(proxyState, async () => { revokedAt = await revokeSelf(seed); }),
+            inspect: inspectStopped, failAfterPositive });
+        } catch (error) {
+          intentionalObserved = failAfterPositive && error.message === "TRUSTED_BROWSER_INTENTIONAL_FAILURE";
+          throw error;
+        }
+      }, {
+        workerHandoff: true, executablePath: browserBinary, signal: controller.signal,
+        report: (line) => {
+          if (line === "cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed") browserCleanupConfirmed = true;
+        }, stopConsumer: stop,
+        inspectOwned: async (home) => {
+          await inspectStopped();
+          checkFiles(persistence, secrets);
+          for (const directory of [home, process.env.TMPDIR]) {
+            checkFiles(directory, [...secrets, ...hashes]);
+          }
+          check(secrets.every((value) => !JSON.stringify(process.env).includes(value) && !JSON.stringify(process.argv).includes(value)));
+        },
+      });
+      return;
+    }
+    const { key, cert, ca } = certificate;
     const paths = [`/api/me/schedule-months/${seed.month}`, "/api/me/reservations", "/api/auth/student/csrf"];
     const kinds = ["schedule", "history", "csrf"];
     const cookie = (owner) => {
@@ -143,9 +193,14 @@ try {
     check(secrets.every((value) => !JSON.stringify(process.env).includes(value) && !JSON.stringify(process.argv).includes(value)));
     controller.signal.throwIfAborted();
   });
-  console.log(httpsProofCheckpoint); // Only fixed non-secret evidence escapes.
+  if (browserMode) console.log(browserCertificate);
+  console.log(browserMode ? browserProofCheckpoint : httpsProofCheckpoint);
 } catch {
   process.exitCode = 1; // No raw cause, HTTP body, assertion diff or child output.
+  if (intentionalObserved && browserCleanupConfirmed) {
+    console.log(browserCertificate);
+    console.log(browserFailureCheckpoint);
+  }
 } finally {
   try { await stop(); } catch { process.exitCode = 1; }
   clearTimeout(deadline);

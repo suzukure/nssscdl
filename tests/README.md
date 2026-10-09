@@ -285,7 +285,9 @@ test-only Node HTTPSは`127.0.0.1:8788`だけで固定非機密textを返す。p
 不特定hostnameはresolverで拒否し、proxyを使わない。TLS session ticketを無効化し、応答はconnection closeとする。
 `ignoreHTTPSErrors`はfalse、無検証flag / policy / global trust変更なし。
 `withIsolatedBrowserTls(callback)` は正負probe後のowned context / 固定originだけをcallbackへ渡し、
-callback終了後も同じ停止・保全契約を適用する最小test helper。#914 consumerは未接続。
+callback終了後も同じ停止・保全契約を適用する最小test helper。#914の明示`workerHandoff`だけは
+正負probe後にNode listener / socketを停止し、port閉鎖を確認して同じcontext / origin / cert pathsを渡す。
+default proof / CLIはWorker・Cookie・D1を接続しない。
 非秘密checkpointはHEAD / UTC / Node・browser exact version・binary / NSS tool・OpenSSL版、
 HOME相対NSS path、証明書fingerprint、固定正負結果、cleanup、未実施事項だけ。
 key / cert本文 / raw browser error / child envはstdout / Artifactへ出さない。
@@ -296,10 +298,54 @@ key / cert本文 / raw browser error / child envはstdout / Artifactへ出さな
 成功runと意図的失敗runの終了・cleanupを記録する（後者の期待exit 1を成功probeへすり替えない）。
 一時stepは最終差分から撤去し、proof HEAD / final HEADの実行対象blob一致、final HEAD標準Product CI /
 PR Traceabilityを別途確認する。Codexのローカル報告・fixtureだけは正式実Browser証拠に算入しない。
-正式実証・レビュー未完了なら#915はOpen / PR Draft維持、#914はresumeしない。
+このTLS-only proofをBrowser Cookie本人GETの正式証拠へ読み替えない。#914統合の証明範囲は次節とする。
 これは既存`TC-F-001/002/005/207/211`・`TC-NF-914`のBrowser TLS環境前提の部分証拠のみ。
 POL→BR→REQ→AC→TC、CON / OOSの意味・identifierは変更せず、Session本人GET / 失効401、
 Gate A〜D、REQ-901/902、#608全体、System / Acceptance TC全体のPassは証明しない。
+
+## #914 opt-in trusted BrowserContext / same-cert Worker 3 GET
+
+Issue本文で確定した単一listener handoffを`evaluation/trusted-browser-smoke.mjs`から明示実行する。
+#906 ownerのfresh persist / migrations 0001..0012とsanitized `trusted-https-process.mjs`を再利用し、
+Session / CSRFの生成・比較はtrusted child内で行う。Sessionの搬出は公式Cookie設定の内部IPC→run所有Cookie jar→固定HTTPS Cookie headerだけに限定し、汎用IPCへ広げない。
+標準#906 / #908経路と#915 TLS-only CLIは維持する。
+Linux / Node 24 / locked Wrangler / Playwrightに加え、固定installed `/usr/bin/google-chrome`、
+certutil / OpenSSL / ss / ps / readable `/proc` / browser sandboxが必須。不足時は取得・fallbackせず停止する。
+`NSSSCDL_CHROMIUM_PATH`やDEBUGをchild env allowlistへ追加しない。
+
+```sh
+node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs
+node tests/evaluation/trusted-browser-smoke.mjs --run
+node tests/evaluation/trusted-browser-smoke.mjs --run --fail-after-positive
+```
+
+seed→proxy dispose→read-only inspect→run-owned NSS / profile / TLS正負probe→Node listenerとsocket停止 / port閉鎖→
+同じkey/cert pathsのWranglerを同じ`https://127.0.0.1:8788`へ起動する。
+証明済みbrowser process / trustは維持し、fileとlive Worker peerのfingerprint / IP SAN、loopback / process groupを照合する。
+Session用self / other / missing / foreignは同browserの別々の非永続Contextであり、persistent proof contextへCookieを入れない。
+公式`addCookies`のroot `url` alternative（Domain / pathを併記しない）でhost-only / Path=/を導出し、
+実Cookie jarのSecure / HttpOnly / SameSite=Lax / root / host / session期限と`document.cookie`非露出を確認する。
+
+既存`/unknown`の503 JSON documentでsame-origin pageを確立し、page内の本物の`fetch`だけで3 GETを実行する。
+requestの`Sec-Fetch-Site: same-origin`はbrowser engineの生成値を観察する。強制header / route mock / APIRequestContextは使わない。
+`trusted-https-assertions.mjs`のexact本人5枠 / 履歴1件 / Session CSRF、200 / missing・foreign 401、
+no-store / no CORS / csrf no-referrerを再利用する。Fetchが隠す401 Set-CookieはdriverのResponse APIでmemory内だけで検査し、jar消去も確認する。
+request終了→Worker停止 / port閉鎖→selfのみ失効 / inspect / proxy dispose→同cert再起動→同Context self 401 / other 200とする。
+終了はpersistent context close（browser全体終了） / process不在→Worker停止 / port閉鎖→最終inspect / secret scan→owned files削除の順。
+停止不明・proxy失敗では関連owned DB / HOME / NSS / profile / cert / logを保全し、自動retry / resetしない。
+Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / artifactへ出さず、trace / screenshot / storageState / network loggerを使わない。
+
+browser pathだけはchild実行120秒（#908の90秒＋既存browser launch 30秒）、owner180秒とする。
+差分60秒はbrowser close 10秒 / process確認5秒 / proof server close 5秒 / Worker停止最大15秒と残余marginを確保する停止用予算であり、性能保証ではない。
+GET / navigationは5秒、response bodyは4096文字上限を維持する。
+意図的失敗commandはpositive 3 GET直後に失敗し、確認済みcleanupの固定checkpointがある場合だけownerもowned filesを削除する。期待exitは1。
+
+標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureはhandoff順序 / Cookie属性 / Context隔離 / response非露出 / 停止契約の補助証拠のみ。
+正式Browser / Worker / D1実証は未確認。既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
+HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
+一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
+`REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
+POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOM / Preview / Confirm、REQ-901/902、Gate A〜DとTC全体Passは後続責務。
 
 ## 既存の部分証拠と標準テスト
 

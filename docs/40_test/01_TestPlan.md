@@ -158,7 +158,13 @@ BrowserContext・assets・unsafe業務POSTは未接続であり、Gate A〜DのP
 
 #915の隔離Chromium TLS harness / 小fixtureと正式Actions proofの区別は `../../tests/README.md` を正本とする。
 run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、Browser Session Cookie本人GET、
-失効401、Gate A〜D、REQ-901/902、#608や既存TC全体のPassを証明しない。#914 consumerは未接続。
+失効401、Gate A〜D、REQ-901/902、#608や既存TC全体のPassを証明しない。
+#914 opt-in consumerは同一cert / portをNode proof listenerからWorkerへ直列handoffし、
+隔離された非永続self / other / missing / foreign Contextの公式Cookie注入とsame-origin browser fetch 3 GETを検査する。
+Worker停止中だけselfを失効し、同cert再起動後のself 401 / other 200とbrowser先行停止 / 最終inspect / owned cleanupを確認する。
+実装・小fixture・停止条件の正本は `../../tests/README.md` の#914節とし、正式Actions実証は未確認。
+既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、
+static assets / DOM / Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
 
 ## 8. Entry Criteria
 
