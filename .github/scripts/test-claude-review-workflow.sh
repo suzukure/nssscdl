@@ -430,7 +430,10 @@ grep -Fqx 'continue=true' "$test_dir/gate-during-entry.outputs"
 grep -Fqx 'continue=false' "$test_dir/gate-during-verdict.outputs"
 grep -Fqx "        if: steps.verdict-entry.outputs.continue == 'true'" <(sed -n '/      - name: Submit reviewer verdict/,/      - name: Record verdict/p' "$workflow")
 grep -Fq "        if: steps.submit-verdict.outcome == 'success'" "$workflow"
-grep -Fq -- '--match-head-commit "$REVIEWED_HEAD_SHA"' "$workflow"
+grep -Fq -- '"--squash", "--match-head-commit", self.head' "$repo_root/.github/scripts/merge-approved-pr.py"
+
+# #919 fixtures live in this existing formal suite; no new runner or paid call.
+python3 -B "$repo_root/.github/scripts/fixtures/merge-approved-pr.py"
 
 MOCK_CHANGED_PATH=src/CLAUDE.md
 export MOCK_CHANGED_PATH
@@ -1556,6 +1559,15 @@ if [ "$(grep -Fxc '    timeout-minutes: 15' "$review_job")" -ne 1 ]; then
 fi
 merge_job="$test_dir/merge-job.yml"
 sed -n '/^  merge:$/,$p' "$workflow" > "$merge_job"
+grep -Fqx '    timeout-minutes: 15' "$merge_job"
+grep -Fq 'ref: ${{ needs.review.outputs.trusted_base_sha }}' "$merge_job"
+grep -Fq 'python3 -B .github/scripts/merge-approved-pr.py "$GITHUB_REPOSITORY"' "$merge_job"
+grep -Fq '"$PR_NUMBER" "$REVIEWED_HEAD_SHA" "$DEV_APP_SLUG" "$REVIEW_APP_SLUG"' "$merge_job"
+grep -Fq 'REVIEW_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}' "$merge_job"
+if grep -Eq -- '--(admin|auto)([[:space:]]|$)' "$merge_job"; then
+  echo 'The bounded merge must not bypass Rulesets or enable native auto-merge.' >&2
+  exit 1
+fi
 grep -Fqx '    needs: review' "$merge_job"
 grep -Fqx '      needs.review.result == '\''success'\'' &&' "$merge_job"
 grep -Fqx '      needs.review.outputs.verdict == '\''approve'\'' &&' "$merge_job"

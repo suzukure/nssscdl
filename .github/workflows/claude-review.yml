@@ -847,6 +847,8 @@ jobs:
 
   merge:
     name: Merge approved PR
+    # 10-minute helper deadline + 5 minutes for token/checkout/cleanup.
+    timeout-minutes: 15
     needs: review
     if: >-
       needs.review.result == 'success' &&
@@ -870,20 +872,15 @@ jobs:
           ref: ${{ needs.review.outputs.trusted_base_sha }}
           persist-credentials: false
 
-      - name: Verify merge gates
-        env:
-          GH_TOKEN: ${{ steps.review-token.outputs.token }}
-          PR_NUMBER: ${{ needs.review.outputs.pr_number }}
-          DEV_APP_SLUG: ${{ needs.review.outputs.developer_app_slug }}
-        run: bash .github/scripts/verify-pr-gates.sh "$GITHUB_REPOSITORY" "$PR_NUMBER" merge "$DEV_APP_SLUG"
-
       - name: Squash merge as reviewer
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ needs.review.outputs.pr_number }}
           REVIEWED_HEAD_SHA: ${{ needs.review.outputs.reviewed_head_sha }}
+          DEV_APP_SLUG: ${{ needs.review.outputs.developer_app_slug }}
+          REVIEW_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
         shell: bash
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash \
-            --match-head-commit "$REVIEWED_HEAD_SHA"
+          python3 -B .github/scripts/merge-approved-pr.py "$GITHUB_REPOSITORY" \
+            "$PR_NUMBER" "$REVIEWED_HEAD_SHA" "$DEV_APP_SLUG" "$REVIEW_APP_SLUG"
