@@ -119,10 +119,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -x /usr/bin/chromium
+          test -x /usr/bin/google-chrome
           test -x /usr/bin/certutil
           node --test tests/evaluation/browser-tls-trust.test.mjs
-          export NSSSCDL_CHROMIUM_PATH=/usr/bin/chromium
+          export NSSSCDL_CHROMIUM_PATH=/usr/bin/google-chrome
           timeout --signal=TERM --kill-after=15s 180s node tests/evaluation/browser-tls-trust.mjs --run
           # Expected negative lifecycle probe, NOT a successful browser test.
           failure_log="$(mktemp "$RUNNER_TEMP/issue-915-intentional.XXXX")"
