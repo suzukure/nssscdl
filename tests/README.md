@@ -64,6 +64,7 @@ help / dry-run / HTTPS Listenerを確認できていない。locked依存を準�
 `node_modules/.bin/wrangler deploy --help`、`node_modules/.bin/wrangler d1 migrations apply --help`を確認し、
 exact CLI flagsとdry-runの非外部deployを検証してから採用する。未確認なら開始しない。
 認証済みaccountやlogin / tunnel / remote / deployを追加して解決しない。
+Wrangler 4.146.0の`dev --help`には`--infer-origin-from-routes`が表示されなかったため、`--no-infer-origin-from-routes`は候補から除く。経路 / dev.host設定は持たず、実Request originがcanonical HTTPS originに一致することは後続#904の実Listenerで確認する。
 8788が未使用であること、設定origin / Listener / 証明書のIP SANが完全一致すること、
 専用config以外のconfig / `.dev.vars` / `.env` / Production credential・実利用者dataを取り込まないことを確認する。
 
@@ -73,7 +74,7 @@ seedは行わず、raw Session / Cookieをcommand・URL・Logへ渡さない。
 ```sh
 WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler deploy --config tests/evaluation/wrangler.jsonc --dry-run --outdir dist/evaluation-read-only
 WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler d1 migrations apply nssscdl-local-read-only-evaluation --config tests/evaluation/wrangler.jsonc --local --persist-to .wrangler/student-read-only-evaluation
-WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev --config tests/evaluation/wrangler.jsonc --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to .wrangler/student-read-only-evaluation --no-infer-origin-from-routes
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev --config tests/evaluation/wrangler.jsonc --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to .wrangler/student-read-only-evaluation
 ```
 
 dry-run bundleが専用entrypoint / #899 serviceだけを含み、seed / Browser / unsafe Adapter / Providerを含まず、
