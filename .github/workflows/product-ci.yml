@@ -112,11 +112,3 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
-
-      # #906-only opt-in proof, never enabled for ordinary PRs. No credentials,
-      # artifacts or Session values; remove this temporary step after evidence.
-      - name: '#906 opt-in actual persistent D1 seed proof'
-        if: steps.applicability.outputs.applicable == 'true' && contains(github.event.pull_request.body, '[evaluation-seed-proof-906]')
-        run: |
-          node --test tests/evaluation/trusted-evaluation-seed.test.mjs
-          node tests/evaluation/trusted-seed-smoke.mjs --run
