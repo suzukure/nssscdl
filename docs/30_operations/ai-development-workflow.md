@@ -16,6 +16,7 @@ GitHub上に新規投稿・表示する人間向けのIssue / PR本文・コメ�
 5. ClaudeがPR、信頼済み会話、closing Issue、明示された後継Issueのsnapshot、差分を確認し、reviewer Appとして `APPROVE` または `REQUEST_CHANGES` を投稿する。仕様書レビューでは `CLAUDE.md` の重点観点を適用する。Actionへ現行5-key JSON Schemaを渡し、`structured_output` をreview内容の第一入力として、current base由来の `validate-claude-review-output.sh` を通過した結果だけを投稿する。`summary` を総評、`blocking_findings` / `non_blocking_findings` を指摘事項と改善案として記録する。native出力は厳密に1個のJSON値として読み、欠落・不正JSON・schema不一致は非機密な固定reason codeでfail-closed停止する。自由テキスト `result` やMarkdown fenceへfallbackせず、verdictを推測しない。
 6. `REQUEST_CHANGES` の場合、reviewer Appを確認したtrusted workflowはreviewの`commit_id`がPRの現在headと一致するときだけPRをDraftへ戻す。一致しないstale reviewはDraft化もCodex follow-upも起動しない。Draft復帰jobの異常終了、gate停止、Codex異常終了、またはpush失敗ではReadyへ戻さず、`human-review-required` により停止する。`ai/issue-*` の通常follow-upは停止ラベルを付けずにCodexを1回だけ実行し、Codex正常完了、requirements gate、trusted diff guard、commit/pushの全成功後だけtrusted workflowがPRをReady for reviewへ戻す。そのReady eventが現在headへの再レビューを1回要求する。Codex対象外PRは人間または既存の明示操作でReadyへ戻す。停止ラベルを人間が解除する場合の順序・再レビュー起動条件・merged/closed PRのcleanupは「人間エスカレーション」節を正本とする。openかつ非Draft PRのPR `unlabeled` eventは明示的な再レビュー要求として維持する。3回目のchange request、要求変更マーカー、または人間エスカレーションマーカーではCodex修正自体を停止する。
 7. Claudeが承認し、developer App作成PRが `ai/issue-<Issue番号>` ブランチで、ブランチ番号とclosing Issueが一致し、保護対象のAI指示・agent設定・GitHub自動化を変更せず、IssueとPRのどちらにも `human-review-required` ラベルがない場合だけreviewer Appがsquash mergeする。
+   通常のClaude Review `Merge approved PR` jobは、下記[承認後の必須チェック待機](#承認後の必須チェック待機919)に従って必須CI完了後にmergeする。
 
 通常commandのworkflow入口はevent snapshotでcommand、actor、Issueのopen状態を早期判定する。Issue単位のwriter concurrency待機後はtrusted GitHub APIで対象番号・non-PR identity・現在のopen状態と停止ラベルを再取得し、関連open PRの停止ラベルと併せて判定する。取得失敗、metadata欠損・不一致、closed状態ではbranch操作やpaid Codexへ進まない。event snapshotのIssue stateだけを待機後の現在状態の証拠としない。
 
@@ -694,6 +695,16 @@ default branchに次を適用する。
 設定反映後、人間／trusted orchestrationはProduct success時のmerge可否、failure・cancelled・missing／skipped相当時のmerge阻止、Claude未承認・停止ラベル時の自動merge阻止を安全なfixture／temporary PR等で確認し、head SHA・run／check identity・設定証跡を#640へ記録する。local fixture成功を実効merge条件の実証と扱わず、この証跡と承認付き設定反映まで#640および親#536の該当Doneは未完了とする。
 
 rollbackは同Rulesetのrequired checksから `Product CI` / `15368` だけを削除して `Linked Issue` と他ruleを維持する。adapterはread-only CIとして残せる。workflowを#639形へ戻す場合はrequired設定を先にrollbackした上で別PRで行う。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
+### 承認後の必須チェック待機（#919）
+
+通常の `.github/workflows/claude-review.yml` のmerge jobはtrusted base checkoutの `.github/scripts/merge-approved-pr.py` を使い、既存 `verify-pr-gates.sh` の初期検証 → required `Linked Issue` / `Product CI` のbounded wait → trusted gate再照合 → `--match-head-commit` 付きsquashを実行する。独立の `claude-auto-rereview.yml` 経路は本変更の対象外とする。必須check名・workflow pathとGitHub Actions App ID `15368` は既存#640契約を利用し、最新same-head runのcurrent attempt / job / check identityを照合する。旧head、旧run・attemptのsuccessを採用せず、重複・識別不能・取得異常は停止する。
+
+helper全体のdeadlineはIssueで確定した600秒、poll間隔は15秒、各CLI呼出しは残り時間以内かつ最大30秒とする。pendingと生成／取得時点missingだけを期限内で待ち、failure / cancelled / skipped / neutral等を成功扱いしない。PR番号・reviewed head・open / Ready・現在のreviewer App approval・closing Issue関係を固定し、停止ラベル、protected paths、review失効、状態変更も反復検証する。待機完了後にもidentity・trusted gate・checksを再照合する。merge jobの15分上限はhelperの10分にtoken生成・checkout・cleanupの5分余裕を設ける値であり、実Actions所要時間の保証ではない。
+
+停止reasonはJob Summaryへ記録し、API異常・必須check不合格・missing / pending期限切れ・最終merge拒否または結果不明を区別する。merge書込みは最大1回、失敗・結果不明後のretry、再review、追加paid callは行わない。最終merge可否はGitHub Rulesetに委譲し、`--auto` / `--admin`、Repository設定・App権限変更は追加しない。#527のprotected-path classifierの既知欠陥は本Issueで修正せず、既存の人間Code Owner gateを維持する。
+
+secretless fixtureは既存 `test-claude-review-workflow.sh` が `fixtures/merge-approved-pr.py` を実行し、実gate / classifierとfake GitHub応答で待機・失敗境界・1回のmergeを検証する。local成功はformal Actions / Ruleset proofではない。適用CI、独立Claude / 人間Code Owner review、およびmerge後に自然発生する適格PR最大3件のCI待機→mergeまたは根拠付き停止は別途確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityは変更しない。
 
 ## 人間エスカレーション
 
