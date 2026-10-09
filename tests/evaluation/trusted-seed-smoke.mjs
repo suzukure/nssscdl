@@ -51,6 +51,11 @@ export async function run(httpsProof = false, browserProof = false, failAfterPos
           return;
         } catch { /* unrecognized child output: preserve files below */ }
       }
+      // Never reflect unknown stderr/stdout; only this exact fixed stage is safe.
+      if (proof && browserProof && !failAfterPositive) {
+        const stage = /^TRUSTED_BROWSER_STAGE=(entry|seed|seed-inspect|tls-setup|tls-preflight|tls-cert|tls-listener|tls-browser-launch|tls-positive|tls-san|tls-untrusted|tls-consumer|tls-cleanup|worker-start|browser-read)\r?\n?$/.exec(error.stderr ?? "");
+        if (stage) console.log(`TRUSTED_BROWSER_STAGE=${stage[1]}`);
+      }
       if (httpsProof) safe = false; // Unknown proxy/Worker state: retain files.
       throw failure();
     }
