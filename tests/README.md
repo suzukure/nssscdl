@@ -36,8 +36,63 @@ trusted runtimeが単一の隔離D1 binding、canonical HTTPS origin、non-expor
 `TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04` の
 HTTP / local D1 **partial evidence**のための試験であり、Product要求・AC→TCの意味を変更しない。
 標準Product CIによるcurrent-head証跡はworkflow側で別に確認し、ローカル自己申告をformal CI successと扱わない。
-HTTPS runtime / cert・key provisioning / cleanup、Browser assets配信・Cookie接続、unsafe POST、Provider / remote D1、
-Gate A〜D、System / Acceptance TC全体のPassは未接続・未証明のまま後続#537 / #608へ残す。
+#902の入口・local config・key生成の準備は以下を参照する。実HTTPS Listener / cert、Browser assets配信・Cookie接続、
+unsafe POST、Provider / remote D1、Gate A〜D、System / Acceptance TC全体のPassは後続#537 / #608へ残す。
+
+## #902 localhost HTTPS read-only入口の準備
+
+`evaluation/worker.ts` / `evaluation/wrangler.jsonc` は評価専用のES-module入口とconfig。
+canonical originはserver側の `https://127.0.0.1:8788` 固定で、Host / Header / Queryから導出しない。
+公開route / account / remote識別子 / assets / scheduled / varsを持たず、`workers_dev` / `preview_urls`はfalse。
+専用binding `EVALUATION_READ_DB` のUUIDはlocal-only placeholderであり、通常`TEST_DB` / `AUTH_DB`と共有しない。
+既存#899 serviceだけを使い、3 GET以外のPath / Methodは503。Sessionなしは既存401、CSRFのOrigin拒否は既存403。
+HMAC-SHA-256 non-exportable sign-only鍵をWeb Cryptoで一度生成し、並行Requestは同じPromiseを共有する。
+生成失敗は再起動まで503とし、鍵・binding不備はCookieなしでも503。再起動 / hot reload後は旧cursorを使わず、
+cursorなしで履歴を再取得する。鍵のexport / fallback / Production鍵の流用はしない。
+
+`integration/evaluation-worker.test.ts` は専用handlerの実`fetch`から既存service / 実Guard / Adapterへ接続し、
+既存D1 Portのtest-only sourceで401、本人履歴・cursor継続、並行key生成、再起動後の別鍵拒否、
+設定不備・誤URL origin・未対応routeの503、default Workerの全503と専用configの閉じた構造を確認する。
+これは既存Workers test runtime内のHTTP / Harness部分証拠であり、実localhost HTTPS接続や専用D1実Listenerの証拠ではない。
+通常config不変・Product sourceの評価module非importは `integration/read-only-student-isolation.test.ts` が担当する。
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04`の
+要求・AC→TCは変更せず、既存#898 / #899のD1部分証拠を再実装しない。
+
+開始前の別Gate（CLI / Listener）: 下記は実行候補であり、この実装runでは依存cache不足によりWrangler 4.146.0の
+help / dry-run / HTTPS Listenerを確認できていない。locked依存を準備済みの外部通信禁止環境で、
+`node_modules/.bin/wrangler --version`、`node_modules/.bin/wrangler dev --help`、
+`node_modules/.bin/wrangler deploy --help`、`node_modules/.bin/wrangler d1 migrations apply --help`を確認し、
+exact CLI flagsとdry-runの非外部deployを検証してから採用する。未確認なら開始しない。
+認証済みaccountやlogin / tunnel / remote / deployを追加して解決しない。
+8788が未使用であること、設定origin / Listener / 証明書のIP SANが完全一致すること、
+専用config以外のconfig / `.dev.vars` / `.env` / Production credential・実利用者dataを取り込まないことを確認する。
+
+リポジトリrootで専用configだけを指定する。local migrationは正本`migrations/0001`〜`0012`を専用DBへ適用する。
+seedは行わず、raw Session / Cookieをcommand・URL・Logへ渡さない。
+
+```sh
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler deploy --config tests/evaluation/wrangler.jsonc --dry-run --outdir dist/evaluation-read-only
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler d1 migrations apply nssscdl-local-read-only-evaluation --config tests/evaluation/wrangler.jsonc --local --persist-to .wrangler/student-read-only-evaluation
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev --config tests/evaluation/wrangler.jsonc --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to .wrangler/student-read-only-evaluation --no-infer-origin-from-routes
+```
+
+dry-run bundleが専用entrypoint / #899 serviceだけを含み、seed / Browser / unsafe Adapter / Providerを含まず、
+外部呼出し・uploadがないことを確認する。通常buildのWorker bundleも評価moduleを含まないことを確認する。
+devはforegroundで開始し、Listenerが127.0.0.1だけであることを確認する。
+certと設定originの照合方法・TLS検証条件・exact request commandは次の実Listener Gateで記録する。
+Cookieなしで全3 GETが401（CSRFには固定originのOriginまたは`Sec-Fetch-Site: same-origin`を付ける）、
+未対応Path / POSTが503、誤origin拒否を確認し、exact command・日時・config / migration identityと安全な結果だけを残す。
+有効Sessionの200 / Browser評価には後続Issueでtrusted seed呼出し / BrowserContext / Cookie受渡しを決定する必要がある。
+実HTTPS requestを行うまで、unit / structural proofをHTTPS接続済みやGate A完了と記録しない。
+
+停止は起動terminalのCtrl-Cで行い、processと8788のListener終了を確認してから専用local persistenceだけを破棄する。
+失敗 / 応答不明でも自動retry / 修復 / seedは行わず停止する。通常Product test DBはcleanup対象に含めない。
+
+```sh
+rm -rf -- .wrangler/student-read-only-evaluation dist/evaluation-read-only
+```
+
+## 既存の部分証拠と標準テスト
 
 `unit/schedule-query.test.ts` は#828のfake Repository / deterministic Clockによるpure core検証。
 `TC-F-001-01` / `TC-F-001-02` / `TC-F-002-01` / `TC-F-002-02` は
