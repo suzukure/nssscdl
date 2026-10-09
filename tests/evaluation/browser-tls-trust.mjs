@@ -33,7 +33,9 @@ export function launchOptions(home, executablePath) {
     env: { PATH: process.env.PATH, HOME: home, TMPDIR: home,
       XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
       XDG_DATA_HOME: join(home, ".local/share") },
-    args: ["--no-proxy-server", "--host-resolver-rules=MAP localhost 127.0.0.1, MAP * ~NOTFOUND"],
+    // Exclude only the literal loopback target from catch-all DNS rejection.
+    // Chromium's host-resolver-rules supports explicit EXCLUDE exceptions.
+    args: ["--no-proxy-server", "--host-resolver-rules=MAP localhost 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1*"],
   };
 }
 
