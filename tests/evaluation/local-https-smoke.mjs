@@ -185,13 +185,16 @@ export async function run() {
     mkdirSync(join(root, ".wrangler"), { recursive: true });
     mkdirSync(join(root, persist)); ownedPersist = true;
     console.log(`command: wrangler d1 migrations apply ${database} --config ${config} --local --persist-to ${persist}`);
+    stage = "migration-cli";
     await command(wrangler, ["d1", "migrations", "apply", database, "--config", config, "--local", "--persist-to", persist]);
+    stage = "migration-files";
     const files = sqliteFiles(join(root, persist));
     assert.equal(files.length, 1);
     const inspect = () => {
       const db = new DatabaseSync(files[0], { readOnly: true });
       try { return checkDatabase(db, names); } finally { db.close(); }
     };
+    stage = "migration-schema";
     const before = inspect();
     console.log("D1: 12 applied migrations / exact schema / empty business tables / FK+auth+12 reservation scans passed");
     stage = "listener";
