@@ -426,7 +426,9 @@ test("#914 ownership reasons survive independent primary/cleanup and strict owne
     expected.replace("; CLEANUP_OWNERSHIP=main-count", "")]) assert.equal(parseBrowserDiagnostic(value), undefined);
   assert.equal(ownershipReason(new Error("private-canary")), "unknown");
   assert.doesNotMatch(browserDiagnostic({ ...diagnostic, ownership: "private-canary" }), /private-canary/);
-  const reasons = ["home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown"];
+  const reasons = ["home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown",
+    "home-descendant-unknown", ...["missing", "different", "ambiguous"].flatMap((home) =>
+      ["known", "absent", "unknown"].map((type) => `home-descendant-${home}-type-${type}`))];
   for (const reason of reasons) {
     const independent = { primary: "none", cleanup: "none" };
     const cleanupReason = reasons[(reasons.indexOf(reason) + 1) % reasons.length];
@@ -530,7 +532,7 @@ test("#914 HOME diagnostics use selection precedence, ambiguous argv stays unkno
     block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", tracked);');
   const profile = "--user-data-dir=/fixture-run/playwright_chromiumdev_profile-fixture";
   const crash = "--database=/fixture-home/.config/crashpad";
-  // Expected codes come from the Issue's requested role distinction and documented precedence.
+  // Expected codes come from the Issue's entry/argv distinction and documented precedence.
   const cases = [
     [[profile], false, [], "home-profile-main"],
     [[profile], true, [], "home-profile-main"],
@@ -540,15 +542,38 @@ test("#914 HOME diagnostics use selection precedence, ambiguous argv stays unkno
     [[crash], false, [], "home-crash-db"],
     [[], true, [], "home-tracked"],
     [[], true, [{ pid: 43, parent: 1, argv: [profile] }], "home-tracked"],
-    [[], false, [{ pid: 43, parent: 1, argv: [profile] }], "home-descendant"],
-    [[], false, [{ pid: 43, parent: 44, argv: [] }, { pid: 44, parent: 1, argv: [profile] }], "home-descendant"],
+    [[], false, [{ pid: 43, parent: 1, argv: [profile] }], "home-descendant-different-type-absent"],
+    [[], false, [{ pid: 43, parent: 44, argv: [] }, { pid: 44, parent: 1, argv: [profile] }], "home-descendant-different-type-absent"],
     [[profile, profile], true, [], "home-unknown", "profile-argv"],
     [[profile, "--user-data-dir=/fixture-other", crash], true, [], "home-unknown", "profile-argv"],
     [[profile, "--type=renderer", "--type=gpu-process"], true, [], "home-unknown"],
     [[profile, "--type="], true, [], "home-unknown"],
     [[crash, "--database=/fixture-other"], true, [], "home-unknown"],
   ];
-  for (const [argv, isTracked, ancestors, expected, correctHomeFailure] of cases) {
+  // Synthetic entry/argv observations only; a known flag does not establish a real role.
+  const ancestors = [{ pid: 43, parent: 44, argv: [] }, { pid: 44, parent: 1, argv: [profile] }];
+  const environments = [
+    ["SECRET=private-canary\0", "missing"],
+    ["HOME=/private-canary\0SECRET=private-canary\0", "different"],
+    ["HOME=\0", "different"],
+    ["HOME=/private-canary\0HOME=/fixture-other\0", "ambiguous"],
+    ["HOME=/private-canary\0HOME=/private-canary\0", "ambiguous"],
+    ["HOME\0", "ambiguous"],
+  ];
+  for (const [environment, homeState] of environments) {
+    for (const [argv, typeState] of [
+      [["--type=renderer"], "known"], [["--type=zygote"], "known"],
+      [["--type=gpu-process"], "known"], [["--type=utility"], "known"], [[], "absent"],
+      [["--type=renderer", "--type=renderer"], "unknown"],
+      [["--type=renderer", "--type=gpu-process"], "unknown"],
+      [["--type="], "unknown"], [["--type=private-canary"], "unknown"], [["--type"], "unknown"],
+    ]) cases.push([argv, false, ancestors, `home-descendant-${homeState}-type-${typeState}`, undefined, environment]);
+  }
+  // Stronger selection bases stay unchanged even with missing/duplicate HOME entries.
+  cases.push([[profile, crash], true, ancestors, "home-profile-main", undefined, ""],
+    [[crash], true, ancestors, "home-crash-db", undefined, "HOME=/private-canary\0HOME=/fixture-other\0"],
+    [[], true, ancestors, "home-tracked", undefined, ""]);
+  for (const [argv, isTracked, ancestors, expected, correctHomeFailure, environment] of cases) {
     // The mismatched process comes first; transitive descendant selection must still find it.
     const rows = [{ pid: 42, parent: ancestors.length ? 43 : 1, argv }, ...ancestors];
     for (const wrongHome of [false, true]) {
@@ -563,7 +588,7 @@ test("#914 HOME diagnostics use selection precedence, ambiguous argv stays unkno
           return `${pid} (fixture) ` + fields.join(" ");
         }
         environmentReads.push(pid);
-        return wrongHome && pid === 42 ? "HOME=/private-canary\0SECRET=private-canary\0" : "HOME=/fixture-home\0";
+        return wrongHome && pid === 42 ? environment ?? "HOME=/private-canary\0SECRET=private-canary\0" : "HOME=/fixture-home\0";
       }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
       (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
       (_reason, operation) => operation(), (path) => path.slice(0, path.lastIndexOf("/")), tracked);
@@ -580,6 +605,35 @@ test("#914 HOME diagnostics use selection precedence, ambiguous argv stays unkno
         assert.deepEqual(environmentReads, rows.map((row) => row.pid));
         assert.equal(tracked.get(42), "identity-42");
       }
+    }
+  }
+  // Preserve existing exact-match acceptance, even when another HOME entry exists.
+  // Diagnostic refinement must not silently introduce a new acceptance rule.
+  const selected = [{ pid: 42, parent: 43, argv: ["--type=renderer"] }, { pid: 43, parent: 1, argv: [profile] }];
+  for (const outcome of ["matching-duplicate", "ENOENT", "ESRCH", "EACCES", "unknown"]) {
+    const tracked = new Map();
+    const operation = () => run(() => selected.map((row) => String(row.pid)), () => ({ uid: 7 }), (path) => {
+      const pid = Number(path.split("/")[2]), row = selected.find((row) => row.pid === pid);
+      if (path.endsWith("cmdline")) return row.argv.join("\0") + "\0";
+      if (path.endsWith("stat")) {
+        const fields = Array(20).fill("0"); fields[1] = String(row.parent); fields[19] = `identity-${pid}`;
+        return `${pid} (fixture) ` + fields.join(" ");
+      }
+      if (pid === 42 && outcome !== "matching-duplicate") {
+        const error = new Error("private-canary");
+        if (outcome !== "unknown") error.code = outcome;
+        throw error;
+      }
+      return "HOME=/fixture-home\0HOME=/private-canary\0";
+    }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
+    (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
+    (_reason, operation) => operation(), (path) => path.slice(0, path.lastIndexOf("/")), tracked);
+    if (["EACCES", "unknown"].includes(outcome)) {
+      assert.throws(operation, (error) => ownershipReason(error) === "proc-environ" && !error.message.includes("private-canary"));
+      assert.equal(tracked.has(42), false);
+    } else {
+      assert.deepEqual(operation().map((row) => row.pid), outcome === "matching-duplicate" ? [42, 43] : [43]);
+      assert.equal(tracked.has(42), outcome === "matching-duplicate");
     }
   }
   // Reused PID with a different start identity is unrelated; environ must not be read.
@@ -604,7 +658,9 @@ test("#914 actual pre-close recheck still closes once, reports ownership only af
   `);
   let OwnershipFailure;
   try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  for (const reason of ["proc-environ", "home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown"]) {
+  for (const reason of ["proc-environ", "home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown", "home-descendant-unknown",
+    ...["missing", "different", "ambiguous"].flatMap((home) =>
+      ["known", "absent", "unknown"].map((type) => `home-descendant-${home}-type-${type}`))]) {
     for (const closeFails of [false, true]) {
       let closes = 0, removed = 0;
       const operation = create({ OwnershipFailure, ownershipReason, requireOwnership() {}, bounded: (pending) => pending,
@@ -636,4 +692,15 @@ test("#914 actual post-close process check reports tracked residue without clean
     requireOwnership: (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); } });
   await assert.rejects(stopped(), (error) => ownershipReason(error) === "related-process-remains");
   assert.equal(reads, 2); // One loop condition and one final confirmation; no new launch/close.
+  for (const reason of ["proc-environ", "unknown"]) {
+    let reads = 0, removed = 0, closed = 0;
+    const unknown = create({ workerBrowserProcesses: () => {
+      reads++; throw reason === "unknown" ? new Error("private-canary") : new OwnershipFailure(reason);
+    }, Date, requireOwnership: (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); } });
+    await assert.rejects(cleanupOwned({ closeBrowser: async () => { closed++; }, browserStopped: unknown,
+      closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }));
+    assert.equal(reads, 1); assert.equal(closed, 1); assert.equal(removed, 0);
+  }
+  const gone = create({ workerBrowserProcesses: () => [], Date, requireOwnership: assert.ok });
+  assert.equal(await gone(), true); // Absence after confirmed API close remains the existing proof.
 });

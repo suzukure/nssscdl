@@ -352,6 +352,13 @@ HOME不一致は選択根拠の優先順をprofile→run-owned Crashpad database
 `home-profile-main`（profile指定・typeなし）/ `home-profile-child`（profile指定・単一の非空type）/
 `home-crash-db` / `home-tracked` / `home-descendant`で区別する。profile選択時のprofile引数複数指定・type複数指定・空値、
 database選択時のdatabase引数複数指定は`home-unknown`とし、弱い選択根拠へfallbackしない。
+子孫だけは、既に選択されHOME完全一致を満たさず失敗する場合に、`home-descendant-{missing|different|ambiguous}-type-{known|absent|unknown}`へ細分化する。
+HOME entryなしはmissing、一件の異値（空値を含む）はdifferent、重複または値指定のない`HOME` entryはambiguousとする。
+knownはargvに`--type=renderer` / `--type=zygote` / `--type=gpu-process` / `--type=utility`のいずれかが単一指定された場合だけで、実roleは断定しない。
+type指定なしはabsent、重複・空・未知値・値指定のない`--type`はunknownに縮退する。HOME判定不能は`home-descendant-unknown`、environ不読は従来の`proc-environ`とする。
+既存`home-descendant`もparser互換として受理し、profile / database / trackedの強い選択根拠は細分化しない。
+診断は不一致時だけの補強であり、完全一致entryがある場合の既存受理条件やprocess消滅時の扱いを変更しない。
+親子閉包は従来のPID=PPID照合のまま。PID再利用・列挙競合による誤認可能性は監査観点として残り、実際の発生は未実証である。
 これは選択根拠による診断分類であり、実Chromeのmain / child / Crashpadの原因確定や許容を意味しない。
 従来の`home-mismatch`もparser互換のため受理する。全関連processの実HOME一致条件は維持する。
 owner parserは既存2項目形式も受理し、新形式は両reasonの固定allowlistと全入力一致を要求する。
@@ -364,7 +371,9 @@ GET / navigationは5秒、response bodyは4096文字上限を維持する。
 意図的失敗commandはpositive 3 GET直後に失敗し、確認済みcleanupの固定checkpointがある場合だけownerもowned filesを削除する。期待exitは1。
 
 標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureは公開Browser引渡し / persistent null境界 / 非永続4Context / TMPDIR・profile・実HOME所有 / main唯一性 / 停止・残存保全 / handoff順序 / Cookie属性 / response非露出の補助証拠のみ。
-正式Browser / Worker / D1実証は未確認。既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
+今回の限定scopeは上記診断の静的・合成fixtureと文書同期だけで、実Chromeの再実行は別途人間判断を要する。
+HOME欠落 / 異値 / 重複、type単一 / 欠落 / 曖昧、親子閉包・選択優先順、primaryとcleanupで異なるreason、不読 / 不明の保全をfixtureで確認するが、実HOME伝播やprocess roleの証明とはしない。
+正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
 HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
 一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
 `REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。

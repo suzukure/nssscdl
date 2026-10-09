@@ -91,7 +91,11 @@ export function ownedProcesses(home, profile) {
 const generatedName = /^(playwright_chromiumdev_profile-|playwright-artifacts-).+/;
 const ownershipReasons = new Set(["none", "unknown", "proc-list", "proc-read", "proc-environ",
   "tracked-owner", "home-mismatch", "home-profile-main", "home-profile-child", "home-crash-db",
-  "home-tracked", "home-descendant", "home-unknown", "profile-argv", "profile-location", "main-count", "profile-set",
+  "home-tracked", "home-descendant", "home-descendant-unknown",
+  "home-descendant-missing-type-known", "home-descendant-missing-type-absent", "home-descendant-missing-type-unknown",
+  "home-descendant-different-type-known", "home-descendant-different-type-absent", "home-descendant-different-type-unknown",
+  "home-descendant-ambiguous-type-known", "home-descendant-ambiguous-type-absent", "home-descendant-ambiguous-type-unknown",
+  "home-unknown", "profile-argv", "profile-location", "main-count", "profile-set",
   "profile-missing", "profile-count", "directory-read", "directory-type", "directory-owner",
   "directory-mode", "directory-path", "generated-changed", "related-process-remains"]);
 class OwnershipFailure extends Error {
@@ -134,7 +138,7 @@ export function generatedBrowserFiles(temporary) {
 export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   // Diagnostic precedence only: profile > crash database > tracked identity > descendant.
   // Ambiguous argv cannot establish a role; it never falls through to a weaker basis.
-  const homeMismatchReason = (row) => {
+  const homeMismatchReason = (row, env) => {
     if (row.profileSelected) {
       const types = row.argv.filter((arg) => arg.startsWith("--type="));
       if (row.profileArgs.length !== 1 || types.length > 1 || types[0] === "--type=") return "home-unknown";
@@ -144,7 +148,17 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
       return row.argv.filter((arg) => arg.startsWith("--database=")).length === 1 ? "home-crash-db" : "home-unknown";
     }
     if (row.trackedSelected) return "home-tracked";
-    return row.selected ? "home-descendant" : "home-unknown";
+    if (!row.selected) return "home-unknown";
+    // Only refine an already selected, failing descendant. These are entry/argv
+    // observations, never proof of a process role or a reason to relax ownership.
+    const homes = env.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
+    const homeState = homes.length === 0 ? "missing" : homes.length > 1 || homes[0] === "HOME" ? "ambiguous" :
+      homes[0] !== `HOME=${home}` ? "different" : "unknown";
+    if (homeState === "unknown") return "home-descendant-unknown";
+    const types = row.argv.filter((arg) => arg.startsWith("--type=") || arg === "--type");
+    const knownTypes = ["--type=renderer", "--type=zygote", "--type=gpu-process", "--type=utility"];
+    const typeState = types.length === 0 ? "absent" : types.length === 1 && knownTypes.includes(types[0]) ? "known" : "unknown";
+    return `home-descendant-${homeState}-type-${typeState}`;
   };
   const rows = [];
   for (const entry of ownershipRead("proc-list", () => readdirSync("/proc"))) {
@@ -179,7 +193,7 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   for (const row of rows.filter((row) => row.selected)) {
     try {
       const env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
-      requireOwnership(env.includes(`HOME=${home}`), homeMismatchReason(row));
+      if (!env.includes(`HOME=${home}`)) throw new OwnershipFailure(homeMismatchReason(row, env));
       requireOwnership(row.profileArgs.length <= 1, "profile-argv");
       const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
       if (profile) {
