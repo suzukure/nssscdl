@@ -23,6 +23,8 @@ let child;
 let stopUnknown = false;
 let intentionalObserved = false, browserCleanupConfirmed = false;
 let browserCertificate;
+// Fixed non-secret runtime stage only; never emit original error, request or child output.
+let browserStage = "entry";
 
 async function command(file, args, cleanup = false) {
   const pending = exec(file, args, { cwd: root, env: process.env, detached: true,
@@ -67,9 +69,11 @@ try {
   check(process.argv.length === 2 || (browserMode && (process.argv.length === 3 ||
     (process.argv.length === 4 && failAfterPositive))));
   checkSetup();
+  if (browserMode) browserStage = "seed";
   if (browserMode) browserPreflight();
   const certificate = browserMode ? undefined : await createCertificate(process.env.TMPDIR, command);
   await withTrustedEvaluationSeed(async (seed) => {
+    if (browserMode) browserStage = "seed-inspect";
     const before = await inspect(seed);
     const secrets = [seed.sessions.self.cookie().value, seed.sessions.other.cookie().value];
     const hashes = secrets.map((value) => createHash("sha256").update(value).digest("hex"));
@@ -79,7 +83,9 @@ try {
       const inspectStopped = () => withStoppedProxy(proxyState, async () => {
         check(before === await inspect(seed, revokedAt));
       });
+      browserStage = "tls-setup";
       await withIsolatedBrowserTls(async ({ browser, context, certificate, signal }) => {
+        browserStage = "worker-start";
         browserCertificate = `certificate: SHA256=${checkCertificate(certificate).fingerprint256}; SAN=127.0.0.1; same Node/Worker cert`;
         const start = async () => {
           signal.throwIfAborted();
@@ -88,6 +94,7 @@ try {
           child = launchWorker(process.env, certificate.key, certificate.cert);
           await waitForWorker(child, command, signal);
           await checkWorkerCertificate(certificate);
+          browserStage = "browser-read";
         };
         try {
           await proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop,
@@ -100,6 +107,10 @@ try {
       }, {
         workerHandoff: true, executablePath: browserBinary, signal: controller.signal,
         report: (line) => {
+          const observed = /^failure: stage=([^;]+); category=/.exec(line);
+          const stageNames = { preflight: "tls-preflight", "certificate/NSS": "tls-cert", listener: "tls-listener", "browser launch/HOME": "tls-browser-launch", "positive trust": "tls-positive", "SAN mismatch": "tls-san", "unregistered certificate": "tls-untrusted", "helper callback": "tls-consumer" };
+          if (observed && Object.hasOwn(stageNames, observed[1])) browserStage = stageNames[observed[1]];
+          if (line === "cleanup: uncertain process/port state; owned files retained for operator inspection; no retry") browserStage = "tls-cleanup";
           if (line === "cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed") browserCleanupConfirmed = true;
         }, stopConsumer: stop,
         inspectOwned: async (home) => {
@@ -197,6 +208,7 @@ try {
   console.log(browserMode ? browserProofCheckpoint : httpsProofCheckpoint);
 } catch {
   process.exitCode = 1; // No raw cause, HTTP body, assertion diff or child output.
+  if (browserMode && !intentionalObserved) console.error(`TRUSTED_BROWSER_STAGE=${browserStage}`);
   if (intentionalObserved && browserCleanupConfirmed) {
     console.log(browserCertificate);
     console.log(browserFailureCheckpoint);
