@@ -66,14 +66,18 @@ export function ownedProcesses(home, profile) {
     let argv, env;
     try {
       if (lstatSync(`/proc/${entry}`).uid !== process.getuid()) continue;
+      // First select this run's exact browser profile using process argv.
+      // Unrelated same-UID CI processes can deny /proc/<pid>/environ reads.
       argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
+      if (!argv.includes(`--user-data-dir=${profile}`)) continue;
+      // Once a process matches our profile, HOME must be readable and exact.
+      // Do not skip EACCES for an owned browser process.
       env = readFileSync(`/proc/${entry}/environ`, "utf8").split("\0");
     } catch (error) {
       if (error.code === "ENOENT" || error.code === "ESRCH") continue;
-      throw error; // Unreadable ownership is unknown, never proof of shutdown.
+      throw error; // Unreadable owned process is unknown, never proof of shutdown.
     }
     const profileArg = argv.includes(`--user-data-dir=${profile}`);
-    if (!profileArg && !env.includes(`HOME=${home}`)) continue;
     assert.ok(env.includes(`HOME=${home}`), "browser process HOME mismatch");
     owned.push({ pid: Number(entry), main: argv.includes(`--user-data-dir=${profile}`) && !argv.some((arg) => arg.startsWith("--type=")) });
   }
