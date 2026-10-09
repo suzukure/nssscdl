@@ -189,6 +189,7 @@ export async function run() {
     await command(wrangler, ["d1", "migrations", "apply", database, "--config", config, "--local", "--persist-to", persist]);
     stage = "migration-files";
     const files = sqliteFiles(join(root, persist));
+    if (files.length !== 1) console.log(`D1 file discovery: sqlite_count=${files.length} (expected 1; no filenames disclosed)`);
     assert.equal(files.length, 1);
     const inspect = () => {
       const db = new DatabaseSync(files[0], { readOnly: true });
