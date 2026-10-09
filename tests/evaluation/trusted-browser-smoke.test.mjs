@@ -381,7 +381,7 @@ test("#914 actual /proc profile and HOME, unique main, related process shutdown;
   const children = [];
   const launch = async (actualHome, args = []) => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`, ...args], {
-      env: { PATH: process.env.PATH, HOME: actualHome }, stdio: "ignore",
+      env: { PATH: process.env.PATH, HOME: actualHome }, stdio: "ignore", detached: true,
     });
     const closed = new Promise((done) => child.once("close", done));
     children.push({ child, closed });
@@ -391,10 +391,9 @@ test("#914 actual /proc profile and HOME, unique main, related process shutdown;
   const stopAll = async () => { for (const { child } of children) child.kill("SIGTERM"); await Promise.all(children.map(({ closed }) => closed)); };
   try {
     const main = await launch(home);
-    const renderer = await launch(home, ["--type=renderer"]);
     const tracked = new Map();
     assert.equal(checkWorkerBrowserOwnership(home, temporary, tracked).profile, profile);
-    assert.ok(tracked.has(main.pid) && tracked.has(renderer.pid));
+    assert.ok(tracked.has(main.pid));
     let removed = 0;
     await assert.rejects(cleanupOwned({ closeBrowser: async () => {},
       browserStopped: async () => workerBrowserProcesses(home, temporary, tracked).length === 0,
@@ -402,8 +401,6 @@ test("#914 actual /proc profile and HOME, unique main, related process shutdown;
     assert.equal(removed, 0); assert.ok(existsSync(home) && existsSync(profile));
     await launch(home);
     assert.throws(() => checkWorkerBrowserOwnership(home, temporary, tracked), (error) => ownershipReason(error) === "main-count");
-    await launch("/fixture-wrong-home", ["--type=renderer"]);
-    assert.throws(() => workerBrowserProcesses(home, temporary, tracked), (error) => ownershipReason(error) === "home-profile-child");
     await stopAll();
     assert.deepEqual(workerBrowserProcesses(home, temporary, tracked), []);
     await assert.rejects(cleanupOwned({ closeBrowser: async () => {}, browserStopped: async () => true,
@@ -426,7 +423,7 @@ test("#914 ownership reasons survive independent primary/cleanup and strict owne
     expected.replace("; CLEANUP_OWNERSHIP=main-count", "")]) assert.equal(parseBrowserDiagnostic(value), undefined);
   assert.equal(ownershipReason(new Error("private-canary")), "unknown");
   assert.doesNotMatch(browserDiagnostic({ ...diagnostic, ownership: "private-canary" }), /private-canary/);
-  const reasons = ["home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown",
+  const reasons = ["root-unverified", "group-mismatch", "session-mismatch", "tracked-drift", "home-profile-main", "home-profile-child", "home-crash-db", "home-tracked", "home-descendant", "home-unknown",
     "home-descendant-unknown", ...["missing", "different", "ambiguous"].flatMap((home) =>
       ["known", "absent", "unknown"].map((type) => `home-descendant-${home}-type-${type}`))];
   for (const reason of reasons) {
@@ -476,7 +473,7 @@ test("#914 profile missing/count and directory read failure remain fail-closed f
   const home = mkdtempSync(join(temporary, "tls-home-"));
   const profile = join(temporary, "playwright_chromiumdev_profile-missing");
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`], {
-    env: { PATH: process.env.PATH, HOME: home }, stdio: "ignore",
+    env: { PATH: process.env.PATH, HOME: home }, stdio: "ignore", detached: true,
   });
   const closed = new Promise((done) => child.once("close", done));
   try {
@@ -493,157 +490,6 @@ test("#914 profile missing/count and directory read failure remain fail-closed f
       assert.ok(!("cause" in error) && !("actual" in error)); return true;
     });
   } finally { child.kill("SIGTERM"); await closed; rmSync(temporary, { recursive: true }); }
-});
-
-test("#914 actual process classifier: inaccessible proc is unknown; disappearance is not a read failure", () => {
-  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
-  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkWorkerBrowserOwnership"));
-  let OwnershipFailure;
-  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  const requireOwnership = (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); };
-  const ownershipRead = (reason, operation) => { try { return operation(); } catch { throw new OwnershipFailure(reason); } };
-  const run = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason", "requireOwnership", "ownershipRead", "dirname",
-    block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", new Map([[42, "identity"]]));');
-  for (const [failure, expected] of [["list", "proc-list"], ["cmdline", "proc-read"], ["stat", "proc-read"],
-    ["environ", "proc-environ"], ["owner", "tracked-owner"], ["home", "home-profile-main"], ["gone", "none"]]) {
-    const denied = () => { const error = new Error("private-canary"); error.code = failure === "gone" ? "ENOENT" : "EACCES"; throw error; };
-    const fields = Array(20).fill("0"); fields[1] = "1"; fields[19] = "identity";
-    const operation = () => run(() => { if (failure === "list") denied(); return ["42"]; },
-      () => ({ uid: failure === "owner" ? 8 : 7 }),
-      (path) => {
-        const kind = path.split("/").at(-1);
-        if (failure === kind || failure === "gone") denied();
-        if (kind === "cmdline") return "--user-data-dir=/fixture-run/playwright_chromiumdev_profile-fixture\0";
-        if (kind === "stat") return "42 (fixture) " + fields.join(" ");
-        return failure === "home" ? "HOME=/fixture-other\0" : "HOME=/fixture-home\0";
-      }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason, requireOwnership, ownershipRead,
-      (path) => path.slice(0, path.lastIndexOf("/")));
-    if (expected === "none") assert.deepEqual(operation(), []);
-    else assert.throws(operation, (error) => { assert.equal(ownershipReason(error), expected); assert.doesNotMatch(error.message, /private-canary/); return true; });
-  }
-});
-
-test("#914 HOME diagnostics use selection precedence, ambiguous argv stays unknown, descendants and tracked identity remain required", () => {
-  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
-  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkWorkerBrowserOwnership"));
-  let OwnershipFailure;
-  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  const run = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason", "requireOwnership", "ownershipRead", "dirname", "tracked",
-    block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", tracked);');
-  const profile = "--user-data-dir=/fixture-run/playwright_chromiumdev_profile-fixture";
-  const crash = "--database=/fixture-home/.config/crashpad";
-  // Expected codes come from the Issue's entry/argv distinction and documented precedence.
-  const cases = [
-    [[profile], false, [], "home-profile-main"],
-    [[profile], true, [], "home-profile-main"],
-    [[profile, crash], true, [], "home-profile-main"],
-    [[profile, "--type=renderer", crash], true, [], "home-profile-child"],
-    [[crash], true, [], "home-crash-db"],
-    [[crash], false, [], "home-crash-db"],
-    [[], true, [], "home-tracked"],
-    [[], true, [{ pid: 43, parent: 1, argv: [profile] }], "home-tracked"],
-    [[], false, [{ pid: 43, parent: 1, argv: [profile] }], "home-descendant-different-type-absent"],
-    [[], false, [{ pid: 43, parent: 44, argv: [] }, { pid: 44, parent: 1, argv: [profile] }], "home-descendant-different-type-absent"],
-    [[profile, profile], true, [], "home-unknown", "profile-argv"],
-    [[profile, "--user-data-dir=/fixture-other", crash], true, [], "home-unknown", "profile-argv"],
-    [[profile, "--type=renderer", "--type=gpu-process"], true, [], "home-unknown"],
-    [[profile, "--type="], true, [], "home-unknown"],
-    [[crash, "--database=/fixture-other"], true, [], "home-unknown"],
-  ];
-  // Synthetic entry/argv observations only; a known flag does not establish a real role.
-  const ancestors = [{ pid: 43, parent: 44, argv: [] }, { pid: 44, parent: 1, argv: [profile] }];
-  const environments = [
-    ["SECRET=private-canary\0", "missing"],
-    ["HOME=/private-canary\0SECRET=private-canary\0", "different"],
-    ["HOME=\0", "different"],
-    ["HOME=/private-canary\0HOME=/fixture-other\0", "ambiguous"],
-    ["HOME=/private-canary\0HOME=/private-canary\0", "ambiguous"],
-    ["HOME\0", "ambiguous"],
-  ];
-  for (const [environment, homeState] of environments) {
-    for (const [argv, typeState] of [
-      [["--type=renderer"], "known"], [["--type=zygote"], "known"],
-      [["--type=gpu-process"], "known"], [["--type=utility"], "known"], [[], "absent"],
-      [["--type=renderer", "--type=renderer"], "unknown"],
-      [["--type=renderer", "--type=gpu-process"], "unknown"],
-      [["--type="], "unknown"], [["--type=private-canary"], "unknown"], [["--type"], "unknown"],
-    ]) cases.push([argv, false, ancestors, `home-descendant-${homeState}-type-${typeState}`, undefined, environment]);
-  }
-  // Stronger selection bases stay unchanged even with missing/duplicate HOME entries.
-  cases.push([[profile, crash], true, ancestors, "home-profile-main", undefined, ""],
-    [[crash], true, ancestors, "home-crash-db", undefined, "HOME=/private-canary\0HOME=/fixture-other\0"],
-    [[], true, ancestors, "home-tracked", undefined, ""]);
-  for (const [argv, isTracked, ancestors, expected, correctHomeFailure, environment] of cases) {
-    // The mismatched process comes first; transitive descendant selection must still find it.
-    const rows = [{ pid: 42, parent: ancestors.length ? 43 : 1, argv }, ...ancestors];
-    for (const wrongHome of [false, true]) {
-      const tracked = new Map(isTracked ? [[42, "identity-42"]] : []);
-      const environmentReads = [];
-      const operation = () => run(() => rows.map((row) => String(row.pid)), () => ({ uid: 7 }), (path) => {
-        const pid = Number(path.split("/")[2]), kind = path.split("/").at(-1);
-        const row = rows.find((row) => row.pid === pid);
-        if (kind === "cmdline") return row.argv.join("\0") + "\0";
-        if (kind === "stat") {
-          const fields = Array(20).fill("0"); fields[1] = String(row.parent); fields[19] = `identity-${pid}`;
-          return `${pid} (fixture) ` + fields.join(" ");
-        }
-        environmentReads.push(pid);
-        return wrongHome && pid === 42 ? environment ?? "HOME=/private-canary\0SECRET=private-canary\0" : "HOME=/fixture-home\0";
-      }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
-      (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
-      (_reason, operation) => operation(), (path) => path.slice(0, path.lastIndexOf("/")), tracked);
-      if (wrongHome) {
-        assert.throws(operation, (error) => {
-          assert.equal(ownershipReason(error), expected);
-          assert.equal(error.message, `browser ownership: ${expected}`);
-          assert.ok(!("cause" in error) && !("actual" in error)); return true;
-        });
-      } else if (correctHomeFailure) {
-        assert.throws(operation, (error) => ownershipReason(error) === correctHomeFailure);
-      } else {
-        assert.equal(operation().length, rows.length);
-        assert.deepEqual(environmentReads, rows.map((row) => row.pid));
-        assert.equal(tracked.get(42), "identity-42");
-      }
-    }
-  }
-  // Preserve existing exact-match acceptance, even when another HOME entry exists.
-  // Diagnostic refinement must not silently introduce a new acceptance rule.
-  const selected = [{ pid: 42, parent: 43, argv: ["--type=renderer"] }, { pid: 43, parent: 1, argv: [profile] }];
-  for (const outcome of ["matching-duplicate", "ENOENT", "ESRCH", "EACCES", "unknown"]) {
-    const tracked = new Map();
-    const operation = () => run(() => selected.map((row) => String(row.pid)), () => ({ uid: 7 }), (path) => {
-      const pid = Number(path.split("/")[2]), row = selected.find((row) => row.pid === pid);
-      if (path.endsWith("cmdline")) return row.argv.join("\0") + "\0";
-      if (path.endsWith("stat")) {
-        const fields = Array(20).fill("0"); fields[1] = String(row.parent); fields[19] = `identity-${pid}`;
-        return `${pid} (fixture) ` + fields.join(" ");
-      }
-      if (pid === 42 && outcome !== "matching-duplicate") {
-        const error = new Error("private-canary");
-        if (outcome !== "unknown") error.code = outcome;
-        throw error;
-      }
-      return "HOME=/fixture-home\0HOME=/private-canary\0";
-    }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
-    (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
-    (_reason, operation) => operation(), (path) => path.slice(0, path.lastIndexOf("/")), tracked);
-    if (["EACCES", "unknown"].includes(outcome)) {
-      assert.throws(operation, (error) => ownershipReason(error) === "proc-environ" && !error.message.includes("private-canary"));
-      assert.equal(tracked.has(42), false);
-    } else {
-      assert.deepEqual(operation().map((row) => row.pid), outcome === "matching-duplicate" ? [42, 43] : [43]);
-      assert.equal(tracked.has(42), outcome === "matching-duplicate");
-    }
-  }
-  // Reused PID with a different start identity is unrelated; environ must not be read.
-  assert.deepEqual(run(() => ["42"], () => ({ uid: 7 }), (path) => {
-    if (path.endsWith("cmdline")) return "fixture\0";
-    if (path.endsWith("stat")) { const fields = Array(20).fill("0"); fields[1] = "1"; fields[19] = "new-identity"; return "42 (fixture) " + fields.join(" "); }
-    assert.fail("unrelated environ read");
-  }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
-  (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
-  (_reason, operation) => operation(), () => "", new Map([[42, "old-identity"]])), []);
 });
 
 test("#914 actual pre-close recheck still closes once, reports ownership only after resolve, never removes", async () => {
@@ -694,6 +540,7 @@ test("#914 actual post-close process check reports tracked residue without clean
     const { workerBrowserProcesses, requireOwnership, Date } = fixture;
     const workerHandoff = true, launchAttempted = true, browser = fixture.browser === null ? undefined : {}, home = "fixture", temporary = "fixture", tracked = new Map();
     const closeObservation = fixture.closeObservation ?? { preClose: "pass", close: "resolve", postClose: "not-run" };
+    tracked.root = { pid: 42, group: 42, session: 42 };
     const operation = { ${block} };
     return operation.browserStopped;
   `);
@@ -726,83 +573,6 @@ test("#914 actual post-close process check reports tracked residue without clean
     Date, requireOwnership: assert.ok, closeObservation: unlaunched });
   assert.equal(await noHandle(), false);
   assert.equal(unlaunched.postClose, "not-run");
-});
-
-test("#914 failing selected processes expose fixed observation axes without changing acceptance", () => {
-  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
-  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkWorkerBrowserOwnership"));
-  let OwnershipFailure;
-  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  const run = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason", "requireOwnership", "ownershipRead", "dirname", "tracked",
-    block.replace("export function", "function") + '\nreturn workerBrowserProcesses("/fixture-home", "/fixture-run", tracked);');
-  const profile = "--user-data-dir=/fixture-run/playwright_chromiumdev_profile-fixture";
-  const evaluate = ({ argv = [], state = "R", env = "", tracked = false, mutate = () => {}, denied = false } = {}) => {
-    const reads = new Map(), environmentReads = [];
-    try {
-      run(() => ["42", "43"], () => ({ uid: 7 }), (path) => {
-        const pid = Number(path.split("/")[2]), kind = path.split("/").at(-1);
-        if (kind === "cmdline") return (pid === 42 ? argv : [profile]).join("\0") + "\0";
-        if (kind === "stat") {
-          const count = (reads.get(pid) ?? 0) + 1; reads.set(pid, count);
-          const fields = Array(20).fill("0"); fields[0] = pid === 42 ? state : "S";
-          fields[1] = pid === 42 ? "43" : "1"; fields[19] = String(pid * 10);
-          const sample = { pid, fields }; mutate(sample, count);
-          return `${sample.pid} (fixture ) private-canary) ` + fields.join(" ");
-        }
-        environmentReads.push(pid);
-        if (denied && pid === 42) { const error = new Error("private-canary"); error.code = "EACCES"; throw error; }
-        return pid === 42 ? env : "HOME=/fixture-home\0";
-      }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason,
-      (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); },
-      (_reason, operation) => operation(), (path) => path.slice(0, path.lastIndexOf("/")), new Map(tracked ? [[42, "420"]] : []));
-      assert.fail("selected mismatch must still fail");
-    } catch (error) {
-      assert.ok(error instanceof OwnershipFailure);
-      assert.deepEqual(environmentReads, [42]);
-      assert.doesNotMatch(error.message + error.observation, /private-canary|fixture-home|fixture-run|420/);
-      return error;
-    }
-  };
-  // proc_pid_stat(5) field positions and the Issue's fixed allowlists are the oracle.
-  for (const [state, expectedState] of [["R", "live"], ["S", "live"], ["Z", "zombie"], ["X", "dead"], ["x", "dead"], ["?", "unknown"]]) {
-    const error = evaluate({ state });
-    assert.equal(error.observation, `descendant,${expectedState},missing,${["Z", "X", "x"].includes(state) ? "unknown" : "absent"},stable`);
-    assert.equal(ownershipReason(error), "home-descendant-missing-type-absent");
-  }
-  for (const [env, expected] of [["", "missing"], ["HOME=/private-canary\0", "different"], ["HOME\0", "ambiguous"], ["HOME=one\0HOME=two\0", "ambiguous"]]) {
-    assert.equal(evaluate({ env }).observation, `descendant,live,${expected},absent,stable`);
-  }
-  for (const [argv, type] of [[[], "absent"], ...["renderer", "zygote", "gpu-process", "utility"].map((type) => [[`--type=${type}`], type]),
-    [["--type=private-canary"], "other"], [["--type="], "unknown"], [["--type"], "unknown"], [["--type=renderer", "--type=zygote"], "unknown"]]) {
-    assert.equal(evaluate({ argv }).observation, `descendant,live,missing,${type},stable`);
-  }
-  for (const [argv, tracked, selection] of [[[profile], true, "profile"], [["--database=/fixture-home/crash"], true, "Crashpad"], [[], true, "tracked"], [[], false, "descendant"]]) {
-    assert.equal(evaluate({ argv, tracked }).observation, `${selection},live,missing,absent,stable`);
-  }
-  const unreadable = evaluate({ denied: true });
-  assert.equal(unreadable.observation, "descendant,live,unreadable,absent,stable");
-  assert.equal(ownershipReason(unreadable), "proc-environ");
-  const exact = evaluate({ argv: [profile, profile], env: "HOME=/fixture-home\0" });
-  assert.equal(exact.observation, "profile,live,exact,absent,stable");
-  assert.equal(ownershipReason(exact), "profile-argv");
-  for (const phase of [2, 3]) {
-    for (const [target, field] of [[42, 19], [42, 1], [42, 0], [43, 19]]) {
-      const error = evaluate({ mutate: ({ pid, fields }, count) => { if (pid === target && count === phase) fields[field] = field === 0 ? "Z" : "999"; } });
-      assert.equal(error.observation.split(",").at(-1), "changed");
-      assert.equal(ownershipReason(error), "home-descendant-missing-type-absent");
-    }
-    for (const target of [42, 43]) for (const [code, consistency] of [["ENOENT", "vanished"], ["ESRCH", "vanished"], ["EACCES", "unreadable"]]) {
-      const error = evaluate({ mutate: ({ pid }, count) => {
-        if (pid === target && count === phase) { const error = new Error("private-canary"); error.code = code; throw error; }
-      } });
-      assert.equal(error.observation.split(",").at(-1), consistency);
-      assert.equal(ownershipReason(error), "home-descendant-missing-type-absent"); // Diagnostic read failure never excludes the selection.
-    }
-  }
-  for (const mutate of [({ pid, fields }) => { if (pid === 42) fields[19] = "malformed"; },
-    (sample, count) => { if (sample.pid === 42 && count === 3) sample.pid = 99; }]) {
-    assert.equal(evaluate({ mutate }).observation, "descendant,unknown,unknown,unknown,unknown");
-  }
 });
 
 test("#914 observation transport keeps primary/cleanup independent and rejects unknown axes or extra output", () => {
@@ -855,4 +625,158 @@ test("#914 actual helper report templates preserve fixed observations through th
     assert.equal(parseBrowserDiagnostic(line + "\n"), line);
     assert.doesNotMatch(line, /private-canary/);
   }
+});
+
+// Issue #914's adopted process-group contract is the oracle, not browser runtime output.
+function ownershipFixture() {
+  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkGeneratedBrowserCleanup"));
+  let OwnershipFailure;
+  try { checkOwnedDirectory("/fixture-absent"); } catch (error) { OwnershipFailure = error.constructor; }
+  const requireOwnership = (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); };
+  const ownershipRead = (reason, operation) => { try { return operation(); } catch (error) {
+    if (error instanceof OwnershipFailure) throw error; throw new OwnershipFailure(reason);
+  } };
+  const factory = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason",
+    "requireOwnership", "ownershipRead", "dirname", "generatedBrowserFiles", block.replaceAll("export function", "function") +
+    "\nreturn { processes: workerBrowserProcesses, check: checkWorkerBrowserOwnership };");
+  const profile = "/fixture-run/playwright_chromiumdev_profile-fixture";
+  const main = { pid: 42, parent: 1, group: 42, session: 42, identity: "420", uid: 7,
+    argv: [`--user-data-dir=${profile}`], env: "HOME=/fixture-home\0", state: "S" };
+  // setproctitle-style single mutable title: type is absent, HOME is missing.
+  const child = { pid: 43, parent: 42, group: 42, session: 42, identity: "430", uid: 7,
+    argv: ["mutable private-canary --type=renderer"], env: "\0\0", state: "R" };
+  let rows = [main, child], files = [profile], mutate = () => {};
+  const tracked = new Map(), reads = new Map();
+  const gone = () => { const error = new Error("private-canary"); error.code = "ENOENT"; throw error; };
+  const api = factory(() => rows.map((row) => String(row.pid)), (path) => {
+    const row = rows.find((row) => row.pid === Number(path.split("/")[2]));
+    if (!row) gone(); return { uid: row.uid };
+  }, (path) => {
+    const pid = Number(path.split("/")[2]), kind = path.split("/").at(-1);
+    const row = rows.find((row) => row.pid === pid); if (!row) gone();
+    const key = `${pid}/${kind}`, count = (reads.get(key) ?? 0) + 1; reads.set(key, count);
+    const sample = { ...row, kind }; mutate(sample, count);
+    if (kind === "cmdline") return sample.argv.join("\0") + (sample.terminated === false ? "" : "\0");
+    if (kind === "environ") return sample.env;
+    const fields = Array(20).fill("0");
+    fields[0] = sample.state; fields[1] = String(sample.parent); fields[2] = String(sample.group);
+    fields[3] = String(sample.session); fields[19] = sample.identity;
+    return `${pid} (mutable ) private-canary) ${fields.join(" ")}`;
+  }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason, requireOwnership, ownershipRead,
+  (path) => path.slice(0, path.lastIndexOf("/")), () => files);
+  return { main, child, tracked, profile, setRows: (value) => { rows = value; }, setFiles: (value) => { files = value; },
+    mutate: (value) => { mutate = value; }, run: (check = false) => {
+      reads.clear(); return api[check ? "check" : "processes"]("/fixture-home", "/fixture-run", tracked);
+    } };
+}
+function failsOwnership(fixture, expected, check = false) {
+  assert.throws(() => fixture.run(check), (error) => {
+    assert.equal(ownershipReason(error), expected);
+    assert.doesNotMatch(error.message + (error.observation ?? ""), /private-canary|fixture-home|fixture-run|420|430/);
+    assert.ok(!("cause" in error) && !("actual" in error)); return true;
+  });
+}
+
+test("#914 exact root: unique private generated profile, NUL argv, HOME and PID=PGRP=SID; no fallback", () => {
+  const good = ownershipFixture(); assert.equal(good.run(true).profile, good.profile);
+  assert.deepEqual([...good.tracked], [[42, "420"], [43, "430"]]);
+  for (const [change, reason] of [
+    [(f) => { f.setRows([f.child]); }, "main-count"],
+    [(f) => { f.setRows([f.main, { ...f.main, pid: 44, identity: "440" }]); }, "main-count"],
+    [(f) => { f.main.argv.push(f.main.argv[0]); }, "profile-argv"],
+    [(f) => { f.main.terminated = false; }, "profile-argv"],
+    [(f) => { f.main.argv = [`title ${f.main.argv[0]}`]; }, "main-count"],
+    [(f) => { f.main.argv = ["--user-data-dir=/fixture-run/fake-profile"]; }, "profile-location"],
+    [(f) => { f.setFiles([]); }, "profile-missing"],
+    [(f) => { f.setFiles([f.profile, "/fixture-run/playwright_chromiumdev_profile-extra"]); }, "profile-count"],
+    [(f) => { f.main.group = 99; }, "root-unverified"],
+    [(f) => { f.main.session = 99; }, "root-unverified"],
+    ...["", "HOME=/private-canary\0", "HOME=/fixture-home\0HOME=/private-canary\0", "HOME\0"].map((env) =>
+      [(f) => { f.main.env = env; }, "home-profile-main"]),
+    [(f) => { f.mutate((row, count) => { if (row.pid === 42 && row.kind === "stat" && count === 2) row.identity = "999"; }); }, "root-unverified"],
+  ]) {
+    const fixture = ownershipFixture(); change(fixture); failsOwnership(fixture, reason, true);
+    assert.equal(fixture.tracked.root, undefined); // Never connect to a guessed same-UID group.
+  }
+});
+
+test("#914 related group/session children allow only missing HOME; explicit different/ambiguous/unreadable remains closed", () => {
+  for (const env of ["", "\0\0", "HOME=/fixture-home\0"]) {
+    const fixture = ownershipFixture(); fixture.child.env = env;
+    assert.deepEqual(fixture.run().map((row) => row.pid), [42, 43]);
+  }
+  for (const [change, reason] of [
+    [(f) => { f.child.group = 99; }, "group-mismatch"],
+    [(f) => { f.child.session = 99; }, "session-mismatch"],
+    [(f) => { f.child.uid = 8; }, "tracked-owner"],
+    [(f) => { f.child.parent = 1; }, "unknown"],
+    [(f) => { f.child.identity = "410"; }, "tracked-drift"],
+    ...["HOME=/private-canary\0", "HOME=\0"].map((env) => [(f) => { f.child.env = env; }, "home-descendant-different-type-absent"]),
+    ...["HOME\0", "HOME=/fixture-home\0HOME=/private-canary\0"].map((env) =>
+      [(f) => { f.child.env = env; }, "home-descendant-ambiguous-type-absent"]),
+    [(f) => { f.mutate((row) => { if (row.pid === 43 && row.kind === "environ") throw new Error("private-canary"); }); }, "proc-environ"],
+  ]) { const fixture = ownershipFixture(); change(fixture); failsOwnership(fixture, reason); }
+  const foreign = ownershipFixture(); foreign.setRows([foreign.main, foreign.child,
+    { ...foreign.child, pid: 44, parent: 1, group: 99, session: 99, uid: 8 }]);
+  assert.equal(foreign.run().length, 2); // Different UID/group/session is unrelated.
+});
+
+test("#914 identity rereads, parent contradictions and tracked drift never transfer ownership or discard unknown residue", () => {
+  for (const [target, field] of [[43, "identity"], [43, "parent"], [43, "group"], [43, "session"], [42, "identity"]]) {
+    const fixture = ownershipFixture(); fixture.run();
+    fixture.mutate((row, count) => { if (row.pid === target && row.kind === "stat" && count === 2) row[field] = field === "identity" ? "999" : 99; });
+    failsOwnership(fixture, "tracked-drift");
+    assert.equal(fixture.tracked.get(target), target === 42 ? "420" : "430");
+  }
+  for (const code of ["ENOENT", "ESRCH", "EACCES"]) {
+    const fixture = ownershipFixture();
+    fixture.mutate((row, count) => { if (row.pid === 43 && row.kind === "stat" && count === 2) {
+      const error = new Error("private-canary"); error.code = code; throw error;
+    } }); failsOwnership(fixture, "tracked-drift");
+  }
+  for (const [change, reason] of [
+    [(f) => { f.child.identity = "999"; }, "tracked-drift"],
+    [(f) => { f.child.group = 99; }, "group-mismatch"],
+    [(f) => { f.child.session = 99; }, "session-mismatch"],
+    [(f) => { f.child.uid = 8; }, "tracked-owner"],
+    [(f) => { f.child.parent = 99; }, "tracked-drift"],
+    [(f) => { f.child.parent = f.child.pid; }, "tracked-drift"],
+    [(f) => { f.main.parent = f.child.pid; }, "tracked-drift"],
+    [(f) => { f.main.identity = "990"; }, "tracked-drift"],
+    [(f) => { f.main.env = ""; }, "home-profile-main"],
+    [(f) => { f.setRows([f.main, f.child, { ...f.child, pid: 44, parent: 1 }]); }, "unknown"],
+  ]) { const fixture = ownershipFixture(); fixture.run(); change(fixture); failsOwnership(fixture, reason); }
+  const reparented = ownershipFixture(); reparented.run(); reparented.child.parent = 1; reparented.setRows([reparented.child]);
+  assert.equal(reparented.run().length, 1); // Attested identity remains tracked after root exit.
+  reparented.setRows([]); assert.deepEqual(reparented.run(), []);
+  assert.equal(reparented.tracked.get(43), "430"); // Tombstone retained to detect PID reuse through shutdown.
+  reparented.child.identity = "999"; reparented.setRows([reparented.child]); failsOwnership(reparented, "tracked-drift");
+});
+
+test("#914 stable fixed observations retain state/type axes while disappeared or malformed related reads preserve uncertainty", () => {
+  for (const [state, expected] of [["R", "live"], ["S", "live"], ["Z", "zombie"], ["X", "dead"], ["x", "dead"]]) {
+    const fixture = ownershipFixture(); fixture.child.state = state; fixture.child.argv = [];
+    fixture.child.env = "HOME=/private-canary\0";
+    assert.throws(() => fixture.run(), (error) => error.observation ===
+      `descendant,${expected},different,${["Z", "X", "x"].includes(state) ? "unknown" : "absent"},stable`);
+  }
+  for (const [argv, type] of [
+    ...["renderer", "zygote", "gpu-process", "utility"].map((value) => [[`--type=${value}`], value]),
+    [["--type=private-canary"], "other"], [["--type="], "unknown"], [["--type"], "unknown"],
+    [["--type=renderer", "--type=zygote"], "unknown"],
+  ]) {
+    const fixture = ownershipFixture(); fixture.child.argv = argv; fixture.child.env = "HOME=/private-canary\0";
+    assert.throws(() => fixture.run(), (error) => error.observation === `descendant,live,different,${type},stable`);
+  }
+  for (const [change, reason] of [
+    [(f) => { f.main.uid = 8; }, "main-count"],
+    [(f) => { f.main.identity = "malformed"; }, "proc-read"],
+    [(f) => { f.mutate((row) => { if (row.pid === 42 && row.kind === "environ") throw new Error("private-canary"); }); }, "proc-environ"],
+    [(f) => { f.mutate((row) => { if (row.pid === 43 && row.kind === "cmdline") {
+      const error = new Error("private-canary"); error.code = "ENOENT"; throw error;
+    } }); }, "proc-read"],
+  ]) { const fixture = ownershipFixture(); change(fixture); failsOwnership(fixture, reason); }
+  const altered = ownershipFixture(); altered.run(); altered.main.argv = ["mutable title"];
+  failsOwnership(altered, "root-unverified");
 });

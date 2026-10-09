@@ -90,6 +90,7 @@ export function ownedProcesses(home, profile) {
 // Never infer an exact profile name or remove a wildcard set of directories.
 const generatedName = /^(playwright_chromiumdev_profile-|playwright-artifacts-).+/;
 const ownershipReasons = new Set(["none", "unknown", "proc-list", "proc-read", "proc-environ",
+  "root-unverified", "group-mismatch", "session-mismatch", "tracked-drift",
   "tracked-owner", "home-mismatch", "home-profile-main", "home-profile-child", "home-crash-db",
   "home-tracked", "home-descendant", "home-descendant-unknown",
   "home-descendant-missing-type-known", "home-descendant-missing-type-absent", "home-descendant-missing-type-unknown",
@@ -133,18 +134,19 @@ export function generatedBrowserFiles(temporary) {
   });
 }
 
-// Select argv before reading environ, including run-owned crashpad and descendants.
-// Remember process start identity so a reparented child cannot disappear from proof.
+// #914 attests the unique profile/HOME root before trusting its dedicated group/session.
+// Retain the root and every start identity through shutdown; never transfer trust to a reused PID.
 export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
-  // Observation only: never use these snapshots to select, exempt or discard a row.
+  // proc_pid_stat(5) fields are independent of mutable argv/envp process titles.
   const snapshot = (pid, raw) => {
     try {
       const text = raw ?? readFileSync(`/proc/${pid}/stat`, "utf8");
       const match = /^(\d+) \(.*\) (.*)$/.exec(text.trim());
       const fields = match?.[2].split(/\s+/);
-      if (!fields || Number(match[1]) !== pid || !/^\d+$/.test(fields[1]) || !/^\d+$/.test(fields[19])) return { status: "unknown" };
-      // proc_pid_stat(5): 3=state, 4=PPID, 22=starttime (comm excluded).
-      return { status: "read", pid, state: fields[0], parent: Number(fields[1]), identity: fields[19] };
+      if (!fields || Number(match[1]) !== pid || !/^\d+$/.test(fields[1]) || !/^\d+$/.test(fields[19]) || !/^[RSDZTtXxKWIP]$/.test(fields[0]) ||
+        !/^[1-9]\d*$/.test(fields[2]) || !/^[1-9]\d*$/.test(fields[3])) return { status: "unknown" };
+      // proc_pid_stat(5): 3=state, 4=PPID, 5=PGRP, 6=SID, 22=starttime (comm excluded).
+      return { status: "read", pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), session: Number(fields[3]), identity: fields[19] };
     } catch (error) { return { status: ["ENOENT", "ESRCH"].includes(error.code) ? "vanished" : "unreadable" }; }
   };
   const observe = (row, env, before, parentBefore) => {
@@ -155,10 +157,10 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
     if (samples.some((entry) => entry.status !== "read")) {
       consistency = samples.some((entry) => entry.status === "vanished") ? "vanished" :
         samples.some((entry) => entry.status === "unreadable") ? "unreadable" : "unknown";
-    } else if ([before, after].some((entry) => ["pid", "identity", "state", "parent"].some((key) => entry[key] !== row.snapshot[key])) ||
+    } else if ([before, after].some((entry) => ["pid", "identity", "state", "parent", "group", "session"].some((key) => entry[key] !== row.snapshot[key])) ||
       [parentBefore, parentAfter].some((entry) => entry.pid !== parent.snapshot.pid || entry.identity !== parent.snapshot.identity)) consistency = "changed";
     const childStable = [row.snapshot, before, after].every((entry) => entry.status === "read") &&
-      [before, after].every((entry) => ["pid", "identity", "state", "parent"].every((key) => entry[key] === row.snapshot[key]));
+      [before, after].every((entry) => ["pid", "identity", "state", "parent", "group", "session"].every((key) => entry[key] === row.snapshot[key]));
     const state = !childStable ? "unknown" : row.snapshot.state === "Z" ? "zombie" :
       ["X", "x"].includes(row.snapshot.state) ? "dead" : /^[RSDTtKWIP]$/.test(row.snapshot.state) ? "live" : "unknown";
     const homes = env?.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
@@ -200,25 +202,68 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
   const rows = [];
   for (const entry of ownershipRead("proc-list", () => readdirSync("/proc"))) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+    const pid = Number(entry);
+    let related = tracked.has(pid), sample;
     try {
-      if (lstatSync(`/proc/${entry}`).uid !== process.getuid()) {
-        requireOwnership(!tracked.has(Number(entry)), "tracked-owner");
+      const uid = lstatSync(`/proc/${entry}`).uid;
+      const raw = readFileSync(`/proc/${entry}/stat`, "utf8");
+      sample = snapshot(pid, raw);
+      requireOwnership(sample.status === "read", "proc-read");
+      related ||= !!tracked.root && (sample.group === tracked.root.group || sample.session === tracked.root.session);
+      // Inspect foreign-UID stat too: a member of the attested group cannot be ignored.
+      if (uid !== process.getuid()) {
+        requireOwnership(!tracked.has(pid), "tracked-owner");
+        if (tracked.root) requireOwnership(sample.group !== tracked.root.group && sample.session !== tracked.root.session, "tracked-owner");
+        rows.push({ ...sample, uid, argv: [], profileArgs: [], snapshot: sample });
         continue;
       }
-      const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
-      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf8");
+      const argv = cmdline.split("\0"); // Never split a process title on whitespace.
       const profileArgs = argv.filter((arg) => arg.startsWith("--user-data-dir="));
       const profileSelected = profileArgs.some((arg) => arg.startsWith(`--user-data-dir=${temporary}/`));
       const crashSelected = argv.some((arg) => arg.startsWith(`--database=${home}/`));
-      const trackedSelected = tracked.get(Number(entry)) === fields[19];
-      const selected = profileSelected || crashSelected || trackedSelected;
-      rows.push({ pid: Number(entry), parent: Number(fields[1]), identity: fields[19], argv, profileArgs,
-        profileSelected, crashSelected, trackedSelected, selected, snapshot: snapshot(Number(entry), stat) });
+      requireOwnership(!tracked.has(pid) || tracked.get(pid) === sample.identity, "tracked-drift");
+      const trackedSelected = tracked.has(pid);
+      rows.push({ ...sample, uid, argv, profileArgs, profileSelected, crashSelected, trackedSelected,
+        selected: profileSelected || crashSelected || trackedSelected, nulTerminated: cmdline.endsWith("\0"), snapshot: sample });
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
+      // Enumeration may race an unrelated exit, but a known identity must not vanish mid-read.
+      if (["ENOENT", "ESRCH"].includes(error.code) && !related) {
+        if (sample?.status === "read") rows.push({ ...sample, argv: [], profileArgs: [], snapshot: sample, unread: true });
+        continue;
+      }
+      throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
     }
   }
+  const stable = (row, sample) => sample.status === "read" &&
+    ["pid", "identity", "state", "parent", "group", "session"].every((key) => sample[key] === row.snapshot[key]);
+  const homes = (env) => env.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
+  const readHome = (row) => ownershipRead("proc-environ", () => readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0"));
+  const mains = rows.filter((row) => row.profileSelected && !row.argv.some((arg) => arg.startsWith("--type=") || arg === "--type"));
+  let root = tracked.root;
+  if (!root) {
+    requireOwnership(mains.length === 1, "main-count");
+    const main = mains[0], files = generatedBrowserFiles(temporary);
+    requireOwnership(main.nulTerminated && main.profileArgs.length === 1, "profile-argv");
+    const profile = main.profileArgs[0].slice("--user-data-dir=".length);
+    requireOwnership(dirname(profile) === temporary && /^playwright_chromiumdev_profile-.+/.test(profile.slice(temporary.length + 1)), "profile-location");
+    requireOwnership(files.includes(profile), "profile-missing");
+    requireOwnership(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length === 1, "profile-count");
+    const before = snapshot(main.pid), env = readHome(main), after = snapshot(main.pid);
+    requireOwnership(stable(main, before) && stable(main, after), "root-unverified");
+    requireOwnership(homes(env).length === 1 && homes(env)[0] === `HOME=${home}`, "home-profile-main");
+    requireOwnership(main.uid === process.getuid() && main.pid === main.group && main.pid === main.session, "root-unverified");
+    root = { pid: main.pid, identity: main.identity, group: main.group, session: main.session, profile };
+    // Only a fully attested root establishes provenance. Keep it even after exit.
+    tracked.root = root;
+    tracked.set(main.pid, main.identity);
+  } else {
+    requireOwnership(mains.length <= 1, "main-count");
+    if (mains.length) requireOwnership(mains[0].pid === root.pid && mains[0].identity === root.identity &&
+      mains[0].nulTerminated && mains[0].profileArgs.length === 1 && mains[0].profileArgs[0] === `--user-data-dir=${root.profile}`, "tracked-drift");
+  }
+  // Parent closure detects related processes escaping the group; it is never a fallback.
+  for (const row of rows) if (row.pid === root.pid) row.selected = true;
   let changed;
   do {
     changed = false;
@@ -227,32 +272,60 @@ export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
     }
   } while (changed);
   const owned = [];
-  for (const row of rows.filter((row) => row.selected)) {
+  for (const row of rows.filter((row) => row.selected || row.group === root.group || row.session === root.session)) {
     const before = snapshot(row.pid), parentBefore = snapshot(row.parent);
     let env;
     try {
-      env = readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0");
-      if (!env.includes(`HOME=${home}`)) throw new OwnershipFailure(homeMismatchReason(row, env));
+      requireOwnership(!row.unread, "proc-read");
+      requireOwnership(row.uid === process.getuid(), "tracked-owner");
+      requireOwnership(row.group === root.group, "group-mismatch");
+      requireOwnership(row.session === root.session, "session-mismatch");
+      // A new group member needs the root's parent closure; orphaned unknown members fail closed.
+      requireOwnership(row.selected, "unknown");
+      const parent = rows.find((entry) => entry.pid === row.parent);
+      const visited = new Set([row.pid]);
+      let ancestor = parent;
+      while (ancestor?.selected) {
+        requireOwnership(!visited.has(ancestor.pid), "tracked-drift");
+        visited.add(ancestor.pid);
+        ancestor = rows.find((entry) => entry.pid === ancestor.parent);
+      }
+      if (row.pid !== root.pid) {
+        if (parent?.selected) requireOwnership(BigInt(parent.identity) <= BigInt(row.identity), "tracked-drift");
+        requireOwnership((parent?.selected && parent.group === root.group && parent.session === root.session) ||
+          (row.trackedSelected && row.parent === 1), "tracked-drift");
+        if (parent?.selected) requireOwnership(stable(parent, parentBefore), "tracked-drift");
+      }
+      if (row.pid === root.pid) requireOwnership(row.nulTerminated && row.profileArgs.length === 1 &&
+        row.profileArgs[0] === `--user-data-dir=${root.profile}`, "root-unverified");
+      env = readHome(row);
+      const after = snapshot(row.pid);
+      requireOwnership(stable(row, before) && stable(row, after), "tracked-drift");
+      requireOwnership(lstatSync(`/proc/${row.pid}`).uid === row.uid, "tracked-owner");
+      if (row.pid !== root.pid && parent?.selected) requireOwnership(stable(parent, snapshot(parent.pid)), "tracked-drift");
+      const entries = homes(env);
+      const missingChildHome = row.pid !== root.pid && entries.length === 0;
+      requireOwnership(missingChildHome || (entries.length === 1 && entries[0] === `HOME=${home}`), homeMismatchReason(row, env));
       requireOwnership(row.profileArgs.length <= 1, "profile-argv");
       const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
-      if (profile) {
-        requireOwnership(dirname(profile) === temporary && /^playwright_chromiumdev_profile-.+/.test(profile.slice(temporary.length + 1)), "profile-location");
-      }
+      if (profile) requireOwnership(profile === root.profile, "profile-set");
       tracked.set(row.pid, row.identity);
-      owned.push({ pid: row.pid, profile, main: !!profile && !row.argv.some((arg) => arg.startsWith("--type=")) });
+      owned.push({ pid: row.pid, profile, main: row.pid === root.pid });
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-environ" : ownershipReason(error), observe(row, env, before, parentBefore));
+      throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "unknown" : ownershipReason(error), observe(row, env, before, parentBefore));
     }
+  }
+  // Missing enumeration entries are proven absent only by a separate ENOENT/ESRCH stat read.
+  for (const pid of tracked.keys()) if (!rows.some((row) => row.pid === pid)) {
+    requireOwnership(snapshot(pid).status === "vanished", "tracked-drift");
   }
   return owned;
 }
 
 export function checkWorkerBrowserOwnership(home, temporary, tracked) {
   const owned = workerBrowserProcesses(home, temporary, tracked);
-  const main = owned.filter((entry) => entry.main);
-  requireOwnership(main.length === 1, "main-count");
-  const profile = main[0].profile;
-  requireOwnership(owned.every((entry) => !entry.profile || entry.profile === profile), "profile-set");
+  requireOwnership(owned.filter((entry) => entry.main).length === 1, "main-count");
+  const profile = tracked.root.profile;
   const files = generatedBrowserFiles(temporary);
   requireOwnership(files.includes(profile), "profile-missing");
   requireOwnership(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length === 1, "profile-count");
@@ -580,6 +653,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           // Failed launch has no API-confirmed shutdown: retain files even if /proc looks empty.
           if (launchAttempted && !(workerHandoff ? browser : context)) return false;
           if (workerHandoff) closeObservation.postClose = "fail";
+          if (workerHandoff) requireOwnership(!!tracked.root, "root-unverified");
           const processes = () => workerHandoff ? workerBrowserProcesses(home, temporary, tracked) : ownedProcesses(home, profile);
           const deadline = Date.now() + 5000;
           while (processes().length && Date.now() < deadline) await wait(100);

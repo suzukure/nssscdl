@@ -165,12 +165,14 @@ run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、B
 TLS probe用Contextも同Browserの非永続Contextとし、run TMPDIR生成profile / artifacts、実HOME、main唯一性、終了後の関連process / 生成物消滅を確認する。
 Worker停止中だけselfを失効し、同cert再起動後のself 401 / other 200とbrowser先行停止 / 最終inspect / owned cleanupを確認する。
 小fixtureはlaunch後の所有判定 / Context生成 / NSS候補確認の段階分離と、primary / cleanup独立の固定所有reason・厳密parserも検査する。
-HOME不一致のprofile main / child・Crashpad database・tracked identity・子孫の分類、複数選択根拠の優先順、曖昧時unknown、cleanup時のclose一回・保全も小fixtureで確認する（診断分類の正本は下記#914節）。
-既に選択されたprocessの失敗時の固定5軸観測（選択根拠 / stat state / HOME entry / type / proc・親子整合性）を、primary / cleanup独立で合成fixture検査する。
-live＋HOME欠落・異値、Z＋空cmdline・environ、既知type4種とother / absent / unknown、child identity・親リンク / 親identityの変化・消滅・不読も検査する。
-close前照合・公開close・close後消滅確認の実施結果、pre-close不確定＋close resolve＋post-close not-run、close拒否・未決着、残存保全と厳密parser互換・未知値/余剰行拒否を確認する。
-不読 / 不明のfail-closed保全、消滅時の既存扱い、完全一致・選択集合・cleanup順序を維持し、未実施のpost-close検査を追加しない。
-二時点以上の一致は原子的snapshotを保証せず、実roleやHOME伝播の証明にはしない。診断形式の正本は `../../tests/README.md` の#914節とする。
+#914の所有権Contract・診断形式の正本は `../../tests/README.md` の#914節とする。
+唯一のrun-owned profile mainのexact NUL argv / uid / 単一exact HOME / PID/starttime再読一致とPID=PGRP=SIDを起点に認証する。
+同PGRP＋SID＋uidの関連processを安定identityで追跡し、認証済み子のみHOME欠落を単独では拒否しない。
+明示HOME異値・曖昧・不読、group/session逸脱・別UID・未知混入・tracked PID再利用・親子矛盾・読取り途中消滅はfail-closed保全とする。
+合成fixtureは唯一/複数root・偽profile・root HOME差、PGRP/SID/uid差、setproctitle模擬、identity/親リンク変化・不読・消滅を検査する。
+固定5軸とprimary / cleanup独立reason・strict parser秘密値/余剰拒否を確認し、実roleやHOME伝播を証明しない。
+close一回・pre-close不明＋close resolve＋post-close not-runの保全、close拒否・未決着、post-close残存とgenerated files残存も確認する。
+関連process全消滅・listener/port閉鎖・generated profile/artifacts消滅・最終owned inspect後だけファイル削除する順序を維持する。
 今回の限定scopeは静的・fixture・最小文書同期のみで、実Chrome再実証には別途人間判断が必要。
 実装・小fixture・停止条件の正本は `../../tests/README.md` の#914節とし、正式Actions実証は未確認。
 既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、

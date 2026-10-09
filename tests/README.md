@@ -328,7 +328,9 @@ seed→proxy dispose→read-only inspect→run-owned NSS / profile / TLS正負pr
 #915単独CLIの`launchPersistentContext`は維持する。そのpersistent Contextの`browser()`はnullであり、consumerのBrowser取得に使わない。
 Playwright 1.64.0の`launch()`が呼出Nodeの`os.tmpdir()`へ生成する`playwright_chromiumdev_profile-*` / `playwright-artifacts-*`を、
 #906 sanitized child専用TMPDIR内の実path・所有・0700・非symlinkで確認する。Chromiumの実HOMEはrun専用TLS HOMEのまま。
-profile argvから対象processを選び、その実HOMEとmain process唯一性、関連child / crashpadを確認してprocess identityを追跡する。
+唯一のmainのNUL区切りexact profile引数・uid・読取り前後のPID/starttime・単一exact HOMEを検証する。
+Playwright v1.64.0 Linux launcherの`detached:true`を根拠に、main PID=PGRP=SIDを専用group/sessionの起点として認証する。
+起点不明・wrapper等でこの条件を満たさない場合は代替根拠へfallbackせず停止し、人間のscope判断へ戻す。
 既存生成物があれば起動せず、他runのprofileを推測・glob削除しない。
 公式`addCookies`のroot `url` alternative（Domain / pathを併記しない）でhost-only / Path=/を導出し、
 実Cookie jarのSecure / HttpOnly / SameSite=Lax / root / host / session期限と`document.cookie`非露出を確認する。
@@ -352,24 +354,25 @@ HOME不一致は選択根拠の優先順をprofile→run-owned Crashpad database
 `home-profile-main`（profile指定・typeなし）/ `home-profile-child`（profile指定・単一の非空type）/
 `home-crash-db` / `home-tracked` / `home-descendant`で区別する。profile選択時のprofile引数複数指定・type複数指定・空値、
 database選択時のdatabase引数複数指定は`home-unknown`とし、弱い選択根拠へfallbackしない。
-子孫だけは、既に選択されHOME完全一致を満たさず失敗する場合に、`home-descendant-{missing|different|ambiguous}-type-{known|absent|unknown}`へ細分化する。
+子孫のHOME異値・曖昧は`home-descendant-{different|ambiguous}-type-{known|absent|unknown}`で診断する。
+旧`missing` codeも入力互換として受理するが、認証済み子のHOME欠落単独では失敗しない。
 HOME entryなしはmissing、一件の異値（空値を含む）はdifferent、重複または値指定のない`HOME` entryはambiguousとする。
 knownはargvに`--type=renderer` / `--type=zygote` / `--type=gpu-process` / `--type=utility`のいずれかが単一指定された場合だけで、実roleは断定しない。
 type指定なしはabsent、重複・空・未知値・値指定のない`--type`はunknownに縮退する。HOME判定不能は`home-descendant-unknown`、environ不読は従来の`proc-environ`とする。
 既存`home-descendant`もparser互換として受理し、profile / database / trackedの強い選択根拠は細分化しない。
-診断は不一致時だけの補強であり、完全一致entryがある場合の既存受理条件やprocess消滅時の扱いを変更しない。
-親子閉包による採否は従来のPID=PPID照合のまま。既に選択されたprocessの失敗時だけ、別軸の固定診断を付加する。
-`OBSERVATION` / `CLEANUP_OBSERVATION`はそれぞれ選択根拠、state、HOME entry、type、観測整合性の順のカンマ区切り5項目とする。
+所有性は認証済みrootのPGRPとSIDの両方・uid・読取り前後のPID/starttime一致を必須とする。
+親子閉包はgroup/session外への離脱検出にも使用し、未知のgroup memberはrootからの閉包を確認できなければ保全停止する。
+tracked identityは終了まで保持し、root終了後に再親子化された既知process（PPID=1）も監視する。PID再利用へ認証を転用しない。
+rootの単一exact HOMEは常に必須。認証済みgroup/session内の子だけはHOME entry欠落を単独の拒否理由にしない。
+明示異値・重複・曖昧・不読、親子identity矛盾・読取り途中消滅・不明はfail-closedとし、所有物を保全する。
+別group/sessionのChrome / Crashpadを暗黙に除外しない。別UIDや未知process混入も成功扱いしない。
+`root-unverified` / `group-mismatch` / `session-mismatch` / `tracked-drift`を固定reasonへ追加し、旧HOME reasonはparser互換として保持する。
+`OBSERVATION` / `CLEANUP_OBSERVATION`は選択根拠、state、HOME entry、type、観測整合性の順の固定5軸とする。
 選択根拠はprofile / Crashpad / tracked / descendant / unknown、stateはlive / zombie / dead / unknown、
-HOME entryはexact / missing / different / ambiguous / unreadable / unknown、typeはrenderer / zygote / gpu-process / utility / other / absent / unknown、
+HOMEはexact / missing / different / ambiguous / unreadable / unknown、typeはrenderer / zygote / gpu-process / utility / other / absent / unknown、
 整合性はstable / changed / vanished / unreadable / unknownだけを受理する。未知値は公開せずunknownへ縮退する。
-statのfield 3=state、4=PPID、22=starttimeを照合し、Zはzombie、X/xはdeadと観測する。空cmdlineのzombie/deadはtype=unknownとし、HOME免除や選択除外を行わない。
-収集時・environ前後のchild PID/starttime/state/PPIDと、観測できる親PID/starttimeを非公開で照合する。
-child観測が競合・取得不能ならstate / HOME / typeはunknownとし、一致時のHOME/typeも読取り内容の分類であって伝播元・実roleの証明ではない。
-追加読取り失敗も元の選択やHOME判定の成否を変えない。stableは二時点以上の一致だけを示し、原子的snapshotや完全な親子一貫性を保証しない。
-PID再利用・列挙競合による誤認可能性と、今回の実際の発生は未実証として残る。
-これは選択根拠による診断分類であり、実Chromeのmain / child / Crashpadの原因確定や許容を意味しない。
-従来の`home-mismatch`もparser互換のため受理する。全関連processの実HOME一致条件は維持する。
+statのfield 3=state、4=PPID、5=PGRP、6=SID、22=starttimeを照合する。Zはzombie、X/xはdeadの観測であり、終了証明にはしない。
+可変process titleやtype=absentは所有性の証拠にせず、空白再splitは行わない。二時点一致は原子的snapshotや実HOME伝播を保証しない。
 owner parserは既存2項目形式・互換reasonを受理し、追加時は両観測の固定allowlist・固定順と全入力一致を要求する。
 cleanupの追加フィールド`PRE_CLOSE`=pass / fail / not-done、`CLOSE`=resolve / reject / not-done、`POST_CLOSE`=pass / fail / not-runは独立した実施結果とする。
 close未決着のdeadlineはnot-doneであり、公開APIのrejectと推測しない。pre-close不確定→close resolve→browser-ownershipをthrowする既存順序を維持するため、その経路はPOST_CLOSE=not-runとなる。
@@ -383,9 +386,10 @@ GET / navigationは5秒、response bodyは4096文字上限を維持する。
 意図的失敗commandはpositive 3 GET直後に失敗し、確認済みcleanupの固定checkpointがある場合だけownerもowned filesを削除する。期待exitは1。
 
 標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureは公開Browser引渡し / persistent null境界 / 非永続4Context / TMPDIR・profile・実HOME所有 / main唯一性 / 停止・残存保全 / handoff順序 / Cookie属性 / response非露出の補助証拠のみ。
-今回の限定scopeは上記診断の静的・合成fixtureと文書同期だけで、実Chromeの再実行は別途人間判断を要する。
+今回の限定scopeは上記所有権Contractの静的実装・合成fixtureと文書同期だけで、実Chromeの再実行は別途人間判断を要する。
 HOME欠落 / 異値 / 重複、live / Z＋空cmdline・environ、既知type4種 / other / 欠落 / 曖昧、
-child identity・state・親リンク / 親identityの二時点変化・消滅・不読・malformed stat、選択優先順、
+root唯一性・偽profile・HOME不一致、PGRP / SID / uid差、HOME欠落子の受理・明示異値拒否、
+child identity・親リンク / 親identity変化・消滅・不読・malformed stat、tracked PID再利用、
 primaryとcleanupで異なるreason / 観測、pre-close fail＋close resolve＋post-close not-run、close reject・未決着、残存保全、厳格parser拒否をfixtureで確認する。
 実HOME伝播、process role、Chrome / Worker / D1やowned cleanup成功の証明とはしない。
 正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
