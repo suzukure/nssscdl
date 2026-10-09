@@ -150,7 +150,7 @@ Session生tokenはtrusted test processの専用返却値だけで保持し、DB 
 #902は `tests/evaluation/worker.ts` / 専用configから#899のread-only 3 GETだけを使う入口とlifetime鍵を準備する。
 既存integration topologyのhandler fetch / test-only D1 Portと構造検査を部分証拠とし、通常Workerの全503を維持する。
 CLI flags / 非外部dry-run / 実localhost HTTPS Listener・certは別Gateとして `../../tests/README.md` の開始前条件に従う。
-trusted seedのruntime呼出し・Cookie / BrowserContext・assets・unsafe POSTは未接続であり、Gate A〜DのPassとしない。
+trusted seedのpersistent local D1 runtime proofは `../../tests/README.md` の#906 opt-inで独立検証する。Cookie / BrowserContext・assets・unsafe POSTは未接続であり、Gate A〜DのPassとしない。
 
 ## 8. Entry Criteria
 
