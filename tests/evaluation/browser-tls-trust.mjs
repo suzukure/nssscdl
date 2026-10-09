@@ -225,6 +225,8 @@ export async function withIsolatedBrowserTls(use = async () => {}, { failAfterPo
     await use({ context, origin });
     controller.signal.throwIfAborted();
   } catch {
+    // Static stage label only; never expose raw browser/CLI errors or paths.
+    console.log(`failure: stage=${stage}; TLS proof incomplete; raw cause withheld`);
     throw new Error(`BROWSER_TLS_TRUST_FAILED (${stage}); runtime proof incomplete`);
   } finally {
     try {
