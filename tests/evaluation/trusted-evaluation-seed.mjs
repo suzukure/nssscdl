@@ -1,3 +1,4 @@
+import { verifyStudentAssets } from "./verify-student-assets.mjs";
 // #906: trusted Node memory only; never imported by a Worker or Browser.
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -13,6 +14,19 @@ export const proxyOptions = Object.freeze({
   persist: Object.freeze({ path: resolve(persistence, "v3") }),
 });
 export const failure = () => new Error("TRUSTED_EVALUATION_SEED_FAILED");
+
+// #922: the same sealed evaluation config now supplies an assets binding as
+// well as D1. Consumers receive ONLY the D1 Port; reject other capabilities.
+export function evaluationD1(env) {
+  try {
+    if (!env || typeof env !== "object" || Array.isArray(env) ||
+        JSON.stringify(Object.keys(env).sort()) !== '["ASSETS","EVALUATION_READ_DB"]' ||
+        !env.ASSETS || typeof env.ASSETS.fetch !== "function" ||
+        !env.EVALUATION_READ_DB || typeof env.EVALUATION_READ_DB.prepare !== "function" ||
+        typeof env.EVALUATION_READ_DB.withSession !== "function") throw failure();
+    return env.EVALUATION_READ_DB;
+  } catch { throw failure(); }
+}
 
 export function validation() {
   return {
@@ -30,11 +44,13 @@ export function checkStaticSetup() {
     if (pkg.devDependencies.wrangler !== "4.146.0" ||
         lock.packages["node_modules/wrangler"].version !== "4.146.0" ||
         JSON.parse(readFileSync(resolve(root, "node_modules/wrangler/package.json"), "utf8")).version !== "4.146.0") throw failure();
+    verifyStudentAssets(root);
     const cfg = JSON.parse(readFileSync(proxyOptions.configPath, "utf8"));
     const expected = {
       name: "nssscdl-local-read-only-evaluation", main: "worker.ts", compatibility_date: "2026-10-06",
       workers_dev: false, preview_urls: false,
       dev: { ip: "127.0.0.1", port: 8788, local_protocol: "https" },
+      assets: { directory: "../../dist/student", binding: "ASSETS", run_worker_first: true, html_handling: "none", not_found_handling: "none" },
       d1_databases: [{ binding: "EVALUATION_READ_DB", database_name: "nssscdl-local-read-only-evaluation",
         database_id: "00000000-0000-4000-8000-000000000902", migrations_dir: "../../migrations" }],
     };
@@ -69,8 +85,7 @@ export async function useSeedProxy(createProxy, consume) {
   try {
     if (typeof consume !== "function") throw failure();
     proxy = await createProxy(proxyOptions);
-    if (Object.keys(proxy.env).length !== 1 || !proxy.env.EVALUATION_READ_DB) throw failure();
-    const seed = await seedTrustedStudents(proxy.env.EVALUATION_READ_DB, validation());
+    const seed = await seedTrustedStudents(evaluationD1(proxy.env), validation());
     // No simultaneous DB connection: callback may open its own read-only proxy
     // or later start the local Worker only AFTER disposal is confirmed.
     const closing = proxy;

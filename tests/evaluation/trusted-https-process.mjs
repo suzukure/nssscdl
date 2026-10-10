@@ -1,11 +1,12 @@
 // Secret-owning sanitized Node child. No raw secrets leave this process except
 // the fixed loopback TLS Cookie header or #914's isolated official Cookie jar.
+import { proveStudentDom } from "./trusted-browser-dom.mjs";
 import { writeBrowserReport } from "./trusted-browser-unit.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { createCertificate, launchWorker, request, stopGroup, stopWorker, waitForWorker } from "./local-https-smoke.mjs";
-import { checkSetup, persistence, proxyOptions, root, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
+import { checkSetup, evaluationD1, persistence, proxyOptions, root, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
 import { checkFiles, inspect } from "./trusted-seed-process.mjs";
 import { check, checkError, checkSuccess, httpsProofCheckpoint } from "./trusted-https-assertions.mjs";
 import { browserDiagnostic, observeTlsDiagnostic, recordBrowserFailure, withIsolatedBrowserTls } from "./browser-tls-trust.mjs";
@@ -55,8 +56,7 @@ async function revokeSelf(seed) {
   let proxy;
   try {
     proxy = await getPlatformProxy(proxyOptions);
-    check(Object.keys(proxy.env).length === 1 && !!proxy.env.EVALUATION_READ_DB);
-    const db = proxy.env.EVALUATION_READ_DB;
+    const db = evaluationD1(proxy.env);
     const hash = createHash("sha256").update(seed.sessions.self.cookie().value).digest("hex");
     // Existing D1 §8.5 revocation, test-owned Session only; no business write.
     const result = await db.prepare(`UPDATE student_sessions SET revoked_at=CAST(strftime('%s','now') AS INTEGER)
@@ -103,7 +103,8 @@ try {
         try {
           await proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop,
             revoke: () => withStoppedProxy(proxyState, async () => { revokedAt = await revokeSelf(seed); }),
-            inspect: inspectStopped, failAfterPositive });
+            inspect: inspectStopped, failAfterPositive,
+            proveDom: (page, signal, revoked) => proveStudentDom(page, signal, seed, [...secrets, ...hashes], revoked) });
         } catch (error) {
           intentionalObserved = failAfterPositive && error.message === "TRUSTED_BROWSER_INTENTIONAL_FAILURE";
           throw error;

@@ -44,9 +44,9 @@ System / Acceptance TC全体のPassは後続#537 / #608へ残す。
 
 `evaluation/worker.ts` / `evaluation/wrangler.jsonc` は評価専用のES-module入口とconfig。
 canonical originはserver側の `https://127.0.0.1:8788` 固定で、Host / Header / Queryから導出しない。
-公開route / account / remote識別子 / assets / scheduled / varsを持たず、`workers_dev` / `preview_urls`はfalse。
+公開route / account / remote識別子 / scheduled / varsを持たず、静的assetsは下記#922の評価専用配線だけに限定し、`workers_dev` / `preview_urls`はfalse。
 専用binding `EVALUATION_READ_DB` のUUIDはlocal-only placeholderであり、通常`TEST_DB` / `AUTH_DB`と共有しない。
-既存#899 serviceだけを使い、3 GET以外のPath / Methodは503。Sessionなしは既存401、CSRFのOrigin拒否は既存403。
+APIは既存#899 serviceだけを使い、3 GETと下記#922の静的配信以外のPath / Methodは503。Sessionなしは既存401、CSRFのOrigin拒否は既存403。
 HMAC-SHA-256 non-exportable sign-only鍵をWeb Cryptoで一度生成し、並行Requestは同じPromiseを共有する。
 生成失敗は再起動まで503とし、鍵・binding不備はCookieなしでも503。再起動 / hot reload後は旧cursorを使わず、
 cursorなしで履歴を再取得する。鍵のexport / fallback / Production鍵の流用はしない。
@@ -393,11 +393,71 @@ GET / navigationは5秒、response body4096文字上限を維持する。累積�
 合成fixtureはroot本人・strict report・正常/意図的失敗の削除順、parent exit0 / setsid子残存の非終端、
 同一InvocationID/設定不一致、unknown/timeout/cancel/stopの失敗固定、不正/欠落report、close不明、port/生成物残存、非所有物非削除を検査する。
 今回の限定scopeはsystemd責任置換の静的実装・合成fixture・文書同期だけで、実Chrome / Worker / D1やowned cleanup成功の証明ではない。
-正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
+#914のnormal / intentional正式実証記録はsupplied Issue #922 contextを参照し、今回DOM成功へ読み替えない。今回の別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
 HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
 一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
 `REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
-POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOM / Preview / Confirm、REQ-901/902、Gate A〜DとTC全体Passは後続責務。
+POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOMの段階1準備は下記#922を参照する。Preview / Confirm、REQ-901/902全体、Gate A〜DとTC全体Passは後続責務。
+
+## #922 same-origin read-only DOM（段階1 prepared＋normal/intentional実走部分証拠）
+
+`npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
+通常Workerと評価Workerのdry-runを行う。評価configだけに `ASSETS` と `run_worker_first: true`、
+`html_handling: "none"` / `not_found_handling: "none"` を設定する。installed locked Wrangler schemaの
+対応項目は `evaluation/verify-wrangler-cli.mjs` で検査する。schema検査だけをruntime proofとしない。
+`/student` はWorker内で `/student.html` に写像し、rootの `/student.css` / `/student.js` /
+`view.js` / `controller.js` / `model.js` だけを配信する。HTMLの相対URLはこのrootと一致する。
+固定 `https://127.0.0.1:8788`、GET、queryなしの入口のみで、任意Hostはoriginを置き換えない。
+静的Responseはno-store / nosniff / no-referrerと明示MIME、missing assetは安全な404、
+binding失敗 / その他URL・methodは既存503。通常configとdefault Workerの全503を維持する。
+配信URL / MIME / allowlistの合成Port検証は `integration/evaluation-worker.test.ts` に置く。
+asset build不在・余剰ファイルはtrusted setup開始前に拒否する。#922でconfigに追加した`ASSETS`により、`getPlatformProxy`の環境は`EVALUATION_READ_DB`と`ASSETS`の**正確な2 bindingのみ**を持つ契約となる。`evaluationD1()`は両bindingの存在と型、余分なbindingの不在を共通検証し、seed / inspect / revokeには**D1 Portだけ**を渡す。`ASSETS`を読み書きに使わず、従来のD1-only消費・local persist・proxy逐次disposeの信頼境界を維持する。補助fixtureは欠損・型違い・追加bindingを拒否する。最初の[#922 normal proof #38024971080](https://github.com/suzukure/nssscdl/actions/runs/38024971080) は`seed`段階で失敗した。共通binding検査修正後の**正式normal実走成功**は下記の別Runを参照し、失敗runを成功扱いしない。
+
+既存 `node tests/evaluation/trusted-browser-smoke.mjs --run`（および `--fail-after-positive`）を再利用する。
+`trusted-browser-dom.mjs` はselfの同一Contextで実 `/student`、全module / CSS、seed公開月の
+5枠・4 View、Calendar/List、keyboard選択、本人履歴更新を検査する。
+self ContextはAmerica/Los_Angelesとし、日本時間の投影を確認する。停止・本人失効・再起動後は
+実UIの401案内・表示破棄を検査する。3 GET / CSRF証拠は既存のbrowser fetchに保持し、UIが
+CSRFを取得・表示したとは主張しない。secret / PIIはDOM・URLへ出さず、trace等も追加しない。
+
+その後だけ、同じbuilt `mountStudent` へページ内のsecretless fetch fixtureを注入する。
+HTTP認証迂回は作らず、403 FORBIDDEN / 404 / 503 / 通信断 / 401、古い月の応答、年跨ぎ、
+履歴次ページ、focus、320 CSS pxのpage溢れとcalendar局所scrollを合成DOMとして検査する。
+real API / D1成功と合成結果は固定checkpointでも区別する。fixtureの401は実失効の証拠を代替しない。
+実seedは履歴1件なので実cursor paging、多状態履歴、実403 / 通信断はこのproofの成功範囲に含めない。
+
+#914のTLS / sandbox / unit / secret / owned cleanupとchild120秒・owner180秒を維持し、
+runner・workflow・停止責任・retryを追加しない。正常 / intentionalのreportはDOM検査後だけ完成する。
+2026-10-10の人間承認に基づき、既存Product CIへnormal限定の一時opt-inを配線して
+[正式Run #38025821104](https://github.com/suzukure/nssscdl/actions/runs/38025821104) / job #114136326193で**success**を確認した。
+実証HEAD `bffb96633c09ffc5fae7b7058104ea8a17bf758d`、Node v24.21.0、Wrangler 4.146.0、
+Google Chrome 154.0.8037.97、local 127.0.0.1:8788、migrations0001..0012。
+実Wrangler Worker-firstで`/student`と5静的assetのHTTP 200 / MIME / no-store、
+本人Sessionの3 GET / 実DOM5枠・4 View・Calendar/List・本人履歴、Cookie失効後401表示と破棄を確認した。
+keyboard/focus・320px実layout・端末timezone差の読取、別の**合成DOM**での403 / 404 / 503・通信断・
+古い応答・年跨ぎ・cursor例は別証拠として識別する。実404 asset-missing、実cursor複数ページ、
+実403 / 通信断やPreview / Confirmを実証したとはしない。
+同Runのstrict checkpointは#914のTLS/Browser Session/D1 read/失効・同一InvocationID正常終端、
+port停止とowned HOME/NSS/cert/key/persist削除まで確認。child120秒・owner180秒内の**normal1回**だけ成功した。
+2026-10-10に別の人間承認を得た**intentional単発**[Product CI #38029294402](https://github.com/suzukure/nssscdl/actions/runs/38029294402) / job #114146666302も**success**。
+実証HEAD `845c397abebd9a2faa3e5ae5021896bb170a14d4`、Chrome 154.0.8037.97 / Node v24.21.0 / Wrangler 4.146.0。
+本人/別本人のread-only Browser GET成功と#922の本人DOM成功**直後**に意図的に例外を送出し、
+public Browser.close / Worker・port停止、proxy inspectとsecret scanの完了、child固定report、
+outer同一systemd unit正常終端・owned HOME/NSS/cert/key/persist/temporary削除をstrict検証した。
+CLIが期待どおりexit1を返し、wrapperが`INTEGRATED_INTENTIONAL=expected_cli_exit_1`と
+`INTEGRATED_INTENTIONAL=pass`を報告。normalとintentionalは**別Run・別HEAD**で各1回成功。
+intentional Runはpositive後の中断位置を検証するもので、normal後半の失効/restart検証は行わない。
+**未知の障害・timeout時の実cleanup、Release browser matrix / mobile / Gate A〜Dは未検証**。
+proof sourceから一時workflowを撤去したHEAD `9ed27f27c2c25d30fa08db6f043a05673a829882`では、
+追加前source HEAD `b7c812a0d2b38d3cc8cbb0119a80ec86d17a5110`とのGitHub比較で変更ファイル0、
+workflow blobは従来/mainと一致。normal復元後[Product CI #38026043227](https://github.com/suzukure/nssscdl/actions/runs/38026043227)はsuccess。
+intentional後も一時workflowを撤去したHEAD `0e664274bb557a2cc194440ae6c1a6be711b01a8`で、
+前の文書同期済みsource `9f266a15ee950b2e87febdfe26c9f00fdb9d96cf`との比較は**変更ファイル0**、
+workflow blob `92ee87e3e6368987c2d613a8385ba0af51e27012`はmainと一致。
+intentional撤去後の通常Product CIと文書同期後のfinal HEAD CIは別証拠として確認する。
+段階1の通常CI / 合成fixture、段階2のopt-in正式Run / executable blob / workflow復元 / final-head CIを混同しない。
+`REQ-001/002/005/207/211/902/903/907/914` →既存AC→既存TCへのread-only partial evidenceのみで、
+識別子・意味・要求traceabilityは変更しない。Preview / Confirm / Gate A〜D / 全TC Passは未検証。
 
 ## 既存の部分証拠と標準テスト
 

@@ -55,11 +55,48 @@ async function fixture() {
 }
 afterEach(() => vi.restoreAllMocks());
 
+it("[#922 synthetic asset Port] worker-first fixed origin serves only built UI with safe headers and exact MIME", async () => {
+  const { env, access } = await fixture();
+  const fetchAsset = vi.fn(async (input: Request) => { expect(input.method).toBe("GET"); return new Response("built fixture", { headers: { "set-cookie": "private-canary" } }); });
+  const assets = { ...env, ASSETS: { fetch: fetchAsset } };
+  for (const [path, mime] of [["/student", "text/html"], ["/student.css", "text/css"],
+    ["/student.js", "text/javascript"], ["/view.js", "text/javascript"],
+    ["/controller.js", "text/javascript"], ["/model.js", "text/javascript"]]) {
+    const result = await worker.fetch(request(path), assets);
+    expect(result.status).toBe(200);
+    expect(result.headers.get("content-type")).toBe(mime + "; charset=utf-8");
+    expect(result.headers.get("cache-control")).toBe("no-store");
+    expect(result.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(result.headers.has("set-cookie")).toBe(false);
+    expect(await result.text()).toBe("built fixture");
+  }
+  expect(new URL(fetchAsset.mock.calls[0][0]!.url).pathname).toBe("/student.html");
+  expect(access.all).not.toHaveBeenCalled();
+  fetchAsset.mockClear();
+  for (const path of ["/student.html", "/student/", "/student?identity=other", "/unknown.js", "/student/student.js"]) {
+    await error(await worker.fetch(request(path), assets));
+  }
+  for (const method of ["POST", "HEAD", "OPTIONS"]) await error(await worker.fetch(request("/student", false, origin, method), assets));
+  const foreign = request("/student", false, "https://other.test");
+  foreign.headers.set("host", "127.0.0.1:8788");
+  await error(await worker.fetch(foreign, assets));
+  expect(fetchAsset).not.toHaveBeenCalled();
+  fetchAsset.mockResolvedValue(new Response("private-canary", { status: 404 }));
+  const missing = await worker.fetch(request("/student.js"), assets);
+  expect(missing.status).toBe(404); expect(await missing.text()).toBe("Asset not available.");
+  await error(await worker.fetch(request("/student"), env));
+  fetchAsset.mockResolvedValue(new Response(null, { status: 302, headers: { location: "https://other.test" } }));
+  await error(await worker.fetch(request("/student"), assets));
+  fetchAsset.mockRejectedValue(new Error("private-canary"));
+  await error(await worker.fetch(request("/student"), assets));
+});
+
 it("[#902 structural isolation] dedicated loopback HTTPS config has one local placeholder D1 and no public or remote configuration", () => {
   expect(JSON.parse(configText)).toEqual({
     name: "nssscdl-local-read-only-evaluation", main: "worker.ts", compatibility_date: "2026-10-06",
     workers_dev: false, preview_urls: false,
     dev: { ip: "127.0.0.1", port: 8788, local_protocol: "https" },
+    assets: { directory: "../../dist/student", binding: "ASSETS", run_worker_first: true, html_handling: "none", not_found_handling: "none" },
     d1_databases: [{ binding: "EVALUATION_READ_DB", database_name: "nssscdl-local-read-only-evaluation",
       database_id: "00000000-0000-4000-8000-000000000902", migrations_dir: "../../migrations" }],
   });
@@ -69,7 +106,7 @@ it("[#902 structural isolation] dedicated loopback HTTPS config has one local pl
 });
 
 it("[#902 default isolation] default Worker still refuses student UI and every GET/unsafe POST", async () => {
-  for (const path of [...paths, "/student", "/student/student.js", "/api/me/reservations/preview"]) {
+  for (const path of [...paths, "/student", "/student/student.js", "/student.css", "/student.js", "/view.js", "/controller.js", "/model.js", "/api/me/reservations/preview"]) {
     for (const method of ["GET", "POST"]) {
       const response = await exports.default.fetch(origin + path, { method });
       expect(response.status).toBe(503);
@@ -184,7 +221,7 @@ it("[#902 fail-closed] URL origin is fixed; headers cannot replace it, and unsup
       await error(await local.fetch(request(path, true, origin, method), env));
     }
   }
-  for (const path of ["/", "/student", "/student/student.js", "/student/student.css", "/login", "/seed", "/debug",
+  for (const path of ["/", "/student/student.js", "/student/student.css", "/login", "/seed", "/debug",
     "/api/auth/student/google/start", "/api/me/reservations/preview"]) {
     await error(await local.fetch(request(path, true), env));
   }
