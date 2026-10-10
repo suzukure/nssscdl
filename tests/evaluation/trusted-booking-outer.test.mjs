@@ -5,10 +5,11 @@ import { chmodSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { runInNewContext } from "node:vm";
 import { BrowserUnit, ownedIdentity, verifyOwned } from "./trusted-browser-unit.mjs";
 import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
 import { useBookingChild } from "./trusted-booking-child.mjs";
-import { useBookingOuter } from "./trusted-booking-outer.mjs";
+import { bookingOuterCheckpoint, useBookingOuter } from "./trusted-booking-outer.mjs";
 import { bookingChildComplete, bookingChildUnknown, bookingFixtureComplete, parseBookingReport, readBookingReport, writeBookingReport } from "./trusted-booking-report.mjs";
 
 const canary = "private-session-state-csrf-sql-pii-stderr";
@@ -155,7 +156,81 @@ test("#945 actual private report: one atomic write; partial/symlink/hardlink/mod
   } finally { rmSync(dir, { recursive: true }); }
 });
 
-test("#945 inert imports and non-opt-in CLI; sealed read-only, Production and workflows have no caller", () => {
+// #948: exact append-only grammar, not an approval credential. This string is
+// fixture data; this Issue never writes a workflow or executes the proof.
+const productWorkflow = ".github/workflows/product-ci.yml";
+const bookingCaller = /trusted-booking-(outer|child|report)\./;
+const strictText = bytes => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+const proofStep = `
+      - name: '#930 booking normal proof (temporary)'
+        if: steps.applicability.outputs.applicable == 'true'
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-booking-outer.mjs', '--run'], {
+            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
+          });
+          if (result.error || result.signal || result.status !== 0 || result.stderr !== '' ||
+              result.stdout !== ${JSON.stringify(bookingOuterCheckpoint + "\n")}) {
+            console.error('BOOKING_PROOF_FAILED; do not retry; human inspection required');
+            process.exitCode = 1;
+          } else {
+            console.log(${JSON.stringify(bookingOuterCheckpoint)});
+          }
+          NODE
+`;
+
+// All authority/identity inputs are supplied separately from the workflow text.
+// No PR title/body/comment, approval marker, network call, or hidden command.
+function allowsBookingCaller(files, context) {
+  try {
+    for (const [path, content] of files) {
+      if (path !== productWorkflow && bookingCaller.test(content)) return false;
+    }
+    const workflow = files.get(productWorkflow);
+    if (typeof workflow !== "string") return false;
+    if (!bookingCaller.test(workflow)) return true; // Ordinary CI stays inert.
+    const { env, event, head, base, main, mergeBase, changed, clean, baseWorkflow, diff } = context;
+    const pr = event.pull_request, repository = "suzukure/nssscdl";
+    const sha = value => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+    if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_EVENT_NAME !== "pull_request" ||
+        env.GITHUB_REPOSITORY !== repository || env.GITHUB_WORKFLOW !== "Product CI" ||
+        event.repository.full_name !== repository || !Number.isSafeInteger(event.number) || event.number <= 0 ||
+        pr.number !== event.number || pr.state !== "open" ||
+        env.GITHUB_REF !== `refs/pull/${event.number}/merge` ||
+        pr.base.repo.full_name !== repository || pr.head.repo.full_name !== repository ||
+        pr.base.ref !== "main" || env.GITHUB_BASE_REF !== "main" ||
+        typeof pr.head.ref !== "string" || !/^proof\/930-booking-normal-[a-z0-9][a-z0-9-]*$/.test(pr.head.ref) ||
+        env.GITHUB_HEAD_REF !== pr.head.ref || !sha(head) || !sha(base) || head === base ||
+        head !== pr.head.sha || base !== pr.base.sha || base !== main || mergeBase !== base ||
+        clean !== "" || changed !== productWorkflow + "\0" ||
+        diff !== `M\0${productWorkflow}\0` || typeof baseWorkflow !== "string" ||
+        bookingCaller.test(baseWorkflow) || !baseWorkflow.endsWith("\n")) return false;
+    // Byte-for-byte prefix preserves all nine commands, permissions, triggers,
+    // actions and step ordering; the only suffix is one bounded, no-retry step.
+    return workflow === baseWorkflow + proofStep;
+  } catch { return false; }
+}
+
+function proofContext(env, event, git) {
+  // Read only: checkout supplies the PR head and freshly fetched origin/main.
+  // Missing/stale base or dirty tracked/untracked source cannot gain permission.
+  const base = event.pull_request.base.sha;
+  if (typeof base !== "string" || !/^[0-9a-f]{40}$/.test(base)) throw new Error("PROOF_CONTEXT_UNAVAILABLE");
+  const head = git("rev-parse", "--verify", "HEAD^{commit}").trim();
+  if (!/^[0-9a-f]{40}$/.test(head)) throw new Error("PROOF_CONTEXT_UNAVAILABLE");
+  return { env, event, head, base,
+    main: git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}").trim(),
+    mergeBase: git("merge-base", base, head).trim(),
+    changed: git("diff", "--no-renames", "--name-only", "-z", base, head),
+    diff: git("diff", "--no-renames", "--name-status", "-z", base, head),
+    clean: git("status", "--porcelain=v1", "--untracked-files=normal"),
+    baseWorkflow: git("show", `${base}:${productWorkflow}`) };
+}
+
+test("#945 inert imports and non-opt-in CLI; #948 narrowly guarded caller, sealed read-only and Production deny", () => {
   const imports = spawnSync(process.execPath, ["--input-type=module", "-e",
     "await import('./tests/evaluation/trusted-booking-outer.mjs'); await import('./tests/evaluation/trusted-booking-child.mjs')"], { encoding: "utf8" });
   assert.equal(imports.status, 0); assert.equal(imports.stdout, ""); assert.equal(imports.stderr, "");
@@ -165,5 +240,151 @@ test("#945 inert imports and non-opt-in CLI; sealed read-only, Production and wo
   }
   const walk = dir => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]);
   const files = [...walk("src"), ...walk(".github/workflows"), ...["trusted-seed-smoke.mjs", "trusted-https-process.mjs", "trusted-browser-unit.mjs", "browser-tls-trust.mjs", "trusted-booking-process.mjs"].map(n => join("tests/evaluation", n))];
-  for (const file of files) assert.doesNotMatch(readFileSync(file, "utf8"), /trusted-booking-(outer|child|report)\./, file);
+  const contents = new Map(files.map(file => [file, file === productWorkflow ? strictText(readFileSync(file)) : readFileSync(file, "utf8")]));
+  let context;
+  if (bookingCaller.test(contents.get(productWorkflow))) {
+    try {
+      const git = (...args) => {
+        const result = spawnSync("git", args, { timeout: 5000, maxBuffer: 1048576 });
+        if (result.error || result.signal || result.status !== 0) throw new Error("PROOF_CONTEXT_UNAVAILABLE");
+        return strictText(result.stdout);
+      };
+      context = proofContext(process.env, JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")), git);
+    } catch { /* Unavailable Git/GitHub facts must deny, never bypass. */ }
+  }
+  assert.equal(allowsBookingCaller(contents, context), true, "booking workflow/source caller guard");
+});
+
+function callerFixture(branch = "proof/930-booking-normal-fixture", number = 17) {
+  const currentWorkflow = readFileSync(productWorkflow, "utf8");
+  // The same finite tests run twice in standard CI, including on a Proof PR.
+  // Remove only the exact candidate suffix from fixture input, never from the guard.
+  const baseWorkflow = currentWorkflow.endsWith(proofStep) ? currentWorkflow.slice(0, -proofStep.length) : currentWorkflow;
+  const head = "a".repeat(40), base = "b".repeat(40);
+  const repository = { full_name: "suzukure/nssscdl" };
+  return { files: new Map([[productWorkflow, baseWorkflow + proofStep]]), context: {
+    env: { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_REPOSITORY: repository.full_name,
+      GITHUB_WORKFLOW: "Product CI", GITHUB_BASE_REF: "main", GITHUB_HEAD_REF: branch, GITHUB_REF: `refs/pull/${number}/merge` },
+    event: { repository, number, pull_request: { number, state: "open",
+      head: { ref: branch, sha: head, repo: repository }, base: { ref: "main", sha: base, repo: repository } } },
+    head, base, main: base, mergeBase: base, clean: "", changed: productWorkflow + "\0",
+    diff: `M\0${productWorkflow}\0`, baseWorkflow } };
+}
+
+test("#948 finite proof candidate; ordinary main/PR deny caller, names and approval text alone grant nothing", () => {
+  const f = callerFixture();
+  assert.equal(allowsBookingCaller(new Map([[productWorkflow, f.context.baseWorkflow]])), true);
+  assert.equal(allowsBookingCaller(f.files), false);
+  for (const [branch, number] of [["proof/930-booking-normal-fixture", 17], ["proof/930-booking-normal-next-run", 203]]) {
+    const candidate = callerFixture(branch, number);
+    assert.equal(allowsBookingCaller(candidate.files, candidate.context), true);
+  }
+  const fresh = callerFixture();
+  fresh.context.base = fresh.context.main = fresh.context.mergeBase = fresh.context.event.pull_request.base.sha = "d".repeat(40);
+  fresh.context.baseWorkflow += "\n      # Fresh main baseline\n";
+  fresh.files.set(productWorkflow, fresh.context.baseWorkflow + proofStep);
+  assert.equal(allowsBookingCaller(fresh.files, fresh.context), true);
+  for (const key of Object.keys(f.context.env)) {
+    const missing = callerFixture(); delete missing.context.env[key];
+    assert.equal(allowsBookingCaller(missing.files, missing.context), false, `missing ${key}`);
+  }
+  const changes = [
+    c => { c.env.GITHUB_ACTIONS = "false"; }, c => { c.env.GITHUB_EVENT_NAME = "push"; },
+    c => { c.env.GITHUB_EVENT_NAME = "pull_request_target"; }, c => { c.env.GITHUB_REPOSITORY = "fork/nssscdl"; },
+    c => { c.env.GITHUB_WORKFLOW = "Other"; }, c => { c.event.repository.full_name = "fork/nssscdl"; },
+    c => { c.event.pull_request.head.repo = { full_name: "fork/nssscdl" }; },
+    c => { c.event.pull_request.base.repo = { full_name: "fork/nssscdl" }; },
+    c => { c.event.pull_request.base.ref = "other"; }, c => { c.env.GITHUB_BASE_REF = "other"; },
+    c => { c.event.pull_request.head.ref = "ordinary"; c.env.GITHUB_HEAD_REF = "ordinary"; },
+    c => { c.env.GITHUB_HEAD_REF = "proof/930-booking-normal-forged"; },
+    c => { c.event.pull_request.head.sha = "c".repeat(40); }, c => { c.head = "invalid"; },
+    c => { c.event.pull_request.base.sha = "c".repeat(40); }, c => { c.base = c.head; },
+    c => { c.main = "c".repeat(40); }, c => { c.mergeBase = "c".repeat(40); },
+    c => { c.env.GITHUB_REF = "refs/heads/main"; }, c => { c.event.pull_request.number++; },
+    c => { c.event.pull_request.state = "closed"; }, c => { c.clean = " M tests/evaluation/trusted-booking-outer.test.mjs\n"; },
+    c => { c.clean = "?? src/extra.ts\n"; }, c => { c.changed += "src/worker.ts\0"; },
+    c => { c.changed += "tests/evaluation/trusted-booking-outer.test.mjs\0"; },
+    c => { c.changed += ".github/workflows/extra.yml\0"; }, c => { c.diff = `A\0${productWorkflow}\0`; },
+    c => { c.changed = productWorkflow; }, c => { c.diff = `T\0${productWorkflow}\0`; },
+    c => { c.baseWorkflow += proofStep; }, c => { c.baseWorkflow = undefined; },
+    c => { c.event = {}; }, c => { c.event.pull_request.body = "APPROVED"; c.env.GITHUB_ACTIONS = "false"; },
+  ];
+  for (const [index, change] of changes.entries()) {
+    const candidate = callerFixture(); change(candidate.context);
+    assert.equal(allowsBookingCaller(candidate.files, candidate.context), false, `context denial ${index}`);
+  }
+});
+
+test("#948 deny source/sealed/other workflow references and all deviations from the sole trailing step", () => {
+  const f = callerFixture(), original = f.files.get(productWorkflow);
+  for (const path of ["src/worker.ts", ".github/workflows/other.yml", ...["trusted-seed-smoke.mjs", "trusted-https-process.mjs",
+    "trusted-browser-unit.mjs", "browser-tls-trust.mjs", "trusted-booking-process.mjs"].map(name => `tests/evaluation/${name}`)]) {
+    for (const name of ["outer", "child", "report"]) {
+      assert.equal(allowsBookingCaller(new Map([...f.files, [path, `trusted-booking-${name}.mjs`]]), f.context), false);
+    }
+  }
+  const workflows = [
+    original + proofStep, proofStep + f.context.baseWorkflow,
+    original.replace("contents: read", "contents: write"), original.replace("pull_request:", "push:"),
+    original.replace("npm run test:unit", "echo bypass"), original.replace("fetch-depth: 0", "fetch-depth: 1"),
+    original.replace("timeout-minutes: 4", "timeout-minutes: 5"), original.replace("timeout: 190000", "timeout: 300000"),
+    original.replace("'--run'", "'--run', '--remote'"), original.replace("result.stderr !== ''", "false"),
+    original.replace("result.stdout !==", "false && result.stdout !=="),
+    original.replace("        shell: bash", "        continue-on-error: true\n        shell: bash"),
+    original.replace("        shell: bash", "        env:\n          TOKEN: unsafe\n        shell: bash"),
+    original + "      - run: echo extra\n", original.replace("          NODE\n", "          NODE\n          npm test\n"),
+    original.replace("trusted-booking-outer.mjs", "trusted-booking-child.mjs"),
+  ];
+  for (const [index, workflow] of workflows.entries()) {
+    assert.equal(allowsBookingCaller(new Map([[productWorkflow, workflow]]), f.context), false, `workflow denial ${index}`);
+  }
+});
+
+test("#948 Git evidence adapter: base-to-head file set, fresh main and working source; read errors fail closed", () => {
+  assert.throws(() => strictText(Buffer.from([0xff])));
+  assert.equal(strictText(Buffer.from("\ufeffworkflow\n")), "\ufeffworkflow\n");
+  const f = callerFixture(), c = f.context;
+  const outputs = new Map([
+    [JSON.stringify(["rev-parse", "--verify", "HEAD^{commit}"]), c.head + "\n"],
+    [JSON.stringify(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"]), c.main + "\n"],
+    [JSON.stringify(["merge-base", c.base, c.head]), c.base + "\n"],
+    [JSON.stringify(["diff", "--no-renames", "--name-only", "-z", c.base, c.head]), c.changed],
+    [JSON.stringify(["diff", "--no-renames", "--name-status", "-z", c.base, c.head]), `M\0${productWorkflow}\0`],
+    [JSON.stringify(["status", "--porcelain=v1", "--untracked-files=normal"]), ""],
+    [JSON.stringify(["show", `${c.base}:${productWorkflow}`]), c.baseWorkflow],
+  ]);
+  const git = (...args) => { const key = JSON.stringify(args); assert.ok(outputs.has(key)); return outputs.get(key); };
+  assert.equal(allowsBookingCaller(f.files, proofContext(c.env, c.event, git)), true);
+  for (const key of outputs.keys()) {
+    assert.throws(() => proofContext(c.env, c.event, (...args) => {
+      if (JSON.stringify(args) === key) throw new Error("unavailable");
+      return git(...args);
+    }));
+  }
+});
+
+test("#948 candidate output filter runs once, bounds execution and emits only fixed non-secret text", () => {
+  const script = proofStep.split("          node --input-type=module <<'NODE'\n")[1]
+    .replace("          import { spawnSync } from 'node:child_process';\n", "").replace(/          NODE\n$/, "");
+  const success = { status: 0, signal: null, stdout: bookingOuterCheckpoint + "\n", stderr: "" };
+  for (const result of [success, { ...success, stdout: canary }, { ...success, stderr: canary },
+    { ...success, status: 1 }, { ...success, signal: "SIGTERM" }, { ...success, error: new Error(canary) },
+    { ...success, stdout: success.stdout + "\n" }]) {
+    let calls = 0;
+    const stdout = [], stderr = [], process = { execPath: "fixture-node", exitCode: undefined };
+    runInNewContext(script, { process,
+      console: { log: value => stdout.push(value), error: value => stderr.push(value) },
+      spawnSync(file, args, options) {
+        calls++;
+        assert.equal(file, "fixture-node");
+        assert.deepEqual(Array.from(args), ["tests/evaluation/trusted-booking-outer.mjs", "--run"]);
+        assert.equal(options.timeout, 190000); assert.equal(options.maxBuffer, 4096);
+        assert.deepEqual(Array.from(options.stdio), ["ignore", "pipe", "pipe"]);
+        return result;
+      } });
+    assert.equal(calls, 1);
+    assert.deepEqual(stdout, result === success ? [bookingOuterCheckpoint] : []);
+    assert.deepEqual(stderr, result === success ? [] : ["BOOKING_PROOF_FAILED; do not retry; human inspection required"]);
+    assert.equal(process.exitCode, result === success ? undefined : 1);
+  }
 });
