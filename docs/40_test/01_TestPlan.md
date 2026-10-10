@@ -136,6 +136,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #928の非公開factoryは既存D1 / HTTP部品のsynthetic compositionだけを検証する。対象fixture・既存TCへの部分証拠対応は `../../tests/README.md` の#928節を参照する。実local D1 migration / atomic Commit / 読取照合 / 失敗後cleanupは#931、Worker activationは#929、実Chrome / 通信は#930の責務とし、#928の完了をこれらのPassへ読み替えない。
 
+#931の `tests/d1/reservation-student-service.test.ts` は既存標準Product CIのD1 topologyへ追加する直列fixtureとし、Production migrations・実Guard / CSRF・Preview → Confirm → DB / 本人History・拒否時未書込みと実Guard rollbackを照合する。詳細・部分証拠と未検証境界は `../../tests/README.md` の#931節を正とする。DB破棄は既存file-isolated runtimeの責務で、read-only評価persistを変更しない。追加コードやsynthetic成功だけで実D1実行済み / Gate全体Passと判定しない。
+
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
 | A: local操作評価 | local HTTPS Worker + local D1 + test-owned Sessionで実画面の正常・409再確認・401失効・403拒否・503 / 結果不明非再送を確認する。keyboard / focus / narrow viewportとdefault到達不可も検証する。fake Providerの結果とTransaction内Reservation / Audit / Intent / outboxのCommitを別々に観察する。local成功は実Provider配送・対象環境D1・System / Acceptance TC全体のPassではない。 |
