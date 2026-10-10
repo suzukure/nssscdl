@@ -120,13 +120,17 @@ export async function useBookingSeedProxy(createProxy, consume, confirmOwnership
 // Caller enters with the same credential-free env shape as the sealed read-only
 // helper. Fresh exclusive directory + in-memory capability; no persisted token.
 // Failures retain all files and a spent capability, never reset or retry.
-export async function prepareTrustedBooking(consume) {
+export async function prepareTrustedBooking(consume, observeEntered) {
   let handle;
   try {
     check(typeof consume === "function");
     await preflight();
     check(!present(persistence));
     check(readdirSync(process.env.TMPDIR).length === 0); // Fresh profile/home; never adopt read-only state.
+    if (observeEntered !== undefined) {
+      check(typeof observeEntered === "function");
+      check(observeEntered() === undefined); // Fixed synchronous hook; no async handoff.
+    }
     if (!present(resolve(root, ".wrangler"))) mkdirSync(resolve(root, ".wrangler"), { mode: 0o700 });
     const parent = directoryIdentity(resolve(root, ".wrangler"));
     mkdirSync(persistence, { mode: 0o700 });

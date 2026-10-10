@@ -3,6 +3,7 @@ import { readFileSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, linkSync, wr
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 import { migrations } from "./local-https-smoke.mjs";
 import { validation } from "./trusted-evaluation-seed.mjs";
@@ -212,5 +213,35 @@ test("#937: unknown / old ID / unknown baseline / read error never assert commit
         await assert.rejects(captureBookingBaseline({ prepare() { throw new Error(seed.sessions.self.cookie().value); } }, validation()), readFailure);
       });
     } finally { f.sqlite.close(); }
+  }
+});
+
+// Execute the real prepare boundary with finite dependencies: never invoke D1/CLI.
+test("#959 seed hook runs synchronously once after empty/absent gates and before migration", async () => {
+  const source = readFileSync("tests/evaluation/trusted-booking-seed.mjs", "utf8");
+  const prepare = source.slice(source.indexOf("export async function prepareTrustedBooking"), source.indexOf("// Separate read-only proxy"))
+    .replace("export async function", "async function");
+  for (const fault of ["", "preflight", "persist", "nonempty", "hook", "async-hook", "no-hook"]) {
+    const events = [], owned = new WeakMap();
+    const call = runInNewContext(`${prepare}\nprepareTrustedBooking`, {
+      process: { env: { TMPDIR: "fixture-tmp" } }, root: "fixture-root", persistence: "fixture-persist", owned,
+      failure: () => new Error("TRUSTED_BOOKING_SEED_FAILED"),
+      check: ok => { if (!ok) throw new Error("private-canary"); },
+      preflight: async () => { events.push("preflight"); if (fault === "preflight") throw new Error("private-canary"); },
+      present: path => { events.push("absent"); return path === "fixture-persist" && fault === "persist"; },
+      readdirSync: () => { events.push("empty"); return fault === "nonempty" ? ["residue"] : []; },
+      resolve: (...parts) => parts.join("/"), mkdirSync: () => events.push("mkdir"), directoryIdentity: () => ({}),
+      proxyOptions: { configPath: "fixture-config" },
+      exec: async () => { events.push("migration"); throw new Error("private-canary"); },
+    });
+    const hook = fault === "no-hook" ? undefined : () => {
+      assert.deepEqual(events, ["preflight", "absent", "empty"]);
+      events.push("hook");
+      if (fault === "hook") throw new Error("private-canary");
+      if (fault === "async-hook") return Promise.resolve();
+    };
+    await assert.rejects(call(() => {}, hook), error => error.message === "TRUSTED_BOOKING_SEED_FAILED");
+    assert.equal(events.filter(e => e === "hook").length, ["preflight", "persist", "nonempty", "no-hook"].includes(fault) ? 0 : 1);
+    assert.equal(events.includes("migration"), ["", "no-hook"].includes(fault));
   }
 });

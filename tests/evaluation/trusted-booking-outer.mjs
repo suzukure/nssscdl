@@ -7,14 +7,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { BrowserUnit, browserUnitPreflight, ownedIdentity, verifyOwned } from "./trusted-browser-unit.mjs";
 import { generatedBrowserFiles } from "./browser-tls-trust.mjs";
-import { readBookingReport } from "./trusted-booking-report.mjs";
+import { encodeBookingDiagnostic, parseBookingDiagnostic, readBookingDiagnostic, readBookingReport } from "./trusted-booking-report.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 const persist = join(root, ".wrangler/student-booking-evaluation");
 const oldPersist = join(root, ".wrangler/student-read-only-evaluation");
 const exec = promisify(execFile);
 const terminalReasons = ["timeout", "manager", "mismatch", "cancel", "unknown"];
-const failure = (stage, reason = "unknown") => new Error(`TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}${stage === "terminal" ? `; reason=${reason}` : ""}; retain owned files; do not retry`);
+const failure = (stage, reason = "unknown", detail = "; unit_stop=unknown; diagnostic=unknown") => new Error(`TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}${stage === "terminal" ? `; reason=${reason}${detail}` : ""}; retain owned files; do not retry`);
 function terminalReason(unit) {
   // Only the first-latched category is evidence; never inspect the exception.
   try {
@@ -25,6 +25,11 @@ function terminalReason(unit) {
   } catch { /* Missing/hostile failure values cannot expose details. */ }
   return "unknown";
 }
+function observedDetail(data) {
+  // Existing codec rejects accessors / unknown fields, and reconstructs only enums.
+  const text = encodeBookingDiagnostic(data);
+  return "; unit_stop=confirmed; diagnostic=observed; " + text.slice("TRUSTED_BOOKING_DIAGNOSTIC_V1; ".length, -1);
+}
 function sanitizedFailure(error) {
   // Exact fixed messages only; never reflect arbitrary error fields or causes.
   try {
@@ -33,7 +38,17 @@ function sanitizedFailure(error) {
       if (message === failure(stage).message) return failure(stage);
     }
     for (const reason of terminalReasons) {
-      if (message === failure("terminal", reason).message) return failure("terminal", reason);
+      for (const unitStop of ["unknown", "confirmed"]) {
+        const detail = `; unit_stop=${unitStop}; diagnostic=unknown`;
+        if (message === failure("terminal", reason, detail).message) return failure("terminal", reason, detail);
+      }
+      const prefix = `TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=${reason}; unit_stop=confirmed; diagnostic=observed; `;
+      const suffix = "; retain owned files; do not retry";
+      if (typeof message === "string" && message.startsWith(prefix) && message.endsWith(suffix)) {
+        const data = parseBookingDiagnostic("TRUSTED_BOOKING_DIAGNOSTIC_V1; " + message.slice(prefix.length, -suffix.length) + "\n");
+        const detail = observedDetail(data);
+        if (message === failure("terminal", reason, detail).message) return failure("terminal", reason, detail);
+      }
     }
   } catch { /* Unknown exception shapes remain non-secret. */ }
   return failure("unknown");
@@ -63,9 +78,22 @@ export async function useBookingOuter(unit, ports) {
     return Object.freeze({ success: true, status: "prepared" });
   } catch {
     const reason = stage === "terminal" ? terminalReason(unit) : undefined;
+    let eligible = false, invocation;
+    try {
+      invocation = unit.invocation;
+      eligible = stage === "terminal" && unit.started === true && unit.stopped === false &&
+        typeof invocation === "string" && /^[a-f0-9]{32}$/.test(invocation) && !/^0+$/.test(invocation);
+    } catch { /* Unknown unit identity never permits diagnostic reads. */ }
+    let detail = "; unit_stop=unknown; diagnostic=unknown";
     try { unit.latch("UNKNOWN"); } catch { /* A throwing failure getter stays unknown. */ }
-    try { await unit.dispose(); } catch { /* At most one stop; uncertain files retained. */ }
-    throw failure(stage, reason);
+    try {
+      await unit.dispose(false); // Existing one stop + show; a thrown/early-return stop is not evidence.
+      if (eligible && unit.invocation === invocation && unit.started === true && unit.stopped === true) {
+        detail = "; unit_stop=confirmed; diagnostic=unknown";
+        try { detail = observedDetail(await ports.diagnostic()); } catch { /* Strict rejection stays unknown. */ }
+      }
+    } catch { /* At most one stop; uncertain files retained; no diagnostic read. */ }
+    throw failure(stage, reason, detail);
   } finally { unit.close(); }
 }
 
@@ -126,6 +154,7 @@ export async function runBookingOuter() {
         if (readdirSync(temporary).length || present(persist) || present(oldPersist)) throw failure("preflight");
         await closed();
       },
+      diagnostic: () => readBookingDiagnostic(temporaryIdentity),
       report: () => { verifyOwned(temporaryIdentity); return readBookingReport(temporary); },
       async finalCheck() {
         await closed();
