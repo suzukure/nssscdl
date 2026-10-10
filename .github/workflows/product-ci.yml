@@ -112,3 +112,237 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+  state-probe-914:
+    name: '#914 temporary systemd terminal-state probe'
+    if: github.event.pull_request.number == 921 && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Synthetic terminal-state lifecycle only
+        shell: bash
+        run: |
+          set +e
+          timeout --kill-after=3s 55s python3 -B - 2>/dev/null <<'PY'
+          import json, os, pathlib, re, subprocess, sys, tempfile, time, uuid
+          
+          stage = 'settings'
+          units = []
+          outside = None
+          passed = False
+          root = pathlib.Path(tempfile.mkdtemp(prefix='nssscdl-state-probe-'))
+          properties = 'LoadState,ActiveState,SubState,Result,InvocationID,Type,ExitType,RemainAfterExit,Restart,NRestarts,ExecMainCode,ExecMainStatus,User,Group,OOMPolicy,Delegate,NoNewPrivileges'
+          
+          def run(args):
+              return subprocess.check_output(args, stderr=subprocess.DEVNULL, timeout=3,
+                                             env={'PATH': '/usr/bin:/bin'}).decode().strip()
+          
+          def show(unit):
+              raw = run(['sudo', '-n', 'systemctl', 'show', unit, '--property=' + properties])
+              return dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
+          
+          def check(value):
+              if not value:
+                  raise ValueError()
+          
+          def until(fn, seconds=4):
+              end = time.monotonic() + seconds
+              while time.monotonic() < end:
+                  value = fn()
+                  if value:
+                      return value
+                  time.sleep(0.025)
+              raise TimeoutError()
+          
+          def settings(s):
+              expected = {'LoadState': 'loaded', 'Type': 'exec', 'ExitType': 'cgroup',
+                          'RemainAfterExit': 'yes', 'Restart': 'no', 'NRestarts': '0',
+                          'User': str(os.getuid()), 'Group': str(os.getgid()),
+                          'OOMPolicy': 'stop', 'Delegate': 'no', 'NoNewPrivileges': 'yes'}
+              check(all(s.get(k) == v for k, v in expected.items()))
+          
+          def observe(record, reader=show):
+              if record['failed']:
+                  return record['failed']
+              if record.get('stop_requested'):
+                  record['failed'] = 'stop-requested'
+                  return record['failed']
+              try:
+                  s = reader(record['unit'])
+                  settings(s)
+                  check(s.get('InvocationID') == record['invocation'])
+                  if s.get('Result') != 'success':
+                      record['failed'] = 'failure'
+                  elif s.get('ActiveState') == 'active' and s.get('SubState') == 'running':
+                      return 'pending'
+                  elif (s.get('ActiveState'), s.get('SubState'), s.get('ExecMainCode'), s.get('ExecMainStatus')) == ('active', 'exited', '1', '0'):
+                      return 'terminal'
+                  else:
+                      record['failed'] = 'mismatch'
+              except ValueError:
+                  record['failed'] = 'mismatch'
+              except Exception:
+                  record['failed'] = 'unknown'
+              return record['failed']
+          
+          def decide(record, marker, report, seconds=4, reader=show):
+              try:
+                  outcome = until(lambda: (o if (o := observe(record, reader)) != 'pending' else None), seconds)
+              except TimeoutError:
+                  record['failed'] = 'timeout'
+                  return 'timeout'
+              if outcome != 'terminal':
+                  return outcome
+              if observe(record, reader) != 'terminal':
+                  return record['failed']
+              if not report.is_file() or report.read_text() != 'complete':
+                  record['failed'] = 'missing-report'
+                  return record['failed']
+              marker.unlink()
+              record['accepted'] = True
+              return 'accepted'
+          
+          def stop(unit):
+              run(['sudo', '-n', 'systemctl', 'stop', unit])
+              if show(unit).get('ActiveState') == 'failed':
+                  run(['sudo', '-n', 'systemctl', 'reset-failed', unit])
+              units.remove(unit)
+          
+          try:
+              check(os.getuid() != 0)
+              check(pathlib.Path('/sys/fs/cgroup/cgroup.controllers').is_file())
+              check(int(run(['systemctl', '--version']).split()[1]) >= 250)
+              run(['sudo', '-n', 'true'])
+              child = root / 'child.py'
+              child.write_text('''import json, os, pathlib, sys, time
+          d = pathlib.Path(sys.argv[1])
+          original_sid = os.getsid(0)
+          if os.fork():
+              os._exit(0)
+          os.setsid()
+          data = {"pid": os.getpid(), "uid": os.getuid(), "sid_changed": os.getsid(0) != original_sid}
+          (d / "pending").write_text(json.dumps(data))
+          (d / "pending").rename(d / "ready")
+          end = time.monotonic() + 10
+          while time.monotonic() < end and not (d / "release").exists():
+              time.sleep(0.02)
+          if (d / "release").exists():
+              (d / "report").write_text("complete")
+          ''')
+              outside = subprocess.Popen(['/usr/bin/sleep', '45'], env={'PATH': '/usr/bin:/bin'},
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+          
+              def start(label, runtime='15s'):
+                  global stage
+                  stage = label + '_settings'
+                  d = root / label
+                  d.mkdir(mode=0o700)
+                  marker = d / 'owned'
+                  marker.write_text('retain')
+                  unit = 'nssscdl-state-' + uuid.uuid4().hex + '.service'
+                  units.append(unit)
+                  props = ['Type=exec', 'ExitType=cgroup', 'RemainAfterExit=yes', 'Restart=no',
+                           'OOMPolicy=stop', 'Delegate=no', 'KillMode=control-group',
+                           'RuntimeMaxSec=' + runtime, 'TimeoutStartSec=5s', 'TimeoutStopSec=1s',
+                           'StandardOutput=null', 'StandardError=null', 'NoNewPrivileges=yes',
+                           'ProtectControlGroups=yes', 'RestrictSUIDSGID=yes', 'CollectMode=inactive',
+                           'User=' + str(os.getuid()), 'Group=' + str(os.getgid())]
+                  run(['sudo', '-n', 'systemd-run', '--quiet', '--unit=' + unit] +
+                      ['--property=' + p for p in props] +
+                      ['/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', '/usr/bin/python3', '-B', str(child), str(d)])
+                  stage = label + '_child_start'
+                  until(lambda: (d / 'ready').is_file())
+                  data = json.loads((d / 'ready').read_text())
+                  check(data['uid'] == os.getuid() and data['sid_changed'])
+                  stage = label + '_parent_exit'
+                  s = until(lambda: (v if (v := show(unit)).get('ExecMainCode') == '1' else None))
+                  settings(s)
+                  check(s.get('ExecMainStatus') == '0')
+                  check(re.fullmatch('[0-9a-f]{32}', s.get('InvocationID', '')))
+                  record = {'unit': unit, 'invocation': s['InvocationID'], 'failed': '', 'accepted': False, 'stop_requested': False}
+                  stage = label + '_child_retained'
+                  check(observe(record) == 'pending')
+                  os.kill(data['pid'], 0)
+                  return record, d, marker
+          
+              record, d, marker = start('normal')
+              print('STATE_PROBE=nonroot_parent_exit_child_retained', flush=True)
+              stage = 'normal_terminal_state'
+              (d / 'release').touch()
+              outcome = until(lambda: (o if (o := observe(record)) != 'pending' else None))
+              check(outcome == 'terminal')
+              print('STATE_PROBE=same_invocation_active_exited', flush=True)
+              stage = 'normal_workload_report'
+              check(decide(record, marker, d / 'report') == 'accepted' and not marker.exists())
+              print('STATE_PROBE=report_and_terminal_before_delete', flush=True)
+          
+              stage = 'unknown_preservation'
+              unknown = dict(record, failed='', accepted=False)
+              unknown_marker = d / 'unknown-owned'
+              unknown_marker.write_text('retain')
+              def unreadable(_):
+                  raise OSError()
+              check(decide(unknown, unknown_marker, d / 'report', reader=unreadable) == 'unknown')
+              check(decide(unknown, unknown_marker, d / 'report') == 'unknown' and unknown_marker.exists())
+              print('STATE_PROBE=injected_unknown_latched_owned_retained', flush=True)
+              stage = 'normal_unrelated'
+              check(outside.poll() is None)
+              stage = 'normal_unit_dispose'
+              stop(record['unit'])
+          
+              record, d, marker = start('owner')
+              stage = 'owner_timeout_preservation'
+              check(decide(record, marker, d / 'report', seconds=0.2) == 'timeout' and marker.exists())
+              record['stop_requested'] = True
+              stage = 'owner_unit_dispose'
+              stop(record['unit'])
+              stage = 'owner_timeout_latched'
+              check(decide(record, marker, d / 'report') == 'timeout' and marker.exists())
+              check(not (d / 'report').exists() and outside.poll() is None)
+              print('STATE_PROBE=owner_timeout_stop_never_success_owned_retained', flush=True)
+          
+              record, d, marker = start('manager', runtime='2s')
+              stage = 'manager_timeout_state'
+              s = until(lambda: (v if (v := show(record['unit'])).get('Result') == 'timeout' and v.get('ActiveState') == 'failed' else None))
+              check(s.get('InvocationID') == record['invocation'])
+              check(s.get('ActiveState') == 'failed')
+              stage = 'manager_timeout_preservation'
+              check(decide(record, marker, d / 'report') == 'failure' and marker.exists())
+              check(not (d / 'report').exists())
+              print('STATE_PROBE=manager_timeout_not_success_owned_retained', flush=True)
+              stage = 'manager_unit_dispose'
+              stop(record['unit'])
+              stage = 'unrelated'
+              check(outside.poll() is None)
+              print('STATE_PROBE=unrelated_process_unaffected', flush=True)
+              passed = True
+          except TimeoutError:
+              print('STATE_PROBE=fail_' + stage + '_timeout', flush=True)
+          except ValueError:
+              print('STATE_PROBE=fail_' + stage + '_mismatch', flush=True)
+          except Exception:
+              print('STATE_PROBE=fail_' + stage + '_unknown', flush=True)
+          finally:
+              cleanup = True
+              for unit in list(units):
+                  try:
+                      stop(unit)
+                  except Exception:
+                      cleanup = False
+              if outside is not None:
+                  outside.terminate()
+                  try:
+                      outside.wait(timeout=3)
+                  except Exception:
+                      outside.kill()
+                      outside.wait(timeout=3)
+                      cleanup = False
+              print('STATE_PROBE=units_disposed' if cleanup else 'STATE_PROBE=cleanup_unknown', flush=True)
+              print('STATE_PROBE=pass' if passed and cleanup else 'STATE_PROBE=fail', flush=True)
+              sys.exit(0 if passed and cleanup else 1)
+          PY
+          result=$?
+          if [ "$result" -ne 0 ]; then
+            echo 'STATE_PROBE=job_failed'
+            exit 1
+          fi
