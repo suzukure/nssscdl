@@ -873,7 +873,46 @@ negative / unknown / duplicate / abort / timeoutの再操作禁止・固定非�
 WACはR0 / C1 / P1 / B1、Yellowのprepared限定。C1の実ss / Playwright / asset MIME / Cookie互換性をfixture成功でC0へ昇格させない。
 上記#941節と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared integration **partial evidence**のみで、
 識別子・AC→TCの意味、CON-001/002/009・OOS-001/002は変更しない。旧#914 / #922 helper・証拠、Production / SQL / config / workflowは不変。
-outerのrun-owned TMP / HOME / persist・systemd unit・同一Invocation terminal / process no-live・NSS / cert / key完全cleanup・booking専用reportと証拠、
-step期限 / 費用 / 復旧判断、実環境互換性の確認、human-gated official normalとnegative / 探索評価は#930の後続責務。
+outerのrun-owned TMP / HOME / persist・systemd unit・同一Invocation terminal / process no-live・NSS / cert / key完全cleanup・booking専用reportの準備は下記#945、
+実step期限 / 費用 / 復旧判断、実環境互換性の確認、human-gated official normalとnegative / 探索評価は#930の後続責務。
 今回CLI / Actions entrypoint / outer ownerは追加せず、#537 Gate A、Gate B〜D、#608 Done / Production-readyを主張しない。
 current-head Product CI / PR Traceability / 独立Claude Reviewの正式結果はworkflow側で別途確認する。
+
+## #945 予約outer・private report・完全cleanup（prepared / finite only）
+
+`evaluation/trusted-booking-outer.mjs` は予約専用test-only operator。import / 引数なしは資源を起動しない。
+exact `--run` は将来の構成入口であり、本Issueでの実行許可ではない。CLI / envによるorigin / port / DB / remote / 認証指定はない。
+fresh 0700 `TMPDIR===HOME===XDG_CONFIG_HOME`、credential-free allowlisted env、metrics=falseと固定log pathを用いる。
+既存closed予約config・資産 / migrations・依存版・Chrome / NSS tools・旧persist不在・8788/8789空きを検査し、
+既存 `browserUnitPreflight` のnon-root / NoNewPrivileges / fixed cgroup unit probeをD1 / cert / browser生成前に行う。
+outerは親`.wrangler`とfresh TMPのidentityを保持し、booking persist / browser-home / cert / NSS / seedを先行生成しない。
+既存#937のexclusive seed / empty TMP preflightをinner childだけが一回所有する。
+
+`evaluation/trusted-booking-child.mjs` はisolated unit専用入口。`runTrustedBookingProcess({signal})` を一度だけ呼び、
+exact `{phase:"complete",status:"prepared"}` と非abortを確認してからだけbooking専用reportを確定する。
+`evaluation/trusted-booking-report.mjs` の固定 `booking-report` はexclusive partial→atomic rename、0600、NOFOLLOW read、
+owner / mode / nlink=1 / 最大256 bytes / fdとpathのidentity・size・mtime / ctime安定性を照合する。
+文法はisolated complete prepared、fixture complete prepared、unknown failedの3固定文字列だけ。旧browser-report / browserEvidenceは使わない。
+fixture結果や旧read-only結果はisolated child成功として受理しない。ID / token / hash / CSRF / Expected State Token / PII / payload / raw error / SQL / paths / envは出力しない。
+
+成功順序はinner seed→8788 TLS正負 / 閉鎖→8789 Preview200 / Confirm201 / History→Browser close / Worker stop / 閉鎖→独立5表readback / secret scan→child report / exit0、
+outerの `BrowserUnit.terminal()` によるstop前二度の同一Invocation / ExecMainCode=1 / Status=0 / cgroup no-live照合→booking report、
+独立両port / generated files不在 / 親・TMP・child作成persist・browser-homeのidentityとowned tree照合→`dispose(true)` のstop / inactive確認、
+全identity / tree再照合→test-owned persistとTMP（HOME / NSS / cert / key / report / logを含む）の削除→固定checkpointである。
+outerはwrite / seed / Confirm / readbackを再実行せず、snapshotをproxyなしで推測しない。
+unknown / abort / timeout / manager不整合 / report不備 / 残存 / identity driftは失敗を保持し、一度だけstop依頼、削除せず人間介入とする。
+preflight失敗もfresh TMPを保持する。無条件finally削除 / rm -rf / force / automatic retryはない。
+
+既存owner総180秒 / unit最大120秒を維持し、childは110秒soft abort（120秒unitなら10秒margin）を持つ。
+preflightで残予算が減った場合は既存unitの短いhard期限が優先し、soft abortやcleanup完了を保証しない。
+予定構成はouter preflight→child（migration最大60秒、TLS / launch各既存上限、Worker startup最大30秒、DOM各5秒、停止 / readback）→outer確認 / releaseである。
+各step上限の総和は120秒を超え得るため、通常1回が予算内で完了するとの保証はなく、期限不足はfail-closedで保持する。
+秒数増量 / retryはしない。#930で実測前に時間・cost・Runner / D1 / TLS資源、fail-closed保持・復旧者、manifest / CI temporary安全差分を別途人間が判断する。
+
+`evaluation/trusted-booking-outer.test.mjs` は実inner controllerのfinite Portsと既存BrowserUnit injection seamで上記順序・一回性・report拒否・非終端 / unknown / abort / timeout時の非削除・秘密非反射を検査する。
+既存 `npm run test:unit` へ追加し、Wrangler / Chrome / systemd / real D1 / HTTPSは起動しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared限定。#941と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared outer partial evidenceのみ。
+識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002、Production / SQL / config / workflow / 旧read-only sealed semanticsは変更しない。
+実機non-root `ss -ltnp` PID可視性、Node24 native .ts、Playwright / MIME / Cookie、120秒 / 180秒実runtime、クラッシュ後report / owned cleanupは未実証。
+human-gated official actual normal1回 / negative・探索 / 全gateは#930へ残し、fixtureをC0 / 正式proof、#537 Gate A〜D / #608 Done / Production readinessへ昇格しない。
+official Actions / temporary workflow編集 / dispatchは本Issue未承認・未実施。current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
