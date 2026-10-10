@@ -13,13 +13,27 @@ const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, ""
 const persist = join(root, ".wrangler/student-booking-evaluation");
 const oldPersist = join(root, ".wrangler/student-read-only-evaluation");
 const exec = promisify(execFile);
-const failure = stage => new Error(`TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`);
+const terminalReasons = ["timeout", "manager", "mismatch", "cancel", "unknown"];
+const failure = (stage, reason = "unknown") => new Error(`TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}${stage === "terminal" ? `; reason=${reason}` : ""}; retain owned files; do not retry`);
+function terminalReason(unit) {
+  // Only the first-latched category is evidence; never inspect the exception.
+  try {
+    const reason = unit.failure;
+    for (const allowed of terminalReasons) {
+      if (reason === allowed.toUpperCase()) return allowed;
+    }
+  } catch { /* Missing/hostile failure values cannot expose details. */ }
+  return "unknown";
+}
 function sanitizedFailure(error) {
   // Exact fixed messages only; never reflect arbitrary error fields or causes.
   try {
     const message = error?.message;
-    for (const stage of ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator"]) {
+    for (const stage of ["preflight", "start", "report", "ownership", "release", "remove", "listeners", "operator"]) {
       if (message === failure(stage).message) return failure(stage);
+    }
+    for (const reason of terminalReasons) {
+      if (message === failure("terminal", reason).message) return failure("terminal", reason);
     }
   } catch { /* Unknown exception shapes remain non-secret. */ }
   return failure("unknown");
@@ -48,9 +62,10 @@ export async function useBookingOuter(unit, ports) {
     await ports.remove();
     return Object.freeze({ success: true, status: "prepared" });
   } catch {
-    unit.latch("UNKNOWN");
+    const reason = stage === "terminal" ? terminalReason(unit) : undefined;
+    try { unit.latch("UNKNOWN"); } catch { /* A throwing failure getter stays unknown. */ }
     try { await unit.dispose(); } catch { /* At most one stop; uncertain files retained. */ }
-    throw failure(stage);
+    throw failure(stage, reason);
   } finally { unit.close(); }
 }
 
