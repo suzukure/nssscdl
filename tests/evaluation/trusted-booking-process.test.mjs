@@ -39,8 +39,9 @@ function fixture(fault = "") {
     assert.equal(browserClosed, false); return context;
   } };
   const ports = {
-    async prepareTrustedBooking(consume) {
+    async prepareTrustedBooking(consume, entered) {
       hit("seed"); assert.equal(events.includes("home"), false); // Fresh TMP remains empty before seed.
+      entered?.();
       hit("seed-dispose"); seeded = true;
       await consume(seed, handle);
       if (fault === "duplicate-seed") await consume(seed, handle);
@@ -165,4 +166,67 @@ test("#943: loading module exits silently, without resource work; Production/wor
   scan("src"); scan(".github/workflows");
   for (const name of ["trusted-https-process.mjs", "trusted-https-smoke.mjs", "trusted-browser-smoke.mjs", "worker.ts", "wrangler.jsonc"])
     assert.doesNotMatch(readFileSync(`tests/evaluation/${name}`, "utf8"), /trusted-booking-process/);
+});
+
+// #959 oracles: Issue-defined boundaries, first observed failure and independent stop.
+function observedFixture(fault = "", failWrite = () => false) {
+  const f = fixture(fault), snapshots = [];
+  let writes = 0;
+  f.ports.observe = data => {
+    writes++;
+    if (failWrite(data)) throw new Error(canary);
+    snapshots.push({ ...data });
+  };
+  return { ...f, snapshots, writes: () => writes };
+}
+test("#959 all prepared boundaries and complete are diagnostic-only; Worker stop progresses independently", async () => {
+  const f = observedFixture(); await f.run();
+  assert.deepEqual(f.snapshots.map(s => `${s.phase}/${s.boundary}`), [
+    "seed/entered", "seed/completed", "home/entered", "home/completed", "tls/entered", "worker/entered", "worker/completed",
+    "dom/entered", "dom/completed", "stop/entered", "stop/entered", "stop/completed", "readback/entered", "readback/completed",
+    "scan/entered", "scan/completed", "tls/completed", "complete/completed",
+  ]);
+  assert.ok(f.snapshots.every(s => s.primary === "none"));
+  const stops = f.snapshots.filter(s => s.phase === "stop");
+  assert.deepEqual(stops.map(s => s.worker_stop), ["not-attempted", "attempted", "confirmed"]);
+  assert.equal(f.snapshots.at(-1).worker_stop, "confirmed");
+});
+test("#959 local first failure survives TLS finally/stop/inspect; stop uncertainty never confirms", async () => {
+  for (const [fault, primary, stop] of [
+    ["seed-dispose", "seed", "not-attempted"], ["home", "home", "not-attempted"],
+    ["tls-negative", "tls", "not-attempted"], ["worker-create", "worker", "not-attempted"],
+    ["start", "worker", "confirmed"], ["context", "dom", "confirmed"], ["cookie", "dom", "confirmed"],
+    ["dom", "dom", "confirmed"], ["stop", "stop", "attempted"], ["stop-unknown", "stop", "attempted"],
+    ["stop-port-open", "stop", "attempted"], ["readback", "readback", "confirmed"], ["scan", "scan", "confirmed"],
+    ["abort-dom", "dom", "confirmed"], ["abort-readback", "readback", "confirmed"],
+  ]) {
+    const f = observedFixture(fault); await assert.rejects(f.run(), fixed);
+    const failures = f.snapshots.filter(s => s.primary !== "none");
+    assert.ok(failures.length > 0, fault);
+    assert.ok(failures.every(s => s.primary === primary), fault);
+    assert.equal(f.snapshots.at(-1).worker_stop, stop, fault);
+    assert.ok(f.events.filter(e => e === "stop").length <= 1);
+    assert.ok(!f.snapshots.some(s => s.phase === "complete"));
+  }
+  const early = observedFixture("seed"); await assert.rejects(early.run(), fixed);
+  assert.deepEqual(early.snapshots, []); // Hook unreachable: diagnostic unknown.
+});
+test("#959 failed diagnostic write permanently suppresses later writes and success, with no replay", async () => {
+  for (const phase of ["seed", "home", "worker", "dom", "stop", "readback", "scan", "complete"]) {
+    const f = observedFixture("", s => s.phase === phase);
+    await assert.rejects(f.run(), fixed);
+    assert.equal(f.writes(), f.snapshots.length + 1, phase);
+    assert.ok(f.events.filter(e => e === "stop").length <= 1);
+    assert.ok(f.events.filter(e => e === "dom").length <= 1);
+    assert.ok(!f.snapshots.some(s => s.phase === "complete"));
+  }
+});
+
+test("#959 DOM primary remains first when helper finally also fails Worker stop", async () => {
+  const f = observedFixture("dom"), create = f.ports.createBookingWorkerPort;
+  f.ports.createBookingWorkerPort = input => ({ ...create(input), async stop() { f.events.push("stop"); throw new Error(canary); } });
+  await assert.rejects(f.run(), fixed);
+  assert.ok(f.snapshots.filter(s => s.primary !== "none").every(s => s.primary === "dom"));
+  assert.equal(f.snapshots.at(-1).worker_stop, "attempted");
+  assert.equal(f.events.filter(e => e === "stop").length, 1);
 });
