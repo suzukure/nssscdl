@@ -399,7 +399,7 @@ HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanu
 `REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
 POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOMの段階1準備は下記#922を参照する。Preview / Confirm、REQ-901/902全体、Gate A〜DとTC全体Passは後続責務。
 
-## #922 same-origin read-only DOM（段階1 prepared＋normal実走部分証拠）
+## #922 same-origin read-only DOM（段階1 prepared＋normal/intentional実走部分証拠）
 
 `npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
 通常Workerと評価Workerのdry-runを行う。評価configだけに `ASSETS` と `run_worker_first: true`、
@@ -439,10 +439,22 @@ keyboard/focus・320px実layout・端末timezone差の読取、別の**合成DOM
 実403 / 通信断やPreview / Confirmを実証したとはしない。
 同Runのstrict checkpointは#914のTLS/Browser Session/D1 read/失効・同一InvocationID正常終端、
 port停止とowned HOME/NSS/cert/key/persist削除まで確認。child120秒・owner180秒内の**normal1回**だけ成功した。
-**intentional後のcleanup / timeout時の実証、Release browser matrix / mobile / Gate A〜Dは未検証**。
+2026-10-10に別の人間承認を得た**intentional単発**[Product CI #38029294402](https://github.com/suzukure/nssscdl/actions/runs/38029294402) / job #114146666302も**success**。
+実証HEAD `845c397abebd9a2faa3e5ae5021896bb170a14d4`、Chrome 154.0.8037.97 / Node v24.21.0 / Wrangler 4.146.0。
+本人/別本人のread-only Browser GET成功と#922の本人DOM成功**直後**に意図的に例外を送出し、
+public Browser.close / Worker・port停止、proxy inspectとsecret scanの完了、child固定report、
+outer同一systemd unit正常終端・owned HOME/NSS/cert/key/persist/temporary削除をstrict検証した。
+CLIが期待どおりexit1を返し、wrapperが`INTEGRATED_INTENTIONAL=expected_cli_exit_1`と
+`INTEGRATED_INTENTIONAL=pass`を報告。normalとintentionalは**別Run・別HEAD**で各1回成功。
+intentional Runはpositive後の中断位置を検証するもので、normal後半の失効/restart検証は行わない。
+**未知の障害・timeout時の実cleanup、Release browser matrix / mobile / Gate A〜Dは未検証**。
 proof sourceから一時workflowを撤去したHEAD `9ed27f27c2c25d30fa08db6f043a05673a829882`では、
 追加前source HEAD `b7c812a0d2b38d3cc8cbb0119a80ec86d17a5110`とのGitHub比較で変更ファイル0、
-workflow blobは従来/mainと一致。撤去後の通常Product CIと、文書同期後のfinal HEAD通常CIは別途確認する。
+workflow blobは従来/mainと一致。normal復元後[Product CI #38026043227](https://github.com/suzukure/nssscdl/actions/runs/38026043227)はsuccess。
+intentional後も一時workflowを撤去したHEAD `0e664274bb557a2cc194440ae6c1a6be711b01a8`で、
+前の文書同期済みsource `9f266a15ee950b2e87febdfe26c9f00fdb9d96cf`との比較は**変更ファイル0**、
+workflow blob `92ee87e3e6368987c2d613a8385ba0af51e27012`はmainと一致。
+intentional撤去後の通常Product CIと文書同期後のfinal HEAD CIは別証拠として確認する。
 段階1の通常CI / 合成fixture、段階2のopt-in正式Run / executable blob / workflow復元 / final-head CIを混同しない。
 `REQ-001/002/005/207/211/902/903/907/914` →既存AC→既存TCへのread-only partial evidenceのみで、
 識別子・意味・要求traceabilityは変更しない。Preview / Confirm / Gate A〜D / 全TC Passは未検証。

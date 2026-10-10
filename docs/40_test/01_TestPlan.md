@@ -176,9 +176,9 @@ unknown/timeout/cancel/stop/不正reportは不可逆な失敗で、後から空u
 child120秒・owner180秒の共通残予算と停止margin、固定report・有効設定の正本は `../../tests/README.md` の#914節とadapterを参照する。
 合成fixtureは通常/意図的失敗、parent exit0/setsid子残存、InvocationID/設定差、失敗固定、report拒否、close不明、port/生成物残存、非所有物保全を検査する。
 #906 / #908標準経路・#915 TLS-only proof・製品entryは維持する。今回の限定scopeは静的実装・fixture・文書同期で、正式Actions current-head通常CIは別証拠とする。
-#914の正式実証と#922の成果は区別する。#922は[Product CI #38025821104](https://github.com/suzukure/nssscdl/actions/runs/38025821104)で人間承認の**normal1回だけ**実Chrome / HTTPS / Worker / local D1 / static assets / 本人read-only DOM・停止と所有物削除を確認した。実証HEADは`bffb9663`。時限内normal成功は意図的失敗時のcleanup成功を保証しない。実404 asset-missing・実403 / 通信断・複数履歴cursorは合成と区別する。詳細は`../../tests/README.md`の#922節。
+#914の正式実証と#922の成果は区別する。#922は人間承認の**normal1回**[Product CI #38025821104](https://github.com/suzukure/nssscdl/actions/runs/38025821104) / HEAD `bffb9663`で実Chrome / HTTPS / Worker / local D1 / static assets / 本人read-only DOM・停止と所有物削除を確認した。別途承認の**intentional1回**[Product CI #38029294402](https://github.com/suzukure/nssscdl/actions/runs/38029294402) / HEAD `845c397a`は、本人/別本人のBrowser GETとDOM成功直後に例外を注入し、Browser/Worker/portの停止・同一unit正常終端・所有物削除、期待CLI exit1・`INTEGRATED_INTENTIONAL=pass`を確認した。未知の障害やtimeoutの実cleanupは未検証。実404 asset-missing・実403 / 通信断・複数履歴cursorは合成と区別する。詳細は`../../tests/README.md`の#922節。
 既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、
-#922 static assets / DOMのprepared範囲と正式normal部分実証は `../../tests/README.md` の#922節を参照する。Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
+#922 static assets / DOMのprepared範囲と正式normal/intentional部分実証は `../../tests/README.md` の#922節を参照する。Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
 
 ## 8. Entry Criteria
 
