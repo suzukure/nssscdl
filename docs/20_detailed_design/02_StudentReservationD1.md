@@ -490,6 +490,8 @@ fixtureはtest entrypointからだけ注入する。Production entrypointからt
 
 #931は同READMEの#931節の既存file-isolated `AUTH_DB`とProduction `0001`〜`0012`を使い、非公開factoryから§5のsingle-batch Commitと実DB / 本人History照合を検査する。read-only評価persistとは分離し、schema fingerprint・empty-only seed・D1時刻・Integrity Scanを変更しない。試験の追加は実行成功や§8.6のremote対象環境proofを意味しない。
 
+#937の予約専用D1準備・独立readbackは同READMEの#937節を正とする。#929の8789 / `EVALUATION_BOOKING_DB`だけにrun-owned persistを供給し、strict seedと§2 / §5の保存内容・所有者・同一Command T・全既存行の保持をread-only Portで照合する。旧8788 read-only証明を変更せず、実Worker / Chrome / 終端cleanupは#930、§8.6のactivation Gateは維持する。
+
 以下は本物理契約の検証観点であり、既存TCの意味・受入範囲を変更しない。
 
 | 既存AC / TC | 物理契約での確認 |

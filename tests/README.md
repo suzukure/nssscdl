@@ -735,7 +735,7 @@ raw Session / CSRF / key / hash・SQLをenv / URL / consoleへ出さず、Provid
 
 専用DB identityは `nssscdl-local-booking-evaluation`、後続のowned persistは `.wrangler/student-booking-evaluation` とする。
 Production migrations `0001`〜`0012`とtest-owned strict seedだけを使い、read-only専用persist / seed / snapshotを再利用・変更しない。
-今回はpersistent DB provisioning / seed runner / cleanupを実装・起動しない。#930で専用owned stateと実通信を検証する。
+#929ではpersistent DB provisioning / seed runner / cleanupを実装・起動しない。準備・独立読取照合は下記#937、実通信と終端cleanupは#930で検証する。
 `evaluation/verify-reservation-config.mjs` を既存 `npm run build` の最初に実行し、closed configの全項目を照合する。
 公開Domain・remote / 追加binding・port / entry・override不一致を拒否し、通常Production configは変更しない。
 `integration/reservation-evaluation-worker.test.ts` は既存Product CIに入り、synthetic D1 row / acknowledgementで
@@ -751,3 +751,37 @@ REQ-901 / 902を含む既存識別子・traceabilityとCON-001/002/009・OOS-001
 新TLS / systemd / Browser proof基盤・暗黙run / retry・workflow一時編集は追加しない。
 current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
 #537 Gate A〜D / #608 Value Unit Done / Production readiness / Provider配送成功は主張しない。
+
+## #937 予約専用D1準備と独立readback（prepared helper）
+
+`evaluation/trusted-booking-seed.mjs` の `prepareTrustedBooking(consume)` は、#929のclosed configを正本に、
+固定8789 / `ASSETS + EVALUATION_BOOKING_DB` / `remoteBindings:false` / locked Wranglerを検査する。
+credential-free環境（#906と同じallowlist、新規・空・privateな同一の専用HOME / XDG_CONFIG_HOME / TMPDIR、metrics無効）と6資産buildを要求し、
+env file、旧read-only persist、8788 / 8789の非所有listenerがあればfail-closedする。設定overrideやoriginの動的導出はしない。
+`.wrangler/student-booking-evaluation`を排他的に新規作成し、同一runのdirectory identityと非symlink / 非hardlinkの所有物を検査する。
+既存persistは空でも採用せず、正式0001〜0012を固定local CLIで一度適用し、実proxyの有効2 bindingとmigration ledgerを照合する。
+#898のschema fingerprint / empty-only / validationを変更せず再利用し、seedと事前状態をtrusted memoryに保持する。
+seed proxyのdispose成功後にだけ `consume(seed, opaqueHandle)` を呼ぶ。戻り値は破棄し、失敗時は固定
+`TRUSTED_BOOKING_SEED_FAILED`で停止する。再seed / reset / remote切替 / 自動write retry / ファイル削除を持たず、未知結果では所有物を保持する。
+本helperの追加はpersistent provisioning実走や実Worker起動の成功証拠ではない。
+
+`evaluation/booking-readback.ts` は独立したread-only `BookingReadPort`。
+`captureBookingBaseline`はadmission済みstrict seedの事前状態を非列挙のtrusted memoryへ保持し、
+`verifyBookingReadback`はseed-selfがseed-slot-bookableへ予約した新IDについて一度だけ照合する。
+既存self / other Reservation・Sessionを含む全不変行、schema、追加Reservation / Occupancy / Audit / Intent / Outboxのexact内容、
+Actor、同一D1時刻T、未claim状態、Command Guard消滅、既存Integrity Scanを検証する。初期N=3で再分類なしのseedシナリオ専用とし、他シナリオは拒否する。
+比較値・Hash・Sessionは公開snapshot / error / logへ出さず、baselineは`{}`にしかserializeしない。
+不明・部分生成・他人ID・内容不一致では固定`BOOKING_EVALUATION_READBACK_FAILED`で停止し、同じbaselineの再検査も拒否する。
+`inspectTrustedBooking(handle, reservationId)`は同一run所有物だけに別proxyで接続し、inspect / dispose完了を確認する。
+下流ownerはwriterを停止してから呼ぶ必要があり、portが開いていれば拒否する。公開認証・write API・repairを持たない。
+
+`evaluation/trusted-booking-seed.test.mjs`を既存Unit stepへ追加し、有限のNode SQLite / factory fixtureでconfig改ざん、
+missing / extra binding、非所有profile / port、directory / hardlink、migration / schema / 重複seed拒否、
+rollback / unknown outcome・disposeの呼出し回数、positive / negative / cross-owner / partial-write readbackと機密非反射を検査する。
+`d1/booking-readback.test.ts`は既存file-isolated Cloudflare D1 topologyで、実factoryのCommit後に独立Portを照合し、
+Outbox欠落・Actor改ざん・読取失敗を拒否する。Node fixtureとCloudflare D1実行結果、実Browser成功は別の証拠とする。
+対応は既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-914`
+への準備 / readback **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002は維持する。
+旧#914 / #922のworker / config / seed / runner / cleanup・証拠は変更しない。
+Worker8789 / HTTPS通信 / TLS / Chrome UI / run-owned終端cleanup・human-gated正式runは#930に残し、Gate A〜D・#608 Doneを主張しない。
+current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。

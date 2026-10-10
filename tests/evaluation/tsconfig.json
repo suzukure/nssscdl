@@ -1,4 +1,5 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["worker.ts", "reservation-worker.ts", "reservation-config.ts"]
+  "compilerOptions": { "allowImportingTsExtensions": true },
+  "include": ["worker.ts", "reservation-worker.ts", "reservation-config.ts", "booking-readback.ts"]
 }
