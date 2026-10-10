@@ -699,3 +699,24 @@ Production root全503、既存GET-only factory、#914 / #922 read-only封印条�
 localhost Worker activationは#929、実Chrome / 通信は#930へ残す（#928 → #931 → #929 → #930）。
 synthetic acknowledgementの201は実DB atomic成功の証拠ではなく、TC全体Pass・Gate A〜D・親#537/#608 Doneを主張しない。
 標準Product CI / PR Traceability / 独立Claude Reviewはworkflow側のcurrent-head証拠を別途確認する。
+
+## #931 非公開予約factoryのisolated local D1試験
+
+`d1/reservation-student-service.test.ts` は既存Cloudflare Vitest / Miniflareのfile-isolated `AUTH_DB`を所有し、
+Production migrations `0001`〜`0012`、変更していない#898のschema fingerprint / empty-only seedを使う。
+read-only評価persist・他test fileのDB・Production / remote resourceへ接続しない。
+標準 `npm run test:d1` / `npm test` の既存Product CI topologyへfixtureを追加するだけで、listener / Worker activationはない。
+real Session Cookie → CSRF GET → Preview 200 → 正規tokenのConfirm 201一回 → 本人History 200を直列に検査する。
+成功判定はHTTP acknowledgementだけでなく、実DBのReservation / Occupancy / Audit / required Intent / Outboxの
+内容・Actor・同一D1時刻T・未claim状態・他人History非公開・既存Integrity Scanで照合する。
+未来枠はseedのD1時刻から次のTokyo月へ生成し、SQL時刻の置換はしない。
+401、CSRF / Origin 403、別本人token・変更token・占有409の未書込みと、batch直前の公開状態変更による
+実Guard rollback / read-only verification / 409をDB全体のdigestで確認する。書込みbatchは各Confirm最大1回。
+有効な別roleは既存Portのtest-only row projection、History read失敗は既存error seamを使う。
+失敗Response / snapshot比較にSession・CSRF・hash・SQL / raw DB errorを出さない。
+正常終了・assertion失敗ともDB寿命と破棄は既存Cloudflare test runtimeに委譲し、persistent DBのreset / cleanup runnerや自動write retryを追加しない。
+既存#873 / #874のGuard・途中失敗rollback・same-plan outcome verification試験を回帰し、再実装しない。
+対応は#928節と同じ既存識別子へのlocal D1 **partial evidence**で、識別子・AC→TCの意味は変更しない。
+この試験の追加自体は実行成功の証拠ではない。current-head標準Product CI / PR Traceability / 独立Claude Reviewはworkflow側で確認する。
+実Browser / HTTPS通信、通信断・未知結果の実障害・高並行race・remote D1・Provider配送・Gate A〜Dは未証明。
+local DB試験をProduction readinessや#537 / #608全体Doneへ読み替えず、後続順序#931 → #929 → #930を維持する。
