@@ -1,5 +1,6 @@
 // Secret-owning sanitized Node child. No raw secrets leave this process except
 // the fixed loopback TLS Cookie header or #914's isolated official Cookie jar.
+import { writeBrowserReport } from "./trusted-browser-unit.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
@@ -13,7 +14,8 @@ import { browserBinary, browserFailureCheckpoint, browserPreflight, browserProof
 const exec = promisify(execFile);
 const origin = "https://127.0.0.1:8788";
 const controller = new AbortController();
-const interrupt = () => controller.abort();
+let cancelled = false;
+const interrupt = () => { cancelled = true; controller.abort(); };
 const browserMode = process.argv[2] === "--browser";
 const failAfterPositive = process.argv[3] === "--fail-after-positive";
 // Browser adds the existing 30s launch budget; outer owner reserves cleanup.
@@ -110,7 +112,7 @@ try {
         workerHandoff: true, executablePath: browserBinary, signal: controller.signal,
         report: (line) => {
           observeTlsDiagnostic(diagnostic, line, browserStage);
-          if (line === "cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed") browserCleanupConfirmed = true;
+          if (line === "cleanup: browser public close / Worker and port stopped / generated files absent / owned inspect and secret scan completed; unit terminal and owned removal unconfirmed") browserCleanupConfirmed = true;
         }, stopConsumer: stop,
         inspectOwned: async (home) => {
           await inspectStopped();
@@ -218,16 +220,23 @@ try {
   clearTimeout(deadline);
   process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt);
 }
-// Publish only after the last stop attempt: cleanup failure cannot look like
-// a confirmed intentional failure, nor overwrite an earlier processing stage.
-if (process.exitCode === 1) {
-  if (browserMode) {
-    if (intentionalObserved && browserCleanupConfirmed && diagnostic.cleanup === "none") {
-      console.log(browserCertificate);
-      console.log(browserFailureCheckpoint);
-    } else console.error(browserDiagnostic(diagnostic));
-  }
-} else if (browserMode) {
-  console.log(browserCertificate);
-  console.log(browserProofCheckpoint);
+// Fixed report is atomic and private. Intentional application failure is a
+// completed verification process (exit0), while outer CLI still returns exit1.
+if (browserMode) {
+  try {
+    if (cancelled || controller.signal.aborted) {
+      recordBrowserFailure(diagnostic, "unknown");
+      process.exitCode = 1;
+    }
+    if (!cancelled && !controller.signal.aborted && browserCleanupConfirmed && diagnostic.cleanup === "none" &&
+      (process.exitCode !== 1 || intentionalObserved)) {
+      writeBrowserReport(process.env.TMPDIR, browserCertificate + "\n" +
+        (intentionalObserved ? browserFailureCheckpoint : browserProofCheckpoint) + "\n");
+      process.exitCode = 0;
+    } else {
+      recordBrowserFailure(diagnostic, browserStage);
+      writeBrowserReport(process.env.TMPDIR, browserDiagnostic({ primary: diagnostic.primary, cleanup: diagnostic.cleanup }) + "\n");
+      process.exitCode = 1;
+    }
+  } catch { process.exitCode = 1; }
 }

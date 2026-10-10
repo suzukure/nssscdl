@@ -311,7 +311,7 @@ Issue本文で確定した単一listener handoffを`evaluation/trusted-browser-s
 Session / CSRFの生成・比較はtrusted child内で行う。Sessionの搬出は公式Cookie設定の内部IPC→run所有Cookie jar→固定HTTPS Cookie headerだけに限定し、汎用IPCへ広げない。
 標準#906 / #908経路と#915 TLS-only CLIは維持する。
 Linux / Node 24 / locked Wrangler / Playwrightに加え、固定installed `/usr/bin/google-chrome`、
-certutil / OpenSSL / ss / ps / readable `/proc` / browser sandboxが必須。不足時は取得・fallbackせず停止する。
+certutil / OpenSSL / ss / ps / readable `/proc` / browser sandboxに加え、非root UID/Group、cgroup v2、systemd ExitType=cgroup、非対話unit操作が必須。不足時は取得・fallbackせず停止する。
 `NSSSCDL_CHROMIUM_PATH`やDEBUGをchild env allowlistへ追加しない。
 
 ```sh
@@ -329,8 +329,10 @@ seed→proxy dispose→read-only inspect→run-owned NSS / profile / TLS正負pr
 Playwright 1.64.0の`launch()`が呼出Nodeの`os.tmpdir()`へ生成する`playwright_chromiumdev_profile-*` / `playwright-artifacts-*`を、
 #906 sanitized child専用TMPDIR内の実path・所有・0700・非symlinkで確認する。Chromiumの実HOMEはrun専用TLS HOMEのまま。
 唯一のmainのNUL区切りexact profile引数・uid・読取り前後のPID/starttime・単一exact HOMEを検証する。
-Playwright v1.64.0 Linux launcherの`detached:true`を根拠に、main PID=PGRP=SIDを専用group/sessionの起点として認証する。
-起点不明・wrapper等でこの条件を満たさない場合は代替根拠へfallbackせず停止し、人間のscope判断へ戻す。
+mainのNoNewPrivs=1と、trusted childと同じ専用unitのcgroup所属を起動後・TLS/consumer前に検証する。
+#914は全子のPGRP/SID一致・mutableな全子environ HOME一致・全PIDの/proc消失の方式を置換する。
+cgroupは所属と生存process不在（no-live）の手段であり、TLS・sandbox・HOME内容検査を代替しない。
+外部管理者の無断kill/移動や同UIDの悪意ある攻撃に耐える新しい機構、各子のexit=0やzombie PID消失の証明は含まない。
 既存生成物があれば起動せず、他runのprofileを推測・glob削除しない。
 公式`addCookies`のroot `url` alternative（Domain / pathを併記しない）でhost-only / Path=/を導出し、
 実Cookie jarのSecure / HttpOnly / SameSite=Lax / root / host / session期限と`document.cookie`非露出を確認する。
@@ -340,59 +342,57 @@ requestの`Sec-Fetch-Site: same-origin`はbrowser engineの生成値を観察す
 `trusted-https-assertions.mjs`のexact本人5枠 / 履歴1件 / Session CSRF、200 / missing・foreign 401、
 no-store / no CORS / csrf no-referrerを再利用する。Fetchが隠す401 Set-CookieはdriverのResponse APIでmemory内だけで検査し、jar消去も確認する。
 request終了→Worker停止 / port閉鎖→selfのみ失効 / inspect / proxy dispose→同cert再起動→同Context self 401 / other 200とする。
-終了は公開`Browser.close()` / 関連process不在→Worker停止 / port閉鎖→Playwright生成profile / artifacts消滅確認→最終inspect / secret scan→owned files削除の順。
+終了は公開`Browser.close()`→Worker停止 / port閉鎖→Playwright生成profile / artifacts消滅確認→最終inspect / secret scan→child報告・終了→outerのunit no-live確認・解放→owned files削除の順。
 profile / artifacts残存も停止不明と同じ保全条件とし、手動削除や再起動で成功へ置き換えない。
 停止不明・proxy失敗では関連owned DB / HOME / NSS / profile / cert / logを保全し、自動retry / resetしない。
 Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / artifactへ出さず、trace / screenshot / storageState / network loggerを使わない。
 
 一次失敗は`tls-browser-launch`（公開launch未完了）、`tls-browser-ownership`（launch resolve後の所有判定）、
 `tls-browser-context`（証明用Context生成）、`tls-browser-nss`（別NSS候補検査）を区別する。
-所有判定の失敗時だけ固定`OWNERSHIP` / `CLEANUP_OWNERSHIP`をprimary / cleanupに独立して付加し、
-`/proc`列挙・読取り・environ、tracked owner、HOME、profile argv / 配置 / main数 / 一致 / 存在 / 数、
-generated directory読取り / 種別 / owner / mode / 実path、生成物変化、関連process残存を固定codeで示す。
-HOME不一致は選択根拠の優先順をprofile→run-owned Crashpad database→tracked PID/start identity→選択済み親の子孫とし、
-`home-profile-main`（profile指定・typeなし）/ `home-profile-child`（profile指定・単一の非空type）/
-`home-crash-db` / `home-tracked` / `home-descendant`で区別する。profile選択時のprofile引数複数指定・type複数指定・空値、
-database選択時のdatabase引数複数指定は`home-unknown`とし、弱い選択根拠へfallbackしない。
-子孫のHOME異値・曖昧は`home-descendant-{different|ambiguous}-type-{known|absent|unknown}`で診断する。
-旧`missing` codeも入力互換として受理するが、認証済み子のHOME欠落単独では失敗しない。
-HOME entryなしはmissing、一件の異値（空値を含む）はdifferent、重複または値指定のない`HOME` entryはambiguousとする。
-knownはargvに`--type=renderer` / `--type=zygote` / `--type=gpu-process` / `--type=utility`のいずれかが単一指定された場合だけで、実roleは断定しない。
-type指定なしはabsent、重複・空・未知値・値指定のない`--type`はunknownに縮退する。HOME判定不能は`home-descendant-unknown`、environ不読は従来の`proc-environ`とする。
-既存`home-descendant`もparser互換として受理し、profile / database / trackedの強い選択根拠は細分化しない。
-所有性は認証済みrootのPGRPとSIDの両方・uid・読取り前後のPID/starttime一致を必須とする。
-親子閉包はgroup/session外への離脱検出にも使用し、未知のgroup memberはrootからの閉包を確認できなければ保全停止する。
-tracked identityは終了まで保持し、root終了後に再親子化された既知process（PPID=1）も監視する。PID再利用へ認証を転用しない。
-rootの単一exact HOMEは常に必須。認証済みgroup/session内の子だけはHOME entry欠落を単独の拒否理由にしない。
-明示異値・重複・曖昧・不読、親子identity矛盾・読取り途中消滅・不明はfail-closedとし、所有物を保全する。
-別group/sessionのChrome / Crashpadを暗黙に除外しない。別UIDや未知process混入も成功扱いしない。
-`root-unverified` / `group-mismatch` / `session-mismatch` / `tracked-drift`を固定reasonへ追加し、旧HOME reasonはparser互換として保持する。
-`OBSERVATION` / `CLEANUP_OBSERVATION`は選択根拠、state、HOME entry、type、観測整合性の順の固定5軸とする。
-選択根拠はprofile / Crashpad / tracked / descendant / unknown、stateはlive / zombie / dead / unknown、
-HOMEはexact / missing / different / ambiguous / unreadable / unknown、typeはrenderer / zygote / gpu-process / utility / other / absent / unknown、
-整合性はstable / changed / vanished / unreadable / unknownだけを受理する。未知値は公開せずunknownへ縮退する。
-statのfield 3=state、4=PPID、5=PGRP、6=SID、22=starttimeを照合する。Zはzombie、X/xはdeadの観測であり、終了証明にはしない。
-同一live階級内のR/S等の遷移は識別情報の不一致にしないが、live→Z/XやPID/starttime/PPID/PGRP/SIDの変化・不読はfail-closed保全とする。
-可変process titleやtype=absentは所有性の証拠にせず、空白再splitは行わない。二時点一致は原子的snapshotや実HOME伝播を保証しない。
-owner parserは既存2項目形式・互換reasonを受理し、追加時は両観測の固定allowlist・固定順と全入力一致を要求する。
-cleanupの追加フィールド`PRE_CLOSE`=pass / fail / not-done、`CLOSE`=resolve / reject / not-done、`POST_CLOSE`=pass / fail / not-runは独立した実施結果とする。
-close未決着のdeadlineはnot-doneであり、公開APIのrejectと推測しない。pre-close不確定→close resolve→browser-ownershipをthrowする既存順序を維持するため、その経路はPOST_CLOSE=not-runとなる。
-診断のために未実施のclose後消滅確認を追加せず、resolveだけをowned cleanup成功へ読み替えない。
-raw path / argv / env / errorを出さず、後発cleanupは一次failureや最初のcleanup reasonを上書きしない。
-診断は所有チェック・close順序・不明時保全を緩和せず、runtime原因確定やcleanup成功の証拠としない。
+所有判定失敗はprimary / cleanupに独立した固定reasonとして内部で記録する。公開reportは固定stage / cleanupだけに制限する。
+既存`parseBrowserDiagnostic`は固定allowlist・全入力一致を維持し、未知値・余剰行・秘密値を拒否する。
+mainのexact NUL profile argv / 単一exact HOME / UID / 安定PID,starttime / NoNewPrivs / 専用unit所属、
+所有0700非symlink profile/artifacts、NSS候補・単一cert、strict TLS・固定binary・非永続Contextを別々に確認する。
+全子のmutable title/envを再追跡せず、既存#915のexact profile方式は独立経路として保持する。
 
-browser pathだけはchild実行120秒（#908の90秒＋既存browser launch 30秒）、owner180秒とする。
-差分60秒はbrowser close 10秒 / process確認5秒 / proof server close 5秒 / Worker停止最大15秒と残余marginを確保する停止用予算であり、性能保証ではない。
-GET / navigationは5秒、response bodyは4096文字上限を維持する。
-意図的失敗commandはpositive 3 GET直後に失敗し、確認済みcleanupの固定checkpointがある場合だけownerもowned filesを削除する。期待exitは1。
+`trusted-browser-unit.mjs`は#914専用の薄いadapterで、外側`trusted-seed-smoke.mjs`がunit外から使用する。
+persist/migration書込み前にcgroup v2 / systemd / 非root / 非対話操作を、同設定の短い`true`専用unitで確認する。
+不足時は固定`TRUSTED_BROWSER_UNIT_UNAVAILABLE`で停止し、host設定変更・root Chrome・sandbox無効化・直接exec方式へのfallbackをしない。
+ownerが0700 temporary / browser HOME / 専用persistを所有し、既存sanitized envを`env -i`でtrusted browser childへ供給する。
+#906 / #908のchildやmigrationはunitへ移行しない。unit stdout/stderrはnull、秘密はunit argv/env/journalへ渡さない。
+有効設定・終端条件はadapterの固定設定と判定を正本とする（Type=exec / ExitType=cgroup / RemainAfterExit=yes / Restart=no / NRestarts=0、
+OOMPolicy=stop / Delegate=no / NoNewPrivileges=yes / ProtectControlGroups=yes / KillMode=control-group、非root User/Group）。
 
-標準Product CIのUnit stepで追加fixtureと既存#915 fixtureを実行する。小fixtureは公開Browser引渡し / persistent null境界 / 非永続4Context / TMPDIR・profile・実HOME所有 / main唯一性 / 停止・残存保全 / handoff順序 / Cookie属性 / response非露出の補助証拠のみ。
-今回の限定scopeは上記所有権Contractの静的実装・合成fixtureと文書同期だけで、実Chromeの再実行は別途人間判断を要する。
-HOME欠落 / 異値 / 重複、live / Z＋空cmdline・environ、既知type4種 / other / 欠落 / 曖昧、
-root唯一性・偽profile・HOME不一致、PGRP / SID / uid差、HOME欠落子の受理・明示異値拒否、
-child identity・親リンク / 親identity変化・消滅・不読・malformed stat、tracked PID再利用、
-primaryとcleanupで異なるreason / 観測、pre-close fail＋close resolve＋post-close not-run、close reject・未決着、残存保全、厳格parser拒否をfixtureで確認する。
-実HOME伝播、process role、Chrome / Worker / D1やowned cleanup成功の証明とはしない。
+処理順は公開Browser.close一回→proof listener/socket停止・Worker停止/port閉鎖→停止中だけproxy inspect/dispose→
+generated profile/artifacts不在・最終inspect・secret scan→child固定report・終了→outerのunit no-live確認→所有物削除とする。
+helper内では#914のHOMEを削除せず、close resolveをunit no-liveやWorker停止前の全browser process消失と読み替えない。
+close前のroot/生成物再確認が不明でも公開closeは一回試し、失敗を保持して保全する。close拒否/未決着、API停止・scan不明はretryしない。
+`PRE_CLOSE` / `CLOSE` / `POST_CLOSE`の内部観測は実施結果だけを表し、managed #914のPOST_CLOSEはnot-run（終端確認担当はouter）である。
+
+reportはrun-private temporaryの専用pathに0600・非symlink・8KiB以下でatomicに一回確定する。
+既存`browserEvidence`で、許可済みfingerprint行と「child処理・停止/検査完了、unit終端・削除未確認」の固定checkpointを厳密parseする。
+通常/意図的失敗を指定modeと照合し、生reportをconsoleへ転送せずownerが固定文言を再構成する。
+Session / CSRF / hash / HMAC / PII / raw PID,path,env,argv,InvocationID,error / D1 payloadはreport・journal・consoleに入れない。
+通常childはreport＋exit0。positive 3 GET直後の指定意図的失敗も、期待位置/種類と停止/検査完了が確認された場合だけreport＋exit0とし、outer CLIは期待exit1を返す。
+未確認・予期しない失敗やcancel/deadlineは正常完了reportにせず、expected failureより優先する。
+
+ownerはstop前に同一InvocationIDのactive/exited / Result=success / ExecMainCode=CLD_EXITED / ExecMainStatus=0 / NRestarts=0と有効設定を二度照合する。
+reportだけ、main exit0、Result=success単独、cgroupファイル消失、強制stop後の空状態は成功根拠にしない。
+timeout/cancel/stop/unknown・設定/identity不一致・不正/欠落reportは最初の失敗を不可逆保持する。
+ownerも8788閉鎖と生成profile/artifacts不在を最終確認し、残存はglob削除で隠さず保全する。
+受理後に空unitを解放し、作成時の実path / owner / device,inode identityを全rootで再確認してからrun-owned HOME/NSS/cert/key/temporary/persistだけ削除する。
+解放・削除不明は失敗とし、異常時のunit停止とファイル保全を分け、自動retry/resetしない。最終cleanup完了はouterだけが出力する。
+
+browser child120秒とowner180秒を維持する。ownerの開始時から能力確認・migration・開始/照合/待機/終端/解放に共通残予算を使う。
+unit RuntimeMaxSecは120秒とowner残予算（停止margin10秒控除）の小さい方、各manager操作は最大5秒、TimeoutStopSec=2秒。
+通常CLI準備commandはowner残予算から30秒を予約し、既存process-group停止最大15秒＋ss最大5秒とmargin10秒を確保する。
+Browser.close10秒 / proof server close5秒 / Worker stop最大15秒等は既存API上限を維持し、child期限後のmanager停止を成功にしない。
+GET / navigationは5秒、response body4096文字上限を維持する。累積時間超過・残予算不足はtimeout保全であり、成功待機を延長しない。
+
+標準Product CIの既存Unit stepで#915 fixtureと直接関連#914 fixtureを実行する。追加workflowは作らない。
+合成fixtureはroot本人・strict report・正常/意図的失敗の削除順、parent exit0 / setsid子残存の非終端、
+同一InvocationID/設定不一致、unknown/timeout/cancel/stopの失敗固定、不正/欠落report、close不明、port/生成物残存、非所有物非削除を検査する。
+今回の限定scopeはsystemd責任置換の静的実装・合成fixture・文書同期だけで、実Chrome / Worker / D1やowned cleanup成功の証明ではない。
 正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
 HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
 一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。

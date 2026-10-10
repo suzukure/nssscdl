@@ -1,15 +1,16 @@
 // Finite #914 fixtures, not real browser/Worker/D1 evidence.
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { browserDiagnostic, checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, observeTlsDiagnostic, origin, ownershipReason, parseBrowserDiagnostic, recordBrowserFailure, workerBrowserProcesses } from "./browser-tls-trust.mjs";
+import { browserDiagnostic, checkGeneratedBrowserCleanup, checkOwnedDirectory, checkWorkerBrowserOwnership, cleanupOwned, generatedBrowserFiles, handoffListener, launchTlsBrowser, observeTlsDiagnostic, origin, ownershipReason, parseBrowserDiagnostic, recordBrowserFailure, } from "./browser-tls-trust.mjs";
 import { browserCookie, browserEvidence, browserFailureCheckpoint, browserGet, browserProofCheckpoint, checkCertificate, checkNonExposure, injectCookie, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 import { expectedHistory, expectedSchedule } from "./trusted-https-assertions.mjs";
+import { BrowserUnit, finishBrowserUnit, ownedIdentity, readBrowserReport, verifyOwned, writeBrowserReport } from "./trusted-browser-unit.mjs";
 import { createCertificate } from "./local-https-smoke.mjs";
 
 const cookie = (value = "A".repeat(43)) => ({ name: "__Host-student_session", value,
@@ -50,44 +51,39 @@ test("#914 cleanup-only and unconfirmed primary are distinct; unknown values nev
   assert.equal(browserDiagnostic(unobserved), "TRUSTED_BROWSER_STAGE=unknown; CLEANUP=browser-process");
 });
 
-test("#914 actual child final reporting keeps normal/intentional failure diagnostics until final stop", async () => {
-  // Execute the unchanged reporting block with isolated fake lifecycle objects;
-  // no browser, Worker, seed or runtime proof is launched by this fixture.
+test("#914 actual child final report separates expected failure and cancellation; no stdout", async () => {
   const source = readFileSync("tests/evaluation/trusted-https-process.mjs", "utf8");
-  const tail = source.slice(source.indexOf("} catch {\n  process.exitCode = 1; // No raw cause"));
-  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-  const run = new AsyncFunction("fixture", `
-    const { process, console, stop, diagnostic, intentionalObserved, browserCleanupConfirmed,
-      browserCertificate, browserFailureCheckpoint, browserProofCheckpoint, browserDiagnostic,
-      recordBrowserFailure } = fixture;
-    const browserMode = true, browserStage = "browser-read", deadline = undefined, interrupt = () => {};
-    try { if (fixture.failed) throw new Error("private-canary");
+  const tail = source.slice(source.indexOf("// Fixed report is atomic"));
+  const run = new Function("fixture", `
+    const { process, writeBrowserReport, diagnostic, cancelled, intentionalObserved,
+      browserCleanupConfirmed, browserCertificate, browserFailureCheckpoint, browserProofCheckpoint,
+      browserDiagnostic, recordBrowserFailure, controller } = fixture;
+    const browserMode = true, browserStage = 'browser-read';
     ${tail}
   `);
-  for (const intentional of [false, true]) {
-    for (const cleanup of ["none", "browser-close"]) {
-      const output = [], errors = [], fakeProcess = { removeListener() {} };
-      await run({ process: fakeProcess, console: { log: (value) => output.push(value), error: (value) => errors.push(value) },
-        stop: async () => {}, diagnostic: { primary: "browser-read", cleanup }, failed: true,
-        intentionalObserved: intentional, browserCleanupConfirmed: cleanup === "none",
-        browserCertificate: "certificate-fixture", browserFailureCheckpoint, browserProofCheckpoint,
-        browserDiagnostic, recordBrowserFailure });
-      assert.equal(fakeProcess.exitCode, 1);
-      assert.deepEqual(output, intentional && cleanup === "none" ? ["certificate-fixture", browserFailureCheckpoint] : []);
-      assert.deepEqual(errors, intentional && cleanup === "none" ? [] : [`TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=${cleanup}`]);
-    }
+  for (const intentional of [false, true]) for (const cancelled of [false, true]) for (const cleanup of ["none", "browser-close"]) {
+    const reports = [], fakeProcess = { env: { TMPDIR: 'fixture' }, exitCode: intentional ? 1 : undefined };
+    run({ process: fakeProcess, writeBrowserReport: (_path, value) => reports.push(value),
+      diagnostic: { primary: intentional ? "browser-read" : "none", cleanup }, cancelled,
+      controller: { signal: { aborted: cancelled } }, intentionalObserved: intentional,
+      browserCleanupConfirmed: cleanup === "none", browserCertificate: "certificate-fixture",
+      browserFailureCheckpoint, browserProofCheckpoint, browserDiagnostic, recordBrowserFailure });
+    const complete = !cancelled && cleanup === "none";
+    assert.equal(fakeProcess.exitCode, complete ? 0 : 1);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0], complete ? `certificate-fixture\n${intentional ? browserFailureCheckpoint : browserProofCheckpoint}\n` :
+      `TRUSTED_BROWSER_STAGE=${intentional ? "browser-read" : cancelled ? "unknown" : "browser-read"}; CLEANUP=${cleanup}\n`);
   }
-  const output = [], errors = [];
-  await run({ process: { removeListener() {} }, console: { log: (value) => output.push(value), error: (value) => errors.push(value) },
-    stop: async () => { throw new Error("private-canary"); }, diagnostic: { primary: "none", cleanup: "none" }, failed: false,
-    intentionalObserved: false, browserCleanupConfirmed: true, browserCertificate: "certificate-fixture",
-    browserFailureCheckpoint, browserProofCheckpoint, browserDiagnostic, recordBrowserFailure });
-  assert.deepEqual(output, []);
-  assert.deepEqual(errors, ["TRUSTED_BROWSER_STAGE=none; CLEANUP=worker-stop"]);
+  const reports = [], process = { env: { TMPDIR: 'fixture' }, exitCode: 1 };
+  run({ process, writeBrowserReport: (_path, value) => reports.push(value), diagnostic: { primary: "tls-positive", cleanup: "none" },
+    cancelled: false, controller: { signal: { aborted: false } }, intentionalObserved: false,
+    browserCleanupConfirmed: true, browserCertificate: 'fixture', browserFailureCheckpoint, browserProofCheckpoint,
+    browserDiagnostic, recordBrowserFailure });
+  assert.equal(process.exitCode, 1); assert.deepEqual(reports, ["TRUSTED_BROWSER_STAGE=tls-positive; CLEANUP=none\n"]);
 });
 
-test("#914 cleanup operation diagnosis preserves existing fail-closed order and call counts", async () => {
-  const stages = ["browser-close", "browser-process", "proof-listener", "port-close", "owned-remove"];
+test("#914 managed cleanup diagnosis preserves API stop order and call counts without child terminal claims", async () => {
+  const stages = ["browser-close", "proof-listener", "port-close", "owned-remove"];
   for (const failed of stages) {
     const events = [], diagnostic = { primary: "worker-start", cleanup: "none" };
     let stage = "unknown", removed = 0;
@@ -100,8 +96,8 @@ test("#914 cleanup operation diagnosis preserves existing fail-closed order and 
       return true;
     };
     try {
-      await cleanupOwned({ onStage: (value) => { stage = value; },
-        closeBrowser: () => operation("browser-close"), browserStopped: () => operation("browser-process", true),
+      await cleanupOwned({ managed: true, onStage: (value) => { stage = value; },
+        closeBrowser: () => operation("browser-close"), browserStopped: () => assert.fail("unit terminal belongs to outer"),
         closeServer: () => operation("proof-listener"), portClosed: () => operation("port-close", true),
         remove: async () => { await operation("owned-remove"); removed++; } });
       assert.fail("cleanup uncertainty must reject");
@@ -280,15 +276,15 @@ test("#914 four ephemeral contexts: browser 3 GET per owner, no Worker/proxy ove
     "stop", "inspect", "revoke", "inspect", "start", ...Array(3).fill("get:self"), ...Array(3).fill("get:other")]);
 });
 
-test("#914 intentional failure after positives still closes browser, then Worker, then inspects before removing files", async () => {
+test("#914 intentional failure closes browser, then Worker and inspects; deletion belongs to outer", async () => {
   const { input, events } = readFixture();
   await assert.rejects((async () => {
     try { await proveBrowserReads({ ...input, failAfterPositive: true }); }
-    finally { await cleanupOwned({ closeBrowser: async () => { events.push("browser-close"); }, browserStopped: async () => true,
+    finally { await cleanupOwned({ managed: true, closeBrowser: async () => { events.push("browser-close"); }, browserStopped: async () => assert.fail("managed no-live is outer"),
       closeServer: input.stop, portClosed: async () => true,
-      remove: async () => { await input.inspect(); events.push("remove"); } }); }
+      remove: async () => { await input.inspect(); events.push("report-ready"); } }); }
   })(), /TRUSTED_BROWSER_INTENTIONAL_FAILURE/);
-  assert.deepEqual(events.slice(-4), ["browser-close", "stop", "inspect", "remove"]);
+  assert.deepEqual(events.slice(-4), ["browser-close", "stop", "inspect", "report-ready"]);
   assert.ok(!events.includes("revoke"));
 });
 
@@ -374,41 +370,6 @@ test("#914 generated directories: actual private direct-child paths only; symlin
   } finally { rmSync(temporary, { recursive: true }); rmSync(other, { recursive: true }); }
 });
 
-test("#914 actual /proc profile and HOME, unique main, related process shutdown; unknown state preserves files", async () => {
-  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-owned-process-fixture-"));
-  const home = mkdtempSync(join(temporary, "tls-home-"));
-  const profile = mkdtempSync(join(temporary, "playwright_chromiumdev_profile-"));
-  const children = [];
-  const launch = async (actualHome, args = []) => {
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`, ...args], {
-      env: { PATH: process.env.PATH, HOME: actualHome }, stdio: "ignore", detached: true,
-    });
-    const closed = new Promise((done) => child.once("close", done));
-    children.push({ child, closed });
-    await new Promise((done, reject) => { child.once("spawn", done); child.once("error", reject); });
-    return child;
-  };
-  const stopAll = async () => { for (const { child } of children) child.kill("SIGTERM"); await Promise.all(children.map(({ closed }) => closed)); };
-  try {
-    const main = await launch(home);
-    const tracked = new Map();
-    assert.equal(checkWorkerBrowserOwnership(home, temporary, tracked).profile, profile);
-    assert.ok(tracked.has(main.pid));
-    let removed = 0;
-    await assert.rejects(cleanupOwned({ closeBrowser: async () => {},
-      browserStopped: async () => workerBrowserProcesses(home, temporary, tracked).length === 0,
-      closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }));
-    assert.equal(removed, 0); assert.ok(existsSync(home) && existsSync(profile));
-    await launch(home);
-    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, tracked), (error) => ownershipReason(error) === "main-count");
-    await stopAll();
-    assert.deepEqual(workerBrowserProcesses(home, temporary, tracked), []);
-    await assert.rejects(cleanupOwned({ closeBrowser: async () => {}, browserStopped: async () => true,
-      closeServer: async () => {}, portClosed: async () => true,
-      remove: async () => { checkGeneratedBrowserCleanup(temporary, [profile]); removed++; } }), /remain/);
-    assert.equal(removed, 0); assert.ok(existsSync(home));
-  } finally { await stopAll(); rmSync(temporary, { recursive: true }); }
-});
 
 
 test("#914 ownership reasons survive independent primary/cleanup and strict owner parsing", () => {
@@ -468,29 +429,7 @@ test("#914 actual post-launch block diagnoses ownership, Context and NSS indepen
   }
 });
 
-test("#914 profile missing/count and directory read failure remain fail-closed fixed reasons", async () => {
-  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-profile-reason-"));
-  const home = mkdtempSync(join(temporary, "tls-home-"));
-  const profile = join(temporary, "playwright_chromiumdev_profile-missing");
-  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--user-data-dir=${profile}`], {
-    env: { PATH: process.env.PATH, HOME: home }, stdio: "ignore", detached: true,
-  });
-  const closed = new Promise((done) => child.once("close", done));
-  try {
-    await new Promise((done, reject) => { child.once("spawn", done); child.once("error", reject); });
-    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, new Map()), (error) => ownershipReason(error) === "profile-missing");
-    // Existing contract requires exactly one private profile, even if no process uses the extra one.
-    const { mkdirSync } = await import("node:fs");
-    mkdirSync(profile, { mode: 0o700 });
-    mkdtempSync(join(temporary, "playwright_chromiumdev_profile-extra-"));
-    assert.throws(() => checkWorkerBrowserOwnership(home, temporary, new Map()), (error) => ownershipReason(error) === "profile-count");
-    assert.throws(() => generatedBrowserFiles(join(temporary, "private-canary-missing")), (error) => {
-      assert.equal(ownershipReason(error), "directory-read");
-      assert.doesNotMatch(error.message, /private-canary/);
-      assert.ok(!("cause" in error) && !("actual" in error)); return true;
-    });
-  } finally { child.kill("SIGTERM"); await closed; rmSync(temporary, { recursive: true }); }
-});
+
 
 test("#914 actual pre-close recheck still closes once, reports ownership only after resolve, never removes", async () => {
   const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
@@ -513,7 +452,7 @@ test("#914 actual pre-close recheck still closes once, reports ownership only af
       const operation = create({ OwnershipFailure, ownershipReason, requireOwnership() {}, bounded: (pending) => pending,
         checkWorkerBrowserOwnership: () => { throw new OwnershipFailure(reason, "descendant,zombie,missing,unknown,stable"); },
         browser: { close: async () => { closes++; if (closeFails) throw new Error("private-canary"); } } });
-      await assert.rejects(cleanupOwned({ closeBrowser: operation.close, browserStopped: async () => { postChecks++; return true; },
+      await assert.rejects(cleanupOwned({ managed: true, closeBrowser: operation.close, browserStopped: async () => { postChecks++; return true; },
         closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }),
         (error) => ownershipReason(error) === (closeFails ? "unknown" : reason) &&
           (closeFails || error.observation === "descendant,zombie,missing,unknown,stable"));
@@ -533,47 +472,7 @@ test("#914 actual pre-close recheck still closes once, reports ownership only af
   assert.deepEqual(pending.closeObservation, { preClose: "pass", close: "not-done", postClose: "not-run" });
 });
 
-test("#914 actual post-close process check reports tracked residue without cleanup or retry", async () => {
-  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
-  const block = source.slice(source.indexOf("        browserStopped: async () => {"), source.indexOf("        closeServer: async () => {"));
-  const create = new Function("fixture", `
-    const { workerBrowserProcesses, requireOwnership, Date } = fixture;
-    const workerHandoff = true, launchAttempted = true, browser = fixture.browser === null ? undefined : {}, home = "fixture", temporary = "fixture", tracked = new Map();
-    const closeObservation = fixture.closeObservation ?? { preClose: "pass", close: "resolve", postClose: "not-run" };
-    tracked.root = { pid: 42, group: 42, session: 42 };
-    const operation = { ${block} };
-    return operation.browserStopped;
-  `);
-  let OwnershipFailure;
-  try { checkOwnedDirectory("/fixture-private-canary-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  let time = 0, reads = 0;
-  const residueObservation = { preClose: "pass", close: "resolve", postClose: "not-run" };
-  const stopped = create({ workerBrowserProcesses: () => { reads++; return [{ pid: 42 }]; },
-    Date: { now: () => { time += 6000; return time; } },
-    closeObservation: residueObservation,
-    requireOwnership: (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); } });
-  await assert.rejects(stopped(), (error) => ownershipReason(error) === "related-process-remains");
-  assert.equal(reads, 2); // One loop condition and one final confirmation; no new launch/close.
-  assert.equal(residueObservation.postClose, "fail");
-  for (const reason of ["proc-environ", "unknown"]) {
-    let reads = 0, removed = 0, closed = 0;
-    const unknown = create({ workerBrowserProcesses: () => {
-      reads++; throw reason === "unknown" ? new Error("private-canary") : new OwnershipFailure(reason);
-    }, Date, requireOwnership: (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); } });
-    await assert.rejects(cleanupOwned({ closeBrowser: async () => { closed++; }, browserStopped: unknown,
-      closeServer: async () => {}, portClosed: async () => true, remove: async () => { removed++; } }));
-    assert.equal(reads, 1); assert.equal(closed, 1); assert.equal(removed, 0);
-  }
-  const closeObservation = { preClose: "pass", close: "resolve", postClose: "not-run" };
-  const gone = create({ workerBrowserProcesses: () => [], Date, requireOwnership: assert.ok, closeObservation });
-  assert.equal(await gone(), true); // Absence after confirmed API close remains the existing proof.
-  assert.equal(closeObservation.postClose, "pass");
-  const unlaunched = { preClose: "not-done", close: "not-done", postClose: "not-run" };
-  const noHandle = create({ browser: null, workerBrowserProcesses: () => assert.fail("no new post-close check"),
-    Date, requireOwnership: assert.ok, closeObservation: unlaunched });
-  assert.equal(await noHandle(), false);
-  assert.equal(unlaunched.postClose, "not-run");
-});
+
 
 test("#914 observation transport keeps primary/cleanup independent and rejects unknown axes or extra output", () => {
   const diagnostic = { primary: "none", cleanup: "none" };
@@ -627,191 +526,203 @@ test("#914 actual helper report templates preserve fixed observations through th
   }
 });
 
-// Issue #914's adopted process-group contract is the oracle, not browser runtime output.
-function ownershipFixture() {
-  const source = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
-  const block = source.slice(source.indexOf("export function workerBrowserProcesses"), source.indexOf("export function checkGeneratedBrowserCleanup"));
-  let OwnershipFailure;
-  try { checkOwnedDirectory("/fixture-absent"); } catch (error) { OwnershipFailure = error.constructor; }
-  const requireOwnership = (condition, reason) => { if (!condition) throw new OwnershipFailure(reason); };
-  const ownershipRead = (reason, operation) => { try { return operation(); } catch (error) {
-    if (error instanceof OwnershipFailure) throw error; throw new OwnershipFailure(reason);
-  } };
-  const factory = new Function("readdirSync", "lstatSync", "readFileSync", "process", "OwnershipFailure", "ownershipReason",
-    "requireOwnership", "ownershipRead", "dirname", "generatedBrowserFiles", block.replaceAll("export function", "function") +
-    "\nreturn { processes: workerBrowserProcesses, check: checkWorkerBrowserOwnership };");
+// Oracle: Issue #914's current systemd contract and supplied formal probe results.
+function rootFixture() {
   const profile = "/fixture-run/playwright_chromiumdev_profile-fixture";
-  const main = { pid: 42, parent: 1, group: 42, session: 42, identity: "420", uid: 7,
-    argv: [`--user-data-dir=${profile}`], env: "HOME=/fixture-home\0", state: "S" };
-  // setproctitle-style single mutable title: type is absent, HOME is missing.
-  const child = { pid: 43, parent: 42, group: 42, session: 42, identity: "430", uid: 7,
-    argv: ["mutable private-canary --type=renderer"], env: "\0\0", state: "R" };
+  const unit = "0::/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service\n";
+  const main = { pid: 42, uid: 7, identity: "420", argv: [`--user-data-dir=${profile}`], home: "HOME=/fixture-home\0",
+    unit, status: "NoNewPrivs:\t1\n", state: "S", terminated: true };
+  // An ordinary setsid child has mutable title/environment and another group;
+  // no per-child HOME/PGRP/SID reads are required by the adopted unit contract.
+  const child = { ...main, pid: 43, argv: ["mutable title"], home: "", identity: "430" };
   let rows = [main, child], files = [profile], mutate = () => {};
-  const tracked = new Map(), reads = new Map();
-  const gone = () => { const error = new Error("private-canary"); error.code = "ENOENT"; throw error; };
-  const api = factory(() => rows.map((row) => String(row.pid)), (path) => {
-    const row = rows.find((row) => row.pid === Number(path.split("/")[2]));
-    if (!row) gone(); return { uid: row.uid };
-  }, (path) => {
-    const pid = Number(path.split("/")[2]), kind = path.split("/").at(-1);
-    const row = rows.find((row) => row.pid === pid); if (!row) gone();
-    const key = `${pid}/${kind}`, count = (reads.get(key) ?? 0) + 1; reads.set(key, count);
-    const sample = { ...row, kind }; mutate(sample, count);
-    if (kind === "cmdline") return sample.argv.join("\0") + (sample.terminated === false ? "" : "\0");
-    if (kind === "environ") return sample.env;
-    const fields = Array(20).fill("0");
-    fields[0] = sample.state; fields[1] = String(sample.parent); fields[2] = String(sample.group);
-    fields[3] = String(sample.session); fields[19] = sample.identity;
-    return `${pid} (mutable ) private-canary) ${fields.join(" ")}`;
-  }, { pid: 1, getuid: () => 7 }, OwnershipFailure, ownershipReason, requireOwnership, ownershipRead,
-  (path) => path.slice(0, path.lastIndexOf("/")), () => files);
-  return { main, child, tracked, profile, setRows: (value) => { rows = value; }, setFiles: (value) => { files = value; },
-    mutate: (value) => { mutate = value; }, run: (check = false) => {
-      reads.clear(); return api[check ? "check" : "processes"]("/fixture-home", "/fixture-run", tracked);
+  const tracked = new Map(); let reads = 0;
+  const io = { uid: 7, pid: 1, files: () => files, list: () => rows.map((row) => String(row.pid)),
+    stat: (path) => ({ uid: rows.find((row) => row.pid === Number(path.split('/')[2])).uid }),
+    read: (path) => {
+      if (path === "/proc/self/cgroup") return unit;
+      const row = rows.find((row) => row.pid === Number(path.split('/')[2]));
+      const kind = path.split('/').at(-1);
+      if (kind === 'cmdline') return row.argv.join('\0') + (row.terminated ? '\0' : '');
+      assert.equal(row.pid, main.pid); // Never read the child's mutable environ/stat.
+      if (kind === 'environ') return row.home;
+      if (kind === 'cgroup') return row.unit;
+      if (kind === 'status') return row.status;
+      const sample = { ...row }; mutate(sample, ++reads);
+      const fields = Array(20).fill('0'); fields[0] = sample.state; fields[19] = sample.identity;
+      return `${row.pid} (mutable title) ${fields.join(' ')}`;
     } };
-}
-function failsOwnership(fixture, expected, check = false) {
-  assert.throws(() => fixture.run(check), (error) => {
-    assert.equal(ownershipReason(error), expected);
-    assert.doesNotMatch(error.message + (error.observation ?? ""), /private-canary|fixture-home|fixture-run|420|430/);
-    assert.ok(!("cause" in error) && !("actual" in error)); return true;
-  });
+  return { main, child, profile, tracked, io, setRows: (value) => { rows = value; }, setFiles: (value) => { files = value; },
+    mutate: (value) => { mutate = value; }, run: () => { reads = 0; return checkWorkerBrowserOwnership('/fixture-home', '/fixture-run', tracked, io); } };
 }
 
-test("#914 exact root: unique private generated profile, NUL argv, HOME and PID=PGRP=SID; no fallback", () => {
-  const good = ownershipFixture(); assert.equal(good.run(true).profile, good.profile);
-  assert.deepEqual([...good.tracked], [[42, "420"], [43, "430"]]);
+test("#914 exact root HOME/profile/UID/starttime/NoNewPrivs/unit; whole-child tracking removed", () => {
+  const good = rootFixture(); assert.equal(good.run().profile, good.profile);
+  good.mutate((row) => { row.state = 'R'; }); good.run(); // live scheduler change.
   for (const [change, reason] of [
-    [(f) => { f.setRows([f.child]); }, "main-count"],
-    [(f) => { f.setRows([f.main, { ...f.main, pid: 44, identity: "440" }]); }, "main-count"],
-    [(f) => { f.main.argv.push(f.main.argv[0]); }, "profile-argv"],
-    [(f) => { f.main.terminated = false; }, "profile-argv"],
-    [(f) => { f.main.argv = [`title ${f.main.argv[0]}`]; }, "main-count"],
-    [(f) => { f.main.argv = ["--user-data-dir=/fixture-run/fake-profile"]; }, "profile-location"],
-    [(f) => { f.setFiles([]); }, "profile-missing"],
-    [(f) => { f.setFiles([f.profile, "/fixture-run/playwright_chromiumdev_profile-extra"]); }, "profile-count"],
-    [(f) => { f.main.group = 99; }, "root-unverified"],
-    [(f) => { f.main.session = 99; }, "root-unverified"],
-    ...["", "HOME=/private-canary\0", "HOME=/fixture-home\0HOME=/private-canary\0", "HOME\0"].map((env) =>
-      [(f) => { f.main.env = env; }, "home-profile-main"]),
-    [(f) => { f.mutate((row, count) => { if (row.pid === 42 && row.kind === "stat" && count === 2) row.identity = "999"; }); }, "root-unverified"],
+    [(f) => f.setRows([f.child]), 'main-count'],
+    [(f) => f.setRows([f.main, { ...f.main, pid: 44 }]), 'main-count'],
+    [(f) => { f.main.argv.push(f.main.argv[0]); }, 'profile-argv'],
+    [(f) => { f.main.terminated = false; }, 'profile-argv'],
+    [(f) => { f.main.argv = [`title ${f.main.argv[0]}`]; }, 'main-count'],
+    [(f) => { f.main.uid = 8; }, 'main-count'],
+    [(f) => f.setFiles([]), 'profile-missing'],
+    [(f) => f.setFiles([f.profile, '/fixture-run/playwright_chromiumdev_profile-extra']), 'profile-count'],
+    ...['', 'HOME=/other\0', 'HOME=/fixture-home\0HOME=/fixture-home\0'].map((home) =>
+      [(f) => { f.main.home = home; }, 'home-profile-main']),
+    [(f) => { f.main.unit = '0::/other-unit\n'; }, 'root-unverified'],
+    [(f) => { f.main.status = 'NoNewPrivs:\t0\n'; }, 'root-unverified'],
+    [(f) => { f.main.status += 'NoNewPrivs:\t1\n'; }, 'root-unverified'],
+    [(f) => { f.main.argv.push('--no-sandbox'); }, 'root-unverified'],
+    [(f) => f.mutate((row, n) => { if (n === 2) row.identity = '999'; }), 'root-unverified'],
+    [(f) => f.mutate((row, n) => { if (n === 2) row.state = 'Z'; }), 'root-unverified'],
+    [(f) => { f.io.read = () => { throw new Error('private-canary'); }; }, 'proc-read'],
   ]) {
-    const fixture = ownershipFixture(); change(fixture); failsOwnership(fixture, reason, true);
-    assert.equal(fixture.tracked.root, undefined); // Never connect to a guessed same-UID group.
+    const f = rootFixture(); change(f);
+    assert.throws(f.run, (e) => ownershipReason(e) === reason && !e.message.includes('private-canary'));
+    assert.equal(f.tracked.root, undefined);
+  }
+  const reused = rootFixture(); reused.run(); reused.main.identity = '999';
+  assert.throws(reused.run, (e) => ownershipReason(e) === 'tracked-drift');
+});
+
+const certificateLine = `certificate: SHA256=${Array(32).fill('AB').join(':')}; SAN=127.0.0.1; same Node/Worker cert`;
+const reportText = (intentional = false) => certificateLine + '\n' + (intentional ? browserFailureCheckpoint : browserProofCheckpoint) + '\n';
+
+test("#914 private atomic report refuses stale/malformed/oversized/symlink/wrong-mode and cross-mode results", () => {
+  for (const intentional of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), 'nssscdl-report-fixture-'));
+    try {
+      writeBrowserReport(dir, reportText(intentional));
+      assert.deepEqual(readBrowserReport(dir, intentional), { certificate: certificateLine });
+      assert.throws(() => readBrowserReport(dir, !intentional));
+      assert.throws(() => writeBrowserReport(dir, reportText(intentional))); // one-shot path.
+      const path = join(dir, 'browser-report');
+      chmodSync(path, 0o644); assert.throws(() => readBrowserReport(dir, intentional)); chmodSync(path, 0o600);
+      for (const value of [reportText(intentional) + 'private-canary\n', 'x'.repeat(8193), '',
+        '#914: owned HOME removed\n', 'TRUSTED_BROWSER_STAGE=none; CLEANUP=none\n']) {
+        writeFileSync(path, value); assert.throws(() => readBrowserReport(dir, intentional));
+      }
+      writeFileSync(path, 'TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=browser-close\n');
+      assert.deepEqual(readBrowserReport(dir, intentional), { diagnostic: 'TRUSTED_BROWSER_STAGE=browser-read; CLEANUP=browser-close' });
+      rmSync(path); symlinkSync(join(dir, 'nonexistent'), path); assert.throws(() => readBrowserReport(dir, intentional));
+      rmSync(path); assert.throws(() => readBrowserReport(dir, intentional));
+    } finally { rmSync(dir, { recursive: true }); }
   }
 });
 
-test("#914 related group/session children allow only missing HOME; explicit different/ambiguous/unreadable remains closed", () => {
-  for (const env of ["", "\0\0", "HOME=/fixture-home\0"]) {
-    const fixture = ownershipFixture(); fixture.child.env = env;
-    assert.deepEqual(fixture.run().map((row) => row.pid), [42, 43]);
+function unitFixture() {
+  let time = 0, observations = 0, stopped = false, mutate = () => {};
+  const controller = new AbortController(), events = [], options = [];
+  const unit = new BrowserUnit({ env: { PATH: '/usr/bin', HOME: '/fixture', TMPDIR: '/fixture' }, cwd: '/fixture',
+    uid: 7, gid: 7, signal: controller.signal, deadline: 180000, now: () => time,
+    sleep: async (ms) => { time += ms; }, command: async (file, args, config) => {
+      assert.equal(file, 'sudo'); assert.equal(args[0], '-n');
+      assert.ok(config.timeout > 0 && config.timeout <= 5000); options.push(config);
+      if (args[1] === 'systemd-run') { events.push('start'); assert.ok(args.includes('/usr/bin/env') && args.includes('-i')); return ''; }
+      if (args[2] === 'stop') { events.push('stop'); stopped = true; return ''; }
+      events.push('show');
+      const state = stopped ? { LoadState: 'not-found', ActiveState: 'inactive', SubState: 'dead', InvocationID: '' } : {
+        Type: 'exec', ExitType: 'cgroup', RemainAfterExit: 'yes', Restart: 'no', NRestarts: '0', OOMPolicy: 'stop',
+        Delegate: 'no', NoNewPrivileges: 'yes', ProtectControlGroups: 'yes', KillMode: 'control-group',
+        StandardOutput: 'null', StandardError: 'null', User: '7', Group: '7', RuntimeMaxUSec: '2min', TimeoutStopUSec: '2s',
+        LoadState: 'loaded', ActiveState: 'active', SubState: 'exited', Result: 'success', ExecMainCode: '1', ExecMainStatus: '0',
+        InvocationID: 'b'.repeat(32), ControlGroup: '/system.slice/' + unit.name };
+      mutate(state, ++observations, args);
+      return Object.entries(state).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+    } });
+  return { unit, controller, events, options, mutate: (fn) => { mutate = fn; }, time: (n) => { time = n; } };
+}
+
+async function finishFixture(f, overrides = {}) {
+  await f.unit.start('/fixture-node', ['--browser']);
+  return finishBrowserUnit(f.unit, { intentional: false, report: async () => { f.events.push('report'); return { certificate: certificateLine }; },
+    finalCheck: async () => { f.events.push('port/generated'); }, remove: async () => { f.events.push('delete'); }, ...overrides });
+}
+
+test("#914 report + two same-invocation terminal reads + port/generated check precede empty release and owned delete", async () => {
+  for (const intentional of [false, true]) {
+    const f = unitFixture();
+    await finishFixture(f, { intentional, report: async (mode) => { assert.equal(mode, intentional); f.events.push('report'); return { certificate: browserEvidence(reportText(mode), mode) }; } });
+    assert.deepEqual(f.events, ['start', 'show', 'show', 'show', 'report', 'port/generated', 'stop', 'show', 'delete']);
+    assert.equal(f.unit.failure, undefined);
   }
-  for (const [change, reason] of [
-    [(f) => { f.child.group = 99; }, "group-mismatch"],
-    [(f) => { f.child.session = 99; }, "session-mismatch"],
-    [(f) => { f.child.uid = 8; }, "tracked-owner"],
-    [(f) => { f.child.parent = 1; }, "unknown"],
-    [(f) => { f.child.identity = "410"; }, "tracked-drift"],
-    ...["HOME=/private-canary\0", "HOME=\0"].map((env) => [(f) => { f.child.env = env; }, "home-descendant-different-type-absent"]),
-    ...["HOME\0", "HOME=/fixture-home\0HOME=/private-canary\0"].map((env) =>
-      [(f) => { f.child.env = env; }, "home-descendant-ambiguous-type-absent"]),
-    [(f) => { f.mutate((row) => { if (row.pid === 43 && row.kind === "environ") throw new Error("private-canary"); }); }, "proc-environ"],
-  ]) { const fixture = ownershipFixture(); change(fixture); failsOwnership(fixture, reason); }
-  const foreign = ownershipFixture(); foreign.setRows([foreign.main, foreign.child,
-    { ...foreign.child, pid: 44, parent: 1, group: 99, session: 99, uid: 8 }]);
-  assert.equal(foreign.run().length, 2); // Different UID/group/session is unrelated.
-  // A valid Linux stat can report PGRP or SID 0 for unrelated processes.
-  // Parsing them must not weaken the attested root or related-child checks.
-  for (const [group, session] of [[0, 0], [0, 99], [99, 0]]) {
-    const unrelated = ownershipFixture();
-    unrelated.setRows([unrelated.main, unrelated.child,
-      { ...unrelated.child, pid: 44, parent: 1, group, session, uid: 7, argv: [], env: "" }]);
-    assert.deepEqual(unrelated.run().map((entry) => entry.pid), [42, 43]);
-  }
-  const badRootZero = ownershipFixture(); badRootZero.main.group = 0;
-  failsOwnership(badRootZero, "root-unverified", true);
-  const badChildZero = ownershipFixture(); badChildZero.child.group = 0;
-  failsOwnership(badChildZero, "group-mismatch");
+  const retained = unitFixture(); let running = true;
+  retained.mutate((s, n) => { if (n <= 3 && running) { s.SubState = 'running'; s.ExecMainCode = '1'; s.ExecMainStatus = '0'; }
+    if (n === 3) { assert.ok(!retained.events.includes('delete')); running = false; } });
+  await finishFixture(retained); // Parent exit0 cannot end the unit while a setsid child lives.
+  assert.equal(retained.events.filter((x) => x === 'show').length, 6);
 });
 
-test("#914 live R/S transitions preserve identity; zombie/dead transitions remain fail-closed", () => {
-  for (const pid of [42, 43]) for (const [initial, next] of [["R", "S"], ["S", "R"]]) {
-    const fixture = ownershipFixture();
-    (pid === 42 ? fixture.main : fixture.child).state = initial;
-    fixture.mutate((row, count) => { if (row.kind === "stat" && row.pid === pid && count >= 2) row.state = next; });
-    assert.deepEqual(fixture.run().map((row) => row.pid), [42, 43]);
+test("#914 mismatch/unknown/manager failure/timeout/cancel/stop are irreversible; no deletion or stop retry", async () => {
+  for (const [key, value] of [['InvocationID', 'c'.repeat(32)], ['ExitType', 'main'], ['NoNewPrivileges', 'no'],
+    ['User', '0'], ['Group', '0'], ['KillMode', 'process'], ['StandardOutput', 'journal'], ['RuntimeMaxUSec', '3min'],
+    ['ExecMainCode', '2'], ['ExecMainStatus', '1'], ['NRestarts', '1'], ['Result', 'timeout'],
+    ['Result', 'oom-kill'], ['LoadState', 'not-found'], ['ActiveState', 'failed'], ['SubState', 'dead']]) {
+    const f = unitFixture(); f.mutate((s, n) => { if (n === 3) s[key] = value; });
+    await assert.rejects(finishFixture(f)); assert.ok(!f.events.includes('delete'));
+    assert.ok(f.unit.failure); assert.equal(f.events.filter((v) => v === 'stop').length, 1);
   }
-  const diagnostic = ownershipFixture();
-  diagnostic.child.state = "R"; diagnostic.child.env = "HOME=/private-canary\\0"; diagnostic.child.argv = [];
-  diagnostic.mutate((row, count) => {
-    if (row.kind === "stat" && row.pid === 43 && count >= 2) row.state = "S";
-  });
-  assert.throws(() => diagnostic.run(), (error) =>
-    ownershipReason(error) === "home-descendant-different-type-absent" &&
-    error.observation === "descendant,live,different,absent,stable");
-  for (const pid of [42, 43]) for (const next of ["Z", "X"]) {
-    const fixture = ownershipFixture();
-    (pid === 42 ? fixture.main : fixture.child).state = "R";
-    fixture.mutate((row, count) => { if (row.kind === "stat" && row.pid === pid && count >= 2) row.state = next; });
-    failsOwnership(fixture, pid === 42 ? "root-unverified" : "tracked-drift", pid === 42);
+  for (const action of ['unknown', 'timeout', 'cancel', 'stop']) {
+    const f = unitFixture();
+    f.mutate((s, n) => {
+      if (n === 2) {
+        if (action === 'unknown') throw new Error('private-canary');
+        if (action === 'timeout') f.time(170000);
+        if (action === 'cancel') f.controller.abort();
+        if (action === 'stop') f.unit.latch('STOP');
+      }
+    });
+    await assert.rejects(finishFixture(f)); const original = f.unit.failure;
+    f.unit.latch('UNKNOWN'); assert.equal(f.unit.failure, original);
+    assert.ok(!f.events.includes('delete')); assert.equal(f.events.filter((v) => v === 'stop').length, 1);
+  }
+  for (const failAt of ['report', 'port', 'generated', 'release', 'delete-ownership']) {
+    const f = unitFixture();
+    if (failAt === 'release') f.mutate((s, _n, args) => { if (args.some((a) => a === '--property=InvocationID') && s.LoadState === 'not-found') s.ActiveState = 'active'; });
+    await assert.rejects(finishFixture(f, {
+      report: async () => { if (failAt === 'report') return { diagnostic: 'TRUSTED_BROWSER_STAGE=unknown; CLEANUP=unknown' }; return { certificate: certificateLine }; },
+      finalCheck: async () => { if (['port', 'generated'].includes(failAt)) throw new Error('residue'); },
+      remove: async () => { if (failAt === 'delete-ownership') throw new Error('non-owned'); f.events.push('delete'); },
+    }));
+    assert.ok(!f.events.includes('delete')); assert.equal(f.events.filter((v) => v === 'stop').length, 1);
   }
 });
 
-test("#914 identity rereads, parent contradictions and tracked drift never transfer ownership or discard unknown residue", () => {
-  for (const [target, field] of [[43, "identity"], [43, "parent"], [43, "group"], [43, "session"], [42, "identity"]]) {
-    const fixture = ownershipFixture(); fixture.run();
-    fixture.mutate((row, count) => { if (row.pid === target && row.kind === "stat" && count === 2) row[field] = field === "identity" ? "999" : 99; });
-    failsOwnership(fixture, "tracked-drift");
-    assert.equal(fixture.tracked.get(target), target === 42 ? "420" : "430");
+test("#914 malformed state, failed stop and late cancellation preserve files within the shared budget", async () => {
+  for (const kind of ['duplicate', 'missing', 'raw-error', 'stop-failed', 'cancel-after-report']) {
+    const f = unitFixture(), command = f.unit.command;
+    f.unit.command = async (file, args, options) => {
+      if (kind === 'stop-failed' && args[2] === 'stop') {
+        f.events.push('stop'); throw new Error('private-canary');
+      }
+      const output = await command(file, args, options);
+      if (f.events.filter((x) => x === 'show').length === 3) {
+        if (kind === 'duplicate') return output + 'Result=success\n';
+        if (kind === 'missing') return output.replace('InvocationID=' + 'b'.repeat(32) + '\n', '');
+        if (kind === 'raw-error') throw new Error('private-canary');
+      }
+      return output;
+    };
+    await assert.rejects(finishFixture(f, { finalCheck: async () => {
+      if (kind === 'cancel-after-report') f.controller.abort();
+    } }), (e) => /^TRUSTED_BROWSER_UNIT_[A-Z]+$/.test(e.message));
+    assert.ok(!f.events.includes('delete'));
+    assert.equal(f.events.filter((x) => x === 'stop').length, 1);
+    const calls = f.options.length; await f.unit.dispose(); assert.equal(f.options.length, calls);
   }
-  for (const code of ["ENOENT", "ESRCH", "EACCES"]) {
-    const fixture = ownershipFixture();
-    fixture.mutate((row, count) => { if (row.pid === 43 && row.kind === "stat" && count === 2) {
-      const error = new Error("private-canary"); error.code = code; throw error;
-    } }); failsOwnership(fixture, "tracked-drift");
-  }
-  for (const [change, reason] of [
-    [(f) => { f.child.identity = "999"; }, "tracked-drift"],
-    [(f) => { f.child.group = 99; }, "group-mismatch"],
-    [(f) => { f.child.session = 99; }, "session-mismatch"],
-    [(f) => { f.child.uid = 8; }, "tracked-owner"],
-    [(f) => { f.child.parent = 99; }, "tracked-drift"],
-    [(f) => { f.child.parent = f.child.pid; }, "tracked-drift"],
-    [(f) => { f.main.parent = f.child.pid; }, "tracked-drift"],
-    [(f) => { f.main.identity = "990"; }, "tracked-drift"],
-    [(f) => { f.main.env = ""; }, "home-profile-main"],
-    [(f) => { f.setRows([f.main, f.child, { ...f.child, pid: 44, parent: 1 }]); }, "unknown"],
-  ]) { const fixture = ownershipFixture(); fixture.run(); change(fixture); failsOwnership(fixture, reason); }
-  const reparented = ownershipFixture(); reparented.run(); reparented.child.parent = 1; reparented.setRows([reparented.child]);
-  assert.equal(reparented.run().length, 1); // Attested identity remains tracked after root exit.
-  reparented.setRows([]); assert.deepEqual(reparented.run(), []);
-  assert.equal(reparented.tracked.get(43), "430"); // Tombstone retained to detect PID reuse through shutdown.
-  reparented.child.identity = "999"; reparented.setRows([reparented.child]); failsOwnership(reparented, "tracked-drift");
+  const timeout = unitFixture(); timeout.time(170000);
+  await assert.rejects(timeout.unit.start('/fixture-node', []));
+  assert.deepEqual(timeout.events, []); assert.equal(timeout.unit.failure, 'TIMEOUT'); timeout.unit.close();
 });
 
-test("#914 stable fixed observations retain state/type axes while disappeared or malformed related reads preserve uncertainty", () => {
-  for (const [state, expected] of [["R", "live"], ["S", "live"], ["Z", "zombie"], ["X", "dead"], ["x", "dead"]]) {
-    const fixture = ownershipFixture(); fixture.child.state = state; fixture.child.argv = [];
-    fixture.child.env = "HOME=/private-canary\0";
-    assert.throws(() => fixture.run(), (error) => error.observation ===
-      `descendant,${expected},different,${["Z", "X", "x"].includes(state) ? "unknown" : "absent"},stable`);
-  }
-  for (const [argv, type] of [
-    ...["renderer", "zygote", "gpu-process", "utility"].map((value) => [[`--type=${value}`], value]),
-    [["--type=private-canary"], "other"], [["--type="], "unknown"], [["--type"], "unknown"],
-    [["--type=renderer", "--type=zygote"], "unknown"],
-  ]) {
-    const fixture = ownershipFixture(); fixture.child.argv = argv; fixture.child.env = "HOME=/private-canary\0";
-    assert.throws(() => fixture.run(), (error) => error.observation === `descendant,live,different,${type},stable`);
-  }
-  for (const [change, reason] of [
-    [(f) => { f.main.uid = 8; }, "main-count"],
-    [(f) => { f.main.identity = "malformed"; }, "proc-read"],
-    [(f) => { f.mutate((row) => { if (row.pid === 42 && row.kind === "environ") throw new Error("private-canary"); }); }, "proc-environ"],
-    [(f) => { f.mutate((row) => { if (row.pid === 43 && row.kind === "cmdline") {
-      const error = new Error("private-canary"); error.code = "ENOENT"; throw error;
-    } }); }, "proc-read"],
-  ]) { const fixture = ownershipFixture(); change(fixture); failsOwnership(fixture, reason); }
-  const altered = ownershipFixture(); altered.run(); altered.main.argv = ["mutable title"];
-  failsOwnership(altered, "root-unverified");
+test("#914 owner verifies creation identity and realpath before deleting; non-owned/symlink directories preserved", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nssscdl-identity-fixture-'));
+  const other = mkdtempSync(join(tmpdir(), 'nssscdl-nonowned-fixture-'));
+  try {
+    const identity = ownedIdentity(dir); verifyOwned(identity);
+    assert.throws(() => verifyOwned({ ...identity, ino: -1 }));
+    const link = join(dir, 'link'); symlinkSync(other, link); assert.throws(() => ownedIdentity(link));
+    assert.ok(existsSync(other)); chmodSync(dir, 0o755); assert.throws(() => verifyOwned(identity));
+  } finally { rmSync(dir, { recursive: true }); rmSync(other, { recursive: true }); }
 });

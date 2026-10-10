@@ -7,7 +7,7 @@ import { origin } from "./browser-tls-trust.mjs";
 
 // Fixed installed runner binary; no environment-selected child authority.
 export const browserBinary = "/usr/bin/google-chrome";
-export const browserFailureCheckpoint = "#914 intentional failure: positive browser GETs completed; browser/Worker/port/proxy shutdown and final inspect/secret scan confirmed";
+export const browserFailureCheckpoint = "#914 intentional failure: positive browser GETs completed; public browser close / Worker and port stopped / proxy inspect and secret scan completed; unit terminal and owned removal unconfirmed";
 export function browserEvidence(stdout, intentional = false) {
   const newline = stdout.indexOf("\n");
   const certificate = stdout.slice(0, newline);
@@ -20,7 +20,7 @@ export const browserProofCheckpoint = [
   "TC-F-001/002/005/207 partial: real same-origin browser fetch; self/other schedule=200 history=200 csrf=200; exact five views / owner-only history / distinct session CSRF passed",
   "TC-NF-914 partial: host-only Secure HttpOnly SameSite=Lax Path=/; isolated contexts; missing/foreign three GETs=401; no-store / no CORS / 401 clear / csrf no-referrer; secret non-exposure passed",
   "TC-F-207/211 partial: Worker stopped / port closed / self-only revocation / proxy disposed / same-cert restart; self three GETs=401 / other three GETs=200; D1 snapshot preserved passed",
-  "#914: browser processes absent before Worker stop / closed port / final read-only inspect / owned secret scan passed; local browser read-only partial evidence only; assets/DOM/Preview/Confirm/Gate A-D unverified",
+  "#914: public browser close / Worker and port stopped / final read-only inspect / owned secret scan passed; unit terminal and owned removal unconfirmed; local browser read-only partial evidence only; assets/DOM/Preview/Confirm/Gate A-D unverified",
 ].join("\n");
 
 export function browserPreflight() {
@@ -161,5 +161,5 @@ export async function proveBrowserReads({ browser, context, signal, seed, secret
   await inspect();
   await start();
   await getAll("self", 401); await getAll("other", 200);
-  // Browser helper closes the complete browser BEFORE the final Worker stop.
+  // Helper performs public Browser.close before final Worker stop; outer owner verifies unit no-live.
 }

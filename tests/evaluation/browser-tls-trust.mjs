@@ -134,205 +134,52 @@ export function generatedBrowserFiles(temporary) {
   });
 }
 
-// #914 attests the unique profile/HOME root before trusting its dedicated group/session.
-// Retain the root and every start identity through shutdown; never transfer trust to a reused PID.
-export function workerBrowserProcesses(home, temporary, tracked = new Map()) {
-  // proc_pid_stat(5) fields are independent of mutable argv/envp process titles.
-  const snapshot = (pid, raw) => {
+// #914: attest only the unique launch root inside this already managed unit.
+// cgroup membership replaces whole-child mutable argv/environ and PGRP/SID tracking.
+export function checkWorkerBrowserOwnership(home, temporary, tracked = new Map(), io = {
+  list: readdirSync, stat: lstatSync, read: readFileSync,
+  files: generatedBrowserFiles, uid: process.getuid(), pid: process.pid,
+}) {
+  const files = io.files(temporary), rows = [];
+  const unit = ownershipRead("proc-read", () => io.read("/proc/self/cgroup", "utf8"));
+  requireOwnership(/^0::\/system.slice\/nssscdl-browser-[a-f0-9]{32}\.service\n$/.exec(unit)?.[0] === unit, "root-unverified");
+  for (const entry of ownershipRead("proc-list", () => io.list("/proc"))) {
+    if (!/^\d+$/.test(entry) || Number(entry) === io.pid) continue;
     try {
-      const text = raw ?? readFileSync(`/proc/${pid}/stat`, "utf8");
-      const match = /^(\d+) \(.*\) (.*)$/.exec(text.trim());
-      const fields = match?.[2].split(/\s+/);
-      if (!fields || Number(match[1]) !== pid || !/^\d+$/.test(fields[1]) || !/^\d+$/.test(fields[19]) || !/^[RSDZTtXxKWIP]$/.test(fields[0]) ||
-        !/^(0|[1-9]\d*)$/.test(fields[2]) || !/^(0|[1-9]\d*)$/.test(fields[3])) return { status: "unknown" };
-      // proc_pid_stat(5): 3=state, 4=PPID, 5=PGRP, 6=SID, 22=starttime (comm excluded).
-      return { status: "read", pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), session: Number(fields[3]), identity: fields[19] };
-    } catch (error) { return { status: ["ENOENT", "ESRCH"].includes(error.code) ? "vanished" : "unreadable" }; }
-  };
-  // Scheduler R/S/etc. may change without changing process provenance.
-  // Zombie/dead transitions, identity/group/session/parent changes stay fail-closed.
-  const statePhase = (state) => /^[RSDTtKWIP]$/.test(state) ? "live" :
-    state === "Z" ? "zombie" : ["X", "x"].includes(state) ? "dead" : "unknown";
-  const sameProcess = (original, observed) => original?.status === "read" && observed?.status === "read" &&
-    statePhase(original.state) !== "unknown" && statePhase(original.state) === statePhase(observed.state) &&
-    ["pid", "identity", "parent", "group", "session"].every((key) => observed[key] === original[key]);
-  const observe = (row, env, before, parentBefore) => {
-    const after = snapshot(row.pid), parent = rows.find((entry) => entry.pid === row.parent);
-    const parentAfter = snapshot(row.parent);
-    const samples = [row.snapshot, before, after, parent?.snapshot ?? { status: "unknown" }, parentBefore, parentAfter];
-    let consistency = "stable";
-    if (samples.some((entry) => entry.status !== "read")) {
-      consistency = samples.some((entry) => entry.status === "vanished") ? "vanished" :
-        samples.some((entry) => entry.status === "unreadable") ? "unreadable" : "unknown";
-    } else if ([before, after].some((entry) => !sameProcess(row.snapshot, entry)) ||
-      [parentBefore, parentAfter].some((entry) => !sameProcess(parent.snapshot, entry))) consistency = "changed";
-    const childStable = [before, after].every((entry) => sameProcess(row.snapshot, entry));
-    const state = childStable ? statePhase(row.snapshot.state) : "unknown";
-    const homes = env?.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
-    const homeState = !childStable ? "unknown" : !homes ? "unreadable" : homes.length === 0 ? "missing" : homes.length > 1 || homes[0] === "HOME" ? "ambiguous" :
-      homes[0] === `HOME=${home}` ? "exact" : "different";
-    const types = row.argv.filter((arg) => arg.startsWith("--type=") || arg === "--type");
-    const value = types[0]?.slice("--type=".length);
-    const type = !childStable ? "unknown" : types.length === 0 ? (state === "zombie" || state === "dead" ? "unknown" : "absent") :
-      types.length !== 1 || !value || types[0] === "--type" ? "unknown" :
-        ["renderer", "zygote", "gpu-process", "utility"].includes(value) ? value : "other";
-    const selection = row.profileSelected ? "profile" : row.crashSelected ? "Crashpad" : row.trackedSelected ? "tracked" : row.selected ? "descendant" : "unknown";
-    // Fixed axes only; no process identity, argv, path, environment or raw error.
-    return `${selection},${state},${homeState},${type},${consistency}`;
-  };
-  // Diagnostic precedence only: profile > crash database > tracked identity > descendant.
-  // Ambiguous argv cannot establish a role; it never falls through to a weaker basis.
-  const homeMismatchReason = (row, env) => {
-    if (row.profileSelected) {
-      const types = row.argv.filter((arg) => arg.startsWith("--type="));
-      if (row.profileArgs.length !== 1 || types.length > 1 || types[0] === "--type=") return "home-unknown";
-      return types.length ? "home-profile-child" : "home-profile-main";
-    }
-    if (row.crashSelected) {
-      return row.argv.filter((arg) => arg.startsWith("--database=")).length === 1 ? "home-crash-db" : "home-unknown";
-    }
-    if (row.trackedSelected) return "home-tracked";
-    if (!row.selected) return "home-unknown";
-    // Only refine an already selected, failing descendant. These are entry/argv
-    // observations, never proof of a process role or a reason to relax ownership.
-    const homes = env.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
-    const homeState = homes.length === 0 ? "missing" : homes.length > 1 || homes[0] === "HOME" ? "ambiguous" :
-      homes[0] !== `HOME=${home}` ? "different" : "unknown";
-    if (homeState === "unknown") return "home-descendant-unknown";
-    const types = row.argv.filter((arg) => arg.startsWith("--type=") || arg === "--type");
-    const knownTypes = ["--type=renderer", "--type=zygote", "--type=gpu-process", "--type=utility"];
-    const typeState = types.length === 0 ? "absent" : types.length === 1 && knownTypes.includes(types[0]) ? "known" : "unknown";
-    return `home-descendant-${homeState}-type-${typeState}`;
-  };
-  const rows = [];
-  for (const entry of ownershipRead("proc-list", () => readdirSync("/proc"))) {
-    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
-    const pid = Number(entry);
-    let related = tracked.has(pid), sample;
-    try {
-      const uid = lstatSync(`/proc/${entry}`).uid;
-      const raw = readFileSync(`/proc/${entry}/stat`, "utf8");
-      sample = snapshot(pid, raw);
-      requireOwnership(sample.status === "read", "proc-read");
-      related ||= !!tracked.root && (sample.group === tracked.root.group || sample.session === tracked.root.session);
-      // Inspect foreign-UID stat too: a member of the attested group cannot be ignored.
-      if (uid !== process.getuid()) {
-        requireOwnership(!tracked.has(pid), "tracked-owner");
-        if (tracked.root) requireOwnership(sample.group !== tracked.root.group && sample.session !== tracked.root.session, "tracked-owner");
-        rows.push({ ...sample, uid, argv: [], profileArgs: [], snapshot: sample });
-        continue;
-      }
-      const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf8");
-      const argv = cmdline.split("\0"); // Never split a process title on whitespace.
-      const profileArgs = argv.filter((arg) => arg.startsWith("--user-data-dir="));
-      const profileSelected = profileArgs.some((arg) => arg.startsWith(`--user-data-dir=${temporary}/`));
-      const crashSelected = argv.some((arg) => arg.startsWith(`--database=${home}/`));
-      requireOwnership(!tracked.has(pid) || tracked.get(pid) === sample.identity, "tracked-drift");
-      const trackedSelected = tracked.has(pid);
-      rows.push({ ...sample, uid, argv, profileArgs, profileSelected, crashSelected, trackedSelected,
-        selected: profileSelected || crashSelected || trackedSelected, nulTerminated: cmdline.endsWith("\0"), snapshot: sample });
+      if (io.stat(`/proc/${entry}`).uid !== io.uid) continue;
+      const raw = io.read(`/proc/${entry}/cmdline`, "utf8"), argv = raw.split("\0");
+      if (!argv.some((arg) => arg.startsWith(`--user-data-dir=${temporary}/`))) continue;
+      if (!argv.some((arg) => arg.startsWith("--type=") || arg === "--type")) rows.push({ pid: Number(entry), raw, argv });
     } catch (error) {
-      // Enumeration may race an unrelated exit, but a known identity must not vanish mid-read.
-      if (["ENOENT", "ESRCH"].includes(error.code) && !related) {
-        if (sample?.status === "read") rows.push({ ...sample, argv: [], profileArgs: [], snapshot: sample, unread: true });
-        continue;
-      }
-      throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "proc-read" : ownershipReason(error));
+      if (["ENOENT", "ESRCH"].includes(error.code)) continue;
+      throw new OwnershipFailure("proc-read");
     }
   }
-  const stable = (row, sample) => sameProcess(row.snapshot, sample);
-  const homes = (env) => env.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
-  const readHome = (row) => ownershipRead("proc-environ", () => readFileSync(`/proc/${row.pid}/environ`, "utf8").split("\0"));
-  const mains = rows.filter((row) => row.profileSelected && !row.argv.some((arg) => arg.startsWith("--type=") || arg === "--type"));
-  let root = tracked.root;
-  if (!root) {
-    requireOwnership(mains.length === 1, "main-count");
-    const main = mains[0], files = generatedBrowserFiles(temporary);
-    requireOwnership(main.nulTerminated && main.profileArgs.length === 1, "profile-argv");
-    const profile = main.profileArgs[0].slice("--user-data-dir=".length);
-    requireOwnership(dirname(profile) === temporary && /^playwright_chromiumdev_profile-.+/.test(profile.slice(temporary.length + 1)), "profile-location");
-    requireOwnership(files.includes(profile), "profile-missing");
-    requireOwnership(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length === 1, "profile-count");
-    const before = snapshot(main.pid), env = readHome(main), after = snapshot(main.pid);
-    requireOwnership(stable(main, before) && stable(main, after), "root-unverified");
-    requireOwnership(homes(env).length === 1 && homes(env)[0] === `HOME=${home}`, "home-profile-main");
-    requireOwnership(main.uid === process.getuid() && main.pid === main.group && main.pid === main.session, "root-unverified");
-    root = { pid: main.pid, identity: main.identity, group: main.group, session: main.session, profile };
-    // Only a fully attested root establishes provenance. Keep it even after exit.
-    tracked.root = root;
-    tracked.set(main.pid, main.identity);
-  } else {
-    requireOwnership(mains.length <= 1, "main-count");
-    if (mains.length) requireOwnership(mains[0].pid === root.pid && mains[0].identity === root.identity &&
-      mains[0].nulTerminated && mains[0].profileArgs.length === 1 && mains[0].profileArgs[0] === `--user-data-dir=${root.profile}`, "tracked-drift");
-  }
-  // Parent closure detects related processes escaping the group; it is never a fallback.
-  for (const row of rows) if (row.pid === root.pid) row.selected = true;
-  let changed;
-  do {
-    changed = false;
-    for (const row of rows) if (!row.selected && rows.some((parent) => parent.selected && parent.pid === row.parent)) {
-      row.selected = true; changed = true;
-    }
-  } while (changed);
-  const owned = [];
-  for (const row of rows.filter((row) => row.selected || row.group === root.group || row.session === root.session)) {
-    const before = snapshot(row.pid), parentBefore = snapshot(row.parent);
-    let env;
-    try {
-      requireOwnership(!row.unread, "proc-read");
-      requireOwnership(row.uid === process.getuid(), "tracked-owner");
-      requireOwnership(row.group === root.group, "group-mismatch");
-      requireOwnership(row.session === root.session, "session-mismatch");
-      // A new group member needs the root's parent closure; orphaned unknown members fail closed.
-      requireOwnership(row.selected, "unknown");
-      const parent = rows.find((entry) => entry.pid === row.parent);
-      const visited = new Set([row.pid]);
-      let ancestor = parent;
-      while (ancestor?.selected) {
-        requireOwnership(!visited.has(ancestor.pid), "tracked-drift");
-        visited.add(ancestor.pid);
-        ancestor = rows.find((entry) => entry.pid === ancestor.parent);
-      }
-      if (row.pid !== root.pid) {
-        if (parent?.selected) requireOwnership(BigInt(parent.identity) <= BigInt(row.identity), "tracked-drift");
-        requireOwnership((parent?.selected && parent.group === root.group && parent.session === root.session) ||
-          (row.trackedSelected && row.parent === 1), "tracked-drift");
-        if (parent?.selected) requireOwnership(stable(parent, parentBefore), "tracked-drift");
-      }
-      if (row.pid === root.pid) requireOwnership(row.nulTerminated && row.profileArgs.length === 1 &&
-        row.profileArgs[0] === `--user-data-dir=${root.profile}`, "root-unverified");
-      env = readHome(row);
-      const after = snapshot(row.pid);
-      requireOwnership(stable(row, before) && stable(row, after), "tracked-drift");
-      requireOwnership(lstatSync(`/proc/${row.pid}`).uid === row.uid, "tracked-owner");
-      if (row.pid !== root.pid && parent?.selected) requireOwnership(stable(parent, snapshot(parent.pid)), "tracked-drift");
-      const entries = homes(env);
-      const missingChildHome = row.pid !== root.pid && entries.length === 0;
-      requireOwnership(missingChildHome || (entries.length === 1 && entries[0] === `HOME=${home}`), homeMismatchReason(row, env));
-      requireOwnership(row.profileArgs.length <= 1, "profile-argv");
-      const profile = row.profileArgs[0]?.slice("--user-data-dir=".length);
-      if (profile) requireOwnership(profile === root.profile, "profile-set");
-      tracked.set(row.pid, row.identity);
-      owned.push({ pid: row.pid, profile, main: row.pid === root.pid });
-    } catch (error) {
-      throw new OwnershipFailure(ownershipReason(error) === "unknown" ? "unknown" : ownershipReason(error), observe(row, env, before, parentBefore));
-    }
-  }
-  // Missing enumeration entries are proven absent only by a separate ENOENT/ESRCH stat read.
-  for (const pid of tracked.keys()) if (!rows.some((row) => row.pid === pid)) {
-    requireOwnership(snapshot(pid).status === "vanished", "tracked-drift");
-  }
-  return owned;
-}
-
-export function checkWorkerBrowserOwnership(home, temporary, tracked) {
-  const owned = workerBrowserProcesses(home, temporary, tracked);
-  requireOwnership(owned.filter((entry) => entry.main).length === 1, "main-count");
-  const profile = tracked.root.profile;
-  const files = generatedBrowserFiles(temporary);
+  requireOwnership(rows.length === 1, "main-count");
+  const main = rows[0], args = main.argv.filter((arg) => arg.startsWith("--user-data-dir="));
+  requireOwnership(main.raw.endsWith("\0") && args.length === 1, "profile-argv");
+  const profile = args[0].slice("--user-data-dir=".length);
+  requireOwnership(dirname(profile) === temporary && /^playwright_chromiumdev_profile-.+/.test(profile.slice(temporary.length + 1)), "profile-location");
   requireOwnership(files.includes(profile), "profile-missing");
   requireOwnership(files.filter((path) => path.includes("/playwright_chromiumdev_profile-")).length === 1, "profile-count");
+  const identity = () => {
+    const text = ownershipRead("proc-read", () => io.read(`/proc/${main.pid}/stat`, "utf8"));
+    const match = /^(\d+) \(.*\) (.*)$/.exec(text.trim()), fields = match?.[2].split(/\s+/);
+    requireOwnership(Number(match?.[1]) === main.pid && /^[RSDTtKWIP]$/.test(fields?.[0]) && /^\d+$/.test(fields?.[19]), "root-unverified");
+    return fields[19];
+  };
+  const before = identity();
+  const env = ownershipRead("proc-environ", () => io.read(`/proc/${main.pid}/environ`, "utf8")).split("\0");
+  const homes = env.filter((entry) => entry.startsWith("HOME=") || entry === "HOME");
+  requireOwnership(homes.length === 1 && homes[0] === `HOME=${home}`, "home-profile-main");
+  requireOwnership(ownershipRead("proc-read", () => io.read(`/proc/${main.pid}/cgroup`, "utf8")) === unit, "root-unverified");
+  const status = ownershipRead("proc-read", () => io.read(`/proc/${main.pid}/status`, "utf8"));
+  requireOwnership(status.match(/^NoNewPrivs:\s*1$/gm)?.length === 1 && status.match(/^NoNewPrivs:/gm)?.length === 1, "root-unverified");
+  requireOwnership(!main.argv.some((arg) => /^(--no-sandbox|--disable-setuid-sandbox|--ignore-certificate-errors)(=|$)/.test(arg)), "root-unverified");
+  requireOwnership(io.stat(`/proc/${main.pid}`).uid === io.uid && identity() === before, "root-unverified");
+  if (tracked.root) requireOwnership(tracked.root.pid === main.pid && tracked.root.identity === before &&
+    tracked.root.profile === profile && tracked.root.unit === unit, "tracked-drift");
+  tracked.root = { pid: main.pid, identity: before, profile, unit };
   return { profile, files };
 }
 
@@ -420,12 +267,14 @@ export function parseBrowserDiagnostic(stderr) {
     closeObservation: match[7] ? { preClose: match[7], close: match[8], postClose: match[9] } : undefined });
 }
 
-export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove, onStage = () => {} }) {
+export async function cleanupOwned({ closeBrowser, browserStopped, closeServer, portClosed, remove, managed = false, onStage = () => {} }) {
   // Any uncertainty preserves all owned files. No fallback, forced reset or retry.
   onStage("browser-close");
   await closeBrowser();
-  onStage("browser-process");
-  assert.ok(await browserStopped(), "browser process state unknown");
+  if (!managed) {
+    onStage("browser-process");
+    assert.ok(await browserStopped(), "browser process state unknown");
+  }
   onStage("proof-listener");
   await closeServer();
   onStage("port-close");
@@ -477,7 +326,8 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   assert.equal(driverPackage.version, "1.64.0");
   assert.equal(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies["playwright-core"], "1.64.0");
   const { chromium } = await import("playwright-core");
-  const home = mkdtempSync(join(tmpdir(), "nssscdl-browser-tls-"));
+  const home = workerHandoff ? join(tmpdir(), "browser-home") : mkdtempSync(join(tmpdir(), "nssscdl-browser-tls-"));
+  if (workerHandoff) checkOwnedDirectory(home, tmpdir());
   assert.equal(lstatSync(home).uid, process.getuid());
   assert.equal(lstatSync(home).mode & 0o777, 0o700);
   const profile = join(home, "browser-profile");
@@ -505,13 +355,20 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
     consumerStopAttempted = true; // An unknown stop is never retried.
     await stopConsumer();
   };
+  let proofCloseState;
   const closeProof = async () => {
+    if (workerHandoff && proofCloseState) {
+      assert.equal(proofCloseState, "done", "proof close unknown; do not retry");
+      return;
+    }
+    if (workerHandoff) proofCloseState = "unknown";
     if (server?.listening) await bounded(new Promise((done, reject) => {
       server.close((error) => error ? reject(error) : done());
       server.closeAllConnections();
       for (const socket of sockets) socket.destroy();
     }), 5000);
     assert.equal(sockets.size, 0, "proof sockets still open");
+    if (workerHandoff) proofCloseState = "done";
   };
   try {
     if (workerHandoff) {
@@ -629,6 +486,7 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
   } finally {
     try {
       await cleanupOwned({
+        managed: workerHandoff,
         onStage: (value) => { cleanupStage = value; },
         closeBrowser: async () => {
           if (browser) {
@@ -654,17 +512,11 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           else if (context) await bounded(context.close(), 10000);
         },
         browserStopped: async () => {
-          // Failed launch has no API-confirmed shutdown: retain files even if /proc looks empty.
-          if (launchAttempted && !(workerHandoff ? browser : context)) return false;
-          if (workerHandoff) closeObservation.postClose = "fail";
-          if (workerHandoff) requireOwnership(!!tracked.root, "root-unverified");
-          const processes = () => workerHandoff ? workerBrowserProcesses(home, temporary, tracked) : ownedProcesses(home, profile);
+          // #915 only: managed #914 terminal verification belongs to outer owner.
+          if (launchAttempted && !context) return false;
           const deadline = Date.now() + 5000;
-          while (processes().length && Date.now() < deadline) await wait(100);
-          const stopped = processes().length === 0;
-          if (workerHandoff) requireOwnership(stopped, "related-process-remains");
-          if (workerHandoff && stopped) closeObservation.postClose = "pass";
-          return stopped;
+          while (ownedProcesses(home, profile).length && Date.now() < deadline) await wait(100);
+          return ownedProcesses(home, profile).length === 0;
         },
         closeServer: async () => {
           await closeProof(); cleanupStage = "worker-stop"; await closeConsumer();
@@ -681,18 +533,21 @@ export async function withIsolatedBrowserTls(use = async () => {}, {
           cleanupStage = "owned-inspect";
           await inspectOwned(home);
           cleanupStage = "owned-remove";
-          rmSync(home, { recursive: true });
+          if (!workerHandoff) rmSync(home, { recursive: true });
         },
       });
       if (workerHandoff) report(`cleanup observation${closeFields(closeObservation)}`);
-      report("cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
+      report(workerHandoff ? "cleanup: browser public close / Worker and port stopped / generated files absent / owned inspect and secret scan completed; unit terminal and owned removal unconfirmed" :
+        "cleanup: browser processes stopped / HTTPS listener and port closed / owned HOME,NSS,profile,cert,key removed");
     } catch (error) {
       // Capture the first failing cleanup operation before emergency shutdown.
       if (workerHandoff) report(`cleanup observation${closeFields(closeObservation)}`);
       report(`cleanup failure: stage=${cleanupStage}; primary=${primaryFailed ? "failed" : "none"}${workerHandoff && error instanceof OwnershipFailure ? `; ownership=${ownershipReason(error)}` : ""}${workerHandoff ? failureObservation(error, cleanupProcessObservation) : ""}`);
       // Stop the owned server even if browser state is uncertain; never delete its files.
-      if (server?.listening) { server.close(); server.closeAllConnections(); }
-      for (const socket of sockets) socket.destroy();
+      if (!workerHandoff || !proofCloseState) {
+        if (server?.listening) { server.close(); server.closeAllConnections(); }
+        for (const socket of sockets) socket.destroy();
+      }
       try { await closeConsumer(); } catch { /* preserve files; fixed error below */ }
       report("cleanup: uncertain process/port state; owned files retained for operator inspection; no retry");
       throw new Error(`BROWSER_TLS_TRUST_CLEANUP_FAILED; primary=${primaryFailed ? tlsStages[stage] ?? "unknown" : "none"}; cleanup=${cleanupStage}; preserve owned files; do not retry`);

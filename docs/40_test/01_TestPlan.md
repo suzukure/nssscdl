@@ -162,20 +162,21 @@ run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、B
 #914 opt-in consumerは同一cert / portをNode proof listenerからWorkerへ直列handoffし、
 公開`chromium.launch()`のBrowser handleを明示引き渡す（#915単独persistent proofは維持）。
 隔離された非永続self / other / missing / foreign Contextの公式Cookie注入とsame-origin browser fetch 3 GETを検査する。
-TLS probe用Contextも同Browserの非永続Contextとし、run TMPDIR生成profile / artifacts、実HOME、main唯一性、終了後の関連process / 生成物消滅を確認する。
-Worker停止中だけselfを失効し、同cert再起動後のself 401 / other 200とbrowser先行停止 / 最終inspect / owned cleanupを確認する。
-小fixtureはlaunch後の所有判定 / Context生成 / NSS候補確認の段階分離と、primary / cleanup独立の固定所有reason・厳密parserも検査する。
-#914の所有権Contract・診断形式の正本は `../../tests/README.md` の#914節とする。
-唯一のrun-owned profile mainのexact NUL argv / uid / 単一exact HOME / PID/starttime再読一致とPID=PGRP=SIDを起点に認証する。
-同PGRP＋SID＋uidの関連processを安定identityで追跡し、認証済み子のみHOME欠落を単独では拒否しない。
-明示HOME異値・曖昧・不読、group/session逸脱・別UID・未知混入・tracked PID再利用・親子矛盾・読取り途中消滅はfail-closed保全とする。
-合成fixtureは唯一/複数root・偽profile・root HOME差、PGRP/SID/uid差、setproctitle模擬、identity/親リンク変化・不読・消滅を検査する。
-live階級内のR/S等の変化は安定した同一identityとして扱い、live→Z/X、PID/starttime/親/PGRP/SIDの変化はfail-closedとするfixtureを検査する。
-固定5軸とprimary / cleanup独立reason・strict parser秘密値/余剰拒否を確認し、実roleやHOME伝播を証明しない。
-close一回・pre-close不明＋close resolve＋post-close not-runの保全、close拒否・未決着、post-close残存とgenerated files残存も確認する。
-関連process全消滅・listener/port閉鎖・generated profile/artifacts消滅・最終owned inspect後だけファイル削除する順序を維持する。
-今回の限定scopeは静的・fixture・最小文書同期のみで、実Chrome再実証には別途人間判断が必要。
-実装・小fixture・停止条件の正本は `../../tests/README.md` の#914節とし、正式Actions実証は未確認。
+TLS probe用Contextも同Browserの非永続Contextとし、run TMPDIR生成profile/artifacts、実HOME、main唯一性を確認する。
+#914はtrusted childを開始時から非root専用systemd unitに置き、outer ownerはunit外で管理する。
+能力確認はpersist/migration書込み前、sanitized env・TLS/sandbox・NSS/単一cert・Cookie秘密境界は維持する。
+全子PGRP/SID一致・mutable全子environ追跡・全PID消失方式を、専用unitの生存process不在（no-live）へ明示的に置換する。
+root本人のexact NUL profile argv / 単一exact HOME / UID / 安定PID,starttime / NoNewPrivs / 専用unit所属はTLS/consumer前に確認する。
+公開Browser.close一回→Worker/proxy停止・port閉鎖・生成物/secret検査→child固定report・終了→outer同一unit終端確認→所有物削除とする。
+Worker停止前のbrowser全process消失、zombieを含む全PID消失、各子のexit0を証明した扱いにはしない。
+ownerは正常/指定意図的失敗reportと、stop前二度の同一InvocationID active/exited・Result=success・main正常終了・再起動0・有効設定を照合する。
+意図的失敗childは停止/検査確認済みのreport＋exit0、outer CLIは終端と安全な削除後も期待exit1とする。
+unknown/timeout/cancel/stop/不正reportは不可逆な失敗で、後から空unitになっても成功化せずfiles保全・retry禁止とする。
+最終port/生成物不在→空unit解放→作成時所有identity/実path確認→owned HOME/NSS/cert/key/temporary/persist削除はouterだけの責任とする。
+child120秒・owner180秒の共通残予算と停止margin、固定report・有効設定の正本は `../../tests/README.md` の#914節とadapterを参照する。
+合成fixtureは通常/意図的失敗、parent exit0/setsid子残存、InvocationID/設定差、失敗固定、report拒否、close不明、port/生成物残存、非所有物保全を検査する。
+#906 / #908標準経路・#915 TLS-only proof・製品entryは維持する。今回の限定scopeは静的実装・fixture・文書同期で、正式Actions current-head通常CIは別証拠とする。
+実Chrome / TLS / Worker / D1の統合実証には別途人間判断が必要であり、正式統合実証は未確認。
 既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、
 static assets / DOM / Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
 
