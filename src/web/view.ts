@@ -1,5 +1,5 @@
 import { StudentReadController, type Area } from "./controller.js";
-import { monthDays, moveMonth, slotLabels, classificationLabels, reservationLabels, intervalLabel, type Slot } from "./model.js";
+import { monthDays, moveMonth, slotLabels, classificationLabels, reservationLabels, intervalLabel, dateTimeLabel, type Slot } from "./model.js";
 
 export function mountStudent(root: HTMLElement, month: string, fetcher: typeof fetch): StudentReadController {
   const doc = root.ownerDocument;
@@ -34,13 +34,21 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   const content = element("div"); content.id = "schedule-content";
   calendar.setAttribute("aria-controls", content.id); list.setAttribute("aria-controls", content.id);
   schedule.append(scheduleHeading, form, nav, scheduleStatus, content, selectionStatus);
+  const operation = element("section"), operationHeading = element("h2", "予約内容の確認・確定");
+  operationHeading.id = "operation-heading"; operation.setAttribute("aria-labelledby", operationHeading.id);
+  const operationStatus = status("operation-status"), operationContent = element("div");
+  const preview = button("選択枠の予約内容をPreview", () => { void controller.preview(); });
+  const confirm = button("内容を確認して予約を確定", () => { void controller.confirm(); });
+  preview.setAttribute("aria-describedby", operationStatus.id); confirm.setAttribute("aria-describedby", operationStatus.id);
+  operationContent.id = "operation-content"; confirm.setAttribute("aria-controls", operationContent.id);
+  operation.append(operationHeading, preview, operationStatus, operationContent, confirm);
   const history = element("section"), historyHeading = element("h2", "本人の予約履歴");
   historyHeading.id = "history-heading"; history.setAttribute("aria-labelledby", historyHeading.id);
   const refresh = button("履歴を最新から再取得", () => { void controller.loadHistory(); });
   const more = button("履歴の次ページ", () => { void controller.loadHistory(true); });
   const historyStatus = status("history-status"), historyContent = element("ol");
   history.append(historyHeading, refresh, more, historyStatus, historyContent);
-  root.replaceChildren(heading, explanation, schedule, history);
+  root.replaceChildren(heading, explanation, schedule, operation, history);
   const slotButtons = new Map<string, HTMLButtonElement>();
   function slotNode(slot: Slot): HTMLElement {
     const label = `${intervalLabel(slot)}：${slotLabels[slot.view]}${slot.classification ? `／${classificationLabels[slot.classification]}` : ""}`;
@@ -87,6 +95,24 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
       selectionStatus.textContent = state.selectionMessage;
       for (const [id, node] of slotButtons) node.setAttribute("aria-pressed", String(id === state.selectedId));
     }
+    if (area === "operation" || area === "schedule" || area === "selection") {
+      operationStatus.textContent = state.operationMessage;
+      operationContent.setAttribute("aria-busy", String(state.operationBusy));
+      preview.disabled = state.stopped || state.operationHalted || state.operationBusy || state.scheduleLoading || !state.selectedId;
+      confirm.disabled = state.stopped || state.operationHalted || state.operationBusy || state.operation !== "review";
+      operationContent.replaceChildren();
+      const view = state.preview ?? state.confirmed;
+      if (view) {
+        const classification = state.preview?.previewClassification ?? state.confirmed!.reservation.classification;
+        operationContent.append(element("p", intervalLabel(view.slot)), element("p", `区分：${classificationLabels[classification]}`));
+        if (classification === "additional") operationContent.append(element("p", "現在は追加区分ですが、他予約のキャンセル等によりLesson開始前までは後から再分類される場合があります。"));
+        operationContent.append(element("h3", "既存の本人予約への区分変更"));
+        const changes = element("ul");
+        for (const change of view.classificationChanges) changes.append(element("li", `${dateTimeLabel(change.startsAt)}（日本時間）：${classificationLabels[change.before]} → ${classificationLabels[change.after]}`));
+        if (view.classificationChanges.length) operationContent.append(changes);
+        else operationContent.append(element("p", "区分変更はありません。"));
+      }
+    }
     if (area === "history") {
       historyStatus.textContent = state.historyMessage;
       historyContent.setAttribute("aria-busy", String(state.historyLoading));
@@ -100,7 +126,7 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
         historyContent.append(node);
       }
     }
-    if (focus) (area === "history" ? historyStatus : scheduleStatus).focus();
+    if (focus) (area === "operation" ? operationStatus : area === "history" ? historyStatus : scheduleStatus).focus();
   }
   const controller = new StudentReadController(month, fetcher, render);
   render("schedule", false); render("history", false);

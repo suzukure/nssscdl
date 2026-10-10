@@ -22,6 +22,23 @@ note over UI,D1
   No production Provider / Scheduled activation.
 end note
 Student -> UI: Open /student and choose YYYY-MM
+Student -> UI: Request selected month (no published-month list API)
+UI -> HTTP: GET /api/me/schedule-months/{month}
+HTTP -> Guard: Validate session, role, access, lifecycle
+Guard --> HTTP: Resolved student
+HTTP -> Schedule: Query month for student
+Schedule -> Repo: Read published slots and current state
+Repo -> D1: Read
+D1 --> Repo: Committed state
+Repo --> Schedule: State
+Schedule -> Domain: Derive one view per slot
+Domain --> Schedule: bookable / reserved_by_me / group_lesson / unavailable
+Schedule --> HTTP: Month view
+HTTP --> UI: 200 JSON
+UI --> Student: Calendar / list; 4 labeled views
+note over HTTP,UI: Unpublished/absent month: existing 404; choose another month
+
+Student -> UI: Select slot and request preview
 UI -> HTTP: GET /api/auth/student/csrf (same-origin fetch)
 HTTP -> HTTP: Check canonical origin / Fetch Metadata
 note over HTTP,UI: Origin rejection is 403; stop and retain cookie
@@ -44,23 +61,6 @@ end
 
 opt CSRF acquisition succeeded
 
-Student -> UI: Request selected month (no published-month list API)
-UI -> HTTP: GET /api/me/schedule-months/{month}
-HTTP -> Guard: Validate session, role, access, lifecycle
-Guard --> HTTP: Resolved student
-HTTP -> Schedule: Query month for student
-Schedule -> Repo: Read published slots and current state
-Repo -> D1: Read
-D1 --> Repo: Committed state
-Repo --> Schedule: State
-Schedule -> Domain: Derive one view per slot
-Domain --> Schedule: bookable / reserved_by_me / group_lesson / unavailable
-Schedule --> HTTP: Month view
-HTTP --> UI: 200 JSON
-UI --> Student: Calendar / list; 4 labeled views
-note over HTTP,UI: Unpublished/absent month: existing 404; choose another month
-
-Student -> UI: Select slot and request preview
 UI -> HTTP: POST /api/me/reservations/preview {slotId}
 HTTP -> Guard: Validate this request
 Guard --> HTTP: Resolved student
@@ -127,6 +127,8 @@ note over UI,HTTP
   Month/slot change discards token; stale response cannot enable Confirm.
 end note
 
+end
+
 Student -> UI: Open reservation history
 UI -> HTTP: GET /api/me/reservations?limit=50
 HTTP -> Guard: Validate this request
@@ -140,6 +142,5 @@ History --> HTTP: items and nextCursor
 HTTP --> UI: 200 JSON
 UI --> Student: Show reservation, attendance, current classification separately
 note over UI,History: nextCursor pages; refresh from first page for current state
-end
 
 @enduml

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { StudentReadController } from "../../src/web/controller";
-import { monthDays, moveMonth, validDateTime, parseSchedule, parseHistory, intervalLabel } from "../../src/web/model";
+import { monthDays, moveMonth, validDateTime, parseSchedule, parseHistory, intervalLabel, parsePreview, parseConfirm, parseCsrf } from "../../src/web/model";
 import { mountStudent } from "../../src/web/view";
 
 const slot = (view = "bookable", slotId = "slot") => ({ slotId, view,
@@ -47,6 +47,200 @@ function harness() {
   const controller = new StudentReadController("2026-12", fetcher, (area, focus) => events.push({ area, focus }));
   return { calls, events, controller, fetcher };
 }
+const csrf = "A".repeat(43), expectedToken = "v1.synthetic-token-canary";
+function previewBody(classification = "standard", classificationChanges: unknown[] = []) {
+  const { slotId, startsAt, endsAt } = slot();
+  return { slot: { slotId, startsAt, endsAt }, previewClassification: classification, classificationChanges, expectedStateToken: expectedToken };
+}
+function confirmBody(classification = "standard", classificationChanges: unknown[] = []) {
+  const { slotId, startsAt, endsAt } = slot();
+  return { slot: { slotId, startsAt, endsAt, view: "reserved_by_me" },
+    reservation: { reservationId: "new-reservation", startsAt, endsAt, reservationState: "confirmed", classification }, classificationChanges };
+}
+async function selectedHarness() {
+  const h = harness(), read = h.controller.loadMonth("2026-12");
+  h.calls[0].request.resolve(response({ month: "2026-12", slots: [slot(), { ...slot("bookable", "other-slot"),
+    startsAt: "2026-12-31T19:00:00+09:00", endsAt: "2026-12-31T20:30:00+09:00" }] }));
+  await read; h.controller.select("slot"); return h;
+}
+async function reviewedHarness() {
+  const h = await selectedHarness(), read = h.controller.preview();
+  h.calls[1].request.resolve(response({ scope: "session", csrfToken: csrf }));
+  await vi.waitFor(() => expect(h.calls).toHaveLength(3));
+  h.calls[2].request.resolve(response(previewBody())); await read; return h;
+}
+
+describe("TC-F-003-01 / TC-F-003-02 / TC-F-003-05 / TC-F-003-08〜09 / TC-F-005-01 / TC-NF-914-03〜04 [#926 synthetic wire partial evidence]", () => {
+  it("requires explicit Preview then Confirm, exact wire and one Command; success refresh is GET only", async () => {
+    const h = await selectedHarness(), { controller, calls } = h;
+    await controller.confirm(); expect(calls).toHaveLength(1);
+    const read = controller.preview(); await controller.preview(); await controller.confirm();
+    expect(calls).toHaveLength(2); expect(calls[1].path).toBe("/api/auth/student/csrf");
+    expect(calls[1].init).toEqual(calls[0].init);
+    calls[1].request.resolve(response({ scope: "session", csrfToken: csrf }));
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    calls[2].request.resolve(response({ ...previewBody("additional"), email: "private-canary", snapshot: "private-canary", monthlyN: 3 })); await read;
+    expect(controller.state.preview?.previewClassification).toBe("additional");
+    expect(JSON.stringify(controller.state)).not.toContain(expectedToken);
+    expect(JSON.stringify(controller.state)).not.toContain(csrf);
+    expect(JSON.stringify(controller.state)).not.toContain("private-canary");
+    const confirm = controller.confirm(); await controller.confirm(); await controller.preview();
+    expect(calls).toHaveLength(4);
+    expect(calls[2]).toMatchObject({ path: "/api/me/reservations/preview", init: { method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error",
+      headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: '{"slotId":"slot"}' } });
+    expect(calls[3].path).toBe("/api/me/reservations");
+    expect(calls[3].init).toEqual({ ...calls[2].init, body: JSON.stringify({ slotId: "slot", expectedStateToken: expectedToken }) });
+    calls[3].request.resolve(response(confirmBody("additional"), 201)); await confirm;
+    expect(controller.state.operation).toBe("confirmed");
+    expect(controller.state.operationMessage).toContain("メールの配送完了を表すものではありません");
+    expect(controller.state.confirmed?.reservation).toMatchObject({ reservationState: "confirmed", classification: "additional" });
+    await controller.confirm(); expect(calls).toHaveLength(5); expect(calls[4].init?.method).toBe("GET");
+    calls[4].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false));
+    const history = controller.loadHistory(); calls[5].request.resolve(response({ items: [item()], nextCursor: null })); await history;
+    expect(controller.state.operation).toBe("confirmed"); expect(controller.state.history.items).toHaveLength(1);
+  });
+  it.each([
+    [409, "RESERVATION_STATE_CHANGED", "repreview", "再Preview"],
+    [409, "RESERVATION_NOT_AVAILABLE", "reload", "予約可能枠"],
+    [409, "RESERVATION_WINDOW_CLOSED", "reload", "予約可能枠"],
+    [403, "CSRF_INVALID", "reload", "CSRFを再取得"],
+  ])("discards review on %s %s and requires fresh Schedule and explicit Preview", async (status, code, retry, guidance) => {
+    const { controller, calls } = await reviewedHarness(); const command = controller.confirm();
+    calls[3].request.resolve(response({ error: { code, retry, message: "private-canary" } }, status)); await command;
+    expect(controller.state.preview).toBeNull(); expect(controller.state.confirmed).toBeNull();
+    expect(controller.state.operationMessage).toContain(guidance); expect(calls).toHaveLength(5);
+    await controller.confirm(); await controller.preview(); expect(calls).toHaveLength(5);
+    calls[4].request.resolve(response({ month: "2026-12", slots: [slot()] }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false)); controller.select("slot");
+    const again = controller.preview(); expect(calls[5].path).toBe("/api/auth/student/csrf");
+    calls[5].request.resolve(response({ scope: "session", csrfToken: csrf }));
+    await vi.waitFor(() => expect(calls).toHaveLength(7)); calls[6].request.resolve(response(previewBody())); await again;
+    expect(controller.state.operation).toBe("review");
+    expect(calls.filter(call => call.init?.method === "POST" && call.path === "/api/me/reservations")).toHaveLength(1);
+  });
+  it("FORBIDDEN halts operations without stopping read-only or inferring Cookie removal", async () => {
+    const { controller, calls } = await reviewedHarness(); const command = controller.confirm();
+    calls[3].request.resolve(response({ error: { code: "FORBIDDEN", retry: "none", message: "private-canary" } }, 403)); await command;
+    expect(controller.state.operationMessage).toBe("この操作は利用できません。"); expect(controller.state.stopped).toBe(false);
+    await controller.preview(); await controller.confirm(); expect(calls).toHaveLength(4);
+    const read = controller.loadMonth("2026-12"); calls[4].request.resolve(response({ month: "2026-12", slots: [slot()] })); await read;
+    controller.select("slot"); await controller.preview(); expect(calls).toHaveLength(5);
+  });
+  it.each(["network", "503", "html", "malformed", "200", "unknown-code", "wrong-retry"])
+    ("unknown Confirm outcome %s never enables a write retry, including after read-only refresh", async mode => {
+      const { controller, calls } = await reviewedHarness(); const command = controller.confirm();
+      if (mode === "network") calls[3].request.reject(new Error("private-canary"));
+      else if (mode === "html") calls[3].request.resolve(new Response("private-canary", { status: 503 }));
+      else if (mode === "503") calls[3].request.resolve(response({ error: { code: "SERVICE_UNAVAILABLE", retry: "later" } }, 503));
+      else if (mode === "malformed") calls[3].request.resolve(response({ ...confirmBody(), slot: slot("bookable") }, 201));
+      else if (mode === "200") calls[3].request.resolve(response(confirmBody()));
+      else calls[3].request.resolve(response({ error: { code: mode === "unknown-code" ? "UNKNOWN" : "RESERVATION_STATE_CHANGED", retry: "none", message: "private-canary" } }, 409));
+      await command; expect(controller.state.operation).toBe("halted"); expect(controller.state.operationMessage).toContain("結果は不明");
+      expect(controller.state.confirmed).toBeNull(); expect(controller.state.preview).toBeNull();
+      expect(JSON.stringify(controller.state)).not.toContain("private-canary");
+      const read = controller.loadMonth("2026-12"); calls[4].request.resolve(response({ month: "2026-12", slots: [slot()] })); await read;
+      controller.select("slot"); await controller.preview(); await controller.confirm(); expect(calls).toHaveLength(5);
+      const history = controller.loadHistory(); calls[5].request.resolve(response({ items: [item()], nextCursor: null })); await history;
+      expect(controller.state.operation).toBe("halted"); expect(controller.state.confirmed).toBeNull();
+    });
+  it.each(["csrf", "preview", "confirm", "history"])("401 from %s clears all personal state and invalidates other reads/operations", async stage => {
+    const { controller, calls } = await (stage === "confirm" || stage === "history" ? reviewedHarness() : selectedHarness());
+    const start = calls.length;
+    const operation = stage === "confirm" || stage === "history" ? controller.confirm() : controller.preview();
+    let failingIndex = start;
+    if (stage === "preview") {
+      calls[start].request.resolve(response({ scope: "session", csrfToken: csrf }));
+      await vi.waitFor(() => expect(calls).toHaveLength(start + 2)); failingIndex++;
+    }
+    const historyIndex = calls.length, history = controller.loadHistory();
+    if (stage === "history") failingIndex = historyIndex;
+    calls[failingIndex].request.resolve(new Response("private-canary", { status: 401 }));
+    await (stage === "history" ? history : operation);
+    expect(controller.state.stopped).toBe(true); expect(controller.state.slots).toEqual([]); expect(controller.state.preview).toBeNull();
+    expect(controller.state.confirmed).toBeNull(); expect(controller.state.history.items).toEqual([]);
+    if (stage === "history") calls[start].request.resolve(response(confirmBody(), 201));
+    else calls[historyIndex].request.resolve(response({ items: [item()], nextCursor: null }));
+    await Promise.all([history, operation]); const count = calls.length;
+    await controller.preview(); await controller.confirm(); await controller.loadHistory(); await controller.loadMonth("2027-01");
+    expect(calls).toHaveLength(count); expect(controller.state.confirmed).toBeNull();
+    expect(JSON.stringify(controller.state)).not.toContain(expectedToken); expect(JSON.stringify(controller.state)).not.toContain(csrf);
+  });
+  it.each(["csrf", "preview", "confirm"])("slot/month change invalidates old %s responses and never overlaps Command", async stage => {
+    const { controller, calls } = await (stage === "confirm" ? reviewedHarness() : selectedHarness());
+    const start = calls.length, operation = stage === "confirm" ? controller.confirm() : controller.preview();
+    if (stage === "preview") {
+      calls[start].request.resolve(response({ scope: "session", csrfToken: csrf })); await vi.waitFor(() => expect(calls).toHaveLength(start + 2));
+    }
+    controller.select("other-slot"); expect(controller.state.preview).toBeNull();
+    await controller.preview(); await controller.confirm();
+    const readIndex = calls.length, month = controller.loadMonth("2027-01");
+    calls[readIndex].request.resolve(response({ month: "2027-01", slots: [] })); await month;
+    calls[start + (stage === "preview" ? 1 : 0)].request.resolve(response(stage === "csrf" ? { scope: "session", csrfToken: csrf } : stage === "preview" ? previewBody() : confirmBody(), stage === "confirm" ? 201 : 200));
+    await operation; expect(controller.state.month).toBe("2027-01"); expect(controller.state.preview).toBeNull(); expect(controller.state.confirmed).toBeNull();
+    expect(controller.state.operation).toBe("idle"); expect(calls).toHaveLength(readIndex + 1);
+  });
+  it("an obsolete failed Command still stops future writes without adopting its Slot", async () => {
+    const { controller, calls } = await reviewedHarness(); const command = controller.confirm(); controller.select("other-slot");
+    calls[3].request.reject(new Error("private-canary")); await command;
+    expect(controller.state.selectedId).toBe("other-slot"); expect(controller.state.operationHalted).toBe(true);
+    expect(controller.state.confirmed).toBeNull(); await controller.preview(); expect(calls).toHaveLength(4);
+  });
+  it("rePreview requires fresh Schedule and reselection, discards the old token and caches CSRF only in memory", async () => {
+    const { controller, calls } = await reviewedHarness(); const again = controller.preview();
+    expect(controller.state.preview).toBeNull(); await controller.confirm(); expect(calls).toHaveLength(4);
+    expect(calls[3].path).toBe("/api/me/schedule-months/2026-12");
+    calls[3].request.resolve(response({ month: "2026-12", slots: [slot()] })); await again;
+    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false)); controller.select("slot");
+    const fresh = controller.preview(); expect(calls[4].path).toBe("/api/me/reservations/preview");
+    calls[4].request.resolve(response({ ...previewBody(), expectedStateToken: "v1.new-token" })); await fresh;
+    const command = controller.confirm(); expect(JSON.parse(calls[5].init!.body as string).expectedStateToken).toBe("v1.new-token");
+    calls[5].request.resolve(response(confirmBody(), 201)); await command;
+  });
+  it("changing a reviewed Slot requires fresh Schedule before a new explicit Preview", async () => {
+    const { controller, calls } = await reviewedHarness(); controller.select("other-slot");
+    await controller.confirm(); await controller.preview(); expect(calls).toHaveLength(4);
+    expect(calls[3].init?.method).toBe("GET"); expect(controller.state.selectedId).toBeNull(); expect(controller.state.preview).toBeNull();
+    calls[3].request.resolve(response({ month: "2026-12", slots: [] }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false)); await controller.preview(); expect(calls).toHaveLength(4);
+  });
+  it.each(["preauth", "bad-token", "bad-preview", "network", "503", "403", "409", "401"])
+    ("Preview failure %s cannot enable Confirm or leak details", async mode => {
+      const { controller, calls } = await selectedHarness(); const read = controller.preview();
+      if (mode === "preauth" || mode === "bad-token") calls[1].request.resolve(response({ scope: mode === "preauth" ? "preauth" : "session", csrfToken: mode === "preauth" ? csrf : "bad" }));
+      else {
+        calls[1].request.resolve(response({ scope: "session", csrfToken: csrf })); await vi.waitFor(() => expect(calls).toHaveLength(3));
+        if (mode === "network") calls[2].request.reject(new Error("private-canary"));
+        else if (mode === "bad-preview") calls[2].request.resolve(response({ ...previewBody(), expectedStateToken: null }));
+        else calls[2].request.resolve(response({ error: { code: mode === "403" ? "FORBIDDEN" : mode === "409" ? "RESERVATION_STATE_CHANGED" : mode === "401" ? "UNAUTHENTICATED" : "SERVICE_UNAVAILABLE", retry: mode === "409" ? "repreview" : "none", message: "private-canary" } }, Number(mode)));
+      }
+      await read; expect(controller.state.preview).toBeNull(); const count = calls.length; await controller.confirm(); expect(calls).toHaveLength(count);
+      expect(JSON.stringify(controller.state)).not.toContain("private-canary");
+    });
+});
+
+describe("TC-F-003-01 / TC-F-003-08 / TC-NF-914-04 [#926 strict projection partial evidence]", () => {
+  const selected = { ...slot(), view: "bookable" as const };
+  it.each([
+    { slot: { ...slot(), slotId: "wrong" } }, { slot: { ...slot(), startsAt: "2026-12-31T16:00:00Z" } },
+    { previewClassification: "unknown" }, { expectedStateToken: "" }, { classificationChanges: null },
+    { classificationChanges: [{ reservationId: "r", startsAt: slot().startsAt, before: "standard", after: "standard" }] },
+    { classificationChanges: [{ reservationId: "r", startsAt: "bad", before: "standard", after: "additional" }] },
+  ])("rejects malformed Preview fields %#", override => { expect(() => parsePreview({ ...previewBody(), ...override }, selected)).toThrow(); });
+  it.each([
+    { reservation: { ...confirmBody().reservation, reservationState: "student_cancelled" } },
+    { reservation: { ...confirmBody().reservation, classification: "not_applicable" } },
+    { reservation: { ...confirmBody().reservation, endsAt: "2026-12-31T19:00:00+09:00" } },
+    { slot: { ...confirmBody().slot, slotId: "wrong" } }, { classificationChanges: [{}] },
+  ])("rejects malformed Confirm fields %#", override => { expect(() => parseConfirm({ ...confirmBody(), ...override }, selected)).toThrow(); });
+  it("rejects noncanonical CSRF and duplicate changes, drops all unknown fields", () => {
+    expect(() => parseCsrf({ scope: "session", csrfToken: "B".repeat(43) })).toThrow();
+    const change = { reservationId: "r", startsAt: slot().startsAt, before: "standard", after: "additional", email: "private-canary" };
+    expect(() => parsePreview(previewBody("standard", [change, change]), selected)).toThrow();
+    expect(JSON.stringify(parsePreview(previewBody("standard", [change]), selected).view)).not.toContain("private-canary");
+    expect(JSON.stringify(parseConfirm({ ...confirmBody(), notification: "private-canary" }, selected))).not.toContain("private-canary");
+  });
+});
 
 describe("TC-NF-907-01 / TC-F-002-01 [#894 calendar/model partial evidence]", () => {
   it("places weekdays, leap days and month/year boundaries by the Gregorian calendar", () => {
@@ -249,5 +443,56 @@ describe("TC-F-001-01 / TC-F-001-02 / TC-F-005-01 / TC-NF-903-01 [#894 structura
     calls[2].request.resolve(response({ error: { code: "SCHEDULE_MONTH_NOT_AVAILABLE", message: "private-canary" } }, 404)); await read;
     expect(doc.activeElement?.id).toBe("schedule-status"); expect(root.textContent).toContain("別の月を選択");
     expect(root.textContent).not.toContain("private-canary");
+  });
+});
+
+describe("TC-F-003-01〜02 / TC-F-003-08 / TC-NF-902-02 / TC-NF-914-03〜04 [#926 structural DOM partial evidence]", () => {
+  it("renders every dated classification change, keeps secrets out of DOM and focuses explicit review/result", async () => {
+    const { fetcher, calls } = harness(), doc = new TestDocument(), root = doc.createElement("main");
+    const controller = mountStudent(root as unknown as HTMLElement, "2026-12", fetcher);
+    calls[0].request.resolve(response({ month: "2026-12", slots: [slot()] }));
+    calls[1].request.resolve(response({ items: [], nextCursor: null })); await waitForInitialReads(controller);
+    const preview = root.all().find(node => node.textContent === "選択枠の予約内容をPreview")!;
+    const confirm = root.all().find(node => node.textContent === "内容を確認して予約を確定")!;
+    expect(preview.disabled).toBe(true); expect(confirm.disabled).toBe(true);
+    root.all().find(node => node.className === "slot bookable")!.activate();
+    expect(calls).toHaveLength(2); expect(preview.disabled).toBe(false); expect(confirm.disabled).toBe(true);
+    preview.activate(); expect(preview.disabled).toBe(true);
+    calls[2].request.resolve(response({ scope: "session", csrfToken: csrf }));
+    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    // Pure wire-presentation fixture: both allowed directions, not evidence of Domain calculation.
+    const changes = [
+      { reservationId: "r1", startsAt: "2026-12-31T19:00:00+09:00", before: "standard", after: "additional" },
+      { reservationId: "r2", startsAt: "2026-12-31T21:00:00+09:00", before: "additional", after: "standard" },
+    ];
+    calls[3].request.resolve(response(previewBody("additional", changes)));
+    await vi.waitFor(() => expect(controller.state.operation).toBe("review"));
+    expect(confirm.disabled).toBe(false); expect(doc.activeElement?.id).toBe("operation-status");
+    expect(root.textContent).toContain("2026年12月31日 16:00 ～ 2026年12月31日 17:30（日本時間）");
+    expect(root.textContent).toContain("区分：追加"); expect(root.textContent).toContain("Lesson開始前までは後から再分類される場合があります");
+    for (const label of ["2026年12月31日 19:00（日本時間）：標準 → 追加", "2026年12月31日 21:00（日本時間）：追加 → 標準"]) expect(root.textContent).toContain(label);
+    const serializedDom = JSON.stringify(root.all().map(node => ({ text: node.textContent, attributes: [...node.attributes], id: node.id, value: node.value })));
+    expect(serializedDom).not.toContain(expectedToken); expect(serializedDom).not.toContain(csrf);
+    expect(root.all().find(node => node.id === "operation-status")?.attributes.get("aria-live")).toBe("polite");
+    confirm.activate(); confirm.activate(); expect(confirm.disabled).toBe(true); expect(calls).toHaveLength(5);
+    calls[4].request.resolve(response(confirmBody("additional", changes), 201));
+    await vi.waitFor(() => expect(controller.state.operation).toBe("confirmed"));
+    expect(root.textContent).toContain("予約済みです"); expect(doc.activeElement?.id).toBe("operation-status");
+    expect(root.textContent).toContain("メールの配送完了を表すものではありません");
+    expect(confirm.disabled).toBe(true); expect(calls[5].init?.method).toBe("GET");
+    calls[5].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] })); await waitForInitialReads(controller);
+  });
+  it("focuses unknown outcome, removes review and disables both actions across month refresh", async () => {
+    const { fetcher, calls } = harness(), doc = new TestDocument(), root = doc.createElement("main");
+    const controller = mountStudent(root as unknown as HTMLElement, "2026-12", fetcher);
+    calls[0].request.resolve(response({ month: "2026-12", slots: [slot()] })); calls[1].request.resolve(response({ items: [], nextCursor: null })); await waitForInitialReads(controller);
+    controller.select("slot"); const read = controller.preview(); calls[2].request.resolve(response({ scope: "session", csrfToken: csrf }));
+    await vi.waitFor(() => expect(calls).toHaveLength(4)); calls[3].request.resolve(response(previewBody())); await read;
+    const command = controller.confirm(); calls[4].request.resolve(response({ error: { code: "SERVICE_UNAVAILABLE", message: "private-canary" } }, 503)); await command;
+    expect(doc.activeElement?.id).toBe("operation-status"); expect(root.textContent).toContain("結果は不明");
+    expect(root.all().find(node => node.id === "operation-content")?.textContent).toBe(""); expect(root.textContent).not.toContain("private-canary");
+    for (const label of ["選択枠の予約内容をPreview", "内容を確認して予約を確定"]) expect(root.all().find(node => node.textContent === label)?.disabled).toBe(true);
+    const month = controller.loadMonth("2026-12"); calls[5].request.resolve(response({ month: "2026-12", slots: [slot()] })); await month; controller.select("slot");
+    expect(root.textContent).toContain("結果は不明"); expect(calls).toHaveLength(6);
   });
 });

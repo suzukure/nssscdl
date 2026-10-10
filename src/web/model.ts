@@ -18,6 +18,19 @@ export interface HistoryItem {
   classification: keyof typeof classificationLabels;
 }
 export interface HistoryPage { items: HistoryItem[]; nextCursor: string | null }
+type BookingClassification = "standard" | "additional";
+export interface ClassificationChange {
+  reservationId: string; startsAt: string; before: BookingClassification; after: BookingClassification;
+}
+export interface PreviewView {
+  slot: Pick<Slot, "slotId" | "startsAt" | "endsAt">;
+  previewClassification: BookingClassification; classificationChanges: ClassificationChange[];
+}
+export interface ConfirmView {
+  slot: Slot;
+  reservation: Omit<HistoryItem, "attendanceState">;
+  classificationChanges: ClassificationChange[];
+}
 
 export function validMonth(month: string): boolean {
   return /^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(month);
@@ -78,6 +91,43 @@ function interval(value: Record<string, unknown>): { startsAt: string; endsAt: s
 function enumValue<T extends string>(value: unknown, labels: Record<T, string>): T {
   if (typeof value !== "string" || !Object.hasOwn(labels, value)) throw new Error("Invalid response");
   return value as T;
+}
+const bookingLabels = { standard: "標準", additional: "追加" } as const;
+function changes(value: unknown): ClassificationChange[] {
+  if (!Array.isArray(value)) throw new Error("Invalid response");
+  const seen = new Set<string>();
+  return value.map(raw => {
+    const item = record(raw), reservationId = id(item.reservationId);
+    const before = enumValue(item.before, bookingLabels), after = enumValue(item.after, bookingLabels);
+    if (!validDateTime(item.startsAt) || seen.has(reservationId) || before === after) throw new Error("Invalid response");
+    seen.add(reservationId);
+    return { reservationId, startsAt: item.startsAt, before, after };
+  });
+}
+function bookingSlot(value: unknown, selected: Slot): PreviewView["slot"] {
+  const item = record(value), dates = interval(item), slotId = id(item.slotId);
+  if (slotId !== selected.slotId || dates.startsAt !== selected.startsAt || dates.endsAt !== selected.endsAt) throw new Error("Invalid response");
+  return { slotId, ...dates };
+}
+export function parsePreview(value: unknown, selected: Slot): { view: PreviewView; token: string } {
+  const data = record(value);
+  return { view: { slot: bookingSlot(data.slot, selected),
+    previewClassification: enumValue(data.previewClassification, bookingLabels), classificationChanges: changes(data.classificationChanges) },
+    token: id(data.expectedStateToken) };
+}
+export function parseConfirm(value: unknown, selected: Slot): ConfirmView {
+  const data = record(value), rawSlot = record(data.slot), reservation = record(data.reservation);
+  const slot = bookingSlot(rawSlot, selected), dates = interval(reservation);
+  if (rawSlot.view !== "reserved_by_me" || reservation.reservationState !== "confirmed" ||
+      dates.startsAt !== slot.startsAt || dates.endsAt !== slot.endsAt) throw new Error("Invalid response");
+  return { slot: { ...slot, view: "reserved_by_me" }, reservation: {
+    reservationId: id(reservation.reservationId), ...dates, reservationState: "confirmed",
+    classification: enumValue(reservation.classification, bookingLabels) }, classificationChanges: changes(data.classificationChanges) };
+}
+export function parseCsrf(value: unknown): string {
+  const data = record(value);
+  if (data.scope !== "session" || typeof data.csrfToken !== "string" || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(data.csrfToken)) throw new Error("Invalid response");
+  return data.csrfToken;
 }
 export function parseSchedule(value: unknown, month: string): Slot[] {
   const data = record(value);

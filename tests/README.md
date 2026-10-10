@@ -664,3 +664,19 @@ test-only structural DOM adapterでlabel・button / 非活性説明・切替focu
 複数/大量枠の非省略を確認する。実DOM、layout計測、実keyboard / screen reader / Browser互換性の証明ではない。
 `integration/worker.test.ts` は `/student` / UI資産 / 本人履歴へのdefault HTTPが503 / no-storeのままなことを回帰する。
 320px overflow、端末timezone別実Browser、HTTPS / asset serving、Gate A〜DとTC全体Passは#537へ保持する。
+
+#926は同じ `unit/student-read.test.ts` に単一予約操作のsynthetic fetch / structural DOM検査を追加する。
+`TC-F-003-01〜02 / 05 / 08〜09 / TC-F-005-01 / TC-NF-902-02 / TC-NF-914-03〜04` のUI **partial evidence**である。
+詳細設計Application §5〜9.2 / §10.3を入力として、明示Preview前の通信なし、session CSRF取得GET、
+exact Preview / Confirm body、same-origin / no-store / redirect:error、+09:00日時、標準 / 追加説明、全before / after差分、
+token / CSRF非表示、201だけの確定表示とメール配送の分離、二重送信抑止、read-only Schedule更新・本人履歴を検査する。
+409 / retryの照合とfresh Schedule→明示再Preview、CSRF_INVALIDの再取得・再確認、403操作停止、
+401の全読取・操作無効化、古いCSRF / Preview / Confirm応答、再Preview / 月 / 枠変更、
+503 / network / malformed / unexpected statusの結果不明・書込み停止・非再送、focus / aria-liveを回帰する。
+複数差分のDOM fixtureはwireで許される両方向の投影検査であり、Domainの分類計算を証明しない。
+REQ-003 / AC-003-001〜008・016〜021、REQ-005 / AC-005-001〜002、REQ-101 / AC-101-001〜002への既存traceを維持し、
+Serverの本人解決・再検証・Transaction / NotificationIntentは既存HTTP / D1試験の責務である。
+実Chrome / actual isolated unsafe HTTP、D1書込み・履歴反映、320px layout / 実keyboard / screen reader、
+System / Acceptance全体Pass・Gate A〜D・#608全体Done・Production readyは証明しない。
+評価Workerは既存read-only GET / assetsのみでunsafe POSTは503、default Production Workerも全503を維持する。
+実接続・actual Commitの評価は#537の独立した後続Issueで行い、本Issueではrunner / config / routeを変更しない。
