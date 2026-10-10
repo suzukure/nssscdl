@@ -145,14 +145,22 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
         ["self", { "x-csrf-token": "invalid" }, 403, "CSRF_INVALID"],
         ["self", { origin: "https://other.test" }, 403, "CSRF_INVALID"],
         ["self", { "x-csrf-token": csrf.other }, 403, "CSRF_INVALID"],
-      ] as const) await error(await post(path, body, owner, headers), status, code, "none");
+      ] as const) {
+        stage = `negative-${path === previewPath ? "preview" : "confirm"}-${owner}-${code}-${"origin" in headers ? "origin" : "x-csrf-token" in headers ? "csrf" : "cookie"}`;
+        await error(await post(path, body, owner, headers), status, code, "none");
+      }
       forbidden = true;
+      stage = `negative-${path === previewPath ? "preview" : "confirm"}-role`;
       await error(await post(path, body), 403, "FORBIDDEN", "none");
       forbidden = false;
     }
+    stage = "negative-token-changed";
     await error(await post(confirmPath, { ...confirm, expectedStateToken: "v1." + "A".repeat(43) }), 409, "RESERVATION_STATE_CHANGED", "repreview");
+    stage = "negative-other-identity";
     await error(await post(confirmPath, confirm, "other"), 409, "RESERVATION_STATE_CHANGED", "repreview");
+    stage = "negative-occupied-target";
     await error(await post(previewPath, { slotId: "seed-slot-other" }), 409, "RESERVATION_NOT_AVAILABLE", "reload");
+    stage = "negative-snapshot";
     await unchanged(initial);
     expect(batches).toBe(0);
 
