@@ -146,6 +146,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #941は後続ownerが供給するstrict Browser context / 本人Session / #937 seedを消費するdormant DOM helperを追加する。明示Preview200→日時・区分・全差分のDOM照合→単発Confirm201→本人履歴1件追加、非秘密ID handoff、未知結果 / 重複 / timeout / abortでの再操作禁止を既存Unit stepのfinite fixtureで検査する。証明範囲と既存TCへのprepared partial evidence対応は `../../tests/README.md` の#941節を正とする。合成成功を実Chrome / HTTPS / D1成功とはせず、runtime owner統合・Worker停止後の独立readback・cleanup・human-gated正式runは#930に残す。
 
+#943は#937 seed / 初期proxy disposal→sealed 8788 TLS proof / listener閉鎖→同一certの8789 Worker→新strict Context / 本人Cookie / 単発DOM→Browser public close→Worker単発stop / port閉鎖→独立5表readback / 秘密scanをprepared inner childとして接続する。既存Unit stepのfinite Port fixtureで順序・未知 / 中断 / 重複のfail-closed・再操作禁止・秘密非出力・import時非起動とread-only / Production不変を検査する。実装境界と既存TCへのprepared integration partial evidenceは `../../tests/README.md` の#943節を正とする。実Chrome / Worker / D1の成功とは区別し、outer owner / 同一Invocation終端 / 完全cleanup / booking証拠、実環境互換性とhuman-gated正式normal・負例 / 探索評価、#537 Gate A未了を#930へ残す。
+
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
 | A: local操作評価 | local HTTPS Worker + local D1 + test-owned Sessionで実画面の正常・409再確認・401失効・403拒否・503 / 結果不明非再送を確認する。keyboard / focus / narrow viewportとdefault到達不可も検証する。fake Providerの結果とTransaction内Reservation / Audit / Intent / outboxのCommitを別々に観察する。local成功は実Provider配送・対象環境D1・System / Acceptance TC全体のPassではない。 |
