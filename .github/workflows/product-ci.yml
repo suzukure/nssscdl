@@ -112,3 +112,22 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      - name: '#930 booking normal proof (temporary)'
+        if: steps.applicability.outputs.applicable == 'true'
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-booking-outer.mjs', '--run'], {
+            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
+          });
+          if (result.error || result.signal || result.status !== 0 || result.stderr !== '' ||
+              result.stdout !== "#945 booking: isolated child prepared / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified\n") {
+            console.error('BOOKING_PROOF_FAILED; do not retry; human inspection required');
+            process.exitCode = 1;
+          } else {
+            console.log("#945 booking: isolated child prepared / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified");
+          }
+          NODE
