@@ -720,3 +720,34 @@ real Session Cookie → CSRF GET → Preview 200 → 正規tokenのConfirm 201�
 この試験の追加自体は実行成功の証拠ではない。current-head標準Product CI / PR Traceability / 独立Claude Reviewはworkflow側で確認する。
 実Browser / HTTPS通信、通信断・未知結果の実障害・高並行race・remote D1・Provider配送・Gate A〜Dは未証明。
 local DB試験をProduction readinessや#537 / #608全体Doneへ読み替えず、後続順序#931 → #929 → #930を維持する。
+
+
+## #929 独立localhost予約Worker（isolated HTTP fixture）
+
+`evaluation/reservation-worker.ts` と `evaluation/wrangler.reservation.jsonc` は#928 factoryだけを合成する独立入口。
+固定 `https://127.0.0.1:8789`、`workers_dev:false` / `preview_urls:false`、Worker-firstの6資産と
+既存3 GET、`POST /api/me/reservations/preview` / `POST /api/me/reservations`だけを許可する。
+Host / Forwarded / Refererをorigin設定に使わず、未知method / path / URL originは503。
+許可API内のstrict JSON・Session / Origin / CSRF・Transaction判断とResponseは既存Adapterへ委譲する。
+Envは正確な `ASSETS` + `EVALUATION_BOOKING_DB`、DBはPrimary prepare / batch Portを要求する。
+HMAC-SHA-256 non-extractable sign-only鍵はWorker lifetimeで一度生成し、同時要求で共有、失敗はrestartまでsticky。
+raw Session / CSRF / key / hash・SQLをenv / URL / consoleへ出さず、Provider pickup / 外部送信を持たない。
+
+専用DB identityは `nssscdl-local-booking-evaluation`、後続のowned persistは `.wrangler/student-booking-evaluation` とする。
+Production migrations `0001`〜`0012`とtest-owned strict seedだけを使い、read-only専用persist / seed / snapshotを再利用・変更しない。
+今回はpersistent DB provisioning / seed runner / cleanupを実装・起動しない。#930で専用owned stateと実通信を検証する。
+`evaluation/verify-reservation-config.mjs` を既存 `npm run build` の最初に実行し、closed configの全項目を照合する。
+公開Domain・remote / 追加binding・port / entry・override不一致を拒否し、通常Production configは変更しない。
+`integration/reservation-evaluation-worker.test.ts` は既存Product CIに入り、synthetic D1 row / acknowledgementで
+実factory / Guard / Preview / Confirm接続、route table、CSRF GET、JSON / header / Origin / CSRF正負、
+401 / 403 / 409 / 503・Cookie / no-store・secret非反射・拒否時無write、6資産・redirect拒否、lifetime鍵を検査する。
+従来 `integration/evaluation-worker.test.ts` / `read-only-student-isolation.test.ts` と#914 / #922 smoke fixtureは不変で回帰する。
+Production全503は新fixtureでも検査する。synthetic成功は#931の実D1 atomic成功と区別する。
+
+対応は#928節と同じ既存POL / BR / REQ / AC / TCへのisolated HTTP **partial evidence**。
+REQ-901 / 902を含む既存識別子・traceabilityとCON-001/002/009・OOS-001/002の意味は変更しない。
+既存live runnerはread-onlyの8788 / exact binding / snapshotに封印されており、新入口へ転用しない。
+実HTTPS予約POST・Chrome Preview / Confirm・actual HTTP経由のD1 readback / owned cleanupは未検証で#930の責務。
+新TLS / systemd / Browser proof基盤・暗黙run / retry・workflow一時編集は追加しない。
+current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
+#537 Gate A〜D / #608 Value Unit Done / Production readiness / Provider配送成功は主張しない。

@@ -1,4 +1,4 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["worker.ts"]
+  "include": ["worker.ts", "reservation-worker.ts", "reservation-config.ts"]
 }

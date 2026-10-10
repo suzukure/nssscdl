@@ -243,7 +243,7 @@ Expected State TokenはUI memoryに保持し、内部Snapshotを復元・表示�
 古い応答を新しい確認として採用せず、古いConfirmの結果不明も将来の書込みを停止する。401は古い要求からでも停止を優先する。
 201後はread-only Scheduleを更新し、本人履歴を明示再取得できる。結果不明後のread-only再取得はConfirm成功の推定に使わない。
 synthetic fetch / structural DOMのpartial evidenceと対応TCは `../../tests/README.md` を参照する。
-評価Workerのunsafe POSTは503を維持し、実Browser + actual isolated HTTP / D1 Commit、Gate A〜Dは#537の独立した後続責務である。
+既存read-only評価Workerのunsafe POSTは503を維持する。#929の独立予約入口と部分証拠は§9.3を参照し、実Browser + actual isolated HTTP / D1 Commit、Gate A〜Dは#537の独立した後続責務である。
 
 ### 9.2 Browser Session / CSRFと隔離composition
 
@@ -268,6 +268,8 @@ cursor用鍵はoperator / trusted server setupでWeb CryptoのHMAC-SHA-256署名
 後続compositionのproofは、(1) default entrypointのimport / build artifact / route / configから評価fixtureへ到達不可、(2) defaultへの `/student` / CSRF / 4 APIを含む実Requestが503、(3) 評価側が実GuardとProduction D1 Adapterを使い、seedはtest entrypointに限定され、任意identity入力で迂回不可、(4) config / binding / secret identity不一致でfail-closed、(5) Production Provider・Scheduled side effectへ接続不可、を静的検査とruntime assertionで確認する。UI非表示だけをproofとしない。fake Providerの観察とReservation / Audit / Intent / outboxのCommit観察は分離し、実配送を主張しない。
 
 ### 9.3 評価Gateと後続責務
+
+#929は `tests/evaluation/reservation-worker.ts` / `wrangler.reservation.jsonc` の独立localhost入口で#928 factoryを利用する。固定HTTPS `127.0.0.1:8789`、専用 `EVALUATION_BOOKING_DB`、6静的資産・既存3 GET・Preview / Confirmの2 POSTだけを許可し、Origin / Session / CSRF / Transactionの判断は既存Adapterへ委譲する。read-only `worker.ts` / `wrangler.jsonc`、8788の証拠・seed / snapshot・通常Production全503は維持する。strict config検査とisolated HTTP fixtureの証明範囲・専用persist境界は `../../tests/README.md` の#929節を正とする。実HTTPS / Chrome・owned cleanupを起動せず、新proof infrastructureを追加しない。実D1の先行部分証拠#931とsynthetic HTTP応答を区別し、実画面の統合証明は#930へ残す。
 
 Gateの証跡・完了判定は `../40_test/01_TestPlan.md` §7 / §9 / §12、deploy / migration / rollback / cleanupの共通正本は `../10_basic_design/01_SystemArchitecture.md` §6とする。順序はA: local HTTPS Browser + isolated D1、B: 必要性と人間承認後の隔離remote対象環境D1 proof、C: #537の正式Browser Matrix / 実mobile / deploy・rollback / Backup-Restore、D: Production readiness / #534 Business Cutoverである。Aの成功をB〜DのPassへ読み替えない。
 
