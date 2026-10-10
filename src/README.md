@@ -153,10 +153,13 @@ Guardのread-only本人解決、Primary SELECT、状態分離、Tokyo日時、li
 default Workerは503、Production鍵・binding・公開routeは未接続。
 
 
-`web/` は#894のread-only Web/UI Presentation。`model.ts` がBrowser側の既存wireの安全な投影と
-UTC暦演算 / +09:00表示、`controller.ts` がsame-origin GET・要求世代・401停止、`view.ts` が
+`web/` は#894のread-only表示と#926の単一予約Preview / Confirm Web/UI Presentation。`model.ts` がBrowser側の既存wireの安全な投影と
+UTC暦演算 / +09:00表示、`controller.ts` がsame-origin取得・明示Preview / Confirm・要求世代・401停止、`view.ts` が
 native DOM / focus / Calendar・List / 本人履歴、`student.ts` がHTTPS用起動を担当する。
 `student.html` / `student.css` とES modulesは既存buildで `dist/student/` へ生成する。
-Worker / server moduleをimportせず、default entrypointから到達不能。配信は後続#537専用構成の責務。
-選択はmemoryだけで予約を確定せず、Preview / Confirm / CSRF / login / storageは追加しない。
+Worker / server moduleをimportせず、default entrypointから到達不能。配信は既存#922の評価専用read-only構成だけである。
+選択はmemoryだけで通信せず、明示Preview時だけSession CSRF取得GET→Preview POST、確認後の明示Confirmだけで確定POSTを1回送る。
+CSRF / Expected State Tokenはprivate memoryに保持し、DOM / storage / URL / Logへ出さない。
+結果不明・403は書込み停止、401は個人表示と全要求を無効化する。評価Workerのunsafe POSTは503のままであり、
+検証はsynthetic fetch / structural DOMに限定する。actual isolated HTTP / D1 Commitは#537の独立した後続責務。
 設計・比較・証拠限界の正本は詳細設計Application §9.1、試験は `tests/README.md` を参照する。

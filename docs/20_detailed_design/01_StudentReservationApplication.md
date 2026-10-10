@@ -225,7 +225,7 @@ native controlの順序・label・可視focus・状態のlive region、切替but
 | Browser状態 / 操作 | 表示・遷移と送信条件 |
 | --- | --- |
 | 月選択・読込 | 指定した `YYYY-MM` に§4のGETを行う。公開月一覧APIは追加しない。404は§8の案内を表示し別月選択へ戻す。calendar / listは同じSlot Viewを用い、4値を文字で区別し、`bookable`だけを新規予約選択対象とする。 |
-| 枠選択・Preview中 | 選択Slotに§5のPOSTを送る。選択だけでConfirmしない。読込中は確定操作を無効にする。 |
+| 枠選択・Preview中 | 選択だけでは通信しない。ユーザーの明示Preview時だけ§9.2のSession CSRF取得GETを行い、選択Slotに§5のPOSTを送る。読込中は確定操作を無効にする。 |
 | Preview確認 | 開始・終了日時をAsia/Tokyoで表示し、`previewClassification`、`classificationChanges`全件の日時とbefore / afterを提示する。差分は省略せず、追加はAC-003-008の説明を含め、継続を妨げない。内容を確認してからだけ明示Confirmを可能にする。 |
 | Confirm中 | §6の `slotId / expectedStateToken` のみを送る。二重操作を抑止し、同じ確認からの自動再送をしない。UIの抑止はServerのTransaction Guardを代替しない。 |
 | 201確定 | Commit済みResponseの日時・予約状態・分類・区分変更を表示する。NotificationIntent commitと配送成功を混同しない。Scheduleを更新し、§7の本人履歴へ進める。 |
@@ -235,6 +235,15 @@ native controlの順序・label・可視focus・状態のlive region、切替but
 Expected State TokenはUI memoryに保持し、内部Snapshotを復元・表示しない。失効はServerのSession / Guard判定に従い、tokenの独自TTLやClient時刻によるCommit可否を追加しない。画面には他生徒PII、料金、月間標準回数N、内部Session / hash / Snapshotを出さない。日時・分類・差分は色だけに依存せず、月選択・表示切替・枠選択・Preview・Confirm・履歴をkeyboardで操作でき、focusが見えることを最小受入条件とする。Preview / 結果 / エラーへのfocus移動で現在状態を把握でき、320 CSS px以上の狭幅でも全差分と確定操作を確認できることを検証する。通常Page全体の横scrollを避け、calendar / table内部の局所scrollはREQ-902に従う。
 
 エラーは§8 / §10.8のcode / message / retryを使用する。401は確認状態・memory CSRFを破棄し認証が必要と案内して停止する（隔離評価ではtrusted setupへ戻り、未実装loginを成功扱いしない）。403は操作不可、`CSRF_INVALID`は再読込・CSRF再取得と再確認を案内する。401以外はCookieを除去しない。409は安全な最新Viewを案内して上表へ戻す。503、通信断、応答不明は予約成立と表示せず、確認状態とExpected State Tokenを破棄して停止し、Confirmを自動再送しない。安全に本人履歴 / Scheduleを再取得できても、それはread-onlyの状態確認であり書込み再試行ではない。201を受け取らなかった操作の成功を推測せず、履歴では取得した現在状態だけを表示する。
+
+#926は既存6 Browser資産内でこの単一予約操作を実装する。CSRF / Expected State Tokenを表示stateから分離したprivate memoryに保持し、
+200 Preview / 201 Confirmの必須field・型・日時・選択Slot一致・分類と全差分を検査して投影する。
+同じ確認のtokenはConfirm送信前に消費し、月 / 枠変更後も進行中の操作が終わるまで新たな操作を送らない。
+確認済み枠の変更・再Previewは最新Scheduleの再取得と枠の選び直しを先行し、再度の明示Preview・人間確認を要求する。
+古い応答を新しい確認として採用せず、古いConfirmの結果不明も将来の書込みを停止する。401は古い要求からでも停止を優先する。
+201後はread-only Scheduleを更新し、本人履歴を明示再取得できる。結果不明後のread-only再取得はConfirm成功の推定に使わない。
+synthetic fetch / structural DOMのpartial evidenceと対応TCは `../../tests/README.md` を参照する。
+評価Workerのunsafe POSTは503を維持し、実Browser + actual isolated HTTP / D1 Commit、Gate A〜Dは#537の独立した後続責務である。
 
 ### 9.2 Browser Session / CSRFと隔離composition
 
