@@ -150,6 +150,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #945は明示opt-in予約outerとisolated child、booking専用private reportをprepared / finite限定で接続する。既存BrowserUnit injection seamとinner finite Portsでchild一回・同一Invocation / cgroup no-live→strict report→独立8788/8789閉鎖 / owned files確認→正常release→完全cleanupの順序、unknown / abort / timeout / partial report / identity driftの保持・非再実行、fixture / 旧read-only証拠の不採用を既存Unit stepで検査する。詳細契約と既存TC-F-003/005・TC-NF-902/914へのprepared outer partial evidenceは `../../tests/README.md` の#945節を正とする。実systemd / Chrome / Worker / D1 / HTTPSを起動せず、180秒 / 最大120秒の実行可能性・実機non-root ss所有観測・クラッシュ復旧、人間承認後のofficial normal1回 / CI temporary安全差分と全gateは#930へ残す。current-head正式CI・Traceability・独立Reviewをfixtureで代替しない。
 
+同節の#948限定caller guardは通常main / PR・Production / 旧sealed / 他workflowの拒否を維持し、same-repositoryの一時Proof PRのGit / event / fresh base・source identity、Product CI末尾一stepだけの差分、単発実行上限・strict非秘密出力をfinite fixtureで検査する。branch名・approval文言だけでは許可せず、検証不能はfail-closed。固定step文法・境界の正本は `../../tests/README.md` の#945節と同testとする。実証stepは追加せず、#930の人間承認checkpoint / 対象HEAD照合・未使用normal1回のfresh gateと正式CI / Traceability / Reviewを単体判定で代替しない。既存識別子・AC→TC対応・Gate A〜Dは変更しない。
+
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
 | A: local操作評価 | local HTTPS Worker + local D1 + test-owned Sessionで実画面の正常・409再確認・401失効・403拒否・503 / 結果不明非再送を確認する。keyboard / focus / narrow viewportとdefault到達不可も検証する。fake Providerの結果とTransaction内Reservation / Audit / Intent / outboxのCommitを別々に観察する。local成功は実Provider配送・対象環境D1・System / Acceptance TC全体のPassではない。 |

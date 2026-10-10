@@ -911,6 +911,12 @@ preflightで残予算が減った場合は既存unitの短いhard期限が優先
 
 `evaluation/trusted-booking-outer.test.mjs` は実inner controllerのfinite Portsと既存BrowserUnit injection seamで上記順序・一回性・report拒否・非終端 / unknown / abort / timeout時の非削除・秘密非反射を検査する。
 既存 `npm run test:unit` へ追加し、Wrangler / Chrome / systemd / real D1 / HTTPSは起動しない。
+#948の同ファイル内caller guardはProduction / 旧sealed / 他workflowの予約outer・child・report参照を引き続き拒否する。
+通常main / 通常PRのProduct CI参照も拒否し、GitHub Actionsのsame-repository `pull_request` / base `main` / `proof/930-booking-normal-...`だけを例外候補とする。
+eventのPR HEADとGit HEAD、event baseとcheckout時に取得した`origin/main`、merge-base、clean sourceを照合し、base→HEAD差分がProduct CI一ファイルの変更だけであることを必須とする。baseが進んだ・取得不能・dirty sourceならfail-closedとし、fresh checkout / eventの再照合が必要。
+正本base workflowとのbyte単位比較で既存9コマンド・permissions・trigger・actions・step順序を保持し、同testの`proofStep`に一致する末尾一stepだけを許容する。単発`--run`、runner step上限4分、outer subprocess上限190秒 / 出力4096 bytes、stdoutの既存固定checkpoint完全一致・stderr空を検査し、raw出力を反射せず固定失敗文だけを返す。outerの180秒 / child最大120秒を増量せず、retryしない。190秒はouter後の10秒margin、4分はwrapperのbackstopであり、cleanup成功を保証しない。
+positive / negativeは有限fixtureと実行しないspawn adapterで検査する。guardの許容は人間承認・正式proofではなく、実証用一時PR作成・実行前後に#930の承認checkpoint / scope / 対象HEAD・PR / Runを別途人間が照合する。#947は実Chrome step到達前に停止し実走0回という supplied evidenceを引き継ぎ、未使用normal1回・期限・Secrets / Production禁止・中止条件・原状復元のfresh gateは#930に残す。本Issueではworkflow追加や実証を行わない。
+限定guardのWACはR0 / C0相当 / P1 / B1、Green。Issueが明示した静的判定Contractの定義・finite proofだけであり、下記prepared runtimeのC1を昇格しない。
 WACはR0 / C1 / P1 / B1、Yellow prepared限定。#941と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared outer partial evidenceのみ。
 識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002、Production / SQL / config / workflow / 旧read-only sealed semanticsは変更しない。
 実機non-root `ss -ltnp` PID可視性、Node24 native .ts、Playwright / MIME / Cookie、120秒 / 180秒実runtime、クラッシュ後report / owned cleanupは未実証。
