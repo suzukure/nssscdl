@@ -13,7 +13,9 @@ import { bookingOuterCheckpoint, useBookingOuter } from "./trusted-booking-outer
 import { bookingChildComplete, bookingChildUnknown, bookingFixtureComplete, parseBookingReport, readBookingReport, writeBookingReport } from "./trusted-booking-report.mjs";
 
 const canary = "private-session-state-csrf-sql-pii-stderr";
-const fixed = e => /^TRUSTED_BOOKING_OUTER_FAILED; stage=[a-z]+; retain owned files; do not retry$/.test(e.message) && !e.stack.includes(canary) && !("cause" in e);
+const stages = ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator"];
+const diagnostic = stage => `TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`;
+const fixed = e => [...stages, "unknown"].some(stage => e.message === diagnostic(stage)) && !e.stack.includes(canary) && !("cause" in e);
 
 // The real inner controller through finite Ports: no D1/TLS/Chrome/systemd execution.
 function innerPorts(events, fault, signal) {
@@ -110,13 +112,72 @@ test("#945 one inner seed/Confirm/readback, same-invocation terminal, booking re
 });
 
 test("#945 unknown/partial child, readback missing, cgroup live, drift, abort/timeout, bad report or release retain files; no re-run/re-stop", async () => {
-  for (const fault of ["preflight", "start", "manager", "invocation", "live", "timeout", "abort", "late-abort", "fixture-report", "report",
-    "listener", "generated", "ownership", "identity-drift", "release", "stop", "seed", "confirm201", "worker-stop", "readback-five-tables", "secret-scan"]) {
+  const faults = { preflight: "preflight", start: "start", manager: "start", invocation: "terminal", live: "terminal",
+    timeout: "terminal", abort: "terminal", "late-abort": "ownership", "fixture-report": "report", report: "report",
+    listener: "ownership", generated: "ownership", ownership: "ownership", "identity-drift": "remove", release: "release",
+    stop: "release", seed: "terminal", confirm201: "terminal", "worker-stop": "terminal", "readback-five-tables": "terminal", "secret-scan": "terminal" };
+  for (const [fault, stage] of Object.entries(faults)) {
     const f = fixture(fault);
-    await assert.rejects(useBookingOuter(f.unit, f.ports), fixed, fault);
+    await assert.rejects(useBookingOuter(f.unit, f.ports), e => fixed(e) && e.message === diagnostic(stage), fault);
     assert.ok(!f.events.includes("delete"), fault);
     for (const event of ["start", "seed", "confirm201", "stop"]) assert.ok(f.events.filter(e => e === event).length <= 1, fault);
     const calls = f.events.length; await f.unit.dispose(); assert.equal(f.events.length, calls);
+  }
+});
+
+// Execute the real outer catch/finally and CLI text with finite resource adapters.
+// No --run subprocess, filesystem provisioning, commands or manager are invoked.
+async function outerCliFixture(run) {
+  const source = readFileSync("tests/evaluation/trusted-booking-outer.mjs", "utf8");
+  const sanitizing = source.slice(source.indexOf("const failure ="), source.indexOf("export const bookingOuterCheckpoint"));
+  const operator = source.slice(source.indexOf("export async function runBookingOuter"))
+    .replace("export async function", "async function").replace("fileURLToPath(import.meta.url)", "'fixture-outer'")
+    .replace("\nif (process.argv[1]", `
+const actualRun = runBookingOuter;
+runBookingOuter = async () => {
+  try { return await actualRun(); } catch (error) { inspectError(error); throw error; }
+};
+if (process.argv[1]`);
+  const stdout = [], stderr = [], listeners = new Set(); let calls = 0, closes = 0;
+  const process = { platform: "linux", version: "v24.0.0", execPath: "fixture-node", argv: ["fixture-node", "fixture-outer", "--run"],
+    on: name => listeners.add(name), removeListener: name => listeners.delete(name) };
+  await runInNewContext(`(async () => { ${sanitizing}\n${operator}\n })()`, {
+    process, AbortController, bookingOuterCheckpoint, root: "fixture-root", persist: "fixture-persist", oldPersist: "fixture-old",
+    join, tmpdir: () => "fixture-tmp", resolve: value => value, mkdtempSync: () => "fixture-owned", ownedIdentity: () => ({}),
+    BrowserUnit: class { close() { closes++; } },
+    useBookingOuter: async () => { calls++; return run(); },
+    inspectError: error => assert.ok(fixed(error), "outer rethrow is sanitized before CLI"),
+    exec: () => { throw new Error("fixture must not execute commands"); },
+    console: { log: value => stdout.push(value), error: value => stderr.push(value) },
+  });
+  assert.equal(calls, 1); assert.equal(closes, 1); assert.equal(listeners.size, 0);
+  return { stdout, stderr, status: process.exitCode ?? 0 };
+}
+
+test("#951 real outer catch and CLI preserve finite stages and unchanged success; no raw error reflection", async () => {
+  const success = await outerCliFixture(async () => {
+    const f = fixture(); return useBookingOuter(f.unit, f.ports);
+  });
+  assert.deepEqual(success, { stdout: [bookingOuterCheckpoint], stderr: [], status: 0 });
+  for (const fault of ["preflight", "start", "report", "ownership", "release", "identity-drift", "seed", "manager", "timeout", "abort"]) {
+    const f = fixture(fault);
+    const stage = { "identity-drift": "remove", seed: "terminal", manager: "start", timeout: "terminal", abort: "terminal" }[fault] ?? fault;
+    assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
+      { stdout: [], stderr: [diagnostic(stage)], status: 1 }, fault);
+    assert.ok(!f.events.includes("delete"));
+  }
+  for (const stage of stages) {
+    const error = new Error(diagnostic(stage), { cause: new Error(canary) }); error.stack = canary;
+    assert.deepEqual(await outerCliFixture(async () => { throw error; }),
+      { stdout: [], stderr: [diagnostic(stage)], status: 1 });
+  }
+  for (const error of [new Error(canary), null, undefined, diagnostic("terminal"), {},
+    { message: { toString() { throw new Error(canary); } } }, { get message() { throw new Error(canary); } },
+    ...["inner", "TERMINAL", "", canary].map(stage => new Error(diagnostic(stage))),
+    ...["\n", "\r\n", canary, "\0"].map(suffix => new Error(diagnostic("terminal") + suffix)),
+    new Error(canary + diagnostic("terminal")), new Error(diagnostic("terminal").replace("do not retry", "retry"))]) {
+    assert.deepEqual(await outerCliFixture(async () => { throw error; }),
+      { stdout: [], stderr: [diagnostic("unknown")], status: 1 });
   }
 });
 
@@ -174,7 +235,13 @@ const proofStep = `
           });
           if (result.error || result.signal || result.status !== 0 || result.stderr !== '' ||
               result.stdout !== ${JSON.stringify(bookingOuterCheckpoint + "\n")}) {
-            console.error('BOOKING_PROOF_FAILED; do not retry; human inspection required');
+            let stage = 'unknown';
+            if (!result.error && !result.signal && result.status === 1 && result.stdout === '') {
+              for (const allowed of ['preflight', 'start', 'terminal', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator']) {
+                if (result.stderr === 'TRUSTED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
+              }
+            }
+            console.error('BOOKING_PROOF_FAILED; stage=' + stage);
             process.exitCode = 1;
           } else {
             console.log(${JSON.stringify(bookingOuterCheckpoint)});
@@ -330,6 +397,9 @@ test("#948 deny source/sealed/other workflow references and all deviations from 
     original.replace("timeout-minutes: 4", "timeout-minutes: 5"), original.replace("timeout: 190000", "timeout: 300000"),
     original.replace("'--run'", "'--run', '--remote'"), original.replace("result.stderr !== ''", "false"),
     original.replace("result.stdout !==", "false && result.stdout !=="),
+    original.replace("result.status === 1", "true"), original.replace("result.stdout === ''", "true"),
+    original.replace("result.stderr ===", "String(result.stderr) ==="),
+    original.replace("stage=' + stage", "stage=' + result.stderr"),
     original.replace("        shell: bash", "        continue-on-error: true\n        shell: bash"),
     original.replace("        shell: bash", "        env:\n          TOKEN: unsafe\n        shell: bash"),
     original + "      - run: echo extra\n", original.replace("          NODE\n", "          NODE\n          npm test\n"),
@@ -367,9 +437,25 @@ test("#948 candidate output filter runs once, bounds execution and emits only fi
   const script = proofStep.split("          node --input-type=module <<'NODE'\n")[1]
     .replace("          import { spawnSync } from 'node:child_process';\n", "").replace(/          NODE\n$/, "");
   const success = { status: 0, signal: null, stdout: bookingOuterCheckpoint + "\n", stderr: "" };
-  for (const result of [success, { ...success, stdout: canary }, { ...success, stderr: canary },
+  const failed = { status: 1, signal: null, stdout: "", stderr: diagnostic("terminal") + "\n" };
+  const unknown = [
+    { ...success, stdout: canary }, { ...success, stderr: canary },
     { ...success, status: 1 }, { ...success, signal: "SIGTERM" }, { ...success, error: new Error(canary) },
-    { ...success, stdout: success.stdout + "\n" }]) {
+    { ...success, stdout: success.stdout + "\n" },
+    { ...failed, stdout: canary }, { ...failed, stdout: bookingOuterCheckpoint + "\n" },
+    { ...failed, stdout: Buffer.from("") }, { ...failed, signal: "SIGTERM" },
+    ...[0, 2, null, "1"].map(status => ({ ...failed, status })),
+    ...["SIGTERM", "SIGKILL"].map(signal => ({ ...failed, status: null, signal })),
+    ...["ETIMEDOUT", "ENOBUFS", "ENOENT"].map(code => ({ ...failed, error: Object.assign(new Error(canary), { code }) })),
+    { ...failed, stderr: canary }, { ...failed, stderr: Buffer.from(failed.stderr) },
+    ...["inner", "unknown", "TERMINAL", "", canary].map(stage => ({ ...failed, stderr: diagnostic(stage) + "\n" })),
+    ...stages.flatMap(stage => [diagnostic(stage), diagnostic(stage) + "\r\n", diagnostic(stage) + "\n\n",
+      diagnostic(stage) + "\n" + canary, canary + diagnostic(stage) + "\n", diagnostic(stage) + "\0\n",
+      diagnostic(stage).replace("do not retry", "retry") + "\n"].map(stderr => ({ ...failed, stderr }))),
+  ];
+  const cases = [[success, undefined], ...stages.map(stage => [{ ...failed, stderr: diagnostic(stage) + "\n" }, stage]),
+    ...unknown.map(result => [result, "unknown"])];
+  for (const [result, stage] of cases) {
     let calls = 0;
     const stdout = [], stderr = [], process = { execPath: "fixture-node", exitCode: undefined };
     runInNewContext(script, { process,
@@ -384,7 +470,7 @@ test("#948 candidate output filter runs once, bounds execution and emits only fi
       } });
     assert.equal(calls, 1);
     assert.deepEqual(stdout, result === success ? [bookingOuterCheckpoint] : []);
-    assert.deepEqual(stderr, result === success ? [] : ["BOOKING_PROOF_FAILED; do not retry; human inspection required"]);
+    assert.deepEqual(stderr, result === success ? [] : [`BOOKING_PROOF_FAILED; stage=${stage}`]);
     assert.equal(process.exitCode, result === success ? undefined : 1);
   }
 });
