@@ -285,7 +285,10 @@ test-only Node HTTPSは`127.0.0.1:8788`だけで固定非機密textを返す。p
 不特定hostnameはresolverで拒否し、proxyを使わない。TLS session ticketを無効化し、応答はconnection closeとする。
 `ignoreHTTPSErrors`はfalse、無検証flag / policy / global trust変更なし。
 `withIsolatedBrowserTls(callback)` は正負probe後のowned context / 固定originだけをcallbackへ渡し、
-callback終了後も同じ停止・保全契約を適用する最小test helper。#914 consumerは未接続。
+callback終了後も同じ停止・保全契約を適用する最小test helper。#914の明示`workerHandoff`だけは
+正負probe後にNode listener / socketを停止し、port閉鎖を確認して同じcontext / origin / cert pathsを渡す。
+この経路だけは公開`chromium.launch()` / `Browser.newContext()`を使い、callbackへ`browser`を明示渡す。
+default proof / CLIはWorker・Cookie・D1を接続しない。
 非秘密checkpointはHEAD / UTC / Node・browser exact version・binary / NSS tool・OpenSSL版、
 HOME相対NSS path、証明書fingerprint、固定正負結果、cleanup、未実施事項だけ。
 key / cert本文 / raw browser error / child envはstdout / Artifactへ出さない。
@@ -296,10 +299,105 @@ key / cert本文 / raw browser error / child envはstdout / Artifactへ出さな
 成功runと意図的失敗runの終了・cleanupを記録する（後者の期待exit 1を成功probeへすり替えない）。
 一時stepは最終差分から撤去し、proof HEAD / final HEADの実行対象blob一致、final HEAD標準Product CI /
 PR Traceabilityを別途確認する。Codexのローカル報告・fixtureだけは正式実Browser証拠に算入しない。
-正式実証・レビュー未完了なら#915はOpen / PR Draft維持、#914はresumeしない。
+このTLS-only proofをBrowser Cookie本人GETの正式証拠へ読み替えない。#914統合の証明範囲は次節とする。
 これは既存`TC-F-001/002/005/207/211`・`TC-NF-914`のBrowser TLS環境前提の部分証拠のみ。
 POL→BR→REQ→AC→TC、CON / OOSの意味・identifierは変更せず、Session本人GET / 失効401、
 Gate A〜D、REQ-901/902、#608全体、System / Acceptance TC全体のPassは証明しない。
+
+## #914 opt-in trusted BrowserContext / same-cert Worker 3 GET
+
+Issue本文で確定した単一listener handoffを`evaluation/trusted-browser-smoke.mjs`から明示実行する。
+#906 ownerのfresh persist / migrations 0001..0012とsanitized `trusted-https-process.mjs`を再利用し、
+Session / CSRFの生成・比較はtrusted child内で行う。Sessionの搬出は公式Cookie設定の内部IPC→run所有Cookie jar→固定HTTPS Cookie headerだけに限定し、汎用IPCへ広げない。
+標準#906 / #908経路と#915 TLS-only CLIは維持する。
+Linux / Node 24 / locked Wrangler / Playwrightに加え、固定installed `/usr/bin/google-chrome`、
+certutil / OpenSSL / ss / ps / readable `/proc` / browser sandboxに加え、非root UID/Group、cgroup v2、systemd ExitType=cgroup、非対話unit操作が必須。不足時は取得・fallbackせず停止する。
+`NSSSCDL_CHROMIUM_PATH`やDEBUGをchild env allowlistへ追加しない。
+
+```sh
+node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs
+node tests/evaluation/trusted-browser-smoke.mjs --run
+node tests/evaluation/trusted-browser-smoke.mjs --run --fail-after-positive
+```
+
+seed→proxy dispose→read-only inspect→run-owned NSS / profile / TLS正負probe→Node listenerとsocket停止 / port閉鎖→
+同じkey/cert pathsのWranglerを同じ`https://127.0.0.1:8788`へ起動する。
+証明済みbrowser process / trustは維持し、fileとlive Worker peerのfingerprint / IP SAN、loopback / process groupを照合する。
+#914だけは公開`chromium.launch()`で同一Browserを所有し、TLS probe用とSession用self / other / missing / foreignを
+別々の非永続`Browser.newContext()`として作る。TLS probe用ContextへCookieを入れない。
+#915単独CLIの`launchPersistentContext`は維持する。そのpersistent Contextの`browser()`はnullであり、consumerのBrowser取得に使わない。
+Playwright 1.64.0の`launch()`が呼出Nodeの`os.tmpdir()`へ生成する`playwright_chromiumdev_profile-*` / `playwright-artifacts-*`を、
+#906 sanitized child専用TMPDIR内の実path・所有・0700・非symlinkで確認する。Chromiumの実HOMEはrun専用TLS HOMEのまま。
+唯一のmainのNUL区切りexact profile引数・uid・読取り前後のPID/starttime・単一exact HOMEを検証する。
+mainのNoNewPrivs=1と、trusted childと同じ専用unitのcgroup所属を起動後・TLS/consumer前に検証する。
+#914は全子のPGRP/SID一致・mutableな全子environ HOME一致・全PIDの/proc消失の方式を置換する。
+cgroupは所属と生存process不在（no-live）の手段であり、TLS・sandbox・HOME内容検査を代替しない。
+外部管理者の無断kill/移動や同UIDの悪意ある攻撃に耐える新しい機構、各子のexit=0やzombie PID消失の証明は含まない。
+既存生成物があれば起動せず、他runのprofileを推測・glob削除しない。
+公式`addCookies`のroot `url` alternative（Domain / pathを併記しない）でhost-only / Path=/を導出し、
+実Cookie jarのSecure / HttpOnly / SameSite=Lax / root / host / session期限と`document.cookie`非露出を確認する。
+
+既存`/unknown`の503 JSON documentでsame-origin pageを確立し、page内の本物の`fetch`だけで3 GETを実行する。
+requestの`Sec-Fetch-Site: same-origin`はbrowser engineの生成値を観察する。強制header / route mock / APIRequestContextは使わない。
+`trusted-https-assertions.mjs`のexact本人5枠 / 履歴1件 / Session CSRF、200 / missing・foreign 401、
+no-store / no CORS / csrf no-referrerを再利用する。Fetchが隠す401 Set-CookieはdriverのResponse APIでmemory内だけで検査し、jar消去も確認する。
+request終了→Worker停止 / port閉鎖→selfのみ失効 / inspect / proxy dispose→同cert再起動→同Context self 401 / other 200とする。
+終了は公開`Browser.close()`→Worker停止 / port閉鎖→Playwright生成profile / artifacts消滅確認→最終inspect / secret scan→child報告・終了→outerのunit no-live確認・解放→owned files削除の順。
+profile / artifacts残存も停止不明と同じ保全条件とし、手動削除や再起動で成功へ置き換えない。
+停止不明・proxy失敗では関連owned DB / HOME / NSS / profile / cert / logを保全し、自動retry / resetしない。
+Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / artifactへ出さず、trace / screenshot / storageState / network loggerを使わない。
+
+一次失敗は`tls-browser-launch`（公開launch未完了）、`tls-browser-ownership`（launch resolve後の所有判定）、
+`tls-browser-context`（証明用Context生成）、`tls-browser-nss`（別NSS候補検査）を区別する。
+所有判定失敗はprimary / cleanupに独立した固定reasonとして内部で記録する。公開reportは固定stage / cleanupだけに制限する。
+既存`parseBrowserDiagnostic`は固定allowlist・全入力一致を維持し、未知値・余剰行・秘密値を拒否する。
+mainのexact NUL profile argv / 単一exact HOME / UID / 安定PID,starttime / NoNewPrivs / 専用unit所属、
+所有0700非symlink profile/artifacts、NSS候補・単一cert、strict TLS・固定binary・非永続Contextを別々に確認する。
+全子のmutable title/envを再追跡せず、既存#915のexact profile方式は独立経路として保持する。
+
+`trusted-browser-unit.mjs`は#914専用の薄いadapterで、外側`trusted-seed-smoke.mjs`がunit外から使用する。
+persist/migration書込み前にcgroup v2 / systemd / 非root / 非対話操作を、同設定の短い`true`専用unitで確認する。
+不足時は固定`TRUSTED_BROWSER_UNIT_UNAVAILABLE`で停止し、host設定変更・root Chrome・sandbox無効化・直接exec方式へのfallbackをしない。
+ownerが0700 temporary / browser HOME / 専用persistを所有し、既存sanitized envを`env -i`でtrusted browser childへ供給する。
+#906 / #908のchildやmigrationはunitへ移行しない。unit stdout/stderrはnull、秘密はunit argv/env/journalへ渡さない。
+有効設定・終端条件はadapterの固定設定と判定を正本とする（Type=exec / ExitType=cgroup / RemainAfterExit=yes / Restart=no / NRestarts=0、
+OOMPolicy=stop / Delegate=no / NoNewPrivileges=yes / ProtectControlGroups=yes / KillMode=control-group、非root User/Group）。
+
+処理順は公開Browser.close一回→proof listener/socket停止・Worker停止/port閉鎖→停止中だけproxy inspect/dispose→
+generated profile/artifacts不在・最終inspect・secret scan→child固定report・終了→outerのunit no-live確認→所有物削除とする。
+helper内では#914のHOMEを削除せず、close resolveをunit no-liveやWorker停止前の全browser process消失と読み替えない。
+close前のroot/生成物再確認が不明でも公開closeは一回試し、失敗を保持して保全する。close拒否/未決着、API停止・scan不明はretryしない。
+`PRE_CLOSE` / `CLOSE` / `POST_CLOSE`の内部観測は実施結果だけを表し、managed #914のPOST_CLOSEはnot-run（終端確認担当はouter）である。
+
+reportはrun-private temporaryの専用pathに0600・非symlink・8KiB以下でatomicに一回確定する。
+既存`browserEvidence`で、許可済みfingerprint行と「child処理・停止/検査完了、unit終端・削除未確認」の固定checkpointを厳密parseする。
+通常/意図的失敗を指定modeと照合し、生reportをconsoleへ転送せずownerが固定文言を再構成する。
+Session / CSRF / hash / HMAC / PII / raw PID,path,env,argv,InvocationID,error / D1 payloadはreport・journal・consoleに入れない。
+通常childはreport＋exit0。positive 3 GET直後の指定意図的失敗も、期待位置/種類と停止/検査完了が確認された場合だけreport＋exit0とし、outer CLIは期待exit1を返す。
+未確認・予期しない失敗やcancel/deadlineは正常完了reportにせず、expected failureより優先する。
+
+ownerはstop前に同一InvocationIDのactive/exited / Result=success / ExecMainCode=CLD_EXITED / ExecMainStatus=0 / NRestarts=0と有効設定を二度照合する。
+reportだけ、main exit0、Result=success単独、cgroupファイル消失、強制stop後の空状態は成功根拠にしない。
+timeout/cancel/stop/unknown・設定/identity不一致・不正/欠落reportは最初の失敗を不可逆保持する。
+ownerも8788閉鎖と生成profile/artifacts不在を最終確認し、残存はglob削除で隠さず保全する。
+受理後に空unitを解放し、作成時の実path / owner / device,inode identityを全rootで再確認してからrun-owned HOME/NSS/cert/key/temporary/persistだけ削除する。
+解放・削除不明は失敗とし、異常時のunit停止とファイル保全を分け、自動retry/resetしない。最終cleanup完了はouterだけが出力する。
+
+browser child120秒とowner180秒を維持する。ownerの開始時から能力確認・migration・開始/照合/待機/終端/解放に共通残予算を使う。
+unit RuntimeMaxSecは120秒とowner残予算（停止margin10秒控除）の小さい方、各manager操作は最大5秒、TimeoutStopSec=2秒。
+通常CLI準備commandはowner残予算から30秒を予約し、既存process-group停止最大15秒＋ss最大5秒とmargin10秒を確保する。
+Browser.close10秒 / proof server close5秒 / Worker stop最大15秒等は既存API上限を維持し、child期限後のmanager停止を成功にしない。
+GET / navigationは5秒、response body4096文字上限を維持する。累積時間超過・残予算不足はtimeout保全であり、成功待機を延長しない。
+
+標準Product CIの既存Unit stepで#915 fixtureと直接関連#914 fixtureを実行する。追加workflowは作らない。
+合成fixtureはroot本人・strict report・正常/意図的失敗の削除順、parent exit0 / setsid子残存の非終端、
+同一InvocationID/設定不一致、unknown/timeout/cancel/stopの失敗固定、不正/欠落report、close不明、port/生成物残存、非所有物非削除を検査する。
+今回の限定scopeはsystemd責任置換の静的実装・合成fixture・文書同期だけで、実Chrome / Worker / D1やowned cleanup成功の証明ではない。
+正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
+HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
+一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
+`REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
+POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOM / Preview / Confirm、REQ-901/902、Gate A〜DとTC全体Passは後続責務。
 
 ## 既存の部分証拠と標準テスト
 

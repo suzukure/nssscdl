@@ -1,5 +1,6 @@
 // Secret-owning sanitized Node child. No raw secrets leave this process except
-// the fixed loopback TLS Cookie header. No browser, IPC or owner-shell input.
+// the fixed loopback TLS Cookie header or #914's isolated official Cookie jar.
+import { writeBrowserReport } from "./trusted-browser-unit.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
@@ -7,16 +8,26 @@ import { createCertificate, launchWorker, request, stopGroup, stopWorker, waitFo
 import { checkSetup, persistence, proxyOptions, root, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
 import { checkFiles, inspect } from "./trusted-seed-process.mjs";
 import { check, checkError, checkSuccess, httpsProofCheckpoint } from "./trusted-https-assertions.mjs";
+import { browserDiagnostic, observeTlsDiagnostic, recordBrowserFailure, withIsolatedBrowserTls } from "./browser-tls-trust.mjs";
+import { browserBinary, browserFailureCheckpoint, browserPreflight, browserProofCheckpoint, checkCertificate, checkWorkerCertificate, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 
 const exec = promisify(execFile);
 const origin = "https://127.0.0.1:8788";
 const controller = new AbortController();
-const interrupt = () => controller.abort();
-// Outer owner allows 120s: 90s execution + up to 15s stop + margin.
-const deadline = setTimeout(interrupt, 90000);
+let cancelled = false;
+const interrupt = () => { cancelled = true; controller.abort(); };
+const browserMode = process.argv[2] === "--browser";
+const failAfterPositive = process.argv[3] === "--fail-after-positive";
+// Browser adds the existing 30s launch budget; outer owner reserves cleanup.
+const deadline = setTimeout(interrupt, browserMode ? 120000 : 90000);
 process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
 let child;
 let stopUnknown = false;
+let intentionalObserved = false, browserCleanupConfirmed = false;
+let browserCertificate;
+// Fixed non-secret runtime stage only; never emit original error, request or child output.
+let browserStage = "entry";
+const diagnostic = { primary: "none", cleanup: "none" };
 
 async function command(file, args, cleanup = false) {
   const pending = exec(file, args, { cwd: root, env: process.env, detached: true,
@@ -58,12 +69,64 @@ async function revokeSelf(seed) {
 }
 
 try {
+  check(process.argv.length === 2 || (browserMode && (process.argv.length === 3 ||
+    (process.argv.length === 4 && failAfterPositive))));
   checkSetup();
-  const { key, cert, ca } = await createCertificate(process.env.TMPDIR, command);
+  if (browserMode) browserStage = "seed";
+  if (browserMode) browserPreflight();
+  const certificate = browserMode ? undefined : await createCertificate(process.env.TMPDIR, command);
   await withTrustedEvaluationSeed(async (seed) => {
+    if (browserMode) browserStage = "seed-inspect";
     const before = await inspect(seed);
     const secrets = [seed.sessions.self.cookie().value, seed.sessions.other.cookie().value];
     const hashes = secrets.map((value) => createHash("sha256").update(value).digest("hex"));
+    if (browserMode) {
+      let revokedAt = null;
+      const proxyState = { stopped: () => !child && !stopUnknown, unknown: false };
+      const inspectStopped = () => withStoppedProxy(proxyState, async () => {
+        check(before === await inspect(seed, revokedAt));
+      });
+      browserStage = "tls-setup";
+      await withIsolatedBrowserTls(async ({ browser, context, certificate, signal }) => {
+        browserStage = "worker-start";
+        browserCertificate = `certificate: SHA256=${checkCertificate(certificate).fingerprint256}; SAN=127.0.0.1; same Node/Worker cert`;
+        const start = async () => {
+          browserStage = "worker-start";
+          signal.throwIfAborted();
+          check(!child && !proxyState.unknown); checkSetup();
+          checkCertificate(certificate);
+          child = launchWorker(process.env, certificate.key, certificate.cert);
+          await waitForWorker(child, command, signal);
+          await checkWorkerCertificate(certificate);
+          browserStage = "browser-read";
+        };
+        try {
+          await proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop,
+            revoke: () => withStoppedProxy(proxyState, async () => { revokedAt = await revokeSelf(seed); }),
+            inspect: inspectStopped, failAfterPositive });
+        } catch (error) {
+          intentionalObserved = failAfterPositive && error.message === "TRUSTED_BROWSER_INTENTIONAL_FAILURE";
+          throw error;
+        }
+      }, {
+        workerHandoff: true, executablePath: browserBinary, signal: controller.signal,
+        report: (line) => {
+          observeTlsDiagnostic(diagnostic, line, browserStage);
+          if (line === "cleanup: browser public close / Worker and port stopped / generated files absent / owned inspect and secret scan completed; unit terminal and owned removal unconfirmed") browserCleanupConfirmed = true;
+        }, stopConsumer: stop,
+        inspectOwned: async (home) => {
+          await inspectStopped();
+          checkFiles(persistence, secrets);
+          for (const directory of [home, process.env.TMPDIR]) {
+            checkFiles(directory, [...secrets, ...hashes]);
+          }
+          check(secrets.every((value) => !JSON.stringify(process.env).includes(value) && !JSON.stringify(process.argv).includes(value)));
+        },
+      });
+      browserStage = "none"; // A later failure has no confirmed browser processing stage.
+      return;
+    }
+    const { key, cert, ca } = certificate;
     const paths = [`/api/me/schedule-months/${seed.month}`, "/api/me/reservations", "/api/auth/student/csrf"];
     const kinds = ["schedule", "history", "csrf"];
     const cookie = (owner) => {
@@ -143,11 +206,37 @@ try {
     check(secrets.every((value) => !JSON.stringify(process.env).includes(value) && !JSON.stringify(process.argv).includes(value)));
     controller.signal.throwIfAborted();
   });
-  console.log(httpsProofCheckpoint); // Only fixed non-secret evidence escapes.
+  if (!browserMode) console.log(httpsProofCheckpoint);
 } catch {
   process.exitCode = 1; // No raw cause, HTTP body, assertion diff or child output.
+  if (browserMode && diagnostic.cleanup === "none") {
+    recordBrowserFailure(diagnostic, browserStage);
+  }
 } finally {
-  try { await stop(); } catch { process.exitCode = 1; }
+  try { await stop(); } catch {
+    process.exitCode = 1;
+    if (browserMode && diagnostic.cleanup === "none") diagnostic.cleanup = "worker-stop";
+  }
   clearTimeout(deadline);
   process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt);
+}
+// Fixed report is atomic and private. Intentional application failure is a
+// completed verification process (exit0), while outer CLI still returns exit1.
+if (browserMode) {
+  try {
+    if (cancelled || controller.signal.aborted) {
+      recordBrowserFailure(diagnostic, "unknown");
+      process.exitCode = 1;
+    }
+    if (!cancelled && !controller.signal.aborted && browserCleanupConfirmed && diagnostic.cleanup === "none" &&
+      (process.exitCode !== 1 || intentionalObserved)) {
+      writeBrowserReport(process.env.TMPDIR, browserCertificate + "\n" +
+        (intentionalObserved ? browserFailureCheckpoint : browserProofCheckpoint) + "\n");
+      process.exitCode = 0;
+    } else {
+      recordBrowserFailure(diagnostic, browserStage);
+      writeBrowserReport(process.env.TMPDIR, browserDiagnostic({ primary: diagnostic.primary, cleanup: diagnostic.cleanup }) + "\n");
+      process.exitCode = 1;
+    }
+  } catch { process.exitCode = 1; }
 }

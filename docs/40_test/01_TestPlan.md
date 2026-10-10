@@ -158,7 +158,27 @@ BrowserContext・assets・unsafe業務POSTは未接続であり、Gate A〜DのP
 
 #915の隔離Chromium TLS harness / 小fixtureと正式Actions proofの区別は `../../tests/README.md` を正本とする。
 run-owned HOME / NSS / profileでの正負TLS transportだけを対象とし、Browser Session Cookie本人GET、
-失効401、Gate A〜D、REQ-901/902、#608や既存TC全体のPassを証明しない。#914 consumerは未接続。
+失効401、Gate A〜D、REQ-901/902、#608や既存TC全体のPassを証明しない。
+#914 opt-in consumerは同一cert / portをNode proof listenerからWorkerへ直列handoffし、
+公開`chromium.launch()`のBrowser handleを明示引き渡す（#915単独persistent proofは維持）。
+隔離された非永続self / other / missing / foreign Contextの公式Cookie注入とsame-origin browser fetch 3 GETを検査する。
+TLS probe用Contextも同Browserの非永続Contextとし、run TMPDIR生成profile/artifacts、実HOME、main唯一性を確認する。
+#914はtrusted childを開始時から非root専用systemd unitに置き、outer ownerはunit外で管理する。
+能力確認はpersist/migration書込み前、sanitized env・TLS/sandbox・NSS/単一cert・Cookie秘密境界は維持する。
+全子PGRP/SID一致・mutable全子environ追跡・全PID消失方式を、専用unitの生存process不在（no-live）へ明示的に置換する。
+root本人のexact NUL profile argv / 単一exact HOME / UID / 安定PID,starttime / NoNewPrivs / 専用unit所属はTLS/consumer前に確認する。
+公開Browser.close一回→Worker/proxy停止・port閉鎖・生成物/secret検査→child固定report・終了→outer同一unit終端確認→所有物削除とする。
+Worker停止前のbrowser全process消失、zombieを含む全PID消失、各子のexit0を証明した扱いにはしない。
+ownerは正常/指定意図的失敗reportと、stop前二度の同一InvocationID active/exited・Result=success・main正常終了・再起動0・有効設定を照合する。
+意図的失敗childは停止/検査確認済みのreport＋exit0、outer CLIは終端と安全な削除後も期待exit1とする。
+unknown/timeout/cancel/stop/不正reportは不可逆な失敗で、後から空unitになっても成功化せずfiles保全・retry禁止とする。
+最終port/生成物不在→空unit解放→作成時所有identity/実path確認→owned HOME/NSS/cert/key/temporary/persist削除はouterだけの責任とする。
+child120秒・owner180秒の共通残予算と停止margin、固定report・有効設定の正本は `../../tests/README.md` の#914節とadapterを参照する。
+合成fixtureは通常/意図的失敗、parent exit0/setsid子残存、InvocationID/設定差、失敗固定、report拒否、close不明、port/生成物残存、非所有物保全を検査する。
+#906 / #908標準経路・#915 TLS-only proof・製品entryは維持する。今回の限定scopeは静的実装・fixture・文書同期で、正式Actions current-head通常CIは別証拠とする。
+実Chrome / TLS / Worker / D1の統合実証には別途人間判断が必要であり、正式統合実証は未確認。
+既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、
+static assets / DOM / Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
 
 ## 8. Entry Criteria
 
