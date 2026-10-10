@@ -399,7 +399,7 @@ HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanu
 `REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
 POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOMの段階1準備は下記#922を参照する。Preview / Confirm、REQ-901/902全体、Gate A〜DとTC全体Passは後続責務。
 
-## #922 same-origin read-only DOM（段階1 prepared）
+## #922 same-origin read-only DOM（段階1 prepared＋normal実走部分証拠）
 
 `npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
 通常Workerと評価Workerのdry-runを行う。評価configだけに `ASSETS` と `run_worker_first: true`、
@@ -411,7 +411,7 @@ POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOM
 静的Responseはno-store / nosniff / no-referrerと明示MIME、missing assetは安全な404、
 binding失敗 / その他URL・methodは既存503。通常configとdefault Workerの全503を維持する。
 配信URL / MIME / allowlistの合成Port検証は `integration/evaluation-worker.test.ts` に置く。
-asset build不在・余剰ファイルはtrusted setup開始前に拒否する。#922でconfigに追加した`ASSETS`により、`getPlatformProxy`の環境は`EVALUATION_READ_DB`と`ASSETS`の**正確な2 bindingのみ**を持つ契約となる。`evaluationD1()`は両bindingの存在と型、余分なbindingの不在を共通検証し、seed / inspect / revokeには**D1 Portだけ**を渡す。`ASSETS`を読み書きに使わず、従来のD1-only消費・local persist・proxy逐次disposeの信頼境界を維持する。補助fixtureは欠損・型違い・追加bindingを拒否する。2026-10-10の[#922 normal proof #38024971080](https://github.com/suzukure/nssscdl/actions/runs/38024971080) は`seed`段階で失敗したため、この更新は**設計上の前提不一致を修正するもの**で、実Proxy形状やChrome DOM・cleanupの実証ではない。
+asset build不在・余剰ファイルはtrusted setup開始前に拒否する。#922でconfigに追加した`ASSETS`により、`getPlatformProxy`の環境は`EVALUATION_READ_DB`と`ASSETS`の**正確な2 bindingのみ**を持つ契約となる。`evaluationD1()`は両bindingの存在と型、余分なbindingの不在を共通検証し、seed / inspect / revokeには**D1 Portだけ**を渡す。`ASSETS`を読み書きに使わず、従来のD1-only消費・local persist・proxy逐次disposeの信頼境界を維持する。補助fixtureは欠損・型違い・追加bindingを拒否する。最初の[#922 normal proof #38024971080](https://github.com/suzukure/nssscdl/actions/runs/38024971080) は`seed`段階で失敗した。共通binding検査修正後の**正式normal実走成功**は下記の別Runを参照し、失敗runを成功扱いしない。
 
 既存 `node tests/evaluation/trusted-browser-smoke.mjs --run`（および `--fail-after-positive`）を再利用する。
 `trusted-browser-dom.mjs` はselfの同一Contextで実 `/student`、全module / CSS、seed公開月の
@@ -428,9 +428,22 @@ real API / D1成功と合成結果は固定checkpointでも区別する。fixtur
 
 #914のTLS / sandbox / unit / secret / owned cleanupとchild120秒・owner180秒を維持し、
 runner・workflow・停止責任・retryを追加しない。正常 / intentionalのreportはDOM検査後だけ完成する。
-時間適合、locked Wrangler上の実asset precedence / 404、proxy DB-only互換性、実Chrome DOMと
-normal / intentional cleanupは段階2のfresh人間判断後に正式Actionsで確認する。未走をPassとしない。
-段階1の標準CI / 合成fixtureと、段階2のopt-in正式run / blob照合 / workflow復元 / final-head CIは別証拠。
+2026-10-10の人間承認に基づき、既存Product CIへnormal限定の一時opt-inを配線して
+[正式Run #38025821104](https://github.com/suzukure/nssscdl/actions/runs/38025821104) / job #114136326193で**success**を確認した。
+実証HEAD `bffb96633c09ffc5fae7b7058104ea8a17bf758d`、Node v24.21.0、Wrangler 4.146.0、
+Google Chrome 154.0.8037.97、local 127.0.0.1:8788、migrations0001..0012。
+実Wrangler Worker-firstで`/student`と5静的assetのHTTP 200 / MIME / no-store、
+本人Sessionの3 GET / 実DOM5枠・4 View・Calendar/List・本人履歴、Cookie失効後401表示と破棄を確認した。
+keyboard/focus・320px実layout・端末timezone差の読取、別の**合成DOM**での403 / 404 / 503・通信断・
+古い応答・年跨ぎ・cursor例は別証拠として識別する。実404 asset-missing、実cursor複数ページ、
+実403 / 通信断やPreview / Confirmを実証したとはしない。
+同Runのstrict checkpointは#914のTLS/Browser Session/D1 read/失効・同一InvocationID正常終端、
+port停止とowned HOME/NSS/cert/key/persist削除まで確認。child120秒・owner180秒内の**normal1回**だけ成功した。
+**intentional後のcleanup / timeout時の実証、Release browser matrix / mobile / Gate A〜Dは未検証**。
+proof sourceから一時workflowを撤去したHEAD `9ed27f27c2c25d30fa08db6f043a05673a829882`では、
+追加前source HEAD `b7c812a0d2b38d3cc8cbb0119a80ec86d17a5110`とのGitHub比較で変更ファイル0、
+workflow blobは従来/mainと一致。撤去後の通常Product CIと、文書同期後のfinal HEAD通常CIは別途確認する。
+段階1の通常CI / 合成fixture、段階2のopt-in正式Run / executable blob / workflow復元 / final-head CIを混同しない。
 `REQ-001/002/005/207/211/902/903/907/914` →既存AC→既存TCへのread-only partial evidenceのみで、
 識別子・意味・要求traceabilityは変更しない。Preview / Confirm / Gate A〜D / 全TC Passは未検証。
 
