@@ -911,14 +911,16 @@ preflightで残予算が減った場合は既存unitの短いhard期限が優先
 
 `evaluation/trusted-booking-outer.test.mjs` は実inner controllerのfinite Portsと既存BrowserUnit injection seamで上記順序・一回性・report拒否・非終端 / unknown / abort / timeout時の非削除・秘密非反射を検査する。
 既存 `npm run test:unit` へ追加し、Wrangler / Chrome / systemd / real D1 / HTTPSは起動しない。
+#951はouterの既存固定stageだけを最外catchのsanitized rethrowからCLIまで保持する。allowlistの正本はouterの`sanitizedFailure`と同testの`proofStep`であり、完全一致以外のerror / messageは`unknown`となる。失敗CLIは固定`TRUSTED_BOOKING_OUTER_FAILED; stage=<固定値>; retain owned files; do not retry`一行 / exit1だけを返し、元error / stack / cause / path / 任意出力を反射しない。stageはouter受信地点の分類だけで、内部D1 write / Confirmや最終cleanupの成否を示さない。成功checkpoint / stderr空 / exit0、時間上限・fail-closed・所有 / cleanup契約は維持する。
 #948の同ファイル内caller guardはProduction / 旧sealed / 他workflowの予約outer・child・report参照を引き続き拒否する。
 通常main / 通常PRのProduct CI参照も拒否し、GitHub Actionsのsame-repository `pull_request` / base `main` / `proof/930-booking-normal-...`だけを例外候補とする。
 eventのPR HEADとGit HEAD、event baseとcheckout時に取得した`origin/main`、merge-base、clean sourceを照合し、base→HEAD差分がProduct CI一ファイルの変更だけであることを必須とする。baseが進んだ・取得不能・dirty sourceならfail-closedとし、fresh checkout / eventの再照合が必要。
-正本base workflowとのbyte単位比較で既存9コマンド・permissions・trigger・actions・step順序を保持し、同testの`proofStep`に一致する末尾一stepだけを許容する。単発`--run`、runner step上限4分、outer subprocess上限190秒 / 出力4096 bytes、stdoutの既存固定checkpoint完全一致・stderr空を検査し、raw出力を反射せず固定失敗文だけを返す。outerの180秒 / child最大120秒を増量せず、retryしない。190秒はouter後の10秒margin、4分はwrapperのbackstopであり、cleanup成功を保証しない。
-positive / negativeは有限fixtureと実行しないspawn adapterで検査する。guardの許容は人間承認・正式proofではなく、実証用一時PR作成・実行前後に#930の承認checkpoint / scope / 対象HEAD・PR / Runを別途人間が照合する。#947は実Chrome step到達前に停止し実走0回という supplied evidenceを引き継ぎ、未使用normal1回・期限・Secrets / Production禁止・中止条件・原状復元のfresh gateは#930に残す。本Issueではworkflow追加や実証を行わない。
+正本base workflowとのbyte単位比較で既存9コマンド・permissions・trigger・actions・step順序を保持し、同testの`proofStep`に一致する末尾一stepだけを許容する。単発`--run`、runner step上限4分、outer subprocess上限190秒 / 出力4096 bytes、成功stdoutの既存固定checkpoint完全一致・stderr空・exit0を検査する。#951ではerror / signalなし、status===1、stdout空、stderrがallowlisted固定診断と末尾LF一つに完全一致する失敗だけ`BOOKING_PROOF_FAILED; stage=<固定値>`を返し、その他は`BOOKING_PROOF_FAILED; stage=unknown`とする。raw出力は反射しない。outerの180秒 / child最大120秒を増量せず、retryしない。190秒はouter後の10秒margin、4分はwrapperのbackstopであり、cleanup成功を保証しない。
+positive / negativeは有限fixtureと実行しないspawn adapterで検査する。#951は実outer catch / CLIをVMのfinite adapterで、Proof wrapperをspawnしないVM seamで検査し、stage保持・未知 / 細工message・不正改行・追加出力・PII canary・signal / timeout / exec error / output overflowの反射拒否を確認する。guardの許容は人間承認・正式proofではなく、実証用一時PR作成・実行前後に#930の承認checkpoint / scope / 対象HEAD・PR / Runを別途人間が照合する。#947の実走0回の後、#950の承認済みnormal1回は実行済み・失敗（下記supplied evidence）であり、追加normal・期限・Secrets / Production禁止・中止条件・原状復元のfresh gateは#930の新たな人間判断に残す。#951ではworkflow追加や実証を行わない。
 限定guardのWACはR0 / C0相当 / P1 / B1、Green。Issueが明示した静的判定Contractの定義・finite proofだけであり、下記prepared runtimeのC1を昇格しない。
+#951の固定診断引き渡しもR0 / C0相当 / P1 / B1、Greenの明示scopeであり、runtime target-modeへの昇格や新しいproof infrastructureを追加しない。
 WACはR0 / C1 / P1 / B1、Yellow prepared限定。#941と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared outer partial evidenceのみ。
 識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002、Production / SQL / config / workflow / 旧read-only sealed semanticsは変更しない。
 実機non-root `ss -ltnp` PID可視性、Node24 native .ts、Playwright / MIME / Cookie、120秒 / 180秒実runtime、クラッシュ後report / owned cleanupは未実証。
-human-gated official actual normal1回 / negative・探索 / 全gateは#930へ残し、fixtureをC0 / 正式proof、#537 Gate A〜D / #608 Done / Production readinessへ昇格しない。
-official Actions / temporary workflow編集 / dispatchは本Issue未承認・未実施。current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
+#951のsupplied evidenceでは#950（temporary step復元後Close / 未merge）のProduct CI #38061592313は通常工程success後、予約stepが約120.43秒で固定`BOOKING_PROOF_FAILED` / exit1となった。D1 write・Chrome到達・Worker停止・cleanupの成否とtimeout真因は不明であり、時間だけから分類しない。追加actual normal / negative・探索 / 全gateは#930の新たな人間判断へ残し、fixtureをC0 / 正式proof、#537 Gate A〜D / #608 Done / Production readinessへ昇格しない。
+#951でofficial proof / temporary workflow編集 / dispatchは未承認・未実施。current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。

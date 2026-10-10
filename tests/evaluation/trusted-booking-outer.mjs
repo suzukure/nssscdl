@@ -14,6 +14,16 @@ const persist = join(root, ".wrangler/student-booking-evaluation");
 const oldPersist = join(root, ".wrangler/student-read-only-evaluation");
 const exec = promisify(execFile);
 const failure = stage => new Error(`TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`);
+function sanitizedFailure(error) {
+  // Exact fixed messages only; never reflect arbitrary error fields or causes.
+  try {
+    const message = error?.message;
+    for (const stage of ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator"]) {
+      if (message === failure(stage).message) return failure(stage);
+    }
+  } catch { /* Unknown exception shapes remain non-secret. */ }
+  return failure("unknown");
+}
 export const bookingOuterCheckpoint = "#945 booking: isolated child prepared / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified";
 const present = path => { try { lstatSync(path); return true; } catch (e) { if (e.code === "ENOENT") return false; throw failure("preflight"); } };
 
@@ -125,7 +135,7 @@ export async function runBookingOuter() {
         rmSync(persist, { recursive: true }); rmSync(temporary, { recursive: true });
       },
     });
-  } catch { throw failure("operator"); }
+  } catch (error) { throw sanitizedFailure(error); }
   finally {
     unit?.close();
     process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt);
@@ -139,6 +149,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exitCode = 1;
   } else {
     try { await runBookingOuter(); console.log(bookingOuterCheckpoint); }
-    catch { console.error(failure("unknown").message); process.exitCode = 1; }
+    catch (error) { console.error(sanitizedFailure(error).message); process.exitCode = 1; }
   }
 }
