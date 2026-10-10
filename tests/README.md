@@ -680,3 +680,22 @@ Serverの本人解決・再検証・Transaction / NotificationIntentは既存HTT
 System / Acceptance全体Pass・Gate A〜D・#608全体Done・Production readyは証明しない。
 評価Workerは既存read-only GET / assetsのみでunsafe POSTは503、default Production Workerも全503を維持する。
 実接続・actual Commitの評価は#537の独立した後続Issueで行い、本Issueではrunner / config / routeを変更しない。
+
+## #928 非公開予約factory（synthetic compositionのみ）
+
+`fixtures/reservation-student-service.ts` はlistener / runnable mainのないtest-only Request-service factory。
+既存D1 Guard・Preview Repository / Service・Confirm preparation / executor / verifier / Transactionと両HTTP Adapterを合成し、
+3 GETは`createReadOnlyStudentService`へそのまま委譲する。固定canonical HTTPS origin、単一D1 Port、
+non-extractable HMAC-SHA-256 sign-only cursor keyを確認し、Primary sessionのprepare / batch形状もSQL発行前に検査する。
+設定不備は全ルート503。exact pathname / methodの5ルート以外と不正URL / originは503とし、
+許可ルート内の認証・CSRF・strict JSON・業務error・Cookie / no-storeは既存Adapterに従う。
+`integration/reservation-student-service.test.ts` はsynthetic D1 row / acknowledgementを使い、実部品接続・本人Context・
+GET Response同一性、正常Preview / Confirm、結果不明時の実verifierとNOT_APPLIED / 不整合 / read不能、
+Commit / batch最大1回・ID非再生成、設定拒否・negative routing・no-secret / no-write-on-failureを確認する。
+`integration/read-only-student-isolation.test.ts` はsrcからの参照禁止と評価Worker / configへの未接続を回帰する。
+Production root全503、既存GET-only factory、#914 / #922 read-only封印条件は維持する。
+既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/911/914/940 → AC-003/005/101 → TC-F-003-*/005-*・TC-NF-914-*` のsynthetic composition **partial evidence**だけであり、ID / 要求 / AC / TCの意味は変更しない。CON-001/002/009・OOS-001/002も維持する。
+実local D1 migration・CommitとReservation / Occupancy / Audit / Intent / Outbox読取照合・失敗後cleanupは#931、
+localhost Worker activationは#929、実Chrome / 通信は#930へ残す（#928 → #931 → #929 → #930）。
+synthetic acknowledgementの201は実DB atomic成功の証拠ではなく、TC全体Pass・Gate A〜D・親#537/#608 Doneを主張しない。
+標準Product CI / PR Traceability / 独立Claude Reviewはworkflow側のcurrent-head証拠を別途確認する。

@@ -1,13 +1,14 @@
 import { expect, it } from "vitest";
 import config from "../../wrangler.jsonc?raw";
 import composition from "../fixtures/read-only-student-service.ts?raw";
+import reservationComposition from "../fixtures/reservation-student-service.ts?raw";
 
 const sources = import.meta.glob("../../src/**/*.ts", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 it("[#899 structural isolation] Product source imports stay inside src; default Worker and config expose no evaluation entry", () => {
   expect(Object.keys(sources).length).toBeGreaterThan(0);
   for (const [path, source] of Object.entries(sources)) {
-    expect(source).not.toMatch(/read-only-student-service|trusted-student-seed|tests\/|fixtures\//);
+    expect(source).not.toMatch(/read-only-student-service|reservation-student-service|trusted-student-seed|tests\/|fixtures\//);
     expect(source).not.toMatch(/\b(?:import\s*\(|require\s*\()/);
     for (const match of source.matchAll(/\b(?:from\s*|import\s*)["']([^"']+)["']/g)) {
       const dependency = match[1];
@@ -24,4 +25,11 @@ it("[#899 structural isolation] Product source imports stay inside src; default 
   expect(JSON.parse(config)).toEqual({ name: "nssscdl", main: "src/index.ts", compatibility_date: "2026-10-06" });
   expect(composition).not.toMatch(/export default|seedTrustedStudents\(|generateKey\(|importKey\(|process\.env|Deno\.env/);
   expect(composition).not.toMatch(/reservation-preview|reservation-confirm|web\/|scheduled\s*\(/);
+});
+
+it("[#928 structural isolation] reservation factory is non-runnable and absent from the read-only evaluation Worker", () => {
+  expect(reservationComposition).not.toMatch(/export default|seedTrustedStudents\(|generateKey\(|importKey\(|process\.env|Deno\.env|scheduled\s*\(|\.listen\(|serve\(/);
+  const evaluation = import.meta.glob("../evaluation/{worker.ts,wrangler.jsonc}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+  expect(Object.keys(evaluation)).toHaveLength(2);
+  for (const source of Object.values(evaluation)) expect(source).not.toMatch(/reservation-student-service|createReservationStudentService/);
 });
