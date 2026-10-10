@@ -778,8 +778,10 @@ Actor、同一D1時刻T、未claim状態、Command Guard消滅、既存Integrity
 `evaluation/trusted-booking-seed.test.mjs`を既存Unit stepへ追加し、有限のNode SQLite / factory fixtureでconfig改ざん、
 missing / extra binding、非所有profile / port、directory / hardlink、migration / schema / 重複seed拒否、
 rollback / unknown outcome・disposeの呼出し回数、positive / negative / cross-owner / partial-write readbackと機密非反射を検査する。
-`d1/booking-readback.test.ts`は既存file-isolated Cloudflare D1 topologyで、実factoryのCommit後に独立Portを照合し、
-Outbox欠落・Actor改ざん・読取失敗を拒否する。Node fixtureとCloudflare D1実行結果、実Browser成功は別の証拠とする。
+`d1/booking-readback.test.ts`は既存file-isolated Cloudflare D1 topologyで、empty-only seedを1回投入し、
+実factoryの1回のCommit後に独立Portの正常readbackを照合する。Outbox欠落・Actor改ざん・読取失敗の拒否は
+上記Node/SQLiteの独立fixtureで検査し、同一D1 file内での再seedや状態resetをしない。
+Node fixtureの異常系、Cloudflare実D1の正常系、実Browser成功は別々の証拠とする。
 対応は既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-914`
 への準備 / readback **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002は維持する。
 旧#914 / #922のworker / config / seed / runner / cleanup・証拠は変更しない。

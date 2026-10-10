@@ -140,7 +140,7 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #929の独立予約評価入口は既存Product CIでstrict local configとisolated HTTP fixtureを検査する。6資産・3 GET・2 POST、認証 / Origin / CSRF / JSON・安全なerror / Cookie / no-store、未知route / binding拒否、Production全503と旧read-only封印の回帰を対象とする。証明範囲は `../../tests/README.md` の#929節を正とし、synthetic 201を実Commitとして扱わない。実localhost HTTPS予約通信・実Chrome・owned cleanupは未検証のまま#930へ引き継ぎ、Gate全体のPassとはしない。
 
-#937は予約専用D1のprepared helperと独立read-only照合Portを追加する。closed config / run-owned persist / strict seed / dispose後handoffをNode fixtureで、Commit後のpositive / partial-write / cross-owner / read failureを既存Cloudflare D1 fixtureで検査する。実装・検証境界と既存TCへのpartial evidence対応は `../../tests/README.md` の#937節を正とする。test readbackは実Browser成功と区別し、Worker / TLS / Chrome / 終端cleanupとhuman-gated正式runは#930に残す。
+#937は予約専用D1のprepared helperと独立read-only照合Portを追加する。closed config / run-owned persist / strict seed / dispose後handoffおよびpartial-write / cross-owner / read failureの拒否をNode/SQLite fixtureで、1回のempty-only seed→actual Commit→positive readbackを既存Cloudflare D1 fixtureで検査する。実装・検証境界と既存TCへのpartial evidence対応は `../../tests/README.md` の#937節を正とする。test readbackは実Browser成功と区別し、Worker / TLS / Chrome / 終端cleanupとhuman-gated正式runは#930に残す。
 
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
