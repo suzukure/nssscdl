@@ -2,6 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fileSystem from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -11,6 +12,7 @@ import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
 import { useBookingChild } from "./trusted-booking-child.mjs";
 import { bookingOuterCheckpoint, useBookingOuter } from "./trusted-booking-outer.mjs";
 import { bookingChildComplete, bookingChildUnknown, bookingFixtureComplete, parseBookingReport, readBookingReport, writeBookingReport } from "./trusted-booking-report.mjs";
+import { bookingDiagnosticName, encodeBookingDiagnostic, parseBookingDiagnostic, readBookingDiagnostic, writeBookingDiagnostic } from "./trusted-booking-report.mjs";
 
 const canary = "private-session-state-csrf-sql-pii-stderr";
 const stages = ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator"];
@@ -300,6 +302,223 @@ test("#945 actual private report: one atomic write; partial/symlink/hardlink/mod
     assert.throws(() => verifyOwned({ ...identity, ino: -1 }));
     chmodSync(dir, 0o755); assert.throws(() => readBookingReport(dir)); chmodSync(dir, 0o700);
   } finally { rmSync(dir, { recursive: true }); }
+});
+
+// #957: Issue-defined independent enums, not a runtime transition oracle.
+const diagnosticEnums = [
+  ["entry", "seed", "home", "tls", "worker", "dom", "stop", "readback", "scan", "complete", "unknown"],
+  ["entered", "completed", "unknown"],
+  ["none", "entry", "seed", "home", "tls", "worker", "dom", "stop", "readback", "scan", "unknown"],
+  ["not-attempted", "attempted", "confirmed", "unknown"],
+];
+const diagnosticData = (phase = "entry", boundary = "entered", primary = "none", worker_stop = "not-attempted") =>
+  ({ phase, boundary, primary, worker_stop });
+const diagnosticText = (phase = "entry", boundary = "entered", primary = "none", stop = "not-attempted") =>
+  `TRUSTED_BOOKING_DIAGNOSTIC_V1; phase=${phase}; boundary=${boundary}; primary=${primary}; worker_stop=${stop}\n`;
+const diagnosticError = e => e.message === "TRUSTED_BOOKING_DIAGNOSTIC_FAILED" &&
+  !e.stack.includes(canary) && !Object.hasOwn(e, "cause");
+function diagnosticFixture(run) {
+  const dir = mkdtempSync(join(tmpdir(), "nssscdl-diagnostic-fixture-"));
+  try { run({ dir, owner: ownedIdentity(dir), path: join(dir, bookingDiagnosticName) }); }
+  finally { rmSync(dir, { recursive: true }); }
+}
+// Execute the actual codec with fixture-local fs fault adapters; never a process.
+function diagnosticCodec(overrides) {
+  const source = readFileSync("tests/evaluation/trusted-booking-report.mjs", "utf8")
+    .replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
+  return runInNewContext(`${source}\n({ readBookingDiagnostic, writeBookingDiagnostic })`,
+    { ...fileSystem, Buffer, process, join, ownedIdentity, ...overrides });
+}
+
+test("#957 every finite snapshot is exact diagnostic data, with no success/report authority", () => {
+  for (const phase of diagnosticEnums[0]) for (const boundary of diagnosticEnums[1])
+    for (const primary of diagnosticEnums[2]) for (const stop of diagnosticEnums[3]) {
+      const data = diagnosticData(phase, boundary, primary, stop), text = diagnosticText(phase, boundary, primary, stop);
+      assert.ok(Buffer.byteLength(text) <= 256);
+      assert.equal(encodeBookingDiagnostic(data), text);
+      const result = parseBookingDiagnostic(text);
+      assert.deepEqual(result, data); assert.ok(Object.isFrozen(result));
+      assert.throws(() => parseBookingReport(text));
+    }
+  for (const report of [bookingChildComplete, bookingFixtureComplete, bookingChildUnknown]) {
+    assert.throws(() => parseBookingDiagnostic(report), diagnosticError);
+  }
+});
+
+test("#957 strict types/fields/order/LF/bytes reject canary and alternative schemas", () => {
+  const good = diagnosticData(), text = diagnosticText();
+  for (const data of [null, undefined, text, [], { ...good, raw: canary },
+    { boundary: "entered", phase: "entry", primary: "none", worker_stop: "not-attempted" },
+    { ...good, [Symbol("extra")]: canary }, { ...good, get phase() { throw new Error(canary); } },
+    ...Object.keys(good).flatMap(key => [null, 1, true, {}, [], "", canary, good[key] + "\n"].map(value => ({ ...good, [key]: value })))]) {
+    assert.throws(() => encodeBookingDiagnostic(data), diagnosticError);
+    diagnosticFixture(({ owner, dir }) => {
+      assert.throws(() => writeBookingDiagnostic(owner, data), diagnosticError);
+      assert.deepEqual(readdirSync(dir), []);
+      assert.throws(() => writeBookingDiagnostic(owner, good), diagnosticError);
+    });
+  }
+  const badTexts = [null, 1, Buffer.from(text), "", text.slice(0, -1), text + "\n", text.replace("\n", "\r\n"),
+    text + canary, canary + text, text.replace("phase=entry", "phase=" + canary), text.replace("phase=entry", "phase=ENTRY"),
+    text.replace("V1", "V2"), text.replace("; boundary=entered", ""), text.replace("; primary=none", "; raw=none; primary=none"),
+    text.replace("phase=entry; boundary=entered", "boundary=entered; phase=entry"), text.replace("; primary=none", "; primary=none; primary=none"),
+    text.replace("entry", "entry\0"), text.replace("entry", "entr\u00ff"), "x".repeat(257), bookingChildComplete];
+  for (const value of badTexts) {
+    assert.throws(() => parseBookingDiagnostic(value), diagnosticError);
+    if (typeof value !== "string") continue;
+    diagnosticFixture(({ owner, path }) => {
+      writeFileSync(path, value, { mode: 0o600 });
+      assert.throws(() => readBookingDiagnostic(owner), diagnosticError);
+      assert.throws(() => writeBookingDiagnostic(owner, good), diagnosticError);
+      assert.equal(readFileSync(path, "utf8"), value);
+    });
+  }
+});
+
+test("#957 exclusive first write and many atomic updates preserve report grammar and independent reads", () => {
+  diagnosticFixture(({ owner, dir, path }) => {
+    writeBookingReport(dir, bookingChildComplete);
+    assert.throws(() => readBookingDiagnostic(owner), diagnosticError);
+    for (const phase of diagnosticEnums[0]) {
+      const data = diagnosticData(phase, "completed", "unknown", "confirmed");
+      writeBookingDiagnostic(owner, data);
+      assert.equal(readFileSync(path, "utf8"), diagnosticText(phase, "completed", "unknown", "confirmed"));
+      assert.deepEqual(readBookingDiagnostic(owner), data);
+      assert.deepEqual(readBookingDiagnostic(ownedIdentity(dir)), data);
+      assert.equal(fileSystem.lstatSync(path).mode & 0o7777, 0o600);
+      assert.ok(!existsSync(path + ".partial"));
+      assert.deepEqual(readBookingReport(dir), parseBookingReport(bookingChildComplete));
+    }
+    const before = readFileSync(path);
+    assert.throws(() => writeBookingDiagnostic(ownedIdentity(dir), diagnosticData()), diagnosticError);
+    assert.deepEqual(readFileSync(path), before); // A new writer cannot adopt an old final.
+    assert.throws(() => writeBookingReport(dir, bookingChildComplete));
+  });
+});
+
+test("#957 partial leftovers (including stop), wrong mode, symlink/hardlink, missing or replaced final are retained", () => {
+  const faults = [
+    ({ path }) => writeFileSync(path + ".partial", diagnosticText("stop"), { mode: 0o600 }),
+    ({ path }) => symlinkSync(path, path + ".partial"),
+    ({ path }) => chmodSync(path, 0o640),
+    ({ path }) => chmodSync(path, 0o4600),
+    ({ path }) => linkSync(path, path + ".link"),
+    ({ path }) => { fileSystem.renameSync(path, path + ".old"); symlinkSync(path + ".old", path); },
+    ({ path }) => { fileSystem.renameSync(path, path + ".old"); writeFileSync(path, diagnosticText(), { mode: 0o600 }); },
+    ({ path }) => { writeFileSync(path, diagnosticText()); fileSystem.utimesSync(path, 1, 1); },
+    ({ path }) => rmSync(path),
+    ({ dir }) => chmodSync(dir, 0o755),
+    ({ owner }) => { owner.ino = -1; },
+    ({ owner }) => { owner.mode = 0o755; },
+    ({ path }) => writeFileSync(path, Buffer.from([0xff])),
+  ];
+  for (const fault of faults) diagnosticFixture(f => {
+    writeBookingDiagnostic(f.owner, diagnosticData()); fault(f);
+    const entries = readdirSync(f.dir);
+    assert.throws(() => readBookingDiagnostic(f.owner), diagnosticError);
+    assert.throws(() => writeBookingDiagnostic(f.owner, diagnosticData("stop")), diagnosticError);
+    assert.throws(() => writeBookingDiagnostic(f.owner, diagnosticData("unknown")), diagnosticError);
+    assert.deepEqual(readdirSync(f.dir), entries);
+  });
+  for (const finalExists of [false, true]) diagnosticFixture(({ owner, path }) => {
+    if (finalExists) writeBookingDiagnostic(owner, diagnosticData());
+    writeFileSync(path + ".partial", diagnosticText("stop"), { mode: 0o600 });
+    assert.throws(() => readBookingDiagnostic(owner), diagnosticError);
+    assert.throws(() => writeBookingDiagnostic(owner, diagnosticData()), diagnosticError);
+    assert.equal(readFileSync(path + ".partial", "utf8"), diagnosticText("stop"));
+  });
+});
+
+test("#957 stable fd/path/owner/directory checks reject mid-read changes with fixed errors", () => {
+  for (const fault of ["replace", "grow", "shrink", "partial", "owner", "gid", "not-regular", "directory"]) {
+    diagnosticFixture(({ owner, path }) => {
+      let active = false;
+      const codec = diagnosticCodec({
+        readSync(...args) {
+          const count = fileSystem.readSync(...args);
+          if (!active) return count;
+          if (fault === "replace") { fileSystem.renameSync(path, path + ".old"); writeFileSync(path, diagnosticText(), { mode: 0o600 }); }
+          if (fault === "grow") fileSystem.appendFileSync(path, "\n");
+          if (fault === "shrink") fileSystem.truncateSync(path, 1);
+          if (fault === "partial") writeFileSync(path + ".partial", diagnosticText("stop"), { mode: 0o600 });
+          return count;
+        },
+        fstatSync(fd) {
+          const s = fileSystem.fstatSync(fd);
+          if (active && fault === "owner") s.uid += 1;
+          if (active && fault === "gid") s.gid += 1;
+          if (active && fault === "not-regular") s.isFile = () => false;
+          return s;
+        },
+        ownedIdentity(dir) { const identity = ownedIdentity(dir); if (active && fault === "directory") identity.ino = -1; return identity; },
+      });
+      codec.writeBookingDiagnostic(owner, diagnosticData()); active = true;
+      assert.throws(() => codec.readBookingDiagnostic(owner), diagnosticError, fault);
+      assert.throws(() => codec.writeBookingDiagnostic(owner, diagnosticData("stop")), diagnosticError, fault);
+    });
+  }
+  for (const key of ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeMs", "ctimeMs"]) {
+    diagnosticFixture(({ owner, path }) => {
+      writeFileSync(path, diagnosticText(), { mode: 0o600 });
+      let reads = 0;
+      const codec = diagnosticCodec({
+        openSync(file, flags) {
+          assert.equal(flags, fileSystem.constants.O_RDONLY | fileSystem.constants.O_NOFOLLOW | fileSystem.constants.O_NONBLOCK);
+          return fileSystem.openSync(file, flags);
+        },
+        readSync(fd, bytes, offset, length, position) {
+          assert.equal(length, 257); assert.equal(position, 0);
+          return fileSystem.readSync(fd, bytes, offset, length, position);
+        },
+        fstatSync(fd) { const stat = fileSystem.fstatSync(fd); if (++reads === 2) stat[key] += 1; return stat; },
+      });
+      assert.throws(() => codec.readBookingDiagnostic(owner), diagnosticError, key);
+    });
+  }
+});
+
+test("#957 write/rename/close failure or last-moment replacement: no retry, repair, removal or raw reflection", () => {
+  for (const fault of ["open", "rename"]) diagnosticFixture(({ owner, dir, path }) => {
+    let opens = 0, renames = 0;
+    const codec = diagnosticCodec({
+      openSync(file, flags, mode) {
+        opens++;
+        assert.equal(file, path + ".partial"); assert.equal(mode, 0o600);
+        assert.ok(flags & fileSystem.constants.O_EXCL);
+        if (fault === "open") throw new Error(canary);
+        return fileSystem.openSync(file, flags, mode);
+      },
+      renameSync() { renames++; throw new Error(canary); },
+    });
+    assert.throws(() => codec.writeBookingDiagnostic(owner, diagnosticData()), diagnosticError);
+    assert.equal(opens, 1); assert.equal(renames, fault === "rename" ? 1 : 0);
+    assert.throws(() => codec.writeBookingDiagnostic(owner, diagnosticData()), diagnosticError);
+    assert.equal(opens, 1); assert.equal(renames, fault === "rename" ? 1 : 0);
+    assert.deepEqual(readdirSync(dir), fault === "rename" ? [bookingDiagnosticName + ".partial"] : []);
+  });
+  for (const fault of ["write", "rename", "close", "replace", "partial-replace"]) diagnosticFixture(({ owner, path, dir }) => {
+    let writes = 0, renames = 0, closes = 0;
+    const codec = diagnosticCodec({
+      writeFileSync(fd, text) {
+        writes++; fileSystem.writeFileSync(fd, text);
+        if (writes === 2 && fault === "write") throw new Error(canary);
+        if (writes === 2 && fault === "replace") { fileSystem.renameSync(path, path + ".old"); writeFileSync(path, diagnosticText(), { mode: 0o600 }); }
+        if (writes === 2 && fault === "partial-replace") {
+          fileSystem.renameSync(path + ".partial", path + ".pending"); symlinkSync(path + ".pending", path + ".partial");
+        }
+      },
+      renameSync(from, to) { renames++; if (renames === 2 && fault === "rename") throw new Error(canary); fileSystem.renameSync(from, to); },
+      closeSync(fd) { closes++; fileSystem.closeSync(fd); if (writes === 2 && fault === "close") throw new Error(canary); },
+    });
+    codec.writeBookingDiagnostic(owner, diagnosticData());
+    assert.throws(() => codec.writeBookingDiagnostic(owner, diagnosticData("stop")), diagnosticError, fault);
+    const entries = readdirSync(dir), counts = [writes, renames, closes];
+    assert.throws(() => codec.writeBookingDiagnostic(owner, diagnosticData("unknown")), diagnosticError);
+    assert.deepEqual([writes, renames, closes], counts);
+    assert.deepEqual(readdirSync(dir), entries);
+    assert.ok(existsSync(path + ".partial"));
+    assert.equal(readFileSync(path, "utf8"), diagnosticText());
+  });
 });
 
 // #948: exact append-only grammar, not an approval credential. This string is
