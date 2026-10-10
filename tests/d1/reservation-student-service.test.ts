@@ -11,13 +11,17 @@ import type { ReservationHistoryView } from "../../src/application/reservation-h
 // listener, remote resource, Clock substitution, Provider or pickup consumer.
 // The existing Cloudflare test runtime owns disposal; never reset/retry writes.
 it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] proves factory Preview → atomic Confirm → owner History", async () => {
+  let stage = "migration-preflight";
   try {
     const db = env.AUTH_DB;
     const validation = { authSql: env.AUTH_INTEGRITY_SQL, reservationScans: env.RESERVATION_INTEGRITY_SCANS };
     expect([...env.AUTH_MIGRATIONS, ...env.RESERVATION_MIGRATIONS].map((m: { name: string }) => m.name.slice(0, 4)))
       .toEqual(Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(4, "0")));
+    stage = "apply-reservation-migrations";
     await applyD1Migrations(db, env.RESERVATION_MIGRATIONS);
+    stage = "trusted-seed";
     const seed = await seedTrustedStudents(db, validation); // Unchanged strict fingerprint / empty-only seed.
+    stage = "service-composition";
     const origin = "https://nssscdl.test";
     const previewPath = "/api/me/reservations/preview";
     const confirmPath = "/api/me/reservations";
@@ -110,7 +114,9 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
       expect(text).not.toMatch(/private|SQL|student_sessions|tokenHash|canonicalRawReadSet|seed-/);
     };
     const csrf = { self: "", other: "" };
+    stage = "initial-snapshot";
     const initial = await snapshot();
+    stage = "csrf-get";
     for (const owner of ["self", "other"] as const) {
       const csrfResponse = await service.fetch(request("/api/auth/student/csrf", owner));
       expect(csrfResponse.headers.get("referrer-policy")).toBe("no-referrer");
@@ -123,6 +129,7 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
     const post = (path: string, body: object, owner: "self" | "other" | "missing" = "self", headers: Record<string, string> = {}) =>
       service.fetch(request(path, owner, body, { "x-csrf-token": csrf[owner === "missing" ? "self" : owner], ...headers }));
     const preview = async () => await response(await post(previewPath, { slotId: "seed-slot-bookable" }), 200) as PreviewView;
+    stage = "preview";
     const view = await preview();
     expect(view).toMatchObject({ slot: { slotId: "seed-slot-bookable", startsAt: `${seed.date}T10:00:00+09:00`, endsAt: `${seed.date}T11:00:00+09:00` },
       previewClassification: "standard", classificationChanges: [] }); // Existing reservation + new one < default N=3.
@@ -130,6 +137,7 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
     await unchanged(initial);
     expect(batches).toBe(0);
     const confirm = { slotId: "seed-slot-bookable", expectedStateToken: view.expectedStateToken };
+    stage = "negative-requests";
     for (const path of [previewPath, confirmPath]) {
       const body = path === previewPath ? { slotId: confirm.slotId } : confirm;
       for (const [owner, headers, status, code] of [
@@ -148,6 +156,7 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
     await unchanged(initial);
     expect(batches).toBe(0);
 
+    stage = "rollback-revalidation";
     // Real Guard rollback at the existing batch boundary, not a race simulator.
     // The fixture's publication change is the only permitted persistent change.
     {
@@ -170,10 +179,12 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
       // retry of an unknown Commit.
     }
 
+    stage = "confirmed-preview";
     const finalPreview = await preview();
     const beforeCommit = await db.prepare("SELECT CAST(strftime('%s','now') AS INTEGER) AS t").first<number>("t");
     const calls = batches;
     const reads = verificationReads;
+    stage = "atomic-confirm";
     const committed = await response(await post(confirmPath, { slotId: confirm.slotId, expectedStateToken: finalPreview.expectedStateToken }), 201) as ReservationConfirmResult;
     expect(batches - calls).toBe(1);
     expect(verificationReads).toBe(reads);
@@ -182,6 +193,7 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
     expect(committed).toEqual({ reservation: { reservationId: id, startsAt: `${seed.date}T10:00:00+09:00`, endsAt: `${seed.date}T11:00:00+09:00`, reservationState: "confirmed", classification: "standard" },
       slot: { slotId: confirm.slotId, startsAt: `${seed.date}T10:00:00+09:00`, endsAt: `${seed.date}T11:00:00+09:00`, view: "reserved_by_me" }, classificationChanges: [] });
     const afterCommit = await db.prepare("SELECT CAST(strftime('%s','now') AS INTEGER) AS t").first<number>("t");
+    stage = "db-readback";
     const reservation = await db.prepare("SELECT * FROM student_reservations WHERE id=?").bind(id).first<{ created_at: number } & Record<string, unknown>>();
     expect(reservation).toEqual({ id, student_id: "seed-self", lesson_slot_id: confirm.slotId, status: "confirmed", automatic_classification: "standard", classification: "standard", created_at: reservation!.created_at, updated_at: reservation!.created_at, cancelled_at: null });
     const t = reservation!.created_at;
@@ -201,8 +213,10 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
     expect(await db.prepare("SELECT count(*) AS n FROM student_reservations").first("n")).toBe(3);
     expect(await db.prepare("SELECT count(*) AS n FROM slot_occupancies").first("n")).toBe(5);
     expect((await db.prepare("SELECT * FROM command_guards").all()).results).toEqual([]);
+    stage = "post-commit-integrity";
     await checkTrustedSeedIntegrity(db, validation);
 
+    stage = "owner-history";
     const saved = await snapshot();
     for (const owner of ["self", "other"] as const) {
       const history = await response(await service.fetch(request(confirmPath, owner)), 200) as ReservationHistoryView;
@@ -210,14 +224,18 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
       if (owner === "self") expect(history.items[1]).toEqual({ reservationId: id, reservationState: "confirmed", attendanceState: "none", classification: "standard", startsAt: `${seed.date}T10:00:00+09:00`, endsAt: `${seed.date}T11:00:00+09:00` });
       expect(history.nextCursor).toBeNull();
     }
+    stage = "read-error-fail-closed";
     failHistory = true;
     await error(await service.fetch(request(confirmPath)), 503, "SERVICE_UNAVAILABLE", "later");
     await unchanged(saved);
     expect(batches - calls).toBe(1); // GET/read failures never cause another write.
+    stage = "final-constraints";
     expect(constraints.every((constraint) => constraint === "first-primary")).toBe(true);
   } catch {
     // Even setup/direct DB readback failures must not expose D1 SQL/cause or
     // secret-bearing fixtures through Vitest's exception reporter.
-    throw new Error("TRUSTED_LOCAL_RESERVATION_PROOF_FAILED");
+    // Only a fixed test-phase label may reach CI; never expose the original error,
+    // SQL, Session, token, or D1 rows through Vitest diagnostics.
+    throw new Error(`TRUSTED_LOCAL_RESERVATION_PROOF_FAILED:${stage}`);
   }
 }, 30_000);
