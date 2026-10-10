@@ -785,5 +785,33 @@ Node fixtureの異常系、Cloudflare実D1の正常系、実Browser成功は別�
 対応は既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-914`
 への準備 / readback **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002は維持する。
 旧#914 / #922のworker / config / seed / runner / cleanup・証拠は変更しない。
-Worker8789 / HTTPS通信 / TLS / Chrome UI / run-owned終端cleanup・human-gated正式runは#930に残し、Gate A〜D・#608 Doneを主張しない。
+Worker8789 lifecycleの準備Portは下記#939、実HTTPS通信 / TLS / Chrome UI / run-owned終端cleanup・human-gated正式runは#930に残し、Gate A〜D・#608 Doneを主張しない。
 current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
+
+## #939 8789予約Worker lifecycle（prepared Port / finite fixture）
+
+`evaluation/trusted-booking-worker.mjs` の `createBookingWorkerPort` は明示 `start()` / `stop()` で操作する独立予約helper。
+#937の `persistence` / `proxyOptions` をそのまま消費し、locked local Wrangler / closed config / credential-free envを確認する。
+上位ownerは#937のseed proxy dispose後の `consume` 内で準備済みD1に対して呼び出す。
+上位ownerが渡す `certificate`、`certificateParent`、`certificateParentIdentity` は既存 `createCertificate` の
+同一run `server.key` / `server.pem` と、事前に採取した親directory identityとする。親はprivateな専用TMPDIR自身または
+既存TLS ownerの `TMPDIR/browser-home` に限り、owner / inode / realpath・非symlink / 非hardlinkを検査する。
+TLS生成 / trust変更 / seed / persist作成・削除は行わず、prepared D1の同一directory identityと所有treeを維持する。
+固定 `dev --config tests/evaluation/wrangler.reservation.jsonc --ip 127.0.0.1 --port 8789 --local-protocol https`
+と固定persist・run-owned証明書だけで単一foreground process groupを起動する。env / argv / Header / Cookieによるoverrideはない。
+`ss` の8789一意socket / 正確な `127.0.0.1:8789` と各PIDのPGID一致を照合し、inspectorを含む全owned TCP listenersを
+loopbackに限定する。隠れたPID・不明PGID・早期exit・未知結果はreadyへ昇格しない。`isReady()` はprepared transport状態だけを表す。
+`stop()` は所有状態を再確認してSIGINTを一度だけ送り、group消滅・child終了と8789閉鎖を確認してから
+`{ stopped: true, portClosed: true }` を返す。観測済みearly exitでもgroup消滅・port閉鎖が必要で、非所有processは操作しない。
+既存startup 30秒 / graceful stop 10秒の予算内で観測し、force-kill / stop retry / restartを持たない。
+失敗は固定非秘密 `TRUSTED_BOOKING_WORKER_FAILED` とし、同じPortのstart / stopは単発、未知停止ではchild / 所有物を保持する。
+旧8788 `stopWorker` の成功を8789閉鎖証拠として流用しない。
+
+`evaluation/trusted-booking-worker.test.mjs` を既存 `npm run test:unit` / Product CIのUnit stepへ追加する。
+有限effects fixtureでexact CLI、port / PGID正負、unknown listener / inspector、early exit、stop失敗 / 閉鎖不明、
+再start / stop拒否、並行呼出し、未所有8088非操作、証明書の親 / link / identity拒否、旧8788の封印を検査する。
+Worker / Chrome / TLS / systemd / persistent D1を起動しない。synthetic listener観測は実Wrangler / ss互換性・実HTTPS成功の証拠ではない。
+既存#937節と同じ `POL→BR→REQ→AC→TC-F-003/005・TC-NF-914` へのprepared transport **partial evidence**のみで、
+識別子・CON-001/002/009・OOS-001/002、Production全503、旧read-only helper / proofは不変。
+実Chrome同一runの8788 TLS proof→8788閉鎖→同じcertで8789起動→Preview / Confirm→D1 readback・終端cleanupは#930に残る。
+正式runの人間判断、current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認し、Gate A〜D / #608 Doneを主張しない。
