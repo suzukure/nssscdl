@@ -14,8 +14,11 @@ import { bookingChildComplete, bookingChildUnknown, bookingFixtureComplete, pars
 
 const canary = "private-session-state-csrf-sql-pii-stderr";
 const stages = ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator"];
-const diagnostic = stage => `TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`;
-const fixed = e => [...stages, "unknown"].some(stage => e.message === diagnostic(stage)) && !e.stack.includes(canary) && !("cause" in e);
+const reasons = ["timeout", "manager", "mismatch", "cancel", "unknown"];
+const diagnostic = (stage, reason = "unknown") => `TRUSTED_BOOKING_OUTER_FAILED; stage=${stage}${stage === "terminal" ? `; reason=${reason}` : ""}; retain owned files; do not retry`;
+const legacyTerminal = "TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; retain owned files; do not retry";
+const terminalFaultReason = fault => ({ invocation: "mismatch", live: "timeout", timeout: "timeout", abort: "cancel" }[fault] ?? "manager");
+const fixed = e => ([...stages, "unknown"].some(stage => e.message === diagnostic(stage)) || reasons.some(reason => e.message === diagnostic("terminal", reason))) && !e.stack.includes(canary) && !("cause" in e);
 
 // The real inner controller through finite Ports: no D1/TLS/Chrome/systemd execution.
 function innerPorts(events, fault, signal) {
@@ -45,7 +48,7 @@ function innerPorts(events, fault, signal) {
   };
 }
 
-function fixture(fault = "") {
+function fixture(fault = "", { preflightTime = 0, terminalState = {} } = {}) {
   let time = 0, observations = 0, stopped = false, text;
   const controller = new AbortController(), events = [];
   const unit = new BrowserUnit({ env: { PATH: "/usr/bin", HOME: "fixture", TMPDIR: "fixture" }, cwd: "fixture",
@@ -54,7 +57,7 @@ function fixture(fault = "") {
       assert.equal(file, "sudo"); assert.equal(args[0], "-n");
       if (args[1] === "systemd-run") {
         events.push("start");
-        assert.ok(args.includes("--property=RuntimeMaxSec=120s"));
+        assert.ok(args.includes(`--property=RuntimeMaxSec=${Math.min(120, Math.floor((170000 - preflightTime) / 1000))}s`));
         assert.ok(args.includes("tests/evaluation/trusted-booking-child.mjs"));
         if (fault === "start") throw new Error(canary);
         const ok = await useBookingChild({ signal: controller.signal, isolated: true,
@@ -71,9 +74,10 @@ function fixture(fault = "") {
       const state = stopped ? { LoadState: "not-found", ActiveState: "inactive", SubState: "dead", InvocationID: "" } : {
         Type: "exec", ExitType: "cgroup", RemainAfterExit: "yes", Restart: "no", NRestarts: "0", OOMPolicy: "stop",
         Delegate: "no", NoNewPrivileges: "yes", ProtectControlGroups: "yes", KillMode: "control-group",
-        StandardOutput: "null", StandardError: "null", User: "7", Group: "7", RuntimeMaxUSec: "2min", TimeoutStopUSec: "2s",
+        StandardOutput: "null", StandardError: "null", User: "7", Group: "7", RuntimeMaxUSec: `${unit.runtime}s`, TimeoutStopUSec: "2s",
         LoadState: "loaded", ActiveState: "active", SubState: "exited", Result: "success", ExecMainCode: "1",
         ExecMainStatus: events.includes("child-exit1") ? "1" : "0", InvocationID: "b".repeat(32), ControlGroup: "/system.slice/" + unit.name };
+      if (!stopped && observations >= 2) Object.assign(state, terminalState);
       if (!stopped && observations === 3) {
         if (fault === "invocation") state.InvocationID = "c".repeat(32);
         if (fault === "timeout") time = 170000;
@@ -84,7 +88,7 @@ function fixture(fault = "") {
       return Object.entries(state).map(([k, v]) => `${k}=${v}`).join("\n");
     } });
   const ports = {
-    async preflight() { events.push("preflight"); if (fault === "preflight") throw new Error(canary); },
+    async preflight() { events.push("preflight"); time += preflightTime; if (fault === "preflight") throw new Error(canary); },
     async report() {
       events.push("report");
       return parseBookingReport(fault === "fixture-report" ? bookingFixtureComplete : fault === "report" ? canary : text);
@@ -118,18 +122,90 @@ test("#945 unknown/partial child, readback missing, cgroup live, drift, abort/ti
     stop: "release", seed: "terminal", confirm201: "terminal", "worker-stop": "terminal", "readback-five-tables": "terminal", "secret-scan": "terminal" };
   for (const [fault, stage] of Object.entries(faults)) {
     const f = fixture(fault);
-    await assert.rejects(useBookingOuter(f.unit, f.ports), e => fixed(e) && e.message === diagnostic(stage), fault);
+    await assert.rejects(useBookingOuter(f.unit, f.ports), e => fixed(e) && e.message === diagnostic(stage, stage === "terminal" ? terminalFaultReason(fault) : undefined), fault);
     assert.ok(!f.events.includes("delete"), fault);
     for (const event of ["start", "seed", "confirm201", "stop"]) assert.ok(f.events.filter(e => e === event).length <= 1, fault);
     const calls = f.events.length; await f.unit.dispose(); assert.equal(f.events.length, calls);
   }
 });
 
+test("#955 real BrowserUnit terminal categories remain first-latched through outer catch, disposal and CLI", async () => {
+  // Oracles are the #914 check/show/terminal contracts, not error messages.
+  const cases = [
+    [{ terminalState: { Result: "timeout" } }, "timeout", "TIMEOUT"],
+    [{ terminalState: { Result: "exit-code" } }, "manager", "MANAGER"],
+    [{ terminalState: { ExecMainStatus: "1" } }, "manager", "MANAGER"],
+    [{ terminalState: { ExecMainCode: "2" } }, "manager", "MANAGER"],
+    [{ terminalState: { ExitType: "main" } }, "mismatch", "MISMATCH"],
+    [{ fault: "invocation" }, "mismatch", "MISMATCH"],
+    [{ fault: "timeout" }, "timeout", "TIMEOUT"],
+    [{ fault: "abort" }, "cancel", "CANCEL"],
+    [{ show: "throw" }, "unknown", "UNKNOWN"],
+    [{ show: "missing" }, "unknown", "UNKNOWN"],
+  ];
+  for (const [options, reason, latched] of cases) {
+    const f = fixture(options.fault, options), command = f.unit.command;
+    f.unit.command = async (file, args, config) => {
+      const output = await command(file, args, config);
+      if (f.events.filter(e => e === "show").length === 2) {
+        if (options.show === "throw") throw new Error(canary);
+        if (options.show === "missing") return output.replace(/Result=.*\n/, "");
+      }
+      return output;
+    };
+    assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
+      { stdout: [], stderr: [diagnostic("terminal", reason)], status: 1 });
+    assert.equal(f.unit.failure, latched);
+    f.unit.latch("UNKNOWN"); assert.equal(f.unit.failure, latched);
+    assert.equal(f.events.filter(e => e === "start").length, 1);
+    assert.equal(f.events.filter(e => e === "stop").length, 1);
+    for (const event of ["report", "ports/generated/identities", "delete"]) assert.ok(!f.events.includes(event));
+    const calls = f.events.length; await f.unit.dispose(); assert.equal(f.events.length, calls);
+  }
+});
+
+test("#955 terminal classification uses failure alone before latch/dispose, invalid values and throwing getter stay unknown", async () => {
+  const values = [
+    ...[["TIMEOUT", "timeout"], ["MANAGER", "manager"], ["MISMATCH", "mismatch"], ["CANCEL", "cancel"], ["UNKNOWN", "unknown"]],
+    ...[undefined, null, "STOP", "UNAVAILABLE", "timeout", "TIMEOUT\n", canary, 1, {},
+      { toString() { throw new Error(canary); } }, Symbol(canary)].map(value => [value, "unknown"]),
+    ["throw", "unknown"],
+  ];
+  for (const [value, reason] of values) {
+    const events = [];
+    const unit = {
+      remaining() {}, async start() { events.push("start"); },
+      async terminal() { events.push("terminal"); throw { get message() { throw new Error(canary); }, stack: canary, cause: canary }; },
+      get failure() { events.push("failure"); if (value === "throw") throw new Error(canary); return value; },
+      latch(category) { events.push("latch"); assert.equal(category, "UNKNOWN"); if (value === "throw") throw new Error(canary); },
+      async dispose() { events.push("stop"); Object.defineProperty(this, "failure", { value: "CANCEL" }); throw new Error(canary); },
+      close() { events.push("close"); },
+    };
+    const ports = { async preflight() {}, async report() { assert.fail("no report"); },
+      async finalCheck() { assert.fail("no ownership check"); }, async remove() { assert.fail("no deletion"); } };
+    assert.deepEqual(await outerCliFixture(() => useBookingOuter(unit, ports)),
+      { stdout: [], stderr: [diagnostic("terminal", reason)], status: 1 });
+    assert.deepEqual(events, ["start", "terminal", "failure", "latch", "stop", "close"]);
+  }
+});
+
+test("#955 static preflight budget reduces the existing unit bound without extending the owner deadline", async () => {
+  // 180s owner minus 10s disposal reserve minus P; cap unit at 120s.
+  for (const [preflightTime, runtime] of [[0, 120], [50000, 120], [50001, 119], [60000, 110], [169000, 1]]) {
+    const f = fixture("", { preflightTime });
+    await useBookingOuter(f.unit, f.ports);
+    assert.equal(f.unit.runtime, runtime); assert.equal(f.unit.deadline, 180000);
+  }
+  const expired = fixture("", { preflightTime: 170000 });
+  await assert.rejects(useBookingOuter(expired.unit, expired.ports), e => e.message === diagnostic("preflight"));
+  assert.deepEqual(expired.events, ["preflight"]); assert.equal(expired.unit.failure, "TIMEOUT");
+});
+
 // Execute the real outer catch/finally and CLI text with finite resource adapters.
 // No --run subprocess, filesystem provisioning, commands or manager are invoked.
 async function outerCliFixture(run) {
   const source = readFileSync("tests/evaluation/trusted-booking-outer.mjs", "utf8");
-  const sanitizing = source.slice(source.indexOf("const failure ="), source.indexOf("export const bookingOuterCheckpoint"));
+  const sanitizing = source.slice(source.indexOf("const terminalReasons ="), source.indexOf("export const bookingOuterCheckpoint"));
   const operator = source.slice(source.indexOf("export async function runBookingOuter"))
     .replace("export async function", "async function").replace("fileURLToPath(import.meta.url)", "'fixture-outer'")
     .replace("\nif (process.argv[1]", `
@@ -163,7 +239,7 @@ test("#951 real outer catch and CLI preserve finite stages and unchanged success
     const f = fixture(fault);
     const stage = { "identity-drift": "remove", seed: "terminal", manager: "start", timeout: "terminal", abort: "terminal" }[fault] ?? fault;
     assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
-      { stdout: [], stderr: [diagnostic(stage)], status: 1 }, fault);
+      { stdout: [], stderr: [diagnostic(stage, stage === "terminal" ? terminalFaultReason(fault) : undefined)], status: 1 }, fault);
     assert.ok(!f.events.includes("delete"));
   }
   for (const stage of stages) {
@@ -171,7 +247,16 @@ test("#951 real outer catch and CLI preserve finite stages and unchanged success
     assert.deepEqual(await outerCliFixture(async () => { throw error; }),
       { stdout: [], stderr: [diagnostic(stage)], status: 1 });
   }
+  for (const reason of reasons) {
+    const error = new Error(diagnostic("terminal", reason), { cause: new Error(canary) }); error.stack = canary;
+    assert.deepEqual(await outerCliFixture(async () => { throw error; }),
+      { stdout: [], stderr: [diagnostic("terminal", reason)], status: 1 });
+  }
   for (const error of [new Error(canary), null, undefined, diagnostic("terminal"), {},
+    new Error(legacyTerminal),
+    ...["TIMEOUT", "", "fake", canary, "timeout; reason=manager", "timeout\n"].map(reason => new Error(diagnostic("terminal", reason))),
+    ...stages.filter(stage => stage !== "terminal").map(stage => new Error(diagnostic(stage).replace("; retain", "; reason=timeout; retain"))),
+    ...reasons.flatMap(reason => ["\n", "\r\n", canary, "\0"].map(suffix => new Error(diagnostic("terminal", reason) + suffix))),
     { message: { toString() { throw new Error(canary); } } }, { get message() { throw new Error(canary); } },
     ...["inner", "TERMINAL", "", canary].map(stage => new Error(diagnostic(stage))),
     ...["\n", "\r\n", canary, "\0"].map(suffix => new Error(diagnostic("terminal") + suffix)),
@@ -237,8 +322,11 @@ const proofStep = `
               result.stdout !== ${JSON.stringify(bookingOuterCheckpoint + "\n")}) {
             let stage = 'unknown';
             if (!result.error && !result.signal && result.status === 1 && result.stdout === '') {
-              for (const allowed of ['preflight', 'start', 'terminal', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator']) {
+              for (const allowed of ['preflight', 'start', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator']) {
                 if (result.stderr === 'TRUSTED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
+              }
+              for (const reason of ['timeout', 'manager', 'mismatch', 'cancel', 'unknown']) {
+                if (result.stderr === 'TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=' + reason + '; retain owned files; do not retry\\n') stage = 'terminal; reason=' + reason;
               }
             }
             console.error('BOOKING_PROOF_FAILED; stage=' + stage);
@@ -448,12 +536,20 @@ test("#948 candidate output filter runs once, bounds execution and emits only fi
     ...["SIGTERM", "SIGKILL"].map(signal => ({ ...failed, status: null, signal })),
     ...["ETIMEDOUT", "ENOBUFS", "ENOENT"].map(code => ({ ...failed, error: Object.assign(new Error(canary), { code }) })),
     { ...failed, stderr: canary }, { ...failed, stderr: Buffer.from(failed.stderr) },
+    { ...failed, stderr: legacyTerminal + "\n" },
+    ...["TIMEOUT", "", "fake", canary, "timeout; reason=manager", "timeout\n"].map(reason => ({ ...failed, stderr: diagnostic("terminal", reason) + "\n" })),
+    ...stages.filter(stage => stage !== "terminal").map(stage => ({ ...failed, stderr: diagnostic(stage).replace("; retain", "; reason=timeout; retain") + "\n" })),
+    ...reasons.flatMap(reason => [diagnostic("terminal", reason), diagnostic("terminal", reason) + "\r\n",
+      diagnostic("terminal", reason) + "\n\n", diagnostic("terminal", reason) + "\n" + canary,
+      canary + diagnostic("terminal", reason) + "\n", diagnostic("terminal", reason) + "\0\n",
+      diagnostic("terminal", reason).replace("do not retry", "retry") + "\n"].map(stderr => ({ ...failed, stderr }))),
     ...["inner", "unknown", "TERMINAL", "", canary].map(stage => ({ ...failed, stderr: diagnostic(stage) + "\n" })),
     ...stages.flatMap(stage => [diagnostic(stage), diagnostic(stage) + "\r\n", diagnostic(stage) + "\n\n",
       diagnostic(stage) + "\n" + canary, canary + diagnostic(stage) + "\n", diagnostic(stage) + "\0\n",
       diagnostic(stage).replace("do not retry", "retry") + "\n"].map(stderr => ({ ...failed, stderr }))),
   ];
-  const cases = [[success, undefined], ...stages.map(stage => [{ ...failed, stderr: diagnostic(stage) + "\n" }, stage]),
+  const cases = [[success, undefined], ...stages.filter(stage => stage !== "terminal").map(stage => [{ ...failed, stderr: diagnostic(stage) + "\n" }, stage]),
+    ...reasons.map(reason => [{ ...failed, stderr: diagnostic("terminal", reason) + "\n" }, `terminal; reason=${reason}`]),
     ...unknown.map(result => [result, "unknown"])];
   for (const [result, stage] of cases) {
     let calls = 0;
