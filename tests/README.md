@@ -850,3 +850,30 @@ WACはproduction接続なしの独立prepared ContractとしてR0 / C0相当 / P
 へのprepared操作 **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002を変更しない。
 旧8788 read-only helper / Production / migration / workflowは不変。実Worker / Chrome / D1統合、stop / cleanup、正式Actions・human opt-in Gate、Gate A〜D・#608全体Doneは#930へ残す。
 current-head Product CI / PR Traceability / 独立Claude Reviewの正式結果はworkflow側で別途確認する。
+
+
+## #943 予約inner接続（prepared composition / finite fixture）
+
+`evaluation/trusted-booking-process.mjs` の `runTrustedBookingProcess({signal})` は後続operatorのisolated child専用で、
+importだけでは副作用を持たない。既存sanitized Node24/Linux env、fresh `TMPDIR===HOME===XDG_CONFIG_HOME` とownerのdeadline signalを前提とする。
+`prepareTrustedBooking` のseed / baseline / 初期proxy disposal後のconsume内でだけ `TMPDIR/browser-home` を0700で新規作成し、directory identityを確認する。
+変更しない `withIsolatedBrowserTls({workerHandoff:true})` のstrict 8788 positive / negative proofとlistener閉鎖・port空き確認後のcallbackだけで、
+同じcert / 親identityを `createBookingWorkerPort` へ渡す。固定8789のprepared readyは実TLS / Chrome成功を意味しない。
+親Browserに新しい非永続strict contextを作り、固定originへ本人Cookieをownerとして注入して、`proveTrustedBookingDom` を一度だけ呼ぶ。
+実Confirm201由来のopaque IDはmemoryだけに保持し、sealed helperのBrowser public close → 単発Worker stop / 8789閉鎖 → inspectOwnedの順で、
+`inspectTrustedBooking(handle, reservationId)` の独立5表readbackと所有tree / 秘密scanへ渡す。Session hashはD1だけで許容する。
+公開戻り値は固定 `{phase:"complete",status:"prepared"}`、失敗は固定phaseを持つ `TRUSTED_BOOKING_PROCESS_FAILED` のみでcauseを持たない。
+旧TLS reportは捨て、ID・Session / CSRF / Expected State Token・HTML / SQL / PII・CLI stderrを出力しない。
+未知 / 中断 / 重複はfail-closed、再start / stop / DOM / readback、ID推測、所有ファイルの削除を行わない。
+
+`evaluation/trusted-booking-process.test.mjs` は `useTrustedBookingProcess` のfinite Port seamと既存sealed handoff / cleanup関数で、
+seed前TMP空の前提、8788閉鎖前の8789拒否、strict context / 本人Cookie、単発DOM、Browser close / 単発stop / closed前readback拒否、
+negative / unknown / duplicate / abort / timeoutの再操作禁止・固定非秘密出力・import時非起動・Production / workflow / read-onlyから到達不可を検査する。
+既存 `npm run test:unit` に登録し、実Wrangler / Chrome / systemd / HTTPS / persistent D1は起動しない。
+WACはR0 / C1 / P1 / B1、Yellowのprepared限定。C1の実ss / Playwright / asset MIME / Cookie互換性をfixture成功でC0へ昇格させない。
+上記#941節と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared integration **partial evidence**のみで、
+識別子・AC→TCの意味、CON-001/002/009・OOS-001/002は変更しない。旧#914 / #922 helper・証拠、Production / SQL / config / workflowは不変。
+outerのrun-owned TMP / HOME / persist・systemd unit・同一Invocation terminal / process no-live・NSS / cert / key完全cleanup・booking専用reportと証拠、
+step期限 / 費用 / 復旧判断、実環境互換性の確認、human-gated official normalとnegative / 探索評価は#930の後続責務。
+今回CLI / Actions entrypoint / outer ownerは追加せず、#537 Gate A、Gate B〜D、#608 Done / Production-readyを主張しない。
+current-head Product CI / PR Traceability / 独立Claude Reviewの正式結果はworkflow側で別途確認する。
