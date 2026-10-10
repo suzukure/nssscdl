@@ -9,7 +9,7 @@
     "build": "node tests/evaluation/verify-reservation-config.mjs && tsc -p src/web/tsconfig.json && cp src/web/student.html src/web/student.css dist/student/ && node tests/evaluation/verify-student-assets.mjs && wrangler deploy --dry-run --outdir dist && node tests/evaluation/verify-wrangler-cli.mjs && wrangler deploy --config tests/evaluation/wrangler.jsonc --dry-run --outdir dist/evaluation-read-only",
     "typecheck": "tsc --noEmit && tsc -p tests/evaluation/tsconfig.json",
     "lint": "eslint \"src/**/*.ts\" \"tests/unit/**/*.ts\" \"tests/integration/**/*.ts\" \"tests/d1/**/*.ts\" \"tests/evaluation/**/*.ts\" vitest.config.ts vitest.d1.config.ts",
-    "test:unit": "vitest run tests/unit && node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs tests/evaluation/trusted-booking-seed.test.mjs tests/evaluation/trusted-booking-worker.test.mjs",
+    "test:unit": "vitest run tests/unit && node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs tests/evaluation/trusted-booking-seed.test.mjs tests/evaluation/trusted-booking-worker.test.mjs tests/evaluation/trusted-booking-dom.test.mjs",
     "test:integration": "vitest run tests/integration",
     "d1:local": "wrangler d1 migrations apply nssscdl-bootstrap-test --config tests/fixtures/d1/wrangler.jsonc --local --persist-to .wrangler/d1-bootstrap-test && wrangler d1 migrations apply nssscdl-student-auth-test --config tests/fixtures/d1/wrangler.jsonc --local --persist-to .wrangler/d1-bootstrap-test",
     "test:d1": "vitest run --config vitest.d1.config.ts",

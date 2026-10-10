@@ -815,3 +815,38 @@ Worker / Chrome / TLS / systemd / persistent D1を起動しない。synthetic li
 識別子・CON-001/002/009・OOS-001/002、Production全503、旧read-only helper / proofは不変。
 実Chrome同一runの8788 TLS proof→8788閉鎖→同じcertで8789起動→Preview / Confirm→D1 readback・終端cleanupは#930に残る。
 正式runの人間判断、current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認し、Gate A〜D / #608 Doneを主張しない。
+
+## #941 予約正常1回のDOM操作（dormant/prepared helper / finite fixture）
+
+`evaluation/trusted-booking-dom.mjs` の `proveTrustedBookingDom({browser, context, session, seed, signal})` は明示呼出し専用。
+上位ownerは `Browser.newContext({ignoreHTTPSErrors:false, serviceWorkers:"block"})` で新しい専用contextを作り、
+#937の `seed.sessions.self` の `__Host-student_session` をCookie jarへ注入してから渡す。
+helperはBrowserとの対応・空のPage集合・本人Session capability・Cookie属性を検査する。strict TLS / service worker設定の供給・実証はownerの責務であり、fixtureから設定や実Browser trustの成功を推定しない。
+contextは成功・失敗とも再利用不可。helperはCookie発行、Worker / D1 / TLS / NSS / systemd / portの起動・準備・削除を持たず、ownerがcontext / Browserと全資源の終端処理を行う。
+`src/**` やdefault workflowから到達しないことをfinite source fixtureで固定する。
+
+固定 `https://127.0.0.1:8789/student` を実navigationし、同originの6資産・既存表示を確認する。
+予約API証拠はPageのネットワークResponseだけを使い、driver fetch、mock Response、URLによる生徒ID指定を持たない。
+context routeは送信前にorigin / method / path / queryなし / redirectなし・Page対応を検査し、別originや予期しないPOSTを拒否する。
+同originの補助favicon GETは予約証拠へ採用しない。後続ownerの既存routeやPageを引き継がない専用contextが前提となる。
+次の東京月15日10:00の `seed-slot-bookable` を日時のaccessible labelで選び、選択だけではPOST / CSRF取得・確定がないことを検査する。
+明示「選択枠の予約内容をPreview」でPOST 200とSession-bound CSRFを照合し、日時・分類・既存予約の全差分をDOMで確認してからだけ、
+明示「内容を確認して予約を確定」を1回操作する。strict seedの初期N=3・既存本人1件では新規standard / 差分なしが正本期待形。
+ConfirmのPOST 201、日時・分類・予約済み表示とSchedule更新、明示「履歴を最新から再取得」による本人履歴の1→2件を照合する。
+戻り値はこの実201のpayloadにあるopaque `reservationId` だけ。201観測はWorker停止後の `inspectTrustedBooking(handle, reservationId)` による5表独立readbackとは別の証拠で、配送成功も主張しない。
+
+Session / hash / CSRF / Expected State Tokenはtrusted memoryでのみ比較し、DOM非露出を検査する。
+HTML / payload / header / query / PIIを戻り値・log・console・error causeへ出さない。
+null navigation、不正 / 欠損ID、応答不整合・403 / 409 / 503、重複POST、結果不明は固定 `TRUSTED_BOOKING_DOM_*` reasonで停止する。
+各driver操作は既存read-only helperと同じ5秒上限。abort / timeoutは停止をlatchし、自動retry / reload / 再Confirmを行わない。
+停止後や成功返却後もcontext routeのdeny guardを保持し、遅延通信・2回目writeを拒否する。ownerは必ずcontextを閉じ、別用途へ再利用しない。
+これは実Chrome取消・cleanupの証明ではなく、後続ownerの共有deadline・終端処理へ接続するprepared制御である。
+
+`evaluation/trusted-booking-dom.test.mjs` を既存 `npm run test:unit` に追加する。
+finite Page / route / Response doubleは正常順序・各POST最大1回・全差分の欠落 / 順序 / before-after・秘密非出力・origin / navigation / ID不整合・未知結果・abort / timeout後の停止を検査する。
+実Chrome / HTTPS / Worker / D1を起動せず、fixture成功はassertion / control flowだけの証拠とする。
+WACはproduction接続なしの独立prepared ContractとしてR0 / C0相当 / P1 / B1、Green（強制分割なし）。後続target-modeへの昇格は#930でfresh admissionする。
+既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-902/914`
+へのprepared操作 **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002を変更しない。
+旧8788 read-only helper / Production / migration / workflowは不変。実Worker / Chrome / D1統合、stop / cleanup、正式Actions・human opt-in Gate、Gate A〜D・#608全体Doneは#930へ残す。
+current-head Product CI / PR Traceability / 独立Claude Reviewの正式結果はworkflow側で別途確認する。

@@ -144,6 +144,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #939は独立8789予約Workerの明示起動・所有listener / PGID / loopback検査・単発停止 / port閉鎖のprepared lifecycle Portを追加する。固定CLI、run-owned証明書、非所有 / 未知状態のfail-closed、再stop / restart拒否を既存Unit stepのfinite Node fixtureで検査する。境界と既存TCへのprepared transport partial evidence対応は `../../tests/README.md` の#939節を正とし、実Worker / HTTPS / Chrome / D1永続を起動しない。旧8788 proofとProduction全503を維持し、実統合・終端cleanup・正式runの人間判断は#930に残す。
 
+#941は後続ownerが供給するstrict Browser context / 本人Session / #937 seedを消費するdormant DOM helperを追加する。明示Preview200→日時・区分・全差分のDOM照合→単発Confirm201→本人履歴1件追加、非秘密ID handoff、未知結果 / 重複 / timeout / abortでの再操作禁止を既存Unit stepのfinite fixtureで検査する。証明範囲と既存TCへのprepared partial evidence対応は `../../tests/README.md` の#941節を正とする。合成成功を実Chrome / HTTPS / D1成功とはせず、runtime owner統合・Worker停止後の独立readback・cleanup・human-gated正式runは#930に残す。
+
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
 | A: local操作評価 | local HTTPS Worker + local D1 + test-owned Sessionで実画面の正常・409再確認・401失効・403拒否・503 / 結果不明非再送を確認する。keyboard / focus / narrow viewportとdefault到達不可も検証する。fake Providerの結果とTransaction内Reservation / Audit / Intent / outboxのCommitを別々に観察する。local成功は実Provider配送・対象環境D1・System / Acceptance TC全体のPassではない。 |
