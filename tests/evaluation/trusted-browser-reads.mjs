@@ -1,4 +1,5 @@
 // #914: trusted memory -> official Cookie jar -> browser engine fetch only.
+import { domProofCheckpoint } from "./trusted-browser-dom.mjs";
 import { X509Certificate } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { connect } from "node:tls";
@@ -7,7 +8,7 @@ import { origin } from "./browser-tls-trust.mjs";
 
 // Fixed installed runner binary; no environment-selected child authority.
 export const browserBinary = "/usr/bin/google-chrome";
-export const browserFailureCheckpoint = "#914 intentional failure: positive browser GETs completed; public browser close / Worker and port stopped / proxy inspect and secret scan completed; unit terminal and owned removal unconfirmed";
+export const browserFailureCheckpoint = "#914 intentional failure: positive browser GETs and #922 DOM checks completed; public browser close / Worker and port stopped / proxy inspect and secret scan completed; unit terminal and owned removal unconfirmed";
 export function browserEvidence(stdout, intentional = false) {
   const newline = stdout.indexOf("\n");
   const certificate = stdout.slice(0, newline);
@@ -20,7 +21,8 @@ export const browserProofCheckpoint = [
   "TC-F-001/002/005/207 partial: real same-origin browser fetch; self/other schedule=200 history=200 csrf=200; exact five views / owner-only history / distinct session CSRF passed",
   "TC-NF-914 partial: host-only Secure HttpOnly SameSite=Lax Path=/; isolated contexts; missing/foreign three GETs=401; no-store / no CORS / 401 clear / csrf no-referrer; secret non-exposure passed",
   "TC-F-207/211 partial: Worker stopped / port closed / self-only revocation / proxy disposed / same-cert restart; self three GETs=401 / other three GETs=200; D1 snapshot preserved passed",
-  "#914: public browser close / Worker and port stopped / final read-only inspect / owned secret scan passed; unit terminal and owned removal unconfirmed; local browser read-only partial evidence only; assets/DOM/Preview/Confirm/Gate A-D unverified",
+  domProofCheckpoint,
+  "#914: public browser close / Worker and port stopped / final read-only inspect / owned secret scan passed; unit terminal and owned removal unconfirmed; local browser read-only partial evidence only; Preview/Confirm/Gate A-D unverified",
 ].join("\n");
 
 export function browserPreflight() {
@@ -109,9 +111,9 @@ export async function browserGet(page, path, signal) {
   return { ...fetched, headers };
 }
 
-export async function proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop, revoke, inspect, failAfterPositive = false }) {
+export async function proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop, revoke, inspect, failAfterPositive = false, proveDom }) {
   check(browser);
-  const self = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
+  const self = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block", timezoneId: "America/Los_Angeles" });
   const other = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
   const missing = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
   const foreign = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
@@ -153,6 +155,7 @@ export async function proveBrowserReads({ browser, context, signal, seed, secret
   };
   await getAll("self", 200); await getAll("other", 200);
   check(csrfValues.length === 2 && csrfValues[0] !== csrfValues[1]);
+  if (proveDom) await proveDom(pages.self, signal);
   if (failAfterPositive) throw new Error("TRUSTED_BROWSER_INTENTIONAL_FAILURE");
   await getAll("missing", 401); await getAll("foreign", 401);
   await stop();
@@ -161,5 +164,6 @@ export async function proveBrowserReads({ browser, context, signal, seed, secret
   await inspect();
   await start();
   await getAll("self", 401); await getAll("other", 200);
+  if (proveDom) await proveDom(pages.self, signal, true);
   // Helper performs public Browser.close before final Worker stop; outer owner verifies unit no-live.
 }

@@ -11,6 +11,8 @@ import { browserDiagnostic, checkGeneratedBrowserCleanup, checkOwnedDirectory, c
 import { browserCookie, browserEvidence, browserFailureCheckpoint, browserGet, browserProofCheckpoint, checkCertificate, checkNonExposure, injectCookie, proveBrowserReads, withStoppedProxy } from "./trusted-browser-reads.mjs";
 import { expectedHistory, expectedSchedule } from "./trusted-https-assertions.mjs";
 import { BrowserUnit, finishBrowserUnit, ownedIdentity, readBrowserReport, verifyOwned, writeBrowserReport } from "./trusted-browser-unit.mjs";
+import { verifyStudentAssets } from "./verify-student-assets.mjs";
+import { mkdirSync } from "node:fs";
 import { createCertificate } from "./local-https-smoke.mjs";
 
 const cookie = (value = "A".repeat(43)) => ({ name: "__Host-student_session", value,
@@ -227,7 +229,7 @@ function readFixture() {
       ...(csrf ? { "referrer-policy": "no-referrer" } : {}), ...(status === 401 ? { "set-cookie": clear } : {}) } };
   };
   const browser = { newContext: async (options) => {
-    assert.deepEqual(options, { ignoreHTTPSErrors: false, serviceWorkers: "block" });
+    assert.deepEqual(options, { ignoreHTTPSErrors: false, serviceWorkers: "block", ...(created === 0 ? { timezoneId: "America/Los_Angeles" } : {}) });
     const owner = ["self", "other", "missing", "foreign"][created++];
     let jar = [];
     return { cookies: async () => jar, addCookies: async ([value]) => {
@@ -725,4 +727,39 @@ test("#914 owner verifies creation identity and realpath before deleting; non-ow
     const link = join(dir, 'link'); symlinkSync(other, link); assert.throws(() => ownedIdentity(link));
     assert.ok(existsSync(other)); chmodSync(dir, 0o755); assert.throws(() => verifyOwned(identity));
   } finally { rmSync(dir, { recursive: true }); rmSync(other, { recursive: true }); }
+});
+
+
+test("#922 DOM consumer follows real positive reads and runs after self revocation; failure prevents downstream revocation", async () => {
+  const normal = readFixture();
+  await proveBrowserReads({ ...normal.input, proveDom: async (_page, signal, revoked = false) => {
+    signal.throwIfAborted(); normal.events.push(revoked ? "dom:revoked" : "dom:positive");
+  } });
+  assert.ok(normal.events.indexOf("dom:positive") > normal.events.indexOf("get:other"));
+  assert.ok(normal.events.indexOf("dom:positive") < normal.events.indexOf("revoke"));
+  assert.equal(normal.events.at(-1), "dom:revoked");
+  const failed = readFixture();
+  await assert.rejects(proveBrowserReads({ ...failed.input, proveDom: async () => { throw new Error("fixture failure"); } }));
+  assert.ok(!failed.events.includes("revoke") && !failed.events.includes("stop")); // existing outer owner handles cleanup
+});
+
+test("#922 build preflight rejects missing, extra, empty or symlink assets and production activation", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-assets-fixture-"));
+  const files = ["student.html", "student.css", "student.js", "view.js", "controller.js", "model.js"];
+  const asset = name => join(temporary, "dist/student", name);
+  try {
+    mkdirSync(join(temporary, "tests/evaluation"), { recursive: true });
+    mkdirSync(join(temporary, "dist/student"), { recursive: true });
+    writeFileSync(join(temporary, "tests/evaluation/wrangler.jsonc"), readFileSync("tests/evaluation/wrangler.jsonc"));
+    writeFileSync(join(temporary, "wrangler.jsonc"), readFileSync("wrangler.jsonc"));
+    assert.throws(() => verifyStudentAssets(temporary));
+    for (const name of files) writeFileSync(asset(name), "secretless build fixture");
+    verifyStudentAssets(temporary);
+    writeFileSync(asset("unexpected.js"), "extra"); assert.throws(() => verifyStudentAssets(temporary)); rmSync(asset("unexpected.js"));
+    writeFileSync(asset("model.js"), ""); assert.throws(() => verifyStudentAssets(temporary)); rmSync(asset("model.js"));
+    symlinkSync(asset("view.js"), asset("model.js")); assert.throws(() => verifyStudentAssets(temporary)); rmSync(asset("model.js"));
+    writeFileSync(asset("model.js"), "fixture");
+    writeFileSync(join(temporary, "wrangler.jsonc"), JSON.stringify({ assets: {} }));
+    assert.throws(() => verifyStudentAssets(temporary));
+  } finally { rmSync(temporary, { recursive: true }); }
 });

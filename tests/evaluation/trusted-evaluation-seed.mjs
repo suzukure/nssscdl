@@ -1,3 +1,4 @@
+import { verifyStudentAssets } from "./verify-student-assets.mjs";
 // #906: trusted Node memory only; never imported by a Worker or Browser.
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -30,11 +31,13 @@ export function checkStaticSetup() {
     if (pkg.devDependencies.wrangler !== "4.146.0" ||
         lock.packages["node_modules/wrangler"].version !== "4.146.0" ||
         JSON.parse(readFileSync(resolve(root, "node_modules/wrangler/package.json"), "utf8")).version !== "4.146.0") throw failure();
+    verifyStudentAssets(root);
     const cfg = JSON.parse(readFileSync(proxyOptions.configPath, "utf8"));
     const expected = {
       name: "nssscdl-local-read-only-evaluation", main: "worker.ts", compatibility_date: "2026-10-06",
       workers_dev: false, preview_urls: false,
       dev: { ip: "127.0.0.1", port: 8788, local_protocol: "https" },
+      assets: { directory: "../../dist/student", binding: "ASSETS", run_worker_first: true, html_handling: "none", not_found_handling: "none" },
       d1_databases: [{ binding: "EVALUATION_READ_DB", database_name: "nssscdl-local-read-only-evaluation",
         database_id: "00000000-0000-4000-8000-000000000902", migrations_dir: "../../migrations" }],
     };

@@ -44,9 +44,9 @@ System / Acceptance TC全体のPassは後続#537 / #608へ残す。
 
 `evaluation/worker.ts` / `evaluation/wrangler.jsonc` は評価専用のES-module入口とconfig。
 canonical originはserver側の `https://127.0.0.1:8788` 固定で、Host / Header / Queryから導出しない。
-公開route / account / remote識別子 / assets / scheduled / varsを持たず、`workers_dev` / `preview_urls`はfalse。
+公開route / account / remote識別子 / scheduled / varsを持たず、静的assetsは下記#922の評価専用配線だけに限定し、`workers_dev` / `preview_urls`はfalse。
 専用binding `EVALUATION_READ_DB` のUUIDはlocal-only placeholderであり、通常`TEST_DB` / `AUTH_DB`と共有しない。
-既存#899 serviceだけを使い、3 GET以外のPath / Methodは503。Sessionなしは既存401、CSRFのOrigin拒否は既存403。
+APIは既存#899 serviceだけを使い、3 GETと下記#922の静的配信以外のPath / Methodは503。Sessionなしは既存401、CSRFのOrigin拒否は既存403。
 HMAC-SHA-256 non-exportable sign-only鍵をWeb Cryptoで一度生成し、並行Requestは同じPromiseを共有する。
 生成失敗は再起動まで503とし、鍵・binding不備はCookieなしでも503。再起動 / hot reload後は旧cursorを使わず、
 cursorなしで履歴を再取得する。鍵のexport / fallback / Production鍵の流用はしない。
@@ -393,11 +393,46 @@ GET / navigationは5秒、response body4096文字上限を維持する。累積�
 合成fixtureはroot本人・strict report・正常/意図的失敗の削除順、parent exit0 / setsid子残存の非終端、
 同一InvocationID/設定不一致、unknown/timeout/cancel/stopの失敗固定、不正/欠落report、close不明、port/生成物残存、非所有物非削除を検査する。
 今回の限定scopeはsystemd責任置換の静的実装・合成fixture・文書同期だけで、実Chrome / Worker / D1やowned cleanup成功の証明ではない。
-正式Browser / Worker / D1実証は未確認。別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
+#914のnormal / intentional正式実証記録はsupplied Issue #922 contextを参照し、今回DOM成功へ読み替えない。今回の別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
 HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
 一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
 `REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
-POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOM / Preview / Confirm、REQ-901/902、Gate A〜DとTC全体Passは後続責務。
+POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOMの段階1準備は下記#922を参照する。Preview / Confirm、REQ-901/902全体、Gate A〜DとTC全体Passは後続責務。
+
+## #922 same-origin read-only DOM（段階1 prepared）
+
+`npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
+通常Workerと評価Workerのdry-runを行う。評価configだけに `ASSETS` と `run_worker_first: true`、
+`html_handling: "none"` / `not_found_handling: "none"` を設定する。installed locked Wrangler schemaの
+対応項目は `evaluation/verify-wrangler-cli.mjs` で検査する。schema検査だけをruntime proofとしない。
+`/student` はWorker内で `/student.html` に写像し、rootの `/student.css` / `/student.js` /
+`view.js` / `controller.js` / `model.js` だけを配信する。HTMLの相対URLはこのrootと一致する。
+固定 `https://127.0.0.1:8788`、GET、queryなしの入口のみで、任意Hostはoriginを置き換えない。
+静的Responseはno-store / nosniff / no-referrerと明示MIME、missing assetは安全な404、
+binding失敗 / その他URL・methodは既存503。通常configとdefault Workerの全503を維持する。
+配信URL / MIME / allowlistの合成Port検証は `integration/evaluation-worker.test.ts` に置く。
+asset build不在・余剰ファイルはtrusted setup開始前に拒否し、proxyのDB-only環境判定は維持する。
+
+既存 `node tests/evaluation/trusted-browser-smoke.mjs --run`（および `--fail-after-positive`）を再利用する。
+`trusted-browser-dom.mjs` はselfの同一Contextで実 `/student`、全module / CSS、seed公開月の
+5枠・4 View、Calendar/List、keyboard選択、本人履歴更新を検査する。
+self ContextはAmerica/Los_Angelesとし、日本時間の投影を確認する。停止・本人失効・再起動後は
+実UIの401案内・表示破棄を検査する。3 GET / CSRF証拠は既存のbrowser fetchに保持し、UIが
+CSRFを取得・表示したとは主張しない。secret / PIIはDOM・URLへ出さず、trace等も追加しない。
+
+その後だけ、同じbuilt `mountStudent` へページ内のsecretless fetch fixtureを注入する。
+HTTP認証迂回は作らず、403 FORBIDDEN / 404 / 503 / 通信断 / 401、古い月の応答、年跨ぎ、
+履歴次ページ、focus、320 CSS pxのpage溢れとcalendar局所scrollを合成DOMとして検査する。
+real API / D1成功と合成結果は固定checkpointでも区別する。fixtureの401は実失効の証拠を代替しない。
+実seedは履歴1件なので実cursor paging、多状態履歴、実403 / 通信断はこのproofの成功範囲に含めない。
+
+#914のTLS / sandbox / unit / secret / owned cleanupとchild120秒・owner180秒を維持し、
+runner・workflow・停止責任・retryを追加しない。正常 / intentionalのreportはDOM検査後だけ完成する。
+時間適合、locked Wrangler上の実asset precedence / 404、proxy DB-only互換性、実Chrome DOMと
+normal / intentional cleanupは段階2のfresh人間判断後に正式Actionsで確認する。未走をPassとしない。
+段階1の標準CI / 合成fixtureと、段階2のopt-in正式run / blob照合 / workflow復元 / final-head CIは別証拠。
+`REQ-001/002/005/207/211/902/903/907/914` →既存AC→既存TCへのread-only partial evidenceのみで、
+識別子・意味・要求traceabilityは変更しない。Preview / Confirm / Gate A〜D / 全TC Passは未検証。
 
 ## 既存の部分証拠と標準テスト
 

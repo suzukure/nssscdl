@@ -1,3 +1,4 @@
+import { verifyStudentAssets } from "./verify-student-assets.mjs";
 // #904: operator-owned, opt-in, local-only proof. No seed or Cookie input.
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
@@ -173,10 +174,12 @@ export async function run() {
   for (const dir of [root, join(root, "tests"), join(root, "tests/evaluation")]) {
     assert.ok(!readdirSync(dir).some((n) => /^(\.env|\.dev\.vars)(\.|$)/.test(n) && n !== ".env.example"), "Local env file present");
   }
+  verifyStudentAssets(root);
   const cfg = JSON.parse(readFileSync(join(root, config), "utf8"));
   assert.deepEqual(cfg, {
     name: database, main: "worker.ts", compatibility_date: "2026-10-06", workers_dev: false, preview_urls: false,
     dev: { ip: "127.0.0.1", port: 8788, local_protocol: "https" },
+    assets: { directory: "../../dist/student", binding: "ASSETS", run_worker_first: true, html_handling: "none", not_found_handling: "none" },
     d1_databases: [{ binding: "EVALUATION_READ_DB", database_name: database,
       database_id: "00000000-0000-4000-8000-000000000902", migrations_dir: "../../migrations" }],
   });

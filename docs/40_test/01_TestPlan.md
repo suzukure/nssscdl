@@ -132,7 +132,7 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 ### 7.1 #608初回隔離評価のGate（#892）
 
-構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。Preview / Confirm UI、Production preauth / Auth flow、静的WebのHTTPS配信 / Browser評価compositionは未実装であり、以下は後続検証の責務である。
+構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。Preview / Confirm UI、Production preauth / Auth flow、静的WebのHTTPS配信 / read-only DOM compositionは#922段階1で準備し、正式実走は未確認であり、以下は後続検証の責務である。
 
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
@@ -176,9 +176,9 @@ unknown/timeout/cancel/stop/不正reportは不可逆な失敗で、後から空u
 child120秒・owner180秒の共通残予算と停止margin、固定report・有効設定の正本は `../../tests/README.md` の#914節とadapterを参照する。
 合成fixtureは通常/意図的失敗、parent exit0/setsid子残存、InvocationID/設定差、失敗固定、report拒否、close不明、port/生成物残存、非所有物保全を検査する。
 #906 / #908標準経路・#915 TLS-only proof・製品entryは維持する。今回の限定scopeは静的実装・fixture・文書同期で、正式Actions current-head通常CIは別証拠とする。
-実Chrome / TLS / Worker / D1の統合実証には別途人間判断が必要であり、正式統合実証は未確認。
+#914正式実証はsupplied Issue #922 contextの記録とし、#922のsame-origin assets / DOM実証とは区別する。#922の実Chrome / TLS / Worker / D1実走には別途fresh人間判断が必要であり、正式DOM統合実証・時間適合は未確認。
 既存REQ / AC→TC-F-001/002/005/207/211・TC-NF-914へのlocal browser read-only partial evidenceのみで、
-static assets / DOM / Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
+#922 static assets / DOMの段階1 prepared範囲は `../../tests/README.md` の#922節を参照する。Preview / Confirm、Gate A〜D、REQ-901/902やTC全体Passを主張しない。
 
 ## 8. Entry Criteria
 

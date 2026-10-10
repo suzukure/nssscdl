@@ -1,5 +1,6 @@
 // Secret-owning sanitized Node child. No raw secrets leave this process except
 // the fixed loopback TLS Cookie header or #914's isolated official Cookie jar.
+import { proveStudentDom } from "./trusted-browser-dom.mjs";
 import { writeBrowserReport } from "./trusted-browser-unit.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -103,7 +104,8 @@ try {
         try {
           await proveBrowserReads({ browser, context, signal, seed, secrets, hashes, start, stop,
             revoke: () => withStoppedProxy(proxyState, async () => { revokedAt = await revokeSelf(seed); }),
-            inspect: inspectStopped, failAfterPositive });
+            inspect: inspectStopped, failAfterPositive,
+            proveDom: (page, signal, revoked) => proveStudentDom(page, signal, seed, [...secrets, ...hashes], revoked) });
         } catch (error) {
           intentionalObserved = failAfterPositive && error.message === "TRUSTED_BROWSER_INTENTIONAL_FAILURE";
           throw error;
