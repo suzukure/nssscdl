@@ -147,7 +147,7 @@ it("[#931 / TC-F-003-01,05,06 / TC-F-005-01 / TC-NF-914-04 partial local D1] pro
         ["self", { "x-csrf-token": csrf.other }, 403, "CSRF_INVALID"],
       ] as const) {
         stage = `negative-${path === previewPath ? "preview" : "confirm"}-${owner}-${code}-${"origin" in headers ? "origin" : "x-csrf-token" in headers ? "csrf" : "cookie"}`;
-        await error(await post(path, body, owner, headers), status, code, "none");
+        await error(await post(path, body, owner, headers), status, code, code === "CSRF_INVALID" ? "reload" : "none");
       }
       forbidden = true;
       stage = `negative-${path === previewPath ? "preview" : "confirm"}-role`;
