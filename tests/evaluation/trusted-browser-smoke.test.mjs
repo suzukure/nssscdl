@@ -12,6 +12,7 @@ import { browserCookie, browserEvidence, browserFailureCheckpoint, browserGet, b
 import { expectedHistory, expectedSchedule } from "./trusted-https-assertions.mjs";
 import { BrowserUnit, finishBrowserUnit, ownedIdentity, readBrowserReport, verifyOwned, writeBrowserReport } from "./trusted-browser-unit.mjs";
 import { verifyStudentAssets } from "./verify-student-assets.mjs";
+import { evaluationD1 } from "./trusted-evaluation-seed.mjs";
 import { mkdirSync } from "node:fs";
 import { createCertificate } from "./local-https-smoke.mjs";
 
@@ -762,4 +763,24 @@ test("#922 build preflight rejects missing, extra, empty or symlink assets and p
     writeFileSync(join(temporary, "wrangler.jsonc"), JSON.stringify({ assets: {} }));
     assert.throws(() => verifyStudentAssets(temporary));
   } finally { rmSync(temporary, { recursive: true }); }
+});
+
+
+test("#922 evaluation proxy has exactly D1 + ASSETS, but seed/inspect/revoke consume only D1", () => {
+  const db = { prepare() {}, withSession() {} };
+  const assets = { fetch() {} };
+  const required = { EVALUATION_READ_DB: db, ASSETS: assets };
+  assert.equal(evaluationD1(required), db);
+  assert.equal(evaluationD1({ ASSETS: assets, EVALUATION_READ_DB: db }), db);
+  for (const env of [undefined, null, [], {}, { EVALUATION_READ_DB: db },
+    { ASSETS: assets }, { ...required, REMOTE_DB: db }, { ...required, AUTH_DB: db },
+    { ...required, ASSETS: undefined }, { ...required, ASSETS: {} },
+    { ...required, ASSETS: { fetch: "not a function" } },
+    { ...required, EVALUATION_READ_DB: undefined },
+    { ...required, EVALUATION_READ_DB: { prepare() {} } },
+    { ...required, EVALUATION_READ_DB: { withSession() {} } },
+    { ...required, EVALUATION_READ_DB: { ...db, prepare: null } }]) {
+    assert.throws(() => evaluationD1(env), (error) =>
+      error.message === "TRUSTED_EVALUATION_SEED_FAILED" && !("cause" in error));
+  }
 });

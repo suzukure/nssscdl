@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { checkTrustedSeedIntegrity } from "../fixtures/d1/trusted-student-seed.ts";
 import { migrations } from "./local-https-smoke.mjs";
-import { checkSetup, failure, persistence, proxyOptions, root, validation, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
+import { checkSetup, evaluationD1, failure, persistence, proxyOptions, root, validation, withTrustedEvaluationSeed } from "./trusted-evaluation-seed.mjs";
 
 const check = (condition) => { if (!condition) throw failure(); };
 const digest = (s) => createHash("sha256").update(s).digest("hex");
@@ -22,8 +22,7 @@ export async function inspect(seed, selfRevokedAt = null) {
   let proxy;
   try {
     proxy = await getPlatformProxy(proxyOptions);
-    check(Object.keys(proxy.env).length === 1 && !!proxy.env.EVALUATION_READ_DB);
-    const db = proxy.env.EVALUATION_READ_DB;
+    const db = evaluationD1(proxy.env);
     const rows = async (query) => {
       const result = await db.prepare(query).all();
       check(result.success); return result.results;

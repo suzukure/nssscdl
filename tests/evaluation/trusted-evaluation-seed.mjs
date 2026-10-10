@@ -15,6 +15,19 @@ export const proxyOptions = Object.freeze({
 });
 export const failure = () => new Error("TRUSTED_EVALUATION_SEED_FAILED");
 
+// #922: the same sealed evaluation config now supplies an assets binding as
+// well as D1. Consumers receive ONLY the D1 Port; reject other capabilities.
+export function evaluationD1(env) {
+  try {
+    if (!env || typeof env !== "object" || Array.isArray(env) ||
+        JSON.stringify(Object.keys(env).sort()) !== '["ASSETS","EVALUATION_READ_DB"]' ||
+        !env.ASSETS || typeof env.ASSETS.fetch !== "function" ||
+        !env.EVALUATION_READ_DB || typeof env.EVALUATION_READ_DB.prepare !== "function" ||
+        typeof env.EVALUATION_READ_DB.withSession !== "function") throw failure();
+    return env.EVALUATION_READ_DB;
+  } catch { throw failure(); }
+}
+
 export function validation() {
   return {
     authSql: readFileSync(resolve(root, "migrations/validation/student_auth.sql"), "utf8"),
@@ -72,8 +85,7 @@ export async function useSeedProxy(createProxy, consume) {
   try {
     if (typeof consume !== "function") throw failure();
     proxy = await createProxy(proxyOptions);
-    if (Object.keys(proxy.env).length !== 1 || !proxy.env.EVALUATION_READ_DB) throw failure();
-    const seed = await seedTrustedStudents(proxy.env.EVALUATION_READ_DB, validation());
+    const seed = await seedTrustedStudents(evaluationD1(proxy.env), validation());
     // No simultaneous DB connection: callback may open its own read-only proxy
     // or later start the local Worker only AFTER disposal is confirmed.
     const closing = proxy;

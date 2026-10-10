@@ -411,7 +411,7 @@ POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOM
 静的Responseはno-store / nosniff / no-referrerと明示MIME、missing assetは安全な404、
 binding失敗 / その他URL・methodは既存503。通常configとdefault Workerの全503を維持する。
 配信URL / MIME / allowlistの合成Port検証は `integration/evaluation-worker.test.ts` に置く。
-asset build不在・余剰ファイルはtrusted setup開始前に拒否し、proxyのDB-only環境判定は維持する。
+asset build不在・余剰ファイルはtrusted setup開始前に拒否する。#922でconfigに追加した`ASSETS`により、`getPlatformProxy`の環境は`EVALUATION_READ_DB`と`ASSETS`の**正確な2 bindingのみ**を持つ契約となる。`evaluationD1()`は両bindingの存在と型、余分なbindingの不在を共通検証し、seed / inspect / revokeには**D1 Portだけ**を渡す。`ASSETS`を読み書きに使わず、従来のD1-only消費・local persist・proxy逐次disposeの信頼境界を維持する。補助fixtureは欠損・型違い・追加bindingを拒否する。2026-10-10の[#922 normal proof #38024971080](https://github.com/suzukure/nssscdl/actions/runs/38024971080) は`seed`段階で失敗したため、この更新は**設計上の前提不一致を修正するもの**で、実Proxy形状やChrome DOM・cleanupの実証ではない。
 
 既存 `node tests/evaluation/trusted-browser-smoke.mjs --run`（および `--fail-after-positive`）を再利用する。
 `trusted-browser-dom.mjs` はselfの同一Contextで実 `/student`、全module / CSS、seed公開月の
