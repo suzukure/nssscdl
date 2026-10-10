@@ -32,6 +32,19 @@ This reading order is not an access allowlist and does not limit review responsi
 
 The canonical project operating norm for Issue partitioning is recorded in [the AI development workflow](docs/30_operations/ai-development-workflow.md#issueの分割単位). Do not return `request_changes` solely because an Issue could be divided further. Return `request_changes` when the current Issue or PR cannot independently complete safely, correctly, and consistently; its completion condition cannot be determined unambiguously; or it combines multiple changes that require independent decisions. Require Issue partitioning or scope reconfirmation in those cases. When the current change is already safe, correct, and consistent as a standalone completion and the observation is only a proposal for better granularity, record it as non-blocking.
 
+## Code-focused review criteria
+
+Apply these criteria to changes in executable code, including product code, workflows, scripts, and tests, alongside Required checks and Specification-focused review criteria. Do not require every code criterion for specification-only PRs.
+
+- **Correctness**: Check changed behavior against existing requirements and contracts: normal cases, boundary values, relevant failures, caller/callee interactions, state transitions, and side effects. Do not guess unresolved specifications or add new Done conditions.
+- **Simplicity and maintainability**: Check unnecessary generalization or unrequested features, mixed responsibilities, branches/names/comments that hinder understanding, and duplicated logic that can drift during maintenance. Consider reuse of existing implementations and standard features without requiring mechanical abstraction, new libraries, or large refactors.
+- **Test quality**: Beyond test presence and success, check that inputs and expected values are grounded in specifications/contracts, assertions would fail for the targeted defect, and mocks/fixtures do not omit the boundary being verified. Assess the boundary, failure, and side-effect verification needed for the change; do not uniformly require exhaustive path coverage, mutation testing, or new proof infrastructure.
+- **Additional relevant concerns**: Reuse Required checks for security, privacy, authorization, concurrency, and migration. For external calls or failure/side-effect boundaries, check timeout, cancellation, partial success, duplicate execution on retry, cleanup, and diagnosability against existing contracts. Check performance, resources, paid-call counts/costs, UI usability, and accessibility only where relevant to the change. Do not invent performance guarantees or external-system facts; identify insufficient evidence as requiring verification.
+
+These criteria clarify what to inspect; they do not expand Work Admission Control Q1–Q3 or the Verdict blocking criteria. Classify findings using concrete defects, existing contract violations, and their impact. Preferences, general advice, or future robustness alone do not justify `request_changes`.
+
+Use the existing five-key structured review output. Keep each finding concise, with a precise location, the concrete problem and impact, and an actionable improvement. Do not invent findings when no problem exists or output a checklist of all criteria checked.
+
 ## Specification-focused review criteria
 
 Apply these criteria primarily to normative specification and design documents under `docs/00_requirements/**`, `docs/10_basic_design/**`, and `docs/20_detailed_design/**`. Also apply them to other Markdown documents only when they define normative system behavior, business rules, interfaces, or operational constraints; do not apply them merely because a file is Markdown.
