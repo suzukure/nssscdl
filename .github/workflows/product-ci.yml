@@ -112,3 +112,36 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      - name: '#930 予約実Chrome normal単発（一時証明・撤去必須）'
+        if: steps.applicability.outputs.applicable == 'true'
+        timeout-minutes: 5
+        env:
+          PROOF_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ "$(git rev-parse HEAD)" != "$PROOF_HEAD_SHA" ]; then echo 'BOOKING_NORMAL=failed'; exit 1; fi
+          out="$(mktemp)"
+          err="$(mktemp)"
+          trap 'rm -f "$out" "$err"' EXIT
+          status=0
+          timeout --signal=TERM --kill-after=15s 240s node --disable-warning=ExperimentalWarning tests/evaluation/trusted-booking-outer.mjs --run >"$out" 2>"$err" || status=$?
+          if [ "$status" -ne 0 ]; then echo 'BOOKING_NORMAL=failed'; exit 1; fi
+          PROOF_STDOUT="$out" PROOF_STDERR="$err" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          checkpoint = ('#945 booking: isolated child prepared / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified\n').encode()
+          try:
+              out = Path(os.environ['PROOF_STDOUT'])
+              err = Path(os.environ['PROOF_STDERR'])
+              if out.stat().st_size > 8192 or err.stat().st_size > 8192:
+                  raise ValueError('size')
+              if out.read_bytes() != checkpoint or err.read_bytes() != b'':
+                  raise ValueError('content')
+          except Exception:
+              print('BOOKING_NORMAL=failed')
+              raise SystemExit(1)
+          print('BOOKING_NORMAL=pass')
+          PY
