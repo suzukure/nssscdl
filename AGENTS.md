@@ -42,6 +42,8 @@ Expand the reading range if excerpts omit necessary context or if contradictions
 
 For both Issue-origin development and existing review follow-up, check the existing mandatory conditions, inputs/outputs, failure classifications, and validation scope before implementation. Before finishing the same Codex run, compare the corresponding implementation and tests against those contracts within the current assigned scope; this is part of development, not a new review stage. Correct in-scope omissions in the same run. Do not invent unresolved contracts; use the existing requirement or scope escalation for the current path.
 
+When local fixes for the same objective indicate a recurring premise problem, unclear evidence from the next run, or a contradiction with confirmed normal external behavior, reassess the approach before the next fix, diagnostic addition, or rerun. Separate required guarantees from verification means and follow [the canonical diagnostic rules](docs/30_operations/ai-development-workflow.md#変更前の証拠照合と診断変更の集約) within existing scope and execution authority.
+
 Only when changing a side-effect or failure boundary, check the classifications immediately before the operation, when execution or its outcome is unknown, and after success, together with retry conditions and call counts, against the existing contract. Do not require exhaustive testing of all APIs.
 
 In all cases, verify test inputs, including parameterized-test arguments, and expected values from existing requirements/design; implementation output alone is not evidence for an expected value.
