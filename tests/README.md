@@ -930,6 +930,8 @@ contextは成功・失敗とも再利用不可。helperはCookie発行、Worker 
 固定 `https://127.0.0.1:8789/student` を実navigationし、同originの6資産・既存表示を確認する。
 予約API証拠はPageのネットワークResponseだけを使い、driver fetch、mock Response、URLによる生徒ID指定を持たない。
 context routeは送信前にorigin / method / path / queryなし / redirectなし・Page対応を検査し、別originや予期しないPOSTを拒否する。
+#992はPreview / Confirm POSTのtest-only pre-route観測を訂正する。`request.allHeaders()` の `sec-fetch-site` key不在は未観測として扱い、その存在を `route.continue()` 前の必要条件にしない。keyが存在すれば正確な `same-origin` だけを許可し、cross-site / same-site / none / unknown / 空文字 / undefined / 型不正は転送前に拒否する。Origin完全一致・JSON Content-Type / exact body・Session-bound CSRF exact・method / path / redirect / frame・各POST一回性・abort / timeout / deny guardは維持する。headerを追加 / 上書きせず、`route.fetch/fulfill`・二重送信・HTTP retryを行わない。Serverの実HTTP判定は `src/http/student-session-csrf.ts` と詳細設計§10.3を正とし、CSRF取得GETを含む製品契約を変更しない。
+供給Issueが示す [Playwright公式Network文書](https://playwright.dev/docs/network#headers-owned-by-the-network-stack) は、network stackが送信直前に付与する `Sec-Fetch-*` がroute内の `allHeaders()` では保証されない境界を説明する。[upstream reproduction #42620](https://github.com/microsoft/playwright/issues/42620) も供給根拠とする。route時の欠落から実wireの欠落 / same-originを推定しない。外部再取得・実Chrome確認は行わず、対象Playwright版 / 実Runへの適用と真因は未検証とする。
 同originの補助favicon GETは予約証拠へ採用しない。後続ownerの既存routeやPageを引き継がない専用contextが前提となる。
 次の東京月15日10:00の `seed-slot-bookable` を日時のaccessible labelで選び、選択だけではPOST / CSRF取得・確定がないことを検査する。
 明示「選択枠の予約内容をPreview」でPOST 200とSession-bound CSRFを照合し、日時・分類・既存予約の全差分をDOMで確認してからだけ、
@@ -946,8 +948,9 @@ null navigation、不正 / 欠損ID、応答不整合・403 / 409 / 503、重複
 
 `evaluation/trusted-booking-dom.test.mjs` を既存 `npm run test:unit` に追加する。
 finite Page / route / Response doubleは正常順序・各POST最大1回・全差分の欠落 / 順序 / before-after・秘密非出力・origin / navigation / ID不整合・未知結果・abort / timeout後の停止を検査する。
+#992のfinite fixtureはPreview / Confirm片方または両方のheader key不在で従来のpresent same-origin成功と単発POST / observer pairを比較し、両方不在の実helper→process→V2 codec / stop観測も同一と照合する。present undefinedとkey不在を区別し、明示不正site・key不在時のOrigin / CSRF / Content-Type / body欠落・汚染 / method / redirect / frame不正で `fault=request`・対象POSTのcontinue未到達・Confirm再送なし・秘密非出力を検査する。既存negative / late / abort / timeout / observer throw / duplicate guardsも回帰する。WACはR0 / C1 / P1 / B1、Yellow prepared限定で、新proof infrastructureやruntime接続を追加しない。
 実Chrome / HTTPS / Worker / D1を起動せず、fixture成功はassertion / control flowだけの証拠とする。
-WACはproduction接続なしの独立prepared ContractとしてR0 / C0相当 / P1 / B1、Green（強制分割なし）。後続target-modeへの昇格は#930でfresh admissionする。
+#941導入時のWACはproduction接続なしの独立prepared ContractとしてR0 / C0相当 / P1 / B1、Green（強制分割なし）。#992の評価は上記Yellow preparedとし、後続target-modeへの昇格は#930でfresh admissionする。
 既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-902/914`
 へのprepared操作 **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002を変更しない。
 旧8788 read-only helper / Production / migration / workflowは不変。実Worker / Chrome / D1統合、stop / cleanup、正式Actions・human opt-in Gate、Gate A〜D・#608全体Doneは#930へ残す。
@@ -1071,6 +1074,7 @@ WACはR0 / C1 / P1 / B1、Yellow prepared限定。TC-F-003/005・TC-NF-902/914�
 `write` はhighest safely observedを保持する。Confirmクリック直前のaction-startは送信証拠ではなく、route callbackのrequest-seenはforward証拠ではなく、guard通過直後・continue直前のroute-allowedは配送 / Commit証拠ではない。同じrequest identity・Page response eventのHTTP201だけでresponse-201へ進み、D1 5表readbackを代替しない。未観測は未送信の証明ではなく、応答不能ではそれ以前の観測値だけを保持する。
 first fault / abort / observer throw・非同期戻り値 / helper返却後は通知を閉鎖する。遅延route / response、重複POST、Worker stop / readback / scan / cleanupは3軸を昇格・上書きしない。observer失敗は成功を抑止し、既存first primary・単発停止・deny guard・Confirm再送禁止を保持する。URL / request / headers / Cookie / Session / token / error / HTML / SQL / IDをobserverへ渡さない。
 `trusted-booking-dom.test.mjs` と `trusted-booking-process.test.mjs` のfinite正負fixtureで各checkpoint・fault・Confirm段階、実helper→process→V2 codec、abort / bounded timeout / pending driver解決後・late response / identity不一致・observer failure・重複POST・stop後の不変を照合する。`trusted-booking-outer.test.mjs` のhook未通知real process fixtureはcookie-inject / unknown / unobservedを既存private snapshot→停止済みouter→CLIへ通す。codec全enum・拒否条件は保持する。
+#992のroute時Fetch Metadata観測境界とfinite受入条件は上記#941節を参照する。supplied #991の初回V2 booking Proofは通常9工程success後に実Chrome Proof failureとなり、固定診断は `primary=dom; dom=preview; fault=request; write=unobserved`、Worker / Unit stop confirmedだった。一時PRは未merge Closed・workflow元blobへbyte復元済みで再実行 / Confirm再送なし。これは静的矛盾の原因候補であり、拒否guard / 真因の確定や未送信の証明ではない。#992のfinite成功でも実Chrome予約成功・D1 5表readback・owned cleanupは未証明で、追加Chrome一回にはreview / main後の#930で別の新human Gateが必要となる。
 WACはR0 / C1 / P1 / B1、Yellow prepared。TC-F-003/005・TC-NF-902/914へのpartial evidenceのみで、POL→BR→REQ→AC→TC・CON-001/002/009・OOS-001/002、予約操作 / HTTP / 成功 / readback / cleanup・時間上限は不変。実Chrome / Playwright互換性 / Worker / systemd / D1・snapshot新鮮さと正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠であり、追加実Chrome / Confirm一回・一時Proofは#930の別人間承認待ち。#537 Gate A〜D / #608 Done / Production Readyへ昇格しない。
 
 限定guardのWACはR0 / C0相当 / P1 / B1、Green。Issueが明示した静的判定Contractの定義・finite proofだけであり、下記prepared runtimeのC1を昇格しない。
