@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { BrowserUnit, ownedIdentity, verifyOwned } from "./trusted-browser-unit.mjs";
 import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
+import { createBookingWorkerPort } from "./trusted-booking-worker.mjs";
 import { useBookingChild } from "./trusted-booking-child.mjs";
 import { bookingOuterCheckpoint, useBookingOuter } from "./trusted-booking-outer.mjs";
 import { bookingChildComplete, bookingChildUnknown, bookingFixtureComplete, parseBookingReport, readBookingReport, writeBookingReport } from "./trusted-booking-report.mjs";
@@ -38,7 +39,7 @@ const fixed = e => (observedFixed(e.message) || [...stages, "unknown"].some(stag
   !e.stack.includes(canary) && !("cause" in e);
 
 // The real inner controller through finite Ports: no D1/TLS/Chrome/systemd execution.
-function innerPorts(events, fault, signal, observe) {
+function innerPorts(events, fault, signal, observe, workerCreate) {
   const hit = name => { events.push(name); if (fault === name) throw new Error(canary); signal.throwIfAborted(); };
   const cookie = { name: "__Host-student_session", value: canary, path: "/", secure: true, httpOnly: true, sameSite: "Lax" };
   return {
@@ -58,7 +59,7 @@ function innerPorts(events, fault, signal, observe) {
         hit("browser-close"); await options.stopConsumer(); await options.inspectOwned("fixture-home");
       }
     },
-    createBookingWorkerPort() { return { async start() { hit("worker"); return "https://127.0.0.1:8789"; }, isReady: () => true,
+    createBookingWorkerPort(...args) { if (workerCreate) return workerCreate(...args); return { async start() { hit("worker"); return "https://127.0.0.1:8789"; }, isReady: () => true,
       async stop() { hit("worker-stop"); hit("8789-closed"); return { stopped: true, portClosed: true }; } }; },
     async proveTrustedBookingDom() { hit("preview200"); hit("confirm201"); hit("history"); return "opaque-memory-only"; },
     async inspectTrustedBooking() { hit("readback-five-tables"); },
@@ -66,7 +67,7 @@ function innerPorts(events, fault, signal, observe) {
   };
 }
 
-function fixture(fault = "", { preflightTime = 0, terminalState = {}, cleanupState = {}, observe, diagnosticRead } = {}) {
+function fixture(fault = "", { preflightTime = 0, terminalState = {}, cleanupState = {}, observe, diagnosticRead, workerCreate } = {}) {
   let time = 0, observations = 0, stopped = false, text;
   const controller = new AbortController(), events = [];
   const unit = new BrowserUnit({ env: { PATH: "/usr/bin", HOME: "fixture", TMPDIR: "fixture" }, cwd: "fixture",
@@ -79,7 +80,7 @@ function fixture(fault = "", { preflightTime = 0, terminalState = {}, cleanupSta
         assert.ok(args.includes("tests/evaluation/trusted-booking-child.mjs"));
         if (fault === "start") throw new Error(canary);
         const ok = await useBookingChild({ signal: controller.signal, isolated: true,
-          runInner: options => useTrustedBookingProcess(innerPorts(events, fault, options.signal, observe), options.signal),
+          runInner: options => useTrustedBookingProcess(innerPorts(events, fault, options.signal, observe, workerCreate), options.signal),
           write: value => { events.push("child-report"); text = value; } });
         events.push(ok ? "child-exit0" : "child-exit1"); return "";
       }
@@ -344,11 +345,13 @@ const diagnosticEnums = [
   ["entered", "completed", "unknown"],
   ["none", "entry", "seed", "home", "tls", "worker", "dom", "stop", "readback", "scan", "unknown"],
   ["not-attempted", "attempted", "confirmed", "unknown"],
+  ["none", "preflight", "spawn", "group", "booking-listener", "listener-unattributed", "owned-listener", "deadline", "unknown"],
+  ["not-attempted", "ownership", "ownership-failed", "signal", "signal-failed", "signal-sent", "wait", "wait-failed", "port", "port-failed", "confirmed", "unknown"],
 ];
-const diagnosticData = (phase = "entry", boundary = "entered", primary = "none", worker_stop = "not-attempted") =>
-  ({ phase, boundary, primary, worker_stop });
-const diagnosticText = (phase = "entry", boundary = "entered", primary = "none", stop = "not-attempted") =>
-  `TRUSTED_BOOKING_DIAGNOSTIC_V1; phase=${phase}; boundary=${boundary}; primary=${primary}; worker_stop=${stop}\n`;
+const diagnosticData = (phase = "entry", boundary = "entered", primary = "none", worker_stop = "not-attempted", worker_failure = "none", worker_stop_detail = worker_stop === "confirmed" ? "confirmed" : worker_stop === "not-attempted" ? "not-attempted" : worker_stop === "attempted" ? "ownership-failed" : "unknown") =>
+  ({ phase, boundary, primary, worker_stop, worker_failure, worker_stop_detail });
+const diagnosticText = (phase = "entry", boundary = "entered", primary = "none", stop = "not-attempted", worker_failure = "none", worker_stop_detail = stop === "confirmed" ? "confirmed" : stop === "not-attempted" ? "not-attempted" : stop === "attempted" ? "ownership-failed" : "unknown") =>
+  `TRUSTED_BOOKING_DIAGNOSTIC_V1; phase=${phase}; boundary=${boundary}; primary=${primary}; worker_stop=${stop}; worker_failure=${worker_failure}; worker_stop_detail=${worker_stop_detail}\n`;
 const diagnosticError = e => e.message === "TRUSTED_BOOKING_DIAGNOSTIC_FAILED" &&
   !e.stack.includes(canary) && !Object.hasOwn(e, "cause");
 function diagnosticFixture(run) {
@@ -597,11 +600,13 @@ const proofStep = `
                         ['entry', 'seed', 'home', 'tls', 'worker', 'dom', 'stop', 'readback', 'scan', 'complete', 'unknown'],
                         ['entered', 'completed', 'unknown'],
                         ['none', 'entry', 'seed', 'home', 'tls', 'worker', 'dom', 'stop', 'readback', 'scan', 'unknown'],
-                        ['not-attempted', 'attempted', 'confirmed', 'unknown']
+                        ['not-attempted', 'attempted', 'confirmed', 'unknown'],
+                        ['none', 'preflight', 'spawn', 'group', 'booking-listener', 'listener-unattributed', 'owned-listener', 'deadline', 'unknown'],
+                        ['not-attempted', 'ownership', 'ownership-failed', 'signal', 'signal-failed', 'signal-sent', 'wait', 'wait-failed', 'port', 'port-failed', 'confirmed', 'unknown']
                       ];
-                      const keys = ['phase', 'boundary', 'primary', 'worker_stop'];
+                      const keys = ['phase', 'boundary', 'primary', 'worker_stop', 'worker_failure', 'worker_stop_detail'];
                       const values = keys.map((key, i) => enums[i].find(value => fields[i] === key + '=' + value));
-                      if (fields.length === 4 && values.every(value => value !== undefined)) {
+                      if (fields.length === 6 && values.every(value => value !== undefined)) {
                         const detail = '; unit_stop=confirmed; diagnostic=observed; stop_observation=' + observation + '; ' + keys.map((key, i) => key + '=' + values[i]).join('; ');
                         if (result.stderr === 'TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=' + reason + detail + suffix) stage = 'terminal; reason=' + reason + detail;
                       }
@@ -851,7 +856,7 @@ test("#948 candidate output filter runs once, bounds execution and emits only fi
   const observed = [];
   for (const reason of reasons) {
     for (const [i, values] of diagnosticEnums.entries()) for (const value of values) {
-      const fields = ["dom", "entered", "dom", "attempted"]; fields[i] = value;
+      const fields = ["dom", "entered", "dom", "attempted", "none", "ownership-failed"]; fields[i] = value;
       const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; " + diagnosticText(...fields).slice("TRUSTED_BOOKING_DIAGNOSTIC_V1; ".length, -1);
       const text = diagnostic("terminal", reason, detail);
       observed.push([{ ...failed, stderr: text + "\n" }, `terminal; reason=${reason}${detail}`]);
@@ -962,7 +967,7 @@ test("#959 loaded same-Invocation inactive/dead is stop evidence; final snapshot
       return `LoadState=loaded\nActiveState=inactive\nSubState=dead\nInvocationID=${f.unit.invocation}`;
     return result;
   };
-  const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; phase=dom; boundary=entered; primary=dom; worker_stop=attempted";
+  const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; phase=dom; boundary=entered; primary=dom; worker_stop=attempted; worker_failure=none; worker_stop_detail=ownership-failed";
   await assert.rejects(useBookingOuter(f.unit, f.ports), e => e.message === diagnostic("terminal", "manager", detail));
   assert.equal(f.events.filter(e => e === "diagnostic-read").length, 1);
   const events = [], writes = [], signal = new AbortController().signal;
@@ -1018,7 +1023,7 @@ test("#965 real stop observations survive outer, CLI re-sanitize and fixed wrapp
       try { return await dispose(release); } finally { cleanupClockCalls = reads - terminalClockCalls; }
     };
     const observation = ["malformed", "missing", "duplicate"].includes(kind) ? "show-invalid" : kind;
-    const detail = confirmed ? "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted" :
+    const detail = confirmed ? "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted; worker_failure=none; worker_stop_detail=not-attempted" :
       `; unit_stop=unknown; diagnostic=unknown; stop_observation=${observation}`;
     const text = diagnostic("terminal", "timeout", detail);
     const cli = await outerCliFixture(() => useBookingOuter(f.unit, f.ports));
@@ -1060,7 +1065,7 @@ test("#965 own data enum only, after one dispose; invalid observations preserve 
       report() { assert.fail("no report"); }, remove() { assert.fail("no remove"); } };
     const observation = confirmed ? (value === "accepted" ? "accepted" : "unknown") :
       (typeof value === "string" && stopObservations.includes(value) && !["accepted", "ineligible"].includes(value) ? value : "unknown");
-    const detail = confirmed ? `; unit_stop=confirmed; diagnostic=observed; stop_observation=${observation}; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted` :
+    const detail = confirmed ? `; unit_stop=confirmed; diagnostic=observed; stop_observation=${observation}; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted; worker_failure=none; worker_stop_detail=not-attempted` :
       `; unit_stop=unknown; diagnostic=unknown; stop_observation=${observation}`;
     assert.deepEqual(await outerCliFixture(() => useBookingOuter(unit, ports)),
       { stdout: [], stderr: [diagnostic("terminal", "timeout", detail)], status: 1 });
@@ -1113,7 +1118,7 @@ test("#965 sanitize and wrapper accept only consistent fixed combinations and ex
   for (const reason of reasons) for (const stop of ["confirmed", "unknown"]) for (const observation of [...stopObservations, "manager-empty"]) {
     for (const snapshot of [false, true]) {
       const detail = `; unit_stop=${stop}; diagnostic=${snapshot ? "observed" : "unknown"}; stop_observation=${observation}` +
-        (snapshot ? "; phase=dom; boundary=entered; primary=dom; worker_stop=attempted" : "");
+        (snapshot ? "; phase=dom; boundary=entered; primary=dom; worker_stop=attempted; worker_failure=none; worker_stop_detail=ownership-failed" : "");
       const text = diagnostic("terminal", reason, detail);
       const allowed = stop === "confirmed" ? ["accepted", "unknown", "manager-empty"].includes(observation) : !["accepted", "manager-empty"].includes(observation) && !snapshot;
       (allowed ? texts : rejected).push(text);
@@ -1189,7 +1194,7 @@ function managerDiagnosticFixture({ group = "path", mutate = () => {}, api = "a(
 test("#973 trusted manager empty permits one diagnostic read for stable failed state, retaining failure and files", async () => {
   for (const group of ["path", "empty"]) {
     const f = managerDiagnosticFixture({ group });
-    const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=manager-empty; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted";
+    const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=manager-empty; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted; worker_failure=none; worker_stop_detail=not-attempted";
     const text = diagnostic("terminal", "timeout", detail);
     assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)), { stdout: [], stderr: [text], status: 1 });
     assert.equal(proofFixture({ status: 1, stdout: "", stderr: text + "\n" }).stderr[0], "BOOKING_PROOF_FAILED; stage=terminal; reason=timeout" + detail);
@@ -1291,4 +1296,72 @@ test("#973 private stop facts resist public observation forgery and local identi
   assert.equal(await release.unit.confirmDiagnosticStop(), false);
   assert.deepEqual(release.counts(), { samples: 0, apis: 0 });
   release.unit.close();
+});
+
+test("#976 new enum fields survive codec/file/outer/CLI/wrapper; longest valid bytes and old schema rejection", async () => {
+  // Longest lengths from the Issue enums, not from codec output.
+  const longest = diagnosticData("complete", "completed", "readback", "not-attempted", "listener-unattributed", "ownership-failed");
+  const longestText = "TRUSTED_BOOKING_DIAGNOSTIC_V1; phase=complete; boundary=completed; primary=readback; worker_stop=not-attempted; worker_failure=listener-unattributed; worker_stop_detail=ownership-failed\n";
+  assert.equal(Buffer.byteLength(longestText), 186); assert.ok(Buffer.byteLength(longestText) <= 256);
+  assert.equal(encodeBookingDiagnostic(longest), longestText);
+  for (const [failure, detail] of diagnosticEnums[4].flatMap(failure => diagnosticEnums[5].map(detail => [failure, detail]))) {
+    const data = diagnosticData("worker", "entered", "worker", "attempted", failure, detail);
+    diagnosticFixture(({ owner, path }) => {
+      writeBookingDiagnostic(owner, data); assert.deepEqual(readBookingDiagnostic(owner), data);
+      assert.equal(readFileSync(path, "utf8"), diagnosticText("worker", "entered", "worker", "attempted", failure, detail));
+    });
+  }
+  const old = diagnosticText().replace(/; worker_failure=.*\n$/, "\n");
+  for (const text of [old, diagnosticText().replace("; worker_stop_detail=not-attempted", ""),
+    diagnosticText().replace("; worker_failure=none", ""),
+    diagnosticText().replace("worker_failure=none", "worker_failure=invalid"),
+    diagnosticText().replace("worker_stop_detail=not-attempted", "worker_stop_detail=invalid"),
+    diagnosticText().replace("worker_failure=none; worker_stop_detail=not-attempted", "worker_stop_detail=not-attempted; worker_failure=none")]) {
+    assert.throws(() => parseBookingDiagnostic(text), diagnosticError);
+    const message = diagnostic("terminal", "manager", "; unit_stop=confirmed; diagnostic=observed; stop_observation=manager-empty; " +
+      text.slice("TRUSTED_BOOKING_DIAGNOSTIC_V1; ".length, -1));
+    assert.deepEqual(await outerCliFixture(async () => { throw new Error(message); }),
+      { stdout: [], stderr: [diagnostic("unknown")], status: 1 });
+    assert.deepEqual(proofFixture({ status: 1, stdout: "", stderr: message + "\n" }).stderr, ["BOOKING_PROOF_FAILED; stage=unknown"]);
+  }
+  let touched = 0;
+  for (const key of ["worker_failure", "worker_stop_detail"]) {
+    const data = Object.defineProperty(diagnosticData(), key, { get() { touched++; throw new Error(canary); } });
+    assert.throws(() => encodeBookingDiagnostic(data), diagnosticError);
+    const f = fixture("confirm201", { diagnosticRead: () => data });
+    await assert.rejects(useBookingOuter(f.unit, f.ports), e => e.message === diagnostic("terminal", "manager"));
+    assert.equal(f.events.filter(e => e === "diagnostic-read").length, 1);
+  }
+  assert.equal(touched, 0);
+});
+
+test("#976 actual Worker unattributed-listener refusal reaches six-field private snapshot and strict CLI/proof without cleanup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "booking-worker-diagnostic-fixture-"));
+  try {
+    const owner = ownedIdentity(dir), effects = [];
+    const line = 'LISTEN 0 128 127.0.0.1:8789 0.0.0.0:* users:(("node",pid=42,fd=3))';
+    const fake = {
+      preflight: () => ({ env: {}, confirm() {} }),
+      spawn() { effects.push("spawn"); return { pid: 42, exitCode: null, signalCode: null, on() {} }; },
+      async command(file, args) {
+        effects.push(file);
+        return file === "ps" ? "42" : args[1] === "-ltn" ? "" : line +
+          (args.length === 2 ? "\nLISTEN 0 128 0.0.0.0:8088 0.0.0.0:*" : "");
+      },
+      groupAlive: () => true, interrupt() { effects.push("SIGINT"); }, now: () => 0, sleep: async () => assert.fail("no polling"),
+    };
+    const f = fixture("", { observe: data => writeBookingDiagnostic(owner, data),
+      workerCreate: (input, defaults, hook) => { assert.equal(defaults, undefined); return createBookingWorkerPort(input, fake, hook); },
+      diagnosticRead: () => readBookingDiagnostic(ownedIdentity(dir)) });
+    const snapshot = "; phase=stop; boundary=entered; primary=worker; worker_stop=attempted; worker_failure=listener-unattributed; worker_stop_detail=ownership-failed";
+    const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted" + snapshot;
+    const result = await outerCliFixture(() => useBookingOuter(f.unit, f.ports));
+    assert.deepEqual(result, { stdout: [], stderr: [diagnostic("terminal", "manager", detail)], status: 1 });
+    assert.deepEqual(proofFixture({ status: 1, stdout: "", stderr: result.stderr[0] + "\n" }).stderr,
+      ["BOOKING_PROOF_FAILED; stage=terminal; reason=manager" + detail]);
+    assert.equal(effects.filter(e => e === "spawn").length, 1); assert.equal(effects.includes("SIGINT"), false);
+    assert.equal(f.events.filter(e => e === "stop").length, 1); assert.equal(f.events.filter(e => e === "diagnostic-read").length, 1);
+    for (const event of ["report", "delete", "confirm201", "readback-five-tables"]) assert.equal(f.events.includes(event), false);
+    assert.deepEqual(readdirSync(dir), [bookingDiagnosticName]);
+  } finally { rmSync(dir, { recursive: true }); }
 });

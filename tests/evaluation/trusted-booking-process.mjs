@@ -15,9 +15,13 @@ export async function useTrustedBookingProcess(ports, signal) {
   let domDone = false, inspectAttempted = false, inspected = false;
   let seed, handle, reservationId, home, identity, browserSignal;
   let observing = false, observerClosed = false, primary = "none", workerStop = "not-attempted";
+  let workerFailure = "none", workerStopDetail = "not-attempted", stopDetailFinished = false;
   const observe = boundary => {
     if (!observing || observerClosed) return;
-    try { ports.observe?.({ phase, boundary, primary, worker_stop: workerStop }); }
+    try {
+      if (ports.observe?.({ phase, boundary, primary, worker_stop: workerStop,
+        worker_failure: workerFailure, worker_stop_detail: workerStopDetail }) !== undefined) throw failure(phase);
+    }
     catch { observerClosed = true; failed = true; throw failure(phase); }
   };
   const recordFailure = () => {
@@ -30,6 +34,22 @@ export async function useTrustedBookingProcess(ports, signal) {
   };
   const check = ok => { if (!ok) { failed = true; throw failure(phase); } };
   const alive = () => { check(!failed && !signal.aborted); };
+  const workerObserve = (kind, value) => {
+    if (kind === "failure") {
+      if (workerFailure !== "none") return;
+      check(["preflight", "spawn", "group", "booking-listener", "listener-unattributed", "owned-listener", "deadline", "unknown"].includes(value));
+      workerFailure = value;
+    } else {
+      check(kind === "stop" && stopAttempted);
+      if (stopDetailFinished) return;
+      check(["ownership", "ownership-failed", "signal", "signal-failed", "signal-sent", "wait", "wait-failed", "port", "port-failed", "confirmed", "unknown"].includes(value));
+      if (workerStopDetail === value) return;
+      workerStopDetail = value;
+      stopDetailFinished = value.endsWith("-failed") || value === "confirmed" || value === "unknown";
+      workerStop = value === "confirmed" ? "confirmed" : value === "unknown" ? "unknown" : "attempted";
+    }
+    observe("entered");
+  };
   try {
     check(signal && typeof signal.throwIfAborted === "function"); alive();
     phase = "seed";
@@ -49,10 +69,17 @@ export async function useTrustedBookingProcess(ports, signal) {
             ports.checkBrowserHome(home, identity);
             // Only the sealed helper's post-close/post-port-check callback gets here.
             await at("worker", async () => {
-              worker = ports.createBookingWorkerPort({ certificate: { key: certificate.key, cert: certificate.cert },
-                certificateParent: home, certificateParentIdentity: identity });
-              startAttempted = true;
-              check(await worker.start() === origin); alive(); check(worker.isReady());
+              try {
+                worker = ports.createBookingWorkerPort({ certificate: { key: certificate.key, cert: certificate.cert },
+                  certificateParent: home, certificateParentIdentity: identity }, undefined, workerObserve);
+              } catch { workerObserve("failure", "preflight"); throw failure(phase); }
+              try {
+                startAttempted = true;
+                check(await worker.start() === origin);
+              } catch { workerObserve("failure", "unknown"); throw failure(phase); }
+              alive();
+              try { check(worker.isReady()); }
+              catch { workerObserve("failure", "unknown"); throw failure(phase); }
             });
             await at("dom", async () => {
               const context = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
@@ -76,10 +103,13 @@ export async function useTrustedBookingProcess(ports, signal) {
             if (!startAttempted) return;
             await at("stop", async () => {
               check(!stopAttempted); stopAttempted = true;
-              workerStop = "attempted"; observe("entered");
-              const result = await worker.stop();
-              check(result?.stopped === true && result?.portClosed === true);
-              stopped = true; workerStop = "confirmed";
+              workerObserve("stop", "ownership");
+              try {
+                const result = await worker.stop();
+                check(result?.stopped === true && result?.portClosed === true);
+                stopped = true;
+                workerObserve("stop", "confirmed");
+              } catch { workerObserve("stop", "unknown"); throw failure(phase); }
             }); // Unknown outcome never opens the independent proxy.
           },
           inspectOwned: async inspectedHome => {

@@ -17,19 +17,22 @@ const input = { certificate: { key: "/fixture/server.key", cert: "/fixture/serve
 // Wrangler/ss compatibility is intentionally not claimed by these finite rows.
 const listener = (address = "127.0.0.1:8789", pid = 42) =>
   `LISTEN 0 128 ${address} 0.0.0.0:*${pid === null ? "" : ` users:((\"node\",pid=${pid},fd=3))`}`;
-function fixture(options = {}) {
+function fixture(options = {}, observe) {
   let clock = 0, spawned = 0, signals = 0, commands = 0, confirms = 0, active = false, stopped = false;
   const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null });
-  const calls = [];
+  const calls = [], order = [];
   const effects = {
     preflight(value) {
+      order.push("preflight");
       assert.deepEqual(value, input);
       if (options.preflight) throw new Error("private-canary");
       return { env: { WRANGLER_SEND_METRICS: "false" }, confirm() {
+        order.push("confirm");
         confirms++; if (options.drift && confirms === 2) throw new Error("private-canary");
       } };
     },
     spawn(file, args, spawnOptions) {
+      order.push("spawn");
       spawned++; calls.push({ file, args, spawnOptions }); active = true;
       if (options.spawnThrows) throw new Error("private-canary");
       if (options.earlyExit) { child.exitCode = 1; active = false; }
@@ -38,9 +41,13 @@ function fixture(options = {}) {
       return child;
     },
     async command(file, args, timeout) {
+      order.push(file === "ps" ? `ps:${args[3]}` : args.join(" "));
       commands++; assert.ok(timeout > 0 && timeout <= 5000);
       if (options.commandThrows) throw new Error("private-canary");
-      if (file === "ps") return String(options.groups?.[args[3]] ?? (args[3] === "88" ? 88 : 42));
+      if (file === "ps") {
+        if (options.psThrows) throw new Error("private-canary");
+        return String(options.groups?.[args[3]] ?? (args[3] === "88" ? 88 : 42));
+      }
       assert.equal(file, "ss");
       if (args[1] === "-ltn") {
         if (!spawned) return options.preexisting ?? "";
@@ -50,17 +57,18 @@ function fixture(options = {}) {
       if (args.length === 3) return options.booking ?? listener();
       return options.all ?? options.booking ?? listener();
     },
-    groupAlive() { if (options.unknownGroup) return undefined; return active; },
+    groupAlive() { order.push("alive"); if (options.unknownGroup) return undefined; return active; },
     interrupt(pid) {
+      order.push("SIGINT");
       assert.equal(pid, 42); signals++;
       if (options.stopThrows) throw new Error("private-canary");
       if (!options.stopTimeout) { active = false; stopped = true; child.signalCode = "SIGINT"; child.emit("exit"); }
       if (options.unknownTerminal) { delete child.exitCode; delete child.signalCode; }
     },
     now: () => clock,
-    sleep: async () => { clock += 1000; },
+    sleep: async () => { order.push("sleep"); clock += 1000; },
   };
-  return { port: createBookingWorkerPort(input, effects), child, calls, effects,
+  return { port: createBookingWorkerPort(input, effects, observe), child, calls, effects, order,
     counts: () => ({ spawned, signals, commands, confirms }), exit() { active = false; child.exitCode = 1; child.emit("exit"); } };
 }
 
@@ -210,4 +218,135 @@ test("#939: sealed 8788 CLI/config and Production 503 remain separate", async ()
       assert.equal(response.status, 503); assert.equal(response.headers.get("cache-control"), "no-store");
     }
   }
+});
+
+// #976 oracles: confirmed Issue's fixed positions, independent of error text.
+test("#976 first startup failure uses the most direct fixed position, once; stop never overwrites it", async () => {
+  const cases = [
+    [{ preflight: true }, "preflight"], [{ drift: true }, "preflight"],
+    [{ spawnThrows: true }, "spawn"], [{ noPid: true }, "spawn"], [{ earlyExit: true }, "spawn"],
+    [{ unknownExit: true }, "spawn"], [{ unknownGroup: true }, "group"],
+    [{ psThrows: true }, "group"],
+    [{ groups: { 42: 88 } }, "group"], [{ groups: { 42: "invalid" } }, "group"],
+    [{ booking: listener("127.0.0.1:8789", 43), groups: { 43: 88 } }, "group"],
+    [{ preexisting: listener() }, "booking-listener"], [{ commandThrows: true }, "booking-listener"],
+    [{ booking: "malformed" }, "booking-listener"], [{ booking: `${listener()}\n${listener()}` }, "booking-listener"],
+    [{ booking: listener("0.0.0.0:8789") }, "booking-listener"],
+    [{ booking: listener("127.0.0.1:8789", null) }, "booking-listener"],
+    [{ all: listener("127.0.0.1:8789", null) }, "booking-listener"],
+    [{ all: "" }, "booking-listener"],
+    [{ all: `${listener()}\n${listener("0.0.0.0:8088", null)}` }, "listener-unattributed"],
+    [{ all: `${listener()}\n${listener("0.0.0.0:9229", 43)}` }, "owned-listener"],
+    [{ neverReady: true }, "deadline"],
+  ];
+  for (const [options, expected] of cases) {
+    const observed = [], f = fixture(options, (kind, value) => { observed.push([kind, value]); });
+    await assert.rejects(f.port.start(), fixed);
+    await f.port.stop().catch(error => assert.ok(fixed(error)));
+    const before = f.counts(), saved = [...observed];
+    await assert.rejects(f.port.start(), fixed); await assert.rejects(f.port.stop(), fixed);
+    assert.deepEqual(observed.filter(([kind]) => kind === "failure"), [["failure", expected]], JSON.stringify(options));
+    assert.deepEqual(observed, saved); assert.deepEqual(f.counts(), before);
+    assert.equal(before.signals, options.drift || options.neverReady ? 1 : 0, JSON.stringify(options));
+    if (options.neverReady) assert.equal(f.order.filter(step => step === "sleep").length, 30);
+  }
+  const observed = [], f = fixture({}, (kind, value) => { observed.push([kind, value]); });
+  f.effects.sleep = async () => { throw new Error("private-canary"); };
+  f.effects.command = async (file, args) => file === "ps" ? "42" : "";
+  await assert.rejects(f.port.start(), fixed);
+  assert.deepEqual(observed, [["failure", "unknown"]]);
+  const create = [];
+  assert.throws(() => createBookingWorkerPort(null, {}, (kind, value) => { create.push([kind, value]); }), fixed);
+  assert.deepEqual(create, [["failure", "preflight"]]);
+});
+
+test("#976 success, unrelated known PGID, owned loopback and stop boundary snapshots preserve effect order", async () => {
+  for (const options of [{}, { all: `${listener()}\n${listener("0.0.0.0:8088", 88)}` },
+    { all: `${listener()}\n${listener("[::1]:9229", 43)}` }]) {
+    const plain = fixture(options), observed = [], traced = fixture(options, (kind, value) => { observed.push([kind, value]); });
+    await plain.port.start(); await plain.port.stop();
+    await traced.port.start(); await traced.port.stop();
+    assert.deepEqual(traced.order, plain.order); assert.deepEqual(traced.counts(), plain.counts());
+    if (!options.all) {
+      // Existing #939 effect sequence, including every ss/ps/alive call.
+      assert.deepEqual(traced.order, ["preflight", "-H -ltn sport = :8789", "confirm", "spawn", "alive", "ps:42",
+        "-H -ltnp sport = :8789", "ps:42", "-H -ltnp", "ps:42", "ps:42", "confirm", "alive",
+        "alive", "ps:42", "-H -ltnp sport = :8789", "ps:42", "-H -ltnp", "ps:42", "ps:42", "alive",
+        "SIGINT", "alive", "alive", "-H -ltn sport = :8789"]);
+      assert.deepEqual(traced.counts(), { spawned: 1, signals: 1, commands: 14, confirms: 2 });
+    }
+    assert.deepEqual(observed, ["ownership", "signal", "signal-sent", "wait", "port", "confirmed"].map(value => ["stop", value]));
+    const saved = [...observed]; await assert.rejects(traced.port.stop(), fixed); assert.deepEqual(observed, saved);
+  }
+});
+
+test("#976 independent stop failure freezes at ownership, signal, wait or port without extra effects", async () => {
+  for (const [options, expected, signals] of [
+    [{ all: `${listener()}\n${listener("0.0.0.0:8088", null)}` }, "ownership-failed", 0],
+    [{ stopThrows: true }, "signal-failed", 1], [{ stopTimeout: true }, "wait-failed", 1],
+    [{ unknownTerminal: true }, "wait-failed", 1], [{ portRemains: true }, "port-failed", 1],
+  ]) {
+    const observed = [], f = fixture(options, (kind, value) => { observed.push([kind, value]); });
+    if (signals === 0) await assert.rejects(f.port.start(), fixed); else await f.port.start();
+    await assert.rejects(f.port.stop(), fixed);
+    assert.deepEqual(observed.at(-1), ["stop", expected]);
+    assert.equal(f.counts().signals, signals);
+    if (options.stopTimeout) assert.equal(f.order.filter(step => step === "sleep").length, 10);
+    const saved = [...observed], counts = f.counts();
+    await assert.rejects(f.port.stop(), fixed); assert.deepEqual(observed, saved); assert.deepEqual(f.counts(), counts);
+    if (signals) assert.equal(observed.some(([kind]) => kind === "failure"), false);
+  }
+  const observed = [], f = fixture({ earlyExit: true }, (kind, value) => { observed.push([kind, value]); });
+  await assert.rejects(f.port.start(), fixed);
+  f.effects.command = async () => "";
+  await f.port.stop();
+  assert.deepEqual(observed, [["failure", "spawn"], ...["ownership", "wait", "port", "confirmed"].map(value => ["stop", value])]);
+  assert.equal(f.counts().signals, 0);
+});
+
+test("#976 unknown wait inspection and closed-port command failure use stop positions; hook fails closed", async () => {
+  for (const stage of ["wait", "port"]) {
+    const options = {}, observed = [], f = fixture(options, (kind, value) => {
+      observed.push([kind, value]);
+      if (value === "wait" && stage === "wait") options.unknownGroup = true;
+      if (value === "port" && stage === "port") options.commandThrows = true;
+    });
+    await f.port.start(); await assert.rejects(f.port.stop(), fixed);
+    assert.deepEqual(observed.at(-1), ["stop", `${stage}-failed`]); assert.equal(f.counts().signals, 1);
+  }
+  for (const hook of [() => { throw new Error("private-canary"); }, () => Promise.resolve(), () => ({ then() { throw new Error("private-canary"); } })]) {
+    const f = fixture({}, hook); await f.port.start(); await assert.rejects(f.port.stop(), fixed);
+    const counts = f.counts(); await assert.rejects(f.port.stop(), fixed);
+    assert.deepEqual(f.counts(), counts); assert.equal(counts.signals, 0);
+  }
+});
+
+test("#976 startup child events latch spawn before a later group failure; ready-time events do not rewrite none", async () => {
+  for (const event of ["error", "exit"]) {
+    const observed = [], f = fixture({}, (kind, value) => { observed.push([kind, value]); });
+    const command = f.effects.command;
+    f.effects.command = async (file, args, ...rest) => {
+      if (file === "ps") {
+        if (event === "exit") f.child.exitCode = 1;
+        f.child.emit(event, new Error("private-canary"));
+        return "invalid-group";
+      }
+      return command(file, args, ...rest);
+    };
+    await assert.rejects(f.port.start(), fixed);
+    assert.deepEqual(observed, [["failure", "spawn"]]); assert.equal(f.counts().signals, 0);
+  }
+  const observed = [], f = fixture({}, (kind, value) => { observed.push([kind, value]); });
+  await f.port.start(); f.child.emit("error", new Error("private-canary"));
+  assert.equal(f.port.isReady(), false); await assert.rejects(f.port.stop(), fixed);
+  assert.deepEqual(observed, [["stop", "ownership"], ["stop", "ownership-failed"]]);
+  let hooks = 0;
+  const broken = fixture({}, () => { hooks++; throw new Error("private-canary"); });
+  const command = broken.effects.command;
+  broken.effects.command = async (file, args, ...rest) => {
+    if (file === "ps") { broken.child.emit("error", new Error("private-canary")); return "invalid"; }
+    return command(file, args, ...rest);
+  };
+  await assert.rejects(broken.port.start(), fixed); await assert.rejects(broken.port.stop(), fixed);
+  assert.equal(hooks, 1); assert.equal(broken.counts().signals, 0);
 });

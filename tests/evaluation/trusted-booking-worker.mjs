@@ -89,24 +89,53 @@ const exited = (child) => Number.isInteger(child.exitCode) || typeof child.signa
 
 // Test-only finite effects seam, analogous to #937's proxy factory. The default
 // implementation fixes binary/config/persist/flags and never accepts overrides.
-export function createBookingWorkerPort(input, effects = runtime) {
+export function createBookingWorkerPort(input, effects = runtime, observe) {
+  let firstFailure = false, observationClosed = false;
+  const emit = (kind, value) => {
+    if (observationClosed) throw failure();
+    try {
+      // No error/raw data or asynchronous observation is accepted.
+      if (observe !== undefined && (typeof observe !== "function" || observe(kind, value) !== undefined)) throw failure();
+    } catch { observationClosed = true; throw failure(); }
+  };
+  const recordFailure = value => {
+    if (!firstFailure) { firstFailure = true; emit("failure", value); }
+  };
   try {
     input = Object.freeze({ certificate: Object.freeze({ key: input.certificate.key, cert: input.certificate.cert }),
       certificateParent: input.certificateParent, certificateParentIdentity: Object.freeze({ ...input.certificateParentIdentity }) });
-  } catch { throw failure(); }
+  } catch { recordFailure("preflight"); throw failure(); }
   let child, pid, setup, startAttempted = false, stopAttempted = false, ready = false;
   let starting = false;
+  let position = "unknown", stopPosition = "unknown", stopFinished = false;
+  const startCheck = (ok, kind) => { if (!ok) { recordFailure(kind); throw failure(); } };
+  const progress = value => { stopPosition = value; emit("stop", value); };
   const command = async (file, args, deadline) => {
     const remaining = Math.floor(deadline - effects.now());
     check(remaining > 0);
     return effects.command(file, args, Math.min(5000, remaining), setup.env);
   };
   const group = async (processId, deadline) => {
-    const result = (await command("ps", ["-o", "pgid=", "-p", String(processId)], deadline)).trim();
-    check(/^[1-9]\d*$/.test(result));
-    return result;
+    try {
+      const result = (await command("ps", ["-o", "pgid=", "-p", String(processId)], deadline)).trim();
+      check(/^[1-9]\d*$/.test(result));
+      return result;
+    } catch { if (starting) recordFailure("group"); throw failure(); }
   };
-  const alive = () => { const result = effects.groupAlive(pid); check(typeof result === "boolean"); return result; };
+  const alive = () => {
+    try { const result = effects.groupAlive(pid); check(typeof result === "boolean"); return result; }
+    catch { if (starting) recordFailure("group"); throw failure(); }
+  };
+  const groupCheck = ok => {
+    if (!ok) { if (starting) recordFailure("group"); throw failure(); }
+  };
+  const childFailure = () => {
+    ready = false;
+    if (starting) {
+      try { recordFailure("spawn"); }
+      catch { /* Failed hook is closed; the child liveness check rejects startup. */ }
+    }
+  };
   const closed = async (deadline) => {
     check(rows(await command("ss", ["-H", "-ltn", "sport = :8789"], deadline)).length === 0);
   };
@@ -115,19 +144,25 @@ export function createBookingWorkerPort(input, effects = runtime) {
     check(booking.length <= 1);
     for (const row of booking) {
       check(row.address === "127.0.0.1:8789" && row.pids.length > 0);
-      for (const owner of row.pids) check(await group(owner, deadline) === String(pid));
+      for (const owner of row.pids) groupCheck(await group(owner, deadline) === String(pid));
     }
     const all = rows(await command("ss", ["-H", "-ltnp"], deadline));
     check(all.filter((row) => /:8789$/.test(row.address)).length === booking.length);
     for (const row of all) {
-      check(row.pids.length > 0); // Hidden ownership is unknown, never evidence.
+      if (!row.pids.length) {
+        if (starting) recordFailure(/:8789$/.test(row.address) ? "booking-listener" : "listener-unattributed");
+        throw failure(); // Hidden ownership is unknown, never evidence.
+      }
       if (/:8789$/.test(row.address)) {
         check(row.address === "127.0.0.1:8789");
-        for (const owner of row.pids) check(await group(owner, deadline) === String(pid));
+        for (const owner of row.pids) groupCheck(await group(owner, deadline) === String(pid));
       }
       for (const owner of row.pids) {
         if (await group(owner, deadline) === String(pid))
-          check(/^(127\.0\.0\.1|\[::1\]):\d+$/.test(row.address));
+          if (!/^(127\.0\.0\.1|\[::1\]):\d+$/.test(row.address)) {
+            if (starting) recordFailure("owned-listener");
+            throw failure();
+          }
       }
     }
     return booking.length === 1;
@@ -138,50 +173,78 @@ export function createBookingWorkerPort(input, effects = runtime) {
       try {
         check(!startAttempted && !stopAttempted);
         startAttempted = true; starting = true; accepted = true;
+        position = "preflight";
         setup = effects.preflight(input);
+        position = "unknown";
         const deadline = effects.now() + 30000; // Existing read-only startup budget.
+        position = "booking-listener";
         await closed(deadline);
+        position = "preflight";
         setup.confirm();
+        position = "spawn";
         child = effects.spawn(binary, ["dev", "--config", relative(root, proxyOptions.configPath),
           "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https",
           "--persist-to", relative(root, persistence),
           "--https-key-path", input.certificate.key, "--https-cert-path", input.certificate.cert],
         { cwd: root, env: setup.env, detached: true, stdio: "ignore" });
-        child.on("error", () => { child.spawnFailed = true; ready = false; });
-        child.on("exit", () => { ready = false; });
+        child.on("error", () => { child.spawnFailed = true; childFailure(); });
+        child.on("exit", childFailure);
         pid = child.pid;
         check(Number.isSafeInteger(pid) && pid > 1);
+        position = "unknown";
         while (effects.now() < deadline) {
-          check(live(child) && alive() && await group(pid, deadline) === String(pid));
+          position = "spawn";
+          startCheck(live(child), "spawn");
+          groupCheck(alive() && await group(pid, deadline) === String(pid));
+          position = "booking-listener";
           if (await ownedListeners(deadline)) {
+            position = "preflight";
             setup.confirm();
-            check(live(child) && child.pid === pid && alive());
+            position = "spawn";
+            startCheck(live(child) && child.pid === pid, "spawn");
+            groupCheck(alive());
             ready = true;
             return origin; // Transport preparation only; no HTTP/TLS/write proof.
           }
+          position = "unknown";
           await effects.sleep();
         }
+        position = "deadline";
         throw failure();
-      } catch { ready = false; throw failure(); }
+      } catch { ready = false; recordFailure(position); throw failure(); }
       finally { if (accepted) starting = false; }
     },
     async stop() {
+      let accepted = false;
       try {
         check(startAttempted && !starting && !stopAttempted);
-        stopAttempted = true; ready = false; // Spent before any async effect.
+        stopAttempted = true; accepted = true; ready = false; // Spent before any async effect.
+        progress("ownership");
         check(child && Number.isSafeInteger(pid) && pid > 1 && child.pid === pid);
         const deadline = effects.now() + 10000; // No force-kill or second signal.
         if (alive()) {
           check(live(child) && await group(pid, deadline) === String(pid));
           await ownedListeners(deadline);
           check(live(child) && alive());
+          progress("signal");
           effects.interrupt(pid); // Exactly one owned group stop request.
+          progress("signal-sent");
         }
+        progress("wait");
         while (alive() && effects.now() < deadline) await effects.sleep();
         check(!alive() && exited(child));
+        progress("port");
         await closed(deadline); // Never reuse 8788's stopWorker result.
+        progress("confirmed"); stopFinished = true;
         return Object.freeze({ stopped: true, portClosed: true });
-      } catch { throw failure(); } // Retain child/files and spent state on unknown result.
+      } catch {
+        if (!stopFinished && accepted) {
+          stopFinished = true;
+          const detail = { ownership: "ownership-failed", signal: "signal-failed", wait: "wait-failed", port: "port-failed" }[stopPosition] ?? "unknown";
+          emit("stop", detail);
+        }
+        throw failure(); // Retain child/files and spent state on unknown result.
+      }
     },
     isReady() { return ready && !stopAttempted && live(child); },
   });
