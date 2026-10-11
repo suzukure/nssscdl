@@ -900,7 +900,7 @@ test("#959 same-instance confirmed stop opens exactly one strict diagnostic read
     const owner = ownedIdentity(dir);
     const f = fixture("confirm201", { observe: data => writeBookingDiagnostic(owner, data),
       diagnosticRead: () => { assert.equal(f.unit.stopped, true); return readBookingDiagnostic(ownedIdentity(dir)); } });
-    const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; " + diagnosticText("stop", "completed", "dom", "confirmed")
+    const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=accepted; " + diagnosticText("stop", "completed", "dom", "confirmed", "none", "confirmed", "cookie-inject", "unknown")
       .slice("TRUSTED_BOOKING_DIAGNOSTIC_V2; ".length, -1);
     assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
       { stdout: [], stderr: [diagnostic("terminal", "manager", detail)], status: 1 });

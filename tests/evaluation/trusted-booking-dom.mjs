@@ -15,7 +15,10 @@ const assets = new Map([["/student", "text/html"], ["/student.css", "text/css"],
 const previewPath = "/api/me/reservations/preview", confirmPath = "/api/me/reservations";
 const csrfPath = "/api/auth/student/csrf";
 const failure = reason => new Error(`TRUSTED_BOOKING_DOM_${reason}`);
-const check = condition => { if (!condition) throw failure("ASSERTION"); };
+const assertions = new WeakSet();
+const check = condition => {
+  if (!condition) { const error = failure("ASSERTION"); assertions.add(error); throw error; }
+};
 
 // Shared assertion seam for isolated finite fixtures, never a fetch/mock adapter.
 // Compare every displayed change in order; do not export HTML or comparison data.
@@ -30,15 +33,36 @@ export async function assertBookingReviewDom(page, view, classification, run = a
   if (classification === "additional") check(paragraphs.includes("現在は追加区分ですが、他予約のキャンセル等によりLesson開始前までは後から再分類される場合があります。"));
 }
 
-export async function proveTrustedBookingDom({ browser, context, session, seed, signal }) {
-  let reason, terminal = false, page, phase = "initial", navigationCount = 0;
+export async function proveTrustedBookingDom({ browser, context, session, seed, signal, observe }) {
+  let reason, terminal = false, observerClosed = false, page, phase = "initial", navigationCount = 0;
   const requests = new Map(), responses = new Map(), seenAssets = new Map();
-  let previewCount = 0, confirmCount = 0, csrfCount = 0, expectedToken;
+  let previewCount = 0, confirmCount = 0, csrfCount = 0, expectedToken, writeLevel = 0;
   let rejectStopped;
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
   stopped.catch(() => {});
-  const stop = value => {
-    if (!reason) { reason = value; terminal = true; rejectStopped(failure(reason)); }
+  // Only fixed primitive pairs cross this synchronous test-only seam.
+  const notify = (kind, value) => {
+    if (observerClosed) return;
+    try { if (observe?.(kind, value) !== undefined) throw failure("ASSERTION"); }
+    catch {
+      observerClosed = true;
+      if (context && typeof context === "object") spent.add(context);
+      stop("ASSERTION", "unknown"); throw failure(reason);
+    }
+  };
+  const stop = (value, fault = { REQUEST: "request", RESPONSE: "response", NAVIGATION: "navigation",
+    NETWORK_UNKNOWN: "network", TIMEOUT: "timeout", ABORTED: "abort", ASSERTION: "assertion" }[value]) => {
+    if (reason || terminal) return;
+    reason = value; terminal = true;
+    try { notify("fault", fault); } catch { /* retain first failure; observer is closed */ }
+    rejectStopped(failure(reason));
+  };
+  const entered = value => { alive(); notify("dom", value); alive(); };
+  const write = value => {
+    alive();
+    const level = ["unobserved", "action-start", "request-seen", "route-allowed", "response-201"].indexOf(value);
+    if (level <= writeLevel) return;
+    writeLevel = level; notify("write", value); alive();
   };
   const alive = () => {
     if (signal?.aborted) stop("ABORTED");
@@ -51,16 +75,21 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
   // Race also covers driver operations without a native Playwright timeout.
   // A pending operation cannot resume the caller after failure; the retained
   // context route blocks its late traffic until the owner closes the context.
-  const step = async action => {
+  const step = async (action, fault = "driver") => {
     alive(); let timer;
     try {
       const result = await Promise.race([Promise.resolve().then(() => { alive(); return action(); }), stopped,
         new Promise((_, reject) => { timer = setTimeout(() => { stop("TIMEOUT"); reject(failure(reason)); }, timeout); })]);
       alive(); return result;
+    } catch (error) {
+      stop(error?.name === "TimeoutError" ? "TIMEOUT" : "ASSERTION",
+        error?.name === "TimeoutError" ? "timeout" : assertions.has(error) ? "assertion" : fault);
+      throw failure(reason);
     } finally { clearTimeout(timer); }
   };
   const onAbort = () => stop("ABORTED");
   try {
+    entered("cookie-jar");
     check(signal && typeof signal.addEventListener === "function");
     signal.addEventListener("abort", onAbort, { once: true }); alive();
     check(browser && context?.browser() === browser && context.pages().length === 0 && !spent.has(context));
@@ -85,11 +114,13 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     }, [...secrets, "seed-other", "seed-reservation-other", "expectedStateToken", "csrfToken", "token_hash", "snapshot", "料金"])).then(check);
     // Guard before connection, including redirects/popups. No synthetic response,
     // APIRequestContext, page fetch injection, or owner lifecycle mutation.
+    entered("route");
     await step(() => context.route("**/*", async route => {
       const request = route.request();
       try {
         if (terminal || signal.aborted) { if (signal.aborted) stop("ABORTED"); await route.abort(); return; }
         const url = new URL(request.url()), method = request.method();
+        if (url.origin === bookingOrigin && url.pathname === confirmPath && method === "POST") write("request-seen");
         check(url.origin === bookingOrigin && !url.username && !url.password && !url.search && !url.hash && request.redirectedFrom() === null);
         check(request.frame().page() === page);
         if (method === "POST") {
@@ -111,6 +142,7 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
         }
         alive(); // In particular, abort during request-header observation cannot forward a write.
         requests.set(request, { path: url.pathname, method });
+        if (url.pathname === confirmPath && method === "POST") write("route-allowed");
         await route.continue();
       } catch { stop("REQUEST"); try { await route.abort(); } catch { /* owner teardown */ } }
     }));
@@ -127,6 +159,7 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
         responses.set(request, response);
         if (assets.has(identity.path)) seenAssets.set(identity.path, response);
         if (identity.method === "POST") check(response.status() === (identity.path === previewPath ? 200 : 201));
+        if (identity.path === confirmPath && identity.method === "POST") write("response-201");
       } catch { stop("RESPONSE"); }
     });
     const settled = selector => step(() => page.waitForFunction(selector =>
@@ -146,18 +179,25 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
       // Listener is installed before the explicit accessible action.
       const [response] = await step(() => Promise.all([
         page.waitForResponse(r => r.url() === bookingOrigin + path && r.request().method() === method, { timeout }),
-        page.getByRole("button", { name, exact: true }).click({ timeout }),
+        Promise.resolve().then(() => {
+          alive();
+          if (path === confirmPath && method === "POST") write("action-start");
+          return page.getByRole("button", { name, exact: true }).click({ timeout });
+        }),
       ]));
       return api(response, path, method, status);
     };
+    entered("navigation");
     const navigation = await step(() => page.goto(bookingOrigin + "/student", { waitUntil: "load", timeout }));
     check(navigation && navigation.status() === 200 && navigation.url() === bookingOrigin + "/student" && navigationCount === 1);
     phase = "select";
     await step(() => page.getByRole("heading", { name: "生徒の予定・本人履歴", exact: true }).waitFor({ timeout }));
+    entered("assets");
     for (const [path, mime] of assets) {
       const asset = seenAssets.get(path), headers = asset && await step(() => asset.allHeaders());
       check(asset?.status() === 200 && headers["content-type"].startsWith(mime) && headers["cache-control"] === "no-store" && !headers["set-cookie"]);
     }
+    entered("initial-ui");
     await settled("#schedule-content"); await settled("section ol");
     await step(() => page.locator("#schedule-month").fill(seed.month, { timeout }));
     await click("この月を取得"); await settled("#schedule-content");
@@ -167,10 +207,12 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     check(await step(() => page.getByRole("button", { name: "履歴の次ページ", exact: true }).isDisabled()));
     check(await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
     await safeDom();
+    entered("selection");
     await click(`${intervalLabel(slot)}：予約可能`);
     check(await step(() => page.locator("#selection-status").textContent()).then(v => v.includes("予約は確定していません")));
     check(previewCount === 0 && confirmCount === 0 && csrfCount === 0);
     check(await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
+    entered("preview");
     phase = "preview";
     const previewBody = await observeClick("選択枠の予約内容をPreview", previewPath, "POST", 200);
     const parsed = parsePreview(previewBody, slot);
@@ -182,21 +224,25 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     check(csrfResponses.length === 1);
     check(isDeepStrictEqual(await api(csrfResponses[0], csrfPath, "GET", 200), { csrfToken: expectedCsrf, scope: "session" }));
     await settled("#operation-content");
-    await step(() => assertBookingReviewDom(page, parsed.view, parsed.view.previewClassification, step)); await safeDom();
+    entered("review");
+    await step(() => assertBookingReviewDom(page, parsed.view, parsed.view.previewClassification, step), "unknown"); await safeDom();
     check(previewCount === 1 && confirmCount === 0);
     check(!await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
     expectedToken = parsed.token; // Enable the only write after all review assertions.
+    entered("confirm");
     phase = "confirm";
     const confirmBody = await observeClick("内容を確認して予約を確定", confirmPath, "POST", 201);
     const confirmed = parseConfirm(confirmBody, slot), reservationId = confirmed.reservation.reservationId;
     check(reservationId !== "seed-reservation-self" && reservationId !== "seed-reservation-other" && secrets.every(s => !reservationId.includes(s)));
     check(isDeepStrictEqual(confirmBody, { reservation: { reservationId, startsAt: slot.startsAt, endsAt: slot.endsAt,
       reservationState: "confirmed", classification: "standard" }, slot: { ...parsed.view.slot, view: "reserved_by_me" }, classificationChanges: [] }));
+    entered("confirm-ui");
     await settled("#operation-content"); await settled("#schedule-content");
-    await step(() => assertBookingReviewDom(page, confirmed, confirmed.reservation.classification, step));
+    await step(() => assertBookingReviewDom(page, confirmed, confirmed.reservation.classification, step), "unknown");
     check(await step(() => page.locator("#operation-status").textContent()).then(v => v === "予約済みです。メールの配送完了を表すものではありません。"));
     check(await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
     check(await step(() => page.locator(".slot.reserved_by_me").allTextContents()).then(v => v.includes(`${intervalLabel(slot)}：本人予約済み／標準`)));
+    entered("history");
     phase = "history";
     const history = await observeClick("履歴を最新から再取得", confirmPath, "GET", 200);
     const expectedItems = [...initialHistory.items, { ...confirmed.reservation, attendanceState: "none" }];
@@ -204,10 +250,13 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     await settled("section ol");
     check(await step(() => page.locator("section ol li").allTextContents()).then(v => isDeepStrictEqual(v, expectedItems.map(historyText))));
     await safeDom(); alive(); check(previewCount === 1 && confirmCount === 1);
+    entered("handoff");
+    entered("complete");
     terminal = true; // Retain the deny guard. Owner closes context; never reuse it.
     return reservationId; // Only the actual Browser POST 201 identity; no readback claim.
   } catch (error) {
-    stop(error?.name === "TimeoutError" ? "TIMEOUT" : "ASSERTION");
+    stop(error?.name === "TimeoutError" ? "TIMEOUT" : "ASSERTION",
+      assertions.has(error) ? "assertion" : "unknown");
     throw failure(reason); // No raw error, cause, URL, headers, payload, or PII.
   } finally { signal?.removeEventListener?.("abort", onAbort); }
 }

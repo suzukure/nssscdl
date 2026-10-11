@@ -96,7 +96,10 @@ function fixture(fault = "") {
       };
     },
     async proveTrustedBookingDom(input) {
-      hit("dom"); assert.deepEqual(input, { browser, context, session: seed.sessions.self, seed, signal: callbackSignal });
+      hit("dom");
+      const { observe, ...supplied } = input;
+      assert.equal(typeof observe, "function");
+      assert.deepEqual(supplied, { browser, context, session: seed.sessions.self, seed, signal: callbackSignal });
       if (fault === "missing-id") return undefined;
       if (fault === "empty-id") return "";
       return id;
@@ -177,9 +180,8 @@ function observedFixture(fault = "", failWrite = () => false) {
   let writes = 0;
   f.ports.observe = data => {
     writes++;
-    // #983 every publication, including failures/stop, remains unobserved.
+    // Every publication retains the strict V2 keys and closed enums.
     assert.deepEqual(Object.keys(data), ["phase", "boundary", "primary", "worker_stop", "worker_failure", "worker_stop_detail", "dom", "fault", "write"]);
-    assert.equal(data.dom, "none"); assert.equal(data.fault, "none"); assert.equal(data.write, "unobserved");
     assert.deepEqual(parseBookingDiagnostic(encodeBookingDiagnostic(data)), data);
     if (failWrite(data)) throw new Error(canary);
     snapshots.push({ ...data });
@@ -190,7 +192,7 @@ test("#959 all prepared boundaries and complete are diagnostic-only; Worker stop
   const f = observedFixture(); await f.run();
   assert.deepEqual(f.snapshots.map(s => `${s.phase}/${s.boundary}`), [
     "seed/entered", "seed/completed", "home/entered", "home/completed", "tls/entered", "worker/entered", "worker/completed",
-    "dom/entered", "dom/completed", "stop/entered", "stop/entered", "stop/entered", "stop/completed", "readback/entered", "readback/completed",
+    "dom/entered", "dom/entered", "dom/entered", "dom/entered", "dom/completed", "stop/entered", "stop/entered", "stop/entered", "stop/completed", "readback/entered", "readback/completed",
     "scan/entered", "scan/completed", "tls/completed", "complete/completed",
   ]);
   assert.ok(f.snapshots.every(s => s.primary === "none"));
@@ -323,4 +325,100 @@ test("#976 progress snapshots are synchronous; any writer failure closes writing
   let writes = 0;
   f.ports.observe = () => { writes++; return Promise.resolve(); };
   await assert.rejects(f.run(), fixed); assert.equal(writes, 1); assert.deepEqual(worker.effects, []);
+});
+
+const axes = data => [data.dom, data.fault, data.write];
+test("#984 context/cookie controlled failures publish entered stage and first fault through stop", async () => {
+  for (const [fault, stage, observed] of [
+    ["context", "context", "driver"], ["timeout-context", "context", "timeout"],
+    ["abort-context", "context", "abort"], ["cookie", "cookie-inject", "driver"],
+    ["abort-cookie", "cookie-inject", "abort"], ["dom", "cookie-inject", "unknown"],
+    ["timeout-dom", "cookie-inject", "unknown"], ["abort-dom", "cookie-inject", "abort"],
+    ["missing-id", "cookie-inject", "assertion"], ["empty-id", "cookie-inject", "assertion"],
+  ]) {
+    const f = observedFixture(fault); await assert.rejects(f.run(), fixed);
+    assert.deepEqual(axes(f.snapshots.at(-1)), [stage, observed, "unobserved"], fault);
+    const failures = f.snapshots.filter(s => s.fault !== "none");
+    assert.ok(failures.length > 0 && failures.every(s => s.fault === observed), fault);
+    assert.ok(f.snapshots.filter(s => s.phase === "stop").every(s => s.dom === stage), fault);
+    assert.ok(!f.events.includes("readback"), fault);
+  }
+  for (const badCookie of [null, { name: "untrusted" }, { name: "__Host-student_session", path: "/", secure: true, httpOnly: true, sameSite: "Lax", domain: "bad" }]) {
+    const f = observedFixture(), prepare = f.ports.prepareTrustedBooking;
+    f.ports.prepareTrustedBooking = (consume, entered) => prepare((seed, handle) => {
+      seed.sessions.self.cookie = () => badCookie;
+      return consume(seed, handle);
+    }, entered);
+    await assert.rejects(f.run(), fixed);
+    assert.deepEqual(axes(f.snapshots.at(-1)), ["cookie-check", badCookie === null ? "unknown" : "assertion", "unobserved"]);
+    assert.ok(!f.events.includes("cookie")); assert.ok(!f.events.includes("dom"));
+  }
+});
+test("#984 optional hook cannot infer helper progress, and readback/scan/worker stop cannot promote axes", async () => {
+  const f = observedFixture(); await f.run();
+  assert.deepEqual(f.snapshots.filter(s => s.phase === "dom").map(axes), [
+    ["none", "none", "unobserved"], ["context", "none", "unobserved"], ["cookie-check", "none", "unobserved"],
+    ["cookie-inject", "none", "unobserved"], ["cookie-inject", "none", "unobserved"],
+  ]);
+  assert.deepEqual(axes(f.snapshots.at(-1)), ["cookie-inject", "none", "unobserved"]);
+});
+test("#984 synchronous enum seam preserves first fault, highest write and rejects hostile pairs", async () => {
+  const invalid = [["dom", "context"], ["dom", "unknown"], ["dom", "history"], ["fault", "none"], ["write", "unobserved"],
+    ["url", canary], ["fault", {}], [{ toString() { assert.fail("coercion"); } }, "unknown"]];
+  for (const pair of invalid) {
+    const f = observedFixture();
+    f.ports.proveTrustedBookingDom = ({ observe }) => {
+      observe("dom", "complete"); // Earlier/reversed stage must never be accepted.
+      observe(...pair); return id;
+    };
+    await assert.rejects(f.run(), fixed);
+    assert.deepEqual(axes(f.snapshots.at(-1)), ["complete", "unknown", "unobserved"]);
+    assert.doesNotMatch(JSON.stringify(f.snapshots), /private-session|opaque-confirm/);
+  }
+  const f = observedFixture(); let hook;
+  f.ports.proveTrustedBookingDom = ({ observe }) => {
+    hook = observe;
+    observe("dom", "confirm"); observe("write", "action-start"); observe("write", "request-seen");
+    observe("write", "route-allowed"); observe("write", "action-start");
+    observe("fault", "request"); observe("fault", "timeout"); observe("write", "response-201"); observe("dom", "history");
+    return id; // Observed failure itself suppresses success even if a fake ignores it.
+  };
+  await assert.rejects(f.run(), fixed);
+  assert.deepEqual(axes(f.snapshots.at(-1)), ["confirm", "request", "route-allowed"]);
+  const saved = structuredClone(f.snapshots); hook("write", "response-201"); hook("dom", "complete");
+  assert.deepEqual(f.snapshots, saved); assert.ok(!f.events.includes("readback"));
+});
+test("#984 callback is inert after helper return/worker stop and after abort/writer throw", async () => {
+  for (const outcome of ["success", "abort", "writer", "async-writer", "worker-stop"]) {
+    const f = observedFixture(); let hook;
+    f.ports.proveTrustedBookingDom = ({ observe }) => {
+      hook = observe; observe("dom", "confirm");
+      if (outcome === "abort") f.controller.abort(canary);
+      observe("write", "action-start");
+      if (outcome === "abort") observe("write", "response-201");
+      return id;
+    };
+    if (["writer", "async-writer"].includes(outcome)) {
+      const observer = f.ports.observe;
+      f.ports.observe = data => {
+        if (data.dom === "confirm") { if (outcome === "async-writer") return Promise.resolve(); throw new Error(canary); }
+        return observer(data);
+      };
+    }
+    const create = f.ports.createBookingWorkerPort;
+    f.ports.createBookingWorkerPort = (...args) => {
+      const worker = create(...args);
+      return { ...worker, async stop() {
+        hook?.("write", "response-201"); hook?.("dom", "complete");
+        if (outcome === "worker-stop") throw new Error(canary);
+        return worker.stop();
+      } };
+    };
+    if (outcome === "success") await f.run(); else await assert.rejects(f.run(), fixed);
+    const saved = structuredClone(f.snapshots); hook?.("write", "response-201"); hook?.("dom", "complete");
+    assert.deepEqual(f.snapshots, saved);
+    assert.ok(!f.snapshots.some(s => s.write === "response-201" || s.dom === "complete"));
+    if (outcome === "abort") assert.deepEqual(axes(f.snapshots.at(-1)), ["confirm", "abort", "unobserved"]);
+    if (outcome !== "success") assert.ok(!f.events.includes("readback"));
+  }
 });

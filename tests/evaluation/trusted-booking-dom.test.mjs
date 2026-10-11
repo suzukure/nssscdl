@@ -5,6 +5,8 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
+import { encodeBookingDiagnostic, parseBookingDiagnostic } from "./trusted-booking-report.mjs";
 import { proveTrustedBookingDom, assertBookingReviewDom, bookingOrigin } from "./trusted-booking-dom.mjs";
 
 const previewName = "選択枠の予約内容をPreview", confirmName = "内容を確認して予約を確定";
@@ -31,7 +33,9 @@ function fixture(fault = "") {
   const preview = { slot, previewClassification: "standard", classificationChanges: [], expectedStateToken: token };
   const { attendanceState: _unused, ...reservation } = added;
   const confirm = { reservation, slot: { ...slot, view: "reserved_by_me" }, classificationChanges: [] };
-  let mode = "initial", routeHandler, currentUrl = "about:blank", pages = [], op;
+  let resumeResponse, responsePendingResolve;
+  const responsePending = new Promise(resolve => { responsePendingResolve = resolve; });
+  let lastResponse, mode = "initial", routeHandler, currentUrl = "about:blank", pages = [], op;
   const events = [], forwarded = [], denied = [], waiters = [], page = new EventEmitter();
   const frame = { page: () => page, url: () => currentUrl };
   const emitResponse = async (path, method = "GET", body = {}, status = 200, navigation = false) => {
@@ -41,7 +45,7 @@ function fixture(fault = "") {
       postDataJSON: () => fault === "identity-body" ? { slotId: slot.slotId, studentId: "seed-other" } :
         path === previewPath ? { slotId: slot.slotId } : { slotId: slot.slotId, expectedStateToken: fault === "wrong-confirm-token" ? canary : token },
       allHeaders: async () => {
-        if (fault === "abort-headers" && method === "POST") controller.abort(canary);
+        if ((fault === "abort-headers" || fault === "abort-confirm-headers" && path === confirmPath) && method === "POST") controller.abort(canary);
         return { origin: fault === "wrong-request-origin" ? "https://invalid.test" : bookingOrigin, "sec-fetch-site": "same-origin",
           "content-type": "application/json", "x-csrf-token": fault === "wrong-request-csrf" ? canary : csrf };
       } };
@@ -50,16 +54,20 @@ function fixture(fault = "") {
       "cache-control": "no-store", ...(path === csrfPath ? { "referrer-policy": "no-referrer" } : {}) };
     if (fault === "header-secret" && path === previewPath) headers["private"] = self.value;
     if (fault === "set-cookie" && path === previewPath) headers["set-cookie"] = canary;
-    const response = { request: () => request, url: () => fault === "response-origin" && path === previewPath ? "https://invalid.test/student" : url,
+    const response = { request: () => fault === "response-identity" && path === confirmPath && method === "POST" ? { ...request } : request, url: () => fault === "response-origin" && path === previewPath ? "https://invalid.test/student" : url,
       status: () => status, fromServiceWorker: () => fault === "service-worker" && path === previewPath,
       allHeaders: async () => headers, json: async () => {
         if (fault === "json-unknown" && method === "POST" && path === confirmPath) throw new Error(canary);
         return structuredClone(body);
       } };
+    lastResponse = response;
     let passed = false;
     await routeHandler({ request: () => request, abort: async () => { denied.push(path); }, continue: async () => {
+      if (fault === "forward-confirm" && path === confirmPath && method === "POST") throw new Error(canary);
       passed = true; forwarded.push(`${method} ${path}`);
       if (fault === "network-unknown" && method === "POST" && path === confirmPath) { page.emit("requestfailed", request); return; }
+      if (fault === "pending-confirm" && method === "POST" && path === confirmPath)
+        await new Promise(resolve => { resumeResponse = resolve; responsePendingResolve(); });
       page.emit("response", response);
       if (fault === "duplicate-response" && path === previewPath) page.emit("response", response);
       for (const waiter of [...waiters]) if (waiter.match(response)) { waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(response); }
@@ -77,6 +85,7 @@ function fixture(fault = "") {
     if (selector === "#operation-content li") return fault === "extra-dom-change" ? [canary] : [];
     if (selector === ".slot.reserved_by_me") return mode === "confirmed" || mode === "history" ? [`${interval("10")}：本人予約済み／標準`] : [];
     if (selector === "section ol li") {
+      if (fault === "initial-history" && mode === "initial") return [];
       const hours = mode === "history" && fault !== "stale-history" ? ["11", "10"] : ["11"];
       return hours.map(hour => `${interval(hour)}予約状態：予約済み欠席状態：なし現在の区分：標準`);
     }
@@ -85,6 +94,7 @@ function fixture(fault = "") {
   const click = async name => {
     events.push(name);
     if (fault === "abort-selection" && name.endsWith("：予約可能")) controller.abort(canary);
+    if (fault === "click-confirm" && name === confirmName) throw new Error(canary);
     if (name === previewName) {
       if (fault === "timeout-preview") { const e = new Error(canary); e.name = "TimeoutError"; throw e; }
       await emitResponse(csrfPath, "GET", { csrfToken: fault === "csrf-mismatch" ? canary : csrf, scope: "session" });
@@ -126,6 +136,7 @@ function fixture(fault = "") {
   Object.assign(page, {
     mainFrame: () => frame, url: () => currentUrl,
     goto: async url => {
+      if (fault === "goto") throw new Error(canary);
       events.push("navigate"); currentUrl = url; page.emit("framenavigated", frame);
       const response = await emitResponse("/student", "GET", {}, 200, true);
       for (const path of ["/student.css", "/student.js", "/view.js", "/controller.js", "/model.js"]) {
@@ -143,18 +154,20 @@ function fixture(fault = "") {
       const exposure = fault === "secret-dom" && op ? token : fault === "other-dom" ? "seed-other" : "";
       return runInNewContext(`(${fn.toString()})(forbidden)`, { forbidden, document: { documentElement: { outerHTML: exposure }, cookie: "" }, location: { href: currentUrl } });
     },
-    locator: selector => ({ fill: async value => { events.push("month"); assert.equal(value, month); }, textContent: async () => text(selector), allTextContents: async () => texts(selector) }),
+    locator: selector => ({ fill: async value => { if (fault === "month") throw new Error(canary); events.push("month"); assert.equal(value, month); }, textContent: async () => text(selector), allTextContents: async () => texts(selector) }),
     getByRole: (_role, { name, exact }) => {
       assert.equal(exact, true);
-      return { waitFor: async () => {}, click: () => click(name),
+      return { waitFor: async () => { if (fault === "heading") throw new Error(canary); }, click: () => click(name),
         isDisabled: async () => name === confirmName ? mode !== "review" : name === "履歴の次ページ" };
     },
   });
   const browser = {}, context = { browser: () => browser, pages: () => pages,
-    cookies: async () => [{ ...self, domain: "127.0.0.1", expires: -1 }],
-    route: async (pattern, handler) => { assert.equal(pattern, "**/*"); routeHandler = handler; },
-    newPage: async () => { pages = [page]; return page; } };
+    cookies: async () => { if (fault === "cookie-jar") throw new Error(canary); return [{ ...self, domain: "127.0.0.1", expires: -1 }]; },
+    route: async (pattern, handler) => { if (fault === "route") throw new Error(canary); assert.equal(pattern, "**/*"); routeHandler = handler; },
+    newPage: async () => { if (fault === "page") throw new Error(canary); pages = [page]; return page; } };
   return { input: { browser, context, session: seed.sessions.self, seed, signal: controller.signal }, events, forwarded, denied, controller, id,
+    responsePending, resumeResponse: () => resumeResponse(),
+    lateResponse: () => page.emit("response", lastResponse),
     late: () => emitResponse(confirmPath, "POST", confirm, 201),
     stalledCookie: () => { context.cookies = () => new Promise(() => {}); },
     cookieChange: mutate => { context.cookies = async () => { const jar = [{ ...self, domain: "127.0.0.1", expires: -1 }]; mutate(jar); return jar; }; },
@@ -183,7 +196,8 @@ test("#941 finite negative observations stop without retry/reload/reConfirm or s
     "navigation", "extra-navigation", "service-worker", "header-secret", "set-cookie", "secret-dom", "other-dom", "identity-body", "wrong-confirm-token", "wrong-request-origin", "wrong-request-csrf", "abort-headers", "id-empty", "id-null", "id-number", "id-other", "id-secret", "id-token", "id-missing",
     "confirm-slot", "confirm-state", "confirm-classification", "confirm-extra", "confirm-409", "confirm-503", "confirm-200", "duplicate-confirm", "json-unknown", "network-unknown", "false-success", "stale-history", "other-history",
     "abort-selection", "abort-preview", "abort-confirm", "abort-wait", "timeout-preview"]) {
-    const f = fixture(fault);
+    const f = fixture(fault), observations = [];
+    f.input.observe = (kind, value) => { observations.push([kind, value]); };
     await assert.rejects(proveTrustedBookingDom(f.input), error => {
       assert.match(error.message, /^TRUSTED_BOOKING_DOM_(ASSERTION|REQUEST|RESPONSE|NAVIGATION|ABORTED|TIMEOUT|NETWORK_UNKNOWN)$/);
       assert.equal("cause" in error, false); assert.doesNotMatch(String(error), /private-canary|seed-other|v1\.|https:/);
@@ -193,7 +207,10 @@ test("#941 finite negative observations stop without retry/reload/reConfirm or s
     assert.ok(f.events.filter(v => v === previewName).length <= 1, fault);
     assert.ok(f.forwarded.filter(v => v === `POST ${confirmPath}`).length <= 1, fault);
     if (fault.startsWith("preview-") || ["wrong-dom-classification", "extra-dom-change", "secret-dom", "csrf-mismatch"].includes(fault)) assert.ok(!f.events.includes(confirmName), fault);
-    const calls = f.events.length; await f.late(); assert.equal(f.events.length, calls);
+    assert.equal(observations.filter(([kind]) => kind === "fault").length, 1, fault);
+    const saved = structuredClone(observations);
+    f.lateResponse();
+    const calls = f.events.length; await f.late(); assert.deepEqual(observations, saved, fault); assert.equal(f.events.length, calls);
     assert.ok(f.denied.includes(confirmPath));
     await assert.rejects(proveTrustedBookingDom(f.input)); assert.equal(f.events.length, calls);
   }
@@ -246,4 +263,162 @@ test("#941 dormant helper has no production/default workflow caller or launch/cl
   }
   const source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8");
   assert.doesNotMatch(source, /route\.fulfill|\.reload\(|\.addCookies\(|browser\.newContext|\.launch\(|\.close\(|child_process|wrangler|systemd/);
+});
+
+// #984 oracle: Issue-entered checkpoints and fixed control positions, not driver output.
+const domStages = ["cookie-jar", "route", "navigation", "assets", "initial-ui", "selection", "preview", "review",
+  "confirm", "confirm-ui", "history", "handoff", "complete"];
+const capture = f => {
+  const observations = [];
+  f.input.observe = (kind, value) => { observations.push([kind, value]); };
+  return observations;
+};
+test("#984 complete entered stages and four distinct Confirm observations, with no secret payload", async () => {
+  const f = fixture(), observations = capture(f);
+  assert.equal(await proveTrustedBookingDom(f.input), f.id);
+  assert.deepEqual(observations.filter(([kind]) => kind === "dom").map(([, value]) => value), domStages);
+  assert.deepEqual(observations.filter(([kind]) => kind === "write").map(([, value]) => value),
+    ["action-start", "request-seen", "route-allowed", "response-201"]);
+  assert.deepEqual(observations.filter(([kind]) => kind === "fault"), []);
+  assert.ok(observations.indexOf(observations.find(v => v[1] === "confirm")) < observations.indexOf(observations.find(v => v[1] === "action-start")));
+  assert.doesNotMatch(JSON.stringify(observations), /private-canary|fixture-created|seed-|https:|v1\./);
+  const saved = structuredClone(observations); f.lateResponse(); await f.late();
+  assert.deepEqual(observations, saved);
+});
+test("#984 finite checkpoint/fault/write negatives retain only directly observed facts", async () => {
+  for (const [fault, stage, first, write] of [
+    ["cookie-jar", "cookie-jar", "driver", "unobserved"],
+    ["route", "route", "driver", "unobserved"], ["page", "route", "driver", "unobserved"],
+    ["goto", "navigation", "driver", "unobserved"], ["heading", "navigation", "driver", "unobserved"],
+    ["null-navigation", "navigation", "assertion", "unobserved"], ["missing-asset", "assets", "assertion", "unobserved"],
+    ["month", "initial-ui", "driver", "unobserved"], ["initial-history", "initial-ui", "assertion", "unobserved"],
+    ["abort-selection", "selection", "abort", "unobserved"], ["timeout-preview", "preview", "timeout", "unobserved"],
+    ["wrong-dom-classification", "review", "assertion", "unobserved"],
+    ["navigation", "preview", "navigation", "unobserved"], ["preview-403", "preview", "response", "unobserved"],
+    ["preview-token", "preview", "unknown", "unobserved"],
+    ["click-confirm", "confirm", "driver", "action-start"], ["wrong-confirm-token", "confirm", "request", "request-seen"],
+    ["abort-confirm-headers", "confirm", "abort", "request-seen"],
+    ["forward-confirm", "confirm", "request", "route-allowed"], ["network-unknown", "confirm", "network", "route-allowed"],
+    ["response-identity", "confirm", "response", "route-allowed"], ["confirm-409", "confirm", "response", "route-allowed"],
+    ["json-unknown", "confirm", "driver", "response-201"], ["id-other", "confirm", "assertion", "response-201"],
+    ["false-success", "confirm-ui", "assertion", "response-201"], ["stale-history", "history", "assertion", "response-201"],
+    ["duplicate-confirm", "confirm", "request", "response-201"], ["abort-confirm", "confirm", "abort", "response-201"],
+  ]) {
+    const f = fixture(fault), observations = capture(f);
+    await assert.rejects(proveTrustedBookingDom(f.input));
+    assert.equal(observations.filter(v => v[0] === "dom").at(-1)?.[1], stage, fault);
+    assert.deepEqual(observations.filter(v => v[0] === "fault"), [["fault", first]], fault);
+    assert.equal(observations.filter(v => v[0] === "write").at(-1)?.[1] ?? "unobserved", write, fault);
+    const saved = structuredClone(observations); f.lateResponse(); if (stage !== "cookie-jar" && fault !== "route") await f.late();
+    assert.deepEqual(observations, saved, fault);
+    assert.ok(f.events.filter(v => v === confirmName).length <= 1, fault);
+    assert.ok(f.forwarded.filter(v => v === `POST ${confirmPath}`).length <= 1, fault);
+  }
+});
+test("#984 observer throw/non-sync return fails closed before the next action and after the first fault", async () => {
+  for (const point of ["cookie-jar", "route", "selection", "confirm", "action-start", "request-seen", "route-allowed", "response-201", "handoff", "complete", "fault"]) {
+    for (const asyncReturn of [false, true]) {
+      const f = fixture(point === "fault" ? "wrong-confirm-token" : ""), observations = [];
+      f.input.observe = (kind, value) => {
+        observations.push([kind, value]);
+        if (value === point || kind === point) {
+          if (asyncReturn) return Promise.resolve();
+          throw new Error(canary);
+        }
+      };
+      await assert.rejects(proveTrustedBookingDom(f.input));
+      const saved = structuredClone(observations); f.lateResponse(); if (point !== "cookie-jar" && point !== "route") await f.late();
+      assert.deepEqual(observations, saved);
+      if (point === "action-start") assert.equal(f.events.includes(confirmName), false);
+      if (["action-start", "request-seen", "route-allowed"].includes(point)) assert.ok(!f.forwarded.includes(`POST ${confirmPath}`), point);
+      assert.ok(f.events.filter(v => v === confirmName).length <= 1);
+      if (point === "fault") assert.deepEqual(observations.at(-1), ["fault", "request"]);
+      delete f.input.observe;
+      const calls = f.events.length;
+      await assert.rejects(proveTrustedBookingDom(f.input));
+      assert.equal(f.events.length, calls);
+    }
+  }
+});
+test("#984 abort/timeout freezes notifications despite a pending driver and subsequent completion", async () => {
+  for (const kind of ["abort", "timeout"]) {
+    const f = fixture(), observations = capture(f);
+    let release;
+    f.input.context.cookies = () => new Promise(resolve => { release = resolve; });
+    const running = proveTrustedBookingDom(f.input);
+    await Promise.resolve(); await Promise.resolve();
+    if (kind === "abort") f.controller.abort(canary);
+    await assert.rejects(running);
+    assert.deepEqual(observations, [["dom", "cookie-jar"], ["fault", kind]]);
+    release([]); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(observations, [["dom", "cookie-jar"], ["fault", kind]]);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test("#984 real DOM helper → real process → strict nine-field codec, success and first failure through stop", async () => {
+  for (const [fault, stage, first, write] of [
+    ["", "complete", "none", "response-201"], ["missing-asset", "assets", "assertion", "unobserved"],
+    ["wrong-dom-classification", "review", "assertion", "unobserved"],
+    ["click-confirm", "confirm", "driver", "action-start"], ["wrong-confirm-token", "confirm", "request", "request-seen"],
+    ["network-unknown", "confirm", "network", "route-allowed"], ["confirm-409", "confirm", "response", "route-allowed"],
+    ["stale-history", "history", "assertion", "response-201"], ["abort-confirm-headers", "confirm", "abort", "request-seen"],
+  ]) {
+    const f = fixture(fault), snapshots = [], lifecycle = [];
+    f.input.browser.newContext = async () => f.input.context;
+    f.input.context.addCookies = async () => {};
+    const signal = f.controller.signal;
+    const ports = {
+      observe(data) { snapshots.push(parseBookingDiagnostic(encodeBookingDiagnostic(data))); },
+      async prepareTrustedBooking(consume, entered) { entered(); await consume(f.input.seed, {}); },
+      createBrowserHome: () => ({ home: "fixture-home", identity: {} }), checkBrowserHome() {},
+      async withIsolatedBrowserTls(consume, options) {
+        try { await consume({ browser: f.input.browser, certificate: {}, signal }); }
+        finally { lifecycle.push("browser-close"); await options.stopConsumer(); await options.inspectOwned("fixture-home"); }
+      },
+      createBookingWorkerPort: () => ({ start: async () => bookingOrigin, isReady: () => true,
+        async stop() { lifecycle.push("worker-stop"); f.lateResponse(); await f.late(); return { stopped: true, portClosed: true }; } }),
+      proveTrustedBookingDom,
+      async inspectTrustedBooking(_handle, id) { assert.equal(id, f.id); lifecycle.push("readback"); },
+      scanOwnedSecrets() { lifecycle.push("scan"); },
+    };
+    const running = useTrustedBookingProcess(ports, signal);
+    if (fault) await assert.rejects(running); else await running;
+    assert.deepEqual([snapshots.at(-1).dom, snapshots.at(-1).fault, snapshots.at(-1).write], [stage, first, write], fault);
+    assert.ok(snapshots.filter(s => s.phase === "stop").every(s => s.dom === stage && s.fault === first && s.write === write), fault);
+    assert.equal(lifecycle.filter(v => v === "worker-stop").length, 1);
+    assert.equal(lifecycle.includes("readback"), !fault);
+    if (fault) assert.ok(snapshots.filter(s => s.primary !== "none").every(s => s.primary === "dom"));
+    else assert.deepEqual(snapshots.filter(s => s.phase === "dom" && s.boundary === "entered").map(s => s.dom),
+      ["none", "context", "cookie-check", "cookie-inject", ...domStages.slice(0, 9), "confirm", "confirm", "confirm", "confirm", ...domStages.slice(9)]);
+    assert.doesNotMatch(JSON.stringify(snapshots), /private-canary|fixture-created|seed-|https:|v1\./);
+  }
+});
+
+test("#984 ambiguous pre-driver exceptions stay unknown even with a TimeoutError name", async () => {
+  for (const name of ["Error", "TimeoutError"]) {
+    const f = fixture(), observations = capture(f);
+    f.input.seed.sessions.self.cookie = () => { const error = new Error(canary); error.name = name; throw error; };
+    await assert.rejects(proveTrustedBookingDom(f.input));
+    assert.deepEqual(observations, [["dom", "cookie-jar"], ["fault", "unknown"]]);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test("#984 Confirm forwarded with pending HTTP response freezes at route-allowed on abort/timeout", async () => {
+  for (const kind of ["abort", "timeout"]) {
+    const f = fixture("pending-confirm"), observations = capture(f);
+    const running = proveTrustedBookingDom(f.input);
+    await f.responsePending;
+    assert.equal(observations.filter(v => v[0] === "write").at(-1)[1], "route-allowed");
+    if (kind === "abort") f.controller.abort(canary);
+    await assert.rejects(running);
+    assert.deepEqual(observations.filter(v => v[0] === "fault"), [["fault", kind]]);
+    const saved = structuredClone(observations);
+    f.resumeResponse(); await new Promise(resolve => setImmediate(resolve)); await f.late();
+    assert.deepEqual(observations, saved);
+    assert.equal(f.events.filter(v => v === confirmName).length, 1);
+    assert.equal(f.forwarded.filter(v => v === `POST ${confirmPath}`).length, 1);
+    assert.equal(f.denied.includes(confirmPath), true);
+  }
 });
