@@ -61,7 +61,7 @@ function innerPorts(events, fault, signal, observe) {
   };
 }
 
-function fixture(fault = "", { preflightTime = 0, terminalState = {}, observe, diagnosticRead } = {}) {
+function fixture(fault = "", { preflightTime = 0, terminalState = {}, cleanupState = {}, observe, diagnosticRead } = {}) {
   let time = 0, observations = 0, stopped = false, text;
   const controller = new AbortController(), events = [];
   const unit = new BrowserUnit({ env: { PATH: "/usr/bin", HOME: "fixture", TMPDIR: "fixture" }, cwd: "fixture",
@@ -91,6 +91,7 @@ function fixture(fault = "", { preflightTime = 0, terminalState = {}, observe, d
         LoadState: "loaded", ActiveState: "active", SubState: "exited", Result: "success", ExecMainCode: "1",
         ExecMainStatus: events.includes("child-exit1") ? "1" : "0", InvocationID: "b".repeat(32), ControlGroup: "/system.slice/" + unit.name };
       if (!stopped && observations >= 2) Object.assign(state, terminalState);
+      if (stopped) Object.assign(state, cleanupState);
       if (!stopped && observations === 3) {
         if (fault === "invocation") state.InvocationID = "c".repeat(32);
         if (fault === "timeout") time = 170000;
@@ -176,6 +177,22 @@ test("#955 real BrowserUnit terminal categories remain first-latched through out
     for (const event of ["report", "ports/generated/identities", "delete"]) assert.ok(!f.events.includes(event));
     const calls = f.events.length; await f.unit.dispose(); assert.equal(f.events.length, calls);
   }
+});
+
+test("#963 timeout then same-invocation failed stop state retains the existing unknown read gate and CLI", async () => {
+  const f = fixture('', { terminalState: { Result: 'timeout' }, cleanupState: {
+    LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', InvocationID: 'b'.repeat(32),
+  }, diagnosticRead: () => assert.fail('failed-state must not permit a diagnostic read') });
+  assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
+    { stdout: [], stderr: [diagnostic('terminal', 'timeout', '; unit_stop=unknown; diagnostic=unknown')], status: 1 });
+  assert.equal(f.unit.failure, 'TIMEOUT'); assert.equal(f.unit.stopObservation, 'failed-state');
+  assert.deepEqual(f.events.slice(-2), ['stop', 'show']);
+  assert.equal(f.events.filter(e => e === 'stop').length, 1);
+  assert.equal(f.events.filter(e => e === 'show').length, 3);
+  for (const event of ['diagnostic-read', 'report', 'ports/generated/identities', 'delete']) assert.ok(!f.events.includes(event));
+  const calls = f.events.length;
+  await f.unit.dispose(true); // Existing stopped early return keeps the first observation.
+  assert.equal(f.events.length, calls); assert.equal(f.unit.stopObservation, 'failed-state');
 });
 
 test("#955 terminal classification uses failure alone before latch/dispose, invalid values and throwing getter stay unknown", async () => {

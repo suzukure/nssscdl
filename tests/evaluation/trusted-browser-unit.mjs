@@ -1,4 +1,4 @@
-// #914 only: bounded, non-interactive system manager adapter. No secrets or raw errors.
+// Shared #914 / booking evaluation: bounded, non-interactive manager adapter. No secrets or raw errors.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
@@ -73,29 +73,36 @@ export class BrowserUnit {
     this.name = `nssscdl-browser-${randomBytes(16).toString("hex")}.service`;
     this.failure = undefined;
     this.started = false; this.stopped = false;
+    this.stopObservation = "unknown"; // Prepared observation only; never a control/read gate.
     this.cancel = () => { this.latch("CANCEL"); };
     signal?.addEventListener("abort", this.cancel, { once: true });
   }
   latch(reason) { this.failure ??= reason; }
-  remaining(cleanup = false) {
+  remaining(cleanup = false, stopPhase) {
     if (this.signal?.aborted) this.latch("CANCEL");
     const left = this.deadline - this.now() - (cleanup ? 0 : 10000);
-    if (left <= 0) this.latch("TIMEOUT");
+    if (left <= 0) {
+      if (cleanup && stopPhase) this.stopObservation = `${stopPhase}-budget`;
+      this.latch("TIMEOUT");
+    }
     if (left <= 0 || (!cleanup && this.failure)) throw fail(this.failure);
     return left;
   }
-  async call(args, cleanup = false) {
+  async call(args, cleanup = false, stopPhase) {
     try {
-      const timeout = Math.min(5000, this.remaining(cleanup));
+      const timeout = Math.min(5000, this.remaining(cleanup, stopPhase));
+      if (cleanup && stopPhase) this.stopObservation = stopPhase === "stop" ? "stop-unconfirmed" : "show-unavailable";
       return await this.command("sudo", ["-n", ...args], { cwd: this.cwd,
         env: { PATH: this.env.PATH }, timeout, maxBuffer: 16384,
         ...(!cleanup ? { signal: this.signal } : {}) });
     } catch { this.latch(this.signal?.aborted ? "CANCEL" : this.now() >= this.deadline - 10000 ? "TIMEOUT" : "UNKNOWN"); throw fail(this.failure); }
   }
-  async show(cleanup = false) {
+  async show(cleanup = false, observeStop = false) {
     const keys = cleanup ? ["LoadState", "ActiveState", "SubState", "InvocationID"] :
       [...Object.keys(settings), ...stateKeys, "User", "Group", "RuntimeMaxUSec", "TimeoutStopUSec"];
-    const output = await this.call(["systemctl", "show", this.name, ...keys.map((key) => `--property=${key}`)], cleanup);
+    const output = await this.call(["systemctl", "show", this.name, ...keys.map((key) => `--property=${key}`)], cleanup,
+      cleanup && observeStop ? "show" : undefined);
+    if (cleanup && observeStop) this.stopObservation = "show-invalid";
     const state = {};
     try {
       for (const line of output.trimEnd().split("\n")) {
@@ -153,14 +160,17 @@ export class BrowserUnit {
     if (!this.started || this.stopped) return;
     if (!release || !this.accepted || this.failure) this.latch("STOP");
     this.stopped = true;
-    await this.call(["systemctl", "stop", this.name], true);
-    const state = await this.show(true);
+    await this.call(["systemctl", "stop", this.name], true, "stop");
+    const state = await this.show(true, true);
     // Collection after a confirmed stop is disposal evidence only, never proof
     // of normal completion. Failure/unknown remains latched.
     if (!((state.LoadState === "not-found" && state.ActiveState === "inactive") ||
       (state.InvocationID === this.invocation && state.ActiveState === "inactive" && state.SubState === "dead"))) {
+      this.stopObservation = state.InvocationID !== this.invocation ? "identity-mismatch" :
+        state.LoadState === "loaded" && state.ActiveState === "failed" && state.SubState === "failed" ? "failed-state" : "state-unaccepted";
       this.latch("UNKNOWN"); throw fail(this.failure);
     }
+    this.stopObservation = "accepted";
     if (release && this.failure) throw fail(this.failure);
   }
   close() { this.signal?.removeEventListener("abort", this.cancel); }
