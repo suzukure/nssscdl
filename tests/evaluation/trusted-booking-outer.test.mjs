@@ -22,7 +22,7 @@ const diagnostic = (stage, reason = "unknown", detail = "; unit_stop=confirmed; 
 const legacyTerminal = "TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; retain owned files; do not retry";
 const terminalFaultReason = fault => ({ invocation: "mismatch", live: "timeout", timeout: "timeout", abort: "cancel" }[fault] ?? "manager");
 const observedFixed = message => {
-  for (const reason of reasons) for (const observation of ["accepted", "unknown"]) {
+  for (const reason of reasons) for (const observation of ["accepted", "unknown", "manager-empty"]) {
     const prefix = `TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=${reason}; unit_stop=confirmed; diagnostic=observed; stop_observation=${observation}; `;
     const suffix = "; retain owned files; do not retry";
     if (message.startsWith(prefix) && message.endsWith(suffix)) {
@@ -32,8 +32,8 @@ const observedFixed = message => {
   return false;
 };
 const fixed = e => (observedFixed(e.message) || [...stages, "unknown"].some(stage => stage !== "terminal" && e.message === diagnostic(stage)) ||
-  reasons.some(reason => ["confirmed", "unknown"].some(stop => stopObservations.some(observation =>
-    (stop === "confirmed" ? ["accepted", "unknown"].includes(observation) : observation !== "accepted") &&
+  reasons.some(reason => ["confirmed", "unknown"].some(stop => [...stopObservations, "manager-empty"].some(observation =>
+    (stop === "confirmed" ? ["accepted", "unknown", "manager-empty"].includes(observation) : !["accepted", "manager-empty"].includes(observation)) &&
     e.message === diagnostic("terminal", reason, `; unit_stop=${stop}; diagnostic=unknown; stop_observation=${observation}`))))) &&
   !e.stack.includes(canary) && !("cause" in e);
 
@@ -184,16 +184,16 @@ test("#955 real BrowserUnit terminal categories remain first-latched through out
   }
 });
 
-test("#963 timeout then same-invocation failed stop state retains the existing unknown read gate and CLI", async () => {
+test("#963 timeout then same-invocation failed stop state with incomplete diagnostic properties keeps the read gate closed", async () => {
   const f = fixture('', { terminalState: { Result: 'timeout' }, cleanupState: {
     LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', InvocationID: 'b'.repeat(32),
   }, diagnosticRead: () => assert.fail('failed-state must not permit a diagnostic read') });
   assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
     { stdout: [], stderr: [diagnostic('terminal', 'timeout', '; unit_stop=unknown; diagnostic=unknown; stop_observation=failed-state')], status: 1 });
   assert.equal(f.unit.failure, 'TIMEOUT'); assert.equal(f.unit.stopObservation, 'failed-state');
-  assert.deepEqual(f.events.slice(-2), ['stop', 'show']);
+  assert.deepEqual(f.events.slice(-3), ['stop', 'show', 'show']);
   assert.equal(f.events.filter(e => e === 'stop').length, 1);
-  assert.equal(f.events.filter(e => e === 'show').length, 3);
+  assert.equal(f.events.filter(e => e === 'show').length, 4);
   for (const event of ['diagnostic-read', 'report', 'ports/generated/identities', 'delete']) assert.ok(!f.events.includes(event));
   const calls = f.events.length;
   await f.unit.dispose(true); // Existing stopped early return keeps the first observation.
@@ -580,14 +580,14 @@ const proofStep = `
               }
               for (const reason of ['timeout', 'manager', 'mismatch', 'cancel', 'unknown']) {
                 for (const stop of ['confirmed', 'unknown']) {
-                  const observations = stop === 'confirmed' ? ['accepted', 'unknown'] :
+                  const observations = stop === 'confirmed' ? ['accepted', 'unknown', 'manager-empty'] :
                     ['unknown', 'stop-budget', 'stop-unconfirmed', 'show-budget', 'show-unavailable', 'show-invalid', 'identity-mismatch', 'failed-state', 'state-unaccepted', 'ineligible'];
                   for (const observation of observations) {
                     const detail = '; unit_stop=' + stop + '; diagnostic=unknown; stop_observation=' + observation;
                     if (result.stderr === 'TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=' + reason + detail + '; retain owned files; do not retry\\n') stage = 'terminal; reason=' + reason + detail;
                   }
                 }
-                for (const observation of ['accepted', 'unknown']) {
+                for (const observation of ['accepted', 'unknown', 'manager-empty']) {
                   if (typeof result.stderr === 'string') {
                     const prefix = 'TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=' + reason + '; unit_stop=confirmed; diagnostic=observed; stop_observation=' + observation + '; ';
                     const suffix = '; retain owned files; do not retry\\n';
@@ -979,7 +979,7 @@ test("#959 loaded same-Invocation inactive/dead is stop evidence; final snapshot
 test("#965 real stop observations survive outer, CLI re-sanitize and fixed wrapper without opening read gates", async () => {
   const invocation = "b".repeat(32);
   const cases = [
-    ["failed-state", { LoadState: "loaded", ActiveState: "failed", SubState: "failed", InvocationID: invocation }, 1, 1, false],
+    ["failed-state", { LoadState: "loaded", ActiveState: "failed", SubState: "failed", InvocationID: invocation }, 1, 2, false],
     ["identity-mismatch", { LoadState: "loaded", ActiveState: "inactive", SubState: "dead", InvocationID: "c".repeat(32) }, 1, 1, false],
     ["state-unaccepted", { LoadState: "loaded", ActiveState: "active", SubState: "running", InvocationID: invocation }, 1, 1, false],
     ["accepted", {}, 1, 1, true],
@@ -1110,12 +1110,12 @@ test("#965 ineligible/eligibility exceptions never read observations; successful
 
 test("#965 sanitize and wrapper accept only consistent fixed combinations and exact bytes", async () => {
   const texts = [], rejected = [];
-  for (const reason of reasons) for (const stop of ["confirmed", "unknown"]) for (const observation of stopObservations) {
+  for (const reason of reasons) for (const stop of ["confirmed", "unknown"]) for (const observation of [...stopObservations, "manager-empty"]) {
     for (const snapshot of [false, true]) {
       const detail = `; unit_stop=${stop}; diagnostic=${snapshot ? "observed" : "unknown"}; stop_observation=${observation}` +
         (snapshot ? "; phase=dom; boundary=entered; primary=dom; worker_stop=attempted" : "");
       const text = diagnostic("terminal", reason, detail);
-      const allowed = stop === "confirmed" ? ["accepted", "unknown"].includes(observation) : observation !== "accepted" && !snapshot;
+      const allowed = stop === "confirmed" ? ["accepted", "unknown", "manager-empty"].includes(observation) : !["accepted", "manager-empty"].includes(observation) && !snapshot;
       (allowed ? texts : rejected).push(text);
     }
   }
@@ -1135,4 +1135,160 @@ test("#965 sanitize and wrapper accept only consistent fixed combinations and ex
     assert.deepEqual(proofFixture({ status: 1, stdout: "", stderr: text + "\n" }),
       { stdout: [], stderr: ["BOOKING_PROOF_FAILED; stage=unknown"], status: 1 });
   }
+});
+
+// #973 uses the existing real BrowserUnit command/clock seam, never a manager process.
+function managerDiagnosticFixture({ group = "path", mutate = () => {}, api = "a(sus) 0\n", fault = "", cleanupState = {} } = {}) {
+  const f = fixture("", { terminalState: { Result: "timeout" }, cleanupState: {
+    LoadState: "loaded", ActiveState: "failed", SubState: "failed", InvocationID: "b".repeat(32), ...cleanupState,
+  }, diagnosticRead: () => diagnosticData() });
+  const command = f.unit.command;
+  let initial, samples = 0, apis = 0;
+  f.unit.command = async (file, args, options) => {
+    assert.equal(file, "sudo"); assert.equal(args[0], "-n");
+    assert.ok(options.timeout > 0 && options.timeout <= 5000);
+    assert.equal(options.maxBuffer, 16384);
+    if (args[1] === "busctl") {
+      f.events.push("manager-api"); apis++;
+      assert.deepEqual(args, ["-n", "busctl", "--system", "--no-pager", "--timeout=5s", "call",
+        "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+        "GetUnitProcesses", "s", f.unit.name]);
+      assert.equal(options.signal, f.controller.signal);
+      if (fault === "api-throw" || fault === "overflow") throw new Error(canary);
+      if (fault === "api-cancel") f.controller.abort(canary);
+      if (fault === "api-expire") f.time(180000);
+      return api;
+    }
+    if (args.includes("--property=MainPID")) {
+      f.events.push("diagnostic-show"); samples++;
+      assert.equal(options.signal, f.controller.signal);
+      const state = { ...initial, LoadState: "loaded", ActiveState: "failed", SubState: "failed",
+        MainPID: "0", ControlPID: "0", ControlGroup: group === "empty" ? "" : `/system.slice/${f.unit.name}` };
+      mutate(state, samples, f);
+      if (fault === `show-${samples}-throw`) throw new Error(canary);
+      if (fault === `show-${samples}-cancel`) f.controller.abort(canary);
+      if (fault === `show-${samples}-expire`) f.time(180000);
+      const keys = args.filter(arg => arg.startsWith("--property=")).map(arg => arg.slice(11));
+      const text = keys.filter(key => Object.hasOwn(state, key)).map(key => `${key}=${state[key]}`).join("\n") + "\n";
+      return fault === "duplicate" ? text + "MainPID=0\n" : fault === "malformed" ? canary : text;
+    }
+    if (args[2] === "stop" && fault === "stop-throw") { f.events.push("stop"); throw new Error(canary); }
+    const text = await command(file, args, options);
+    if (args[2] === "show" && !f.unit.stopped && !initial) initial = Object.fromEntries(text.split("\n").map(line => line.split("=")));
+    if (args[2] === "show" && f.unit.stopped && !args.includes("--property=MainPID")) {
+      if (fault === "cleanup-throw") throw new Error(canary);
+      if (fault === "cleanup-invalid") return text + "\nInvocationID=bad";
+      if (fault === "budget") f.time(180000);
+      if (fault === "cancel") f.controller.abort(canary);
+    }
+    return text;
+  };
+  return { ...f, counts: () => ({ samples, apis }) };
+}
+
+test("#973 trusted manager empty permits one diagnostic read for stable failed state, retaining failure and files", async () => {
+  for (const group of ["path", "empty"]) {
+    const f = managerDiagnosticFixture({ group });
+    const detail = "; unit_stop=confirmed; diagnostic=observed; stop_observation=manager-empty; phase=entry; boundary=entered; primary=none; worker_stop=not-attempted";
+    const text = diagnostic("terminal", "timeout", detail);
+    assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)), { stdout: [], stderr: [text], status: 1 });
+    assert.equal(proofFixture({ status: 1, stdout: "", stderr: text + "\n" }).stderr[0], "BOOKING_PROOF_FAILED; stage=terminal; reason=timeout" + detail);
+    assert.equal(f.unit.failure, "TIMEOUT"); assert.equal(f.unit.stopObservation, "failed-state");
+    assert.deepEqual(f.counts(), { samples: 2, apis: 1 });
+    assert.deepEqual(f.events.slice(-6), ["stop", "show", "diagnostic-show", "manager-api", "diagnostic-show", "diagnostic-read"]);
+    assert.equal(f.events.filter(e => e === "stop").length, 1);
+    assert.equal(f.events.filter(e => e === "diagnostic-read").length, 1);
+    for (const event of ["report", "delete", "ports/generated/identities"]) assert.ok(!f.events.includes(event));
+    const calls = f.events.length;
+    assert.equal(await f.unit.confirmDiagnosticStop(), false);
+    await f.unit.dispose(true); assert.equal(f.events.length, calls);
+  }
+});
+
+test("#973 diagnostic confirmation rejects changed/missing settings, identity, state, PID, runtime and cgroup before or after API", async () => {
+  const invalid = { Type: "simple", ExitType: "main", RemainAfterExit: "no", Restart: "always", NRestarts: "1",
+    OOMPolicy: "continue", Delegate: "yes", NoNewPrivileges: "no", ProtectControlGroups: "no", KillMode: "process",
+    StandardOutput: "journal", StandardError: "journal", User: "8", Group: "8", LoadState: "not-found",
+    ActiveState: "inactive", SubState: "dead", InvocationID: "c".repeat(32), MainPID: "1", ControlPID: "1",
+    RuntimeMaxUSec: "121s", TimeoutStopUSec: "3s", ControlGroup: "/other" };
+  for (const sample of [1, 2]) for (const [key, value] of Object.entries(invalid)) for (const missing of [false, true]) {
+    const f = managerDiagnosticFixture({ mutate(state, n) { if (n === sample) { if (missing) delete state[key]; else state[key] = value; } } });
+    await assert.rejects(useBookingOuter(f.unit, f.ports), e => e.message === diagnostic("terminal", "timeout", "; unit_stop=unknown; diagnostic=unknown; stop_observation=failed-state"), `${sample}/${key}/${missing}`);
+    assert.deepEqual(f.counts(), { samples: sample, apis: sample - 1 });
+    assert.equal(f.unit.failure, "TIMEOUT");
+    assert.equal(f.events.filter(e => e === "stop").length, 1);
+    for (const event of ["diagnostic-read", "report", "delete"]) assert.ok(!f.events.includes(event));
+  }
+  for (const group of ["path", "empty"]) {
+    const f = managerDiagnosticFixture({ group, mutate(state, n) { if (n === 2) state.ControlGroup = group === "path" ? "" : `/system.slice/${f.unit.name}`; } });
+    await assert.rejects(useBookingOuter(f.unit, f.ports), fixed);
+    assert.ok(!f.events.includes("diagnostic-read"));
+  }
+});
+
+test("#973 unknown API, stop/show failure, cancellation and exhausted budgets never read or retry", async () => {
+  const cases = [
+    ...["", "a(sus) 0", "a(sus) 0\n\n", "a(sus) 1 1 7 process\n", canary, "x".repeat(16385), null, {}].map(api => ({ api })),
+    ...["stop-throw", "cleanup-throw", "cleanup-invalid", "duplicate", "malformed", "budget", "cancel", "api-throw", "overflow",
+      "api-cancel", "api-expire", "show-1-throw", "show-2-throw", "show-1-cancel", "show-2-cancel", "show-1-expire", "show-2-expire"].map(fault => ({ fault })),
+    ...[{ LoadState: "not-found" }, { ActiveState: "active" }, { SubState: "running" }, { InvocationID: "c".repeat(32) }].map(cleanupState => ({ cleanupState })),
+  ];
+  for (const options of cases) {
+    const f = managerDiagnosticFixture(options);
+    await assert.rejects(useBookingOuter(f.unit, f.ports), fixed);
+    assert.equal(f.unit.failure, "TIMEOUT");
+    assert.ok(f.counts().apis <= 1);
+    assert.equal(f.events.filter(e => e === "stop").length, 1);
+    for (const event of ["diagnostic-read", "report", "delete"]) assert.ok(!f.events.includes(event));
+    const calls = f.events.length;
+    assert.equal(await f.unit.confirmDiagnosticStop(), false);
+    await f.unit.dispose(); assert.equal(f.events.length, calls);
+  }
+});
+
+test("#973 private stop facts resist public observation forgery and local identity drift; codec failure grants no success", async () => {
+  for (const observation of ["accepted", "unknown", "manager-empty", "accessor"]) {
+    const f = managerDiagnosticFixture();
+    const dispose = f.unit.dispose.bind(f.unit);
+    let getters = 0;
+    f.unit.dispose = async release => {
+      try { await dispose(release); } finally {
+        if (observation === "accessor") Object.defineProperty(f.unit, "stopObservation", { get() { getters++; throw new Error(canary); } });
+        else f.unit.stopObservation = observation;
+      }
+    };
+    f.ports.diagnostic = () => { f.events.push("diagnostic-read"); throw new Error(canary); };
+    const detail = "; unit_stop=confirmed; diagnostic=unknown; stop_observation=manager-empty";
+    assert.deepEqual(await outerCliFixture(() => useBookingOuter(f.unit, f.ports)),
+      { stdout: [], stderr: [diagnostic("terminal", "timeout", detail)], status: 1 });
+    assert.equal(getters, 0); assert.deepEqual(f.counts(), { samples: 2, apis: 1 });
+    assert.equal(f.events.filter(e => e === "diagnostic-read").length, 1);
+    assert.equal(f.unit.failure, "TIMEOUT");
+    assert.ok(!f.events.includes("report") && !f.events.includes("delete"));
+  }
+  for (const phase of ["stop", "cleanup", "before-query", "after-api"]) for (const key of ["invocation", "name", "runtime", "uid", "gid"]) {
+    const f = managerDiagnosticFixture();
+    const command = f.unit.command, confirm = f.unit.confirmDiagnosticStop.bind(f.unit);
+    const drift = () => { f.unit[key] = typeof f.unit[key] === "string" ? "c".repeat(32) : 8; };
+    f.unit.command = async (file, args, options) => {
+      const text = await command(file, args, options);
+      if ((phase === "stop" && args[2] === "stop") ||
+        (phase === "cleanup" && args[2] === "show" && f.unit.stopped && !args.includes("--property=MainPID")) ||
+        (phase === "after-api" && args[1] === "busctl")) drift();
+      return text;
+    };
+    f.unit.confirmDiagnosticStop = async () => { if (phase === "before-query") drift(); return confirm(); };
+    await assert.rejects(useBookingOuter(f.unit, f.ports), fixed, `${phase}/${key}`);
+    assert.deepEqual(f.counts(), phase === "after-api" ? { samples: 1, apis: 1 } : { samples: 0, apis: 0 });
+    assert.equal(f.unit.failure, "TIMEOUT");
+    assert.ok(!f.events.includes("diagnostic-read"));
+    assert.equal(f.events.filter(e => e === "stop").length, 1);
+  }
+  const release = managerDiagnosticFixture();
+  await release.unit.start(process.execPath, ["tests/evaluation/trusted-booking-child.mjs"]);
+  await assert.rejects(release.unit.terminal());
+  await assert.rejects(release.unit.dispose(true));
+  assert.equal(await release.unit.confirmDiagnosticStop(), false);
+  assert.deepEqual(release.counts(), { samples: 0, apis: 0 });
+  release.unit.close();
 });
