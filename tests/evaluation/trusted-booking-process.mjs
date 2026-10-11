@@ -16,15 +16,43 @@ export async function useTrustedBookingProcess(ports, signal) {
   let seed, handle, reservationId, home, identity, browserSignal;
   let observing = false, observerClosed = false, primary = "none", workerStop = "not-attempted";
   let workerFailure = "none", workerStopDetail = "not-attempted", stopDetailFinished = false;
-  // #983 V2 preparation only: no DOM event collection or Confirm-state inference.
+  let dom = "none", fault = "none", write = "unobserved", domClosed = false;
+  const stages = ["context", "cookie-check", "cookie-inject", "cookie-jar", "route", "navigation", "assets",
+    "initial-ui", "selection", "preview", "review", "confirm", "confirm-ui", "history", "handoff", "complete"];
+  const writes = ["unobserved", "action-start", "request-seen", "route-allowed", "response-201", "unknown"];
+  const faults = ["assertion", "timeout", "abort", "navigation", "request", "response", "network", "driver", "unknown"];
   const observe = boundary => {
     if (!observing || observerClosed) return;
     try {
       if (ports.observe?.({ phase, boundary, primary, worker_stop: workerStop,
         worker_failure: workerFailure, worker_stop_detail: workerStopDetail,
-        dom: "none", fault: "none", write: "unobserved" }) !== undefined) throw failure(phase);
+        dom, fault, write }) !== undefined) throw failure(phase);
     }
-    catch { observerClosed = true; failed = true; throw failure(phase); }
+    catch { observerClosed = true; domClosed = true; failed = true; throw failure(phase); }
+  };
+  // A closed callback is inert, including after failure, stop, or helper return.
+  const domObserve = (kind, value, helper = false) => {
+    if (domClosed || observerClosed || primary !== "none") return;
+    try {
+      check(phase === "dom" && typeof kind === "string" && typeof value === "string");
+      if (signal.aborted || browserSignal?.aborted) { kind = "fault"; value = "abort"; }
+      if (kind === "dom") {
+        check(stages.includes(value) && (!helper || stages.indexOf(value) >= 3));
+        check(stages.indexOf(value) >= stages.indexOf(dom));
+        dom = value;
+      } else if (kind === "fault") {
+        check(faults.includes(value)); fault = value; domClosed = true; failed = true;
+      } else {
+        check(kind === "write" && writes.includes(value) && value !== "unobserved");
+        if (writes.indexOf(value) <= writes.indexOf(write)) return;
+        write = value;
+      }
+      observe("entered");
+    } catch {
+      domClosed = true; failed = true;
+      if (fault === "none") { fault = "unknown"; observe("entered"); }
+      throw failure(phase);
+    }
   };
   const recordFailure = () => {
     if (primary === "none") { primary = phase; observe("entered"); }
@@ -84,17 +112,38 @@ export async function useTrustedBookingProcess(ports, signal) {
               catch { workerObserve("failure", "unknown"); throw failure(phase); }
             });
             await at("dom", async () => {
-              const context = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
-              alive(); check(!tlsSignal.aborted);
-              const cookie = seed.sessions.self.cookie();
-              check(cookie.name === "__Host-student_session" && cookie.path === "/" && cookie.secure &&
-                cookie.httpOnly && cookie.sameSite === "Lax" && !("domain" in cookie));
-              await context.addCookies([{ name: cookie.name, value: cookie.value, url: origin,
-                secure: true, httpOnly: true, sameSite: "Lax" }]);
-              alive(); check(!tlsSignal.aborted);
-              reservationId = await ports.proveTrustedBookingDom({ browser, context, session: seed.sessions.self, seed, signal: tlsSignal });
-              alive(); check(!tlsSignal.aborted);
-              check(typeof reservationId === "string" && reservationId.length > 0);
+              const driver = async action => {
+                try { return await action(); }
+                catch (error) {
+                  domObserve("fault", signal.aborted || tlsSignal.aborted ? "abort" :
+                    error?.name === "TimeoutError" ? "timeout" : "driver");
+                  throw failure(phase);
+                }
+              };
+              try {
+                domObserve("dom", "context"); alive(); check(!tlsSignal.aborted);
+                const context = await driver(() => browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" }));
+                alive(); check(!tlsSignal.aborted);
+                domObserve("dom", "cookie-check");
+                const cookie = seed.sessions.self.cookie();
+                if (!(cookie.name === "__Host-student_session" && cookie.path === "/" && cookie.secure &&
+                  cookie.httpOnly && cookie.sameSite === "Lax" && !("domain" in cookie))) {
+                  domObserve("fault", "assertion"); check(false);
+                }
+                domObserve("dom", "cookie-inject");
+                await driver(() => context.addCookies([{ name: cookie.name, value: cookie.value, url: origin,
+                  secure: true, httpOnly: true, sameSite: "Lax" }]));
+                alive(); check(!tlsSignal.aborted);
+                reservationId = await ports.proveTrustedBookingDom({ browser, context, session: seed.sessions.self, seed, signal: tlsSignal,
+                  observe: (kind, value) => domObserve(kind, value, true) });
+                alive(); check(!tlsSignal.aborted);
+                if (!(typeof reservationId === "string" && reservationId.length > 0)) {
+                  domObserve("fault", "assertion"); check(false);
+                }
+              } catch {
+                domObserve("fault", signal.aborted || tlsSignal.aborted ? "abort" : "unknown");
+                throw failure(phase);
+              } finally { domClosed = true; }
               domDone = true; // Browser close belongs to the sealed TLS owner, not this callback.
             });
           } catch { recordFailure(); throw failure(phase); }

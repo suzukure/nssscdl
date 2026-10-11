@@ -920,7 +920,7 @@ Worker / Chrome / TLS / systemd / persistent D1を起動しない。synthetic li
 
 ## #941 予約正常1回のDOM操作（dormant/prepared helper / finite fixture）
 
-`evaluation/trusted-booking-dom.mjs` の `proveTrustedBookingDom({browser, context, session, seed, signal})` は明示呼出し専用。
+`evaluation/trusted-booking-dom.mjs` の `proveTrustedBookingDom({browser, context, session, seed, signal, observe})` は明示呼出し専用。
 上位ownerは `Browser.newContext({ignoreHTTPSErrors:false, serviceWorkers:"block"})` で新しい専用contextを作り、
 #937の `seed.sessions.self` の `__Host-student_session` をCookie jarへ注入してから渡す。
 helperはBrowserとの対応・空のPage集合・本人Session capability・Cookie属性を検査する。strict TLS / service worker設定の供給・実証はownerの責務であり、fixtureから設定や実Browser trustの成功を推定しない。
@@ -1057,10 +1057,21 @@ WACはR1相当 / C1 / P1 / B最大2のYellow preparedで、700秒内elapsedの�
 
 
 #983は親#982の第1実装として、既存private codec / 同期producer / 停止後reader / sanitized CLI / 未実行`proofStep`をV2の9固定fieldへ一括同期する。fixed ASCII prefixは`TRUSTED_BOOKING_DIAGNOSTIC_V2;`、順序は`phase; boundary; primary; worker_stop; worker_failure; worker_stop_detail; dom; fault; write`。closed enum / strict bytesの機械正本は`trusted-booking-report.mjs`とし、V1・未知version・旧6 field・欠落 / 追加 / 重複 / 順序違い・任意文字列は拒否する。末尾LFを含む最長の実値組合せは244 bytes、恒常上限256 bytesと257 bytes拒否を維持する。
-`trusted-booking-process.mjs`の既存`ports.observe`は全phase / stopで同じ9 keysを同期発行する。新3項目は常に`dom=none; fault=none; write=unobserved`であり、DOM実イベント未収集を表す準備値に留める。「DOM未起動」「Confirm未送信」や診断能力向上のLive証拠にはしない。既存primary / Worker first failure / stop observationは保持し、DOM一次失敗を後続phase=stopで上書きしない。DOM helper / hookは変更しない。
+`trusted-booking-process.mjs`の既存`ports.observe`は全phase / stopで同じ9 keysを同期発行する。新3項目は#983時点では`dom=none; fault=none; write=unobserved`の準備値だった。現行の実イベント接続は下記#984を正とする。「DOM未起動」「Confirm未送信」や診断能力向上のLive証拠にはしない。既存primary / Worker first failure / stop observationは保持し、DOM一次失敗を後続phase=stopで上書きしない。#983ではDOM helper / hookを変更しなかった。
 既存process / outer finite fixtureで全enumのcodec→private file→停止確認済みouter→CLI→exact wrapper、最長244 bytesの実値組合せ、256 / 257 bytes不正入力、V1と全fieldの欠落 / 追加 / 重複 / 順序・型 / getter / LF・CRLF / canary拒否を照合する。owned private 0600 atomic snapshot / stat / partial / symlink・hardlink・race拒否、停止未確認0read・confirmed最大1read、first failure / one-stop / observer errorと成功report文法を回帰する。wrapperは文字列escapeと単発spawnを維持し、恒常workflowへstepを追加しない。
-WACはR0 / C1 / P1 / B1、Yellow prepared限定。TC-F-003/005・TC-NF-902/914へのprepared partial evidenceのみで、POL→BR→REQ→AC→TC / CON-001/002/009 / OOS-001/002と予約・成功 / cleanup意味は不変。実Chrome / Worker / systemd / D1・DOMイベント・snapshot新鮮さは未実証。第2実装のDOM hook接続は本Issueのmain反映・正式same-HEAD Product CI / PR Traceability / 独立Claude Review成功後に親#982で扱い、追加Chrome / 実Confirm・D1 writeは#930の別事前承認へ残す。V2準備だけで正常予約・Proof追加・Gate A〜D / #608 Doneを主張しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared限定。TC-F-003/005・TC-NF-902/914へのprepared partial evidenceのみで、POL→BR→REQ→AC→TC / CON-001/002/009 / OOS-001/002と予約・成功 / cleanup意味は不変。実Chrome / Worker / systemd / D1・live DOMイベント・snapshot新鮮さは未実証。第2実装のprepared DOM hook接続は下記#984とし、追加Chrome / 実Confirm・D1 writeは#930の別事前承認へ残す。V2準備だけで正常予約・Proof追加・Gate A〜D / #608 Doneを主張しない。
 
+
+### #984 DOM・Confirm観測3軸の同期接続（prepared / finite only）
+
+`trusted-booking-dom.mjs` の任意 `observe(kind, value)` は、秘密データを含まない固定enum pairだけを同期通知する。
+`trusted-booking-process.mjs` は同じ単一seamで許可pairを検証し、既存 `ports.observe` の9field snapshotへ接続する。
+`dom` はlast enteredであり、processのcontext / cookie-check / cookie-injectからhelperのcookie-jar / route / navigation / assets / initial-ui / selection / preview / review / confirm / confirm-ui / history / handoff / completeへ進む。Page作成はroute、初期heading待機はnavigation、月取得と初期Historyはinitial-ui、201 payloadと返却IDの検査はconfirm、History照合後のID返却はhandoffに対応する。開始は成功を表さない。
+`fault` は固定制御位置のfirst observedだけを保持する。route / response / navigation / network、既存abort / Timeout guard、自前assertion、操作位置が確実なdriverだけを分類し、任意例外はunknownとする。helper hookがない場合もcontext / Cookieの観測は残すが、helper例外の内容からdriver / timeoutを推定しない。
+`write` はhighest safely observedを保持する。Confirmクリック直前のaction-startは送信証拠ではなく、route callbackのrequest-seenはforward証拠ではなく、guard通過直後・continue直前のroute-allowedは配送 / Commit証拠ではない。同じrequest identity・Page response eventのHTTP201だけでresponse-201へ進み、D1 5表readbackを代替しない。未観測は未送信の証明ではなく、応答不能ではそれ以前の観測値だけを保持する。
+first fault / abort / observer throw・非同期戻り値 / helper返却後は通知を閉鎖する。遅延route / response、重複POST、Worker stop / readback / scan / cleanupは3軸を昇格・上書きしない。observer失敗は成功を抑止し、既存first primary・単発停止・deny guard・Confirm再送禁止を保持する。URL / request / headers / Cookie / Session / token / error / HTML / SQL / IDをobserverへ渡さない。
+`trusted-booking-dom.test.mjs` と `trusted-booking-process.test.mjs` のfinite正負fixtureで各checkpoint・fault・Confirm段階、実helper→process→V2 codec、abort / bounded timeout / pending driver解決後・late response / identity不一致・observer failure・重複POST・stop後の不変を照合する。`trusted-booking-outer.test.mjs` のhook未通知real process fixtureはcookie-inject / unknown / unobservedを既存private snapshot→停止済みouter→CLIへ通す。codec全enum・拒否条件は保持する。
+WACはR0 / C1 / P1 / B1、Yellow prepared。TC-F-003/005・TC-NF-902/914へのpartial evidenceのみで、POL→BR→REQ→AC→TC・CON-001/002/009・OOS-001/002、予約操作 / HTTP / 成功 / readback / cleanup・時間上限は不変。実Chrome / Playwright互換性 / Worker / systemd / D1・snapshot新鮮さと正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠であり、追加実Chrome / Confirm一回・一時Proofは#930の別人間承認待ち。#537 Gate A〜D / #608 Done / Production Readyへ昇格しない。
 
 限定guardのWACはR0 / C0相当 / P1 / B1、Green。Issueが明示した静的判定Contractの定義・finite proofだけであり、下記prepared runtimeのC1を昇格しない。
 #951 / #955の固定診断引き渡しもR0 / C0相当 / P1 / B1、Greenの明示scopeであり、runtime target-modeへの昇格や新しいproof infrastructureを追加しない。
