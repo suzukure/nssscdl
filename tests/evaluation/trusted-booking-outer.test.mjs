@@ -1341,12 +1341,17 @@ test("#976 actual Worker unattributed-listener refusal reaches six-field private
     const owner = ownedIdentity(dir), effects = [];
     const line = 'LISTEN 0 128 127.0.0.1:8789 0.0.0.0:* users:(("node",pid=42,fd=3))';
     const fake = {
+      read(path, encoding) { assert.equal(path, "/proc/self/cgroup"); assert.equal(encoding, "utf8"); return "0::/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service\n"; },
       preflight: () => ({ env: {}, confirm() {} }),
       spawn() { effects.push("spawn"); return { pid: 42, exitCode: null, signalCode: null, on() {} }; },
       async command(file, args) {
         effects.push(file);
-        return file === "ps" ? "42" : args[1] === "-ltn" ? "" : line +
-          (args.length === 2 ? "\nLISTEN 0 128 0.0.0.0:8088 0.0.0.0:*" : "");
+        if (file === "ps") return "42";
+        if (args[1] === "-ltn") return "";
+        if (args.length === 3) return line;
+        assert.deepEqual(args, ["-H", "-ltnp", "-O", "--cgroup", "cgroup", "=", "/sys/fs/cgroup/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service"]);
+        return line + " cgroup:/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service" +
+          "\nLISTEN 0 128 0.0.0.0:8088 0.0.0.0:*";
       },
       groupAlive: () => true, interrupt() { effects.push("SIGINT"); }, now: () => 0, sleep: async () => assert.fail("no polling"),
     };

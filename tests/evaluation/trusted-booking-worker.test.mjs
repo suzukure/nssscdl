@@ -15,13 +15,22 @@ const input = { certificate: { key: "/fixture/server.key", cert: "/fixture/serve
   certificateParent: "/fixture", certificateParentIdentity: { dev: 1, ino: 2, uid: 3 } };
 // ss columns follow the existing waitForWorker fixture contract; external
 // Wrangler/ss compatibility is intentionally not claimed by these finite rows.
+const unitPath = "/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service";
+const unit = `0::${unitPath}\n`;
+const filterArgs = ["-H", "-ltnp", "-O", "--cgroup", "cgroup", "=", `/sys/fs/cgroup${unitPath}`];
+const filtered = output => output.split("\n").map(line => line + ` cgroup:${unitPath}`).join("\n");
 const listener = (address = "127.0.0.1:8789", pid = 42) =>
   `LISTEN 0 128 ${address} 0.0.0.0:*${pid === null ? "" : ` users:((\"node\",pid=${pid},fd=3))`}`;
 function fixture(options = {}, observe) {
   let clock = 0, spawned = 0, signals = 0, commands = 0, confirms = 0, active = false, stopped = false;
   const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null });
-  const calls = [], order = [];
+  const calls = [], order = [], queries = [];
   const effects = {
+    read(path, encoding) {
+      order.push("cgroup"); assert.equal(path, "/proc/self/cgroup"); assert.equal(encoding, "utf8");
+      if (options.readThrows) throw new Error("private-canary");
+      return options.unit ?? unit;
+    },
     preflight(value) {
       order.push("preflight");
       assert.deepEqual(value, input);
@@ -42,7 +51,7 @@ function fixture(options = {}, observe) {
     },
     async command(file, args, timeout) {
       order.push(file === "ps" ? `ps:${args[3]}` : args.join(" "));
-      commands++; assert.ok(timeout > 0 && timeout <= 5000);
+      queries.push({ file, args }); commands++; assert.ok(timeout > 0 && timeout <= 5000);
       if (options.commandThrows) throw new Error("private-canary");
       if (file === "ps") {
         if (options.psThrows) throw new Error("private-canary");
@@ -55,7 +64,9 @@ function fixture(options = {}, observe) {
       }
       if (!active || options.neverReady) return "";
       if (args.length === 3) return options.booking ?? listener();
-      return options.all ?? options.booking ?? listener();
+      assert.deepEqual(args, filterArgs);
+      if (options.filterThrows) throw new Error("private-canary");
+      return options.filtered ?? (options.all === "" ? "" : filtered(options.all ?? options.booking ?? listener()));
     },
     groupAlive() { order.push("alive"); if (options.unknownGroup) return undefined; return active; },
     interrupt(pid) {
@@ -68,7 +79,7 @@ function fixture(options = {}, observe) {
     now: () => clock,
     sleep: async () => { order.push("sleep"); clock += 1000; },
   };
-  return { port: createBookingWorkerPort(input, effects, observe), child, calls, effects, order,
+  return { port: createBookingWorkerPort(input, effects, observe), child, calls, effects, order, queries,
     counts: () => ({ spawned, signals, commands, confirms }), exit() { active = false; child.exitCode = 1; child.emit("exit"); } };
 }
 
@@ -108,7 +119,7 @@ test("#939: ambiguous socket, PGID, hidden owner and nonloopback inspector never
     { booking: listener("127.0.0.1:8789", null) }, { groups: { 42: 88 } }, { groups: { 42: "" } },
     { booking: listener("127.0.0.1:8789", 43), groups: { 43: 88 } },
     { all: `${listener()}\n${listener("0.0.0.0:9229", 43)}` },
-    { all: `${listener()}\n${listener("127.0.0.1:9229", null)}` },
+    { all: `${listener()}\n${listener("0.0.0.0:9229", null)}` },
     { all: listener("127.0.0.1:8789", 88) }, { all: "" },
     { earlyExit: true }, { unknownExit: true }, { noPid: true }, { unknownGroup: true },
     { spawnThrows: true }, { drift: true }, { neverReady: true },
@@ -120,8 +131,8 @@ test("#939: ambiguous socket, PGID, hidden owner and nonloopback inspector never
   }
 });
 
-test("#939: owned inspector may use loopback; unrelated 8088 is never signalled", async () => {
-  const f = fixture({ all: `${listener()}\n${listener("[::1]:9229", 43)}\n${listener("0.0.0.0:8088", 88)}` });
+test("#939/#979: same-unit inspector may use fixed IPv6 loopback", async () => {
+  const f = fixture({ all: `${listener()}\n${listener("[::1]:9229", 43)}` });
   await f.port.start(); await f.port.stop(); assert.equal(f.counts().signals, 1);
 });
 
@@ -171,7 +182,7 @@ test("#939: concurrent start/stop cannot spend another start's foreground owners
 test("#939: caller overrides never select CLI; asynchronous child failure revokes ready", async () => {
   const f = fixture();
   const port = createBookingWorkerPort({ ...input, config: "other", port: 8788, persist: "other",
-    env: { TOKEN: "private-canary" }, argv: ["--remote"], headers: { cookie: "private-canary" } }, f.effects);
+    cgroup: "/other", unit: "other", env: { TOKEN: "private-canary" }, argv: ["--remote"], headers: { cookie: "private-canary" } }, f.effects);
   await port.start();
   assert.equal(f.calls[0].args.includes("other"), false); assert.equal(f.calls[0].args.includes("--remote"), false);
   f.child.emit("error", new Error("private-canary")); assert.equal(port.isReady(), false);
@@ -235,7 +246,7 @@ test("#976 first startup failure uses the most direct fixed position, once; stop
     [{ booking: listener("127.0.0.1:8789", null) }, "booking-listener"],
     [{ all: listener("127.0.0.1:8789", null) }, "booking-listener"],
     [{ all: "" }, "booking-listener"],
-    [{ all: `${listener()}\n${listener("0.0.0.0:8088", null)}` }, "listener-unattributed"],
+    [{ filtered: filtered(listener()) + "\n" + listener("0.0.0.0:8088", null) }, "listener-unattributed"],
     [{ all: `${listener()}\n${listener("0.0.0.0:9229", 43)}` }, "owned-listener"],
     [{ neverReady: true }, "deadline"],
   ];
@@ -247,7 +258,7 @@ test("#976 first startup failure uses the most direct fixed position, once; stop
     await assert.rejects(f.port.start(), fixed); await assert.rejects(f.port.stop(), fixed);
     assert.deepEqual(observed.filter(([kind]) => kind === "failure"), [["failure", expected]], JSON.stringify(options));
     assert.deepEqual(observed, saved); assert.deepEqual(f.counts(), before);
-    assert.equal(before.signals, options.drift || options.neverReady ? 1 : 0, JSON.stringify(options));
+    assert.equal(before.signals, options.drift ? 1 : 0, JSON.stringify(options));
     if (options.neverReady) assert.equal(f.order.filter(step => step === "sleep").length, 30);
   }
   const observed = [], f = fixture({}, (kind, value) => { observed.push([kind, value]); });
@@ -260,20 +271,22 @@ test("#976 first startup failure uses the most direct fixed position, once; stop
   assert.deepEqual(create, [["failure", "preflight"]]);
 });
 
-test("#976 success, unrelated known PGID, owned loopback and stop boundary snapshots preserve effect order", async () => {
-  for (const options of [{}, { all: `${listener()}\n${listener("0.0.0.0:8088", 88)}` },
+test("#976/#979 success, same-unit other PGID loopback and stop snapshots preserve effect order", async () => {
+  for (const options of [{}, { all: `${listener()}\n${listener("127.0.0.1:8088", 88)}` },
     { all: `${listener()}\n${listener("[::1]:9229", 43)}` }]) {
     const plain = fixture(options), observed = [], traced = fixture(options, (kind, value) => { observed.push([kind, value]); });
     await plain.port.start(); await plain.port.stop();
     await traced.port.start(); await traced.port.stop();
     assert.deepEqual(traced.order, plain.order); assert.deepEqual(traced.counts(), plain.counts());
     if (!options.all) {
-      // Existing #939 effect sequence, including every ss/ps/alive call.
-      assert.deepEqual(traced.order, ["preflight", "-H -ltn sport = :8789", "confirm", "spawn", "alive", "ps:42",
-        "-H -ltnp sport = :8789", "ps:42", "-H -ltnp", "ps:42", "ps:42", "confirm", "alive",
-        "alive", "ps:42", "-H -ltnp sport = :8789", "ps:42", "-H -ltnp", "ps:42", "ps:42", "alive",
-        "SIGINT", "alive", "alive", "-H -ltn sport = :8789"]);
-      assert.deepEqual(traced.counts(), { spawned: 1, signals: 1, commands: 14, confirms: 2 });
+      assert.deepEqual(traced.queries.filter(call => call.file === "ss").map(call => call.args), [
+        ["-H", "-ltn", "sport = :8789"], ["-H", "-ltnp", "sport = :8789"], filterArgs,
+        ["-H", "-ltnp", "sport = :8789"], filterArgs, ["-H", "-ltn", "sport = :8789"],
+      ]);
+      assert.ok(traced.order.indexOf("cgroup") < traced.order.indexOf("spawn"));
+      assert.ok(traced.order.lastIndexOf("cgroup", traced.order.indexOf("SIGINT")) > traced.order.indexOf(filterArgs.join(" ")));
+      assert.equal(traced.order.filter(step => step === "cgroup").length, 11);
+      assert.deepEqual(traced.counts(), { spawned: 1, signals: 1, commands: 12, confirms: 2 });
     }
     assert.deepEqual(observed, ["ownership", "signal", "signal-sent", "wait", "port", "confirmed"].map(value => ["stop", value]));
     const saved = [...observed]; await assert.rejects(traced.port.stop(), fixed); assert.deepEqual(observed, saved);
@@ -282,7 +295,7 @@ test("#976 success, unrelated known PGID, owned loopback and stop boundary snaps
 
 test("#976 independent stop failure freezes at ownership, signal, wait or port without extra effects", async () => {
   for (const [options, expected, signals] of [
-    [{ all: `${listener()}\n${listener("0.0.0.0:8088", null)}` }, "ownership-failed", 0],
+    [{ filtered: filtered(listener()) + "\n" + listener("0.0.0.0:8088", null) }, "ownership-failed", 0],
     [{ stopThrows: true }, "signal-failed", 1], [{ stopTimeout: true }, "wait-failed", 1],
     [{ unknownTerminal: true }, "wait-failed", 1], [{ portRemains: true }, "port-failed", 1],
   ]) {
@@ -349,4 +362,105 @@ test("#976 startup child events latch spawn before a later group failure; ready-
   };
   await assert.rejects(broken.port.start(), fixed); await assert.rejects(broken.port.stop(), fixed);
   assert.equal(hooks, 1); assert.equal(broken.counts().signals, 0);
+});
+
+// #979 oracles: the confirmed Issue's strict cgroup and reserved-port control,
+// ss(8) --cgroup mount-relative display / cgroup = full-path filter / -O.
+test("#979 runtime-only unit identity rejects malformed, unavailable and drifting membership", async () => {
+  for (const value of ["", undefined, null, unit.trim(), unit + "\n", unit.replace("\n", "\r\n"),
+    unit + "1:cpu:/other\n", unit.replace("system.slice", "user.slice"), unit.replace("a".repeat(32), "g".repeat(32)),
+    unit.replace(".service", ".service/child"), "/sys/fs/cgroup" + unit]) {
+    const events = [], options = {}, f = fixture(options, (kind, value) => { events.push([kind, value]); });
+    f.effects.read = () => value;
+    await assert.rejects(f.port.start(), fixed);
+    assert.equal(f.counts().spawned, 0); assert.deepEqual(events, [["failure", "preflight"]]);
+  }
+  const unreadable = fixture({ readThrows: true });
+  await assert.rejects(unreadable.port.start(), fixed); assert.equal(unreadable.counts().spawned, 0);
+  for (const during of ["start", "stop", "exited"]) {
+    const options = {}, events = [], f = fixture(options, (kind, value) => { events.push([kind, value]); });
+    if (during === "start") {
+      const command = f.effects.command;
+      f.effects.command = async (file, args, ...rest) => {
+        const result = await command(file, args, ...rest);
+        if (args.includes("--cgroup")) options.unit = unit.replace("a".repeat(32), "b".repeat(32));
+        return result;
+      };
+      await assert.rejects(f.port.start(), fixed);
+    } else {
+      await f.port.start(); options.unit = unit.replace("a".repeat(32), "b".repeat(32));
+      if (during === "exited") f.exit();
+    }
+    await assert.rejects(f.port.stop(), fixed); await assert.rejects(f.port.stop(), fixed);
+    assert.equal(f.counts().signals, 0); assert.deepEqual(events.at(-1), ["stop", "ownership-failed"]);
+  }
+});
+
+test("#979 filter failures, untrusted grammar and missing or mismatched positive control fail closed twice", async () => {
+  const good = filtered(listener());
+  const cases = [
+    { filterThrows: true }, { filtered: "" }, { filtered: "\n" },
+    { filtered: listener() }, { filtered: good.replace(unitPath, "/other") },
+    { filtered: good.replace(".service", ".service/child") },
+    { filtered: good + " extra" }, { filtered: good + ` cgroup:${unitPath}` },
+    { filtered: good + "\n\n" }, { filtered: good + "\r\n" }, { filtered: good.replace("LISTEN", "ESTAB") },
+    { filtered: good.replace("pid=42", "pid=unknown") }, { filtered: good.replace("fd=3", "fd=3,extra=1") },
+    { filtered: "x".repeat(65537) }, { filtered: `${good}\n${good}` },
+    { filtered: filtered(listener("127.0.0.1:9229", null)) },
+    { filtered: filtered(listener("127.0.0.1:8789", null)) },
+    { filtered: filtered(listener("127.0.0.1:8789", 43)) },
+    { filtered: filtered(listener("[::1]:8789")) },
+    ...["0.0.0.0:9229", "[::]:9229", "192.0.2.1:9229", "[2001:db8::1]:9229"].flatMap(address =>
+      [null, 43, 88].map(pid => ({ filtered: `${good}\n${filtered(listener(address, pid))}` }))),
+  ];
+  for (const options of cases) {
+    const events = [], f = fixture(options, (kind, value) => { events.push([kind, value]); });
+    await assert.rejects(f.port.start(), fixed); await assert.rejects(f.port.stop(), fixed);
+    assert.equal(f.port.isReady(), false); assert.equal(f.counts().signals, 0);
+    assert.equal(events.filter(([kind]) => kind === "failure").length, 1);
+    assert.deepEqual(events.at(-1), ["stop", "ownership-failed"]);
+    const counts = f.counts(), saved = [...events];
+    await assert.rejects(f.port.start(), fixed); await assert.rejects(f.port.stop(), fixed);
+    assert.deepEqual(f.counts(), counts); assert.deepEqual(events, saved);
+  }
+});
+
+test("#979 invisible host owners are outside the query; same-unit loopback without PID or with other PGID is allowed", async () => {
+  const multi = listener().replace('("node",pid=42,fd=3)', '("node",pid=43,fd=4),("node",pid=42,fd=3)');
+  const reversed = listener().replace('("node",pid=42,fd=3)', '("node",pid=42,fd=3),("node",pid=43,fd=4),("node",pid=42,fd=5)');
+  const options = { booking: multi, filtered: `${filtered(reversed)}\n${filtered(listener("127.0.0.1:8088", null))}\n${filtered(listener("[::1]:9229", 88))}` };
+  const f = fixture(options), command = f.effects.command;
+  f.effects.command = async (file, args, ...rest) => {
+    // An unfiltered whole-host query would encounter an invisible nonloopback
+    // socket. The authorized implementation must never issue that query.
+    if (file === "ss" && args.length === 2) return listener("0.0.0.0:8088", null);
+    return command(file, args, ...rest);
+  };
+  await f.port.start(); await f.port.stop(); assert.equal(f.counts().signals, 1);
+  assert.equal(f.queries.filter(call => call.args.includes("--cgroup")).length, 2);
+  assert.equal(f.queries.some(call => call.file === "ps" && call.args[3] === "88"), false);
+});
+
+test("#979 positive control loss, group race or expired observation before stop never sends SIGINT", async () => {
+  for (const kind of ["port-missing", "empty", "cgroup", "group-race", "deadline"]) {
+    const options = {}, events = [], f = fixture(options, (kind, value) => { events.push([kind, value]); });
+    await f.port.start();
+    if (kind === "port-missing") options.neverReady = true;
+    if (kind === "empty") options.filtered = "";
+    if (kind === "cgroup") options.filtered = filtered(listener()).replace(unitPath, "/other");
+    if (["group-race", "deadline"].includes(kind)) {
+      const command = f.effects.command;
+      f.effects.command = async (file, args, ...rest) => {
+        const result = await command(file, args, ...rest);
+        if (args.includes("--cgroup")) {
+          if (kind === "group-race") options.groups = { 42: 88 };
+          else f.effects.now = () => 10000;
+        }
+        return result;
+      };
+    }
+    await assert.rejects(f.port.stop(), fixed); await assert.rejects(f.port.stop(), fixed);
+    assert.equal(f.counts().signals, 0); assert.deepEqual(events.at(-1), ["stop", "ownership-failed"]);
+    assert.equal(events.some(([kind]) => kind === "failure"), false);
+  }
 });

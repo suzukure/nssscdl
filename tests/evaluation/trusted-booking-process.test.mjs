@@ -240,6 +240,7 @@ function attachWorker(f, { unattributed = false, failStart = false, failStop = f
   const effects = [], child = { pid: 42, exitCode: null, signalCode: null, on() {} };
   const line = 'LISTEN 0 128 127.0.0.1:8789 0.0.0.0:* users:(("node",pid=42,fd=3))';
   const fake = {
+    read(path, encoding) { assert.equal(path, "/proc/self/cgroup"); assert.equal(encoding, "utf8"); return "0::/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service\n"; },
     preflight() { effects.push("preflight"); return { env: {}, confirm() { effects.push("confirm"); } }; },
     spawn() { effects.push("spawn"); active = true; return child; },
     async command(file, args) {
@@ -247,7 +248,9 @@ function attachWorker(f, { unattributed = false, failStart = false, failStop = f
       if (file === "ps") return "42";
       if (args[1] === "-ltn") return "";
       if (failStart) throw new Error(canary);
-      return line + (unattributed && args.length === 2 ? '\nLISTEN 0 128 0.0.0.0:8088 0.0.0.0:*' : "");
+      if (args.length === 3) return line;
+      assert.deepEqual(args, ["-H", "-ltnp", "-O", "--cgroup", "cgroup", "=", "/sys/fs/cgroup/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service"]);
+      return line + " cgroup:/system.slice/nssscdl-browser-" + "a".repeat(32) + ".service" + (unattributed ? '\nLISTEN 0 128 0.0.0.0:8088 0.0.0.0:*' : "");
     },
     groupAlive() { effects.push("alive"); return active; },
     interrupt() {

@@ -64,6 +64,7 @@ function preflight(input) {
 const runtime = {
   preflight,
   spawn,
+  read: readFileSync,
   async command(file, args, timeout, env) {
     return (await exec(file, args, { cwd: root, env, timeout, maxBuffer: 65536 })).stdout;
   },
@@ -77,12 +78,20 @@ const runtime = {
 };
 
 const rows = (output) => {
-  check(typeof output === "string");
-  return output.trim() ? output.trim().split("\n").map((line) => {
-    const fields = line.trim().split(/\s+/);
-    check(fields[0] === "LISTEN" && fields.length >= 5);
-    return { address: fields[3], pids: [...line.matchAll(/pid=(\d+)/g)].map((m) => m[1]) };
-  }) : [];
+  check(typeof output === "string" && output.length <= 65536 && !/[\r\x00]/.test(output));
+  if (output === "") return [];
+  const lines = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
+  return lines.map((line) => {
+    // ss -H -ltnp [-O --cgroup]: only the five TCP columns, optional
+    // users tuples and optional mount-relative cgroup pathname are accepted.
+    const match = /^[ \t]*LISTEN[ \t]+\d+[ \t]+\d+[ \t]+([^ \t]+)[ \t]+([^ \t]+)(?:[ \t]+(users:\(.*\)))?(?:[ \t]+cgroup:([^ \t]+))?[ \t]*$/.exec(line);
+    check(match);
+    const users = match[3];
+    check(!users || /^users:\(\("(?:[^"\\\r\n]|\\[^\r\n])*",pid=[1-9]\d*,fd=\d+\)(?:,\("(?:[^"\\\r\n]|\\[^\r\n])*",pid=[1-9]\d*,fd=\d+\))*\)$/.test(users));
+    check(/^(?:[\d.]+|\[[a-fA-F\d:]+\]|\*):(?:\d+|\*)$/.test(match[2]));
+    const pids = [...(users ?? "").matchAll(/\("(?:[^"\\\r\n]|\\[^\r\n])*",pid=([1-9]\d*),fd=\d+\)/g)].map(m => m[1]);
+    return { address: match[1], pids, cgroup: match[4] };
+  });
 };
 const live = (child) => child && !child.spawnFailed && child.exitCode === null && child.signalCode === null;
 const exited = (child) => Number.isInteger(child.exitCode) || typeof child.signalCode === "string";
@@ -105,7 +114,7 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
     input = Object.freeze({ certificate: Object.freeze({ key: input.certificate.key, cert: input.certificate.cert }),
       certificateParent: input.certificateParent, certificateParentIdentity: Object.freeze({ ...input.certificateParentIdentity }) });
   } catch { recordFailure("preflight"); throw failure(); }
-  let child, pid, setup, startAttempted = false, stopAttempted = false, ready = false;
+  let child, pid, setup, unit, startAttempted = false, stopAttempted = false, ready = false;
   let starting = false;
   let position = "unknown", stopPosition = "unknown", stopFinished = false;
   const startCheck = (ok, kind) => { if (!ok) { recordFailure(kind); throw failure(); } };
@@ -139,33 +148,45 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
   const closed = async (deadline) => {
     check(rows(await command("ss", ["-H", "-ltn", "sport = :8789"], deadline)).length === 0);
   };
+  const membership = () => {
+    const current = effects.read("/proc/self/cgroup", "utf8");
+    check(typeof current === "string" && /^0::\/system.slice\/nssscdl-browser-[a-f0-9]{32}\.service\n$/.exec(current)?.[0] === current);
+    if (unit === undefined) unit = current;
+    check(current === unit);
+    return current.slice(3, -1);
+  };
   const ownedListeners = async (deadline) => {
+    const path = membership();
     const booking = rows(await command("ss", ["-H", "-ltnp", "sport = :8789"], deadline));
     check(booking.length <= 1);
     for (const row of booking) {
       check(row.address === "127.0.0.1:8789" && row.pids.length > 0);
       for (const owner of row.pids) groupCheck(await group(owner, deadline) === String(pid));
     }
-    const all = rows(await command("ss", ["-H", "-ltnp"], deadline));
-    check(all.filter((row) => /:8789$/.test(row.address)).length === booking.length);
+    // Startup may wait for the reserved port; it cannot become ready (or
+    // authorize a stop signal) without the filtered positive control below.
+    if (!booking.length) { membership(); check(effects.now() < deadline); return false; }
+    let all;
+    try {
+      all = rows(await command("ss", ["-H", "-ltnp", "-O", "--cgroup", "cgroup", "=", resolve("/sys/fs/cgroup", `.${path}`)], deadline));
+    } catch { if (starting) recordFailure("listener-unattributed"); throw failure(); }
     for (const row of all) {
-      if (!row.pids.length) {
+      if (row.cgroup !== path) {
         if (starting) recordFailure(/:8789$/.test(row.address) ? "booking-listener" : "listener-unattributed");
-        throw failure(); // Hidden ownership is unknown, never evidence.
+        throw failure();
       }
-      if (/:8789$/.test(row.address)) {
-        check(row.address === "127.0.0.1:8789");
-        for (const owner of row.pids) groupCheck(await group(owner, deadline) === String(pid));
-      }
-      for (const owner of row.pids) {
-        if (await group(owner, deadline) === String(pid))
-          if (!/^(127\.0\.0\.1|\[::1\]):\d+$/.test(row.address)) {
-            if (starting) recordFailure("owned-listener");
-            throw failure();
-          }
+      if (!/^(127\.0\.0\.1|\[::1\]):\d+$/.test(row.address)) {
+        if (starting) recordFailure("owned-listener");
+        throw failure();
       }
     }
-    return booking.length === 1;
+    const control = all.filter(row => /:8789$/.test(row.address));
+    check(control.length === 1 && control[0].address === booking[0].address);
+    const owners = row => [...new Set(row.pids)].sort();
+    check(control[0].pids.length > 0 && JSON.stringify(owners(control[0])) === JSON.stringify(owners(booking[0])));
+    for (const owner of owners(control[0])) groupCheck(await group(owner, deadline) === String(pid));
+    membership(); check(effects.now() < deadline);
+    return true;
   };
   return Object.freeze({
     async start() {
@@ -177,10 +198,13 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
         setup = effects.preflight(input);
         position = "unknown";
         const deadline = effects.now() + 30000; // Existing read-only startup budget.
+        position = "preflight";
+        membership();
         position = "booking-listener";
         await closed(deadline);
         position = "preflight";
         setup.confirm();
+        membership(); check(effects.now() < deadline);
         position = "spawn";
         child = effects.spawn(binary, ["dev", "--config", relative(root, proxyOptions.configPath),
           "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https",
@@ -203,6 +227,7 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
             position = "spawn";
             startCheck(live(child) && child.pid === pid, "spawn");
             groupCheck(alive());
+            membership(); check(effects.now() < deadline);
             ready = true;
             return origin; // Transport preparation only; no HTTP/TLS/write proof.
           }
@@ -222,10 +247,12 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
         progress("ownership");
         check(child && Number.isSafeInteger(pid) && pid > 1 && child.pid === pid);
         const deadline = effects.now() + 10000; // No force-kill or second signal.
+        membership();
         if (alive()) {
           check(live(child) && await group(pid, deadline) === String(pid));
-          await ownedListeners(deadline);
+          check(await ownedListeners(deadline));
           check(live(child) && alive());
+          membership(); check(effects.now() < deadline);
           progress("signal");
           effects.interrupt(pid); // Exactly one owned group stop request.
           progress("signal-sent");
@@ -234,7 +261,9 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
         while (alive() && effects.now() < deadline) await effects.sleep();
         check(!alive() && exited(child));
         progress("port");
+        membership();
         await closed(deadline); // Never reuse 8788's stopWorker result.
+        membership(); check(effects.now() < deadline);
         progress("confirmed"); stopFinished = true;
         return Object.freeze({ stopped: true, portClosed: true });
       } catch {
