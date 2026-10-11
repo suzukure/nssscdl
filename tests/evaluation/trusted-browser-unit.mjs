@@ -66,6 +66,8 @@ export function readBrowserReport(temporary, intentional) {
 // A single 180s owner deadline includes capability checks, migration, execution,
 // final checks and disposal. Reserve 10s for one stop (5s) + one show (5s).
 export class BrowserUnit {
+  #diagnosticStop;
+  #diagnosticQueried = false;
   constructor({ env, cwd, signal, deadline = Date.now() + 180000,
     command = async (file, args, options) => (await exec(file, args, options)).stdout,
     now = Date.now, sleep = wait, uid = process.getuid(), gid = process.getgid() }) {
@@ -158,10 +160,20 @@ export class BrowserUnit {
   }
   async dispose(release = false) {
     if (!this.started || this.stopped) return;
+    const diagnosticIdentity = !release && typeof this.invocation === "string" &&
+      /^[a-f0-9]{32}$/.test(this.invocation) && !/^0+$/.test(this.invocation) ?
+      { invocation: this.invocation, name: this.name, runtime: this.runtime, uid: this.uid, gid: this.gid } : undefined;
     if (!release || !this.accepted || this.failure) this.latch("STOP");
     this.stopped = true;
     await this.call(["systemctl", "stop", this.name], true, "stop");
     const state = await this.show(true, true);
+    // Only this successful stop + strictly parsed cleanup observation can admit
+    // the booking diagnostic query. Public stopObservation is never its gate.
+    if (diagnosticIdentity && Object.entries(diagnosticIdentity).every(([key, value]) => this[key] === value) &&
+      state.InvocationID === diagnosticIdentity.invocation && state.LoadState === "loaded" &&
+      state.ActiveState === "failed" && state.SubState === "failed") {
+      this.#diagnosticStop = diagnosticIdentity;
+    }
     // Collection after a confirmed stop is disposal evidence only, never proof
     // of normal completion. Failure/unknown remains latched.
     if (!((state.LoadState === "not-found" && state.ActiveState === "inactive") ||
@@ -172,6 +184,58 @@ export class BrowserUnit {
     }
     this.stopObservation = "accepted";
     if (release && this.failure) throw fail(this.failure);
+  }
+  async confirmDiagnosticStop() {
+    // Trusted systemd/root manager, reviewed child and no external lifecycle
+    // changes are operational premises; this is not independent kernel proof.
+    const identity = this.#diagnosticStop;
+    if (!identity || this.#diagnosticQueried) return false;
+    this.#diagnosticQueried = true; // One attempt, including budget/parse failure.
+    const budget = () => {
+      if (this.signal?.aborted) this.latch("CANCEL");
+      const left = this.deadline - this.now();
+      if (left <= 0) this.latch("TIMEOUT");
+      if (this.signal?.aborted || left <= 0 || this.started !== true || this.stopped !== true ||
+        Object.entries(identity).some(([key, value]) => this[key] !== value)) throw fail("UNKNOWN");
+      return left;
+    };
+    const query = async args => {
+      const text = await this.command("sudo", ["-n", ...args], { cwd: this.cwd, env: { PATH: this.env.PATH },
+        timeout: Math.min(5000, budget()), maxBuffer: 16384, signal: this.signal });
+      budget();
+      if (typeof text !== "string" || Buffer.byteLength(text) > 16384) throw fail("UNKNOWN");
+      return text;
+    };
+    const keys = [...Object.keys(settings), "LoadState", "ActiveState", "SubState", "InvocationID", "ControlGroup",
+      "User", "Group", "RuntimeMaxUSec", "TimeoutStopUSec", "MainPID", "ControlPID"];
+    const sample = async () => {
+      const text = await query(["systemctl", "show", this.name, ...keys.map(key => `--property=${key}`)]);
+      const state = {};
+      for (const line of (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n")) {
+        const split = line.indexOf("="), key = line.slice(0, split);
+        if (split < 1 || !keys.includes(key) || Object.hasOwn(state, key)) throw fail("UNKNOWN");
+        state[key] = line.slice(split + 1);
+      }
+      if (keys.some(key => !Object.hasOwn(state, key)) ||
+        Object.entries(settings).some(([key, value]) => state[key] !== value) ||
+        state.InvocationID !== identity.invocation || state.LoadState !== "loaded" ||
+        state.ActiveState !== "failed" || state.SubState !== "failed" ||
+        state.User !== String(identity.uid) || state.Group !== String(identity.gid) ||
+        state.MainPID !== "0" || state.ControlPID !== "0" ||
+        duration(state.RuntimeMaxUSec) !== identity.runtime * 1000000 || duration(state.TimeoutStopUSec) !== 2000000 ||
+        !["", `/system.slice/${identity.name}`].includes(state.ControlGroup)) throw fail("UNKNOWN");
+      return state.ControlGroup;
+    };
+    try {
+      const before = await sample();
+      const processes = await query(["busctl", "--system", "--no-pager", "--timeout=5s", "call",
+        "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+        "GetUnitProcesses", "s", this.name]);
+      if (processes !== "a(sus) 0\n") return false;
+      const after = await sample();
+      budget();
+      return before === after;
+    } catch { return false; } // Never replace the first failure or retry.
   }
   close() { this.signal?.removeEventListener("abort", this.cancel); }
 }

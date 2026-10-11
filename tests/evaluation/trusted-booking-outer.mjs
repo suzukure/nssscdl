@@ -40,7 +40,7 @@ function sanitizedFailure(error) {
     }
     for (const reason of terminalReasons) {
       for (const unitStop of ["unknown", "confirmed"]) {
-        const observations = unitStop === "confirmed" ? ["accepted", "unknown"] :
+        const observations = unitStop === "confirmed" ? ["accepted", "unknown", "manager-empty"] :
           [...stopObservations.filter(value => value !== "accepted"), "ineligible"];
         for (const observation of observations) {
           const detail = `; unit_stop=${unitStop}; diagnostic=unknown; stop_observation=${observation}`;
@@ -97,7 +97,14 @@ export async function useBookingOuter(unit, ports) {
       await unit.dispose(false); // Existing one stop + show; a thrown/early-return stop is not evidence.
       disposed = true;
       confirmed = eligible && unit.invocation === invocation && unit.started === true && unit.stopped === true;
-    } catch { /* At most one stop; uncertain files retained; no diagnostic read. */ }
+    } catch { /* A rejected disposal may admit only the private failed-state query below. */ }
+    let managerConfirmed = false;
+    if (eligible && !disposed) {
+      try {
+        managerConfirmed = await unit.confirmDiagnosticStop() === true && unit.invocation === invocation &&
+          unit.started === true && unit.stopped === true;
+      } catch { /* Missing/unknown confirmation stays closed; never retry stop. */ }
+    }
     if (stage === "terminal") {
       if (!eligible && evaluated) observation = "ineligible";
       else if (eligible) {
@@ -110,6 +117,7 @@ export async function useBookingOuter(unit, ports) {
         if (confirmed ? observation !== "accepted" : disposed || observation === "accepted") observation = "unknown";
       }
     }
+    if (managerConfirmed) { confirmed = true; observation = "manager-empty"; }
     let detail = `; unit_stop=${confirmed ? "confirmed" : "unknown"}; diagnostic=unknown; stop_observation=${observation}`;
     if (confirmed) {
       try { detail = observedDetail(await ports.diagnostic(), observation); } catch { /* Strict rejection stays unknown. */ }
@@ -161,7 +169,7 @@ export async function runBookingOuter() {
         if (present(join(root, ".wrangler"))) parentIdentity = supply.directoryIdentity(join(root, ".wrangler"));
         await closed();
         // Read-only availability probes; no Chrome launch/version process, NSS or cert generation.
-        for (const name of ["openssl", "certutil", "dpkg-query", "ss", "sudo", "systemctl", "systemd-run"]) {
+        for (const name of ["openssl", "certutil", "dpkg-query", "ss", "sudo", "systemctl", "systemd-run", "busctl"]) {
           await command("/usr/bin/which", [name]);
         }
         await browserUnitPreflight(options);
