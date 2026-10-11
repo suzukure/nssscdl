@@ -112,3 +112,42 @@ jobs:
       - name: 全テスト
         if: steps.applicability.outputs.applicable == 'true'
         run: npm test
+
+      - name: '#930 systemd timeout probe (temporary)'
+        if: steps.applicability.outputs.applicable == 'true'
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          const query = (file, args, timeout) => {
+            try { return spawnSync(file, args, {
+              encoding: 'utf8', timeout, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
+            }); } catch { return {}; }
+          };
+          const accepted = r => !r.error && !r.signal && r.status === 0 && r.stderr === '' &&
+            typeof r.stdout === 'string' && Buffer.byteLength(r.stdout) <= 4096;
+          const kernel = query('uname', ['-r'], 5000);
+          const systemd = query('systemctl', ['--version'], 5000);
+          const k = accepted(kernel) && /^[0-9][A-Za-z0-9._+-]{0,127}\n$/.test(kernel.stdout) ? kernel.stdout.slice(0, -1) : 'unknown';
+          const v = accepted(systemd) && /^systemd ([1-9][0-9]{0,5})(?: [ -~]*)?\n(?:[ -~]*\n)*$/.exec(systemd.stdout);
+          console.log('SYSTEMD_TIMEOUT_PROBE_ENV; kernel=' + k + '; systemd=' + (v ? v[1] : 'unknown'));
+          const result = query(process.execPath, ['tests/evaluation/systemd-timeout-probe.mjs', '--run'], 40000);
+          const fields = [
+            ['terminal', ['complete', 'timeout', 'manager', 'mismatch', 'cancel', 'unavailable', 'unknown']],
+            ['stop_observation', ['unknown', 'stop-budget', 'stop-unconfirmed', 'show-budget', 'show-unavailable', 'show-invalid', 'accepted', 'identity-mismatch', 'failed-state', 'state-unaccepted']],
+            ['cgroup_before', ['present-populated', 'present-empty', 'missing', 'identity-mismatch', 'unknown']],
+            ['cgroup_after', ['present-populated', 'present-empty', 'missing', 'identity-mismatch', 'unknown']],
+            ['manager', ['empty-observed', 'nonempty-or-unaccepted', 'unknown']],
+            ['identity', ['same', 'mismatch', 'unknown']]
+          ];
+          const parts = accepted(result) ? result.stdout.split('; ') : [];
+          const values = fields.map(([key, enums], i) => enums.find(value => parts[i + 1] === key + '=' + value + (i === fields.length - 1 ? '\n' : '')));
+          const line = 'SYSTEMD_TIMEOUT_PROBE; ' + fields.map(([key], i) => key + '=' + values[i]).join('; ');
+          if (parts.length === fields.length + 1 && values.every(value => value !== undefined) && result.stdout === line + '\n') {
+            console.log(line);
+          } else {
+            console.error('SYSTEMD_TIMEOUT_PROBE_FAILED; observation=unknown');
+            process.exitCode = 1;
+          }
+          NODE
