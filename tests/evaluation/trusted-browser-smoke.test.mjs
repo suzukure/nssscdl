@@ -649,6 +649,7 @@ test("#914 report + two same-invocation terminal reads + port/generated check pr
     await finishFixture(f, { intentional, report: async (mode) => { assert.equal(mode, intentional); f.events.push('report'); return { certificate: browserEvidence(reportText(mode), mode) }; } });
     assert.deepEqual(f.events, ['start', 'show', 'show', 'show', 'report', 'port/generated', 'stop', 'show', 'delete']);
     assert.equal(f.unit.failure, undefined);
+    assert.equal(f.unit.stopObservation, 'accepted');
   }
   const retained = unitFixture(); let running = true;
   retained.mutate((s, n) => { if (n <= 3 && running) { s.SubState = 'running'; s.ExecMainCode = '1'; s.ExecMainStatus = '0'; }
@@ -712,11 +713,102 @@ test("#914 malformed state, failed stop and late cancellation preserve files wit
     } }), (e) => /^TRUSTED_BROWSER_UNIT_[A-Z]+$/.test(e.message));
     assert.ok(!f.events.includes('delete'));
     assert.equal(f.events.filter((x) => x === 'stop').length, 1);
+    const observation = f.unit.stopObservation;
+    // raw-error's existing wrapper also throws on stop while the show count stays three.
+    assert.equal(observation, ['stop-failed', 'raw-error'].includes(kind) ? 'stop-unconfirmed' : 'accepted');
     const calls = f.options.length; await f.unit.dispose(); assert.equal(f.options.length, calls);
+    assert.equal(f.unit.stopObservation, observation);
   }
   const timeout = unitFixture(); timeout.time(170000);
   await assert.rejects(timeout.unit.start('/fixture-node', []));
   assert.deepEqual(timeout.events, []); assert.equal(timeout.unit.failure, 'TIMEOUT'); timeout.unit.close();
+});
+
+test("#963 cleanup show observations preserve both positives and the original rejection/first failure", async () => {
+  const invocation = 'b'.repeat(32), drift = 'c'.repeat(32);
+  // Explicit Issue #963 oracles: accepted predicate precedes identity and failed-state.
+  const cases = [
+    [{ LoadState: 'not-found', ActiveState: 'inactive', SubState: 'failed', InvocationID: drift }, 'accepted'],
+    [{ LoadState: 'loaded', ActiveState: 'inactive', SubState: 'dead', InvocationID: invocation }, 'accepted'],
+    [{ LoadState: 'loaded', ActiveState: 'inactive', SubState: 'dead', InvocationID: drift }, 'identity-mismatch'],
+    [{ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', InvocationID: drift }, 'identity-mismatch'],
+    [{ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', InvocationID: invocation }, 'failed-state'],
+    [{ LoadState: 'loaded', ActiveState: 'active', SubState: 'running', InvocationID: invocation }, 'state-unaccepted'],
+    [{ LoadState: 'loaded', ActiveState: 'inactive', SubState: 'exited', InvocationID: invocation }, 'state-unaccepted'],
+    [{ LoadState: 'not-found', ActiveState: 'active', SubState: 'dead', InvocationID: invocation }, 'state-unaccepted'],
+  ];
+  for (const [state, expected] of cases) {
+    for (const release of [false, true]) {
+      const f = unitFixture();
+      assert.equal(Object.getOwnPropertyDescriptor(f.unit, 'stopObservation').value, 'unknown');
+      await f.unit.start('/fixture-node', []);
+      await f.unit.terminal();
+      assert.equal(f.unit.stopObservation, 'unknown'); // Normal show never updates cleanup observation.
+      f.unit.latch('TIMEOUT');
+      f.mutate(s => Object.assign(s, state));
+      const result = f.unit.dispose(release);
+      if (expected === 'accepted' && !release) await result;
+      else await assert.rejects(result, { message: 'TRUSTED_BROWSER_UNIT_TIMEOUT' });
+      assert.equal(f.unit.stopObservation, expected);
+      assert.equal(f.unit.failure, 'TIMEOUT');
+      assert.equal(f.unit.stopped, true);
+      assert.deepEqual(f.events.slice(-2), ['stop', 'show']);
+      const calls = f.options.length;
+      await f.unit.dispose(true);
+      assert.equal(f.options.length, calls); assert.equal(f.unit.stopObservation, expected);
+      f.unit.close();
+    }
+  }
+  const fresh = unitFixture();
+  await fresh.unit.dispose(true);
+  assert.equal(fresh.unit.stopObservation, 'unknown');
+  assert.equal(fresh.unit.stopped, false); assert.equal(fresh.unit.failure, undefined);
+  assert.deepEqual(fresh.events, []); fresh.unit.close();
+});
+
+test("#963 cleanup budget is observed at existing remaining rejection, never inferred from command throws", async () => {
+  const cases = [
+    ['stop-budget', 0, 0, 2], ['show-budget', 1, 0, 3],
+    ['stop-unconfirmed', 1, 0, 2], ['show-unavailable', 1, 1, 3],
+    ['malformed', 1, 1, 2], ['missing', 1, 1, 2], ['duplicate', 1, 1, 2],
+  ];
+  for (const [kind, stops, shows, clockCalls] of cases) {
+    const f = unitFixture(); await f.unit.start('/fixture-node', []);
+    f.unit.latch('TIMEOUT');
+    f.events.length = 0; f.options.length = 0;
+    const command = f.unit.command, now = f.unit.now;
+    let reads = 0;
+    f.unit.now = () => { reads++; return now(); };
+    if (kind === 'stop-budget') f.time(180000);
+    f.unit.command = async (file, args, config) => {
+      assert.equal(config.timeout, 5000); assert.equal('signal' in config, false);
+      if (args[2] === 'stop') assert.deepEqual(args, ['-n', 'systemctl', 'stop', f.unit.name]);
+      else assert.deepEqual(args, ['-n', 'systemctl', 'show', f.unit.name,
+        '--property=LoadState', '--property=ActiveState', '--property=SubState', '--property=InvocationID']);
+      const output = await command(file, args, config);
+      if (args[2] === 'stop' && ['show-budget', 'stop-unconfirmed'].includes(kind)) f.time(180000);
+      if ((args[2] === 'stop' && kind === 'stop-unconfirmed') ||
+        (args[2] === 'show' && kind === 'show-unavailable')) {
+        f.time(180000); throw new Error('private-canary');
+      }
+      if (args[2] === 'show') {
+        if (kind === 'malformed') return 'private-canary';
+        if (kind === 'missing') return output.replace('SubState=dead\n', '');
+        if (kind === 'duplicate') return output + 'SubState=dead\n';
+      }
+      return output;
+    };
+    await assert.rejects(f.unit.dispose(true), { message: 'TRUSTED_BROWSER_UNIT_TIMEOUT' });
+    const expected = ['malformed', 'missing', 'duplicate'].includes(kind) ? 'show-invalid' : kind;
+    assert.equal(f.unit.stopObservation, expected);
+    assert.equal(f.unit.failure, 'TIMEOUT'); assert.equal(f.unit.stopped, true);
+    assert.equal(f.events.filter(e => e === 'stop').length, stops);
+    assert.equal(f.events.filter(e => e === 'show').length, shows);
+    assert.equal(reads, clockCalls); // No new remaining/now calls, including catch-time now.
+    await f.unit.dispose();
+    assert.equal(reads, clockCalls); assert.equal(f.options.length, stops + shows);
+    assert.equal(f.unit.stopObservation, expected); f.unit.close();
+  }
 });
 
 test("#914 owner verifies creation identity and realpath before deleting; non-owned/symlink directories preserved", () => {

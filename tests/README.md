@@ -355,7 +355,7 @@ mainのexact NUL profile argv / 単一exact HOME / UID / 安定PID,starttime / N
 所有0700非symlink profile/artifacts、NSS候補・単一cert、strict TLS・固定binary・非永続Contextを別々に確認する。
 全子のmutable title/envを再追跡せず、既存#915のexact profile方式は独立経路として保持する。
 
-`trusted-browser-unit.mjs`は#914専用の薄いadapterで、外側`trusted-seed-smoke.mjs`がunit外から使用する。
+`trusted-browser-unit.mjs`は#914由来の薄いshared adapterで、外側`trusted-seed-smoke.mjs`と予約outerがunit外から使用する。
 persist/migration書込み前にcgroup v2 / systemd / 非root / 非対話操作を、同設定の短い`true`専用unitで確認する。
 不足時は固定`TRUSTED_BROWSER_UNIT_UNAVAILABLE`で停止し、host設定変更・root Chrome・sandbox無効化・直接exec方式へのfallbackをしない。
 ownerが0700 temporary / browser HOME / 専用persistを所有し、既存sanitized envを`env -i`でtrusted browser childへ供給する。
@@ -388,6 +388,26 @@ unit RuntimeMaxSecは120秒とowner残予算（停止margin10秒控除）の小�
 通常CLI準備commandはowner残予算から30秒を予約し、既存process-group停止最大15秒＋ss最大5秒とmargin10秒を確保する。
 Browser.close10秒 / proof server close5秒 / Worker stop最大15秒等は既存API上限を維持し、child期限後のmanager停止を成功にしない。
 GET / navigationは5秒、response body4096文字上限を維持する。累積時間超過・残予算不足はtimeout保全であり、成功待機を延長しない。
+
+#963はshared BrowserUnitの既存dispose / call / showだけから、instanceのown data property `stopObservation`（string、初期`unknown`）を保持するprepared producer。固定分類は次のとおり。
+
+| stopObservation | 条件 |
+| --- | --- |
+| unknown | 初期、未startのdispose早期return、分類不能 |
+| stop-budget | 既存stopのremaining(true)が期限不足で拒否、command未発行 |
+| stop-unconfirmed | stop command発行開始後、正常復帰未確認 |
+| show-budget | stop正常復帰後、既存showのremaining(true)が期限不足で拒否、show未発行 |
+| show-unavailable | stop正常復帰後show command発行、正常復帰未確認 |
+| show-invalid | show正常復帰後、既存parserが拒否 |
+| accepted | 有効showが既存dispose停止predicateを満たす |
+| identity-mismatch | predicate不成立、捕捉済みInvocationと不一致 |
+| failed-state | predicate不成立、同Invocationのloaded / failed / failed |
+| state-unaccepted | その他の有効showでpredicate不成立 |
+
+停止predicateは`(LoadState=not-found && ActiveState=inactive) OR (InvocationID===this.invocation && ActiveState=inactive && SubState=dead)`のまま。acceptedをidentity-mismatchより優先し、not-found収集positiveも受理する。acceptedは状態predicate成立だけであり、正常終了・booking成功・削除許可を表さず、release=trueが既存first failureで後からthrowする場合とも両立する。
+budgetは既存remaining(true)拒否点でのみ分類し、command開始後の期限切れthrowはstop-unconfirmed / show-unavailableとする。追加command / remaining / now、raw応答・例外・PID / InvocationID / pathの新診断record、message / stack / causeによる分類を加えない。stopped=trueの再dispose早期returnは最初の観測を保持し、再stop / showやresetを行わない。first-latched failure、stopped設定時点、return / throw、command順序・引数・回数・最大5秒、既存deadline / 予備、start / terminal通常showを維持する。
+既存smokeのcommand / now有限注入で10値・2 positive・identity drift・active等拒否・malformed / 欠落 / 重複show・予算拒否とcommand後throw・未start / 再dispose・first failure / releaseを照合する。予約outer fixtureはTIMEOUT→stop正常→同Invocation loaded / failed / failedでも既存throw、unit_stop=unknown、diagnostic 0read、remove 0を維持する。観測propertyを実行 / throw / read / cleanup条件に使わず、booking outer / CLI / sanitizer / wrapperの文法・consumer・外部診断は未接続。merge後fresh mainからの後続接続は別判断とし、本Issueから起動しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared。Product識別子・POL→BR→REQ→AC→TC・CON / OOS、旧#914 / #922の成功report / 削除条件と過去Run結果は不変。finite成功は実Chrome / systemd / Worker / D1や停止後の実機挙動を証明せず、C0 / Gate A〜D / #608 Doneへ昇格しない。正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠とし、追加live proofの人間判断は#930に残す。
 
 標準Product CIの既存Unit stepで#915 fixtureと直接関連#914 fixtureを実行する。追加workflowは作らない。
 合成fixtureはroot本人・strict report・正常/意図的失敗の削除順、parent exit0 / setsid子残存の非終端、
