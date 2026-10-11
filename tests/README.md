@@ -465,6 +465,34 @@ runnerの実版・prune・API互換性 / 権限は未観測。新trust / consume
 finite検証・準備mergeは実機停止、C0、#537 Gate A〜D、#608 Doneを証明しない。
 standard validationの可否とsupplementary local検証、正式current-head Product CI / PR Traceability / 独立reviewは区別する。
 
+## #970 systemd単発probeのprepared caller guard / 固定一時step
+
+`evaluation/systemd-timeout-probe.test.mjs` の `probeStep` が固定一時テンプレートの正本であり、実workflowは変更しない。
+#948の既存Git / event照合方式をprobe専用に使い、通常Product CIにruntime参照がなければ不活性として受理する。
+参照がある場合はsame-repository `pull_request`、Product CI、base `main`、`proof/930-systemd-timeout-<lowercase slug>`候補だけを検査する。
+eventのPR番号 / open / repo / ref / SHA、env ref / base / head、Git HEAD / origin/main / merge-base、clean sourceを照合し、
+base≠head、base=origin/main=merge-base、base→HEADがProduct CI一ファイルのM、strict UTF8のbase末尾LFとprobe参照なしを必須とする。
+candidateはbase bytes＋exact `probeStep`だけ。通常9コマンド / permissions / trigger / actions / checkout / 順序を保持し、
+他src / workflow / package runtime / sealed / Productionの参照、dirty / stale / 不明、余分step / env / timeout等の差異は拒否する。
+Git / event / source収集はread-only・boundedで、fetch・外部アクセスしない。fixture入力だけexact suffixを除去し、guardの実source判定は保持する。
+
+固定stepはapplicability=true時だけの末尾一step、上限1分。同CLIをspawnSync一回、stdin ignore / stdout・stderr pipe、
+utf8・40000ms・4096bytesで観測する。probe owner30秒（cleanup10秒込み）は不変で、40秒は後処理margin、1分はwrapper backstopで停止保証ではない。
+error / signalなし、status===0、stderr空、runtime `formatProbe` と同じenum・順序の一行＋LF一つだけを再構成して表示する。
+不正文法 / 型 / field / 改行 / 未知値、非zero / timeout / overflow / exec errorは固定 `SYSTEMD_TIMEOUT_PROBE_FAILED; observation=unknown` とexit1。
+同step内のread-only `uname -r` / `systemctl --version`は各一回・5秒・4096bytes。bounded ASCII kernel releaseと先頭numeric systemd版だけを
+固定 `SYSTEMD_TIMEOUT_PROBE_ENV` 行へ出し、版取得失敗はunknownにする。raw出力 / error / env / PID / path / commandlineを表示せず、retryしない。
+有効なunknown / timeout観測のexit0も停止 / cleanup / no-live / 予約成功の証明ではない。
+
+既存Unitとnpm testで同じfinite testを二回実行できる候補fixture、ordinary / fork / missing / stale / dirty / 差分path / strict source / template拒否、
+spawnしないVMでprobe一回＋版query二回、上限 / status / 全enum / 順序 / LF一つ / canary非反射を検査する。
+#968のCLI / FS / identity / timeoutと#914 / #922 / booking outer回帰を維持し、runtime / shared BrowserUnit / booking / packageは変更しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared。既存TC-F-003/005・TC-NF-902/914関連評価の準備に限り、
+Product POL→BR→REQ→AC→TC / CON / OOS、識別子・traceability、bookingの停止 / read / 成功 / 削除条件と110 / 120 / 180 / 190秒は不変。
+機械条件は人間の一回実行承認ではない。fresh main / exact template、source base / head、一時PR / Run / attempt、費用・未確認時保持・復旧は#930の別checkpointへ残す。
+実systemd / Chrome / Worker / D1・一時workflow作成 / 実行は行わず、実runner版 / API / prune・C0・Gate A〜D / #608 Doneは未証明。
+local補助検証と正式current-head Product CI / PR Traceability / 独立Claude Reviewは別証拠とする。
+
 ## #922 same-origin read-only DOM（段階1 prepared＋normal/intentional実走部分証拠）
 
 `npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
