@@ -16,11 +16,13 @@ export async function useTrustedBookingProcess(ports, signal) {
   let seed, handle, reservationId, home, identity, browserSignal;
   let observing = false, observerClosed = false, primary = "none", workerStop = "not-attempted";
   let workerFailure = "none", workerStopDetail = "not-attempted", stopDetailFinished = false;
+  // #983 V2 preparation only: no DOM event collection or Confirm-state inference.
   const observe = boundary => {
     if (!observing || observerClosed) return;
     try {
       if (ports.observe?.({ phase, boundary, primary, worker_stop: workerStop,
-        worker_failure: workerFailure, worker_stop_detail: workerStopDetail }) !== undefined) throw failure(phase);
+        worker_failure: workerFailure, worker_stop_detail: workerStopDetail,
+        dom: "none", fault: "none", write: "unobserved" }) !== undefined) throw failure(phase);
     }
     catch { observerClosed = true; failed = true; throw failure(phase); }
   };

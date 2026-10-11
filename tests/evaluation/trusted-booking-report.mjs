@@ -26,9 +26,12 @@ const diagnosticFields = {
   worker_stop: ["not-attempted", "attempted", "confirmed", "unknown"],
   worker_failure: ["none", "preflight", "spawn", "group", "booking-listener", "listener-unattributed", "owned-listener", "deadline", "unknown"],
   worker_stop_detail: ["not-attempted", "ownership", "ownership-failed", "signal", "signal-failed", "signal-sent", "wait", "wait-failed", "port", "port-failed", "confirmed", "unknown"],
+  dom: ["none", "context", "cookie-check", "cookie-inject", "cookie-jar", "route", "navigation", "assets", "initial-ui", "selection", "preview", "review", "confirm", "confirm-ui", "history", "handoff", "complete", "unknown"],
+  fault: ["none", "assertion", "timeout", "abort", "navigation", "request", "response", "network", "driver", "unknown"],
+  write: ["unobserved", "action-start", "request-seen", "route-allowed", "response-201", "unknown"],
 };
 const diagnosticKeys = Object.keys(diagnosticFields);
-const diagnosticGrammar = new RegExp("^TRUSTED_BOOKING_DIAGNOSTIC_V1; " +
+const diagnosticGrammar = new RegExp("^TRUSTED_BOOKING_DIAGNOSTIC_V2; " +
   diagnosticKeys.map(key => `${key}=(${diagnosticFields[key].join("|")})`).join("; ") + "\\n$");
 const diagnosticStatKeys = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeMs", "ctimeMs"];
 const diagnosticOwnerKeys = ["path", "dev", "ino", "uid", "gid", "mode"];
@@ -47,7 +50,7 @@ export function encodeBookingDiagnostic(data) {
         !diagnosticFields[key].includes(field.value)) throw diagnosticFail();
       return `${key}=${field.value}`;
     });
-    const text = `TRUSTED_BOOKING_DIAGNOSTIC_V1; ${values.join("; ")}\n`;
+    const text = `TRUSTED_BOOKING_DIAGNOSTIC_V2; ${values.join("; ")}\n`;
     if (Buffer.byteLength(text) > 256) throw diagnosticFail();
     return text;
   } catch { throw diagnosticFail(); }

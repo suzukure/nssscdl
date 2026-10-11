@@ -29,7 +29,7 @@ function terminalReason(unit) {
 function observedDetail(data, observation) {
   // Existing codec rejects accessors / unknown fields, and reconstructs only enums.
   const text = encodeBookingDiagnostic(data);
-  return `; unit_stop=confirmed; diagnostic=observed; stop_observation=${observation}; ` + text.slice("TRUSTED_BOOKING_DIAGNOSTIC_V1; ".length, -1);
+  return `; unit_stop=confirmed; diagnostic=observed; stop_observation=${observation}; ` + text.slice("TRUSTED_BOOKING_DIAGNOSTIC_V2; ".length, -1);
 }
 function sanitizedFailure(error) {
   // Exact fixed messages only; never reflect arbitrary error fields or causes.
@@ -49,7 +49,7 @@ function sanitizedFailure(error) {
           const prefix = `TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=${reason}; unit_stop=confirmed; diagnostic=observed; stop_observation=${observation}; `;
           const suffix = "; retain owned files; do not retry";
           if (typeof message === "string" && message.startsWith(prefix) && message.endsWith(suffix)) {
-            const data = parseBookingDiagnostic("TRUSTED_BOOKING_DIAGNOSTIC_V1; " + message.slice(prefix.length, -suffix.length) + "\n");
+            const data = parseBookingDiagnostic("TRUSTED_BOOKING_DIAGNOSTIC_V2; " + message.slice(prefix.length, -suffix.length) + "\n");
             const observed = observedDetail(data, observation);
             if (message === failure("terminal", reason, observed).message) return failure("terminal", reason, observed);
           }

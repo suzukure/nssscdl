@@ -177,6 +177,10 @@ function observedFixture(fault = "", failWrite = () => false) {
   let writes = 0;
   f.ports.observe = data => {
     writes++;
+    // #983 every publication, including failures/stop, remains unobserved.
+    assert.deepEqual(Object.keys(data), ["phase", "boundary", "primary", "worker_stop", "worker_failure", "worker_stop_detail", "dom", "fault", "write"]);
+    assert.equal(data.dom, "none"); assert.equal(data.fault, "none"); assert.equal(data.write, "unobserved");
+    assert.deepEqual(parseBookingDiagnostic(encodeBookingDiagnostic(data)), data);
     if (failWrite(data)) throw new Error(canary);
     snapshots.push({ ...data });
   };
@@ -268,7 +272,7 @@ function attachWorker(f, { unattributed = false, failStart = false, failStop = f
   return { effects, port: () => actual };
 }
 
-test("#976 actual Worker first failure and ownership refusal share six-field snapshots, with no signal or readback", async () => {
+test("#976 actual Worker first failure and ownership refusal share nine-field snapshots, with no signal or readback", async () => {
   const f = observedFixture(), worker = attachWorker(f, { unattributed: true });
   await assert.rejects(f.run(), fixed);
   const last = f.snapshots.at(-1);
