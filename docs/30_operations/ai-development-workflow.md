@@ -284,6 +284,10 @@ Draft中はClaude Reviewのjob条件がレビューを抑止する。Draftをpus
 
 ### 検証結果の出所
 
+Issue起点のstaged diff 0件では、既存development gate・trusted diff guard通過後だけ、base blobから復元・整合確認した `format-codex-no-diff-report.py` が最終説明を表示用に検査する（#986）。raw上限16 KiB、strict UTF-8、regular/no-symlinkを要求し、固定promptの5ラベル・完全一致の短い選択値だけを許可する。自由記述は未知の秘密を正規表現で検出できるとみなさず拒否し、全体不正・欠損では抜粋せず固定の「最終説明は安全に公開不可/欠損」を使う。rendered全体は8 KiB以下とし、raw本文をlog / Summary / Artifactへ保存しない。既存gateで先に検出された最終報告欠損やdecision marker等の停止は従来どおりで、このfallbackへ迂回しない。
+
+コメントはrun ID + attemptとrun URL、`diff=0`、commit/push/PRなし、未実装/要人間確認、自己申告が正式CIやIssue Doneを証明しない旨を記載する。選択値の理由・観測はCodexの自己申告であり、差分0件の根本原因をhost事実と認定しない。表示内容はclassifier / pause record / CI / auto-resumeの入力にしない。Issueへ1回だけ投稿し、失敗・結果不明では固定診断でstep failureとする。重複投稿retryやpaid再実行を追加しない。差分ありPRとClaude follow-upは既存経路を維持する。既存workflow fixtureで表示正負・trusted復元・投稿失敗を検証し、自然なno-diff runの実効性と正式CIは別の証拠として確認する。Product識別子・traceabilityへの影響はない。
+
 AI Developerが掲載する`Codexの報告`内のvalidation記述はCodexの自己申告であり、formal GitHub Actions evidenceではない。repository changeをpushした投稿ではworkflowが取得した`pushしたcommit` SHAを、そのrunが行ったrepository writeの識別子として表示する。このSHAはCodexが同一内容をvalidation済みであることを意味しない。formal current-head validationはGitHub Actions/checks側の別証拠を正本とし、AI Developerはそのstatus/resultを取得・判定しない。repository changeのないfollow-up投稿ではpush SHAを表示しない。
 
 AI Developerの投稿またはjob successだけでは、別のmachine-generated evidenceが明示的に証明しない限り、少なくとも`Codexの報告`に記載されたcommand・条件での実行、その報告が最後の変更後かつ表示SHAと同一内容に対する実行、各validationのexit statusまたは出力の独立確認、GitHub Actions/checksの開始・完了・status/result、job successが報告内の各validation成功を意味することを保証しない。
