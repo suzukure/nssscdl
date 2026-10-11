@@ -269,7 +269,7 @@ def mask_trusted_usage_callers(text, masked_text=None):
     masked = (text if masked_text is None else masked_text).splitlines(keepends=True)
     callers = {
         'develop-from-issue': (
-            ('Prepare branch and Issue context', '97fd5f4c7ddc606ee7c00b1fc1be1a146237fc3f74040e266cf9d44ad13443d4'),
+            ('Prepare branch and Issue context', 'ac930bd3c8d2d107d1fc2201b96cf7366504f49de33a5eff02035b90b0b1c1c4'),
             ('Collect trusted Codex Issue usage evidence', 'bfc251027d66840b06728ff7a6120f1a763e8482a21586641bdfa90666009b80'),
             ('Upload sanitized Codex Issue usage evidence', '9caaa0bf306eb6f44d03c7db3f1b74e5eaf30c8f0f42ed1ec6b3cfc7bd809c4d'),
             ('Report Codex Issue usage evidence persistence', '980b17711d9035000aa47a6a26877271a8689b67c278f859bd43f2a87f511742')),

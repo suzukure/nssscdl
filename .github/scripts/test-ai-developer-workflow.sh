@@ -1606,6 +1606,14 @@ git() {
     if [ "$FAULT" = missing ] && [[ "$1" == show || "$1" == rev-parse ]]; then return 1; fi
     if [ "$FAULT" = tampered ] && [ "$1" = show ]; then printf 'exit 99\n'; return; fi
   fi
+  # The newly introduced helper is a finite trusted-base fixture until merge.
+  # Existing base blobs still use real Git; workload/leftover copies are unused.
+  if [[ "${2-}" == *:.github/scripts/format-codex-no-diff-report.py ]]; then
+    case "$1" in
+      rev-parse) command git hash-object --no-filters "$FIXTURE_ROOT/.github/scripts/format-codex-no-diff-report.py"; return ;;
+      show) cat "$FIXTURE_ROOT/.github/scripts/format-codex-no-diff-report.py"; return ;;
+    esac
+  fi
   command git -C "$FIXTURE_ROOT" "$@"
 }
 gh() {
@@ -1664,6 +1672,22 @@ for helper, variable in prepared:
     for fault in ('missing', 'tampered'):
         result = execute(restore_script, {'FAULT_HELPER': helper.name, 'FAULT': fault})
         assert result.returncode != 0, ('unsafe restore passed', helper, fault)
+# #986: same trusted restore boundary, never workload or leftover evaluator.
+no_diff_name = 'format-codex-no-diff-report.py'
+assert (runner / no_diff_name).read_bytes() == (root / '.github/scripts' / no_diff_name).read_bytes()
+assert no_diff_name not in step('Prepare fixed Codex follow-up prompt')
+followup_restore = workflow_text.rsplit('      - name: Restore trusted post-Codex helpers\n', 1)[1]
+assert no_diff_name not in followup_restore
+for invalid in ('', 'BAD', '0' * 40):
+    result = execute(restore_script, {'NO_DIFF_REPORT_BLOB': invalid})
+    assert result.returncode != 0
+for fault in ('missing', 'tampered'):
+    result = execute(restore_script, {'FAULT_HELPER': no_diff_name, 'FAULT': fault})
+    assert result.returncode != 0
+(runner / no_diff_name).unlink(missing_ok=True)
+(runner / no_diff_name).symlink_to(root / '.github/scripts' / no_diff_name)
+result = execute(restore_script)
+assert result.returncode == 0 and not (runner / no_diff_name).is_symlink()
 print('Prepared trusted supply/restore and fail-closed fixtures passed')
 print('Decision classifier and scope marker primitive fixtures passed')
 PY
@@ -1959,6 +1983,79 @@ if MOCK_ENTRY_FETCH_FAIL=true bash "$repo_root/.github/scripts/evaluate-issue-en
   exit 1
 fi
 
+# #986: bounded structured presentation, with all unsupported input withheld.
+python3 - "$repo_root" "$test_dir" <<'PY_NO_DIFF'
+import importlib.util
+import itertools
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+root, scratch = map(Path, sys.argv[1:])
+helper = root / '.github/scripts/format-codex-no-diff-report.py'
+spec = importlib.util.spec_from_file_location('no_diff', helper)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+final = scratch / 'no-diff-final'
+# Expectations come from the scoped five-field contract, not helper output.
+valid = ('作業状況: 変更なし\n差分0件の理由: 理由不明\n観測事実: 関連箇所を確認した\n'
+         '未実施: 実装と検証\n次の人間判断: 実行状況を確認\n')
+fallback = '最終説明は安全に公開不可/欠損。人間確認が必要です。\n'
+final.write_text(valid)
+assert module.explanation(final) == 'Codexの構造化説明（自己申告）\n' + valid
+final.write_text(valid.rstrip('\n'))
+assert module.explanation(final).endswith(valid)
+# Every admitted value must be a fixed prompt choice, and conversely.
+workflow = (root / '.github/workflows/ai-developer.yml').read_text()
+prompt = workflow.split('      - name: Prepare fixed Codex developer prompt\n', 1)[1].split('          CODEX_PROMPT\n', 1)[0]
+for label, values in module.FIELDS:
+    expected_line = '          ' + label + ': ' + ' / '.join(values)
+    assert prompt.splitlines().count(expected_line) == 1
+for values in itertools.product(*(values for _, values in module.FIELDS)):
+    report = ''.join(label + ': ' + value + '\n' for (label, _), value in zip(module.FIELDS, values))
+    final.write_text(report)
+    assert module.explanation(final) == 'Codexの構造化説明（自己申告）\n' + report
+
+bad = [b'', b'\xff', b'x' * (16 * 1024 + 1), b'x' * (16 * 1024),
+       valid.replace('\n', '\r\n').encode(), valid.encode() + b'\n',
+       valid.encode() + b'private-extra', valid.split('\n', 1)[1].encode()]
+# Dangerous shapes, secrets, personal/free text, counterfeit marker/approval,
+# extra values, duplicate/reordered fields: never redact into accepted text.
+for value in ('```', '@person', '<img>', '[link](target)', 'https://example.invalid/private',
+              'ghp_PRIVATE_CANARY', 'sk-private-canary', 'TOKEN=value', '$HOME',
+              '/home/runner/work/private', 'Traceback private', '姓名住所電話',
+              '[REQUIREMENTS_CHANGE_REQUIRED]', '[SCOPE_DECISION_REQUIRED]',
+              'approved', '承認済み', '変更なし private', '変更なし/状況不明',
+              '\x00', '\x1b', '\x7f', '\u200b', '\u202e', '\ufeff'):
+    bad.append(valid.replace('変更なし', value).encode())
+bad.extend([valid.replace('観測事実', '作業状況').encode(),
+            '\n'.join(reversed(valid.rstrip('\n').split('\n'))).encode()])
+for raw in bad:
+    final.write_bytes(raw)
+    assert module.explanation(final) == fallback
+    result = subprocess.run(['python3', '-I', '-B', str(helper), str(final), 'owner/repo', '986', '2'], capture_output=True)
+    assert result.returncode == 0 and not result.stderr
+    text = result.stdout.decode()
+    assert text.endswith(fallback) and len(result.stdout) <= 8 * 1024
+    assert 'PRIVATE_CANARY' not in text and 'private' not in text
+final.unlink()
+assert module.explanation(final) == fallback
+final.symlink_to(helper)
+assert module.explanation(final) == fallback
+final.unlink()
+final.mkdir()
+assert module.explanation(final) == fallback
+final.rmdir()
+os.mkfifo(final)
+assert module.explanation(final) == fallback
+final.unlink()
+for metadata in (['bad@repo', '986', '2'], ['owner/repo', 'x', '2'], ['owner/repo', '986', '0']):
+    result = subprocess.run(['python3', '-I', '-B', str(helper), str(final), *metadata], capture_output=True)
+    assert result.returncode != 0 and not result.stdout and not result.stderr
+print('No-diff presentation: closed values, unsafe/missing inputs and bounded non-reflection PASS')
+PY_NO_DIFF
+
 # Extract and exercise the actual Issue-entry publish step with all Git/GitHub
 # writes mocked. Creating a PR must preserve Draft until a human requests
 # review; updating an existing PR must not create another PR or change its
@@ -1974,12 +2071,12 @@ if grep -Fq '.[0]' "$publish_step"; then
 fi
 grep -Fq 'pushed_commit="$(git rev-parse HEAD)"' "$publish_step"
 grep -Fq 'echo "- pushしたcommit: ${pushed_commit}"' "$publish_step"
-grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$publish_step"
+grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$repo_root/.github/scripts/format-codex-no-diff-report.py"
 if grep -Eqi '(gh (run|pr checks)|/check-runs|/actions/runs|CODEX_FINAL.*(grep|jq)|((grep|jq).*CODEX_FINAL))' "$publish_step" "$followup_commit_step"; then
   echo 'AI Developer provenance must not query formal CI or parse Codex-reported validation.' >&2
   exit 1
 fi
-for publish_case in new existing-draft existing-ready cross-only cross-and-existing ambiguous malformed-number wrong-branch malformed-object malformed-list malformed-json full-page no-diff push-failure list-failure create-failure commit-a-regression commit-am-regression; do
+for publish_case in new existing-draft existing-ready cross-only cross-and-existing ambiguous malformed-number wrong-branch malformed-object malformed-list malformed-json full-page no-diff no-diff-safe no-diff-missing no-diff-publish-failure no-diff-publish-unknown no-diff-prepare-failure no-diff-metadata-failure push-failure list-failure create-failure commit-a-regression commit-am-regression; do
   (
     case_dir="$test_dir/publish-$publish_case"
     mkdir "$case_dir"
@@ -1989,6 +2086,17 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
     export PUBLISH_BODY="$case_dir/body.md" PUBLISH_COMMENT="$case_dir/comment.md"
     export GITHUB_REPOSITORY=owner/repo APP_SLUG=dev ISSUE_NUMBER=36
     export AI_BRANCH=ai/issue-36 CODEX_FINAL="$case_dir/final.md"
+    export RUNNER_TEMP="$case_dir" GITHUB_RUN_ID=986 GITHUB_RUN_ATTEMPT=2
+    cp "$repo_root/.github/scripts/format-codex-no-diff-report.py" "$RUNNER_TEMP/"
+    if [ "$PUBLISH_CASE" = no-diff-safe ]; then
+      printf '%s\n' '作業状況: 変更なし' '差分0件の理由: 理由不明' '観測事実: 関連箇所を確認した' '未実施: 実装と検証' '次の人間判断: 実行状況を確認' > "$CODEX_FINAL"
+    elif [ "$PUBLISH_CASE" = no-diff-missing ]; then
+      rm "$CODEX_FINAL"
+    elif [ "$PUBLISH_CASE" = no-diff-prepare-failure ]; then
+      rm "$RUNNER_TEMP/format-codex-no-diff-report.py"
+    elif [ "$PUBLISH_CASE" = no-diff-metadata-failure ]; then
+      export GITHUB_RUN_ID=invalid
+    fi
     publish_script="$publish_step"
     case "$PUBLISH_CASE" in
       commit-a-regression)
@@ -2017,7 +2125,7 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
           echo 'Publish must not stage post-guard worktree changes.' >&2
           return 2
           ;;
-        diff) [ "$PUBLISH_CASE" = no-diff ] ;;
+        diff) [[ "$PUBLISH_CASE" == no-diff* ]] ;;
         push) [ "$PUBLISH_CASE" != push-failure ] ;;
         rev-parse) printf '%040d\n' 392 ;;
         *) echo "Unexpected git call: $*" >&2; return 2 ;;
@@ -2064,7 +2172,17 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
           done
           return 0
           ;;
-        'issue comment') return 0 ;;
+        'issue comment')
+          while [ "$#" -gt 0 ]; do
+            case "$1" in --body-file) shift; cp "$1" "$PUBLISH_COMMENT" ;; esac
+            shift
+          done
+          # Unknown can mean the server accepted a comment before transport loss.
+          case "$PUBLISH_CASE" in
+            no-diff-publish-failure|no-diff-publish-unknown) echo 'PRIVATE_TRANSPORT_CANARY' >&2; return 1 ;;
+          esac
+          return 0 ;;
+
         *) echo "Unexpected gh call (including automatic stage change): $*" >&2; return 2 ;;
       esac
     }
@@ -2078,7 +2196,7 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
       fi
     }
     case "$PUBLISH_CASE" in
-      *-failure|*-regression|ambiguous|malformed-*|wrong-branch|full-page) [ "$outcome" = failure ] ;;
+      *-failure|no-diff-publish-unknown|*-regression|ambiguous|malformed-*|wrong-branch|full-page) [ "$outcome" = failure ] ;;
       *) [ "$outcome" = success ] ;;
     esac
     case "$PUBLISH_CASE" in
@@ -2102,9 +2220,30 @@ for publish_case in new existing-draft existing-ready cross-only cross-and-exist
         grep -Fq 'pushしたcommit: 0000000000000000000000000000000000000392' "$PUBLISH_COMMENT"
         assert_no_publish_call 'gh pr create '
         ;;
-      no-diff)
-        grep -Fq 'このAI Developer実行ではリポジトリの変更はありませんでした。commit・pushは行っていません。' "$PUBLISH_LOG"
-        assert_no_publish_call 'git (commit|push)|gh pr create'
+      no-diff-prepare-failure|no-diff-metadata-failure)
+        [ "$outcome" = failure ]
+        grep -Fq 'NO_DIFF_REPORT preparation_failed' stderr
+        assert_no_publish_call 'git (commit|push)|gh pr|gh issue comment'
+        ! grep -Fq 'format-codex-no-diff-report.py' stderr
+        ;;
+      no-diff*)
+        [ "$(grep -c '^gh issue comment ' "$PUBLISH_LOG")" -eq 1 ]
+        grep -Fq 'diff=0、commit/push/PRなし。未実装/要人間確認。' "$PUBLISH_COMMENT"
+        grep -Fq '実行run ID: 986 / attempt: 2' "$PUBLISH_COMMENT"
+        grep -Fq 'https://github.com/owner/repo/actions/runs/986/attempts/2' "$PUBLISH_COMMENT"
+        grep -Fq '最終報告は自己申告であり正式CIやIssue Doneを証明しません。' "$PUBLISH_COMMENT"
+        if [ "$PUBLISH_CASE" = no-diff-safe ]; then
+          grep -Fq '差分0件の理由: 理由不明' "$PUBLISH_COMMENT"
+        else
+          grep -Fq '最終説明は安全に公開不可/欠損' "$PUBLISH_COMMENT"
+        fi
+        if [[ "$PUBLISH_CASE" == no-diff-publish-* ]]; then
+          [ "$outcome" = failure ]
+          grep -Fq 'publication_failed_or_unknown' stderr
+        fi
+        ! grep -Fq 'PRIVATE_TRANSPORT_CANARY' stdout stderr
+        ! grep -Fq 'Related references and validation checked.' "$PUBLISH_COMMENT"
+        assert_no_publish_call 'git (commit|push)|gh pr (create|list|comment)|rerun|retry'
         ;;
       push-failure|list-failure)
         assert_no_publish_call 'gh pr (create|comment)|gh issue comment'
