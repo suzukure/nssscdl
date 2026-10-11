@@ -132,7 +132,10 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
           check(isDeepStrictEqual(request.postDataJSON(), url.pathname === previewPath ? { slotId: slot.slotId } :
             { slotId: slot.slotId, expectedStateToken: expectedToken }));
           const headers = await step(() => request.allHeaders());
-          check(headers.origin === bookingOrigin && headers["sec-fetch-site"] === "same-origin" &&
+          // Network-stack Fetch Metadata may be absent before continue; absence
+          // is unobserved, not evidence of the eventual wire value (#992).
+          check(headers.origin === bookingOrigin &&
+            (!Object.hasOwn(headers, "sec-fetch-site") || headers["sec-fetch-site"] === "same-origin") &&
             headers["content-type"] === "application/json" && headers["x-csrf-token"] === expectedCsrf);
         } else {
           check(method === "GET" && (assets.has(url.pathname) || url.pathname === "/favicon.ico" || url.pathname === confirmPath || url.pathname === csrfPath ||
