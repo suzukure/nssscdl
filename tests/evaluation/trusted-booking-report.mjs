@@ -24,6 +24,8 @@ const diagnosticFields = {
   boundary: ["entered", "completed", "unknown"],
   primary: ["none", "entry", "seed", "home", "tls", "worker", "dom", "stop", "readback", "scan", "unknown"],
   worker_stop: ["not-attempted", "attempted", "confirmed", "unknown"],
+  worker_failure: ["none", "preflight", "spawn", "group", "booking-listener", "listener-unattributed", "owned-listener", "deadline", "unknown"],
+  worker_stop_detail: ["not-attempted", "ownership", "ownership-failed", "signal", "signal-failed", "signal-sent", "wait", "wait-failed", "port", "port-failed", "confirmed", "unknown"],
 };
 const diagnosticKeys = Object.keys(diagnosticFields);
 const diagnosticGrammar = new RegExp("^TRUSTED_BOOKING_DIAGNOSTIC_V1; " +
@@ -45,7 +47,9 @@ export function encodeBookingDiagnostic(data) {
         !diagnosticFields[key].includes(field.value)) throw diagnosticFail();
       return `${key}=${field.value}`;
     });
-    return `TRUSTED_BOOKING_DIAGNOSTIC_V1; ${values.join("; ")}\n`;
+    const text = `TRUSTED_BOOKING_DIAGNOSTIC_V1; ${values.join("; ")}\n`;
+    if (Buffer.byteLength(text) > 256) throw diagnosticFail();
+    return text;
   } catch { throw diagnosticFail(); }
 }
 export function parseBookingDiagnostic(text) {
