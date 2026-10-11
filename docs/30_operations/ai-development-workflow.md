@@ -886,6 +886,19 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 4. **確定scope内で集約する**：同一原因・同じ確定scopeの直接関連診断変更を集約する。一度にまとめることを理由にscope/security boundary/diff上限を越えず、範囲外helperの変更が必要なら実装前に[既存scope decision](#issue起点開発中のdynamic-scope-decision)へ戻す。汎用診断基盤、retry loop、永続cache、新台帳は作らない。
 5. **変更PRの独立reviewを維持する**：mainへ残す実行コード、安全境界、token、cleanup、成功判定、証明fixtureを変更するPRには[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)の既存独立reviewを適用する。検証実行/ログ確認だけと変更PRのreviewを区別し、review承認を自然run成功の代用にしない。非Blockingの扱いは[Work Admission Control](#work-admission-control)を正本とする。
 
+診断／ログ／観測の変更を伴うIssueでは、上記の前提確認・集約（#816）を次の短い実行前手順で具体化する。人間/開発補助がCodex起動前に1〜3を既存Issue本文またはcheckpointへ短く整理し、実環境proof前に4を確認する。scope・Doneの確定判断は[current implementation contract](#issue本文におけるcurrent-implementation-contract)に従って本文へ同期する。
+
+1. **次の判断から逆算する**：現在の安全な非秘密証拠から残る原因候補と、次の自然な失敗/成功runで区別したい状態を絞る。最後の到達段階、最初の失敗分類、副作用の開始/送信/応答/結果不明、停止と診断読取可否など必要なものだけを選び、各観測で何が分かる／何は証明されないか、結果別に次の修正・停止・方式再評価をどう選ぶかを記録する。追加runだけを目的にログを増やさない。
+2. **write/read/fixtureの整合を照合する**：対象診断値に直接関係するproducer、伝送/codec、停止後reader、sanitizer/Proof caller、既存テストの固定期待値、文書をコード検索で確認する。値の接続によって初期default `none/unknown/unobserved` 等を前提とするfixtureが変わるか調べ、不可分な変更ファイルをCodex起動前のIssue scopeへ含める。無関係な製品文書・全repoを毎回探索しない。authority外の必須scopeが見つかれば起動前は人間判断へ戻し、起動後は[既存scope pause](#issue起点開発中のdynamic-scope-decision)に従う。
+3. **観測と検証を一括して選ぶ**：同じ診断契約・trust boundary上の複数観測点をcoherentな最小実装と有限fixtureでまとめ、representativeなpositive/negative、missing/late/duplicate/timeout/abort/observer throwのうち関係するものを検証する。全組合せや新taxonomyを義務化しない。異なるauthority、runtime、停止/ownership契約、prod activationを跨ぎ、独立main-safeな段階が必要なら[Issueの分割単位](#issueの分割単位)に従い、親の診断目的と実証前の完成範囲を保持する。
+4. **実環境proofの前提と再評価条件を確認する**：producerから安全な消費先まで、関係するfinite test・既存CIと安全条件の整合がそろった後に、既存の個別実証許可・予算・停止/復旧境界を確認する。失敗後も同種の不明点が残り、次の観測で判断が増えないなら下記の方式再評価条件（#924）に従う。局所ログ追加→paid AI→実runの無根拠な反復を行わず、差分不要なら#910の[差分要否判断](#関連修正の集約とレビュー準備)へ戻す。原因確定済みの単純修正、各段階の安全検証、人間許可済みone-shotは一律に停止しない。
+
+観測値は既存fixed enum / bounded sanitized grammarを優先し、cookie、token、URL、request/response body、SQL、session、PID等のraw出力や未知の秘密を含み得る生ログを保存しない。観測の欠如を副作用なし・送信なし・commitなしと断定せず、Confirm観測値を実write成功やreadbackの証明へ昇格させない。既存fail-closed、first-latch、human pause / owner、Confirm再送禁止、CI/Claude Review、人間承認を維持する。
+
+#984の説明例では、`tests/evaluation/trusted-booking-outer.test.mjs` の `dom=none; fault=none` という既存default期待値も2の照合対象となり、7番目の必須変更ファイルをCodex起動前のscope判断へ載せられる。初回no-diffの原因は未特定であり、本手順で必ず回避できたとは扱わない。#982の安全な2-stage分割や#930の異なる停止/ownership契約の独立判断を維持し、常に1 PRへまとめる規則にはしない。
+
+#989の効果は反映後の自然な診断変更案件を最大3件まで既存Issueリンクで振り返り、AI Develop回数、scope pause、診断不足による再実証、review往復と人間負担の有無を比較する。比較不能・未観測はunknownとし、削減額を推定で保証しない。人工A/B、有料AI実験、定期観測、新台帳、全Issueへの機械的チェック義務は追加せず、観測完了を文書PR mergeの条件にしない。
+
 同じ目的の修正で次のいずれかが生じた場合、次の局所修正・診断追加・再実行を選ぶ前に方式を再評価する。
 
 1. 例外条件が増え、同じ設計前提が繰り返し問題になる。
