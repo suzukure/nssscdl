@@ -419,6 +419,52 @@ HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanu
 `REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
 POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOMの段階1準備は下記#922を参照する。Preview / Confirm、REQ-901/902全体、Gate A〜DとTC全体Passは後続責務。
 
+## #968 Chromeなしsystemd timeout・cgroup回収観測（dormant / prepared）
+
+`evaluation/systemd-timeout-probe.mjs` は#930 C方式再評価の専用観測probe。
+import時は起動せず、CLIはexactな`--run`一つだけをopt-in候補とし、指定なし・余剰引数は固定一行で拒否する。
+**本Issueでは実行しない。** 実機候補はLinux / systemd / 非rootの単一ランダムunitで、
+`BrowserUnit`の固定settingsと非interactive sudoを再利用して`/usr/bin/sleep 60`を一回だけ起動する。
+owner開始時の30秒にcleanup10秒を含め、runtimeは既存式`min(120,floor((残owner予算-10秒)/1秒))`（開始直後なら最大20秒）。
+既存start / terminal / disposeとfirst failureを保持し、別manager、追加kill / reset-failed / restart / retryは使わない。
+短いruntimeの観測であり、bookingの110 / 120 / 180 / 190秒や通常Chrome timeoutの再現証明ではない。
+
+start後の追加の既存show / checkでInvocation / ControlGroupを検証・保持し、exact生成unit pathを観測する。
+固定cgroup2 root / system.slice / unit directoryとeventsの非symlink・実path・device / inodeを照合し、
+NOFOLLOW / NONBLOCKで最大4097 bytesを読み、4096 bytes超、duplicate / malformed、read error、FS不成立はunknownへ閉じる。
+初回のpath / identity前提不成立はunknown、捕捉済みdirectory identityの変化はidentity-mismatchに分類する。
+`populated`一つの0 / 1だけを区別し、他の有効な整数keyは無視する。FDは各sample内で閉じ、
+保持FD / nlink / 通知 / cgroup.procs空から削除後の読取保証や再帰no-liveを導出しない。
+terminal終了 / 失敗後に既存disposeを一回だけ試行し、stopObservationを保持する。
+追加のcgroup sample→標準Manager `GetUnitProcesses`の単発query→同Invocation / ControlGroupの後確認は残cleanup予算内のみ。
+各command最大5秒・stdout既存16KiB、期限不足 / timeout / overflow / errorは未観測unknownとし、予算増量・再stopしない。
+Managerはexactな`a(sus) 0`＋LF一つだけempty-observed、その他の正常応答はnonempty-or-unaccepted。
+同Invocationの後確認ではprune後の空ControlGroupを許容するが、別のnonempty pathはmismatch。
+missing / API empty / failed-state / identity sameを停止確認やsnapshot read許可へ昇格しない。
+
+固定一行の正本は同moduleの`formatProbe` / enumと`systemd-timeout-probe.test.mjs`。
+terminal、stop_observation、cgroup_before / after、manager、identityだけをallowlistから再構成し、
+PID / commandline / path / Invocation / device / inode / stdout / stderr / exceptionを出力・保存しない。
+booking外部文法、共有BrowserUnit、outer / child / codec / wrapper、成功・削除・diagnostic read gateとworkflowは変更しない。
+
+既存Unit stepへfinite testだけを追加する。command / FS / now / sleep注入とfinite CLI entryで、
+failed同Invocationのempty / missing / populated、Manager empty / nonempty / error / timeout / overflow、
+不正events、identity drift / symlink / FS不成立、予算不足、start不明、cancel、first failure、dispose一回、
+canary / 追加LFの非反射とopt-in拒否・通常caller不在を検査する。実systemd / Chrome / HTTP / Worker / D1は起動しない。
+
+後の一回観測は別の人間checkpointで、source / 通常CI / review、実kernel / systemd版、対象runner・単発一回・30秒・資源、
+未確認時保持 / 撤去を判断してから行う。結果別判断は次のとおりで、probe自身には接続しない。
+
+- 同Invocation failed＋present-empty：populated0方式の実現性あり。trust / identity / raceとdiagnostic-only consumer契約をfresh判断する。
+- 同Invocation failed＋missing＋Manager empty：削除経路が必要。API版 / 権限・manager trust・再起動 / 移動防止・前後identityを検討し、readは許可しない。
+- populated1 / identity drift / API unavailable / stop-show未確認：fail-closed維持。原因範囲を再評価し、Chrome反復・時間増量はしない。
+
+WACはR1 / C1 / P1 / B1、Yellow prepared。供給された版固定のLinux / systemd静的証拠を有限期待値の根拠とするが、
+runnerの実版・prune・API互換性 / 権限は未観測。新trust / consumer契約は本Issueで確定しない。
+既存TC-F-003/005・TC-NF-902/914関連評価の準備で、Product POL→BR→REQ→AC→TC / CON / OOS、識別子とtraceabilityは不変。
+finite検証・準備mergeは実機停止、C0、#537 Gate A〜D、#608 Doneを証明しない。
+standard validationの可否とsupplementary local検証、正式current-head Product CI / PR Traceability / 独立reviewは区別する。
+
 ## #922 same-origin read-only DOM（段階1 prepared＋normal/intentional実走部分証拠）
 
 `npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
