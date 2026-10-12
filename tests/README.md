@@ -1107,7 +1107,7 @@ R0 / C1 / P1 / B1、Yellow prepared。`REQ-005/207/914`、`AC-005-001/002`・`AC
 
 ## #1006 Cookieなし401専用inner・owned停止→D1 unchanged（prepared / finiteのみ）
 
-`evaluation/trusted-unauthenticated-booking-process.mjs` の `useUnauthenticatedBookingProcess(ports, signal)` は有限Port seam、`runUnauthenticatedBookingProcess({signal})` は既存seed / TLS / Worker / DOM / unchanged inspectionにsealedに結ぶ将来operator用関数である。import時の起動・CLI・child / outer / reportへの接続はない。正常`useTrustedBookingProcess` / `runTrustedBookingProcess`、Confirm201→5表delta、V2診断 / success checkpointは不変。
+`evaluation/trusted-unauthenticated-booking-process.mjs` の `useUnauthenticatedBookingProcess(ports, signal)` は有限Port seam、`runUnauthenticatedBookingProcess({signal})` は既存seed / TLS / Worker / DOM / unchanged inspectionにsealedに結ぶ将来operator用関数である。import時の起動・CLIはない。専用child / reportへのprepared接続は下記#1008、outerは後続Stage 3Bの責務である。正常`useTrustedBookingProcess` / `runTrustedBookingProcess`、Confirm201→5表delta、V2診断 / success checkpointは不変。
 
 既存`prepareTrustedBooking`のprivate baseline / opaque handle生成一回→fresh `browser-home`→strict TLSの`workerHandoff:true`→同じowned 8789 Workerのstart / isReady一回→strict `newContext({ignoreHTTPSErrors:false,serviceWorkers:"block"})`→`proveUnauthenticatedBookingDom({context,fixture:{month:seed.month},signal:tlsSignal})`一回の順を固定する。Cookie注入 / `addCookies`呼出はゼロで、実Cookie空・Browser-native GET / 401 / UI停止・POST0は#1002 DOMの責務。DOM戻り値はvoidのみを受け入れ、予約ID / Session / CSRFを取得しない。
 
@@ -1115,7 +1115,19 @@ Context / Browser閉鎖・TLS handoff cleanupは既存#914 ownerに任せ、`sto
 
 `evaluation/trusted-unauthenticated-booking-process.test.mjs` はNode Port doublesと既存`handoffListener` / `cleanupOwned`で順序、strict options、Cookie0 / 注入0、month / DOM void、close→stop→unchanged→scan、owner drift、start / stop / port unknown、DOM failure / timeout / abort、TLS handoff / cleanup、二重 / late / pending callback、固定非秘密出力を有限検証する。VMでsealed依存再利用と秘密scanを確認し、通常`npm run test:unit`へ追加する。実Chrome / 8789 Listener / systemd / 永続D1を起動せず、既存所有者の110 / 120 / 180 / 190秒等・TLS検証・SIGINT制約は変更しない。
 
-R0 / C1 / P1 / B1、Yellow prepared（Stage 2）。sourceの証拠境界は`POST count=0`と`readback=unchanged`であり、正常V2の`write=unobserved`をno-write証明にしない。`REQ-005/207/914`、`AC-005-001/002`・`AC-914-004`、`TC-F-005-01`・`TC-NF-914-04`に関係するfinite partial evidenceだけで、POL→BR→REQ→AC→TC / CON / OOSの意味は不変。CookieなしをSession失効実証・`TC-F-207-03`全体Passとしない。実8789 Chrome / Listener / 全19表unchangedの統合Proof、同一HEAD正式Product CI・PR Traceability・独立Claude Reviewは別証拠。専用child / outer / report / 正式Proof手順はStage 3の別Issue・fresh WAC / 人間判断待ちで、自動開始しない。#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。
+R0 / C1 / P1 / B1、Yellow prepared（Stage 2）。sourceの証拠境界は`POST count=0`と`readback=unchanged`であり、正常V2の`write=unobserved`をno-write証明にしない。`REQ-005/207/914`、`AC-005-001/002`・`AC-914-004`、`TC-F-005-01`・`TC-NF-914-04`に関係するfinite partial evidenceだけで、POL→BR→REQ→AC→TC / CON / OOSの意味は不変。CookieなしをSession失効実証・`TC-F-207-03`全体Passとしない。実8789 Chrome / Listener / 全19表unchangedの統合Proof、同一HEAD正式Product CI・PR Traceability・独立Claude Reviewは別証拠。専用child / reportは下記#1008でprepared実装する。専用outer（Stage 3B）/ 正式Proof手順は別Issue・fresh WAC / 人間判断待ちで、自動開始しない。#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。
+
+## #1008 Cookieなし401専用Child＋固定Report（Stage 3A / prepared / finiteのみ）
+
+`evaluation/trusted-unauthenticated-booking-child.mjs` の `useUnauthenticatedBookingChild({runInner,write,signal,isolated})` はsingle-use inner Portを一回だけ呼び、exact `{phase:"complete",status:"prepared"}` のdata fieldsを専用prepared報告へ変換する。isolatedは厳密な`true`だけで、test-only fixtureは別execution値となる。abort / 不正戻値 / raw例外 / 書込失敗は専用unknownを原則一回attemptし、innerを再試行しない。並行・二重entryとabort後のlate結果はsuccess報告へ進めない。ファイルが既存・部分書込・結果不明の場合は保持し、unknownで上書き・再生成しない。
+
+CLIはexact `--isolated-child`だけを明示opt-inとし、`runUnauthenticatedBookingProcess({signal})`へsealedに接続する。単なるimport・不正argvは起動しない。110秒soft abort・SIGINT / SIGTERMを設け、finallyでtimer / signal handlerを解除し、stdout / stderrへrawエラーを反射しない。isolated Linux / Node24・sanitized `TMPDIR===HOME===XDG_CONFIG_HOME`とChild所有起動は後続Outerの責務であり、本IssueのCIはreal CLI / Chrome / Worker / systemd / persistent D1を実行しない。
+
+`evaluation/trusted-unauthenticated-booking-report.mjs` がfixed grammar / 114-byte上限の機械正本で、別ファイル`unauthenticated-booking-report`を一度だけwrite / readする。normal `booking-report` / V2診断 / checkpointは使用しない。completeは`execution=isolated`または`fixture`・`phase=complete; status=prepared; readback=unchanged`で、unknownは専用固定failed文法だけを許す。owned directory identity・O_NOFOLLOW・regular / nlink1 / 0o600・bounded read・inode / stat / exact bytesを照合し、`.partial`を排他生成→内容読戻し→rename確認する。directory drift / 既存finalやpartial / link / I/O不明 / 改竄をfail-closedにし、失敗writerを再利用しない。秘密・row / Session / CSRF / SQL / IDやcauseを報告へ追加しない。
+
+同名の専用child / report `.test.mjs` を既存`test:unit`へ登録し、finite Port・VM operator・file-isolated owned TMPでgrammar、fixture区別、110秒設定 / 解除、abort / timeout / late / 二重・並行entry、inner→unchanged / scan→report順序、書込 / 読取 / rename不明、ownership / inode / mode drift、旧normal文字列と秘密canary拒否を検証する。後続専用Outerはsame BrowserUnit Invocationのterminalとport / owner確認後にのみこのreportを読む。ChildはUnit terminal / no-live・cleanup Doneを宣言しない。
+
+R0 / C1 / P1 / B1、Yellow preparedを維持する。`REQ-005/207/914`・`AC-005-001/002`・`AC-914-004`・`TC-F-005-01`・`TC-NF-914-04`へのfinite partial evidenceだけで、POL→BR→REQ→AC→TC / CON / OOSは不変。実401 / Chrome成功、Session失効 / `TC-F-207-03`全体Pass、#537 Gate A〜D、#608 Done、Production Readyへ昇格しない。Stage 3Bと実Chrome / 実Worker / 全19表unchanged＋owned cleanup同一Invocationの正式Proofは未実施・別人間判断待ち。同一HEAD正式Product CI / PR Traceability / 独立Claude Reviewは別途確認する。
 
 ## #930 実Chrome単一予約normalの公式positive実証（2026-10-12）
 
