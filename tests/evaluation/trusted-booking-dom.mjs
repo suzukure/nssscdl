@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { parsePreview, parseConfirm, intervalLabel, dateTimeLabel, validMonth,
   validDateTime, classificationLabels } from "../../src/web/model.ts";
 import { expectedHistory } from "./trusted-https-assertions.mjs";
+import { tokyoNowMonth } from "../../src/web/model.ts";
 
 export const bookingOrigin = "https://127.0.0.1:8789";
 const timeout = 5000; // Same per-operation bound as the existing read-only DOM helper.
@@ -31,6 +32,202 @@ export async function assertBookingReviewDom(page, view, classification, run = a
   check(isDeepStrictEqual(await run(() => page.locator("#operation-content li").allTextContents()), changes));
   check(changes.length > 0 || paragraphs.includes("区分変更はありません。"));
   if (classification === "additional") check(paragraphs.includes("現在は追加区分ですが、他予約のキャンセル等によりLesson開始前までは後から再分類される場合があります。"));
+}
+
+// #1002: prepared negative consumer only. The owner supplies a fresh, empty
+// strict-TLS / serviceWorkers:"block" context and owns its terminal teardown.
+// No Cookie injection, synthetic responses, lifecycle, D1, report, or CLI.
+export async function proveUnauthenticatedBookingDom({ context, fixture, signal }) {
+  const failed = () => new Error("TRUSTED_UNAUTHENTICATED_BOOKING_DOM_FAILED");
+  let terminal = false, page, navigationCount = 0, explicitPath;
+  let rejectStopped;
+  const stopped = new Promise((_, reject) => { rejectStopped = reject; });
+  stopped.catch(() => {});
+  const stop = () => { if (!terminal) { terminal = true; rejectStopped(failed()); } };
+  const require = condition => { if (!condition) { stop(); throw failed(); } };
+  const alive = () => {
+    require(!terminal && !signal.aborted);
+    if (navigationCount) require(page.url() === bookingOrigin + "/student");
+  };
+  const step = async action => {
+    alive(); let timer;
+    try {
+      const result = await Promise.race([stopped,
+        Promise.resolve().then(() => { alive(); return action(); }),
+        new Promise((_, reject) => { timer = setTimeout(() => { stop(); reject(failed()); }, timeout); })]);
+      alive(); return result;
+    } catch { stop(); throw failed(); }
+    finally { clearTimeout(timer); }
+  };
+  const requests = new Map(), responses = new Map(), counts = new Map(), pending = new Set();
+  const initialMonth = tokyoNowMonth(); // Same initial month as src/web/student.ts.
+  const monthPath = month => `/api/me/schedule-months/${month}`;
+  const deletion = "__Host-student_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  const body = JSON.stringify({ error: { code: "UNAUTHENTICATED", message: "認証が必要です。", retry: "none" } });
+  const guidance = "認証が必要です。認証後に画面を開き直してください。";
+  // Closed non-secret response header values; no arbitrary diagnostic headers.
+  const safeHeaders = (headers, path, api) => {
+    const rules = {
+      "content-type": api ? /^application\/json(?:;\s*charset=utf-8)?$/i :
+        new RegExp(`^${assets.get(path)}(?:;\\s*charset=utf-8)?$`, "i"),
+      "cache-control": /^no-store$/,
+      "content-length": /^\d{1,8}$/,
+      "date": /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/,
+      "connection": /^(keep-alive|close)$/,
+      "keep-alive": /^timeout=\d{1,3}(?:, max=\d{1,6})?$/,
+      "transfer-encoding": /^chunked$/,
+      "content-encoding": /^(gzip|br|deflate)$/,
+      "vary": /^Accept-Encoding$/i,
+      "referrer-policy": /^no-referrer$/,
+      ...(api ? { "set-cookie": { test: value => value === deletion } } : {}),
+    };
+    require(Object.entries(headers).every(([name, value]) => typeof value === "string" && rules[name]?.test(value)));
+    require(rules["content-type"].test(headers["content-type"]) && headers["cache-control"] === "no-store");
+    if (api) require(headers["set-cookie"] === deletion);
+    if (path === csrfPath) require(headers["referrer-policy"] === "no-referrer");
+  };
+  const emptyJar = async () => require(isDeepStrictEqual(await step(() => context.cookies()), []));
+  const drain = async () => {
+    await step(async () => {
+      // Route completion can enqueue response validation. Drain both generations
+      // under one bound; never return while an admitted response is unchecked.
+      do {
+        alive(); await Promise.all([...pending]); alive();
+        const missing = [...requests.keys()].filter(request => !responses.has(request));
+        await Promise.all(missing.map(request => page.waitForResponse(response => response.request() === request, { timeout })));
+        alive();
+      } while (pending.size);
+    });
+    alive();
+    require([...requests.keys()].every(request => responses.has(request)));
+  };
+  const onAbort = () => stop();
+  try {
+    require(signal && typeof signal.addEventListener === "function" && !signal.aborted);
+    require(context && typeof context === "object" && !spent.has(context));
+    spent.add(context); // No reuse after success, failure, or concurrent invocation.
+    require(context.browser() && context.pages().length === 0 && context.serviceWorkers().length === 0);
+    require(fixture && isDeepStrictEqual(Object.keys(fixture), ["month"]) && validMonth(fixture.month));
+    const targets = [monthPath(fixture.month), confirmPath, csrfPath];
+    const initialPaths = new Set([monthPath(initialMonth), confirmPath]);
+    signal.addEventListener("abort", onAbort, { once: true });
+    await emptyJar();
+    // Retained even after return/failure: late routes are denied until owner close.
+    await step(() => context.route("**/*", route => {
+      const task = (async () => {
+        try {
+          alive();
+          const request = route.request(), rawUrl = request.url(), url = new URL(rawUrl), path = url.pathname;
+          require(url.origin === bookingOrigin && rawUrl === bookingOrigin + path && !url.username && !url.password &&
+            !url.search && !url.hash && request.method() === "GET" && request.postData() === null &&
+            request.redirectedFrom() === null && request.frame() === page.mainFrame());
+          require(assets.has(path) || (explicitPath ? path === explicitPath : initialPaths.has(path)));
+          require(!counts.has(path)); counts.set(path, 1);
+          require(request.isNavigationRequest() === (path === "/student") &&
+            (path !== "/student" || navigationCount === 0));
+          const headers = await step(() => request.allHeaders());
+          const browserHeaders = new Set(["accept", "accept-language", "accept-encoding", "user-agent", "host",
+            "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest",
+            "sec-fetch-user", "priority", "cache-control", "pragma", "upgrade-insecure-requests", "origin", "referer", "content-length"]);
+          require(Object.keys(headers).every(name => browserHeaders.has(name)));
+          require(!Object.hasOwn(headers, "cookie") && !Object.hasOwn(headers, "authorization") &&
+            !Object.hasOwn(headers, "x-csrf-token") && !Object.hasOwn(headers, "content-type") &&
+            !Object.hasOwn(headers, "transfer-encoding") &&
+            (!Object.hasOwn(headers, "content-length") || headers["content-length"] === "0"));
+          require(!Object.hasOwn(headers, "origin") || headers.origin === bookingOrigin);
+          require(!Object.hasOwn(headers, "host") || headers.host === "127.0.0.1:8789");
+          // Missing Fetch Metadata is unobserved (#992), never fabricated.
+          require(!Object.hasOwn(headers, "sec-fetch-site") || headers["sec-fetch-site"] === "same-origin" ||
+            path === "/student" && headers["sec-fetch-site"] === "none");
+          require(!Object.hasOwn(headers, "referer") || headers.referer === bookingOrigin + "/student");
+          require(!Object.hasOwn(headers, "sec-fetch-mode") || headers["sec-fetch-mode"] ===
+            (path === "/student" ? "navigate" : path === "/student.css" ? "no-cors" : "cors"));
+          require(!Object.hasOwn(headers, "sec-fetch-dest") || headers["sec-fetch-dest"] ===
+            (path === "/student" ? "document" : path === "/student.css" ? "style" : assets.has(path) ? "script" : "empty"));
+          require(!Object.hasOwn(headers, "sec-fetch-user") || path === "/student" && headers["sec-fetch-user"] === "?1");
+          if (!assets.has(path)) require(headers.accept === "application/json");
+          await emptyJar(); alive();
+          requests.set(request, path);
+          await step(() => route.continue()); // No fetch/fulfill/header rewrite/retry.
+        } catch { stop(); try { await route.abort(); } catch { /* owner teardown */ } }
+      })();
+      pending.add(task); task.finally(() => pending.delete(task));
+      return task;
+    }));
+    // A routed WebSocket is never connected to its server. Keep this deny route
+    // alongside the HTTP guard; owner closes the context, including late sockets.
+    await step(() => context.routeWebSocket("**/*", () => stop()));
+    const onPage = candidate => { if (page && candidate !== page) stop(); };
+    context.on("page", onPage);
+    context.on("serviceworker", stop);
+    page = await step(() => context.newPage());
+    require(context.pages().length === 1 && context.pages()[0] === page);
+    page.on("popup", stop); page.on("websocket", stop); page.on("download", stop);
+    page.on("framenavigated", frame => {
+      try {
+        if (frame !== page.mainFrame() || ++navigationCount !== 1 || frame.url() !== bookingOrigin + "/student") stop();
+      } catch { stop(); }
+    });
+    page.on("requestfailed", stop);
+    page.on("response", response => {
+      if (terminal) return;
+      const task = step(async () => {
+        const request = response.request(), path = requests.get(request);
+        require(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
+        responses.set(request, response);
+        const api = !assets.has(path);
+        require(response.status() === (api ? 401 : 200));
+        safeHeaders(await step(() => response.allHeaders()), path, api);
+        if (api) require(await step(() => response.text()) === body);
+        await emptyJar();
+      }).catch(() => stop());
+      pending.add(task); task.finally(() => pending.delete(task));
+    });
+    const navigation = await step(() => page.goto(bookingOrigin + "/student", { waitUntil: "load", timeout }));
+    require(navigation && navigation.status() === 200 && navigationCount === 1);
+    await step(() => page.getByRole("heading", { name: "生徒の予定・本人履歴", exact: true }).waitFor({ timeout }));
+    const inspectDom = async () => {
+      await step(() => page.waitForFunction(() => ["#schedule-content", "section ol", "#operation-content"]
+        .every(selector => document.querySelector(selector)?.getAttribute("aria-busy") === "false"), undefined, { timeout }));
+      for (const selector of ["#schedule-status", "#history-status", "#operation-status"])
+        require(await step(() => page.locator(selector).textContent()) === guidance);
+      for (const selector of ["section ol li", ".slot", "#operation-content > *"])
+        require(await step(() => page.locator(selector).count()) === 0);
+      require(await step(() => page.locator("#selection-status").textContent()) === "");
+      require(await step(() => page.locator("#schedule-month").isDisabled()));
+      for (const name of ["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ",
+        "選択枠の予約内容をPreview", "内容を確認して予約を確定"])
+        require(await step(() => page.getByRole("button", { name, exact: true }).isDisabled()));
+      require(await step(() => page.evaluate(() => {
+        const html = document.documentElement.outerHTML;
+        return document.cookie === "" && !document.querySelector('[aria-pressed="true"].slot') &&
+          !/expectedStateToken|csrfToken|studentId|reservationId|token_hash|seed-self|seed-other|@/.test(html);
+      })));
+    };
+    await inspectDom(); await drain();
+    require([...assets.keys()].every(path => counts.has(path)));
+    // At least one real initial API response must have caused DOM stop before
+    // any explicit GET. Never substitute a synthetic API response into the UI.
+    require([...responses.keys()].some(request => initialPaths.has(requests.get(request))));
+    for (const path of targets) {
+      if (counts.has(path)) continue; // Never retry an admitted/cancelled request.
+      explicitPath = path;
+      await step(() => page.evaluate(async path => {
+        // Browser-native fetch; its actual Request/Response events are the proof.
+        const response = await fetch(path, { method: "GET", credentials: "same-origin", cache: "no-store",
+          redirect: "error", headers: { Accept: "application/json" } });
+        await response.arrayBuffer(); // Consume body without exporting it.
+      }, path));
+      await drain(); require(counts.has(path)); explicitPath = undefined;
+    }
+    await inspectDom(); await drain(); await emptyJar();
+    require(context.pages().length === 1 && context.serviceWorkers().length === 0);
+    terminal = true;
+    return undefined; // No live proof/report checkpoint or booking identity.
+  } catch { stop(); throw failed(); }
+  finally {
+    try { signal?.removeEventListener?.("abort", onAbort); } catch { throw failed(); }
+  }
 }
 
 export async function proveTrustedBookingDom({ browser, context, session, seed, signal, observe }) {
