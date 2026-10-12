@@ -70,6 +70,21 @@ export async function captureBookingBaseline(db: BookingReadPort, validation: Se
   } catch { throw fail(); }
 }
 
+// No-cookie GET proof only: compare every row (including stored timestamps)
+// and schema privately. Only the independently sampled D1 clock may advance.
+export async function verifyBookingUnchanged(db: BookingReadPort, validation: SeedValidation,
+  baseline: BookingBaseline): Promise<void> {
+  try {
+    const before = baselines.get(baseline);
+    check(before && !inspected.has(baseline));
+    inspected.add(baseline);
+    if (!before) throw fail();
+    const after = await capture(db, validation);
+    check(after.time >= before.time);
+    check(same(before.schema, after.schema) && same(before.tables, after.tables));
+  } catch { throw fail(); }
+}
+
 // Only the strict seed's self -> bookable reservation is admitted. Other
 // scenarios fail closed; no automatic retry, repair or NOT_APPLIED inference.
 export async function verifyBookingReadback(db: BookingReadPort, validation: SeedValidation,
