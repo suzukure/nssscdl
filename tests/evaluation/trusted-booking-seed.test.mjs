@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, linkSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, linkSync, writeFileSync,
+  lstatSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -7,13 +8,14 @@ import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 import { migrations } from "./local-https-smoke.mjs";
 import { validation } from "./trusted-evaluation-seed.mjs";
-import { captureBookingBaseline, verifyBookingReadback } from "./booking-readback.ts";
+import { seedTrustedStudents } from "../fixtures/d1/trusted-student-seed.ts";
+import { captureBookingBaseline, verifyBookingReadback, verifyBookingUnchanged } from "./booking-readback.ts";
 import { bookingD1, checkBookingEnvironment, checkBookingResources, directoryIdentity, checkDirectoryIdentity, checkOwnedTree, origin,
-  persistence, proxyOptions, useBookingSeedProxy } from "./trusted-booking-seed.mjs";
+  persistence, proxyOptions, useBookingSeedProxy, failure } from "./trusted-booking-seed.mjs";
 
 const fixed = (error) => error instanceof Error && error.message === "TRUSTED_BOOKING_SEED_FAILED" && !("cause" in error);
 const readFailure = (error) => error instanceof Error && error.message === "BOOKING_EVALUATION_READBACK_FAILED" && !("cause" in error);
-function fixture() {
+function fixture(expectedOptions = proxyOptions) {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec("PRAGMA foreign_keys=ON");
   for (const name of migrations()) sqlite.exec(readFileSync(`migrations/${name}`, "utf8"));
@@ -31,7 +33,7 @@ function fixture() {
       catch (e) { sqlite.exec("ROLLBACK"); throw e; }
     } };
   const factory = async (options) => {
-    assert.equal(options, proxyOptions);
+    assert.equal(options, expectedOptions);
     return { env: { ASSETS: { fetch() {} }, EVALUATION_BOOKING_DB: db }, dispose: async () => { disposed++; } };
   };
   return { sqlite, db, factory, batches: () => batches, disposed: () => disposed };
@@ -51,6 +53,166 @@ function commitFixture(f, seed) {
   f.sqlite.exec("COMMIT");
 }
 const snapshot = (f) => JSON.stringify(f.sqlite.prepare("SELECT * FROM student_sessions ORDER BY id").all());
+
+// Existing VM seam, with real prepare/checkOwned/inspection bodies and private
+// WeakMap. Only preflight/CLI/Proxy are finite; no production persist is created.
+async function ownedFixture(baselineFault) {
+  const temp = mkdtempSync(resolve(tmpdir(), "booking-owned-fixture-"));
+  const home = resolve(temp, "home"), persist = resolve(temp, ".wrangler/student-booking-evaluation");
+  mkdirSync(home);
+  const options = Object.freeze({ configPath: "fixture-config", remoteBindings: false,
+    persist: Object.freeze({ path: resolve(persist, "v3") }) });
+  const f = fixture(options), events = [];
+  const control = { fault: "", uid: process.getuid(), pause: undefined };
+  let proxies = 0, reads = 0, disposals = 0, handle, seed;
+  const source = readFileSync("tests/evaluation/trusted-booking-seed.mjs", "utf8");
+  const importLine = 'const { getPlatformProxy } = await import("wrangler");';
+  assert.equal(source.split(importLine).length - 1, 2);
+  assert.match(source, /await getPlatformProxy\(proxyOptions\)/);
+  const identities = source.slice(source.indexOf("export function directoryIdentity"), source.indexOf("// Finite static preflight"));
+  const boundaries = source.slice(source.indexOf("\nfunction checkOwned(handle)"));
+  const code = (identities + boundaries).replaceAll("export ", "").replaceAll(importLine, "");
+  const api = runInNewContext(`${code}\n({prepareTrustedBooking, inspectTrustedBooking, inspectTrustedBookingUnchanged})`, {
+    process: { env: { TMPDIR: home }, getuid: () => control.uid }, root: temp, persistence: persist, proxyOptions: options,
+    owned: new WeakMap(), resolve, readdirSync, realpathSync, mkdirSync, bookingD1, failure,
+    lstatSync: path => { if (path === resolve(temp, ".wrangler")) events.push("owner"); return lstatSync(path); },
+    check: ok => { if (!ok) throw failure(); },
+    seedTrustedStudents, verifyBookingReadback, verifyBookingUnchanged, validation, migrations,
+    captureBookingBaseline: async (db, rules) => {
+      const baseline = await captureBookingBaseline(db, rules);
+      if (baselineFault === "unknown-baseline") return Object.freeze({});
+      if (baselineFault === "spent-baseline") await verifyBookingUnchanged(db, rules, baseline);
+      return baseline;
+    },
+    preflight: async () => {
+      events.push("preflight");
+      if (control.pause) await control.pause;
+      if (control.fault === "preflight") throw new Error("private-canary");
+    },
+    exec: async () => { events.push("migration"); },
+    getPlatformProxy: async (supplied) => {
+      assert.equal(supplied, options);
+      proxies++; events.push("proxy");
+      if (proxies === 1) return f.factory(supplied);
+      if (control.fault === "proxy") throw new Error("private-canary");
+      const read = {
+        prepare(query) {
+          reads++; events.push("read");
+          const rules = validation();
+          assert.ok(/^(SELECT|PRAGMA)\b/.test(query) || [rules.authSql, ...rules.reservationScans].includes(query));
+          if (control.fault === "read") throw new Error("private-canary");
+          return { all: () => f.db.prepare(query).all() };
+        },
+        batch() { throw new Error("forbidden-writer"); },
+        withSession(constraint) { assert.equal(constraint, "first-primary"); events.push("session"); return read; },
+      };
+      return { env: { ASSETS: { fetch() {} }, EVALUATION_BOOKING_DB: read }, dispose: async () => {
+        disposals++; events.push("dispose");
+        if (control.fault === "dispose") throw new Error("private-canary");
+      } };
+    },
+  });
+  try {
+    await api.prepareTrustedBooking((value, capability) => { seed = value; handle = capability; });
+    assert.equal(f.disposed(), 1);
+    events.length = 0;
+    return { ...f, ...api, control, events, handle, seed, home, persist, temp,
+      proxies: () => proxies, reads: () => reads, disposals: () => disposals,
+      close() { f.sqlite.close(); rmSync(temp, { recursive: true }); } };
+  } catch (error) { f.sqlite.close(); rmSync(temp, { recursive: true }); throw error; }
+}
+const inspect = (f, mode, handle = f.handle) => mode === "positive" ?
+  f.inspectTrustedBooking(handle, "new") : f.inspectTrustedBookingUnchanged(handle);
+async function spent(f) {
+  const counts = [f.proxies(), f.reads(), f.disposals()];
+  for (const mode of ["positive", "unchanged"]) await assert.rejects(inspect(f, mode), fixed);
+  assert.deepEqual([f.proxies(), f.reads(), f.disposals()], counts);
+}
+
+test("#1004: run-owned unchanged and positive share private one-shot; read-only session/disposal", async () => {
+  for (const mode of ["unchanged", "positive"]) {
+    const f = await ownedFixture();
+    try {
+      assert.equal(Object.isFrozen(f.handle), true);
+      assert.deepEqual(Reflect.ownKeys(f.handle), []);
+      assert.equal(JSON.stringify(f.handle), "{}");
+      if (mode === "positive") commitFixture(f, f.seed);
+      const before = snapshot(f), changes = f.sqlite.prepare("SELECT total_changes() AS n").get().n;
+      assert.equal(await inspect(f, mode), undefined);
+      assert.equal(snapshot(f) === before, true);
+      assert.equal(f.sqlite.prepare("SELECT total_changes() AS n").get().n, changes);
+      assert.equal(f.batches(), 1); assert.equal(f.proxies(), 2); assert.equal(f.disposals(), 1);
+      assert.deepEqual(f.events.slice(0, 5), ["preflight", "owner", "proxy", "session", "session"]);
+      assert.deepEqual(f.events.slice(-2), ["owner", "dispose"]);
+      assert.equal(f.events.filter(e => e === "owner").length, 2);
+      assert.equal(f.events.at(-1), "dispose"); assert.ok(f.reads() > 0);
+      await spent(f); // Both success directions, including cross-use.
+    } finally { f.close(); }
+  }
+});
+test("#1004: foreign capabilities and concurrent cross-use never open a second proxy", async () => {
+  const f = await ownedFixture();
+  try {
+    for (const handle of [{}, Object.freeze({}), null]) {
+      for (const mode of ["positive", "unchanged"]) await assert.rejects(inspect(f, mode, handle), fixed);
+    }
+    await assert.rejects(f.inspectTrustedBookingUnchanged(undefined), fixed);
+    await assert.rejects(f.inspectTrustedBooking(undefined, "new"), fixed);
+    assert.equal(f.proxies(), 1); assert.equal(f.reads(), 0);
+    // Consume at entry, before even the asynchronous preflight can complete.
+    for (const mode of ["positive", "unchanged"]) {
+      const other = await ownedFixture(); let release;
+      try {
+        if (mode === "positive") commitFixture(other, other.seed);
+        other.control.pause = new Promise(done => { release = done; });
+        const pending = inspect(other, mode);
+        await spent(other); assert.equal(other.proxies(), 1);
+        release(); await pending; await spent(other);
+      } finally { release?.(); other.close(); }
+    }
+  } finally { f.close(); }
+});
+test("#1004: unknown reads/proxy/disposal and row/schema changes spend handle; no retry/writes", async () => {
+  for (const fault of ["preflight", "proxy", "read", "dispose", "row", "schema", "unknown-baseline", "spent-baseline"]) {
+    const f = await ownedFixture(fault);
+    try {
+      f.control.fault = fault;
+      if (fault === "row") f.sqlite.exec("UPDATE student_sessions SET revoked_at=created_at WHERE id='seed-session-self'");
+      if (fault === "schema") f.sqlite.exec("CREATE TABLE extra(id TEXT)");
+      const changes = f.sqlite.prepare("SELECT total_changes() AS n").get().n;
+      await assert.rejects(inspect(f, "unchanged"), fixed);
+      assert.equal(f.sqlite.prepare("SELECT total_changes() AS n").get().n, changes);
+      assert.equal(f.disposals(), ["preflight", "proxy"].includes(fault) ? 0 : 1);
+      assert.equal(f.batches(), 1); await spent(f);
+      assert.equal(lstatSync(f.persist).isDirectory(), true); // Failures retain files.
+    } finally { f.close(); }
+  }
+});
+test("#1004: owner directory/home/parent/uid drift fails before read; post-read drift disposes once", async () => {
+  for (const drift of ["persist", "home", "parent", "uid", "symlink", "after-read"]) {
+    const f = await ownedFixture();
+    try {
+      const replace = () => {
+        const path = drift === "home" ? f.home : drift === "parent" ? resolve(f.temp, ".wrangler") : f.persist;
+        renameSync(path, `${path}-old`); mkdirSync(path);
+      };
+      if (drift === "uid") f.control.uid++;
+      else if (drift === "symlink") symlinkSync(f.home, resolve(f.persist, "foreign"));
+      else if (drift === "after-read") {
+        const prepare = f.db.prepare;
+        let changed = false;
+        f.db.prepare = (...args) => {
+          const statement = prepare(...args);
+          return { all: async () => { const result = await statement.all(); if (!changed) { changed = true; replace(); } return result; } };
+        };
+      } else replace();
+      await assert.rejects(inspect(f, "unchanged"), fixed);
+      assert.equal(f.reads() > 0, drift === "after-read");
+      assert.equal(f.disposals(), drift === "after-read" ? 1 : 0);
+      await spent(f);
+    } finally { f.close(); }
+  }
+});
 
 test("#937: fixed local identity is independent of the sealed read-only config", () => {
   assert.equal(origin, "https://127.0.0.1:8789");
