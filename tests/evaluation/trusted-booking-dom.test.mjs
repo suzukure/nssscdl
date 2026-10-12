@@ -7,7 +7,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
 import { encodeBookingDiagnostic, parseBookingDiagnostic } from "./trusted-booking-report.mjs";
-import { proveTrustedBookingDom, assertBookingReviewDom, bookingOrigin } from "./trusted-booking-dom.mjs";
+import { proveTrustedBookingDom, proveUnauthenticatedBookingDom, assertBookingReviewDom, bookingOrigin } from "./trusted-booking-dom.mjs";
+import { tokyoNowMonth } from "../../src/web/model.ts";
 
 const previewName = "選択枠の予約内容をPreview", confirmName = "内容を確認して予約を確定";
 const previewPath = "/api/me/reservations/preview", confirmPath = "/api/me/reservations";
@@ -262,10 +263,312 @@ test("#941 dormant helper has no production/default workflow caller or launch/cl
   const scan = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
     entry.isDirectory() ? scan(`${directory}/${entry.name}`) : [`${directory}/${entry.name}`]);
   for (const file of [...scan("src"), ...scan(".github/workflows")]) {
-    assert.doesNotMatch(readFileSync(file, "utf8"), /trusted-booking-dom|proveTrustedBookingDom|assertBookingReviewDom/, file);
+    assert.doesNotMatch(readFileSync(file, "utf8"), /trusted-booking-dom|proveTrustedBookingDom|proveUnauthenticatedBookingDom|assertBookingReviewDom/, file);
   }
   const source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8");
   assert.doesNotMatch(source, /route\.(?:fetch|fulfill)|\.reload\(|\.addCookies\(|browser\.newContext|\.launch\(|\.close\(|child_process|wrangler|systemd/);
+});
+
+// #1002 oracle: Application §8 / §10.2 / §10.3 session-only branch,
+// controller.ts 401 clear/stop and view.ts labels. All HTTP below is synthetic;
+// executing inspector/fetch functions in a finite VM is not real Chrome proof.
+function unauthenticatedFixture(options = {}) {
+  const controller = new AbortController(), page = new EventEmitter(), context = new EventEmitter();
+  const month = "2099-01", schedule = `/api/me/schedule-months/${month}`;
+  const initialSchedule = `/api/me/schedule-months/${tokyoNowMonth()}`;
+  const assets = ["/student", "/student.css", "/student.js", "/view.js", "/controller.js", "/model.js"];
+  const forwarded = [], denied = [], explicit = [], waiters = [];
+  const guidance = "認証が必要です。認証後に画面を開き直してください。";
+  let handler, websocketHandler, currentUrl = "about:blank", pages = [], stoppedUi = false, lastResponse, resume, entered;
+  const pending = new Promise(resolve => { entered = resolve; });
+  const frame = { page: () => page, url: () => currentUrl };
+  const node = { getAttribute: () => "false" };
+  const document = { cookie: "", documentElement: { outerHTML: "<main>認証が必要です。</main>" },
+    querySelector: selector => selector.includes("aria-pressed") ? null : node };
+  const controls = new Map(["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", previewName, confirmName]
+    .map(name => [name, true]));
+  const texts = new Map(["#schedule-status", "#history-status", "#operation-status"].map(selector => [selector, guidance]));
+  texts.set("#selection-status", "");
+  const lengths = new Map(["section ol li", ".slot", "#operation-content > *"].map(selector => [selector, 0]));
+  const emit = async (path, method = "GET", navigation = false) => {
+    const url = path.startsWith("https:") ? path : bookingOrigin + path, api = path.startsWith("/api/");
+    const requestHeaders = api ? { accept: "application/json", "sec-fetch-site": "same-origin" } : {};
+    // Asset oracle: reservation-worker.ts fixed response, also checked by #929 HTTP tests.
+    const headers = { "content-type": api ? "application/json" : (path === "/student" ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript") + "; charset=utf-8",
+      "cache-control": "no-store",
+      ...(api ? { "set-cookie": "__Host-student_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT" } : {}),
+      ...(!api ? { "x-content-type-options": "nosniff" } : {}),
+      ...(!api || path === csrfPath ? { "referrer-policy": "no-referrer" } : {}) };
+    const request = { url: () => url, method: () => method, postData: () => null, redirectedFrom: () => null,
+      frame: () => frame, isNavigationRequest: () => navigation,
+      allHeaders: async () => {
+        if (options.stall === "headers" && path === csrfPath) { entered(); await new Promise(resolve => { resume = resolve; }); }
+        if (options.abortHeaders && path === csrfPath) controller.abort(canary);
+        return requestHeaders;
+      } };
+    const response = { request: () => request, url: () => url, status: () => api ? 401 : 200,
+      fromServiceWorker: () => false, allHeaders: async () => headers,
+      text: async () => {
+        if (options.stall === "body" && path === csrfPath) { entered(); await new Promise(resolve => { resume = resolve; }); }
+        return '{"error":{"code":"UNAUTHENTICATED","message":"認証が必要です。","retry":"none"}}';
+      }, arrayBuffer: async () => new ArrayBuffer(0) };
+    if (path === (options.target ?? csrfPath)) options.change?.({ request, response, requestHeaders, headers });
+    if (options.absentSite) delete requestHeaders["sec-fetch-site"];
+    let passed = false;
+    await handler({ request: () => request, abort: async () => { denied.push(path); }, continue: async (...args) => {
+      assert.deepEqual(args, []); passed = true; forwarded.push(`${method} ${path}`);
+      if (navigation) page.emit("framenavigated", frame);
+      if (options.networkFailure && path === csrfPath) { page.emit("requestfailed", request); return; }
+      lastResponse = response; page.emit("response", response);
+      if (path === csrfPath) options.afterCsrf?.({ document, controls, texts, lengths });
+      if (options.duplicateResponse && path === csrfPath) page.emit("response", response);
+      for (const waiter of [...waiters]) if (waiter.match(response)) { waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(response); }
+      if (api && response.status() === 401) stoppedUi = true;
+    } });
+    return passed ? response : null;
+  };
+  Object.assign(page, {
+    mainFrame: () => frame, url: () => currentUrl,
+    goto: async url => {
+      currentUrl = url;
+      const response = await emit("/student", "GET", true);
+      for (const path of assets.slice(1)) if (path !== options.missingAsset) await emit(path);
+      for (const path of options.initial ?? [initialSchedule, confirmPath]) await emit(path);
+      if (options.extra) await emit(...options.extra);
+      return response;
+    },
+    waitForResponse: match => new Promise(resolve => waiters.push({ match, resolve })),
+    waitForFunction: async fn => {
+      if (!runInNewContext(`(${fn.toString()})()`, { document }) || !stoppedUi) {
+        const error = new Error(canary); error.name = "TimeoutError"; throw error;
+      }
+    },
+    getByRole: (role, { name, exact }) => {
+      assert.equal(exact, true);
+      return { waitFor: async () => { assert.equal(role, "heading"); assert.equal(name, "生徒の予定・本人履歴"); },
+        isDisabled: async () => controls.get(name) };
+    },
+    locator: selector => ({ textContent: async () => texts.get(selector), count: async () => lengths.get(selector),
+      isDisabled: async () => selector === "#schedule-month" && options.enabledMonth !== true }),
+    evaluate: async (fn, argument) => runInNewContext(`(${fn.toString()})(argument)`, { document, argument,
+      fetch: async (path, init) => {
+        assert.deepEqual(JSON.parse(JSON.stringify(init)), { method: "GET", credentials: "same-origin", cache: "no-store",
+          redirect: "error", headers: { Accept: "application/json" } });
+        explicit.push(path);
+        if (options.throwFetch) throw new Error(canary);
+        const response = await emit(path);
+        if (!response) throw new Error(canary);
+        return response;
+      } }),
+  });
+  Object.assign(context, {
+    browser: () => ({}), pages: () => pages, serviceWorkers: () => [],
+    cookies: async () => options.cookie ? [{ name: canary, value: canary }] : [],
+    route: async (pattern, callback) => { assert.equal(pattern, "**/*"); handler = callback; },
+    routeWebSocket: async (pattern, callback) => { assert.equal(pattern, "**/*"); websocketHandler = callback; },
+    newPage: async () => { pages = [page]; context.emit("page", page); return page; },
+  });
+  options.dom?.({ document, controls, texts, lengths });
+  return { input: { context, fixture: { month }, signal: controller.signal }, forwarded, denied, explicit, controller,
+    page, context, schedule, initialSchedule, assets, emit, pending, resume: () => resume(),
+    lateResponse: () => page.emit("response", lastResponse), socket: socket => websocketHandler(socket) };
+}
+const unauthenticatedError = error => {
+  assert.equal(error.message, "TRUSTED_UNAUTHENTICATED_BOOKING_DOM_FAILED");
+  assert.equal("cause" in error, false); assert.doesNotMatch(String(error), /private-canary|https:|SQL|Session/); return true;
+};
+
+test("#1002 finite no-cookie UI stops before explicit GETs; six assets, three target 401s, POST0", { timeout: 15000 }, async () => {
+  for (const initial of [undefined, [], ["/api/me/reservations"], [`/api/me/schedule-months/${tokyoNowMonth()}`]]) {
+    for (const absentSite of [false, true]) {
+      const f = unauthenticatedFixture({ initial, absentSite });
+      if (initial?.length === 0) {
+        await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+        assert.deepEqual(f.explicit, []); continue; // Explicit fetch cannot manufacture DOM success.
+      }
+      assert.equal(await proveUnauthenticatedBookingDom(f.input), undefined);
+      for (const path of [...f.assets, f.schedule, confirmPath, csrfPath])
+        assert.equal(f.forwarded.filter(value => value === `GET ${path}`).length, 1);
+      assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+      assert.ok(f.explicit.includes(csrfPath));
+      assert.ok(!f.explicit.includes(confirmPath) || !initial?.includes(confirmPath));
+      const saved = [...f.forwarded];
+      f.socket({ connectToServer: () => assert.fail("WebSocket must never forward") });
+      f.lateResponse(); await f.emit(csrfPath); await f.emit(confirmPath, "POST");
+      assert.deepEqual(f.forwarded, saved);
+      await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+      assert.deepEqual(f.forwarded, saved);
+    }
+  }
+});
+
+test("#1002 asset headers match Worker contract; bad/missing/extra headers stop further traffic", { timeout: 15000 }, async () => {
+  const changes = [
+    ...["x-content-type-options", "referrer-policy", "cache-control", "content-type"]
+      .flatMap(name => [({ headers }) => { delete headers[name]; }, ({ headers }) => { headers[name] = canary; }]),
+    ...["", "NOSNIFF", "nosniff, nosniff", "nosniff\nprivate-canary", null, 42]
+      .map(value => ({ headers }) => { headers["x-content-type-options"] = value; }),
+    ...["x-private", "access-control-allow-origin", "location", "set-cookie"]
+      .map(name => ({ headers }) => { headers[name] = canary; }),
+  ];
+  for (const target of ["/student", "/student.css", "/student.js", "/view.js", "/controller.js", "/model.js"]) {
+    for (const change of changes) {
+      const f = unauthenticatedFixture({ target, change });
+      await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+      assert.deepEqual(f.explicit, []);
+      assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+      const saved = [...f.forwarded];
+      f.lateResponse(); await f.emit(csrfPath); await f.emit(confirmPath, "POST");
+      assert.deepEqual(f.forwarded, saved);
+    }
+  }
+  // Asset-only admission must not widen the closed API response map.
+  const api = unauthenticatedFixture({ change: ({ headers }) => { headers["x-content-type-options"] = "nosniff"; } });
+  await assert.rejects(proveUnauthenticatedBookingDom(api.input), unauthenticatedError);
+  assert.ok(api.forwarded.every(value => value.startsWith("GET ")));
+});
+
+test("#1002 invalid route/header attempts never forward; late traffic remains denied", { timeout: 15000 }, async () => {
+  const mutations = [
+    ...["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].map(method => ({ request }) => { request.method = () => method; }),
+    ...["https://invalid.test/api/auth/student/csrf", `${bookingOrigin}${csrfPath}?x=${canary}`,
+      `${bookingOrigin}${csrfPath}?`, `${bookingOrigin}${csrfPath}#`, `${bookingOrigin}${csrfPath}#${canary}`,
+      `https://user:${canary}@127.0.0.1:8789${csrfPath}`, `${bookingOrigin}/api/me/reservations/preview`]
+      .map(url => ({ request }) => { request.url = () => url; }),
+    ({ request }) => { request.redirectedFrom = () => ({}); },
+    ({ request }) => { request.frame = () => ({}); },
+    ({ request }) => { request.isNavigationRequest = () => true; },
+    ({ request }) => { request.postData = () => canary; },
+    ...["cookie", "authorization", "x-csrf-token", "content-type", "transfer-encoding", "x-student-id", "x-private"]
+      .map(name => ({ requestHeaders }) => { requestHeaders[name] = canary; }),
+    ({ requestHeaders }) => { requestHeaders.origin = "https://invalid.test"; },
+    ({ requestHeaders }) => { requestHeaders.host = "invalid.test"; },
+    ({ requestHeaders }) => { requestHeaders.referer = bookingOrigin + "/student?secret=" + canary; },
+    ({ requestHeaders }) => { requestHeaders.accept = "text/plain"; },
+    ...["sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user"].map(name => ({ requestHeaders }) => { requestHeaders[name] = canary; }),
+    ...["cross-site", "same-site", "none", "", undefined, null, 42].map(value => ({ requestHeaders }) => { requestHeaders["sec-fetch-site"] = value; }),
+  ];
+  for (const change of mutations) {
+    const f = unauthenticatedFixture({ change });
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.ok(!f.forwarded.includes(`GET ${csrfPath}`)); assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+    const saved = [...f.forwarded]; await f.emit(confirmPath, "POST"); assert.deepEqual(f.forwarded, saved);
+  }
+});
+
+test("#1002 finite wrong status/body/headers/cookies/identity fail closed without subsequent fetch", { timeout: 15000 }, async () => {
+  const changes = [
+    ...[200, 201, 302, 400, 403, 503].map(status => ({ response }) => { response.status = () => status; }),
+    ...['{}', '{"csrfToken":"private-canary","scope":"session"}', '{"error":{"code":"UNAUTHENTICATED","message":"SQL private-canary","retry":"none"}}',
+      '{"error":{"code":"UNAUTHENTICATED","message":"認証が必要です。","retry":"none"},"studentId":"private-canary"}']
+      .map(body => ({ response }) => { response.text = async () => body; }),
+    ({ response }) => { response.text = async () => { throw new Error(canary); }; },
+    ({ response }) => { response.url = () => "https://invalid.test/"; },
+    ({ response }) => { response.request = () => ({}); },
+    ({ response }) => { response.fromServiceWorker = () => true; },
+    ({ headers }) => { delete headers["set-cookie"]; },
+    ...[canary, `__Host-student_session=${canary}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+      "__Host-student_preauth=; Max-Age=0", "__Host-student_session=; Max-Age=0", "\nprivate-canary"]
+      .map(value => ({ headers }) => { headers["set-cookie"] = value; }),
+    ...["cache-control", "content-type", "referrer-policy", "access-control-allow-origin", "location", "x-private"]
+      .map(name => ({ headers }) => { headers[name] = canary; }),
+  ];
+  for (const change of changes) {
+    const f = unauthenticatedFixture({ change, target: `/api/me/schedule-months/${tokyoNowMonth()}` });
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(f.explicit, []); assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+  }
+  const csrf = unauthenticatedFixture({ change: ({ headers }) => { delete headers["referrer-policy"]; } });
+  await assert.rejects(proveUnauthenticatedBookingDom(csrf.input), unauthenticatedError);
+});
+
+test("#1002 stale DOM, unexpected assets/resources, duplicate response/request and cookie jar stop", { timeout: 15000 }, async () => {
+  const cases = [
+    { cookie: true }, { enabledMonth: true }, { missingAsset: "/model.js" }, { initial: [] },
+    { extra: [confirmPath, "POST"] }, { extra: [previewPath, "POST"] }, { extra: ["/favicon.ico"] },
+    { extra: ["https://invalid.test/student"] }, { extra: [confirmPath] },
+    { duplicateResponse: true }, { throwFetch: true }, { abortHeaders: true }, { networkFailure: true },
+    ...["section ol li", ".slot", "#operation-content > *"].map(selector => ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
+    ...["#selection-status", "#schedule-status", "#history-status", "#operation-status"].map(selector => ({ dom: ({ texts }) => texts.set(selector, canary) })),
+    ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", previewName, confirmName]
+      .map(name => ({ dom: ({ controls }) => controls.set(name, false) })),
+    ...["expectedStateToken", "csrfToken", "studentId", "reservationId", "token_hash", "seed-other", "private@example.test"]
+      .map(value => ({ dom: ({ document }) => { document.documentElement.outerHTML = value; } })),
+    { dom: ({ document }) => { document.cookie = canary; } },
+    { dom: ({ document }) => { document.querySelector = () => ({ getAttribute: () => "true" }); } },
+  ];
+  for (const options of cases) {
+    const f = unauthenticatedFixture(options);
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+    const saved = [...f.forwarded];
+    if (!options.cookie) { f.lateResponse(); await f.emit(confirmPath, "POST"); }
+    assert.deepEqual(f.forwarded, saved);
+  }
+});
+
+test("#1002 abort/timeout pending driver and late response never resume/retry; concurrent context is spent", { timeout: 15000 }, async () => {
+  for (const stall of ["headers", "body"]) {
+    const f = unauthenticatedFixture({ stall }), operation = proveUnauthenticatedBookingDom(f.input);
+    await f.pending;
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    f.controller.abort(canary);
+    await assert.rejects(operation, unauthenticatedError);
+    const saved = [...f.forwarded]; f.resume(); await new Promise(resolve => setImmediate(resolve));
+    f.lateResponse(); await f.emit(confirmPath, "POST"); assert.deepEqual(f.forwarded, saved);
+    if (stall === "headers") assert.ok(!saved.includes(`GET ${csrfPath}`));
+  }
+  const f = unauthenticatedFixture({ stall: "headers" });
+  await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError); // Real 5s bounded race.
+  const saved = [...f.forwarded]; f.resume(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.forwarded, saved); assert.ok(!saved.includes(`GET ${csrfPath}`));
+  for (const event of ["popup", "websocket", "download", "framenavigated"]) {
+    const f = unauthenticatedFixture({ stall: "headers" }), operation = proveUnauthenticatedBookingDom(f.input);
+    await f.pending; f.page.emit(event, {});
+    await assert.rejects(operation, unauthenticatedError); f.resume();
+  }
+  for (const event of ["page", "serviceworker"]) {
+    const f = unauthenticatedFixture({ stall: "headers" }), operation = proveUnauthenticatedBookingDom(f.input);
+    await f.pending; f.context.emit(event, {});
+    await assert.rejects(operation, unauthenticatedError); f.resume();
+  }
+  const preAborted = unauthenticatedFixture(); preAborted.controller.abort(canary);
+  await assert.rejects(proveUnauthenticatedBookingDom(preAborted.input), unauthenticatedError);
+  assert.deepEqual(preAborted.forwarded, []);
+  for (const fixture of [{ month: "2099-13" }, { month: "2099-01", secret: canary }, { month: canary }]) {
+    const f = unauthenticatedFixture(); f.input.fixture = fixture;
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(f.forwarded, []);
+  }
+});
+
+test("#1002 pending response validation blocks success; late invalid body/jar and changed final UI fail", { timeout: 15000 }, async () => {
+  for (const fault of ["body", "cookie"]) {
+    const options = { stall: "body", change: ({ response }) => {
+      const original = response.text;
+      response.text = async () => { const body = await original(); return fault === "body" ? canary : body; };
+    } };
+    const f = unauthenticatedFixture(options);
+    let settled = false;
+    const operation = proveUnauthenticatedBookingDom(f.input).finally(() => { settled = true; });
+    await f.pending; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    if (fault === "cookie") f.context.cookies = async () => [{ name: canary, value: canary }];
+    f.resume(); await assert.rejects(operation, unauthenticatedError);
+    assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+  }
+  const f = unauthenticatedFixture({ afterCsrf: ({ controls }) => controls.set(confirmName, false) });
+  await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+  for (const target of ["/student", "/model.js"]) {
+    const f = unauthenticatedFixture({ target, change: ({ headers }) => { headers["set-cookie"] = canary; } });
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(f.explicit, []);
+  }
+  const socket = unauthenticatedFixture({ stall: "headers" });
+  const operation = proveUnauthenticatedBookingDom(socket.input);
+  await socket.pending;
+  socket.socket({ connectToServer: () => assert.fail("WebSocket must never forward") });
+  await assert.rejects(operation, unauthenticatedError); socket.resume();
 });
 
 // #984 oracle: Issue-entered checkpoints and fixed control positions, not driver output.
