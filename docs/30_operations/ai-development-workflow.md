@@ -688,7 +688,9 @@ default branchに次を適用する。
 
 ### Product CI required-check適合と設定境界（#640）
 
-`.github/workflows/product-ci.yml` は全PRの `opened / synchronize / reopened / ready_for_review` で単一job `Product CI` を生成する。exact event headを全履歴付きでcheckoutし、trusted event base/headのmerge-baseからNUL-safeなdiffでPR固有のProduct差分を判定する。対象pathの機械正本は同workflowの適用判定とする。Product差分がある場合だけ#639のNode準備・標準9コマンドを実行し、差分なしは判定stepが `not applicable` と報告して同じjobが成功する。workflow/job全体はskipしない。SHA・checkout・merge-base・diff・出力の検証／取得不能はjob failureとし、fallbackしない。AI Workflow RegressionはProduct CIの代替証拠としない。
+`.github/workflows/product-ci.yml` は全PRの `opened / synchronize / reopened / ready_for_review` で単一job `Product CI` を生成する。exact event headを全履歴付きでcheckoutし、trusted event base/headのmerge-baseからNUL-safeなdiffでPR固有のProduct差分を判定する。対象pathの機械正本は同workflowの適用判定とする。Product差分がある場合だけ既存のNode準備と#998で改訂した標準8コマンドを実行し、差分なしは判定stepが `not applicable` と報告して同じjobが成功する。workflow/job全体はskipしない。SHA・checkout・merge-base・diff・出力の検証／取得不能はjob failureとし、fallbackしない。AI Workflow RegressionはProduct CIの代替証拠としない。
+
+#998は#639の個別suiteと集約`npm test`を同じProduct CIで二重実行する義務の後継決定である。正式Product CIはcurrent PR headで `npm ci`、`npm run build`、`npm run typecheck`、`npm run lint`、`npm run test:unit`、`npm run test:integration`、`npm run d1:local`、`npm run test:d1` を各1回正常終了することを必要条件とする。重複する末尾の `npm test` は実行せず、aggregate入口自体と二度目の順序・状態汚染の証拠は各PRのformal証拠に含めない。`package.json` の `scripts.test` と個別3suiteはローカル／必要時の全テスト入口として維持し、Product受入期待値は変更しない。Buildのdry-run、D1のlocal-only、failure伝播と既存required check／独立review／人間承認は維持する。過去の#638 / #639 / #640の確定履歴と証拠は遡及変更しない。
 
 #640の供給済み2026-10-06 inventoryでは、`main-protection`（ID `21908706`、default branch対象、bypassなし）のrequired checkは `Linked Issue` / GitHub Actions App ID `15368` のみで、strict policyはfalse、repositoryのauto merge featureはdisabled。PR #818 / Product CI Run #37435294868ではcheck name `Product CI` / 同App IDのsuccessが観測済みである。これは変更後の全PR起動やrequired-check有効化の証拠ではない。branch protection RESTは当該Appから403で取得不能だったため、設定確認は人間／trusted orchestrationがread可能なRuleset APIで行う。
 

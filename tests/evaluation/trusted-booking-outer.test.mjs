@@ -657,7 +657,7 @@ function allowsBookingCaller(files, context) {
         clean !== "" || changed !== productWorkflow + "\0" ||
         diff !== `M\0${productWorkflow}\0` || typeof baseWorkflow !== "string" ||
         bookingCaller.test(baseWorkflow) || !baseWorkflow.endsWith("\n")) return false;
-    // Byte-for-byte prefix preserves all nine commands, permissions, triggers,
+    // Byte-for-byte prefix preserves all standard commands, permissions, triggers,
     // actions and step ordering; the only suffix is one bounded, no-retry step.
     return workflow === baseWorkflow + proofStep;
   } catch { return false; }

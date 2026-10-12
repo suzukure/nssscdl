@@ -472,7 +472,7 @@ standard validationの可否とsupplementary local検証、正式current-head Pr
 参照がある場合はsame-repository `pull_request`、Product CI、base `main`、`proof/930-systemd-timeout-<lowercase slug>`候補だけを検査する。
 eventのPR番号 / open / repo / ref / SHA、env ref / base / head、Git HEAD / origin/main / merge-base、clean sourceを照合し、
 base≠head、base=origin/main=merge-base、base→HEADがProduct CI一ファイルのM、strict UTF8のbase末尾LFとprobe参照なしを必須とする。
-candidateはbase bytes＋exact `probeStep`だけ。通常9コマンド / permissions / trigger / actions / checkout / 順序を保持し、
+candidateはbase bytes＋exact `probeStep`だけ。通常の#998標準8コマンド / permissions / trigger / actions / checkout / 順序を保持し、
 他src / workflow / package runtime / sealed / Productionの参照、dirty / stale / 不明、余分step / env / timeout等の差異は拒否する。
 Git / event / source収集はread-only・boundedで、fetch・外部アクセスしない。fixture入力だけexact suffixを除去し、guardの実source判定は保持する。
 
@@ -484,7 +484,7 @@ error / signalなし、status===0、stderr空、runtime `formatProbe` と同じe
 固定 `SYSTEMD_TIMEOUT_PROBE_ENV` 行へ出し、版取得失敗はunknownにする。raw出力 / error / env / PID / path / commandlineを表示せず、retryしない。
 有効なunknown / timeout観測のexit0も停止 / cleanup / no-live / 予約成功の証明ではない。
 
-既存Unitとnpm testで同じfinite testを二回実行できる候補fixture、ordinary / fork / missing / stale / dirty / 差分path / strict source / template拒否、
+現行のUnit stepで同じfinite testを実行できる候補fixture（ローカルのnpm test入口も維持）、ordinary / fork / missing / stale / dirty / 差分path / strict source / template拒否、
 spawnしないVMでprobe一回＋版query二回、上限 / status / 全enum / 順序 / LF一つ / canary非反射を検査する。
 #968のCLI / FS / identity / timeoutと#914 / #922 / booking outer回帰を維持し、runtime / shared BrowserUnit / booking / packageは変更しない。
 WACはR0 / C1 / P1 / B1、Yellow prepared。既存TC-F-003/005・TC-NF-902/914関連評価の準備に限り、
@@ -799,7 +799,7 @@ synthetic acknowledgementの201は実DB atomic成功の証拠ではなく、TC�
 `d1/reservation-student-service.test.ts` は既存Cloudflare Vitest / Miniflareのfile-isolated `AUTH_DB`を所有し、
 Production migrations `0001`〜`0012`、変更していない#898のschema fingerprint / empty-only seedを使う。
 read-only評価persist・他test fileのDB・Production / remote resourceへ接続しない。
-標準 `npm run test:d1` / `npm test` の既存Product CI topologyへfixtureを追加するだけで、listener / Worker activationはない。
+現行#998のProduct CIでは標準 `npm run test:d1` でfixtureを実行し、ローカルの `npm test` 入口も維持する。listener / Worker activationはない。
 real Session Cookie → CSRF GET → Preview 200 → 正規tokenのConfirm 201一回 → 本人History 200を直列に検査する。
 成功判定はHTTP acknowledgementだけでなく、実DBのReservation / Occupancy / Audit / required Intent / Outboxの
 内容・Actor・同一D1時刻T・未claim状態・他人History非公開・既存Integrity Scanで照合する。
@@ -1020,7 +1020,7 @@ preflightで残予算が減った場合は既存unitの短いhard期限が優先
 #948の同ファイル内caller guardはProduction / 旧sealed / 他workflowの予約outer・child・report参照を引き続き拒否する。
 通常main / 通常PRのProduct CI参照も拒否し、GitHub Actionsのsame-repository `pull_request` / base `main` / `proof/930-booking-normal-...`だけを例外候補とする。
 eventのPR HEADとGit HEAD、event baseとcheckout時に取得した`origin/main`、merge-base、clean sourceを照合し、base→HEAD差分がProduct CI一ファイルの変更だけであることを必須とする。baseが進んだ・取得不能・dirty sourceならfail-closedとし、fresh checkout / eventの再照合が必要。
-正本base workflowとのbyte単位比較で既存9コマンド・permissions・trigger・actions・step順序を保持し、同testの`proofStep`に一致する末尾一stepだけを許容する。単発`--run`、runner step上限4分、outer subprocess上限190秒 / 出力4096 bytes、成功stdoutの既存固定checkpoint完全一致・stderr空・exit0を検査する。#951 / #955ではerror / signalなし、status===1、stdout空、stderrがallowlisted固定診断と末尾LF一つに完全一致する失敗だけ固定表示する。#965のterminalは`BOOKING_PROOF_FAILED; stage=terminal; reason=<固定値>; unit_stop=<confirmed|unknown>; diagnostic=<observed|unknown>; stop_observation=<固定値>`（observed時だけ現行#983 V2の固定9 fieldを続ける）、非terminalは既存`BOOKING_PROOF_FAILED; stage=<固定値>`を返し、reason / unit_stop / diagnostic / stop_observationが不足した旧terminal・fake reason・余分なLF / CRLF・非1 exit・exec error / signal / overflowを含むその他は`BOOKING_PROOF_FAILED; stage=unknown`とする。raw出力は反射しない。outerの180秒 / child最大120秒を増量せず、retryしない。190秒はouter後の10秒margin、4分はwrapperのbackstopであり、cleanup成功を保証しない。
+正本base workflowとのbyte単位比較で現行の#998標準8コマンド・permissions・trigger・actions・step順序を保持し、同testの`proofStep`に一致する末尾一stepだけを許容する。単発`--run`、runner step上限4分、outer subprocess上限190秒 / 出力4096 bytes、成功stdoutの既存固定checkpoint完全一致・stderr空・exit0を検査する。#951 / #955ではerror / signalなし、status===1、stdout空、stderrがallowlisted固定診断と末尾LF一つに完全一致する失敗だけ固定表示する。#965のterminalは`BOOKING_PROOF_FAILED; stage=terminal; reason=<固定値>; unit_stop=<confirmed|unknown>; diagnostic=<observed|unknown>; stop_observation=<固定値>`（observed時だけ現行#983 V2の固定9 fieldを続ける）、非terminalは既存`BOOKING_PROOF_FAILED; stage=<固定値>`を返し、reason / unit_stop / diagnostic / stop_observationが不足した旧terminal・fake reason・余分なLF / CRLF・非1 exit・exec error / signal / overflowを含むその他は`BOOKING_PROOF_FAILED; stage=unknown`とする。raw出力は反射しない。outerの180秒 / child最大120秒を増量せず、retryしない。190秒はouter後の10秒margin、4分はwrapperのbackstopであり、cleanup成功を保証しない。
 positive / negativeは有限fixtureと実行しないspawn adapterで検査する。#951 / #955は実outer catch / CLIをVMのfinite adapterで、Proof wrapperをspawnしないVM seamで検査し、stage / terminal reason保持・未知 / 細工message・不正改行・追加出力・PII canary・signal / timeout / exec error / output overflowの反射拒否を確認する。guardの許容は人間承認・正式proofではなく、実証用一時PR作成・実行前後に#930の承認checkpoint / scope / 対象HEAD・PR / Runを別途人間が照合する。#947の実走0回の後、#950の承認済みnormal1回は実行済み・失敗（下記supplied evidence）であり、追加normal・期限・Secrets / Production禁止・中止条件・原状復元のfresh gateは#930の新たな人間判断に残す。#951 / #955ではworkflow追加や実証を行わない。#955は既存BrowserUnitのcommand / now / sleep注入だけでmanager Result=timeout / exit-code、ExecMainStatus非0、固定property / InvocationID drift、owner期限、Abort、show失敗 / 欠落と悪意あるfailureを照合する。共通#914 adapterとstop / cleanup契約は変更しない。
 #957は同じ`trusted-booking-report.mjs`内に、成功reportと別の固定`booking-diagnostic` codecをprepared / diagnostic-onlyで追加する。
 文法・finite enumの機械正本は同moduleの`encodeBookingDiagnostic` / `parseBookingDiagnostic`。現行#983 V2の固定順9 fieldだけを受理し、最大256 bytes、末尾LF一つ、余分field・型違い・任意文字列を拒否する。

@@ -66,7 +66,7 @@ jobs:
           except Exception:
               print('Product差分を判定できないため、fail-closedで停止します。', file=sys.stderr)
               sys.exit(1)
-          print('Product差分あり: 標準9コマンドを実行します。' if applicable else
+          print('Product差分あり: 標準8コマンドを実行します。' if applicable else
                 'Product差分なし: not applicable（Node/npmコマンドは実行しません）。')
           PY
 
@@ -108,7 +108,3 @@ jobs:
       - name: Local D1 smoke
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
-
-      - name: 全テスト
-        if: steps.applicability.outputs.applicable == 'true'
-        run: npm test
