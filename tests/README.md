@@ -1089,6 +1089,8 @@ WACはR0 / C1 / P1 / B1、Yellow prepared限定。#941と同じPOL→BR→REQ→
 
 ## #1002 Cookieなし8789 DOM / GET-only（prepared / finiteのみ）
 
+静的6資産の200応答は既存 `evaluation/reservation-worker.ts` の契約に合わせ、明示MIME / no-store / `x-content-type-options: nosniff` / no-referrerを必須検査する。finite成功fixtureも同じヘッダーを持ち、不正値・欠落・未知の追加ヘッダーを拒否する。`nosniff`の受入は新helperのasset応答だけに限定し、API応答・既存positive helperのguardは変更しない。
+
 `evaluation/trusted-booking-dom.mjs` の分離export `proveUnauthenticatedBookingDom({context, fixture:{month}, signal})` は、ownerが作った新しい空Cookie・空Pageの専用contextを一回だけ消費する。strict TLS（`ignoreHTTPSErrors:false`）と`serviceWorkers:"block"`の設定・実証、Browser / Worker / TLS / D1 / seed / stop / cleanupはownerの責務。fixtureは秘密・本人情報を持たない有効な架空monthだけ。既存の正常`proveTrustedBookingDom`・V2観測・write latch・Confirm201と5表deltaの成功契約は変更しない。
 
 固定8789 `/student`と既存6資産、UI初期の東京月Schedule / History GETだけを許可し、初期APIの実Request / Responseに対応する401のDOM停止を先に確認する。本人History / Slot / 選択 / 操作表示が空、401案内、月取得・履歴取得・Preview / Confirm無効を照合する。fixture月Schedule・History・CSRFの未送信対象だけをBrowser-native GETで個別確認し、初期自動GETが必ず3件という仮定や、送信済みGETの再試行は置かない。全APIは既存詳細設計§8 / §10.2〜3の固定401 `UNAUTHENTICATED` / no-store、CSRF no-referrer、正確なSession削除Cookieだけを要求する。routeはCookie・POSTその他method・不正origin / query / hash / credentials / redirect / frame・余剰航路を転送前に拒否し、CORS / 秘密を含む余剰response header / body・ServiceWorker / popup等も停止する。Fetch Metadata欠落は#992と同じ未観測で、headerの偽装・HTTP synthetic置換はしない。各操作は既存5秒上限、abort / timeout後は固定非秘密エラーだけを返し、遅延trafficのdeny guardをownerのcontext閉鎖まで保持する。

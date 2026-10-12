@@ -79,11 +79,12 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal 
       "content-encoding": /^(gzip|br|deflate)$/,
       "vary": /^Accept-Encoding$/i,
       "referrer-policy": /^no-referrer$/,
-      ...(api ? { "set-cookie": { test: value => value === deletion } } : {}),
+      ...(api ? { "set-cookie": { test: value => value === deletion } } : { "x-content-type-options": /^nosniff$/ }),
     };
     require(Object.entries(headers).every(([name, value]) => typeof value === "string" && rules[name]?.test(value)));
     require(rules["content-type"].test(headers["content-type"]) && headers["cache-control"] === "no-store");
     if (api) require(headers["set-cookie"] === deletion);
+    else require(headers["x-content-type-options"] === "nosniff" && headers["referrer-policy"] === "no-referrer");
     if (path === csrfPath) require(headers["referrer-policy"] === "no-referrer");
   };
   const emptyJar = async () => require(isDeepStrictEqual(await step(() => context.cookies()), []));

@@ -293,10 +293,12 @@ function unauthenticatedFixture(options = {}) {
   const emit = async (path, method = "GET", navigation = false) => {
     const url = path.startsWith("https:") ? path : bookingOrigin + path, api = path.startsWith("/api/");
     const requestHeaders = api ? { accept: "application/json", "sec-fetch-site": "same-origin" } : {};
-    const headers = { "content-type": api ? "application/json" : path === "/student" ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript",
+    // Asset oracle: reservation-worker.ts fixed response, also checked by #929 HTTP tests.
+    const headers = { "content-type": api ? "application/json" : (path === "/student" ? "text/html" : path.endsWith(".css") ? "text/css" : "text/javascript") + "; charset=utf-8",
       "cache-control": "no-store",
       ...(api ? { "set-cookie": "__Host-student_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT" } : {}),
-      ...(path === csrfPath ? { "referrer-policy": "no-referrer" } : {}) };
+      ...(!api ? { "x-content-type-options": "nosniff" } : {}),
+      ...(!api || path === csrfPath ? { "referrer-policy": "no-referrer" } : {}) };
     const request = { url: () => url, method: () => method, postData: () => null, redirectedFrom: () => null,
       frame: () => frame, isNavigationRequest: () => navigation,
       allHeaders: async () => {
@@ -398,6 +400,32 @@ test("#1002 finite no-cookie UI stops before explicit GETs; six assets, three ta
       assert.deepEqual(f.forwarded, saved);
     }
   }
+});
+
+test("#1002 asset headers match Worker contract; bad/missing/extra headers stop further traffic", { timeout: 15000 }, async () => {
+  const changes = [
+    ...["x-content-type-options", "referrer-policy", "cache-control", "content-type"]
+      .flatMap(name => [({ headers }) => { delete headers[name]; }, ({ headers }) => { headers[name] = canary; }]),
+    ...["", "NOSNIFF", "nosniff, nosniff", "nosniff\nprivate-canary", null, 42]
+      .map(value => ({ headers }) => { headers["x-content-type-options"] = value; }),
+    ...["x-private", "access-control-allow-origin", "location", "set-cookie"]
+      .map(name => ({ headers }) => { headers[name] = canary; }),
+  ];
+  for (const target of ["/student", "/student.css", "/student.js", "/view.js", "/controller.js", "/model.js"]) {
+    for (const change of changes) {
+      const f = unauthenticatedFixture({ target, change });
+      await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+      assert.deepEqual(f.explicit, []);
+      assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+      const saved = [...f.forwarded];
+      f.lateResponse(); await f.emit(csrfPath); await f.emit(confirmPath, "POST");
+      assert.deepEqual(f.forwarded, saved);
+    }
+  }
+  // Asset-only admission must not widen the closed API response map.
+  const api = unauthenticatedFixture({ change: ({ headers }) => { headers["x-content-type-options"] = "nosniff"; } });
+  await assert.rejects(proveUnauthenticatedBookingDom(api.input), unauthenticatedError);
+  assert.ok(api.forwarded.every(value => value.startsWith("GET ")));
 });
 
 test("#1002 invalid route/header attempts never forward; late traffic remains denied", { timeout: 15000 }, async () => {
