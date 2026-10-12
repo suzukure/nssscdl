@@ -495,9 +495,10 @@ test("#970 denies other source/package/sealed/workflow callers and any template 
     original.replace("        shell: bash", "        continue-on-error: true\n        shell: bash"),
     original.replace("        shell: bash", "        env:\n          TOKEN: unsafe\n        shell: bash"),
     original.replace("applicable == 'true'", "applicable != 'true'"), original.replace(/\n/g, "\r\n"), original.trimEnd(),
-    original.replace("observation=unknown", "observation=' + result.stderr + '"), original + "# APPROVED\n"];
+    original.replace("observation=unknown", "observation=' + result.stderr + '"), original + "# APPROVED\n",
+    original + "      - run: npm test\n"];
   for (const cmd of ["npm ci", "npm run build", "npm run typecheck", "npm run lint", "npm run test:unit", "npm run test:integration",
-    "npm run d1:local", "npm run test:d1", "npm test"]) variants.push(original.replace(cmd, "echo bypass"));
+    "npm run d1:local", "npm run test:d1"]) variants.push(original.replace(cmd, "echo bypass"));
   for (const [i, workflow] of variants.entries()) {
     assert.notEqual(workflow, original);
     assert.equal(allowsProbeCaller(new Map([[productWorkflow, workflow]]), f.context), false, `template ${i}`);

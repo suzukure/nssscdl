@@ -120,8 +120,8 @@ auth-only / Preview fixture suiteの適用履歴を維持する。Production bin
 `opened / synchronize / reopened` で単一job `Product CI` を生成する。
 merge refではなく `github.event.pull_request.head.sha` を全履歴付きでcheckoutし、credentialを保持しない。
 GitHub-hosted `ubuntu-latest`、`contents: read` のみ、root `.node-version` を使用し、npm cache最適化は行わない。
-Product差分がある場合だけNode準備と上記の全9標準コマンドを表の順序どおり独立stepとして実行する。
-`npm test` による再実行も省略しない。
+Product差分がある場合だけNode準備と#998で改訂した標準8コマンド（上表の `npm ci` から `npm run test:d1`）を表の順序どおり独立stepとして各1回実行する。
+#998は#639の二重実行義務の後継決定であり、集約 `npm test` はProduct CIでは実行せず、ローカル／必要時の全テスト入口として維持する。過去の#639の確定履歴・証拠は変更しない。
 Buildはdry-run、D1はtest-only local設定を使い、Production / remote Provider / Secretsを使用しない。
 Wranglerのmetrics送信も無効にする。
 
@@ -132,12 +132,12 @@ trusted event base/headのmerge-baseからNUL-safeなdiffでPR固有のProduct�
 Node/npm stepだけをskipし、判定stepが `not applicable` と報告して同じjobがsuccessになる。
 workflow/job全体はskipしない。SHA・checkout・merge-base・diff・出力の検証／取得不能は
 fail-closedでjob failureとし、fallbackしない。
-required-check設定・検証順序・人間承認・rollbackの正本は
+現行8コマンド契約の詳細・required-check設定・検証順序・人間承認・rollbackの正本は
 [`Product CI required-check適合と設定境界（#640）`](../docs/30_operations/ai-development-workflow.md#product-ci-required-check適合と設定境界640) とする。
 
 条件分岐はProduct適用時のNode/npm stepだけに置き、`continue-on-error` を使わず
 GitHub Actions標準の失敗伝播を使う。Product差分ありではcommand失敗で後続stepがskippedになっても
-jobはfailureであり、全9コマンド完了だけがsuccessになる。
+jobはfailureであり、全8コマンドの正常終了だけがsuccessになる。
 非Product差分の `not applicable` successはProductコマンド実行の証拠にしない。
 cancelled runやmissing checkをsuccessへ補完せず、matrix / aggregate helper / retryは追加しない。
 

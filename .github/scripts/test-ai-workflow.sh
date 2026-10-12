@@ -299,7 +299,7 @@ assert all(step['if'] == "steps.applicability.outputs.applicable == 'true'"
 assert [step['run'] for step in commands] == [
     'npm ci', 'npm run build', 'npm run typecheck', 'npm run lint',
     'npm run test:unit', 'npm run test:integration', 'npm run d1:local',
-    'npm run test:d1', 'npm test']
+    'npm run test:d1']
 for step in commands:
     subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
 block = applicability['run']
@@ -370,7 +370,7 @@ else: sys.exit(90)
                       {'MOCK_MERGE': merge + '\n' + base}, {'GIT_FAILURE': 'diff'},
                       {'GITHUB_OUTPUT': str(tmp)}):
         run(b'README.md\0', None, overrides)
-print('Product CI: 全PR check構成・NUL-safe適用判定・fail-closed・標準9コマンドfixture成功。実Actions/settings proofは別途必要です。')
+print('Product CI: 全PR check構成・NUL-safe適用判定・fail-closed・標準8コマンドfixture成功。実Actions/settings proofは別途必要です。')
 PY
 
 regression_workflow="$repo_root/.github/workflows/ai-workflow-regression.yml"
