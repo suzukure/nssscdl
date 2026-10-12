@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "n
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { seedTrustedStudents } from "../fixtures/d1/trusted-student-seed.ts";
-import { captureBookingBaseline, verifyBookingReadback } from "./booking-readback.ts";
+import { captureBookingBaseline, verifyBookingReadback, verifyBookingUnchanged } from "./booking-readback.ts";
 import { root, validation } from "./trusted-evaluation-seed.mjs";
 import { verifyReservationConfig } from "./reservation-config.ts";
 import { verifyStudentAssets } from "./verify-student-assets.mjs";
@@ -156,6 +156,17 @@ export async function prepareTrustedBooking(consume, observeEntered) {
 // Separate read-only proxy; downstream owner must stop its writer before calling.
 // Only the opaque same-run capability opens this DB. Unknown result is terminal.
 export async function inspectTrustedBooking(handle, reservationId) {
+  await inspectOwnedBooking(handle, (db, baseline) => verifyBookingReadback(db, validation(), baseline, reservationId));
+}
+
+// #1004: prepared no-write inspection only; stopping/closing the writer is the
+// owner's prerequisite. No reservation ID or external baseline is accepted.
+export async function inspectTrustedBookingUnchanged(handle) {
+  await inspectOwnedBooking(handle, (db, baseline) => verifyBookingUnchanged(db, validation(), baseline));
+}
+
+// Both results irreversibly consume the same capability before the first await.
+async function inspectOwnedBooking(handle, verify) {
   let proxy;
   try {
     const record = owned.get(handle);
@@ -165,7 +176,7 @@ export async function inspectTrustedBooking(handle, reservationId) {
     await preflight(); checkOwned(handle);
     const { getPlatformProxy } = await import("wrangler");
     proxy = await getPlatformProxy(proxyOptions);
-    await verifyBookingReadback(bookingD1(proxy.env).withSession("first-primary"), validation(), record.baseline, reservationId);
+    await verify(bookingD1(proxy.env).withSession("first-primary"), record.baseline);
     checkOwned(handle);
     const closing = proxy; proxy = undefined;
     await closing.dispose();

@@ -1099,6 +1099,12 @@ WACはR0 / C1 / P1 / B1、Yellow prepared限定。#941と同じPOL→BR→REQ→
 
 R0 / C1 / P1 / B1、Yellow prepared。`REQ-005/207/914`、`AC-005-001/002`・`AC-914-004`、`TC-F-005-01`・`TC-NF-914-04`の関連部分へのfinite partial evidenceだけで、識別子・POL→BR→REQ→AC→TC / CON / OOSは不変。CookieなしをSession失効実証や`AC-207-003` / `TC-F-207-03`全体Passへ昇格しない。正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠であり、#537 Gate A/D・#608 Done / Production Readyは未達。
 
+## #1004 run-owned seed→non-write D1 inspection（prepared / finiteのみ）
+
+`evaluation/trusted-booking-seed.mjs` の `inspectTrustedBookingUnchanged(handle)` は、既存private baselineと `verifyBookingUnchanged` の全19表・schema比較を直接再利用する。正常inspectionと同じopaque handleを最初の非同期処理前に排他・不可逆に一回消費する。ownerがWorker停止・port閉鎖後に呼ぶ前提であり、helper自身は停止完了を保証しない。前後の所有権確認・独立proxyのdispose一回・固定 `TRUSTED_BOOKING_SEED_FAILED` を維持し、失敗時はファイル保持・再読取なしとする。
+
+同testの既存VM seam＋in-memory Production schemaで成功、SQL writer増分0、first-primary、順序、cross-use / 並行読取、owner drift、行 / schema変更、未知 / 消費済みbaseline、read / proxy / dispose失敗を有限検証する。R0 / C1 / P1 / B1 Yellow prepared、既存TC / AC・POL→BR→REQ→AC→TC・CON / OOSは不変。Browser / 実8789 Listener / stop-gate / 専用inner・outer/report / actual 401 Proofは未実証で、#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。正式same-HEAD Product CI・PR Traceability・独立Claude Reviewは別途必要となる。
+
 ## #930 実Chrome単一予約normalの公式positive実証（2026-10-12）
 
 #1000は `tests/d1/booking-readback.test.ts` の既存file-isolated単一local D1試験に、8789 originの予約service / 実HTTP AdapterへCookieなしでSchedule・History・CSRFの3 GETだけを渡すnegative finite検証を追加する。Production migrations 0001–0012とstrict seedを一回適用し、401 / `UNAUTHENTICATED` / no-store・固定非秘密Responseを確認する。negative phaseはPOST・Cookie注入・別本人context・Session revoke UPDATEを行わず、`booking-readback.ts` のprivate baselineを `verifyBookingUnchanged` で一回消費して全19表（migration history含む）・schema / Integrityを独立照合する。D1採取clockだけは前進可能（逆行拒否）で、行内時刻を含む全値は不変を要求する。実DB採取値のprivate複製を使うread-only Port finite fixtureで各表の変化・schema不一致 / 不正JSON・read / Integrity失敗・baseline成功 / 失敗後の両verifier再利用を固定 `BOOKING_EVALUATION_READBACK_FAILED` に閉じることを確認し、fresh baseline後の既存正常Preview200 → Confirm201 / 5表deltaを一回維持する。
