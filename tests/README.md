@@ -1103,7 +1103,19 @@ R0 / C1 / P1 / B1、Yellow prepared。`REQ-005/207/914`、`AC-005-001/002`・`AC
 
 `evaluation/trusted-booking-seed.mjs` の `inspectTrustedBookingUnchanged(handle)` は、既存private baselineと `verifyBookingUnchanged` の全19表・schema比較を直接再利用する。正常inspectionと同じopaque handleを最初の非同期処理前に排他・不可逆に一回消費する。ownerがWorker停止・port閉鎖後に呼ぶ前提であり、helper自身は停止完了を保証しない。前後の所有権確認・独立proxyのdispose一回・固定 `TRUSTED_BOOKING_SEED_FAILED` を維持し、失敗時はファイル保持・再読取なしとする。
 
-同testの既存VM seam＋in-memory Production schemaで成功、SQL writer増分0、first-primary、順序、cross-use / 並行読取、owner drift、行 / schema変更、未知 / 消費済みbaseline、read / proxy / dispose失敗を有限検証する。R0 / C1 / P1 / B1 Yellow prepared、既存TC / AC・POL→BR→REQ→AC→TC・CON / OOSは不変。Browser / 実8789 Listener / stop-gate / 専用inner・outer/report / actual 401 Proofは未実証で、#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。正式same-HEAD Product CI・PR Traceability・独立Claude Reviewは別途必要となる。
+同testの既存VM seam＋in-memory Production schemaで成功、SQL writer増分0、first-primary、順序、cross-use / 並行読取、owner drift、行 / schema変更、未知 / 消費済みbaseline、read / proxy / dispose失敗を有限検証する。R0 / C1 / P1 / B1 Yellow prepared、既存TC / AC・POL→BR→REQ→AC→TC・CON / OOSは不変。専用inner / stop-gateへの有限接続は下記#1006を参照する。実Browser / 実8789 Listener / 専用outer/report / actual 401 Proofは未実証で、#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。正式same-HEAD Product CI・PR Traceability・独立Claude Reviewは別途必要となる。
+
+## #1006 Cookieなし401専用inner・owned停止→D1 unchanged（prepared / finiteのみ）
+
+`evaluation/trusted-unauthenticated-booking-process.mjs` の `useUnauthenticatedBookingProcess(ports, signal)` は有限Port seam、`runUnauthenticatedBookingProcess({signal})` は既存seed / TLS / Worker / DOM / unchanged inspectionにsealedに結ぶ将来operator用関数である。import時の起動・CLI・child / outer / reportへの接続はない。正常`useTrustedBookingProcess` / `runTrustedBookingProcess`、Confirm201→5表delta、V2診断 / success checkpointは不変。
+
+既存`prepareTrustedBooking`のprivate baseline / opaque handle生成一回→fresh `browser-home`→strict TLSの`workerHandoff:true`→同じowned 8789 Workerのstart / isReady一回→strict `newContext({ignoreHTTPSErrors:false,serviceWorkers:"block"})`→`proveUnauthenticatedBookingDom({context,fixture:{month:seed.month},signal:tlsSignal})`一回の順を固定する。Cookie注入 / `addCookies`呼出はゼロで、実Cookie空・Browser-native GET / 401 / UI停止・POST0は#1002 DOMの責務。DOM戻り値はvoidのみを受け入れ、予約ID / Session / CSRFを取得しない。
+
+Context / Browser閉鎖・TLS handoff cleanupは既存#914 ownerに任せ、`stopConsumer`だけでWorkerを一回停止し、`stopped===true && portClosed===true`とstop前後のhome identityを検査する。DOM成功・両signal健全・同じhome / identity・単発性を確認してから、`inspectOwned`で同じhandleを`inspectTrustedBookingUnchanged`へ一回だけ渡す。成功後だけ既存owned tree / file / env / argv secret scanを行う。公開戻り値は固定 `{phase:"complete",status:"prepared"}`、失敗はcauseを持たない固定 `TRUSTED_UNAUTHENTICATED_BOOKING_PROCESS_FAILED` のみ。abort / close不明でも既存ownerのemergency stopは単発で可能だが、readback成功や削除へ昇格しない。二重 / 遅延callback・未awaitのowner戻り・不明結果では再起動 / readback再試行 / release / delete / 正常successへのfallbackを行わず、ファイルを保持する。
+
+`evaluation/trusted-unauthenticated-booking-process.test.mjs` はNode Port doublesと既存`handoffListener` / `cleanupOwned`で順序、strict options、Cookie0 / 注入0、month / DOM void、close→stop→unchanged→scan、owner drift、start / stop / port unknown、DOM failure / timeout / abort、TLS handoff / cleanup、二重 / late / pending callback、固定非秘密出力を有限検証する。VMでsealed依存再利用と秘密scanを確認し、通常`npm run test:unit`へ追加する。実Chrome / 8789 Listener / systemd / 永続D1を起動せず、既存所有者の110 / 120 / 180 / 190秒等・TLS検証・SIGINT制約は変更しない。
+
+R0 / C1 / P1 / B1、Yellow prepared（Stage 2）。sourceの証拠境界は`POST count=0`と`readback=unchanged`であり、正常V2の`write=unobserved`をno-write証明にしない。`REQ-005/207/914`、`AC-005-001/002`・`AC-914-004`、`TC-F-005-01`・`TC-NF-914-04`に関係するfinite partial evidenceだけで、POL→BR→REQ→AC→TC / CON / OOSの意味は不変。CookieなしをSession失効実証・`TC-F-207-03`全体Passとしない。実8789 Chrome / Listener / 全19表unchangedの統合Proof、同一HEAD正式Product CI・PR Traceability・独立Claude Reviewは別証拠。専用child / outer / report / 正式Proof手順はStage 3の別Issue・fresh WAC / 人間判断待ちで、自動開始しない。#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。
 
 ## #930 実Chrome単一予約normalの公式positive実証（2026-10-12）
 
