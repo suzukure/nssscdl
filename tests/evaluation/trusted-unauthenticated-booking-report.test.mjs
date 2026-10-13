@@ -5,9 +5,20 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
+import { types } from "node:util";
 import { ownedIdentity } from "./trusted-browser-unit.mjs";
 import * as report from "./trusted-unauthenticated-booking-report.mjs";
 import { bookingChildComplete, bookingFixtureComplete, bookingChildUnknown } from "./trusted-booking-report.mjs";
+
+// #1023 Issue enum oracle, independent of the codec implementation.
+const primaryOracle = ["none", "unknown", "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch",
+  "tls-browser-ownership", "tls-browser-context", "tls-browser-nss", "tls-positive", "tls-san", "tls-untrusted", "tls-consumer"];
+const cleanupOracle = ["none", "unknown", "browser-close", "browser-ownership", "browser-process", "proof-listener",
+  "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"];
+const errorOracle = ["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR",
+  "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "TIMEOUT", "UNCLASSIFIED", "unknown"];
+const tlsText = (entered, confirmed, primary, cleanup, error) =>
+  `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; tls_primary=${primary}; tls_cleanup=${cleanup}; tls_err=${error}; status=failed\n`;
 
 const name = "unauthenticated-booking-report";
 const complete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=complete; status=prepared; readback=unchanged\n";
@@ -23,14 +34,14 @@ function codec(overrides = {}) {
   const source = fs.readFileSync("tests/evaluation/trusted-unauthenticated-booking-report.mjs", "utf8")
     .replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
   return runInNewContext(`${source}\n({ writeUnauthenticatedBookingReport, readUnauthenticatedBookingReport })`,
-    { ...fs, Buffer, process, join, ownedIdentity, ...overrides });
+    { ...fs, Buffer, process, join, ownedIdentity, types, ...overrides });
 }
 const write = (api, dir, text = complete) => api.writeUnauthenticatedBookingReport(dir, text);
 const read = (api, dir) => api.readUnauthenticatedBookingReport(dir);
 
-test("#1008 exact identifier, name, fields, spaces, ordering, LF and 160-byte bound", () => {
+test("#1008 exact identifier, name, fields, spaces, ordering, LF and 256-byte bound", () => {
   assert.equal(report.unauthenticatedBookingReportName, name);
-  assert.equal(report.unauthenticatedBookingReportMaxBytes, 160);
+  assert.equal(report.unauthenticatedBookingReportMaxBytes, 256);
   assert.equal(report.unauthenticatedBookingChildComplete, complete);
   assert.equal(report.unauthenticatedBookingFixtureComplete, fixtureText);
   assert.equal(report.unauthenticatedBookingChildUnknown, unknown);
@@ -121,7 +132,7 @@ test("#1008 bounded reads, owner/stat drift, interrupted I/O and rename uncertai
         return stat;
       },
       readSync(fd, bytes, offset, length, position) {
-        reads++; assert.equal(length, 161); assert.equal(position, 0);
+        reads++; assert.equal(length, 257); assert.equal(position, 0);
         if (fault === "read-throw") throw new Error(canary);
         return fs.readSync(fd, bytes, offset, fault === "short-read" ? 20 : length, position);
       },
@@ -206,6 +217,63 @@ test("#1018 failure report partial write remains latched and is never regenerate
     assert.deepEqual(fs.readdirSync(dir), [name + ".partial"]);
     const bytes = fs.readFileSync(path + ".partial");
     assert.throws(() => write(api, dir, unknown), fixed); assert.throws(() => read(api, dir), fixed);
+    assert.deepEqual(fs.readFileSync(path + ".partial"), bytes);
+  });
+});
+
+test("#1023 all finite five-axis combinations roundtrip; maximum is 220 ASCII bytes within 256", () => {
+  assert.deepEqual(report.unauthenticatedBookingTlsPrimary, primaryOracle);
+  assert.deepEqual(report.unauthenticatedBookingTlsCleanup, cleanupOracle);
+  assert.deepEqual(report.unauthenticatedBookingTlsErrors, errorOracle);
+  let maximum = 0, longest;
+  for (const entered of report.unauthenticatedBookingPhases) for (const confirmed of report.unauthenticatedBookingPhases)
+    for (const primary of primaryOracle) for (const cleanup of cleanupOracle) for (const error of errorOracle) {
+      const text = tlsText(entered, confirmed, primary, cleanup, error);
+      const expected = { phase: "failed", entered, confirmed, tls_primary: primary, tls_cleanup: cleanup, tls_err: error, status: "failed" };
+      assert.equal(report.formatUnauthenticatedBookingFailure({ entered, confirmed, tls_primary: primary, tls_cleanup: cleanup, tls_err: error }), text);
+      assert.deepEqual(report.parseUnauthenticatedBookingReport(text), expected);
+      assert.equal(Buffer.byteLength(text, "ascii"), Buffer.byteLength(text));
+      if (text.length > maximum) { maximum = text.length; longest = text; }
+    }
+  assert.equal(maximum, 220); assert.ok(maximum <= report.unauthenticatedBookingReportMaxBytes);
+  fixture((dir, path) => {
+    write(report, dir, longest);
+    assert.equal(fs.readFileSync(path, "utf8"), longest);
+    assert.equal(fs.statSync(path).mode & 0o7777, 0o600); assert.equal(fs.statSync(path).nlink, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(read(codec(), dir))), report.parseUnauthenticatedBookingReport(longest));
+    assert.deepEqual(fs.readdirSync(dir), [name]);
+    assert.throws(() => write(report, dir, longest), fixed);
+  });
+});
+
+test("#1023 every TLS field rejects unknown/raw, omission, duplicate, order, getters and transparent Proxy", () => {
+  const observation = { entered: "tls-setup", confirmed: "home", tls_primary: "tls-cert", tls_cleanup: "browser-close", tls_err: "TIMEOUT" };
+  const text = tlsText("tls-setup", "home", "tls-cert", "browser-close", "TIMEOUT");
+  let touched = 0;
+  for (const key of ["tls_primary", "tls_cleanup", "tls_err"]) {
+    const accessor = { ...observation }; Object.defineProperty(accessor, key, { get() { touched++; throw new Error(canary); } });
+    const missing = { ...observation }; delete missing[key];
+    for (const bad of [{ ...observation, [key]: canary }, accessor, missing])
+      assert.throws(() => report.formatUnauthenticatedBookingFailure(bad), fixed);
+    const field = `${key}=${observation[key]}`;
+    for (const bad of [text.replace(field, `${key}=${canary}`), text.replace(`; ${field}`, ""),
+      text.replace(field, `${field}; ${field}`), text.replace(field, `${key}=bogus`),
+      text.replace(field, `${field}; raw=${canary}`)]) assert.throws(() => report.parseUnauthenticatedBookingReport(bad), fixed);
+  }
+  for (const bad of [text.replace("tls_primary=tls-cert; tls_cleanup=browser-close", "tls_cleanup=browser-close; tls_primary=tls-cert"),
+    text.replace("\n", "\r\n"), text + "\n", text + canary, text.trimEnd(), "x".repeat(256), "x".repeat(257)]) {
+    assert.throws(() => report.parseUnauthenticatedBookingReport(bad), fixed);
+    fixture(dir => { const api = codec(); assert.throws(() => write(api, dir, bad), fixed);
+      assert.throws(() => write(api, dir, text), fixed); assert.deepEqual(fs.readdirSync(dir), []); });
+  }
+  const proxy = new Proxy(observation, { ownKeys() { touched++; return Reflect.ownKeys(observation); } });
+  assert.throws(() => report.formatUnauthenticatedBookingFailure(proxy), fixed);
+  assert.equal(touched, 0);
+  fixture((dir, path) => {
+    const api = codec({ writeFileSync(fd, value) { fs.writeFileSync(fd, value.slice(0, 100)); } });
+    assert.throws(() => write(api, dir, text), fixed);
+    const bytes = fs.readFileSync(path + ".partial");
+    assert.throws(() => write(api, dir, text), fixed); assert.throws(() => read(api, dir), fixed);
     assert.deepEqual(fs.readFileSync(path + ".partial"), bytes);
   });
 });

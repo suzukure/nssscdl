@@ -8,8 +8,9 @@ import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { handoffListener, cleanupOwned } from "./browser-tls-trust.mjs";
 import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
-import { parseUnauthenticatedBookingReport } from "./trusted-unauthenticated-booking-report.mjs";
+import * as report from "./trusted-unauthenticated-booking-report.mjs";
 import { useUnauthenticatedBookingProcess } from "./trusted-unauthenticated-booking-process.mjs";
+const { parseUnauthenticatedBookingReport } = report;
 
 const canary = "private-session-csrf-sql-https://private.invalid/error";
 const fixed = error => error?.message === "TRUSTED_UNAUTHENTICATED_BOOKING_PROCESS_FAILED" &&
@@ -257,7 +258,7 @@ test("#1006: sealed operator reuses fixed dependencies and scans only after unch
     "./browser-tls-trust.mjs": f.ports, "./trusted-booking-worker.mjs": f.ports, "./trusted-booking-dom.mjs": f.ports,
     "./trusted-seed-process.mjs": { checkFiles: (path, secrets) => { assert.equal(f.events.includes("readback"), true); scans.push({ path, secrets }); } },
   };
-  const run = runInNewContext(`${source}\nrunUnauthenticatedBookingProcess`, { dependencies, createHash, resolve,
+  const run = runInNewContext(`${source}\nrunUnauthenticatedBookingProcess`, { ...report, dependencies, createHash, resolve,
     mkdirSync: (path, options) => { assert.equal(path, f.home); assert.equal(options.mode, 0o700); },
     process: { env: { TMPDIR: "/fixture" }, argv: [] } });
   // Cross-realm records are compared through JSON at the external fake Ports.
@@ -271,7 +272,14 @@ test("#1006: sealed operator reuses fixed dependencies and scans only after unch
   const dom = f.ports.proveUnauthenticatedBookingDom;
   f.ports.proveUnauthenticatedBookingDom = input => dom({ ...input, fixture: JSON.parse(JSON.stringify(input.fixture)) });
   dependencies["./browser-tls-trust.mjs"] = { withIsolatedBrowserTls: tls };
-  assert.equal(JSON.stringify(await run({ signal: f.controller.signal })), '{"phase":"complete","status":"prepared"}');
+  const tlsEvents = [];
+  dependencies["./browser-tls-trust.mjs"] = { withIsolatedBrowserTls(consume, options) {
+    // The sealed operator forwards the separate private Port unchanged.
+    options.report("failure: stage=certificate/NSS; category=ERR_CERT_INVALID; TLS proof incomplete; raw cause withheld");
+    return tls(consume, options);
+  } };
+  assert.equal(JSON.stringify(await run({ signal: f.controller.signal, observeTls: event => tlsEvents.push(JSON.parse(JSON.stringify(event))) })), '{"phase":"complete","status":"prepared"}');
+  assert.deepEqual(tlsEvents, [{ tls_primary: "tls-cert", tls_err: "ERR_CERT_INVALID" }]);
   assert.deepEqual(trees, ["fixture-db", "/fixture"]);
   const tokens = ["self-private", "other-private"];
   const hashes = tokens.map(token => createHash("sha256").update(token).digest("hex"));
@@ -345,8 +353,8 @@ test("#1018 real process → Child fixed failure report at every phase, one writ
     };
     assert.equal(await useUnauthenticatedBookingChild(input), false, fault);
     assert.equal(calls, 1); atMostOnce(f);
-    assert.deepEqual(writes, [`TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; status=failed\n`], fault);
-    assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered, confirmed, status: "failed" });
+    assert.deepEqual(writes, [`TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; tls_primary=unknown; tls_cleanup=unknown; tls_err=unknown; status=failed\n`], fault);
+    assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered, confirmed, tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown", status: "failed" });
     const before = [...f.events]; assert.equal(await useUnauthenticatedBookingChild(input), false);
     assert.equal(calls, 1); assert.equal(writes.length, 1); assert.deepEqual(f.events, before);
   }
@@ -360,8 +368,116 @@ test("#1018 sealed operator dependency import failures retain import entered wit
     "./trusted-booking-dom.mjs", "./trusted-seed-process.mjs"]) {
     const dependencies = new Proxy({}, { get(_, key) { if (key === path) throw new Error(canary); return {}; } });
     const observations = [];
-    const run = runInNewContext(`${source}\nrunUnauthenticatedBookingProcess`, { dependencies });
+    const run = runInNewContext(`${source}\nrunUnauthenticatedBookingProcess`, { ...report, dependencies });
     await assert.rejects(run({ signal: new AbortController().signal, observe: event => observations.push(JSON.parse(JSON.stringify(event))) }), fixed);
     assert.deepEqual(observations, [{ phase: "import", state: "entered" }]);
   }
+});
+
+// Oracle: existing #914 tlsStages, category whitelist and cleanupStages, as
+// explicitly authorized by #1023. Neither raw errors nor progress infer TLS.
+const tlsStageOracle = [
+  ["preflight", "tls-preflight"], ["certificate/NSS", "tls-cert"], ["listener", "tls-listener"],
+  ["browser launch/HOME", "tls-browser-launch"], ["launch-resolved ownership", "tls-browser-ownership"],
+  ["Browser.newContext", "tls-browser-context"], ["NSS candidate", "tls-browser-nss"],
+  ["positive trust", "tls-positive"], ["SAN mismatch", "tls-san"], ["unregistered certificate", "tls-untrusted"],
+  ["helper callback", "tls-consumer"],
+];
+const primaryLine = (stage, error = "UNCLASSIFIED") => `failure: stage=${stage}; category=${error}; TLS proof incomplete; raw cause withheld`;
+const cleanupLine = (stage, primary = "failed") => `cleanup failure: stage=${stage}; primary=${primary}`;
+async function reportedFailure(lines, observer) {
+  const f = fixture(), writes = [], tlsEvents = []; let saved, calls = 0;
+  f.ports.withIsolatedBrowserTls = async (_, options) => {
+    saved = options.report;
+    for (const line of lines) assert.equal(saved(line), undefined);
+    throw new Error(canary); // Cleanup may overwrite the primary throw.
+  };
+  assert.equal(await useUnauthenticatedBookingChild({ isolated: true, signal: f.controller.signal,
+    runInner: ({ signal, observe, observeTls }) => {
+      calls++; return useUnauthenticatedBookingProcess(f.ports, signal, observe, event => {
+        tlsEvents.push(event); if (observer) observer(event); else observeTls(event);
+      });
+    }, write: text => writes.push(text),
+  }), false);
+  assert.equal(calls, 1); assert.equal(writes.length, 1); atMostOnce(f);
+  assert.ok(tlsEvents.every(Object.isFrozen));
+  assert.ok(!JSON.stringify([tlsEvents, writes]).includes(canary));
+  const before = [...tlsEvents]; saved(primaryLine("positive trust", "TIMEOUT")); saved(cleanupLine("owned-remove"));
+  assert.deepEqual(tlsEvents, before); // Process is closed, even without Child.
+  return { data: parseUnauthenticatedBookingReport(writes[0]), tlsEvents };
+}
+
+test("#1023 existing Helper stages and all categories reduce to private first-bound TLS axes", async () => {
+  const helper = readFileSync("tests/evaluation/browser-tls-trust.mjs", "utf8");
+  const stages = runInNewContext("(" + /const tlsStages = (\{[\s\S]*?\});/.exec(helper)[1] + ")");
+  assert.deepEqual(JSON.parse(JSON.stringify(stages)), Object.fromEntries(tlsStageOracle));
+  for (const [stage, expected] of tlsStageOracle) for (const error of report.unauthenticatedBookingTlsErrors.filter(e => e !== "unknown")) {
+    const { data } = await reportedFailure([primaryLine(stage, error)]);
+    assert.deepEqual(data, { phase: "failed", entered: "tls-setup", confirmed: "home",
+      tls_primary: expected, tls_cleanup: "unknown", tls_err: error, status: "failed" });
+  }
+});
+
+test("#1023 every cleanup stage independent from first primary, duplicates never overwrite, cleanup-only remains unknown", async () => {
+  for (const stage of report.unauthenticatedBookingTlsCleanup.filter(s => !["none", "unknown"].includes(s))) {
+    for (const primary of ["none", "failed"]) {
+      const { data } = await reportedFailure([cleanupLine(stage, primary), primaryLine("positive trust", "TIMEOUT")]);
+      assert.equal(data.tls_primary, "unknown"); assert.equal(data.tls_err, "unknown"); assert.equal(data.tls_cleanup, stage);
+    }
+    const { data } = await reportedFailure([primaryLine("certificate/NSS", "ERR_CERT_INVALID"),
+      primaryLine("helper callback", "TIMEOUT"), cleanupLine(stage), cleanupLine("owned-remove")]);
+    assert.equal(data.tls_primary, "tls-cert"); assert.equal(data.tls_err, "ERR_CERT_INVALID"); assert.equal(data.tls_cleanup, stage);
+  }
+  const { data } = await reportedFailure([]); // try-before/report missing never reconstructed from throw.
+  assert.equal(data.tls_primary, "unknown"); assert.equal(data.tls_cleanup, "unknown"); assert.equal(data.tls_err, "unknown");
+});
+
+test("#1023 exact optional ownership/observation syntax is discarded; arbitrary lines never reflected", async () => {
+  const suffix = "; ownership=home-descendant-missing-type-known; observation=descendant,live,missing,renderer,stable";
+  const { data, tlsEvents } = await reportedFailure([primaryLine("launch-resolved ownership", "UNCLASSIFIED") + suffix,
+    cleanupLine("browser-ownership") + suffix]);
+  assert.equal(data.tls_primary, "tls-browser-ownership"); assert.equal(data.tls_cleanup, "browser-ownership");
+  assert.deepEqual(tlsEvents, [{ tls_primary: "tls-browser-ownership", tls_err: "UNCLASSIFIED" }, { tls_cleanup: "browser-ownership" }]);
+  let coerced = 0;
+  for (const line of [canary, null, undefined, {}, new Proxy({}, { get() { coerced++; throw new Error(canary); } }),
+    primaryLine("preflight") + "\n", primaryLine("preflight") + "\r\n", primaryLine("preflight") + "; raw=" + canary,
+    primaryLine(canary), primaryLine("preflight", canary), primaryLine("BrowserXnewContext"), primaryLine("preflight") + "; ownership=" + canary,
+    primaryLine("preflight") + "; observation=profile,live,exact,renderer,bogus", primaryLine("preflight") + "; observation=" + "x".repeat(513),
+    cleanupLine("browser-close") + "\n", cleanupLine(canary), cleanupLine("browser-close", "unknown"),
+    "cleanup observation; PRE_CLOSE=pass; CLOSE=resolve; POST_CLOSE=pass", "checkpoint: " + canary, "certificate: " + canary]) {
+    const result = await reportedFailure([line]);
+    assert.equal(result.data.tls_primary, "unknown"); assert.equal(result.data.tls_cleanup, "unknown"); assert.equal(result.data.tls_err, "unknown");
+    assert.deepEqual(result.tlsEvents, []);
+  }
+  assert.equal(coerced, 0);
+});
+
+test("#1023 observer throw is passive and latched; abort closes reports without erasing previous primary", async () => {
+  const { data, tlsEvents } = await reportedFailure([primaryLine("SAN mismatch", "ERR_CERT_COMMON_NAME_INVALID"),
+    primaryLine("positive trust", "TIMEOUT"), cleanupLine("browser-close")], () => { throw new Error(canary); });
+  assert.equal(data.tls_primary, "unknown"); assert.equal(data.tls_cleanup, "unknown"); assert.equal(data.tls_err, "unknown");
+  assert.equal(tlsEvents.length, 2); // No second primary delivery after observer failure.
+  for (const fault of ["", "dom", "stop"]) {
+    const f = fixture(fault), original = f.ports.withIsolatedBrowserTls;
+    f.ports.withIsolatedBrowserTls = (consume, options) => original(consume, { ...options, report(line) {
+      options.report(primaryLine("preflight")); options.report(line);
+    } });
+    const operation = useUnauthenticatedBookingProcess(f.ports, f.controller.signal, undefined, () => { throw new Error(canary); });
+    if (fault) await assert.rejects(operation, fixed); else assert.deepEqual(await operation, { phase: "complete", status: "prepared" });
+    atMostOnce(f); assert.equal(f.events.filter(e => e === "stop").length, 1);
+  }
+  const f = fixture(), writes = [];
+  f.ports.withIsolatedBrowserTls = async (_, options) => {
+    options.report(primaryLine("positive trust", "TIMEOUT"));
+    f.controller.abort(canary);
+    options.report(cleanupLine("browser-close")); options.report(primaryLine("helper callback"));
+    throw new Error(canary);
+  };
+  assert.equal(await useUnauthenticatedBookingChild({ signal: f.controller.signal,
+    runInner: ({ signal, observe, observeTls }) => useUnauthenticatedBookingProcess(f.ports, signal, observe, observeTls),
+    write: text => writes.push(text) }), false);
+  assert.equal(writes.length, 1);
+  assert.equal(parseUnauthenticatedBookingReport(writes[0]).tls_primary, "tls-positive");
+  assert.equal(parseUnauthenticatedBookingReport(writes[0]).tls_err, "TIMEOUT");
+  assert.equal(parseUnauthenticatedBookingReport(writes[0]).tls_cleanup, "unknown");
 });

@@ -1,8 +1,10 @@
 // #1008 isolated opt-in only. Import never starts the Cookie-less inner.
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { types } from "node:util";
 import { unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete,
-  unauthenticatedBookingPhases, formatUnauthenticatedBookingFailure, writeUnauthenticatedBookingReport } from "./trusted-unauthenticated-booking-report.mjs";
+  unauthenticatedBookingPhases, unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors,
+  formatUnauthenticatedBookingFailure, writeUnauthenticatedBookingReport } from "./trusted-unauthenticated-booking-report.mjs";
 
 const consumed = new WeakSet();
 export async function useUnauthenticatedBookingChild({ runInner, write, signal, isolated = false }) {
@@ -11,6 +13,27 @@ export async function useUnauthenticatedBookingChild({ runInner, write, signal, 
   consumed.add(runInner);
   let interrupt, aborted, writeAttempted = false, observing = true, invalid = false;
   let entered = "unknown", confirmed = "unknown";
+  let tls_primary = "unknown", tls_cleanup = "unknown", tls_err = "unknown";
+  let primaryLatched = false, cleanupLatched = false;
+  const observeTls = event => {
+    if (!observing || signal?.aborted) return;
+    try {
+      if (!event || typeof event !== "object" || types.isProxy(event)) return;
+      const keys = Reflect.ownKeys(event);
+      const value = key => {
+        const d = Object.getOwnPropertyDescriptor(event, key);
+        return d && Object.hasOwn(d, "value") ? d.value : undefined;
+      };
+      if (keys.length === 2 && !primaryLatched && !cleanupLatched &&
+          unauthenticatedBookingTlsPrimary.includes(value("tls_primary")) && !["none", "unknown"].includes(value("tls_primary")) &&
+          unauthenticatedBookingTlsErrors.includes(value("tls_err")) && value("tls_err") !== "unknown") {
+        tls_primary = value("tls_primary"); tls_err = value("tls_err"); primaryLatched = true;
+      } else if (keys.length === 1 && !cleanupLatched &&
+          unauthenticatedBookingTlsCleanup.includes(value("tls_cleanup")) && !["none", "unknown"].includes(value("tls_cleanup"))) {
+        tls_cleanup = value("tls_cleanup"); cleanupLatched = true;
+      }
+    } catch { /* Invalid observations leave unobserved axes unknown; no raw reflection. */ }
+  };
   const observe = event => {
     if (!observing || invalid || signal?.aborted) return;
     try {
@@ -30,7 +53,7 @@ export async function useUnauthenticatedBookingChild({ runInner, write, signal, 
       signal.addEventListener("abort", interrupt, { once: true });
     });
     let inner;
-    try { inner = runInner({ signal, observe }); } catch { inner = Promise.reject(new Error("TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_FAILED")); }
+    try { inner = runInner({ signal, observe, observeTls }); } catch { inner = Promise.reject(new Error("TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_FAILED")); }
     const result = await Promise.race([inner, aborted]); // Never replay, including abort + synchronous throw.
     signal.throwIfAborted();
     if (!result || typeof result !== "object" || Reflect.ownKeys(result).length !== 2 ||
@@ -47,7 +70,7 @@ export async function useUnauthenticatedBookingChild({ runInner, write, signal, 
     if (!writeAttempted) {
       writeAttempted = true;
       try {
-        const text = formatUnauthenticatedBookingFailure({ entered, confirmed });
+        const text = formatUnauthenticatedBookingFailure({ entered, confirmed, tls_primary, tls_cleanup, tls_err });
         const attempt = write(text); await (aborted ? Promise.race([attempt, aborted]) : attempt);
       } catch { /* Keep uncertain/stale files; no repair or second write. */ }
     }
@@ -62,11 +85,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const timer = setTimeout(interrupt, 110000);
     process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
     try {
-      const runInner = async ({ signal, observe }) => {
+      const runInner = async ({ signal, observe, observeTls }) => {
         observe(Object.freeze({ phase: "import", state: "entered" }));
         const { runUnauthenticatedBookingProcess } = await import("./trusted-unauthenticated-booking-process.mjs");
         observe(Object.freeze({ phase: "import", state: "confirmed" }));
-        return await runUnauthenticatedBookingProcess({ signal, observe });
+        return await runUnauthenticatedBookingProcess({ signal, observe, observeTls });
       };
       if (!await useUnauthenticatedBookingChild({ runInner,
         signal: controller.signal, isolated: true,
