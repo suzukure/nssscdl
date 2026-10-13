@@ -11,7 +11,8 @@ import { BrowserUnit } from "./trusted-browser-unit.mjs";
 import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
 import { useUnauthenticatedBookingOuter, unauthenticatedBookingOuterCheckpoint,
   parseUnauthenticatedBookingTerminal, formatUnauthenticatedBookingTerminal,
-  unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes } from "./trusted-unauthenticated-booking-outer.mjs";
+  unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes,
+  unauthenticatedBookingProofStep } from "./trusted-unauthenticated-booking-outer.mjs";
 import { parseUnauthenticatedBookingReport, readUnauthenticatedBookingReport, writeUnauthenticatedBookingReport,
   unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingChildUnknown,
   unauthenticatedBookingPhases, unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup,
@@ -746,39 +747,7 @@ test("import and non-exact opt-in stay inert", () => {
 const productWorkflow = ".github/workflows/product-ci.yml";
 const unauthenticatedCaller = /trusted-unauthenticated-booking-(outer|child|report)/;
 const strictText = bytes => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-const proofStep = `
-      - name: '#930 booking unauthenticated proof (temporary)'
-        if: steps.applicability.outputs.applicable == 'true' && github.event.action == 'opened' && github.run_attempt == 1
-        timeout-minutes: 4
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { spawnSync } from 'node:child_process';
-          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-unauthenticated-booking-outer.mjs', '--run'], {
-            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
-          });
-          if (result.error !== undefined || result.signal !== null || result.status !== 0 || result.stderr !== '' ||
-              result.stdout !== ${JSON.stringify(unauthenticatedBookingOuterCheckpoint + "\n")}) {
-            let stage = 'unknown';
-            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '') {
-              for (const allowed of ['preflight', 'start', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
-                if (result.stderr === 'TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
-              }
-            }
-            let diagnostic = '';
-            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '' &&
-                typeof result.stderr === 'string' && result.stderr.length <= ${unauthenticatedBookingTerminalMaxBytes} && result.stderr.endsWith('\\n')) {
-              const text = result.stderr.slice(0, -1);
-              const match = new RegExp('^(?:' + ${JSON.stringify(unauthenticatedBookingTerminalGrammar)} + ')$').exec(text);
-              if (match && match[0] === text) { stage = 'terminal'; diagnostic = text.slice('TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal'.length); }
-            }
-            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage + diagnostic);
-            process.exitCode = 1;
-          } else {
-            console.log(${JSON.stringify(unauthenticatedBookingOuterCheckpoint)});
-          }
-          NODE
-`;
+const proofStep = unauthenticatedBookingProofStep;
 
 function allowsUnauthenticatedCaller(files, context) {
   try {
