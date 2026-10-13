@@ -888,6 +888,12 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 4. **確定scope内で集約する**：同一原因・同じ確定scopeの直接関連診断変更を集約する。一度にまとめることを理由にscope/security boundary/diff上限を越えず、範囲外helperの変更が必要なら実装前に[既存scope decision](#issue起点開発中のdynamic-scope-decision)へ戻す。汎用診断基盤、retry loop、永続cache、新台帳は作らない。
 5. **変更PRの独立reviewを維持する**：mainへ残す実行コード、安全境界、token、cleanup、成功判定、証明fixtureを変更するPRには[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)の既存独立reviewを適用する。検証実行/ログ確認だけと変更PRのreviewを区別し、review承認を自然run成功の代用にしない。非Blockingの扱いは[Work Admission Control](#work-admission-control)を正本とする。
 
+**複数の正当な実行構成の実証前照合（#1041）**：通常構成に加えて一時Proof、opt-in、feature flag、段階activationなど次の実行で使用する別の正当な候補構成があり、通常CIの成功だけでは候補の受理を保証できない場合に適用する。実装・実証前に関連Issueの既存checkpointで、代表的な合法状態（通常と次の候補）、状態間の差分、関係する不正状態を短く照合する。単一構成の局所修正やすべてのIssueに新しい検査様式・追加runを義務化しない。
+
+構成の生成・受理判定にはcurrent trusted main由来の既存generator / caller / oracle / fixtureと、その時点で有効なbyte・意味上の契約を再利用し、過去の一時PRや旧suffixのコピーを正本としない。既存の副作用のないfinite testで、**通常構成だけでなく次の正当な候補構成を入力として、その受理分岐も直接実行**する。関係するstale / duplicate / 余分なstep / 改変された実行条件等の代表的なnegativeも拒否を確認する。可能な範囲の代表例を選び、全組合せの網羅は要求しない。合成した合法候補の成功を、実際のPR event・HEAD・repository状態に対する認可や実runner上の挙動・cleanup成功の証明へ昇格させない。
+
+一時Workflow等を含むPRの作成・更新自体で実Chromeその他の副作用が発火し得る場合は、**候補PRの作成を事前検証の手段にしない**。安全な通常Draft上の既存finite fixture / CIを先に用い、信頼済みmainで先行確定すべき検証器は既存の独立review・merge gateを経る。正式実証は[原因未特定デバッグの同一Draft PR反復](#原因未特定デバッグの同一draft-pr反復1027)に定める個別人間承認、one-shot / no-retry、ownership、timeout、秘密非反射、fail-closed、owned cleanup、復元条件を維持する。新しいWorkflow、CI gate、runner、有料診断、承認権限や自動再試行は追加しない。
+
 診断／ログ／観測の変更を伴うIssueでは、上記の前提確認・集約（#816）を次の短い実行前手順で具体化する。人間/開発補助がCodex起動前に1〜3を既存Issue本文またはcheckpointへ短く整理し、実環境proof前に4を確認する。scope・Doneの確定判断は[current implementation contract](#issue本文におけるcurrent-implementation-contract)に従って本文へ同期する。
 
 1. **次の判断から逆算する**：現在の安全な非秘密証拠から残る原因候補と、次の自然な失敗/成功runで区別したい状態を絞る。最後の到達段階、最初の失敗分類、副作用の開始/送信/応答/結果不明、停止と診断読取可否など必要なものだけを選び、各観測で何が分かる／何は証明されないか、結果別に次の修正・停止・方式再評価をどう選ぶかを記録する。追加runだけを目的にログを増やさない。
