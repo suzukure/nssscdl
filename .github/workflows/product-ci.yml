@@ -108,3 +108,35 @@ jobs:
       - name: Local D1 smoke
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
+
+      - name: '#930 booking unauthenticated proof (temporary)'
+        if: steps.applicability.outputs.applicable == 'true' && github.event.action == 'opened' && github.run_attempt == 1
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-unauthenticated-booking-outer.mjs', '--run'], {
+            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
+          });
+          if (result.error !== undefined || result.signal !== null || result.status !== 0 || result.stderr !== '' ||
+              result.stdout !== "#1010 unauthenticated booking: isolated child prepared / readback unchanged / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified\n") {
+            let stage = 'unknown';
+            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '') {
+              for (const allowed of ['preflight', 'start', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
+                if (result.stderr === 'TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\n') stage = allowed;
+              }
+            }
+            let diagnostic = '';
+            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '' &&
+                typeof result.stderr === 'string' && result.stderr.length <= 512 && result.stderr.endsWith('\n')) {
+              const text = result.stderr.slice(0, -1);
+              const match = new RegExp('^(?:' + "(?=.*; unit_stop=confirmed; report=observed;|.*; report=(?:unknown|unread); entered=unknown; confirmed=unknown; tls_primary=unknown; tls_cleanup=unknown; tls_err=unknown;)TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal; reason=(cancel|timeout|manager|mismatch|unknown|unavailable|none); boundary=(pre-show|polling|first-exit|second-show|double-exit|unknown); state=(running|exited|failed|other|invalid|unavailable); result=(success|timeout|other|not-observed); exit=(zero|nonzero|abnormal-code|not-observed|unknown); invocation=(matched|mismatched|not-compared|unknown); cgroup=(expected|empty|other|unknown); second=(observed|not-observed); budget=(adequate|exhausted|aborted|unknown); stop=(confirmed|failed-state|identity-mismatch|state-unaccepted|stop-budget|show-unavailable|not-attempted|unknown); unit_stop=(confirmed|unknown); report=(observed|unknown|unread); entered=(unknown|import|preflight|seed|home|tls-setup|worker-start|dom-401|dom-context|dom-setup|dom-net|dom-request|dom-response|dom-ui|tls-cleanup|worker-stop|d1-unchanged|secret-scan|report-write); confirmed=(unknown|import|preflight|seed|home|tls-setup|worker-start|dom-401|dom-context|dom-setup|dom-net|dom-request|dom-response|dom-ui|tls-cleanup|worker-stop|d1-unchanged|secret-scan|report-write); tls_primary=(none|unknown|tls-preflight|tls-cert|tls-listener|tls-browser-launch|tls-browser-ownership|tls-browser-context|tls-browser-nss|tls-positive|tls-san|tls-untrusted|tls-consumer); tls_cleanup=(none|unknown|browser-close|browser-ownership|browser-process|proof-listener|worker-stop|port-close|generated-files|owned-inspect|owned-remove); tls_err=(ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_INVALID|ERR_SSL_PROTOCOL_ERROR|ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_NAME_NOT_RESOLVED|ERR_TIMED_OUT|TIMEOUT|UNCLASSIFIED|unknown); evidence=unproved; retain owned files; do not retry" + ')$').exec(text);
+              if (match && match[0] === text) { stage = 'terminal'; diagnostic = text.slice('TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal'.length); }
+            }
+            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage + diagnostic);
+            process.exitCode = 1;
+          } else {
+            console.log("#1010 unauthenticated booking: isolated child prepared / readback unchanged / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified");
+          }
+          NODE
