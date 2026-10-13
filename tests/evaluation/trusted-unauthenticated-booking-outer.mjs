@@ -121,6 +121,42 @@ function sanitizedFailure(error) {
   return failure("unknown");
 }
 export const unauthenticatedBookingOuterCheckpoint = "#1010 unauthenticated booking: isolated child prepared / readback unchanged / same invocation no-live / both ports closed / owned persistence,TMP,HOME,NSS,cert,key,report,log removed; partial evidence only; formal proof / Gate A-D unverified";
+// #1036: pure, import-safe proof-step source of truth. Never launch --run here.
+// A future one-shot caller must compare the exact current-main bytes *before* PR opened.
+export const unauthenticatedBookingProofStep = `
+      - name: '#930 booking unauthenticated proof (temporary)'
+        if: steps.applicability.outputs.applicable == 'true' && github.event.action == 'opened' && github.run_attempt == 1
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-unauthenticated-booking-outer.mjs', '--run'], {
+            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
+          });
+          if (result.error !== undefined || result.signal !== null || result.status !== 0 || result.stderr !== '' ||
+              result.stdout !== ${JSON.stringify(unauthenticatedBookingOuterCheckpoint + "\n")}) {
+            let stage = 'unknown';
+            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '') {
+              for (const allowed of ['preflight', 'start', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
+                if (result.stderr === 'TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
+              }
+            }
+            let diagnostic = '';
+            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '' &&
+                typeof result.stderr === 'string' && result.stderr.length <= ${unauthenticatedBookingTerminalMaxBytes} && result.stderr.endsWith('\\n')) {
+              const text = result.stderr.slice(0, -1);
+              const match = new RegExp('^(?:' + ${JSON.stringify(unauthenticatedBookingTerminalGrammar)} + ')$').exec(text);
+              if (match && match[0] === text) { stage = 'terminal'; diagnostic = text.slice('TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal'.length); }
+            }
+            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage + diagnostic);
+            process.exitCode = 1;
+          } else {
+            console.log(${JSON.stringify(unauthenticatedBookingOuterCheckpoint)});
+          }
+          NODE
+`;
+
 const present = path => { try { lstatSync(path); return true; } catch (e) { if (e.code === "ENOENT") return false; throw failure("preflight"); } };
 const consumed = new WeakSet();
 function prepared(report) {

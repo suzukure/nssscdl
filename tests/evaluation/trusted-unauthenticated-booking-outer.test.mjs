@@ -11,7 +11,8 @@ import { BrowserUnit } from "./trusted-browser-unit.mjs";
 import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
 import { useUnauthenticatedBookingOuter, unauthenticatedBookingOuterCheckpoint,
   parseUnauthenticatedBookingTerminal, formatUnauthenticatedBookingTerminal,
-  unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes } from "./trusted-unauthenticated-booking-outer.mjs";
+  unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes,
+  unauthenticatedBookingProofStep } from "./trusted-unauthenticated-booking-outer.mjs";
 import { parseUnauthenticatedBookingReport, readUnauthenticatedBookingReport, writeUnauthenticatedBookingReport,
   unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingChildUnknown,
   unauthenticatedBookingPhases, unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup,
@@ -746,39 +747,43 @@ test("import and non-exact opt-in stay inert", () => {
 const productWorkflow = ".github/workflows/product-ci.yml";
 const unauthenticatedCaller = /trusted-unauthenticated-booking-(outer|child|report)/;
 const strictText = bytes => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-const proofStep = `
-      - name: '#930 booking unauthenticated proof (temporary)'
-        if: steps.applicability.outputs.applicable == 'true' && github.event.action == 'opened' && github.run_attempt == 1
-        timeout-minutes: 4
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { spawnSync } from 'node:child_process';
-          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-unauthenticated-booking-outer.mjs', '--run'], {
-            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
-          });
-          if (result.error !== undefined || result.signal !== null || result.status !== 0 || result.stderr !== '' ||
-              result.stdout !== ${JSON.stringify(unauthenticatedBookingOuterCheckpoint + "\n")}) {
-            let stage = 'unknown';
-            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '') {
-              for (const allowed of ['preflight', 'start', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
-                if (result.stderr === 'TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
-              }
-            }
-            let diagnostic = '';
-            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '' &&
-                typeof result.stderr === 'string' && result.stderr.length <= ${unauthenticatedBookingTerminalMaxBytes} && result.stderr.endsWith('\\n')) {
-              const text = result.stderr.slice(0, -1);
-              const match = new RegExp('^(?:' + ${JSON.stringify(unauthenticatedBookingTerminalGrammar)} + ')$').exec(text);
-              if (match && match[0] === text) { stage = 'terminal'; diagnostic = text.slice('TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal'.length); }
-            }
-            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage + diagnostic);
-            process.exitCode = 1;
-          } else {
-            console.log(${JSON.stringify(unauthenticatedBookingOuterCheckpoint)});
-          }
-          NODE
-`;
+const proofStep = unauthenticatedBookingProofStep;
+
+test("#1036 current-main Proof suffix exports exact bytes without --run or Chrome", () => {
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+    "import { unauthenticatedBookingProofStep } from './tests/evaluation/trusted-unauthenticated-booking-outer.mjs'; process.stdout.write(unauthenticatedBookingProofStep);"], {
+    encoding: "utf8", timeout: 5000, maxBuffer: 65536, stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout, proofStep); // This is the exact suffix to compare before PR opened.
+  assert.ok(proofStep.startsWith("\n      - name: '#930 booking unauthenticated proof (temporary)'"));
+  assert.ok(proofStep.endsWith("          NODE\n"));
+  assert.equal((proofStep.match(/\n      - name:/g) ?? []).length, 1);
+  assert.ok(proofStep.includes("github.event.action == 'opened' && github.run_attempt == 1"));
+  assert.ok(proofStep.includes("timeout-minutes: 4"));
+  assert.ok(proofStep.includes("timeout: 190000, maxBuffer: 4096"));
+  const phaseSuffix = "|dom-context|dom-setup|dom-net|dom-request|dom-response|dom-ui";
+  assert.equal(proofStep.split(phaseSuffix).length - 1, 2); // entered and confirmed, not hardcoded legacy grammar.
+  const baseline = strictText(readFileSync(productWorkflow));
+  assert.equal(baseline.includes("#930 booking unauthenticated proof (temporary)"), false);
+  const f = callerFixture();
+  assert.equal(baseline, f.context.baseWorkflow);
+  assert.equal(f.files.get(productWorkflow), baseline + result.stdout);
+  assert.equal(allowsUnauthenticatedCaller(f.files, f.context), true);
+  // #1035 copied the old suffix. Even with exact base and an approved PR event,
+  // stale enum bytes must be rejected before any live Proof invocation.
+  const oldSuffix = proofStep.replaceAll(phaseSuffix, "");
+  assert.notEqual(oldSuffix, proofStep);
+  assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldSuffix]]), f.context), false);
+  for (const candidate of [oldSuffix, proofStep + "      - run: echo stale\n",
+    proofStep.replace("github.run_attempt == 1", "github.run_attempt >= 1")]) {
+    assert.notEqual(baseline + candidate, baseline + proofStep);
+    assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + candidate]]), f.context), false);
+  }
+});
 
 function allowsUnauthenticatedCaller(files, context) {
   try {
