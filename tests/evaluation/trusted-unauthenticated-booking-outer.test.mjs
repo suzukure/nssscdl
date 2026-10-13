@@ -8,7 +8,9 @@ import { spawnSync } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { BrowserUnit } from "./trusted-browser-unit.mjs";
 import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
-import { useUnauthenticatedBookingOuter, unauthenticatedBookingOuterCheckpoint } from "./trusted-unauthenticated-booking-outer.mjs";
+import { useUnauthenticatedBookingOuter, unauthenticatedBookingOuterCheckpoint,
+  parseUnauthenticatedBookingTerminal, formatUnauthenticatedBookingTerminal,
+  unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes } from "./trusted-unauthenticated-booking-outer.mjs";
 import { parseUnauthenticatedBookingReport, readUnauthenticatedBookingReport, writeUnauthenticatedBookingReport,
   unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingChildUnknown } from "./trusted-unauthenticated-booking-report.mjs";
 
@@ -37,11 +39,12 @@ function fixture(fault = "", preflightTime = 0) {
       }
       if (args[2] === "stop") {
         events.push("stop"); f.hook("stop");
-        if (fault === "stop") throw new Error(canary);
+        if (fault === "stop" || f.stopFault === "stop") throw new Error(canary);
         return "";
       }
       events.push(unit.stopped ? "disposed-show" : "show"); shows++;
-      if (fault === "show" || (unit.stopped && fault === "dispose-show")) throw new Error(canary);
+      if (fault === "show" || (!unit.stopped && shows === 2 && fault === "terminal-io") ||
+        (!unit.stopped && shows === 3 && fault === "second-io") || (unit.stopped && (fault === "dispose-show" || f.stopFault === "dispose-show"))) throw new Error(canary);
       const state = unit.stopped ? { LoadState: "not-found", ActiveState: "inactive", SubState: "dead", InvocationID: "" } : {
         Type: "exec", ExitType: "cgroup", RemainAfterExit: "yes", Restart: "no", NRestarts: "0", OOMPolicy: "stop",
         Delegate: "no", NoNewPrivileges: "yes", ProtectControlGroups: "yes", KillMode: "control-group",
@@ -49,18 +52,29 @@ function fixture(fault = "", preflightTime = 0) {
         LoadState: "loaded", ActiveState: "active", SubState: "exited", Result: "success", ExecMainCode: "1",
         ExecMainStatus: f.exit, InvocationID: "b".repeat(32), ControlGroup: "/system.slice/" + unit.name };
       if (!unit.stopped && shows >= 2) {
-        if (fault === "live") { state.SubState = "running"; time += 60000; }
+        if (fault === "live" || fault === "poll-deadline") { state.SubState = "running"; time += fault === "live" ? 60000 : 85000; }
         if (fault === "timeout") { state.Result = "timeout"; state.SubState = "failed"; }
         if (fault === "unknown-exit") state.ExecMainCode = "0";
         if (fault === "invocation" && shows === 3) state.InvocationID = "c".repeat(32);
         if (fault === "abort") controller.abort(canary);
+        if (fault === "cgroup") state.ControlGroup = canary;
+        if (fault === "second-live" && shows === 3) state.SubState = "running";
+        if (fault === "second-exit" && shows === 3) state.ExecMainStatus = "2";
+        if (fault === "second-code" && shows === 3) state.ExecMainCode = "2";
+        if (fault === "manager") state.Result = canary;
+        if (fault === "budget") time = 180000;
       }
       if (unit.stopped) {
         if (fault === "release") state.ActiveState = "active";
+        if (f.stopFault === "failed-state") Object.assign(state, { LoadState: "loaded", ActiveState: "failed", SubState: "failed", InvocationID: "b".repeat(32) });
+        if (f.stopFault === "identity-mismatch") Object.assign(state, { ActiveState: "active", InvocationID: "c".repeat(32) });
+        if (f.stopFault === "state-unaccepted") Object.assign(state, { ActiveState: "active", InvocationID: "b".repeat(32) });
         if (fault === "late-abort") controller.abort(canary);
         if (fault === "late-budget") time = 180000;
       }
       f.hook(unit.stopped ? "disposed" : "show");
+      if ((!unit.stopped && ((shows === 2 && fault === "show1-invalid") || (shows === 3 && fault === "show2-invalid"))) ||
+        (unit.stopped && f.stopFault === "show-invalid")) return "Result=" + canary;
       return Object.entries(state).map(([key, value]) => `${key}=${value}`).join("\n");
     } });
   const ports = {
@@ -79,6 +93,8 @@ test("dedicated isolated child once; terminal twice before report; release then 
   assert.deepEqual(await useUnauthenticatedBookingOuter(f.unit, f.ports), { success: true, status: "prepared", readback: "unchanged" });
   assert.deepEqual(f.events, ["preflight", "start", "inner", "unchanged/secret-scan", "child-report", "show", "show", "show",
     "report", "final-check", "stop", "disposed-show", "remove-check", "delete"]);
+  assert.deepEqual(f.unit.terminalObservation, { boundary: "double-exit", state: "exited", result: "success",
+    exit: "zero", invocation: "matched", cgroup: "expected", second: "observed", budget: "adequate" });
   const before = f.events.length;
   await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), { message: failed("start") });
   assert.equal(f.events.length, before);
@@ -91,7 +107,11 @@ test("failure matrix retains files, first latch and at most one start/stop; no n
     "late-abort": "release", "late-budget": "release", remove: "remove" };
   for (const [fault, stage] of Object.entries(faults)) {
     const f = fixture(fault);
-    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), { message: failed(stage) }, fault);
+    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), error => {
+      if (stage === "terminal") assert.ok(parseUnauthenticatedBookingTerminal(error.message), fault);
+      else assert.equal(error.message, failed(stage), fault);
+      return true;
+    });
     assert.ok(!f.events.includes("delete"), fault);
     for (const event of ["start", "inner", "stop"]) assert.ok(f.events.filter(v => v === event).length <= 1, fault);
     if (["preflight", "start", "terminal"].includes(stage)) assert.ok(!f.events.includes("report"));
@@ -102,6 +122,124 @@ test("failure matrix retains files, first latch and at most one start/stop; no n
   }
   const late = fixture("after-delete-abort");
   await assert.rejects(useUnauthenticatedBookingOuter(late.unit, late.ports), { message: failed("remove") });
+});
+
+const terminalRecord = overrides => ({ reason: "manager", boundary: "first-exit", state: "exited", result: "success",
+  exit: "nonzero", invocation: "matched", cgroup: "expected", second: "not-observed", budget: "adequate", stop: "confirmed", ...overrides });
+
+test("#1015 real BrowserUnit finite terminal fault families; no report/retry/query/deletion", async () => {
+  // Expected classifications derive from the existing manager checks and #1015 enums.
+  const matrix = [
+    ["child", {}], ["write", {}], ["secret-scan", {}],
+    ["unknown-exit", { exit: "abnormal-code" }],
+    ["invocation", { reason: "mismatch", boundary: "second-show", exit: "zero", invocation: "mismatched", second: "observed" }],
+    ["cgroup", { reason: "mismatch", boundary: "pre-show", exit: "zero", cgroup: "other" }],
+    ["timeout", { reason: "timeout", boundary: "pre-show", state: "failed", result: "timeout", exit: "not-observed" }],
+    ["manager", { boundary: "pre-show", state: "other", result: "other", exit: "zero" }],
+    ["live", { reason: "timeout", boundary: "polling", state: "running", exit: "not-observed", budget: "exhausted", stop: "stop-budget" }],
+    ["poll-deadline", { reason: "timeout", boundary: "polling", state: "running", exit: "not-observed", budget: "exhausted" }],
+    ["budget", { reason: "timeout", boundary: "pre-show", exit: "zero", budget: "exhausted", stop: "stop-budget" }],
+    ["abort", { reason: "cancel", boundary: "pre-show", exit: "zero", budget: "aborted" }],
+    ["terminal-io", { reason: "unknown", boundary: "pre-show", state: "unavailable", result: "not-observed",
+      exit: "not-observed", invocation: "not-compared", cgroup: "unknown" }],
+    ["show1-invalid", { reason: "unknown", boundary: "pre-show", state: "invalid", result: "not-observed",
+      exit: "not-observed", invocation: "not-compared", cgroup: "unknown" }],
+    ["second-io", { reason: "unknown", boundary: "second-show", state: "unavailable", exit: "zero" }],
+    ["show2-invalid", { reason: "unknown", boundary: "second-show", state: "invalid", exit: "zero" }],
+    ["second-live", { reason: "mismatch", boundary: "second-show", state: "running", exit: "not-observed", second: "observed" }],
+    ["second-exit", { reason: "mismatch", boundary: "second-show", second: "observed" }],
+    ["second-code", { reason: "mismatch", boundary: "second-show", exit: "abnormal-code", second: "observed" }],
+  ];
+  for (const [fault, expected] of matrix) {
+    const f = fixture(fault);
+    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), error => {
+      assert.deepEqual(parseUnauthenticatedBookingTerminal(error.message), terminalRecord(expected), fault);
+      assert.equal(error.message.includes(canary), false);
+      assert.ok(Buffer.byteLength(error.message + "\n") <= unauthenticatedBookingTerminalMaxBytes);
+      return true;
+    });
+    assert.equal(f.events.filter(e => e === "start").length, 1);
+    assert.equal(f.events.filter(e => e === "stop").length, ["budget", "live"].includes(fault) ? 0 : 1);
+    assert.equal(f.events.filter(e => e === "disposed-show").length, ["budget", "live"].includes(fault) ? 0 : 1);
+    assert.equal(f.events.filter(e => e === "show").length,
+      fault === "live" ? 4 : fault.startsWith("second-") || ["invocation", "show2-invalid", "poll-deadline"].includes(fault) ? 3 : 2);
+    for (const e of ["report", "final-check", "remove-check", "delete"]) assert.equal(f.events.includes(e), false, fault);
+    assert.equal(f.unit.accepted, undefined, fault);
+  }
+});
+
+test("#1015 one disposal observation; first failure unchanged even with stop failure/invalid cleanup", async () => {
+  for (const [fault, stop] of [["stop", "unknown"], ["dispose-show", "show-unavailable"], ["show-invalid", "show-unavailable"],
+    ["failed-state", "failed-state"], ["identity-mismatch", "identity-mismatch"], ["state-unaccepted", "state-unaccepted"],
+    ["stop-budget", "stop-budget"], ["show-budget", "stop-budget"]]) {
+    const f = fixture("child"); f.stopFault = fault;
+    f.hook = phase => {
+      if (fault === "show-budget" && phase === "stop") f.time(180000);
+    };
+    if (fault === "stop-budget") {
+      const terminal = f.unit.terminal.bind(f.unit);
+      f.unit.terminal = async () => { try { await terminal(); } finally { f.time(180000); } };
+    }
+    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), error => {
+      assert.equal(parseUnauthenticatedBookingTerminal(error.message).stop, stop, fault);
+      assert.equal(parseUnauthenticatedBookingTerminal(error.message).reason, "manager");
+      return true;
+    });
+    assert.ok(f.events.filter(e => e === "stop").length <= 1);
+    assert.ok(f.events.filter(e => e === "disposed-show").length <= 1);
+    assert.ok(!f.events.includes("report") && !f.events.includes("delete"));
+    assert.equal(f.unit.failure, "MANAGER");
+  }
+});
+
+test("#1015 malformed passive observations and accessors cannot reflect raw data or authorize reads", async () => {
+  let touched = 0;
+  for (const fault of ["accessor", "inherited", "extra", "enum", "field-accessor", "reason-object"]) {
+    const f = fixture("child"), terminal = f.unit.terminal.bind(f.unit);
+    f.unit.terminal = async () => {
+      try { await terminal(); } finally {
+        if (fault === "accessor") Object.defineProperty(f.unit, "terminalObservation", { get() { touched++; throw new Error(canary); } });
+        if (fault === "inherited") { const observation = f.unit.terminalObservation; delete f.unit.terminalObservation;
+          // Preserve BrowserUnit methods while making the observation inherited.
+          Object.setPrototypeOf(f.unit, Object.assign(Object.create(BrowserUnit.prototype), { terminalObservation: observation })); }
+        if (fault === "extra") f.unit.terminalObservation = { ...f.unit.terminalObservation, extra: canary };
+        if (fault === "enum") f.unit.terminalObservation = { ...f.unit.terminalObservation, state: canary };
+        if (fault === "field-accessor") { const observation = { ...f.unit.terminalObservation };
+          Object.defineProperty(observation, "exit", { get() { touched++; throw new Error(canary); } }); f.unit.terminalObservation = observation; }
+        if (fault === "reason-object") f.unit.failure = { toString() { touched++; throw new Error(canary); } };
+      }
+    };
+    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), error => {
+      const diagnostic = parseUnauthenticatedBookingTerminal(error.message);
+      assert.ok(diagnostic); assert.equal(error.message.includes(canary), false);
+      if (fault === "reason-object") assert.equal(diagnostic.reason, "unknown");
+      else { assert.equal(diagnostic.reason, "manager"); assert.equal(diagnostic.boundary, "unknown"); }
+      return true;
+    });
+    assert.equal(f.events.filter(e => e === "stop").length, 1);
+    assert.equal(f.events.filter(e => e === "disposed-show").length, 1);
+    assert.ok(!f.events.includes("report") && !f.events.includes("delete"));
+  }
+  assert.equal(touched, 0);
+});
+
+test("#1015 exact terminal codec rejects hostile records without invoking getters", () => {
+  let touched = 0;
+  const wire = formatUnauthenticatedBookingTerminal(terminalRecord());
+  assert.deepEqual(parseUnauthenticatedBookingTerminal(wire), terminalRecord());
+  const accessor = terminalRecord(); Object.defineProperty(accessor, "reason", { get() { touched++; throw new Error(canary); } });
+  for (const record of [null, {}, Object.create(terminalRecord()), accessor, { ...terminalRecord(), extra: canary },
+    { ...terminalRecord(), [Symbol("extra")]: true }, ...Object.keys(terminalRecord()).flatMap(key => {
+      const missing = terminalRecord(); delete missing[key];
+      return [missing, terminalRecord({ [key]: canary }), terminalRecord({ [key]: "" }), terminalRecord({ [key]: undefined })];
+    })]) assert.equal(formatUnauthenticatedBookingTerminal(record), undefined);
+  assert.equal(touched, 0);
+  for (const text of ["", wire + "\n", wire + "\r\n", wire + "\0", canary + wire, wire + wire,
+    wire.replace("; exit=", "; extra=unknown; exit="), wire.replace("; exit=", "; reason=manager; exit="),
+    wire.replace("reason=manager", "reason=unknown-value"), wire.replace("report=unread", "report=read"),
+    wire.replace("evidence=unproved", "evidence=proved"), "x".repeat(513), Buffer.from(wire)]) {
+    assert.equal(parseUnauthenticatedBookingTerminal(text), undefined);
+  }
 });
 
 test("only exact four own data fields; old normal, fixture, unknown, extra symbol and getters rejected", async () => {
@@ -160,7 +298,7 @@ test("actual private report reader is used after terminal and before owned clean
 // Execute the whole sealed operator, catch/finally and CLI with a virtual owned
 // filesystem and command adapter. No real CLI --run, manager, Chrome or D1.
 async function operatorFixture(fault = "", injectedRun) {
-  const f = fixture();
+  const f = fixture(fault.startsWith("terminal-") ? fault.slice("terminal-".length) : "");
   const root = "/fixture", temporary = "/fixture-tmp/run", parent = join(root, ".wrangler");
   const persist = join(parent, "student-booking-evaluation"), home = join(temporary, "browser-home");
   const reportPath = join(temporary, "unauthenticated-booking-report"), old = join(parent, "student-read-only-evaluation");
@@ -275,12 +413,16 @@ test("sealed operator representative fault matrix suppresses checkpoint, prevent
 });
 
 test("CLI accepts only fixed failure enums; accessor/cause/normal diagnostic/raw text never reflected", async () => {
-  for (const stage of ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"]) {
+  const terminalWire = formatUnauthenticatedBookingTerminal(terminalRecord());
+  const terminal = await operatorFixture("", async () => { throw new Error(terminalWire, { cause: canary }); });
+  assert.deepEqual(terminal.stderr, [terminalWire]); assert.deepEqual(terminal.stdout, []); assert.equal(terminal.status, 1);
+  for (const stage of ["preflight", "start", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"]) {
     const r = await operatorFixture("", async () => { throw new Error(failed(stage), { cause: canary }); });
     assert.deepEqual(r.stderr, [failed(stage)]); assert.deepEqual(r.stdout, []);
   }
   let touched = 0;
-  for (const error of [new Error(canary), new Error(failed("report") + "\n"), new Error(failed("made-up")),
+  for (const error of [new Error(canary), new Error(failed("terminal")), new Error(terminalWire + "\n"),
+    new Error(terminalWire.replace("exit=nonzero", "exit=" + canary)), new Error(failed("report") + "\n"), new Error(failed("made-up")),
     new Error("TRUSTED_BOOKING_OUTER_FAILED; stage=terminal"), null,
     { get message() { touched++; throw new Error(canary); } }]) {
     const r = await operatorFixture("", async () => { throw error; });
@@ -317,11 +459,18 @@ const proofStep = `
               result.stdout !== ${JSON.stringify(unauthenticatedBookingOuterCheckpoint + "\n")}) {
             let stage = 'unknown';
             if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '') {
-              for (const allowed of ['preflight', 'start', 'terminal', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
+              for (const allowed of ['preflight', 'start', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
                 if (result.stderr === 'TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
               }
             }
-            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage);
+            let diagnostic = '';
+            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '' &&
+                typeof result.stderr === 'string' && result.stderr.length <= ${unauthenticatedBookingTerminalMaxBytes} && result.stderr.endsWith('\\n')) {
+              const text = result.stderr.slice(0, -1);
+              const match = new RegExp('^(?:' + ${JSON.stringify(unauthenticatedBookingTerminalGrammar)} + ')$').exec(text);
+              if (match && match[0] === text) { stage = 'terminal'; diagnostic = text.slice('TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal'.length); }
+            }
+            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage + diagnostic);
             process.exitCode = 1;
           } else {
             console.log(${JSON.stringify(unauthenticatedBookingOuterCheckpoint)});
@@ -534,11 +683,23 @@ function proofFixture(result) {
   return { stdout, stderr, status: proc.exitCode ?? 0 };
 }
 
+test("#1015 real terminal failure through sealed operator/CLI and exact proofStep; no report/port reread", async () => {
+  const r = await operatorFixture("terminal-child");
+  const expected = formatUnauthenticatedBookingTerminal(terminalRecord());
+  assert.deepEqual(r.stderr, [expected]); assert.deepEqual(r.stdout, []); assert.equal(r.status, 1);
+  assert.equal(r.reads, 0); assert.equal(r.probes, 4);
+  assert.equal(r.events.filter(e => e === "start").length, 1);
+  assert.equal(r.events.filter(e => e === "stop").length, 1);
+  for (const e of ["delete-persist", "delete-tmp", "final-check"]) assert.equal(r.events.includes(e), false);
+  assert.deepEqual(proofFixture({ status: r.status, signal: null, stdout: "", stderr: r.stderr[0] + "\n" }), {
+    stdout: [], stderr: [expected.replace("TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED", "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
+});
+
 test("#1012 bounded single spawn; exact success or fixed failure stage; raw/normal diagnostics never escape", () => {
   const success = { status: 0, signal: null, stdout: unauthenticatedBookingOuterCheckpoint + "\n", stderr: "" };
   assert.deepEqual(proofFixture(success), { stdout: [unauthenticatedBookingOuterCheckpoint], stderr: [], status: 0 });
   const failure = { status: 1, signal: null, stdout: "", stderr: failed("terminal") + "\n" };
-  for (const stage of ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"]) {
+  for (const stage of ["preflight", "start", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"]) {
     assert.deepEqual(proofFixture({ ...failure, stderr: failed(stage) + "\n" }), {
       stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=" + stage], status: 1 });
   }
@@ -554,7 +715,7 @@ test("#1012 bounded single spawn; exact success or fixed failure stage; raw/norm
     ...["", success.stdout.trimEnd(), success.stdout.replace("\n", "\r\n"), "TRUSTED_BOOKING_OUTER_V1\n"]
       .map(stdout => ({ ...success, stdout })),
     { ...success, status: 1 }, { ...failure, status: 0 }, { ...failure, stdout: success.stdout },
-    ...[failed("terminal"), failed("terminal") + "\r\n", failed("terminal") + "\0\n", failed("made-up") + "\n",
+    ...[failed("terminal"), failed("terminal") + "\n", failed("terminal") + "\r\n", failed("terminal") + "\0\n", failed("made-up") + "\n",
       failed("terminal").replace("do not retry", "retry") + "\n", canary + failed("terminal") + "\n",
       "TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; retain owned files; do not retry\n",
       failed("terminal").replace("; retain", "; diagnostic=observed; phase=dom; retain") + "\n"]
@@ -562,4 +723,53 @@ test("#1012 bounded single spawn; exact success or fixed failure stage; raw/norm
   ];
   for (const [index, result] of unknown.entries()) assert.deepEqual(proofFixture(result), {
     stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=unknown"], status: 1 }, `output denial ${index}`);
+});
+
+test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/normal/raw closes without retry", () => {
+  // Independent reviewed enum inventory: additions require codec and wrapper synchronization.
+  const enums = {
+    reason: ["cancel", "timeout", "manager", "mismatch", "unknown", "unavailable", "none"],
+    boundary: ["pre-show", "polling", "first-exit", "second-show", "double-exit", "unknown"],
+    state: ["running", "exited", "failed", "other", "invalid", "unavailable"],
+    result: ["success", "timeout", "other", "not-observed"],
+    exit: ["zero", "nonzero", "abnormal-code", "not-observed", "unknown"],
+    invocation: ["matched", "mismatched", "not-compared", "unknown"], cgroup: ["expected", "empty", "other", "unknown"],
+    second: ["observed", "not-observed"], budget: ["adequate", "exhausted", "aborted", "unknown"],
+    stop: ["confirmed", "failed-state", "identity-mismatch", "state-unaccepted", "stop-budget", "show-unavailable", "not-attempted", "unknown"],
+  };
+  const result = { status: 1, signal: null, stdout: "", stderr: "" };
+  const unknown = { stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=unknown"], status: 1 };
+  const prefix = "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED";
+  const sealed = wire => proofFixture({ ...result, stderr: wire + "\n" });
+  const wire = formatUnauthenticatedBookingTerminal(terminalRecord());
+  const longest = Object.fromEntries(Object.entries(enums).map(([key, values]) => [key, values.reduce((a, b) => a.length > b.length ? a : b)]));
+  const longestWire = formatUnauthenticatedBookingTerminal(longest);
+  assert.ok(Buffer.byteLength(longestWire + "\n") <= 512);
+  assert.deepEqual(sealed(longestWire), { stdout: [], stderr: [longestWire.replace(prefix, "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
+  for (const [key, values] of Object.entries(enums)) {
+    for (const value of values) {
+      const record = terminalRecord({ [key]: value }), text = formatUnauthenticatedBookingTerminal(record);
+      assert.deepEqual(parseUnauthenticatedBookingTerminal(text), record);
+      assert.deepEqual(sealed(text), { stdout: [], stderr: [text.replace(prefix, "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
+    }
+    for (const value of ["", "invalid-enum", canary, "active", "dead", "1", "success\n"]) {
+      assert.deepEqual(sealed(wire.replace(`${key}=${terminalRecord()[key]}`, `${key}=${value}`)), unknown, key);
+    }
+    assert.deepEqual(sealed(wire.replace(`; ${key}=${terminalRecord()[key]}`, "")), unknown);
+    assert.deepEqual(sealed(wire.replace(`; ${key}=`, `; ${key}=${terminalRecord()[key]}; ${key}=`)), unknown);
+  }
+  for (const text of [wire + "\n", wire + "\r", wire + "\n" + wire, canary + wire, wire + canary,
+    wire.replace("report=unread", "report=read"), wire.replace("evidence=unproved", "evidence=proved"),
+    wire.replace("; stop=", "; extra=unknown; stop="), wire.slice(1), wire + "x".repeat(513),
+    "TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=timeout; stop=confirmed; retain owned files; do not retry",
+    "TRUSTED_BOOKING_DIAGNOSTIC_V2; phase=dom; fault=unknown", failed("terminal")]) assert.deepEqual(sealed(text), unknown);
+  // A valid terminal record cannot relax the wrapper's process/stream envelope.
+  const valid = { ...result, stderr: wire + "\n" };
+  for (const altered of [
+    ...[0, 2, null, "1"].map(status => ({ ...valid, status })),
+    ...[undefined, "SIGTERM", "SIGKILL"].map(signal => ({ ...valid, signal })),
+    ...[null, new Error(canary)].map(error => ({ ...valid, error })),
+    { ...valid, stdout: canary }, { ...valid, stderr: Buffer.from(valid.stderr) },
+    { ...valid, stderr: wire }, { ...valid, stderr: wire + "\r\n" },
+  ]) assert.deepEqual(proofFixture(altered), unknown);
 });

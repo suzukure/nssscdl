@@ -68,6 +68,12 @@ export function readBrowserReport(temporary, intentional) {
 export class BrowserUnit {
   #diagnosticStop;
   #diagnosticQueried = false;
+  #terminalObserving = false;
+  #terminalSnapshot;
+  // Passive fixed enums only. This snapshot never authorizes accept/release/delete.
+  #observeTerminal(values) {
+    if (this.#terminalObserving) this.terminalObservation = this.#terminalSnapshot = Object.freeze({ ...this.#terminalSnapshot, ...values });
+  }
   constructor({ env, cwd, signal, deadline = Date.now() + 180000,
     command = async (file, args, options) => (await exec(file, args, options)).stdout,
     now = Date.now, sleep = wait, uid = process.getuid(), gid = process.getgid() }) {
@@ -83,6 +89,7 @@ export class BrowserUnit {
   remaining(cleanup = false, stopPhase) {
     if (this.signal?.aborted) this.latch("CANCEL");
     const left = this.deadline - this.now() - (cleanup ? 0 : 10000);
+    this.#observeTerminal({ budget: this.signal?.aborted ? "aborted" : left <= 0 ? "exhausted" : "adequate" });
     if (left <= 0) {
       if (cleanup && stopPhase) this.stopObservation = `${stopPhase}-budget`;
       this.latch("TIMEOUT");
@@ -102,8 +109,10 @@ export class BrowserUnit {
   async show(cleanup = false, observeStop = false) {
     const keys = cleanup ? ["LoadState", "ActiveState", "SubState", "InvocationID"] :
       [...Object.keys(settings), ...stateKeys, "User", "Group", "RuntimeMaxUSec", "TimeoutStopUSec"];
+    if (!cleanup) this.#observeTerminal({ state: "unavailable" });
     const output = await this.call(["systemctl", "show", this.name, ...keys.map((key) => `--property=${key}`)], cleanup,
       cleanup && observeStop ? "show" : undefined);
+    if (!cleanup) this.#observeTerminal({ state: "invalid" });
     if (cleanup && observeStop) this.stopObservation = "show-invalid";
     const state = {};
     try {
@@ -117,6 +126,16 @@ export class BrowserUnit {
     } catch { this.latch("UNKNOWN"); throw fail(this.failure); }
   }
   check(state) {
+    this.#observeTerminal({
+      state: state.Result === "success" && state.ActiveState === "active" && ["running", "exited"].includes(state.SubState) ?
+        state.SubState : state.ActiveState === "failed" || state.SubState === "failed" ? "failed" : "other",
+      result: state.Result === "success" ? "success" : state.Result === "timeout" ? "timeout" : "other",
+      exit: state.SubState !== "exited" ? "not-observed" : state.ExecMainCode !== "1" ? "abnormal-code" :
+        state.ExecMainStatus === "0" ? "zero" : /^\d+$/.test(state.ExecMainStatus) ? "nonzero" : "unknown",
+      invocation: !/^[a-f0-9]{32}$/.test(state.InvocationID) || /^0+$/.test(state.InvocationID) ? "unknown" :
+        !this.invocation ? "not-compared" : state.InvocationID === this.invocation ? "matched" : "mismatched",
+      cgroup: state.ControlGroup === `/system.slice/${this.name}` ? "expected" : state.ControlGroup === "" ? "empty" : "other",
+    });
     // systemctl displays time spans as e.g. 2min or 1min 59s; use the
     // requested microseconds comparison via the fixed duration parser below.
     if (Object.entries(settings).some(([key, value]) => state[key] !== value) ||
@@ -145,17 +164,31 @@ export class BrowserUnit {
     this.check(await this.show());
   }
   async terminal() {
-    for (;;) {
-      const state = await this.show(); this.check(state);
-      if (state.SubState === "exited") {
-        if (state.ExecMainCode !== "1" || state.ExecMainStatus !== "0") { this.latch("MANAGER"); throw fail(this.failure); }
-        const second = await this.show(); this.check(second);
-        if (second.SubState !== "exited" || second.ExecMainCode !== "1" || second.ExecMainStatus !== "0") {
-          this.latch("MISMATCH"); throw fail(this.failure);
+    this.#terminalObserving = true;
+    this.terminalObservation = this.#terminalSnapshot = Object.freeze({ boundary: "pre-show", state: "unavailable", result: "not-observed",
+      exit: "not-observed", invocation: "not-compared", cgroup: "unknown", second: "not-observed", budget: "unknown" });
+    try {
+      for (;;) {
+        const state = await this.show(); this.check(state);
+        if (state.SubState === "exited") {
+          this.#observeTerminal({ boundary: "first-exit" });
+          if (state.ExecMainCode !== "1" || state.ExecMainStatus !== "0") { this.latch("MANAGER"); throw fail(this.failure); }
+          this.#observeTerminal({ boundary: "second-show" });
+          const second = await this.show();
+          this.#observeTerminal({ second: "observed" });
+          this.check(second);
+          if (second.SubState !== "exited" || second.ExecMainCode !== "1" || second.ExecMainStatus !== "0") {
+            this.latch("MISMATCH"); throw fail(this.failure);
+          }
+          this.#observeTerminal({ boundary: "double-exit" });
+          this.accepted = true; return;
         }
-        this.accepted = true; return;
+        this.#observeTerminal({ boundary: "polling" });
+        await this.sleep(Math.min(100, this.remaining()));
       }
-      await this.sleep(Math.min(100, this.remaining()));
+    } finally {
+      if (this.signal?.aborted) this.#observeTerminal({ budget: "aborted" });
+      this.#terminalObserving = false;
     }
   }
   async dispose(release = false) {
