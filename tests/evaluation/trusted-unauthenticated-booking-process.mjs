@@ -29,17 +29,27 @@ const tlsCleanupFailure = new RegExp("^cleanup failure: stage=(" + unauthenticat
 // Finite test-only Port seam; the operator function below seals every Port.
 export async function useUnauthenticatedBookingProcess(ports, signal, observe, observeTls) {
   let failed = false, open = true, seedOpen = false, tlsOpen = false;
+  // #930 Draft-only finite trial: freeze the first failing operation *before*
+  // the cleanup observer can overwrite entered/confirmed with worker-stop.
+  let firstFailureObserved = false, currentPhase = "unknown";
   let consumed = false, handed = false, seedDone = false, tlsDone = false;
   let worker, startAttempted = false, stopAttempted = false, stopped = false;
   let domDone = false, inspectAttempted = false, inspected = false;
   let seed, handle, home, identity, browserSignal;
-  const check = ok => { if (!ok) { failed = true; throw failure(); } };
+  const firstFailure = () => {
+    failed = true;
+    if (!firstFailureObserved && open) {
+      firstFailureObserved = true;
+      observePhase(observe, currentPhase, "first-failure");
+    }
+  };
+  const check = ok => { if (!ok) { firstFailure(); throw failure(); } };
   const alive = () => check(open && !failed && !signal.aborted && !browserSignal?.aborted);
   const action = async use => {
     try { const value = await use(); alive(); return value; }
-    catch { failed = true; throw failure(); }
+    catch { firstFailure(); throw failure(); }
   };
-  const enter = phase => { if (open) observePhase(observe, phase, "entered"); };
+  const enter = phase => { if (open) { currentPhase = phase; observePhase(observe, phase, "entered"); } };
   const confirm = phase => { if (open) observePhase(observe, phase, "confirmed"); };
   let primaryObserved = false, cleanupObserved = false;
   const reportTls = line => {
@@ -112,7 +122,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
                 check(result?.stopped === true && result?.portClosed === true);
                 ports.checkBrowserHome(home, identity);
                 check(ownerMatches); stopped = true; confirm("worker-stop");
-              } catch { failed = true; throw failure(); }
+              } catch { firstFailure(); throw failure(); }
             },
             inspectOwned: async inspectedHome => {
               check(open && seedOpen && tlsOpen && !inspectAttempted);
@@ -132,12 +142,12 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
           check(inspected); tlsDone = true;
         } finally { tlsOpen = false; }
         alive(); seedDone = true;
-      } catch { failed = true; throw failure(); }
+      } catch { firstFailure(); throw failure(); }
       finally { seedOpen = false; }
     }, () => { confirm("preflight"); enter("seed"); }));
     alive(); check(consumed && handed && seedDone && tlsDone && inspected);
     return Object.freeze({ phase: "complete", status: "prepared" });
-  } catch { failed = true; throw failure(); }
+  } catch { firstFailure(); throw failure(); }
   finally { open = false; seedOpen = false; tlsOpen = false; }
 }
 
