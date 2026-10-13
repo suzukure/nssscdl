@@ -112,7 +112,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
             stopConsumer: async () => {
               check(open && seedOpen && tlsOpen && !stopAttempted);
               stopAttempted = true; // Also closes any late browser handoff.
-              if (!domDone) failed = true; // A pending DOM cannot succeed after stop.
+              if (!domDone) firstFailure(); // Premature stop freezes the interrupted phase before worker-stop.
               if (!startAttempted) return;
               // Emergency owned stop remains possible after DOM/abort/close
               // failure, but no such failure can authorize inspection.
