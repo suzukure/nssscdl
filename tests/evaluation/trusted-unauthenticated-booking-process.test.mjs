@@ -232,6 +232,11 @@ test("#1006: stop while DOM is pending prevents late completion from promoting r
   };
   await assert.rejects(f.run(), fixed); atMostOnce(f);
   assert.equal(f.events.includes("readback"), false); assert.equal(f.events.includes("scan"), false);
+  // A premature one-shot stop is a violation of the still-pending DOM phase.
+  // The emergency stop must not overwrite the first interrupted boundary.
+  assert.deepEqual(f.observations.filter(event => event.state === "first-failure")
+    .map(event => event.phase), ["dom-401"]);
+  assert.equal(f.events.filter(event => event === "stop").length, 1);
 });
 
 test("#1006: owner returning without awaiting its seed/handoff cannot prepare; pending continuation is closed", async () => {
