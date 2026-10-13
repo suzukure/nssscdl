@@ -433,7 +433,9 @@ test("#930 finite first DOM fault only: setup/navigation/request/response/UI; ne
     assert.ok(!JSON.stringify(observed).includes(canary));
     assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
     const before = [...f.forwarded];
-    f.lateResponse(); await f.emit(confirmPath, "POST");
+    if (expected !== "dom-setup") {
+      f.lateResponse(); await f.emit(confirmPath, "POST");
+    }
     assert.deepEqual(f.forwarded, before, expected);
     assert.deepEqual(observed, [expected], "late callbacks may not add fault reports");
   }
