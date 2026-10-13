@@ -9,10 +9,15 @@ export const unauthenticatedBookingReportName = "unauthenticated-booking-report"
 export const unauthenticatedBookingChildComplete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=complete; status=prepared; readback=unchanged\n";
 export const unauthenticatedBookingFixtureComplete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=fixture; phase=complete; status=prepared; readback=unchanged\n";
 export const unauthenticatedBookingChildUnknown = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=unknown; status=failed\n";
+// #1044: closed response first-failure buckets. Each is <=12 ASCII bytes so
+// the existing Cartesian grammar still fits Child256B / Outer512B unchanged.
+export const unauthenticatedBookingResponseFaults = Object.freeze([
+  "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv",
+]);
 // #1018: observations are progress only, never success/cleanup evidence.
 export const unauthenticatedBookingPhases = Object.freeze([
   "unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start",
-  "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui",
+  "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", ...unauthenticatedBookingResponseFaults,
   "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write",
 ]);
 // #1023 private TLS diagnostics, not success/cleanup authority.

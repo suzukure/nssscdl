@@ -478,6 +478,9 @@ test("#1024 real Child codec preserves primary/cleanup, cleanup-only and unobser
 test("#1024 legacy/new own-data reports reflect only after accepted or private no-live gate", async () => {
   for (const privateGate of [false, true]) for (const value of [progress(), tlsProgress(),
     tlsProgress({ entered: "tls-setup", confirmed: "home" }),
+    ...["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"].map(entered =>
+      parseUnauthenticatedBookingReport(formatUnauthenticatedBookingFailure({ entered, confirmed: "dom-context",
+        tls_primary: "tls-consumer", tls_cleanup: "owned-inspect", tls_err: "UNCLASSIFIED" }))),
     tlsProgress({ entered: "unknown", confirmed: "unknown", tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown" })]) {
     const f = privateGate ? managerFailureFixture() : fixture("child");
     f.ports.failureReport = () => {
@@ -766,6 +769,9 @@ test("#1036 current-main Proof suffix exports exact bytes without --run or Chrom
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
   assert.equal(result.stdout, proofStep); // This is the exact suffix to compare before PR opened.
+});
+
+test("#1044 current grammar candidate branches deny pre-bucket suffix without launching a subprocess", () => {
   assert.ok(proofStep.startsWith("\n      - name: '#930 booking unauthenticated proof (temporary)'"));
   assert.ok(proofStep.endsWith("          NODE\n"));
   assert.equal((proofStep.match(/\n      - name:/g) ?? []).length, 1);
@@ -789,7 +795,7 @@ test("#1036 current-main Proof suffix exports exact bytes without --run or Chrom
   assert.equal(candidate.exactCandidate, true);
   assert.equal(candidate.baseline, f.context.baseWorkflow);
   assert.equal(candidate.baseline.includes("#930 booking unauthenticated proof (temporary)"), false);
-  assert.equal(f.files.get(productWorkflow), baseline + result.stdout);
+  assert.equal(f.files.get(productWorkflow), baseline + proofStep);
   assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline]])), true);
   assert.equal(allowsUnauthenticatedCaller(f.files, f.context), true);
   // Both actual forms are allowed; only the exact candidate needs the strict PR context.
@@ -797,10 +803,15 @@ test("#1036 current-main Proof suffix exports exact bytes without --run or Chrom
     exactCandidate ? f.context : undefined), true);
   // #1035 copied the old suffix. Even with exact base and an approved PR event,
   // stale enum bytes must be rejected before any live Proof invocation.
+  const responseSuffix = "|dom-rsp-id|dom-rsp-code|dom-rsp-hdr|dom-rsp-body|dom-rsp-jar|dom-rsp-drv";
+  assert.equal(proofStep.split(responseSuffix).length - 1, 2);
+  const oldResponseSuffix = proofStep.replaceAll(responseSuffix, "");
+  assert.notEqual(oldResponseSuffix, proofStep);
+  assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldResponseSuffix]]), f.context), false);
   const oldSuffix = proofStep.replaceAll(phaseSuffix, "");
   assert.notEqual(oldSuffix, proofStep);
   assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldSuffix]]), f.context), false);
-  for (const candidate of [oldSuffix, proofStep + "      - run: echo stale\n",
+  for (const candidate of [oldSuffix, oldResponseSuffix, proofStep + "      - run: echo stale\n",
     proofStep + proofStep,
     proofStep.replace("github.run_attempt == 1", "github.run_attempt >= 1")]) {
     assert.notEqual(baseline + candidate, baseline + proofStep);
@@ -1089,8 +1100,8 @@ test("#1015/#1024 exact CLI/proofStep publishes only each fixed terminal enum; u
     second: ["observed", "not-observed"], budget: ["adequate", "exhausted", "aborted", "unknown"],
     stop: ["confirmed", "failed-state", "identity-mismatch", "state-unaccepted", "stop-budget", "show-unavailable", "not-attempted", "unknown"],
     unit_stop: ["confirmed", "unknown"], report: ["observed", "unknown", "unread"],
-    entered: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
-    confirmed: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
+    entered: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
+    confirmed: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
     tls_primary: ["none", "unknown", "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch", "tls-browser-ownership", "tls-browser-context", "tls-browser-nss", "tls-positive", "tls-san", "tls-untrusted", "tls-consumer"],
     tls_cleanup: ["none", "unknown", "browser-close", "browser-ownership", "browser-process", "proof-listener", "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"],
     tls_err: ["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "TIMEOUT", "UNCLASSIFIED", "unknown"],

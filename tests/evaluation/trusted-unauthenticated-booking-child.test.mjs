@@ -72,6 +72,24 @@ test("#930 first-failure finite snapshot is latched before cleanup and separate 
   assert.deepEqual(invalid.writes, [unknown]);
 });
 
+test("#1044 response first-failure phases pass the existing Child enum and latch once", async () => {
+  for (const selected of ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"]) {
+    const f = fixture({ inner: (_, observe) => {
+      const emit = (phase, state) => observe(Object.freeze({ phase, state }));
+      emit("dom-context", "entered"); emit("dom-context", "confirmed");
+      emit("dom-response", "entered"); // The existing coarse phase remains legal.
+      emit(selected, "entered"); emit(selected, "first-failure");
+      emit("dom-rsp-drv", "entered"); emit("worker-stop", "entered"); emit("worker-stop", "confirmed");
+      emit(canary, "first-failure");
+      throw new Error(canary);
+    } });
+    assert.equal(await useUnauthenticatedBookingChild(f.input), false);
+    assert.deepEqual(f.writes, [failureReport({ entered: selected, confirmed: "dom-context" })]);
+    assert.equal(f.calls(), 1);
+    assert.equal(await useUnauthenticatedBookingChild(f.input), false); assert.equal(f.writes.length, 1);
+  }
+});
+
 test("#1008 exact result mismatch, raw throw and rejected Promise are unknown once without replay", async () => {
   const invalid = [null, undefined, true, "complete", [], {}, { phase: "complete" }, { phase: "complete", status: "success" },
     { phase: "unknown", status: "prepared" }, { ...good(), readback: "unchanged" }, { ...good(), [Symbol("secret")]: canary },

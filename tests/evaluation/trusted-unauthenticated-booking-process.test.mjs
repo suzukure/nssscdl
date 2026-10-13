@@ -394,7 +394,8 @@ test("#930 first-failure event occurs before cleanup progress, with one immutabl
 });
 
 test("#930 finite DOM subphase callback: first fault stays fixed, invalid/late callback is inert", async () => {
-  for (const selected of ["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui"]) {
+  for (const selected of ["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui",
+    "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"]) {
     const f = fixture(), writes = [], calls = [];
     f.ports.proveUnauthenticatedBookingDom = async input => {
       assert.equal(typeof input.onFault, "function");
@@ -416,6 +417,47 @@ test("#930 finite DOM subphase callback: first fault stays fixed, invalid/late c
     atMostOnce(f);
     assert.equal(f.events.includes("readback"), false);
     assert.equal(f.events.includes("scan"), false);
+    assert.ok(!JSON.stringify(writes).includes(canary));
+  }
+});
+
+test("#1044 DOM first-failure causes owned-inspect precondition refusal after successful owned stop", async () => {
+  for (const selected of ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"]) {
+    const f = fixture(), writes = [], gates = [], observations = [];
+    const tls = f.ports.withIsolatedBrowserTls;
+    f.ports.withIsolatedBrowserTls = (consume, options) => tls(async input => {
+      try { await consume(input); }
+      catch (error) {
+        options.report("failure: stage=helper callback; category=UNCLASSIFIED; TLS proof incomplete; raw cause withheld");
+        throw error;
+      }
+    }, { ...options, inspectOwned: async home => {
+      gates.push("attempt");
+      assert.equal(f.events.filter(event => event === "stop").length, 1);
+      assert.ok(f.events.includes("worker-port"));
+      try { await options.inspectOwned(home); gates.push("accepted"); }
+      catch (error) {
+        gates.push("precondition-denied");
+        options.report("cleanup failure: stage=owned-inspect; primary=failed");
+        throw error;
+      }
+    } });
+    f.ports.proveUnauthenticatedBookingDom = async input => {
+      input.onFault(selected); input.onFault("dom-rsp-drv");
+      throw new Error(canary); // domDone never becomes true.
+    };
+    assert.equal(await useUnauthenticatedBookingChild({ signal: f.controller.signal, isolated: true,
+      runInner: ({ signal, observe, observeTls }) => useUnauthenticatedBookingProcess(f.ports, signal,
+        event => { observations.push(event); observe(event); }, observeTls),
+      write: text => writes.push(text) }), false);
+    assert.deepEqual(gates, ["attempt", "precondition-denied"]);
+    assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered: selected,
+      confirmed: "dom-context", tls_primary: "tls-consumer", tls_cleanup: "owned-inspect", tls_err: "UNCLASSIFIED", status: "failed" });
+    assert.deepEqual(observations.filter(event => event.state === "first-failure").map(event => event.phase), [selected]);
+    assert.ok(observations.some(event => event.phase === "worker-stop" && event.state === "confirmed"));
+    assert.ok(!observations.some(event => ["dom-401", "d1-unchanged", "secret-scan"].includes(event.phase)));
+    assert.equal(f.events.includes("readback"), false); assert.equal(f.events.includes("scan"), false);
+    assert.equal(writes.length, 1); atMostOnce(f);
     assert.ok(!JSON.stringify(writes).includes(canary));
   }
 });
