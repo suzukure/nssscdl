@@ -917,6 +917,18 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 
 費用削減額、原因特定の成功、全診断を1PRへ収束できることは保証しない。本運用はIssue #808の承認時点から適用し、文書mergeを #795 のread-only調査の前提にしない。
 
+#### 原因未特定デバッグの同一Draft PR反復（#1027）
+
+原因がまだ特定されておらず、同じ失敗領域の観測・切り分けを繰り返す間は、**診断を1回追加するごとに独立PRをreviewしてmainへmergeすることを標準としない**。先に[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)で既存証拠を使い、診断が必要なら関連Issueを判断・経緯の正本として、同一のレビュー前Draft PRブランチで仮説→最小の固定非機密観測→有限検証→結果の解釈を反復する。ローカルの新開発環境は前提にせず、既存のGitHub Actionsを利用する。通常の製品実装・独立したmain-safeな契約変更・原因確定済み修正は[Issueの分割単位](#issueの分割単位)および[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)に従う。
+
+1. **入口と書込者を固定**：最新main、対象Issue、既存PR/branch、失敗runのHEAD/attempt、稼働中のCodex writer・review follow-up・human pause/停止ラベルを照合する。既存のレビュー前Draftで書込権限とownerが明確ならそのbranchに変更を集約し、競合するwriterがある場合は操作しない。通常の `ai/issue-<番号>` はdeveloper Appの所有境界を維持する。別の人間所有調査branchが必要ならIssueに紐づくDraft PRを作り、既存Appのbranch名・resume契約を偽装しない。GitHub Issueを未決の仮説と決定の正本にして、観測のたびに子IssueやPRを量産しない。
+2. **Draftのまま切り分ける**：既存の非機密log/artifactと差分不要な静的調査を先に使う。追加観測が必要な場合は次回判別したい複数の関連状態を一括設計し、同一Draftで変更・有限fixture・現在PR HEADの通常Product CI/checksを反復する。Product CIは `pull_request` のPR HEADをcheckoutするため、CIを走らせるだけならmainへのmergeは不要である。run ID/attempt/HEADと「何が判明したか／未証明か」を既存Issueへ残す。Draftの `synchronize` はClaude Review開始条件ではなく、Ready化するまでは有料独立reviewを要求しない。ただし他のActions/AI Develop/CIの費用はゼロとはみなさず、根拠のないpush・追加paid call・同条件replayは避ける。
+3. **通常CIと正式な実環境Proofを分離**：通常の有限CI通過は、実Chrome/Worker/D1/cleanupや安全な実環境結果の証明ではない。信頼境界・cleanup・所有権・権限・timeout・test oracleを変更した未レビューのPR-head scriptを「信頼済み証明器」として採用しない。正式Proofに必要なコードは既存trusted mainの検証器を優先し、変更が不可避なら既存のレビュー/人間Gateを先に成立させる。特に一時workflow付き実Chromeなどのone-shotは、調査Draftの更新や通常CIの成功から実行許可を導かず、対象・予算・HEAD・run/attempt・停止/復旧条件を個別承認する。既存 `opened && run_attempt=1`、fail-closed、no-retry、Confirm再送禁止、owned cleanup、secret非反射を維持し、許可のない `synchronize`/rerun/再PRで正式Proofを再発火させない。一時Proof PRは元workflowをbyte完全復元して差分0を確認し、**未mergeでClose**する。
+4. **結果が確定してから一度レビュー**：原因を特定し変更が必要なら、試行ログ、temporary workflow、不要な診断分岐・テスト用緩和を最終差分から取り除き、必要な回帰fixtureと実装・文書を整合させる。複数branchに分かれた一時Proof成果をそのままmainへmergeせず、通常の実装PRにクリーンな差分を集約する。最新mainとの差分・scope/contract/stop状態・現在HEADの正式CI/Traceabilityを照合してからReady for reviewとし、Claudeの独立reviewと既存merge gateを最終HEADに適用する。証拠に未確認が残るなら成功扱いせず、差分不要と判明したらIssueへcheckpointして一時Draftを未merge Closeする。
+5. **逸脱時の停止条件**：途中で新たな責務、製品要求判断、保護されたproof topology、安全な所有権確認、権限/Secrets、repository-write、認証/外部副作用の変更が必要になった場合はDraft反復を理由に実行・審査を省略しない。[Work Admission Control](#work-admission-control)と既存scope/human pauseへ戻り、独立したmain-safe契約を先行確定すべき場合だけIssue/PRを分割する。試行回数を増やしても判断材料が増えなければ前節の方式再評価を行う。
+
+効果は後続の自然なデバッグ案件の既存Issueで、レビュー/merge・AI Develop・実証runの回数と残った未確認事項を必要な範囲で振り返る。人工paid A/B、新台帳、新Workflow/runner、Secrets/Ruleset変更を本運用の前提にしない。#930の過去の証拠・実Chromeの個別承認は遡及変更せず、製品POL / BR / REQ / AC / TC / CON / OOSの意味は変えない。
+
 #### Issue起点developerのCodex実行境界
 
 Issue Developer / `/ai resume develop` はIssue単位のwriter concurrency内で、Codex runtime準備前に `origin/main` を明示fetchし、そのcommitをcurrent trusted base SHAとしてhelper blob、`AGENTS.md`、diff guard contractに使用する。canonical `ai/issue-N` branchが存在しない場合だけこのSHAから作成する。既存branchはremote HEADを取得し、current mainがbranch HEADのancestorである場合だけCodexへ進む。stale branch、fetch失敗、ancestry検証失敗ではremote branchへのwriteやpaid Codexを行わずfail-closedし、remote HEADがpre-write snapshotから不変なら既存failure handlerの `developer_execution_failed`（`failed_action=develop`）pauseへ進む。branchの自動merge / rebase / resetは行わず、Codex diff guardは今回のstaged diffだけを計測する。#484 / #487のpaused PRは自動同期せずsuperseded候補として保持し、pause解除やPR normalizationは#229 / #483 / #485の正本に従う。
