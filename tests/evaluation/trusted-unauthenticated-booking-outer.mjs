@@ -15,11 +15,75 @@ const oldPersist = join(root, ".wrangler/student-read-only-evaluation");
 const exec = promisify(execFile);
 const stages = ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"];
 const failure = stage => new Error(`TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`);
+// #1015: independent 401 grammar, ASCII only, including fixed unproved evidence.
+const terminalEnums = Object.freeze({
+  reason: ["cancel", "timeout", "manager", "mismatch", "unknown", "unavailable", "none"],
+  boundary: ["pre-show", "polling", "first-exit", "second-show", "double-exit", "unknown"],
+  state: ["running", "exited", "failed", "other", "invalid", "unavailable"],
+  result: ["success", "timeout", "other", "not-observed"],
+  exit: ["zero", "nonzero", "abnormal-code", "not-observed", "unknown"],
+  invocation: ["matched", "mismatched", "not-compared", "unknown"],
+  cgroup: ["expected", "empty", "other", "unknown"],
+  second: ["observed", "not-observed"],
+  budget: ["adequate", "exhausted", "aborted", "unknown"],
+  stop: ["confirmed", "failed-state", "identity-mismatch", "state-unaccepted", "stop-budget", "show-unavailable", "not-attempted", "unknown"],
+});
+export const unauthenticatedBookingTerminalMaxBytes = 512; // Includes the CLI LF.
+export const unauthenticatedBookingTerminalGrammar = "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal" +
+  Object.entries(terminalEnums).map(([key, values]) => `; ${key}=(${values.join("|")})`).join("") +
+  "; report=unread; evidence=unproved; retain owned files; do not retry";
+const terminalPattern = new RegExp("^(?:" + unauthenticatedBookingTerminalGrammar + ")$");
+export function parseUnauthenticatedBookingTerminal(text) {
+  if (typeof text !== "string" || text.length + 1 > unauthenticatedBookingTerminalMaxBytes) return undefined;
+  const match = terminalPattern.exec(text);
+  // JS $ also matches before a trailing LF: require the entire record explicitly.
+  if (!match || match[0] !== text) return undefined;
+  return Object.freeze(Object.fromEntries(Object.keys(terminalEnums).map((key, i) => [key, match[i + 1]])));
+}
+export function formatUnauthenticatedBookingTerminal(record) {
+  try {
+    if (!record || typeof record !== "object" || Reflect.ownKeys(record).length !== Object.keys(terminalEnums).length) return undefined;
+    let text = "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal";
+    for (const [key, values] of Object.entries(terminalEnums)) {
+      const d = Object.getOwnPropertyDescriptor(record, key);
+      if (!d || !Object.hasOwn(d, "value") || !values.includes(d.value)) return undefined;
+      text += `; ${key}=${d.value}`;
+    }
+    text += "; report=unread; evidence=unproved; retain owned files; do not retry";
+    return parseUnauthenticatedBookingTerminal(text) ? text : undefined;
+  } catch { return undefined; }
+}
+function terminalFailure(unit) {
+  const record = { reason: "unknown", boundary: "unknown", state: "unavailable", result: "not-observed",
+    exit: "not-observed", invocation: "not-compared", cgroup: "unknown", second: "not-observed", budget: "unknown", stop: "unknown" };
+  const data = (object, key) => {
+    const d = Object.getOwnPropertyDescriptor(object, key);
+    return d && Object.hasOwn(d, "value") ? d.value : undefined;
+  };
+  try {
+    const observation = data(unit, "terminalObservation"), keys = Object.keys(record).filter(k => !["reason", "stop"].includes(k));
+    if (observation && typeof observation === "object" && Reflect.ownKeys(observation).length === keys.length &&
+      keys.every(key => terminalEnums[key].includes(data(observation, key)))) {
+      for (const key of keys) record[key] = data(observation, key);
+    }
+    const first = Object.getOwnPropertyDescriptor(unit, "failure"), reason = data(unit, "failure");
+    const reasons = { CANCEL: "cancel", TIMEOUT: "timeout", MANAGER: "manager",
+      MISMATCH: "mismatch", UNKNOWN: "unknown", UNAVAILABLE: "unavailable" };
+    record.reason = first && Object.hasOwn(first, "value") && reason === undefined ? "none" :
+      typeof reason === "string" && Object.hasOwn(reasons, reason) ? reasons[reason] : "unknown";
+    const stop = data(unit, "stopObservation");
+    const stops = { accepted: "confirmed", "stop-unconfirmed": "unknown", "show-budget": "stop-budget", "show-invalid": "show-unavailable" };
+    record.stop = data(unit, "stopped") === false ? "not-attempted" :
+      typeof stop === "string" && Object.hasOwn(stops, stop) ? stops[stop] : terminalEnums.stop.includes(stop) ? stop : "unknown";
+  } catch { /* Malformed/accessor observations never produce authority or raw output. */ }
+  return new Error(formatUnauthenticatedBookingTerminal(record));
+}
 function sanitizedFailure(error) {
   try {
     const descriptor = Object.getOwnPropertyDescriptor(error, "message");
     if (descriptor && Object.hasOwn(descriptor, "value")) {
-      for (const stage of stages) if (descriptor.value === failure(stage).message) return failure(stage);
+      if (parseUnauthenticatedBookingTerminal(descriptor.value)) return new Error(descriptor.value);
+      for (const stage of stages.filter(value => value !== "terminal")) if (descriptor.value === failure(stage).message) return failure(stage);
     }
   } catch { /* Unknown error shapes never reflect raw values. */ }
   return failure("unknown");
@@ -65,7 +129,7 @@ export async function useUnauthenticatedBookingOuter(unit, ports) {
     try { unit.latch("UNKNOWN"); } catch { /* Preserve first failure. */ }
     // Existing single stop/show only. A release attempt is never repeated.
     try { if (unit.started && !unit.stopped) await unit.dispose(false); } catch { /* Retain files. */ }
-    throw failure(stage);
+    throw stage === "terminal" ? terminalFailure(unit) : failure(stage);
   } finally { unit.close(); }
 }
 
