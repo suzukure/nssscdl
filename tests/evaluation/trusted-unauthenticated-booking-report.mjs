@@ -1,6 +1,7 @@
 // #1008 closed prepared evidence only; no normal booking report or cleanup authority.
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { types } from "node:util";
 import { ownedIdentity } from "./trusted-browser-unit.mjs";
 
 const fail = () => new Error("TRUSTED_UNAUTHENTICATED_BOOKING_REPORT_FAILED");
@@ -13,18 +14,47 @@ export const unauthenticatedBookingPhases = Object.freeze([
   "unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start",
   "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write",
 ]);
-export const unauthenticatedBookingReportMaxBytes = 160;
+// #1023 private TLS diagnostics, not success/cleanup authority.
+export const unauthenticatedBookingTlsPrimary = Object.freeze([
+  "none", "unknown", "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch",
+  "tls-browser-ownership", "tls-browser-context", "tls-browser-nss", "tls-positive", "tls-san", "tls-untrusted", "tls-consumer",
+]);
+export const unauthenticatedBookingTlsCleanup = Object.freeze([
+  "none", "unknown", "browser-close", "browser-ownership", "browser-process", "proof-listener",
+  "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove",
+]);
+export const unauthenticatedBookingTlsErrors = Object.freeze([
+  "ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR",
+  "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "TIMEOUT", "UNCLASSIFIED", "unknown",
+]);
+export const unauthenticatedBookingReportMaxBytes = 256;
 const failureGrammar = new RegExp("^TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=(" +
   unauthenticatedBookingPhases.join("|") + "); confirmed=(" + unauthenticatedBookingPhases.join("|") + "); status=failed\\n$");
+const tlsFailureGrammar = new RegExp("^TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=(" +
+  unauthenticatedBookingPhases.join("|") + "); confirmed=(" + unauthenticatedBookingPhases.join("|") +
+  "); tls_primary=(" + unauthenticatedBookingTlsPrimary.join("|") + "); tls_cleanup=(" +
+  unauthenticatedBookingTlsCleanup.join("|") + "); tls_err=(" + unauthenticatedBookingTlsErrors.join("|") + "); status=failed\\n$");
 
 export function formatUnauthenticatedBookingFailure(observation) {
   try {
-    if (!observation || typeof observation !== "object" || Reflect.ownKeys(observation).length !== 2) throw fail();
+    if (!observation || typeof observation !== "object" || types.isProxy(observation)) throw fail();
+    const count = Reflect.ownKeys(observation).length;
+    if (count !== 2 && count !== 5) throw fail();
     const values = ["entered", "confirmed"].map(key => {
       const descriptor = Object.getOwnPropertyDescriptor(observation, key);
       if (!descriptor || !Object.hasOwn(descriptor, "value") || !unauthenticatedBookingPhases.includes(descriptor.value)) throw fail();
       return descriptor.value;
     });
+    if (count === 5) {
+      const tls = ["tls_primary", "tls_cleanup", "tls_err"].map((key, i) => {
+        const d = Object.getOwnPropertyDescriptor(observation, key);
+        if (!d || !Object.hasOwn(d, "value") ||
+          ![unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors][i].includes(d.value)) throw fail();
+        return d.value;
+      });
+      return `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${values[0]}; confirmed=${values[1]}; tls_primary=${tls[0]}; tls_cleanup=${tls[1]}; tls_err=${tls[2]}; status=failed\n`;
+    }
+    // Retain the legacy formatter for existing fixture/Consumer callers.
     if (values.every(value => value === "unknown")) return unauthenticatedBookingChildUnknown;
     return `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${values[0]}; confirmed=${values[1]}; status=failed\n`;
   } catch { throw fail(); }
@@ -37,6 +67,9 @@ export function parseUnauthenticatedBookingReport(text) {
   if (text === unauthenticatedBookingFixtureComplete) return Object.freeze({ execution: "fixture", phase: "complete", status: "prepared", readback: "unchanged" });
   if (text === unauthenticatedBookingChildUnknown) return Object.freeze({ phase: "unknown", status: "failed" });
   if (typeof text === "string" && Buffer.byteLength(text) <= unauthenticatedBookingReportMaxBytes) {
+    const tls = tlsFailureGrammar.exec(text);
+    if (tls && tls[0] === text) return Object.freeze({ phase: "failed", entered: tls[1], confirmed: tls[2],
+      tls_primary: tls[3], tls_cleanup: tls[4], tls_err: tls[5], status: "failed" });
     const match = failureGrammar.exec(text);
     if (match && match[0] === text) return Object.freeze({ phase: "failed", entered: match[1], confirmed: match[2], status: "failed" });
   }

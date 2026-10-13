@@ -2,6 +2,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors } from "./trusted-unauthenticated-booking-report.mjs";
 
 const origin = "https://127.0.0.1:8789";
 // The sealed operator forwards only these fixed synchronous records. Observer
@@ -11,8 +12,22 @@ const observePhase = (observe, phase, state) => {
 };
 const failure = () => new Error("TRUSTED_UNAUTHENTICATED_BOOKING_PROCESS_FAILED");
 
+// Exact #914 Helper syntax. Optional fixed ownership/process axes are checked
+// and discarded, never promoted to evidence or forwarded to the private Port.
+const tlsStageNames = Object.freeze({ preflight: "tls-preflight", "certificate/NSS": "tls-cert", listener: "tls-listener",
+  "browser launch/HOME": "tls-browser-launch", "launch-resolved ownership": "tls-browser-ownership",
+  "Browser.newContext": "tls-browser-context", "NSS candidate": "tls-browser-nss", "positive trust": "tls-positive",
+  "SAN mismatch": "tls-san", "unregistered certificate": "tls-untrusted", "helper callback": "tls-consumer" });
+const tlsOwnership = "none|unknown|proc-list|proc-read|proc-environ|root-unverified|group-mismatch|session-mismatch|tracked-drift|tracked-owner|home-mismatch|home-profile-main|home-profile-child|home-crash-db|home-tracked|home-descendant|home-descendant-unknown|home-descendant-(?:missing|different|ambiguous)-type-(?:known|absent|unknown)|home-unknown|profile-argv|profile-location|main-count|profile-set|profile-missing|profile-count|directory-read|directory-type|directory-owner|directory-mode|directory-path|generated-changed|related-process-remains";
+const tlsSuffix = "(?:; ownership=(?:" + tlsOwnership + "))?(?:; observation=(?:profile|Crashpad|tracked|descendant|unknown),(?:live|zombie|dead|unknown),(?:exact|missing|different|ambiguous|unreadable|unknown),(?:renderer|zygote|gpu-process|utility|other|absent|unknown),(?:stable|changed|vanished|unreadable|unknown))?";
+const tlsFailure = new RegExp("^failure: stage=(" + Object.keys(tlsStageNames).map(s => s.replace(/\./g, "\\.")).join("|") +
+  "); category=(" + unauthenticatedBookingTlsErrors.filter(s => s !== "unknown").join("|") +
+  "); TLS proof incomplete; raw cause withheld" + tlsSuffix + "$");
+const tlsCleanupFailure = new RegExp("^cleanup failure: stage=(" + unauthenticatedBookingTlsCleanup.filter(s => !["none", "unknown"].includes(s)).join("|") +
+  "); primary=(?:none|failed)" + tlsSuffix + "$");
+
 // Finite test-only Port seam; the operator function below seals every Port.
-export async function useUnauthenticatedBookingProcess(ports, signal, observe) {
+export async function useUnauthenticatedBookingProcess(ports, signal, observe, observeTls) {
   let failed = false, open = true, seedOpen = false, tlsOpen = false;
   let consumed = false, handed = false, seedDone = false, tlsDone = false;
   let worker, startAttempted = false, stopAttempted = false, stopped = false;
@@ -26,6 +41,23 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe) {
   };
   const enter = phase => { if (open) observePhase(observe, phase, "entered"); };
   const confirm = phase => { if (open) observePhase(observe, phase, "confirmed"); };
+  let primaryObserved = false, cleanupObserved = false;
+  const reportTls = line => {
+    try {
+      if (!open || !seedOpen || !tlsOpen || signal?.aborted || typeof line !== "string" || line.length > 512) return;
+      const primary = tlsFailure.exec(line);
+      if (primary && primary[0] === line && !primaryObserved && !cleanupObserved) {
+        primaryObserved = true; // Latch even when the passive observer throws.
+        if (typeof observeTls === "function") observeTls(Object.freeze({ tls_primary: tlsStageNames[primary[1]], tls_err: primary[2] }));
+        return;
+      }
+      const cleanup = tlsCleanupFailure.exec(line);
+      if (cleanup && cleanup[0] === line && !cleanupObserved) {
+        cleanupObserved = true;
+        if (typeof observeTls === "function") observeTls(Object.freeze({ tls_cleanup: cleanup[1] }));
+      }
+    } catch { /* No I/O, raw retention or execution-control effect. */ }
+  };
   try {
     enter("preflight");
     check(signal && typeof signal.throwIfAborted === "function"); alive();
@@ -63,7 +95,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe) {
             });
           }, {
             workerHandoff: true, executablePath: "/usr/bin/google-chrome", signal,
-            report: () => {},
+            report: reportTls,
             stopConsumer: async () => {
               check(open && seedOpen && tlsOpen && !stopAttempted);
               stopAttempted = true; // Also closes any late browser handoff.
@@ -111,7 +143,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe) {
 
 // Future isolated operator only: unchanged #937 environment/empty-home gates,
 // #914 strict TLS/close owner and #939 single owned Worker start/SIGINT stop.
-export async function runUnauthenticatedBookingProcess({ signal, observe } = {}) {
+export async function runUnauthenticatedBookingProcess({ signal, observe, observeTls } = {}) {
   try {
     observePhase(observe, "import", "entered");
     const supply = await import("./trusted-booking-seed.mjs");
@@ -141,6 +173,6 @@ export async function runUnauthenticatedBookingProcess({ signal, observe } = {})
         if ([...tokens, ...hashes, ...csrf].some(secret => JSON.stringify(process.env).includes(secret) || JSON.stringify(process.argv).includes(secret)))
           throw failure();
       },
-    }, signal, observe);
+    }, signal, observe, observeTls);
   } catch { throw failure(); }
 }
