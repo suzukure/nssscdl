@@ -7,16 +7,18 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { handoffListener, cleanupOwned } from "./browser-tls-trust.mjs";
+import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
+import { parseUnauthenticatedBookingReport } from "./trusted-unauthenticated-booking-report.mjs";
 import { useUnauthenticatedBookingProcess } from "./trusted-unauthenticated-booking-process.mjs";
 
-const canary = "private-session-sql-id-token-uri-error";
+const canary = "private-session-csrf-sql-https://private.invalid/error";
 const fixed = error => error?.message === "TRUSTED_UNAUTHENTICATED_BOOKING_PROCESS_FAILED" &&
   !("cause" in error) && !String(error.stack).includes(canary);
 
 function fixture(fault = "") {
   // Oracle: #1006 ordering; existing #914 sealed handoff/cleanup, #939 stop
   // result, #1002 void DOM/empty Cookie jar and #1004 same opaque capability.
-  const events = [], controller = new AbortController(), tlsController = new AbortController();
+  const observations = [], events = [], controller = new AbortController(), tlsController = new AbortController();
   const home = "/fixture/browser-home", identity = Object.freeze({ dev: 1, ino: 2, uid: 3 });
   const handle = Object.freeze({}), seed = { month: "2026-11" };
   const certificate = { key: `${home}/server.key`, cert: `${home}/server.pem` };
@@ -37,8 +39,8 @@ function fixture(fault = "") {
   } };
   const input = { browser, certificate, signal: tlsController.signal };
   const ports = {
-    async prepareTrustedBooking(consume) {
-      hit("seed"); seedCallback = consume;
+    async prepareTrustedBooking(consume, entered) {
+      hit("preflight"); entered(); hit("seed"); seedCallback = consume;
       if (fault === "seed-skipped") return;
       await consume(seed, handle);
       if (fault === "duplicate-seed") await consume(seed, handle);
@@ -120,8 +122,8 @@ function fixture(fault = "") {
     scanOwnedSecrets(actual, path) { hit("scan"); assert.equal(actual, seed); assert.equal(path, home); },
     inspectTrustedBooking: fail, writeBookingDiagnostic: fail,
   };
-  return { ports, events, seed, home, identity, controller, tlsController, input,
-    run: () => useUnauthenticatedBookingProcess(ports, controller.signal), resume: () => resume(),
+  return { ports, observations, events, seed, home, identity, controller, tlsController, input,
+    run: () => useUnauthenticatedBookingProcess(ports, controller.signal, event => observations.push(event)), resume: () => resume(),
     options: () => options, seedCallback: () => seedCallback, tlsCallback: () => tlsCallback };
 }
 
@@ -133,7 +135,7 @@ const atMostOnce = f => {
 test("#1006: empty-Cookie strict context → void GET-only DOM → Browser close → owned stop/closed → unchanged/scan → prepared", async () => {
   const f = fixture(), result = await f.run();
   assert.deepEqual(result, { phase: "complete", status: "prepared" }); assert.equal(Object.isFrozen(result), true);
-  assert.deepEqual(f.events, ["seed", "home", "tls", "proof-close", "proof-port", "identity", "worker-create", "start", "ready",
+  assert.deepEqual(f.events, ["preflight", "seed", "home", "tls", "proof-close", "proof-port", "identity", "worker-create", "start", "ready",
     "context", "dom", "after-dom", "context-close", "browser-close", "identity", "stop", "worker-port", "identity",
     "tls-port", "identity", "readback", "identity", "scan"]);
   atMostOnce(f); assert.equal(JSON.stringify(result).includes(canary), false);
@@ -296,4 +298,70 @@ test("#1006: import is silent, no CLI/report/delete or caller in Product/workflo
   for (const name of ["trusted-booking-process.mjs", "trusted-booking-child.mjs", "trusted-booking-outer.mjs", "trusted-booking-report.mjs"])
     assert.doesNotMatch(readFileSync(`tests/evaluation/${name}`, "utf8"), /UnauthenticatedBookingProcess|trusted-unauthenticated-booking-process/);
   assert.ok(JSON.parse(readFileSync("package.json", "utf8")).scripts["test:unit"].includes("trusted-unauthenticated-booking-process.test.mjs"));
+});
+
+// #1018 oracle: only boundaries exposed by the existing Ports. TLS setup is
+// aggregate trust/handoff preparation, not a claim about its internal preflight.
+const phaseOracle = [
+  ["preflight", "preflight", "unknown"], ["seed", "seed", "preflight"],
+  ["home", "home", "seed"], ["tls", "tls-setup", "home"],
+  ["worker-create", "worker-start", "tls-setup"], ["start", "worker-stop", "worker-stop"],
+  ["context", "worker-stop", "worker-stop"], ["dom", "worker-stop", "worker-stop"],
+  ["browser-close", "worker-stop", "worker-stop"], ["stop", "worker-stop", "dom-401"],
+  ["readback", "d1-unchanged", "worker-stop"], ["scan", "secret-scan", "d1-unchanged"],
+];
+test("#1018 exact last entered/confirmed at each failing Port, including emergency stop", async () => {
+  for (const [fault, entered, confirmed] of phaseOracle) {
+    const f = fixture(fault); await assert.rejects(f.run(), fixed); atMostOnce(f);
+    assert.equal(f.observations.filter(e => e.state === "entered").at(-1).phase, entered, fault);
+    assert.equal(f.observations.filter(e => e.state === "confirmed").at(-1)?.phase ?? "unknown", confirmed, fault);
+    assert.ok(f.observations.every(Object.isFrozen));
+    assert.ok(!JSON.stringify(f.observations).includes(canary));
+  }
+  const f = fixture(); await f.run();
+  assert.deepEqual(f.observations.map(e => `${e.phase}:${e.state}`), [
+    "preflight:entered", "preflight:confirmed", "seed:entered", "seed:confirmed", "home:entered", "home:confirmed",
+    "tls-setup:entered", "tls-setup:confirmed", "worker-start:entered", "worker-start:confirmed",
+    "dom-401:entered", "dom-401:confirmed", "tls-cleanup:entered", "worker-stop:entered", "worker-stop:confirmed",
+    "d1-unchanged:entered", "d1-unchanged:confirmed", "secret-scan:entered", "secret-scan:confirmed",
+  ]);
+});
+
+test("#1018 observer throws never change effects, failure latch or single owned stop", async () => {
+  for (const fault of ["", "dom", "stop", "readback"]) {
+    const f = fixture(fault);
+    const operation = useUnauthenticatedBookingProcess(f.ports, f.controller.signal, () => { throw new Error(canary); });
+    if (fault) await assert.rejects(operation, fixed); else assert.deepEqual(await operation, { phase: "complete", status: "prepared" });
+    atMostOnce(f); assert.equal(f.events.filter(e => e === "stop").length, 1);
+  }
+});
+
+test("#1018 real process → Child fixed failure report at every phase, one write and no replay", async () => {
+  for (const [fault, entered, confirmed] of phaseOracle) {
+    const f = fixture(fault), writes = []; let calls = 0;
+    const input = { isolated: true, signal: f.controller.signal,
+      runInner: ({ signal, observe }) => { calls++; return useUnauthenticatedBookingProcess(f.ports, signal, observe); },
+      write: text => { writes.push(text); },
+    };
+    assert.equal(await useUnauthenticatedBookingChild(input), false, fault);
+    assert.equal(calls, 1); atMostOnce(f);
+    assert.deepEqual(writes, [`TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; status=failed\n`], fault);
+    assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered, confirmed, status: "failed" });
+    const before = [...f.events]; assert.equal(await useUnauthenticatedBookingChild(input), false);
+    assert.equal(calls, 1); assert.equal(writes.length, 1); assert.deepEqual(f.events, before);
+  }
+});
+
+test("#1018 sealed operator dependency import failures retain import entered without confirmation", async () => {
+  const source = readFileSync("tests/evaluation/trusted-unauthenticated-booking-process.mjs", "utf8")
+    .replace(/^import .*;$/gm, "").replace(/export /g, "")
+    .replace(/await import\("([^"]+)"\)/g, (_, path) => `dependencies[${JSON.stringify(path)}]`);
+  for (const path of ["./trusted-booking-seed.mjs", "./browser-tls-trust.mjs", "./trusted-booking-worker.mjs",
+    "./trusted-booking-dom.mjs", "./trusted-seed-process.mjs"]) {
+    const dependencies = new Proxy({}, { get(_, key) { if (key === path) throw new Error(canary); return {}; } });
+    const observations = [];
+    const run = runInNewContext(`${source}\nrunUnauthenticatedBookingProcess`, { dependencies });
+    await assert.rejects(run({ signal: new AbortController().signal, observe: event => observations.push(JSON.parse(JSON.stringify(event))) }), fixed);
+    assert.deepEqual(observations, [{ phase: "import", state: "entered" }]);
+  }
 });

@@ -8,7 +8,27 @@ export const unauthenticatedBookingReportName = "unauthenticated-booking-report"
 export const unauthenticatedBookingChildComplete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=complete; status=prepared; readback=unchanged\n";
 export const unauthenticatedBookingFixtureComplete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=fixture; phase=complete; status=prepared; readback=unchanged\n";
 export const unauthenticatedBookingChildUnknown = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=unknown; status=failed\n";
-export const unauthenticatedBookingReportMaxBytes = 114;
+// #1018: observations are progress only, never success/cleanup evidence.
+export const unauthenticatedBookingPhases = Object.freeze([
+  "unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start",
+  "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write",
+]);
+export const unauthenticatedBookingReportMaxBytes = 160;
+const failureGrammar = new RegExp("^TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=(" +
+  unauthenticatedBookingPhases.join("|") + "); confirmed=(" + unauthenticatedBookingPhases.join("|") + "); status=failed\\n$");
+
+export function formatUnauthenticatedBookingFailure(observation) {
+  try {
+    if (!observation || typeof observation !== "object" || Reflect.ownKeys(observation).length !== 2) throw fail();
+    const values = ["entered", "confirmed"].map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(observation, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || !unauthenticatedBookingPhases.includes(descriptor.value)) throw fail();
+      return descriptor.value;
+    });
+    if (values.every(value => value === "unknown")) return unauthenticatedBookingChildUnknown;
+    return `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${values[0]}; confirmed=${values[1]}; status=failed\n`;
+  } catch { throw fail(); }
+}
 const states = new Map(); // A failed writer cannot regenerate, even if no file was created.
 const statKeys = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeMs", "ctimeMs"];
 
@@ -16,6 +36,10 @@ export function parseUnauthenticatedBookingReport(text) {
   if (text === unauthenticatedBookingChildComplete) return Object.freeze({ execution: "isolated", phase: "complete", status: "prepared", readback: "unchanged" });
   if (text === unauthenticatedBookingFixtureComplete) return Object.freeze({ execution: "fixture", phase: "complete", status: "prepared", readback: "unchanged" });
   if (text === unauthenticatedBookingChildUnknown) return Object.freeze({ phase: "unknown", status: "failed" });
+  if (typeof text === "string" && Buffer.byteLength(text) <= unauthenticatedBookingReportMaxBytes) {
+    const match = failureGrammar.exec(text);
+    if (match && match[0] === text) return Object.freeze({ phase: "failed", entered: match[1], confirmed: match[2], status: "failed" });
+  }
   throw fail();
 }
 function directory(owner) {

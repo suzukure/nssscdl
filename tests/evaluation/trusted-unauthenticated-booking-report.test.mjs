@@ -13,7 +13,7 @@ const name = "unauthenticated-booking-report";
 const complete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=complete; status=prepared; readback=unchanged\n";
 const fixtureText = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=fixture; phase=complete; status=prepared; readback=unchanged\n";
 const unknown = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=unknown; status=failed\n";
-const canary = "秘密-session-csrf-sql-credential";
+const canary = "秘密-session-csrf-sql-https://private.invalid/credential";
 const fixed = e => e.message === "TRUSTED_UNAUTHENTICATED_BOOKING_REPORT_FAILED" && !("cause" in e) && !e.stack.includes(canary);
 function fixture(run) {
   const dir = fs.mkdtempSync(join(tmpdir(), "nssscdl-negative-report-"));
@@ -28,9 +28,9 @@ function codec(overrides = {}) {
 const write = (api, dir, text = complete) => api.writeUnauthenticatedBookingReport(dir, text);
 const read = (api, dir) => api.readUnauthenticatedBookingReport(dir);
 
-test("#1008 exact identifier, name, fields, spaces, ordering, LF and 114-byte bound", () => {
+test("#1008 exact identifier, name, fields, spaces, ordering, LF and 160-byte bound", () => {
   assert.equal(report.unauthenticatedBookingReportName, name);
-  assert.equal(report.unauthenticatedBookingReportMaxBytes, 114);
+  assert.equal(report.unauthenticatedBookingReportMaxBytes, 160);
   assert.equal(report.unauthenticatedBookingChildComplete, complete);
   assert.equal(report.unauthenticatedBookingFixtureComplete, fixtureText);
   assert.equal(report.unauthenticatedBookingChildUnknown, unknown);
@@ -58,7 +58,7 @@ test("#1008 arbitrary/old/CRLF/nonASCII/extra bytes and fields cannot become a r
     complete.trimEnd(), complete.replace("\n", "\r\n"), complete + "\n", complete + "x", complete + "\0", complete + canary,
     complete.replace("isolated", "real"), complete.replace("prepared", "success"), complete.replace("unchanged", canary),
     complete.replace("; execution=isolated", ""), complete.replace("; ", ";"), complete.replace("phase=complete; status=prepared", "status=prepared; phase=complete"),
-    complete.replace("\n", "; secret=" + canary + "\n"), "x".repeat(115)];
+    complete.replace("\n", "; secret=" + canary + "\n"), "x".repeat(161)];
   for (const text of invalid) {
     assert.throws(() => report.parseUnauthenticatedBookingReport(text), fixed);
     fixture(dir => {
@@ -121,7 +121,7 @@ test("#1008 bounded reads, owner/stat drift, interrupted I/O and rename uncertai
         return stat;
       },
       readSync(fd, bytes, offset, length, position) {
-        reads++; assert.equal(length, 115); assert.equal(position, 0);
+        reads++; assert.equal(length, 161); assert.equal(position, 0);
         if (fault === "read-throw") throw new Error(canary);
         return fs.readSync(fd, bytes, offset, fault === "short-read" ? 20 : length, position);
       },
@@ -160,5 +160,52 @@ test("#1008 read-time tampering, directory replacement, partial, uid/mode/stat d
       closeSync(fd) { fs.closeSync(fd); if (fault === "close") throw new Error(canary); },
     });
     assert.throws(() => read(api, dir), fixed, fault);
+  });
+});
+
+const failureText = (entered, confirmed) => `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; status=failed\n`;
+test("#1018 finite phase codec roundtrip, exact bytes/ownership and old unknown compatibility", () => {
+  assert.deepEqual(report.unauthenticatedBookingPhases, ["unknown", "import", "preflight", "seed", "home", "tls-setup",
+    "worker-start", "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"]);
+  for (const entered of report.unauthenticatedBookingPhases) for (const confirmed of report.unauthenticatedBookingPhases) {
+    const expected = { phase: "failed", entered, confirmed, status: "failed" };
+    const text = failureText(entered, confirmed);
+    assert.ok(Buffer.byteLength(text) <= 160);
+    assert.deepEqual(report.parseUnauthenticatedBookingReport(text), expected);
+    assert.equal(report.formatUnauthenticatedBookingFailure({ entered, confirmed }),
+      entered === "unknown" && confirmed === "unknown" ? unknown : text);
+  }
+  for (const phase of report.unauthenticatedBookingPhases) fixture((dir, path) => {
+    const text = failureText(phase, "unknown"), api = codec();
+    write(api, dir, text); assert.equal(fs.readFileSync(path, "utf8"), text);
+    assert.equal(read(codec(), dir).entered, phase);
+    assert.throws(() => write(api, dir, text), fixed); assert.deepEqual(fs.readdirSync(dir), [name]);
+  });
+});
+
+test("#1018 unknown enums, getters, extra/duplicate fields, CRLF and canaries rejected without reflection", () => {
+  const observation = { entered: "seed", confirmed: "preflight" }, text = failureText("seed", "preflight");
+  let getters = 0;
+  for (const bad of [null, undefined, {}, { ...observation, raw: canary }, { ...observation, [Symbol()]: canary },
+    { ...observation, entered: canary }, { entered: "seed", get confirmed() { getters++; throw new Error(canary); } },
+    new Proxy({}, { ownKeys() { throw new Error(canary); } })]) assert.throws(() => report.formatUnauthenticatedBookingFailure(bad), fixed);
+  assert.equal(getters, 0);
+  for (const bad of [text.replace("seed", canary), text.replace("seed", "tls-preflight"), text.replace("\n", "\r\n"),
+    text + "\n", text + canary, text.trimEnd(), text.replace("; confirmed=", "; entered=seed; confirmed="),
+    text.replace("entered=seed; confirmed=preflight", "confirmed=preflight; entered=seed"), text.replace("status=failed", "status=prepared")]) {
+    assert.throws(() => report.parseUnauthenticatedBookingReport(bad), fixed);
+    fixture(dir => { const api = codec(); assert.throws(() => write(api, dir, bad), fixed);
+      assert.throws(() => write(api, dir, text), fixed); assert.deepEqual(fs.readdirSync(dir), []); });
+  }
+});
+
+test("#1018 failure report partial write remains latched and is never regenerated", () => {
+  fixture((dir, path) => {
+    const api = codec({ writeFileSync(fd, text) { fs.writeFileSync(fd, text.slice(0, 30)); } });
+    assert.throws(() => write(api, dir, failureText("dom-401", "worker-start")), fixed);
+    assert.deepEqual(fs.readdirSync(dir), [name + ".partial"]);
+    const bytes = fs.readFileSync(path + ".partial");
+    assert.throws(() => write(api, dir, unknown), fixed); assert.throws(() => read(api, dir), fixed);
+    assert.deepEqual(fs.readFileSync(path + ".partial"), bytes);
   });
 });
