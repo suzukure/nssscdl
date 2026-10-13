@@ -767,18 +767,27 @@ test("#1036 current-main Proof suffix exports exact bytes without --run or Chrom
   assert.ok(proofStep.includes("timeout: 190000, maxBuffer: 4096"));
   const phaseSuffix = "|dom-context|dom-setup|dom-net|dom-request|dom-response|dom-ui";
   assert.equal(proofStep.split(phaseSuffix).length - 1, 2); // entered and confirmed, not hardcoded legacy grammar.
-  const baseline = strictText(readFileSync(productWorkflow));
+  // #1039: Main's ordinary Workflow and an authorized one-shot candidate share
+  // the same trusted base. Never treat a stale, modified, or doubled suffix as base.
+  const currentWorkflow = strictText(readFileSync(productWorkflow));
+  const exactCandidate = currentWorkflow.endsWith(proofStep);
+  const baseline = exactCandidate ? currentWorkflow.slice(0, -proofStep.length) : currentWorkflow;
   assert.equal(baseline.includes("#930 booking unauthenticated proof (temporary)"), false);
   const f = callerFixture();
   assert.equal(baseline, f.context.baseWorkflow);
   assert.equal(f.files.get(productWorkflow), baseline + result.stdout);
+  assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline]])), true);
   assert.equal(allowsUnauthenticatedCaller(f.files, f.context), true);
+  // Both actual forms are allowed; only the exact candidate needs the strict PR context.
+  assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, currentWorkflow]]),
+    exactCandidate ? f.context : undefined), true);
   // #1035 copied the old suffix. Even with exact base and an approved PR event,
   // stale enum bytes must be rejected before any live Proof invocation.
   const oldSuffix = proofStep.replaceAll(phaseSuffix, "");
   assert.notEqual(oldSuffix, proofStep);
   assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldSuffix]]), f.context), false);
   for (const candidate of [oldSuffix, proofStep + "      - run: echo stale\n",
+    proofStep + proofStep,
     proofStep.replace("github.run_attempt == 1", "github.run_attempt >= 1")]) {
     assert.notEqual(baseline + candidate, baseline + proofStep);
     assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + candidate]]), f.context), false);
