@@ -32,6 +32,9 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
   // #930 Draft-only finite trial: freeze the first failing operation *before*
   // the cleanup observer can overwrite entered/confirmed with worker-stop.
   let firstFailureObserved = false, currentPhase = "unknown", workerStopConfirmed = false;
+  // The DOM helper reports only its first definite failure from a closed set.
+  // Observer events are private; no changed report fields or browser actions.
+  const domFaults = new Set(["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui"]);
   let consumed = false, handed = false, seedDone = false, tlsDone = false;
   let worker, startAttempted = false, stopAttempted = false, stopped = false;
   let domDone = false, inspectAttempted = false, inspected = false;
@@ -97,13 +100,23 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
               startAttempted = true;
               check(await worker.start() === origin); alive();
               check(worker.isReady() === true); confirm("worker-start");
-              enter("dom-401");
+              enter("dom-context");
               const context = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
-              alive();
+              alive(); confirm("dom-context");
+              enter("dom-setup");
+              // Preserve the earliest bounded DOM fault before async cleanup
+              // moves currentPhase to worker-stop. Late/unknown callbacks are inert.
+              const onFault = phase => {
+                try {
+                  if (domFaults.has(phase) && !firstFailureObserved && open && !domDone && !signal.aborted && !tlsSignal.aborted) {
+                    enter(phase); firstFailure();
+                  }
+                } catch { /* Never alter the owner or leak diagnostic input. */ }
+              };
               // The #1002 helper checks the actual empty Cookie jar and GET/POST
               // traffic. No Session, Cookie injection, ID or positive write latch.
-              check(await ports.proveUnauthenticatedBookingDom({ context, fixture: { month: seed.month }, signal: tlsSignal }) === undefined);
-              alive(); domDone = true; confirm("dom-401");
+              check(await ports.proveUnauthenticatedBookingDom({ context, fixture: { month: seed.month }, signal: tlsSignal, onFault }) === undefined);
+              alive(); domDone = true; enter("dom-401"); confirm("dom-401");
               enter("tls-cleanup");
             });
           }, {

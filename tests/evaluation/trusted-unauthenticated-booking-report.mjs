@@ -12,7 +12,8 @@ export const unauthenticatedBookingChildUnknown = "TRUSTED_UNAUTHENTICATED_BOOKI
 // #1018: observations are progress only, never success/cleanup evidence.
 export const unauthenticatedBookingPhases = Object.freeze([
   "unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start",
-  "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write",
+  "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui",
+  "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write",
 ]);
 // #1023 private TLS diagnostics, not success/cleanup authority.
 export const unauthenticatedBookingTlsPrimary = Object.freeze([

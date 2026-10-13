@@ -177,7 +177,8 @@ test("#1008 read-time tampering, directory replacement, partial, uid/mode/stat d
 const failureText = (entered, confirmed) => `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; status=failed\n`;
 test("#1018 finite phase codec roundtrip, exact bytes/ownership and old unknown compatibility", () => {
   assert.deepEqual(report.unauthenticatedBookingPhases, ["unknown", "import", "preflight", "seed", "home", "tls-setup",
-    "worker-start", "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"]);
+    "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui",
+    "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"]);
   for (const entered of report.unauthenticatedBookingPhases) for (const confirmed of report.unauthenticatedBookingPhases) {
     const expected = { phase: "failed", entered, confirmed, status: "failed" };
     const text = failureText(entered, confirmed);

@@ -402,6 +402,48 @@ test("#1002 finite no-cookie UI stops before explicit GETs; six assets, three ta
   }
 });
 
+test("#930 finite first DOM fault only: setup/navigation/request/response/UI; never raw evidence", { timeout: 15000 }, async () => {
+  const cases = [
+    ["dom-setup", () => {
+      const f = unauthenticatedFixture();
+      f.context.route = async () => { throw new Error(canary); };
+      return f;
+    }],
+    ["dom-net", () => {
+      const f = unauthenticatedFixture();
+      f.page.goto = async () => { throw new Error(canary); };
+      return f;
+    }],
+    ["dom-request", () => unauthenticatedFixture({
+      change: ({ requestHeaders }) => { requestHeaders["x-private"] = canary; },
+    })],
+    ["dom-response", () => unauthenticatedFixture({
+      change: ({ headers }) => { headers["cache-control"] = canary; },
+    })],
+    ["dom-ui", () => unauthenticatedFixture({ enabledMonth: true })],
+  ];
+  for (const [expected, create] of cases) {
+    const f = create(), observed = [];
+    f.input.onFault = stage => {
+      assert.equal(typeof stage, "string");
+      observed.push(stage);
+    };
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(observed, [expected], expected);
+    assert.ok(!JSON.stringify(observed).includes(canary));
+    assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+    const before = [...f.forwarded];
+    if (expected !== "dom-setup") {
+      f.lateResponse(); await f.emit(confirmPath, "POST");
+    }
+    assert.deepEqual(f.forwarded, before, expected);
+    assert.deepEqual(observed, [expected], "late callbacks may not add fault reports");
+  }
+  const f = unauthenticatedFixture({ enabledMonth: true });
+  f.input.onFault = () => { throw new Error(canary); }; // Observer rejection must be passive.
+  await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+});
+
 test("#1002 asset headers match Worker contract; bad/missing/extra headers stop further traffic", { timeout: 15000 }, async () => {
   const changes = [
     ...["x-content-type-options", "referrer-policy", "cache-control", "content-type"]

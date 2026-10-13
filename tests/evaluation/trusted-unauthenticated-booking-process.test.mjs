@@ -110,7 +110,9 @@ function fixture(fault = "") {
     },
     async proveUnauthenticatedBookingDom(actual) {
       hit("dom");
-      assert.deepEqual(actual, { context, fixture: { month: seed.month }, signal: tlsController.signal });
+      const { onFault, ...wire } = actual;
+      assert.equal(typeof onFault, "function");
+      assert.deepEqual(wire, { context, fixture: { month: seed.month }, signal: tlsController.signal });
       assert.deepEqual(await actual.context.cookies(), []);
       if (fault === "pending-dom") await new Promise(done => { resume = done; });
       if (fault === "unexpected-dom-value") return canary;
@@ -235,7 +237,7 @@ test("#1006: stop while DOM is pending prevents late completion from promoting r
   // A premature one-shot stop is a violation of the still-pending DOM phase.
   // The emergency stop must not overwrite the first interrupted boundary.
   assert.deepEqual(f.observations.filter(event => event.state === "first-failure")
-    .map(event => event.phase), ["dom-401"]);
+    .map(event => event.phase), ["dom-setup"]);
   assert.equal(f.events.filter(event => event === "stop").length, 1);
 });
 
@@ -335,6 +337,7 @@ test("#1018 exact last entered/confirmed at each failing Port, including emergen
   assert.deepEqual(f.observations.map(e => `${e.phase}:${e.state}`), [
     "preflight:entered", "preflight:confirmed", "seed:entered", "seed:confirmed", "home:entered", "home:confirmed",
     "tls-setup:entered", "tls-setup:confirmed", "worker-start:entered", "worker-start:confirmed",
+    "dom-context:entered", "dom-context:confirmed", "dom-setup:entered",
     "dom-401:entered", "dom-401:confirmed", "tls-cleanup:entered", "worker-stop:entered", "worker-stop:confirmed",
     "d1-unchanged:entered", "d1-unchanged:confirmed", "secret-scan:entered", "secret-scan:confirmed",
   ]);
@@ -354,8 +357,8 @@ test("#1018 observer throws never change effects, failure latch or single owned 
 const earlyFailurePhases = new Map([
   ["worker-create", ["worker-start", "tls-setup"]],
   ["start", ["worker-start", "tls-setup"]],
-  ["context", ["dom-401", "worker-start"]],
-  ["dom", ["dom-401", "worker-start"]],
+  ["context", ["dom-context", "worker-start"]],
+  ["dom", ["dom-setup", "dom-context"]],
 ]);
 test("#1018 real process → Child fixed failure report at every phase, one write and no replay", async () => {
   for (const [fault, entered, confirmed] of phaseOracle) {
@@ -387,6 +390,33 @@ test("#930 first-failure event occurs before cleanup progress, with one immutabl
       fault === "worker-create" ? "worker-start" : "worker-stop", fault);
     assert.ok(!JSON.stringify(observations).includes(canary));
     atMostOnce(f);
+  }
+});
+
+test("#930 finite DOM subphase callback: first fault stays fixed, invalid/late callback is inert", async () => {
+  for (const selected of ["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui"]) {
+    const f = fixture(), writes = [], calls = [];
+    f.ports.proveUnauthenticatedBookingDom = async input => {
+      assert.equal(typeof input.onFault, "function");
+      for (const invalid of [undefined, null, canary, "dom-401", "worker-stop", "dom-context"]) input.onFault(invalid);
+      input.onFault(selected); calls.push(selected);
+      input.onFault("dom-response"); input.onFault("dom-request");
+      throw new Error(canary);
+    };
+    const result = await useUnauthenticatedBookingChild({ isolated: true, signal: f.controller.signal,
+      runInner: ({ signal, observe }) => useUnauthenticatedBookingProcess(f.ports, signal, observe),
+      write: text => { writes.push(text); } });
+    assert.equal(result, false);
+    const data = parseUnauthenticatedBookingReport(writes[0]);
+    assert.equal(data.entered, selected);
+    assert.equal(data.confirmed, "dom-context");
+    assert.equal(data.status, "failed");
+    assert.deepEqual(calls, [selected]);
+    assert.equal(writes.length, 1);
+    atMostOnce(f);
+    assert.equal(f.events.includes("readback"), false);
+    assert.equal(f.events.includes("scan"), false);
+    assert.ok(!JSON.stringify(writes).includes(canary));
   }
 });
 
