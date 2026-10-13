@@ -12,7 +12,7 @@ export async function useUnauthenticatedBookingChild({ runInner, write, signal, 
   if (typeof runInner !== "function" || consumed.has(runInner)) return false;
   consumed.add(runInner);
   let interrupt, aborted, writeAttempted = false, observing = true, invalid = false;
-  let entered = "unknown", confirmed = "unknown";
+  let entered = "unknown", confirmed = "unknown", firstFailureSeen = false;
   let tls_primary = "unknown", tls_cleanup = "unknown", tls_err = "unknown";
   let primaryLatched = false, cleanupLatched = false;
   const observeTls = event => {
@@ -35,15 +35,19 @@ export async function useUnauthenticatedBookingChild({ runInner, write, signal, 
     } catch { /* Invalid observations leave unobserved axes unknown; no raw reflection. */ }
   };
   const observe = event => {
-    if (!observing || invalid || signal?.aborted) return;
+    if (!observing || invalid || firstFailureSeen || signal?.aborted) return;
     try {
       if (!event || typeof event !== "object" || Reflect.ownKeys(event).length !== 2) throw new Error();
       const phase = Object.getOwnPropertyDescriptor(event, "phase"), state = Object.getOwnPropertyDescriptor(event, "state");
       if (!phase || !state || !Object.hasOwn(phase, "value") || !Object.hasOwn(state, "value") ||
         !unauthenticatedBookingPhases.includes(phase.value) || phase.value === "unknown" || phase.value === "report-write" ||
-        !["entered", "confirmed"].includes(state.value)) throw new Error();
+        !["entered", "confirmed", "first-failure"].includes(state.value)) throw new Error();
       if (state.value === "entered") entered = phase.value;
-      else { if (phase.value !== entered) throw new Error(); confirmed = phase.value; }
+      else {
+        if (phase.value !== entered) throw new Error();
+        if (state.value === "first-failure") firstFailureSeen = true; // Stop-only phases cannot conceal the first fault.
+        else confirmed = phase.value;
+      }
     } catch { invalid = true; entered = confirmed = "unknown"; }
   };
   try {

@@ -41,6 +41,37 @@ test("#1008 one inner, prepared unchanged only, fixture distinct; repeat and par
   assert.equal(f.calls(), 1); assert.deepEqual(f.writes, [complete]);
 });
 
+test("#930 first-failure finite snapshot is latched before cleanup and separate TLS axes remain observable", async () => {
+  const f = fixture({ inner: (_, observe, observeTls) => {
+    const emit = (phase, state) => observe(Object.freeze({ phase, state }));
+    emit("import", "entered"); emit("import", "confirmed");
+    emit("worker-start", "entered");
+    emit("worker-start", "first-failure");
+    // Cleanup completion must not conceal the first failure.
+    emit("worker-stop", "entered"); emit("worker-stop", "confirmed");
+    observeTls(Object.freeze({ tls_primary: "tls-consumer", tls_err: "UNCLASSIFIED" }));
+    observeTls(Object.freeze({ tls_cleanup: "owned-inspect" }));
+    throw new Error(canary);
+  } });
+  assert.equal(await useUnauthenticatedBookingChild(f.input), false);
+  assert.deepEqual(f.writes, [failureReport({
+    entered: "worker-start", confirmed: "import", tls_primary: "tls-consumer",
+    tls_cleanup: "owned-inspect", tls_err: "UNCLASSIFIED",
+  })]);
+  assert.equal(f.calls(), 1);
+  assert.equal(await useUnauthenticatedBookingChild(f.input), false);
+  assert.equal(f.writes.length, 1);
+
+  const invalid = fixture({ inner: (_, observe) => {
+    observe(Object.freeze({ phase: "import", state: "entered" }));
+    observe(Object.freeze({ phase: "dom-401", state: "first-failure" })); // Not the active phase.
+    observe(Object.freeze({ phase: "worker-stop", state: "entered" }));
+    throw new Error(canary);
+  } });
+  assert.equal(await useUnauthenticatedBookingChild(invalid.input), false);
+  assert.deepEqual(invalid.writes, [unknown]);
+});
+
 test("#1008 exact result mismatch, raw throw and rejected Promise are unknown once without replay", async () => {
   const invalid = [null, undefined, true, "complete", [], {}, { phase: "complete" }, { phase: "complete", status: "success" },
     { phase: "unknown", status: "prepared" }, { ...good(), readback: "unchanged" }, { ...good(), [Symbol("secret")]: canary },
