@@ -344,8 +344,17 @@ test("#1018 observer throws never change effects, failure latch or single owned 
   }
 });
 
+// #930 finite trial: raw progress still moves during cleanup. The Child's failed
+// report instead preserves a synchronized snapshot captured at first failure.
+const earlyFailurePhases = new Map([
+  ["worker-create", ["worker-start", "tls-setup"]],
+  ["start", ["worker-start", "tls-setup"]],
+  ["context", ["dom-401", "worker-start"]],
+  ["dom", ["dom-401", "worker-start"]],
+]);
 test("#1018 real process → Child fixed failure report at every phase, one write and no replay", async () => {
   for (const [fault, entered, confirmed] of phaseOracle) {
+    const [failedEntered, failedConfirmed] = earlyFailurePhases.get(fault) ?? [entered, confirmed];
     const f = fixture(fault), writes = []; let calls = 0;
     const input = { isolated: true, signal: f.controller.signal,
       runInner: ({ signal, observe }) => { calls++; return useUnauthenticatedBookingProcess(f.ports, signal, observe); },
@@ -353,10 +362,25 @@ test("#1018 real process → Child fixed failure report at every phase, one writ
     };
     assert.equal(await useUnauthenticatedBookingChild(input), false, fault);
     assert.equal(calls, 1); atMostOnce(f);
-    assert.deepEqual(writes, [`TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; tls_primary=unknown; tls_cleanup=unknown; tls_err=unknown; status=failed\n`], fault);
-    assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered, confirmed, tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown", status: "failed" });
+    assert.deepEqual(writes, [`TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${failedEntered}; confirmed=${failedConfirmed}; tls_primary=unknown; tls_cleanup=unknown; tls_err=unknown; status=failed\n`], fault);
+    assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered: failedEntered, confirmed: failedConfirmed, tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown", status: "failed" });
     const before = [...f.events]; assert.equal(await useUnauthenticatedBookingChild(input), false);
     assert.equal(calls, 1); assert.equal(writes.length, 1); assert.deepEqual(f.events, before);
+  }
+});
+
+test("#930 first-failure event occurs before cleanup progress, with one immutable snapshot", async () => {
+  for (const [fault, expected] of earlyFailurePhases) {
+    const f = fixture(fault), observations = [];
+    await assert.rejects(useUnauthenticatedBookingProcess(f.ports, f.controller.signal,
+      event => observations.push(event)), fixed);
+    const first = observations.filter(event => event.state === "first-failure");
+    assert.equal(first.length, 1, fault);
+    assert.deepEqual(first.map(event => event.phase), [expected[0]], fault);
+    assert.ok(first.every(Object.isFrozen));
+    assert.ok(observations.filter(event => event.state === "entered").at(-1).phase === "worker-stop", fault);
+    assert.ok(!JSON.stringify(observations).includes(canary));
+    atMostOnce(f);
   }
 });
 
