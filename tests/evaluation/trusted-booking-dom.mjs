@@ -76,7 +76,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
   const body = JSON.stringify({ error: { code: "UNAUTHENTICATED", message: "認証が必要です。", retry: "none" } });
   const guidance = "認証が必要です。認証後に画面を開き直してください。";
   // Closed non-secret response header values; no arbitrary diagnostic headers.
-  const safeHeaders = (headers, path, api) => {
+  const safeHeaders = (headers, path, api, demand = require) => {
     const rules = {
       "content-type": api ? /^application\/json(?:;\s*charset=utf-8)?$/i :
         new RegExp(`^${assets.get(path)}(?:;\\s*charset=utf-8)?$`, "i"),
@@ -91,11 +91,11 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
       "referrer-policy": /^no-referrer$/,
       ...(api ? { "set-cookie": { test: value => value === deletion } } : { "x-content-type-options": /^nosniff$/ }),
     };
-    require(Object.entries(headers).every(([name, value]) => typeof value === "string" && rules[name]?.test(value)));
-    require(rules["content-type"].test(headers["content-type"]) && headers["cache-control"] === "no-store");
-    if (api) require(headers["set-cookie"] === deletion);
-    else require(headers["x-content-type-options"] === "nosniff" && headers["referrer-policy"] === "no-referrer");
-    if (path === csrfPath) require(headers["referrer-policy"] === "no-referrer");
+    demand(Object.entries(headers).every(([name, value]) => typeof value === "string" && rules[name]?.test(value)));
+    demand(rules["content-type"].test(headers["content-type"]) && headers["cache-control"] === "no-store");
+    if (api) demand(headers["set-cookie"] === deletion);
+    else demand(headers["x-content-type-options"] === "nosniff" && headers["referrer-policy"] === "no-referrer");
+    if (path === csrfPath) demand(headers["referrer-policy"] === "no-referrer");
   };
   const emptyJar = async () => require(isDeepStrictEqual(await step(() => context.cookies()), []));
   const drain = async () => {
@@ -128,35 +128,36 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
       const task = (async () => {
         try {
           alive();
+          const requestGuard = ok => { if (!ok) reportFault("dom-request"); require(ok); };
           const request = route.request(), rawUrl = request.url(), url = new URL(rawUrl), path = url.pathname;
-          require(url.origin === bookingOrigin && rawUrl === bookingOrigin + path && !url.username && !url.password &&
+          requestGuard(url.origin === bookingOrigin && rawUrl === bookingOrigin + path && !url.username && !url.password &&
             !url.search && !url.hash && request.method() === "GET" && request.postData() === null &&
             request.redirectedFrom() === null && request.frame() === page.mainFrame());
-          require(assets.has(path) || (explicitPath ? path === explicitPath : initialPaths.has(path)));
-          require(!counts.has(path)); counts.set(path, 1);
-          require(request.isNavigationRequest() === (path === "/student") &&
+          requestGuard(assets.has(path) || (explicitPath ? path === explicitPath : initialPaths.has(path)));
+          requestGuard(!counts.has(path)); counts.set(path, 1);
+          requestGuard(request.isNavigationRequest() === (path === "/student") &&
             (path !== "/student" || navigationCount === 0));
           const headers = await step(() => request.allHeaders());
           const browserHeaders = new Set(["accept", "accept-language", "accept-encoding", "user-agent", "host",
             "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest",
             "sec-fetch-user", "priority", "cache-control", "pragma", "upgrade-insecure-requests", "origin", "referer", "content-length"]);
-          require(Object.keys(headers).every(name => browserHeaders.has(name)));
-          require(!Object.hasOwn(headers, "cookie") && !Object.hasOwn(headers, "authorization") &&
+          requestGuard(Object.keys(headers).every(name => browserHeaders.has(name)));
+          requestGuard(!Object.hasOwn(headers, "cookie") && !Object.hasOwn(headers, "authorization") &&
             !Object.hasOwn(headers, "x-csrf-token") && !Object.hasOwn(headers, "content-type") &&
             !Object.hasOwn(headers, "transfer-encoding") &&
             (!Object.hasOwn(headers, "content-length") || headers["content-length"] === "0"));
-          require(!Object.hasOwn(headers, "origin") || headers.origin === bookingOrigin);
-          require(!Object.hasOwn(headers, "host") || headers.host === "127.0.0.1:8789");
+          requestGuard(!Object.hasOwn(headers, "origin") || headers.origin === bookingOrigin);
+          requestGuard(!Object.hasOwn(headers, "host") || headers.host === "127.0.0.1:8789");
           // Missing Fetch Metadata is unobserved (#992), never fabricated.
-          require(!Object.hasOwn(headers, "sec-fetch-site") || headers["sec-fetch-site"] === "same-origin" ||
+          requestGuard(!Object.hasOwn(headers, "sec-fetch-site") || headers["sec-fetch-site"] === "same-origin" ||
             path === "/student" && headers["sec-fetch-site"] === "none");
-          require(!Object.hasOwn(headers, "referer") || headers.referer === bookingOrigin + "/student");
-          require(!Object.hasOwn(headers, "sec-fetch-mode") || headers["sec-fetch-mode"] ===
+          requestGuard(!Object.hasOwn(headers, "referer") || headers.referer === bookingOrigin + "/student");
+          requestGuard(!Object.hasOwn(headers, "sec-fetch-mode") || headers["sec-fetch-mode"] ===
             (path === "/student" ? "navigate" : path === "/student.css" ? "no-cors" : "cors"));
-          require(!Object.hasOwn(headers, "sec-fetch-dest") || headers["sec-fetch-dest"] ===
+          requestGuard(!Object.hasOwn(headers, "sec-fetch-dest") || headers["sec-fetch-dest"] ===
             (path === "/student" ? "document" : path === "/student.css" ? "style" : assets.has(path) ? "script" : "empty"));
-          require(!Object.hasOwn(headers, "sec-fetch-user") || path === "/student" && headers["sec-fetch-user"] === "?1");
-          if (!assets.has(path)) require(headers.accept === "application/json");
+          requestGuard(!Object.hasOwn(headers, "sec-fetch-user") || path === "/student" && headers["sec-fetch-user"] === "?1");
+          if (!assets.has(path)) requestGuard(headers.accept === "application/json");
           await emptyJar(); alive();
           requests.set(request, path);
           await step(() => route.continue()); // No fetch/fulfill/header rewrite/retry.
@@ -183,13 +184,14 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     page.on("response", response => {
       if (terminal) return;
       const task = step(async () => {
+        const responseGuard = ok => { if (!ok) reportFault("dom-response"); require(ok); };
         const request = response.request(), path = requests.get(request);
-        require(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
+        responseGuard(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
         responses.set(request, response);
         const api = !assets.has(path);
-        require(response.status() === (api ? 401 : 200));
-        safeHeaders(await step(() => response.allHeaders()), path, api);
-        if (api) require(await step(() => response.text()) === body);
+        responseGuard(response.status() === (api ? 401 : 200));
+        safeHeaders(await step(() => response.allHeaders()), path, api, responseGuard);
+        if (api) responseGuard(await step(() => response.text()) === body);
         await emptyJar();
       }).catch(() => { reportFault("dom-response"); stop(); });
       pending.add(task); task.finally(() => pending.delete(task));
