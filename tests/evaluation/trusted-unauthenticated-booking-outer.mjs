@@ -4,10 +4,10 @@ import { accessSync, constants, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { promisify, types } from "node:util";
 import { BrowserUnit, browserUnitPreflight, ownedIdentity, verifyOwned } from "./trusted-browser-unit.mjs";
 import { generatedBrowserFiles } from "./browser-tls-trust.mjs";
-import { readUnauthenticatedBookingReport, unauthenticatedBookingReportName } from "./trusted-unauthenticated-booking-report.mjs";
+import { readUnauthenticatedBookingReport, unauthenticatedBookingReportName, unauthenticatedBookingPhases } from "./trusted-unauthenticated-booking-report.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 const persist = join(root, ".wrangler/student-booking-evaluation");
@@ -15,7 +15,7 @@ const oldPersist = join(root, ".wrangler/student-read-only-evaluation");
 const exec = promisify(execFile);
 const stages = ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"];
 const failure = stage => new Error(`TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`);
-// #1015: independent 401 grammar, ASCII only, including fixed unproved evidence.
+// #1020: independent 401 grammar; progress never grants success/cleanup authority.
 const terminalEnums = Object.freeze({
   reason: ["cancel", "timeout", "manager", "mismatch", "unknown", "unavailable", "none"],
   boundary: ["pre-show", "polling", "first-exit", "second-show", "double-exit", "unknown"],
@@ -27,11 +27,17 @@ const terminalEnums = Object.freeze({
   second: ["observed", "not-observed"],
   budget: ["adequate", "exhausted", "aborted", "unknown"],
   stop: ["confirmed", "failed-state", "identity-mismatch", "state-unaccepted", "stop-budget", "show-unavailable", "not-attempted", "unknown"],
+  unit_stop: ["confirmed", "unknown"],
+  report: ["observed", "unknown", "unread"],
+  entered: unauthenticatedBookingPhases,
+  confirmed: unauthenticatedBookingPhases,
 });
 export const unauthenticatedBookingTerminalMaxBytes = 512; // Includes the CLI LF.
-export const unauthenticatedBookingTerminalGrammar = "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal" +
+// Unread/unknown cannot carry phases; observed requires the manager no-live gate.
+const progressConstraint = "(?=.*; unit_stop=confirmed; report=observed;|.*; report=(?:unknown|unread); entered=unknown; confirmed=unknown;)";
+export const unauthenticatedBookingTerminalGrammar = progressConstraint + "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal" +
   Object.entries(terminalEnums).map(([key, values]) => `; ${key}=(${values.join("|")})`).join("") +
-  "; report=unread; evidence=unproved; retain owned files; do not retry";
+  "; evidence=unproved; retain owned files; do not retry";
 const terminalPattern = new RegExp("^(?:" + unauthenticatedBookingTerminalGrammar + ")$");
 export function parseUnauthenticatedBookingTerminal(text) {
   if (typeof text !== "string" || text.length + 1 > unauthenticatedBookingTerminalMaxBytes) return undefined;
@@ -49,19 +55,31 @@ export function formatUnauthenticatedBookingTerminal(record) {
       if (!d || !Object.hasOwn(d, "value") || !values.includes(d.value)) return undefined;
       text += `; ${key}=${d.value}`;
     }
-    text += "; report=unread; evidence=unproved; retain owned files; do not retry";
+    text += "; evidence=unproved; retain owned files; do not retry";
     return parseUnauthenticatedBookingTerminal(text) ? text : undefined;
   } catch { return undefined; }
 }
-function terminalFailure(unit) {
+function ownData(object, key) {
+  if (!object || types.isProxy(object)) return undefined;
+  const d = Object.getOwnPropertyDescriptor(object, key);
+  return d && Object.hasOwn(d, "value") ? d.value : undefined;
+}
+function sameStopped(unit, invocation) {
+  return ownData(unit, "invocation") === invocation && ownData(unit, "started") === true &&
+    ownData(unit, "stopped") === true;
+}
+function failedProgress(report) {
+  if (!report || typeof report !== "object" || types.isProxy(report) || Reflect.ownKeys(report).length !== 4 ||
+      ownData(report, "phase") !== "failed" || ownData(report, "status") !== "failed" ||
+      !["entered", "confirmed"].every(key => unauthenticatedBookingPhases.includes(ownData(report, key)))) return undefined;
+  return { entered: ownData(report, "entered"), confirmed: ownData(report, "confirmed") };
+}
+function terminalFailure(unit, diagnostic) {
   const record = { reason: "unknown", boundary: "unknown", state: "unavailable", result: "not-observed",
-    exit: "not-observed", invocation: "not-compared", cgroup: "unknown", second: "not-observed", budget: "unknown", stop: "unknown" };
-  const data = (object, key) => {
-    const d = Object.getOwnPropertyDescriptor(object, key);
-    return d && Object.hasOwn(d, "value") ? d.value : undefined;
-  };
+    exit: "not-observed", invocation: "not-compared", cgroup: "unknown", second: "not-observed", budget: "unknown", stop: "unknown", ...diagnostic };
+  const data = ownData;
   try {
-    const observation = data(unit, "terminalObservation"), keys = Object.keys(record).filter(k => !["reason", "stop"].includes(k));
+    const observation = data(unit, "terminalObservation"), keys = Object.keys(terminalEnums).filter(k => !["reason", "stop", "unit_stop", "report", "entered", "confirmed"].includes(k));
     if (observation && typeof observation === "object" && Reflect.ownKeys(observation).length === keys.length &&
       keys.every(key => terminalEnums[key].includes(data(observation, key)))) {
       for (const key of keys) record[key] = data(observation, key);
@@ -126,10 +144,40 @@ export async function useUnauthenticatedBookingOuter(unit, ports) {
     if (unit.failure) throw failure(stage);
     return Object.freeze({ success: true, status: "prepared", readback: "unchanged" });
   } catch {
+    const diagnostic = { unit_stop: "unknown", report: "unread", entered: "unknown", confirmed: "unknown" };
+    let eligible = false, invocation, disposed = false, confirmed = false;
+    try {
+      invocation = ownData(unit, "invocation");
+      eligible = stage === "terminal" && !types.isProxy(unit) &&
+        Object.getPrototypeOf(unit) === BrowserUnit.prototype &&
+        ownData(unit, "started") === true && ownData(unit, "stopped") === false &&
+        typeof invocation === "string" && /^[a-f0-9]{32}$/.test(invocation) && !/^0+$/.test(invocation);
+    } catch { /* Unknown/accessor/prototype identity never authorizes a read. */ }
     try { unit.latch("UNKNOWN"); } catch { /* Preserve first failure. */ }
-    // Existing single stop/show only. A release attempt is never repeated.
-    try { if (unit.started && !unit.stopped) await unit.dispose(false); } catch { /* Retain files. */ }
-    throw stage === "terminal" ? terminalFailure(unit) : failure(stage);
+    // Same single dispose(false) as normal Outer; a release attempt is never repeated.
+    try {
+      if (ownData(unit, "started") === true && ownData(unit, "stopped") === false) {
+        await unit.dispose(false);
+        disposed = true;
+        confirmed = eligible && ownData(unit, "stopObservation") === "accepted" && sameStopped(unit, invocation);
+      }
+    } catch { /* Only private failed-state confirmation below can admit a read. */ }
+    if (eligible && !disposed && ownData(unit, "stopObservation") === "failed-state") {
+      try { confirmed = await unit.confirmDiagnosticStop() === true && sameStopped(unit, invocation); }
+      catch { /* No retry, additional stop, or alternative manager. */ }
+    }
+    if (confirmed) {
+      try {
+        // Cleanup budget ignores the failure latch, but abort/identity still close the read gate.
+        unit.remaining(true);
+        if (ownData(unit, "signal")?.aborted || !sameStopped(unit, invocation)) throw failure("terminal");
+        diagnostic.unit_stop = "confirmed";
+        diagnostic.report = "unknown";
+        const progress = failedProgress(await ports.failureReport());
+        if (progress) Object.assign(diagnostic, { report: "observed", ...progress });
+      } catch { /* Missing/old/partial/hostile report stays unknown; never write or erase. */ }
+    }
+    throw stage === "terminal" ? terminalFailure(unit, diagnostic) : failure(stage);
   } finally { unit.close(); }
 }
 
@@ -214,6 +262,16 @@ export async function runUnauthenticatedBookingOuter() {
         await closed();
       },
       report,
+      // Independent read authority: no finalCheck, port/D1 access, or success report reuse.
+      failureReport() {
+        strictDirectory(temporaryIdentity);
+        const before = lstatSync(reportPath);
+        const result = readUnauthenticatedBookingReport(temporary);
+        const after = lstatSync(reportPath);
+        if (reportKeys.some(key => before[key] !== after[key])) throw failure("report");
+        strictDirectory(temporaryIdentity);
+        return result;
+      },
       async finalCheck() {
         await closed();
         if (generatedBrowserFiles(temporary).length || present(oldPersist)) throw failure("ownership");

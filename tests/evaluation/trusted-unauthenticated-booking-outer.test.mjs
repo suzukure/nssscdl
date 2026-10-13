@@ -1,10 +1,11 @@
 // #1010: finite only. Real BrowserUnit protocol, dedicated child/report, sealed operator VM.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, rmSync, chmodSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, chmodSync, writeFileSync, readdirSync, linkSync, renameSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { types } from "node:util";
 import { runInNewContext } from "node:vm";
 import { BrowserUnit } from "./trusted-browser-unit.mjs";
 import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
@@ -12,7 +13,8 @@ import { useUnauthenticatedBookingOuter, unauthenticatedBookingOuterCheckpoint,
   parseUnauthenticatedBookingTerminal, formatUnauthenticatedBookingTerminal,
   unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes } from "./trusted-unauthenticated-booking-outer.mjs";
 import { parseUnauthenticatedBookingReport, readUnauthenticatedBookingReport, writeUnauthenticatedBookingReport,
-  unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingChildUnknown } from "./trusted-unauthenticated-booking-report.mjs";
+  unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingChildUnknown,
+  unauthenticatedBookingPhases, formatUnauthenticatedBookingFailure } from "./trusted-unauthenticated-booking-report.mjs";
 
 const canary = "private-session-csrf-sql-cause";
 const failed = stage => `TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`;
@@ -42,6 +44,7 @@ function fixture(fault = "", preflightTime = 0) {
         if (fault === "stop" || f.stopFault === "stop") throw new Error(canary);
         return "";
       }
+      if (args.includes("--property=MainPID")) { events.push("diagnostic-show"); return canary; }
       events.push(unit.stopped ? "disposed-show" : "show"); shows++;
       if (fault === "show" || (!unit.stopped && shows === 2 && fault === "terminal-io") ||
         (!unit.stopped && shows === 3 && fault === "second-io") || (unit.stopped && (fault === "dispose-show" || f.stopFault === "dispose-show"))) throw new Error(canary);
@@ -79,6 +82,7 @@ function fixture(fault = "", preflightTime = 0) {
     } });
   const ports = {
     async preflight() { events.push("preflight"); time += preflightTime; if (fault === "preflight") throw new Error(canary); },
+    failureReport() { events.push("failure-read"); return parseUnauthenticatedBookingReport(text); },
     report() { events.push("report"); if (fault === "report-abort") controller.abort(canary); return parseUnauthenticatedBookingReport(text); },
     async finalCheck() { events.push("final-check"); if (fault === "ownership") throw new Error(canary);
       if (fault === "ownership-abort") controller.abort(canary); if (fault === "ownership-budget") time = 170000; },
@@ -115,6 +119,7 @@ test("failure matrix retains files, first latch and at most one start/stop; no n
     assert.ok(!f.events.includes("delete"), fault);
     for (const event of ["start", "inner", "stop"]) assert.ok(f.events.filter(v => v === event).length <= 1, fault);
     if (["preflight", "start", "terminal"].includes(stage)) assert.ok(!f.events.includes("report"));
+    if (stage !== "terminal") assert.equal(f.events.includes("failure-read"), false, fault);
     if (["preflight", "start", "terminal", "ownership"].includes(stage)) assert.ok(!f.events.includes("remove-check"));
     if (fault === "invocation") assert.equal(f.unit.failure, "MISMATCH");
     if (fault === "timeout" || fault === "live") assert.equal(f.unit.failure, "TIMEOUT");
@@ -125,9 +130,9 @@ test("failure matrix retains files, first latch and at most one start/stop; no n
 });
 
 const terminalRecord = overrides => ({ reason: "manager", boundary: "first-exit", state: "exited", result: "success",
-  exit: "nonzero", invocation: "matched", cgroup: "expected", second: "not-observed", budget: "adequate", stop: "confirmed", ...overrides });
+  exit: "nonzero", invocation: "matched", cgroup: "expected", second: "not-observed", budget: "adequate", stop: "confirmed", unit_stop: "confirmed", report: "unknown", entered: "unknown", confirmed: "unknown", ...overrides });
 
-test("#1015 real BrowserUnit finite terminal fault families; no report/retry/query/deletion", async () => {
+test("#1020 real BrowserUnit finite terminal fault families; success report/retry/deletion forbidden", async () => {
   // Expected classifications derive from the existing manager checks and #1015 enums.
   const matrix = [
     ["child", {}], ["write", {}], ["secret-scan", {}],
@@ -136,10 +141,10 @@ test("#1015 real BrowserUnit finite terminal fault families; no report/retry/que
     ["cgroup", { reason: "mismatch", boundary: "pre-show", exit: "zero", cgroup: "other" }],
     ["timeout", { reason: "timeout", boundary: "pre-show", state: "failed", result: "timeout", exit: "not-observed" }],
     ["manager", { boundary: "pre-show", state: "other", result: "other", exit: "zero" }],
-    ["live", { reason: "timeout", boundary: "polling", state: "running", exit: "not-observed", budget: "exhausted", stop: "stop-budget" }],
+    ["live", { reason: "timeout", boundary: "polling", state: "running", exit: "not-observed", budget: "exhausted", stop: "stop-budget", unit_stop: "unknown", report: "unread" }],
     ["poll-deadline", { reason: "timeout", boundary: "polling", state: "running", exit: "not-observed", budget: "exhausted" }],
-    ["budget", { reason: "timeout", boundary: "pre-show", exit: "zero", budget: "exhausted", stop: "stop-budget" }],
-    ["abort", { reason: "cancel", boundary: "pre-show", exit: "zero", budget: "aborted" }],
+    ["budget", { reason: "timeout", boundary: "pre-show", exit: "zero", budget: "exhausted", stop: "stop-budget", unit_stop: "unknown", report: "unread" }],
+    ["abort", { reason: "cancel", boundary: "pre-show", exit: "zero", budget: "aborted", unit_stop: "unknown", report: "unread" }],
     ["terminal-io", { reason: "unknown", boundary: "pre-show", state: "unavailable", result: "not-observed",
       exit: "not-observed", invocation: "not-compared", cgroup: "unknown" }],
     ["show1-invalid", { reason: "unknown", boundary: "pre-show", state: "invalid", result: "not-observed",
@@ -236,9 +241,207 @@ test("#1015 exact terminal codec rejects hostile records without invoking getter
   assert.equal(touched, 0);
   for (const text of ["", wire + "\n", wire + "\r\n", wire + "\0", canary + wire, wire + wire,
     wire.replace("; exit=", "; extra=unknown; exit="), wire.replace("; exit=", "; reason=manager; exit="),
-    wire.replace("reason=manager", "reason=unknown-value"), wire.replace("report=unread", "report=read"),
+    wire.replace("reason=manager", "reason=unknown-value"), wire.replace("report=unknown", "report=read"),
     wire.replace("evidence=unproved", "evidence=proved"), "x".repeat(513), Buffer.from(wire)]) {
     assert.equal(parseUnauthenticatedBookingTerminal(text), undefined);
+  }
+});
+
+// #1020 reuses the real private manager gate through its existing command seam.
+const progress = () => ({ phase: "failed", entered: "tls-cleanup", confirmed: "dom-401", status: "failed" });
+function managerFailureFixture({ group = "empty", mutate = () => {}, fault = "", api = "a(sus) 0\n" } = {}) {
+  const f = fixture("child"), command = f.unit.command;
+  let initial, samples = 0, apis = 0, confirms = 0;
+  f.stopFault = "failed-state";
+  const confirm = f.unit.confirmDiagnosticStop.bind(f.unit);
+  f.unit.confirmDiagnosticStop = async () => { confirms++; return confirm(); };
+  f.unit.command = async (file, args, options) => {
+    if (args[1] === "busctl") {
+      f.events.push("manager-api"); apis++;
+      if (fault === "api-throw") throw new Error(canary);
+      if (fault === "api-abort") f.controller.abort();
+      if (fault === "api-budget") f.time(180000);
+      return api;
+    }
+    if (args.includes("--property=MainPID")) {
+      f.events.push("diagnostic-show"); samples++;
+      assert.equal(options.signal, f.controller.signal);
+      const state = { ...initial, ActiveState: "failed", SubState: "failed", MainPID: "0", ControlPID: "0",
+        ControlGroup: group === "empty" ? "" : `/system.slice/${f.unit.name}` };
+      mutate(state, samples, f);
+      if (fault === `show-${samples}-throw`) throw new Error(canary);
+      if (fault === `show-${samples}-abort`) f.controller.abort();
+      if (fault === `show-${samples}-budget`) f.time(180000);
+      const keys = args.filter(arg => arg.startsWith("--property=")).map(arg => arg.slice(11));
+      const text = keys.filter(key => Object.hasOwn(state, key)).map(key => `${key}=${state[key]}`).join("\n") + "\n";
+      return fault === "duplicate" ? text + "MainPID=0\n" : fault === "malformed" ? canary : text;
+    }
+    const text = await command(file, args, options);
+    if (args[2] === "show" && !f.unit.stopped && !initial) initial = Object.fromEntries(text.split("\n").map(line => line.split("=")));
+    if (args[2] === "show" && f.unit.stopped) {
+      if (fault === "cleanup-abort") f.controller.abort();
+      if (fault === "cleanup-budget") f.time(180000);
+    }
+    return text;
+  };
+  f.ports.failureReport = () => { f.events.push("failure-read"); return progress(); };
+  f.counts = () => ({ samples, apis, confirms });
+  return f;
+}
+async function terminalDiagnostic(f) {
+  let record;
+  await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), error => {
+    record = parseUnauthenticatedBookingTerminal(error.message);
+    assert.ok(record); assert.equal(error.message.includes(canary), false);
+    assert.ok(Buffer.byteLength(error.message + "\n") <= 512);
+    return true;
+  });
+  assert.ok(f.events.filter(e => e === "stop").length <= 1);
+  for (const event of ["report", "final-check", "remove-check", "delete"]) assert.equal(f.events.includes(event), false);
+  return record;
+}
+
+test("#1020 same invocation accepted stop or private failed-state show/API/show before one failure read", async () => {
+  for (const group of ["empty", "path"]) {
+    const f = managerFailureFixture({ group });
+    const record = await terminalDiagnostic(f);
+    assert.deepEqual(record, terminalRecord({ stop: "failed-state", report: "observed", entered: "tls-cleanup", confirmed: "dom-401" }));
+    assert.deepEqual(f.events.slice(-6), ["stop", "disposed-show", "diagnostic-show", "manager-api", "diagnostic-show", "failure-read"]);
+    assert.deepEqual(f.counts(), { samples: 2, apis: 1, confirms: 1 });
+    assert.equal(f.unit.failure, "MANAGER");
+    const calls = f.events.length;
+    assert.equal(await f.unit.confirmDiagnosticStop(), false);
+    await f.unit.dispose(false); assert.equal(f.events.length, calls);
+  }
+  const f = fixture("child"); f.ports.failureReport = () => { f.events.push("failure-read"); return progress(); };
+  const record = await terminalDiagnostic(f);
+  assert.equal(record.report, "observed"); assert.equal(record.unit_stop, "confirmed");
+  assert.deepEqual(f.events.slice(-3), ["stop", "disposed-show", "failure-read"]);
+});
+
+test("#1020 real manager before/after strict identity/settings/PID/budget failures read zero", async () => {
+  const invalid = { Type: "simple", ExitType: "main", RemainAfterExit: "no", Restart: "always", NRestarts: "1",
+    OOMPolicy: "continue", Delegate: "yes", NoNewPrivileges: "no", ProtectControlGroups: "no", KillMode: "process",
+    StandardOutput: "journal", StandardError: "journal", User: "8", Group: "8", LoadState: "not-found",
+    ActiveState: "inactive", SubState: "dead", InvocationID: "c".repeat(32), MainPID: "1", ControlPID: "1",
+    RuntimeMaxUSec: "121s", TimeoutStopUSec: "3s", ControlGroup: "/other" };
+  for (const sample of [1, 2]) for (const [key, value] of Object.entries(invalid)) for (const missing of [false, true]) {
+    const f = managerFailureFixture({ mutate(state, n) { if (n === sample) { if (missing) delete state[key]; else state[key] = value; } } });
+    const record = await terminalDiagnostic(f);
+    assert.equal(record.unit_stop, "unknown", `${sample}/${key}/${missing}`); assert.equal(record.report, "unread");
+    assert.equal(f.events.includes("failure-read"), false); assert.equal(f.unit.failure, "MANAGER");
+    assert.deepEqual(f.counts(), { samples: sample, apis: sample - 1, confirms: 1 });
+  }
+  for (const group of ["empty", "path"]) {
+    const f = managerFailureFixture({ group, mutate(state, n) { if (n === 2) state.ControlGroup = group === "empty" ? `/system.slice/${f.unit.name}` : ""; } });
+    assert.equal((await terminalDiagnostic(f)).report, "unread");
+  }
+  for (const options of [
+    ...["", "a(sus) 0", "a(sus) 0\n\n", "a(sus) 1 1 7 process\n", canary, null, {}, "x".repeat(16385)].map(api => ({ api })),
+    ...["api-throw", "api-abort", "api-budget", "duplicate", "malformed", "cleanup-abort", "cleanup-budget",
+      ...[1, 2].flatMap(n => ["throw", "abort", "budget"].map(reason => `show-${n}-${reason}`))].map(fault => ({ fault })),
+  ]) {
+    const f = managerFailureFixture(options), record = await terminalDiagnostic(f);
+    assert.equal(record.report, "unread"); assert.equal(record.unit_stop, "unknown");
+    assert.equal(f.events.includes("failure-read"), false); assert.equal(f.unit.failure, "MANAGER");
+    assert.ok(f.counts().apis <= 1); assert.equal(f.counts().confirms, 1);
+  }
+});
+
+test("#1020 start eligibility, disposal rejection, private false/throw and identity drift stay unread", async () => {
+  let getters = 0;
+  for (const kind of ["missing", "zero", "uppercase", "short", "object", "getter", "inherited", "prototype", "not-started", "already-stopped"]) {
+    const f = fixture("child"), terminal = f.unit.terminal.bind(f.unit);
+    f.unit.terminal = async () => { try { await terminal(); } finally {
+      if (kind === "getter") Object.defineProperty(f.unit, "invocation", { get() { getters++; throw new Error(canary); } });
+      else if (kind === "inherited") { delete f.unit.invocation; Object.setPrototypeOf(f.unit, Object.assign(Object.create(BrowserUnit.prototype), { invocation: "b".repeat(32) })); }
+      else if (kind === "prototype") Object.setPrototypeOf(f.unit, Object.create(BrowserUnit.prototype));
+      else if (kind === "not-started") f.unit.started = false;
+      else if (kind === "already-stopped") f.unit.stopped = true;
+      else f.unit.invocation = { missing: undefined, zero: "0".repeat(32), uppercase: "B".repeat(32), short: "bb", object: { toString() { throw new Error(canary); } } }[kind];
+    } };
+    const record = await terminalDiagnostic(f);
+    assert.equal(record.report, "unread", kind); assert.equal(record.unit_stop, "unknown", kind);
+    assert.equal(f.events.includes("failure-read"), false);
+  }
+  // An accessor may be encountered by existing BrowserUnit disposal, never used as read authority.
+  assert.ok(getters <= 1);
+  const hostile = fixture("child"), target = hostile.unit;
+  hostile.unit = new Proxy(target, {
+    get(object, key) { const value = Reflect.get(object, key); return typeof value === "function" ? value.bind(object) : value; },
+    getOwnPropertyDescriptor() { throw new Error(canary); },
+  });
+  assert.equal((await terminalDiagnostic(hostile)).report, "unread");
+  assert.equal(hostile.events.includes("failure-read"), false);
+  for (const key of ["started", "stopped"]) {
+    const f = fixture("child"), terminal = f.unit.terminal.bind(f.unit);
+    f.unit.terminal = async () => { try { await terminal(); } finally {
+      Object.defineProperty(f.unit, key, { get() { throw new Error(canary); } });
+    } };
+    assert.equal((await terminalDiagnostic(f)).report, "unread"); assert.equal(f.events.includes("stop"), false);
+  }
+  for (const fault of ["stop", "dispose-show", "show-invalid", "identity-mismatch", "state-unaccepted"]) {
+    const f = fixture("child"); f.stopFault = fault;
+    let queries = 0; f.unit.confirmDiagnosticStop = async () => { queries++; return true; };
+    assert.equal((await terminalDiagnostic(f)).report, "unread"); assert.equal(queries, 0);
+  }
+  for (const value of [false, "true", "throw", "drift"]) {
+    const f = managerFailureFixture(); let calls = 0;
+    f.unit.confirmDiagnosticStop = async () => { calls++; if (value === "throw") throw new Error(canary);
+      if (value === "drift") f.unit.invocation = "c".repeat(32); return value === "drift" ? true : value; };
+    assert.equal((await terminalDiagnostic(f)).report, "unread"); assert.equal(calls, 1);
+  }
+  for (const phase of ["disposed", "confirmed"]) {
+    const f = phase === "disposed" ? fixture("child") : managerFailureFixture();
+    if (phase === "disposed") f.hook = stage => { if (stage === "disposed") f.unit.invocation = "c".repeat(32); };
+    else { const confirm = f.unit.confirmDiagnosticStop; f.unit.confirmDiagnosticStop = async () => { const result = await confirm(); f.unit.invocation = "c".repeat(32); return result; }; }
+    assert.equal((await terminalDiagnostic(f)).report, "unread");
+  }
+});
+
+test("#1020 no-live failure Port accepts only four fixed failed own data fields; reader errors stay unknown", async () => {
+  let getters = 0;
+  const accessor = progress(); Object.defineProperty(accessor, "entered", { get() { getters++; throw new Error(canary); } });
+  const proxy = new Proxy(progress(), { ownKeys() { throw new Error(canary); } });
+  const values = [undefined, null, {}, good(), { phase: "unknown", status: "failed" },
+    { ...progress(), entered: canary }, { ...progress(), status: "complete" }, { ...progress(), extra: canary },
+    { ...progress(), [Symbol("extra")]: true }, Object.create(progress()), accessor, proxy];
+  for (const value of values) {
+    const f = fixture("child"); f.ports.failureReport = () => { f.events.push("failure-read"); return value; };
+    const record = await terminalDiagnostic(f);
+    assert.equal(record.unit_stop, "confirmed"); assert.equal(record.report, "unknown");
+    assert.equal(record.entered, "unknown"); assert.equal(record.confirmed, "unknown");
+    assert.equal(f.events.filter(e => e === "failure-read").length, 1);
+  }
+  assert.equal(getters, 0);
+  for (const missing of [false, true]) {
+    const f = fixture("child");
+    if (missing) delete f.ports.failureReport;
+    else f.ports.failureReport = () => { f.events.push("failure-read"); throw new Error(canary); };
+    const record = await terminalDiagnostic(f);
+    assert.equal(record.unit_stop, "confirmed"); assert.equal(record.report, "unknown");
+    assert.equal(record.entered, "unknown"); assert.equal(record.confirmed, "unknown");
+    assert.equal(f.events.filter(e => e === "failure-read").length, missing ? 0 : 1);
+  }
+  for (const fault of ["valid", "absent", "partial", "old", "complete", "invalid", "mode", "link", "oversize", "directory-mode", "symlink"]) {
+    const dir = mkdtempSync(join(tmpdir(), "unauthenticated-failure-fixture-"));
+    try {
+      const path = join(dir, "unauthenticated-booking-report");
+      if (fault !== "absent") writeFileSync(path, fault === "old" ? unauthenticatedBookingChildUnknown :
+        fault === "complete" ? unauthenticatedBookingChildComplete : fault === "invalid" ? canary :
+        fault === "oversize" ? "x".repeat(161) : formatUnauthenticatedBookingFailure({ entered: "tls-cleanup", confirmed: "dom-401" }), { mode: 0o600 });
+      if (fault === "partial") writeFileSync(path + ".partial", canary, { mode: 0o600 });
+      if (fault === "mode") chmodSync(path, 0o644);
+      if (fault === "link") linkSync(path, path + "-alias");
+      if (fault === "directory-mode") chmodSync(dir, 0o755);
+      if (fault === "symlink") { renameSync(path, path + "-target"); symlinkSync(path + "-target", path); }
+      const before = readdirSync(dir);
+      const f = managerFailureFixture(); f.ports.failureReport = () => { f.events.push("failure-read"); return readUnauthenticatedBookingReport(dir); };
+      const record = await terminalDiagnostic(f);
+      assert.equal(record.report, fault === "valid" ? "observed" : "unknown", fault);
+      assert.equal(record.confirmed, fault === "valid" ? "dom-401" : "unknown");
+      assert.deepEqual(readdirSync(dir), before);
+    } finally { rmSync(dir, { recursive: true }); }
   }
 });
 
@@ -297,7 +500,7 @@ test("actual private report reader is used after terminal and before owned clean
 
 // Execute the whole sealed operator, catch/finally and CLI with a virtual owned
 // filesystem and command adapter. No real CLI --run, manager, Chrome or D1.
-async function operatorFixture(fault = "", injectedRun) {
+async function operatorFixture(fault = "", injectedRun, failureOptions = {}) {
   const f = fixture(fault.startsWith("terminal-") ? fault.slice("terminal-".length) : "");
   const root = "/fixture", temporary = "/fixture-tmp/run", parent = join(root, ".wrangler");
   const persist = join(parent, "student-booking-evaluation"), home = join(temporary, "browser-home");
@@ -322,6 +525,8 @@ async function operatorFixture(fault = "", injectedRun) {
   f.hook = stage => {
     if (stage === "child") { phase = "final"; node(persist); node(home); node(reportPath, 0o600); }
     if (stage === "stop") { phase = "remove"; mutation();
+      if (failureOptions.owner === "inode") nodes.get(temporary).ino++;
+      if (failureOptions.owner === "mode") nodes.get(temporary).mode = 0o755;
       if (fault === "report-replaced") nodes.get(reportPath).ino++;
       if (fault === "late-signal") listeners.get("SIGTERM")();
       if (fault === "stop-unknown") err(); }
@@ -347,6 +552,7 @@ async function operatorFixture(fault = "", injectedRun) {
   const proc = { platform: "linux", version: "v24.0.0", execPath: process.execPath, argv: ["fixture-node", "fixture-outer", "--run"],
     on: (name, fn) => listeners.set(name, fn), removeListener: name => listeners.delete(name) };
   const context = { process: proc, AbortController, Date: { now: () => 0 }, join, resolve: value => value,
+    types, unauthenticatedBookingPhases,
     fileURLToPath: value => value, tmpdir: () => "/fixture-tmp", constants: { X_OK: 1 },
     load: async name => { assert.ok(Object.hasOwn(dependencies, name)); return dependencies[name]; },
     mkdtempSync: () => { f.events.push("temporary"); return temporary; }, lstatSync: stat, ownedIdentity: owned, verifyOwned: verify,
@@ -360,10 +566,10 @@ async function operatorFixture(fault = "", injectedRun) {
     unauthenticatedBookingReportName: "unauthenticated-booking-report",
     readUnauthenticatedBookingReport: path => { assert.equal(path, temporary); reads++;
       if (fault === "report-read") err();
-      if (fault === "report-toctou") nodes.get(reportPath).mtimeMs++;
-      return good(); },
-    BrowserUnit: class { constructor(options) { assert.equal(options.deadline, 180000); f.unit.signal.removeEventListener("abort", f.unit.cancel); f.unit.signal = options.signal;
-      options.signal.addEventListener("abort", f.unit.cancel, { once: true }); return f.unit; } },
+      if (fault === "report-toctou" || failureOptions.reportDrift) nodes.get(reportPath).mtimeMs++;
+      return failureOptions.value ?? good(); },
+    BrowserUnit: function(options) { assert.equal(options.deadline, 180000); f.unit.signal.removeEventListener("abort", f.unit.cancel); f.unit.signal = options.signal;
+      options.signal.addEventListener("abort", f.unit.cancel, { once: true }); return f.unit; },
     browserUnitPreflight: async options => { assert.equal(options.deadline, 180000); f.events.push("capability"); if (fault === "capability") err(); },
     exec: async (file, args, options) => { assert.ok(options.timeout > 0 && options.timeout <= 5000); assert.equal(options.env.HOME, temporary);
       if (file === "ss") { assert.deepEqual(Array.from(args).slice(0, 2), ["-H", "-ltn"]); probes++; f.events.push(`port:${phase}:${args[2]}`);
@@ -372,6 +578,7 @@ async function operatorFixture(fault = "", injectedRun) {
       return { stdout: "" }; },
     console: { log: value => stdout.push(value), error: value => stderr.push(value) },
   };
+  context.BrowserUnit.prototype = BrowserUnit.prototype;
   if (fault === "old-persist") node(old);
   if (fault === "existing-persist") node(persist);
   if (injectedRun) {
@@ -683,16 +890,33 @@ function proofFixture(result) {
   return { stdout, stderr, status: proc.exitCode ?? 0 };
 }
 
-test("#1015 real terminal failure through sealed operator/CLI and exact proofStep; no report/port reread", async () => {
+test("#1020 terminal failure through sealed operator/CLI and exact proofStep; one gated read, no port reread", async () => {
   const r = await operatorFixture("terminal-child");
   const expected = formatUnauthenticatedBookingTerminal(terminalRecord());
   assert.deepEqual(r.stderr, [expected]); assert.deepEqual(r.stdout, []); assert.equal(r.status, 1);
-  assert.equal(r.reads, 0); assert.equal(r.probes, 4);
+  assert.equal(r.reads, 1); assert.equal(r.probes, 4);
   assert.equal(r.events.filter(e => e === "start").length, 1);
   assert.equal(r.events.filter(e => e === "stop").length, 1);
   for (const e of ["delete-persist", "delete-tmp", "final-check"]) assert.equal(r.events.includes(e), false);
   assert.deepEqual(proofFixture({ status: r.status, signal: null, stdout: "", stderr: r.stderr[0] + "\n" }), {
     stdout: [], stderr: [expected.replace("TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED", "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
+});
+
+test("#1020 sealed failure report Port and proofStep publish progress only after stop/owner/stat checks", async () => {
+  for (const options of [{ value: progress() }, { value: progress(), owner: "inode" },
+    { value: progress(), owner: "mode" }, { value: progress(), reportDrift: true }]) {
+    const r = await operatorFixture("terminal-child", undefined, options);
+    const record = parseUnauthenticatedBookingTerminal(r.stderr[0]);
+    const observed = !options.owner && !options.reportDrift;
+    assert.equal(record.report, observed ? "observed" : "unknown");
+    assert.equal(record.confirmed, observed ? "dom-401" : "unknown");
+    assert.equal(record.unit_stop, "confirmed");
+    assert.equal(r.reads, options.owner ? 0 : 1); assert.equal(r.probes, 4);
+    assert.deepEqual(proofFixture({ status: 1, signal: null, stdout: "", stderr: r.stderr[0] + "\n" }), {
+      stdout: [], stderr: [r.stderr[0].replace("TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED", "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
+    assert.equal(r.events.filter(e => e === "stop").length, 1);
+    assert.equal(r.events.some(e => e.startsWith("delete")), false);
+  }
 });
 
 test("#1012 bounded single spawn; exact success or fixed failure stage; raw/normal diagnostics never escape", () => {
@@ -736,6 +960,9 @@ test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/nor
     invocation: ["matched", "mismatched", "not-compared", "unknown"], cgroup: ["expected", "empty", "other", "unknown"],
     second: ["observed", "not-observed"], budget: ["adequate", "exhausted", "aborted", "unknown"],
     stop: ["confirmed", "failed-state", "identity-mismatch", "state-unaccepted", "stop-budget", "show-unavailable", "not-attempted", "unknown"],
+    unit_stop: ["confirmed", "unknown"], report: ["observed", "unknown", "unread"],
+    entered: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
+    confirmed: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
   };
   const result = { status: 1, signal: null, stdout: "", stderr: "" };
   const unknown = { stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=unknown"], status: 1 };
@@ -744,11 +971,21 @@ test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/nor
   const wire = formatUnauthenticatedBookingTerminal(terminalRecord());
   const longest = Object.fromEntries(Object.entries(enums).map(([key, values]) => [key, values.reduce((a, b) => a.length > b.length ? a : b)]));
   const longestWire = formatUnauthenticatedBookingTerminal(longest);
+  assert.equal(Buffer.byteLength(longestWire + "\n"), 405); // Fixed enum maxima + ASCII grammar + LF.
   assert.ok(Buffer.byteLength(longestWire + "\n") <= 512);
+  for (const record of [terminalRecord({ report: "unread", entered: "dom-401" }),
+    terminalRecord({ report: "unknown", confirmed: "dom-401" }),
+    terminalRecord({ unit_stop: "unknown", report: "observed" })]) {
+    assert.equal(formatUnauthenticatedBookingTerminal(record), undefined);
+  }
+  assert.deepEqual(sealed(wire.replace("entered=unknown", "entered=dom-401")), unknown);
+  assert.deepEqual(sealed(wire.replace("report=unknown", "report=observed").replace("unit_stop=confirmed", "unit_stop=unknown")), unknown);
   assert.deepEqual(sealed(longestWire), { stdout: [], stderr: [longestWire.replace(prefix, "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
   for (const [key, values] of Object.entries(enums)) {
     for (const value of values) {
-      const record = terminalRecord({ [key]: value }), text = formatUnauthenticatedBookingTerminal(record);
+      const record = terminalRecord({ [key]: value });
+      if (["entered", "confirmed"].includes(key) && value !== "unknown") record.report = "observed";
+      const text = formatUnauthenticatedBookingTerminal(record);
       assert.deepEqual(parseUnauthenticatedBookingTerminal(text), record);
       assert.deepEqual(sealed(text), { stdout: [], stderr: [text.replace(prefix, "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
     }
@@ -759,8 +996,9 @@ test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/nor
     assert.deepEqual(sealed(wire.replace(`; ${key}=`, `; ${key}=${terminalRecord()[key]}; ${key}=`)), unknown);
   }
   for (const text of [wire + "\n", wire + "\r", wire + "\n" + wire, canary + wire, wire + canary,
-    wire.replace("report=unread", "report=read"), wire.replace("evidence=unproved", "evidence=proved"),
+    wire.replace("report=unknown", "report=read"), wire.replace("evidence=unproved", "evidence=proved"),
     wire.replace("; stop=", "; extra=unknown; stop="), wire.slice(1), wire + "x".repeat(513),
+    wire.replace(/; unit_stop=.*?; evidence=/, "; report=unread; evidence="),
     "TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=timeout; stop=confirmed; retain owned files; do not retry",
     "TRUSTED_BOOKING_DIAGNOSTIC_V2; phase=dom; fault=unknown", failed("terminal")]) assert.deepEqual(sealed(text), unknown);
   // A valid terminal record cannot relax the wrapper's process/stream envelope.
