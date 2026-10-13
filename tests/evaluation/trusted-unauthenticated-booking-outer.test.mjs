@@ -298,9 +298,268 @@ test("import and non-exact opt-in stay inert", () => {
   }
 });
 
-test("production/workflows/normal operator remain disconnected", () => {
-  const walk = path => readdirSync(path, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(join(path, e.name)) : [join(path, e.name)]);
-  for (const path of [...walk("src"), ...walk(".github/workflows"), "tests/evaluation/trusted-booking-outer.mjs"]) {
-    assert.ok(!readFileSync(path, "utf8").includes("trusted-unauthenticated-booking-outer"), path);
+// #1012: fixture grammar only; no workflow write or execution authorization.
+const productWorkflow = ".github/workflows/product-ci.yml";
+const unauthenticatedCaller = /trusted-unauthenticated-booking-(outer|child|report)/;
+const strictText = bytes => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+const proofStep = `
+      - name: '#930 booking unauthenticated proof (temporary)'
+        if: steps.applicability.outputs.applicable == 'true' && github.event.action == 'opened' && github.run_attempt == 1
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          const result = spawnSync(process.execPath, ['tests/evaluation/trusted-unauthenticated-booking-outer.mjs', '--run'], {
+            encoding: 'utf8', timeout: 190000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe']
+          });
+          if (result.error !== undefined || result.signal !== null || result.status !== 0 || result.stderr !== '' ||
+              result.stdout !== ${JSON.stringify(unauthenticatedBookingOuterCheckpoint + "\n")}) {
+            let stage = 'unknown';
+            if (result.error === undefined && result.signal === null && result.status === 1 && result.stdout === '') {
+              for (const allowed of ['preflight', 'start', 'terminal', 'report', 'ownership', 'release', 'remove', 'listeners', 'operator', 'unknown']) {
+                if (result.stderr === 'TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=' + allowed + '; retain owned files; do not retry\\n') stage = allowed;
+              }
+            }
+            console.error('UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=' + stage);
+            process.exitCode = 1;
+          } else {
+            console.log(${JSON.stringify(unauthenticatedBookingOuterCheckpoint)});
+          }
+          NODE
+`;
+
+function allowsUnauthenticatedCaller(files, context) {
+  try {
+    for (const [path, content] of files) {
+      if (typeof content !== "string" || (path !== productWorkflow && unauthenticatedCaller.test(content))) return false;
+    }
+    const workflow = files.get(productWorkflow);
+    if (typeof workflow !== "string") return false;
+    if (!unauthenticatedCaller.test(workflow)) return true; // Ordinary CI stays inert.
+    const { env, event, head, base, main, mergeBase, changed, diff, clean, baseWorkflow } = context;
+    const pr = event.pull_request, repository = "suzukure/nssscdl";
+    const sha = value => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+    if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_EVENT_NAME !== "pull_request" ||
+        env.GITHUB_RUN_ATTEMPT !== "1" || event.action !== "opened" ||
+        env.GITHUB_REPOSITORY !== repository || env.GITHUB_WORKFLOW !== "Product CI" ||
+        event.repository.full_name !== repository || event.repository.default_branch !== "main" ||
+        !Number.isSafeInteger(event.number) || event.number <= 0 || pr.number !== event.number || pr.state !== "open" ||
+        env.GITHUB_REF !== `refs/pull/${event.number}/merge` ||
+        pr.base.repo.full_name !== repository || pr.head.repo.full_name !== repository ||
+        pr.base.ref !== "main" || env.GITHUB_BASE_REF !== "main" ||
+        typeof pr.head.ref !== "string" || !/^proof\/930-booking-unauthenticated-[a-z0-9][a-z0-9-]*$/.test(pr.head.ref) ||
+        env.GITHUB_HEAD_REF !== pr.head.ref || !sha(head) || !sha(base) || head === base ||
+        head !== pr.head.sha || base !== pr.base.sha || base !== main || mergeBase !== base ||
+        clean !== "" || changed !== productWorkflow + "\0" || diff !== `M\0${productWorkflow}\0` ||
+        typeof baseWorkflow !== "string" || !baseWorkflow.endsWith("\n") ||
+        unauthenticatedCaller.test(baseWorkflow) || /trusted-booking-(outer|child|report)/.test(baseWorkflow)) return false;
+    return workflow === baseWorkflow + proofStep;
+  } catch { return false; }
+}
+
+function proofContext(env, event, git) {
+  // Read-only Git evidence from the existing fetch-depth:0 checkout.
+  const base = event.pull_request.base.sha;
+  if (typeof base !== "string" || !/^[0-9a-f]{40}$/.test(base)) throw new Error("PROOF_CONTEXT_UNAVAILABLE");
+  const head = git("rev-parse", "--verify", "HEAD^{commit}").trim();
+  if (!/^[0-9a-f]{40}$/.test(head) || git("rev-parse", "--verify", `${base}^{commit}`).trim() !== base) {
+    throw new Error("PROOF_CONTEXT_UNAVAILABLE");
   }
+  return { env, event, head, base,
+    main: git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}").trim(),
+    mergeBase: git("merge-base", base, head).trim(),
+    changed: git("diff", "--no-renames", "--name-only", "-z", base, head),
+    diff: git("diff", "--no-renames", "--name-status", "-z", base, head),
+    clean: git("status", "--porcelain=v1", "--untracked-files=normal"),
+    baseWorkflow: git("show", `${base}:${productWorkflow}`) };
+}
+
+test("production/workflows/normal operator remain disconnected except exact #1012 candidate", () => {
+  const walk = path => readdirSync(path, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(join(path, e.name)) : [join(path, e.name)]);
+  const files = new Map([...walk("src"), ...walk(".github/workflows"), "tests/evaluation/trusted-booking-outer.mjs"]
+    .map(path => [path, strictText(readFileSync(path))]));
+  let context;
+  if (unauthenticatedCaller.test(files.get(productWorkflow))) {
+    try {
+      const git = (...args) => {
+        const result = spawnSync("git", args, { timeout: 5000, maxBuffer: 1048576, stdio: ["ignore", "pipe", "pipe"] });
+        if (result.error || result.signal !== null || result.status !== 0) throw new Error("PROOF_CONTEXT_UNAVAILABLE");
+        return strictText(result.stdout);
+      };
+      context = proofContext(process.env, JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")), git);
+    } catch { /* Unknown event/Git facts deny; never infer approval. */ }
+  }
+  assert.equal(allowsUnauthenticatedCaller(files, context), true, "401 workflow/source caller guard");
+});
+
+function callerFixture(branch = "proof/930-booking-unauthenticated-fixture", number = 17) {
+  const current = strictText(readFileSync(productWorkflow));
+  // Permit finite fixtures to run on a future candidate, without changing guard input.
+  const baseWorkflow = current.endsWith(proofStep) ? current.slice(0, -proofStep.length) : current;
+  const head = "a".repeat(40), base = "b".repeat(40);
+  const repository = { full_name: "suzukure/nssscdl", default_branch: "main" };
+  return { files: new Map([[productWorkflow, baseWorkflow + proofStep]]), context: {
+    env: { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_REPOSITORY: repository.full_name, GITHUB_WORKFLOW: "Product CI", GITHUB_BASE_REF: "main",
+      GITHUB_HEAD_REF: branch, GITHUB_REF: `refs/pull/${number}/merge` },
+    event: { repository, action: "opened", number, pull_request: { number, state: "open",
+      head: { ref: branch, sha: head, repo: { ...repository } }, base: { ref: "main", sha: base, repo: { ...repository } } } },
+    head, base, main: base, mergeBase: base, clean: "", changed: productWorkflow + "\0",
+    diff: `M\0${productWorkflow}\0`, baseWorkflow } };
+}
+
+test("#1012 exact opened/attempt1/same-repository/fresh-main candidate only; ordinary CI inert", () => {
+  const f = callerFixture();
+  assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, f.context.baseWorkflow]])), true);
+  assert.equal(allowsUnauthenticatedCaller(f.files), false);
+  assert.equal(allowsUnauthenticatedCaller(f.files, f.context), true);
+  const fresh = callerFixture("proof/930-booking-unauthenticated-next", 203);
+  fresh.context.base = fresh.context.main = fresh.context.mergeBase = fresh.context.event.pull_request.base.sha = "d".repeat(40);
+  fresh.context.baseWorkflow += "\n      # Fresh baseline fixture\n";
+  fresh.files.set(productWorkflow, fresh.context.baseWorkflow + proofStep);
+  assert.equal(allowsUnauthenticatedCaller(fresh.files, fresh.context), true);
+  for (const key of Object.keys(f.context.env)) {
+    const missing = callerFixture(); delete missing.context.env[key];
+    assert.equal(allowsUnauthenticatedCaller(missing.files, missing.context), false, key);
+  }
+  const changes = [
+    c => { c.env.GITHUB_ACTIONS = "false"; },
+    ...["push", "pull_request_target", "workflow_dispatch"].map(value => c => { c.env.GITHUB_EVENT_NAME = value; }),
+    ...["synchronize", "reopened", "ready_for_review", undefined].map(value => c => { c.event.action = value; }),
+    ...["2", "3", "01", 1, undefined].map(value => c => { c.env.GITHUB_RUN_ATTEMPT = value; }),
+    c => { c.env.GITHUB_REPOSITORY = "fork/nssscdl"; }, c => { c.env.GITHUB_WORKFLOW = "Other"; },
+    c => { c.event.repository.full_name = "fork/nssscdl"; }, c => { c.event.repository.default_branch = "other"; },
+    c => { c.event.pull_request.head.repo.full_name = "fork/nssscdl"; },
+    c => { c.event.pull_request.base.repo.full_name = "fork/nssscdl"; },
+    c => { c.event.pull_request.base.ref = "other"; }, c => { c.env.GITHUB_BASE_REF = "other"; },
+    ...["ordinary", "proof/930-booking-normal-fixture", "proof/930-booking-unauthenticated-", "proof/930-booking-unauthenticated-X"]
+      .map(value => c => { c.event.pull_request.head.ref = c.env.GITHUB_HEAD_REF = value; }),
+    c => { c.env.GITHUB_HEAD_REF += "-forged"; }, c => { c.env.GITHUB_REF = "refs/heads/main"; },
+    ...[0, -1, "17", 1.5].map(value => c => { c.event.number = c.event.pull_request.number = value; }),
+    c => { c.event.pull_request.number++; }, c => { c.event.pull_request.state = "closed"; },
+    c => { c.event.pull_request.head.sha = "c".repeat(40); }, c => { c.head = "invalid"; },
+    c => { c.event.pull_request.base.sha = "c".repeat(40); }, c => { c.base = c.head; },
+    c => { c.main = "c".repeat(40); }, c => { c.mergeBase = "c".repeat(40); },
+    c => { c.clean = " M tests/evaluation/trusted-unauthenticated-booking-outer.test.mjs\n"; },
+    c => { c.clean = "?? src/extra.ts\n"; },
+    ...["src/worker.ts", "tests/evaluation/trusted-unauthenticated-booking-outer.test.mjs", ".github/workflows/extra.yml"]
+      .map(path => c => { c.changed += path + "\0"; }),
+    c => { c.changed = productWorkflow; }, c => { c.changed = ""; },
+    ...["A", "D", "T", "R100"].map(status => c => { c.diff = `${status}\0${productWorkflow}\0`; }),
+    c => { c.diff += `M\0src/worker.ts\0`; }, c => { c.baseWorkflow += proofStep; },
+    c => { c.baseWorkflow = undefined; }, c => { c.baseWorkflow = c.baseWorkflow.trimEnd(); },
+    c => { c.baseWorkflow += "trusted-booking-outer.mjs\n"; }, c => { c.event = {}; },
+    c => { c.event.pull_request.body = "APPROVED"; c.env.GITHUB_ACTIONS = "false"; },
+  ];
+  for (const [index, change] of changes.entries()) {
+    const candidate = callerFixture(); change(candidate.context);
+    assert.equal(allowsUnauthenticatedCaller(candidate.files, candidate.context), false, `context denial ${index}`);
+  }
+});
+
+test("#1012 source/other workflows deny; baseline and sole suffix stay byte-exact", () => {
+  const f = callerFixture(), original = f.files.get(productWorkflow);
+  for (const path of ["src/worker.ts", ".github/workflows/other.yml", "tests/evaluation/trusted-booking-outer.mjs"]) {
+    for (const name of ["outer", "child", "report"]) {
+      assert.equal(allowsUnauthenticatedCaller(new Map([...f.files, [path, `trusted-unauthenticated-booking-${name}.mjs`]]), f.context), false);
+    }
+  }
+  const edits = [
+    ["contents: read", "contents: write"], ["pull_request:", "push:"], ["fetch-depth: 0", "fetch-depth: 1"],
+    ["node-version-file: .node-version", "node-version: 24"], ["timeout-minutes: 4", "timeout-minutes: 5"],
+    ["github.event.action == 'opened'", "true"], ["github.run_attempt == 1", "true"],
+    ["timeout: 190000", "timeout: 300000"], ["maxBuffer: 4096", "maxBuffer: 8192"],
+    ["'ignore', 'pipe', 'pipe'", "'inherit', 'pipe', 'pipe'"], ["encoding: 'utf8'", "encoding: 'ascii'"],
+    ["'--run'", "'--run', '--remote'"], ["result.stderr !== ''", "false"],
+    ["result.stdout !==", "false && result.stdout !=="], ["result.signal !== null", "result.signal"],
+    ["stage=' + stage", "stage=' + result.stderr"], ["          NODE\n", "          NODE\n          npm test\n"],
+    ["trusted-unauthenticated-booking-outer.mjs", "trusted-unauthenticated-booking-child.mjs"],
+    ["        shell: bash", "        continue-on-error: true\n        shell: bash"],
+    ...["npm ci", "npm run build", "npm run typecheck", "npm run lint", "npm run test:unit", "npm run test:integration", "npm run d1:local", "npm run test:d1"]
+      .map(command => [command, "echo bypass"]),
+    ...Array.from(original.matchAll(/uses: ([^\n]+)/g), match => [match[0], "uses: unsafe/action@main"]),
+  ];
+  for (const [index, workflow] of [original + proofStep, proofStep + f.context.baseWorkflow,
+    original + "      - run: echo extra\n", ...edits.map(([from, to]) => original.replace(from, to))].entries()) {
+    assert.notEqual(workflow, original, `effective mutation ${index}`);
+    assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, workflow]]), f.context), false, `workflow denial ${index}`);
+  }
+});
+
+test("#1012 Git adapter verifies checkout/base/fresh main/file status/clean tree; every read error denies", () => {
+  assert.throws(() => strictText(Buffer.from([0xff])));
+  assert.equal(strictText(Buffer.from("\ufeffworkflow\n")), "\ufeffworkflow\n");
+  const f = callerFixture(), c = f.context;
+  const outputs = new Map([
+    [["rev-parse", "--verify", "HEAD^{commit}"], c.head + "\n"],
+    [["rev-parse", "--verify", `${c.base}^{commit}`], c.base + "\n"],
+    [["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], c.main + "\n"],
+    [["merge-base", c.base, c.head], c.base + "\n"],
+    [["diff", "--no-renames", "--name-only", "-z", c.base, c.head], c.changed],
+    [["diff", "--no-renames", "--name-status", "-z", c.base, c.head], c.diff],
+    [["status", "--porcelain=v1", "--untracked-files=normal"], ""],
+    [["show", `${c.base}:${productWorkflow}`], c.baseWorkflow],
+  ].map(([args, value]) => [JSON.stringify(args), value]));
+  const git = (...args) => { const key = JSON.stringify(args); assert.ok(outputs.has(key)); return outputs.get(key); };
+  assert.equal(allowsUnauthenticatedCaller(f.files, proofContext(c.env, c.event, git)), true);
+  for (const key of outputs.keys()) {
+    let context;
+    try { context = proofContext(c.env, c.event, (...args) => {
+      if (JSON.stringify(args) === key) throw new Error(canary);
+      return git(...args);
+    }); } catch { /* Same fail-closed adapter as inventory test. */ }
+    assert.equal(allowsUnauthenticatedCaller(f.files, context), false);
+  }
+  for (const value of ["", "invalid", "c".repeat(40)]) {
+    assert.throws(() => proofContext(c.env, c.event, (...args) => args[2] === `${c.base}^{commit}` ? value : git(...args)));
+  }
+});
+
+function proofFixture(result) {
+  const script = proofStep.split("          node --input-type=module <<'NODE'\n")[1]
+    .replace("          import { spawnSync } from 'node:child_process';\n", "").replace(/          NODE\n$/, "");
+  let calls = 0;
+  const stdout = [], stderr = [], proc = { execPath: "fixture-node", exitCode: undefined };
+  runInNewContext(script, { process: proc,
+    console: { log: value => stdout.push(value), error: value => stderr.push(value) },
+    spawnSync(file, args, options) {
+      calls++; assert.equal(file, "fixture-node");
+      assert.deepEqual(Array.from(args), ["tests/evaluation/trusted-unauthenticated-booking-outer.mjs", "--run"]);
+      assert.equal(options.timeout, 190000); assert.equal(options.maxBuffer, 4096); assert.equal(options.encoding, "utf8");
+      assert.deepEqual(Array.from(options.stdio), ["ignore", "pipe", "pipe"]);
+      return result;
+    } });
+  assert.equal(calls, 1);
+  return { stdout, stderr, status: proc.exitCode ?? 0 };
+}
+
+test("#1012 bounded single spawn; exact success or fixed failure stage; raw/normal diagnostics never escape", () => {
+  const success = { status: 0, signal: null, stdout: unauthenticatedBookingOuterCheckpoint + "\n", stderr: "" };
+  assert.deepEqual(proofFixture(success), { stdout: [unauthenticatedBookingOuterCheckpoint], stderr: [], status: 0 });
+  const failure = { status: 1, signal: null, stdout: "", stderr: failed("terminal") + "\n" };
+  for (const stage of ["preflight", "start", "terminal", "report", "ownership", "release", "remove", "listeners", "operator", "unknown"]) {
+    assert.deepEqual(proofFixture({ ...failure, stderr: failed(stage) + "\n" }), {
+      stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=" + stage], status: 1 });
+  }
+  const unknown = [
+    ...[success, failure].flatMap(result => [
+      ...[undefined, "", "SIGTERM", "SIGKILL"].map(signal => ({ ...result, signal })),
+      ...[null, new Error(canary), Object.assign(new Error(canary), { code: "ETIMEDOUT" }),
+        Object.assign(new Error(canary), { code: "ENOBUFS" })].map(error => ({ ...result, error })),
+      ...[2, null, "0", "1"].map(status => ({ ...result, status })),
+      ...[canary, Buffer.from(result.stdout), result.stdout + "\n", result.stdout + canary].map(stdout => ({ ...result, stdout })),
+      ...[canary, Buffer.from(result.stderr), result.stderr + "\n", result.stderr + canary].map(stderr => ({ ...result, stderr })),
+    ]),
+    ...["", success.stdout.trimEnd(), success.stdout.replace("\n", "\r\n"), "TRUSTED_BOOKING_OUTER_V1\n"]
+      .map(stdout => ({ ...success, stdout })),
+    { ...success, status: 1 }, { ...failure, status: 0 }, { ...failure, stdout: success.stdout },
+    ...[failed("terminal"), failed("terminal") + "\r\n", failed("terminal") + "\0\n", failed("made-up") + "\n",
+      failed("terminal").replace("do not retry", "retry") + "\n", canary + failed("terminal") + "\n",
+      "TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; retain owned files; do not retry\n",
+      failed("terminal").replace("; retain", "; diagnostic=observed; phase=dom; retain") + "\n"]
+      .map(stderr => ({ ...failure, stderr })),
+  ];
+  for (const [index, result] of unknown.entries()) assert.deepEqual(proofFixture(result), {
+    stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=unknown"], status: 1 }, `output denial ${index}`);
 });

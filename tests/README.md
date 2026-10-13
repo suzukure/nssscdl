@@ -1141,9 +1141,17 @@ Childのunchanged読戻し後のexact-token / hash / CSRF secret scanは#1006の
 
 timeout / abort・terminal / exit / Invocation不明・report不正 / 書込不明 / TOCTOU・port残存・owner drift / mode / symlink・TLS残存 / tree scan失敗・release / delete不明では専用固定 `TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=<finite enum>; retain owned files; do not retry`だけを返す。既存Unitの一回stop / manager showによる有限収束だけを許し、release後の追加stop・未知所有物削除・normal V2 diagnosticへのfallbackをしない。削除途中失敗では残る資源を保持し、成功checkpointを出さない。
 
-専用 `unauthenticatedBookingOuterCheckpoint` はisolated Child prepared / unchanged・same-Invocation no-live・両port closed・owned cleanupの部分証拠のみ。`evaluation/trusted-unauthenticated-booking-outer.test.mjs` を`test:unit`へ登録し、実BrowserUnit command seam＋専用Child / Report・owned file fixture＋sealed operator VMで成功順序、有限fault matrix、一回性、secret非反射、release前の非削除、全tree確認→削除→checkpoint、遅いsignalを検証する。normal Outerの試験とproduction / workflowを変更しない。
+専用 `unauthenticatedBookingOuterCheckpoint` はisolated Child prepared / unchanged・same-Invocation no-live・両port closed・owned cleanupの部分証拠のみ。`evaluation/trusted-unauthenticated-booking-outer.test.mjs` を`test:unit`へ登録し、実BrowserUnit command seam＋専用Child / Report・owned file fixture＋sealed operator VMで成功順序、有限fault matrix、一回性、secret非反射、release前の非削除、全tree確認→削除→checkpoint、遅いsignalを検証する。normal Outerの試験とproduction / workflowを変更しない。401専用のtest-only workflow caller guard準備は下記#1012を参照する。
 
 R0 / C1 / P1 / B1 Yellow preparedを維持する。`REQ-005/207/914`・`AC-005-001/002`・`AC-914-004`・`TC-F-005-01`・`TC-NF-914-04`の関連部分へのfinite partial evidenceで、POL→BR→REQ→AC→TC / CON / OOSの意味・IDは不変。CookieなしをSession失効 / `TC-F-207-02/03`全体Passへ昇格しない。実Chrome8789 / GET-only401 / POST0 / 全19表schema unchanged / 同一Invocation＋owned cleanupの正式one-shot Proof、新一時workflow、#537 Gate A〜D・#608 Done / Production Readyは未承認・未実証。同一HEAD正式Product CI / PR Traceability / 独立Claude Reviewは別途必要で、#930へのexact source / Proof HEAD・一回性 / 停止保全 / 原workflow復元条件の記録とfresh人間承認まで実Proofを発火しない。
+
+## #1012 Cookieなし401 one-shot caller guard・非秘密出力検査（prepared / finiteのみ）
+
+`evaluation/trusted-unauthenticated-booking-outer.test.mjs` の `proofStep` が401専用一時候補の固定文法正本であり、workflowへ書き込まない。`allowsUnauthenticatedCaller` / `proofContext` は通常main / PRの無接続を維持し、production・他workflow・normal operatorの専用caller参照を拒否する。例外は同一repository / 既定main・`pull_request` opened / attempt1・限定`proof/930-booking-unauthenticated-...`・正しいmerge ref / checkout HEAD・fresh origin/mainとbase / merge-base一致・clean tree・Product CI workflow一件だけのexact M差分・base bytes＋exact末尾一工程の候補だけである。Git / event不明、fork / drift / source差分・追加工程・文法改変はfail-closed。PR文字列や過去の承認は許可根拠にならず、#948正常guardは変更しない。
+
+固定stepはapplicable / opened / attempt1条件・4分上限を持ち、専用Outer exact `--run`をstdin-ignore / utf8 / pipe・190秒 / 4096-byteの`spawnSync`で一回だけ呼ぶ文法とする。Outer180秒 / Unit120秒 / Child110秒を変更しない。VM `proofFixture` は実起動せずこの同じwrapperを検証する。exit0 / signal=null / errorなし / stderr空 / 専用checkpoint＋LF完全一致だけを成功とし、exit1 / signal=null / errorなし / stdout空 / 専用固定failed文法＋LFだけを固定stageへ変換する。それ以外はunknownで、raw stdout / stderr / error・normal checkpoint / V2診断を公開せず、retryしない。
+
+R0 / C1 / P1 / B1 Yellow prepared、上記#1010の識別子・traceabilityとpartial evidence境界を維持する。標準`test:unit`内のfinite fixtureだけが今回の証拠で、正式same-HEAD Product CI / PR Traceability / Claude Reviewと実Chrome one-shotは別証拠。正式起動には別の明示人間承認後、fresh main / workflow blob照合とexact suffixだけの一時Draft PR一件が必要であり、opened attempt1のPR作成自体が実行承認対象となる。結果を問わず証拠保全・workflow byte復元・compare files=[]・Draftのまま未merge Close、失敗時のowned保全 / 復旧判断を#930へ記録し、自動再発火しない。本IssueはそのPR作成・workflow変更・外部実行を行わず、#537 Gate A〜D / #608 Done / Production Ready / `TC-F-207-03`全体Passへ昇格しない。
 
 ## #930 実Chrome単一予約normalの公式positive実証（2026-10-12）
 
