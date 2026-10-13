@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { promisify, types } from "node:util";
 import { BrowserUnit, browserUnitPreflight, ownedIdentity, verifyOwned } from "./trusted-browser-unit.mjs";
 import { generatedBrowserFiles } from "./browser-tls-trust.mjs";
-import { readUnauthenticatedBookingReport, unauthenticatedBookingReportName, unauthenticatedBookingPhases } from "./trusted-unauthenticated-booking-report.mjs";
+import { readUnauthenticatedBookingReport, unauthenticatedBookingReportName, unauthenticatedBookingPhases,
+  unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors } from "./trusted-unauthenticated-booking-report.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 const persist = join(root, ".wrangler/student-booking-evaluation");
@@ -31,10 +32,13 @@ const terminalEnums = Object.freeze({
   report: ["observed", "unknown", "unread"],
   entered: unauthenticatedBookingPhases,
   confirmed: unauthenticatedBookingPhases,
+  tls_primary: unauthenticatedBookingTlsPrimary,
+  tls_cleanup: unauthenticatedBookingTlsCleanup,
+  tls_err: unauthenticatedBookingTlsErrors,
 });
 export const unauthenticatedBookingTerminalMaxBytes = 512; // Includes the CLI LF.
-// Unread/unknown cannot carry phases; observed requires the manager no-live gate.
-const progressConstraint = "(?=.*; unit_stop=confirmed; report=observed;|.*; report=(?:unknown|unread); entered=unknown; confirmed=unknown;)";
+// Unread/unknown cannot carry phases or TLS diagnostics; observed requires the manager no-live gate.
+const progressConstraint = "(?=.*; unit_stop=confirmed; report=observed;|.*; report=(?:unknown|unread); entered=unknown; confirmed=unknown; tls_primary=unknown; tls_cleanup=unknown; tls_err=unknown;)";
 export const unauthenticatedBookingTerminalGrammar = progressConstraint + "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal" +
   Object.entries(terminalEnums).map(([key, values]) => `; ${key}=(${values.join("|")})`).join("") +
   "; evidence=unproved; retain owned files; do not retry";
@@ -48,7 +52,7 @@ export function parseUnauthenticatedBookingTerminal(text) {
 }
 export function formatUnauthenticatedBookingTerminal(record) {
   try {
-    if (!record || typeof record !== "object" || Reflect.ownKeys(record).length !== Object.keys(terminalEnums).length) return undefined;
+    if (!record || typeof record !== "object" || types.isProxy(record) || Reflect.ownKeys(record).length !== Object.keys(terminalEnums).length) return undefined;
     let text = "TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=terminal";
     for (const [key, values] of Object.entries(terminalEnums)) {
       const d = Object.getOwnPropertyDescriptor(record, key);
@@ -69,17 +73,27 @@ function sameStopped(unit, invocation) {
     ownData(unit, "stopped") === true;
 }
 function failedProgress(report) {
-  if (!report || typeof report !== "object" || types.isProxy(report) || Reflect.ownKeys(report).length !== 4 ||
-      ownData(report, "phase") !== "failed" || ownData(report, "status") !== "failed" ||
+  if (!report || typeof report !== "object" || types.isProxy(report)) return undefined;
+  const count = Reflect.ownKeys(report).length;
+  if (![4, 7].includes(count) || ownData(report, "phase") !== "failed" || ownData(report, "status") !== "failed" ||
       !["entered", "confirmed"].every(key => unauthenticatedBookingPhases.includes(ownData(report, key)))) return undefined;
-  return { entered: ownData(report, "entered"), confirmed: ownData(report, "confirmed") };
+  const progress = { entered: ownData(report, "entered"), confirmed: ownData(report, "confirmed"),
+    tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown" };
+  if (count === 7) {
+    for (const key of ["tls_primary", "tls_cleanup", "tls_err"]) {
+      const value = ownData(report, key);
+      if (!terminalEnums[key].includes(value)) return undefined;
+      progress[key] = value;
+    }
+  }
+  return progress;
 }
 function terminalFailure(unit, diagnostic) {
   const record = { reason: "unknown", boundary: "unknown", state: "unavailable", result: "not-observed",
     exit: "not-observed", invocation: "not-compared", cgroup: "unknown", second: "not-observed", budget: "unknown", stop: "unknown", ...diagnostic };
   const data = ownData;
   try {
-    const observation = data(unit, "terminalObservation"), keys = Object.keys(terminalEnums).filter(k => !["reason", "stop", "unit_stop", "report", "entered", "confirmed"].includes(k));
+    const observation = data(unit, "terminalObservation"), keys = Object.keys(terminalEnums).filter(k => !["reason", "stop", "unit_stop", "report", "entered", "confirmed", "tls_primary", "tls_cleanup", "tls_err"].includes(k));
     if (observation && typeof observation === "object" && Reflect.ownKeys(observation).length === keys.length &&
       keys.every(key => terminalEnums[key].includes(data(observation, key)))) {
       for (const key of keys) record[key] = data(observation, key);
@@ -144,7 +158,8 @@ export async function useUnauthenticatedBookingOuter(unit, ports) {
     if (unit.failure) throw failure(stage);
     return Object.freeze({ success: true, status: "prepared", readback: "unchanged" });
   } catch {
-    const diagnostic = { unit_stop: "unknown", report: "unread", entered: "unknown", confirmed: "unknown" };
+    const diagnostic = { unit_stop: "unknown", report: "unread", entered: "unknown", confirmed: "unknown",
+      tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown" };
     let eligible = false, invocation, disposed = false, confirmed = false;
     try {
       invocation = ownData(unit, "invocation");
@@ -175,7 +190,7 @@ export async function useUnauthenticatedBookingOuter(unit, ports) {
         diagnostic.report = "unknown";
         const progress = failedProgress(await ports.failureReport());
         if (progress) Object.assign(diagnostic, { report: "observed", ...progress });
-      } catch { /* Missing/old/partial/hostile report stays unknown; never write or erase. */ }
+      } catch { /* Missing/unknown/partial/hostile report stays unknown; never write or erase. */ }
     }
     throw stage === "terminal" ? terminalFailure(unit, diagnostic) : failure(stage);
   } finally { unit.close(); }
