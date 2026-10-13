@@ -31,7 +31,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
   let failed = false, open = true, seedOpen = false, tlsOpen = false;
   // #930 Draft-only finite trial: freeze the first failing operation *before*
   // the cleanup observer can overwrite entered/confirmed with worker-stop.
-  let firstFailureObserved = false, currentPhase = "unknown";
+  let firstFailureObserved = false, currentPhase = "unknown", workerStopConfirmed = false;
   let consumed = false, handed = false, seedDone = false, tlsDone = false;
   let worker, startAttempted = false, stopAttempted = false, stopped = false;
   let domDone = false, inspectAttempted = false, inspected = false;
@@ -39,6 +39,9 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
   const firstFailure = () => {
     failed = true;
     if (!firstFailureObserved && open) {
+      // A successful emergency stop is not evidence that stop caused a
+      // subsequent TLS/owned-inspect failure. Keep the failure coarse, but true.
+      if (currentPhase === "worker-stop" && workerStopConfirmed) enter("tls-cleanup");
       firstFailureObserved = true;
       observePhase(observe, currentPhase, "first-failure");
     }
@@ -121,7 +124,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
                 const result = await worker.stop();
                 check(result?.stopped === true && result?.portClosed === true);
                 ports.checkBrowserHome(home, identity);
-                check(ownerMatches); stopped = true; confirm("worker-stop");
+                check(ownerMatches); stopped = true; confirm("worker-stop"); workerStopConfirmed = true;
               } catch { firstFailure(); throw failure(); }
             },
             inspectOwned: async inspectedHome => {
