@@ -11,13 +11,13 @@ import { useUnauthenticatedBookingProcess } from "./trusted-unauthenticated-book
 import * as report from "./trusted-unauthenticated-booking-report.mjs";
 
 const good = () => ({ phase: "complete", status: "prepared" });
-const canary = "private-session-csrf-sql-credential";
+const canary = "private-session-csrf-sql-https://private.invalid/credential";
 const unknown = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=unknown; status=failed\n";
 const complete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=complete; status=prepared; readback=unchanged\n";
 function fixture(options = {}) {
   const controller = new AbortController(), writes = []; let calls = 0;
-  const runInner = async input => { calls++; assert.deepEqual(Object.keys(input), ["signal"]); assert.equal(input.signal, controller.signal);
-    return options.inner ? options.inner(controller) : good(); };
+  const runInner = async input => { calls++; assert.deepEqual(Object.keys(input), ["signal", "observe"]); assert.equal(input.signal, controller.signal);
+    return options.inner ? options.inner(controller, input.observe) : good(); };
   const input = { runInner, write: async text => { writes.push(text); if (options.write) await options.write(text, controller); },
     signal: controller.signal, isolated: options.isolated ?? true };
   return { input, controller, writes, calls: () => calls };
@@ -72,18 +72,18 @@ test("#1008 abort before/during/after inner, pending and late resolution never p
   }
 });
 
-test("#1008 write uncertainty/async rejection or abort attempt unknown once; stale success is not overwritten", async () => {
+test("#1008 write uncertainty/async rejection or abort never retry the writer; stale success is not overwritten", async () => {
   for (const write of [() => { throw new Error(canary); }, () => Promise.reject(new Error(canary)), (_, c) => c.abort(canary)]) {
     const f = fixture({ write }); assert.equal(await useUnauthenticatedBookingChild(f.input), false);
-    assert.equal(f.calls(), 1); assert.deepEqual(f.writes, [complete, unknown]);
-    assert.equal(await useUnauthenticatedBookingChild(f.input), false); assert.equal(f.writes.length, 2);
+    assert.equal(f.calls(), 1); assert.deepEqual(f.writes, [complete]);
+    assert.equal(await useUnauthenticatedBookingChild(f.input), false); assert.equal(f.writes.length, 1);
   }
   let release;
   const pending = fixture({ write: text => text === complete ? new Promise(done => { release = done; }) : undefined });
   const pendingResult = useUnauthenticatedBookingChild(pending.input);
   await new Promise(done => setImmediate(done)); pending.controller.abort(canary);
   assert.equal(await pendingResult, false); release();
-  await new Promise(done => setImmediate(done)); assert.deepEqual(pending.writes, [complete, unknown]);
+  await new Promise(done => setImmediate(done)); assert.deepEqual(pending.writes, [complete]);
   const f = fixture({ inner: () => { throw new Error(canary); }, write: () => { throw new Error(canary); } });
   assert.equal(await useUnauthenticatedBookingChild(f.input), false); assert.deepEqual(f.writes, [unknown]);
   const dir = mkdtempSync(join(tmpdir(), "nssscdl-negative-child-"));
@@ -102,7 +102,7 @@ test("#1008 write uncertainty/async rejection or abort attempt unknown once; sta
       throw new Error(canary); // Success file exists, but its caller did not observe write completion.
     };
     assert.equal(await useUnauthenticatedBookingChild(uncertain.input), false);
-    assert.equal(attempts, 2); assert.equal(uncertain.calls(), 1);
+    assert.equal(attempts, 1); assert.equal(uncertain.calls(), 1);
     assert.deepEqual(report.readUnauthenticatedBookingReport(uncertainDir),
       { execution: "isolated", phase: "complete", status: "prepared", readback: "unchanged" });
   } finally { rmSync(uncertainDir, { recursive: true }); }
@@ -110,8 +110,8 @@ test("#1008 write uncertainty/async rejection or abort attempt unknown once; sta
 
 test("#1008 real prepared inner through finite Ports reaches unchanged/scan before the dedicated report", async () => {
   const f = fixture(), events = [], signal = f.controller.signal;
-  f.input.runInner = ({ signal: inputSignal }) => useUnauthenticatedBookingProcess({
-    async prepareTrustedBooking(consume) { events.push("seed"); await consume({ month: "2026-10" }, "private-handle"); },
+  f.input.runInner = ({ signal: inputSignal, observe }) => useUnauthenticatedBookingProcess({
+    async prepareTrustedBooking(consume, entered) { entered(); events.push("seed"); await consume({ month: "2026-10" }, "private-handle"); },
     createBrowserHome() { return { home: "fixture-home", identity: {} }; }, checkBrowserHome() {},
     createBookingWorkerPort() { return { async start() { events.push("worker"); return "https://127.0.0.1:8789"; }, isReady: () => true,
       async stop() { events.push("stop"); return { stopped: true, portClosed: true }; } }; },
@@ -124,7 +124,7 @@ test("#1008 real prepared inner through finite Ports reaches unchanged/scan befo
     async proveUnauthenticatedBookingDom(input) { assert.deepEqual(input.fixture, { month: "2026-10" }); events.push("dom401"); },
     async inspectTrustedBookingUnchanged(handle) { assert.equal(handle, "private-handle"); events.push("unchanged"); },
     async scanOwnedSecrets() { events.push("scan"); },
-  }, inputSignal);
+  }, inputSignal, observe);
   f.input.write = text => { events.push("report"); assert.equal(text, complete); };
   assert.equal(await useUnauthenticatedBookingChild(f.input), true);
   assert.deepEqual(events, ["seed", "worker", "dom401", "close", "stop", "unchanged", "scan", "report"]);
@@ -165,9 +165,10 @@ test("#1008 operator 110s soft abort, SIGINT/SIGTERM and teardown, sealed negati
     assert.equal(result.exitCode, Object.keys(options).length ? 1 : undefined);
     assert.ok(!JSON.stringify(result.events).includes(canary));
     assert.equal(result.events.filter(e => e === "inner").length, options.fault === "load" ? 0 : 1);
-    if (options.interruptBy) { assert.equal(result.receivedSignal.aborted, true); assert.ok(result.events.includes(unknown)); }
+    if (options.interruptBy) { assert.equal(result.receivedSignal.aborted, true); assert.ok(result.events.includes(report.formatUnauthenticatedBookingFailure({ entered: "import", confirmed: "import" }))); }
     if (!Object.keys(options).length) assert.ok(result.events.includes(complete));
-    if (options.fault === "load") assert.deepEqual(result.events.filter(e => e === unknown), [unknown]);
+    if (options.fault === "load") assert.ok(result.events.includes(report.formatUnauthenticatedBookingFailure({ entered: "import", confirmed: "unknown" })));
+    assert.equal(result.events.filter(e => typeof e === "string" && e.startsWith("TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1;")).length, 1);
   }
 });
 
@@ -190,4 +191,57 @@ test("#1008 subprocess import and invalid CLI do not load the real inner or crea
       assert.equal(result.stdout, ""); assert.equal(result.stderr, ""); assert.deepEqual(readdirSync(dir), []);
     }
   } finally { rmSync(dir, { recursive: true }); }
+});
+
+test("#1018 private observations reject getters/unknown/extra, retain no raw exception or invalid phase", async () => {
+  let getters = 0;
+  for (const event of [{ phase: "seed", state: "entered", raw: canary },
+    { phase: "seed", state: "entered", [Symbol()]: canary }, { phase: canary, state: "entered" },
+    { phase: "unknown", state: "entered" }, { phase: "report-write", state: "entered" },
+    { phase: "seed", state: "completed" }, { phase: "seed", state: "confirmed" },
+    { get phase() { getters++; throw new Error(canary); }, state: "entered" },
+    new Proxy({}, { ownKeys() { throw new Error(canary); } })]) {
+    const f = fixture({ inner: (_, observe) => { observe(event);
+      observe({ phase: "home", state: "entered" }); throw new Error(canary); } });
+    assert.equal(await useUnauthenticatedBookingChild(f.input), false);
+    assert.equal(f.calls(), 1); assert.deepEqual(f.writes, [unknown]);
+  }
+  assert.equal(getters, 0);
+});
+
+test("#1018 timeout/abort freezes last observed phase; late continuation cannot alter report", async () => {
+  for (const mode of ["abort", "timeout"]) {
+    let late, release;
+    const f = fixture({ inner: (controller, observe) => {
+      observe({ phase: "worker-start", state: "entered" }); observe({ phase: "worker-start", state: "confirmed" });
+      observe({ phase: "dom-401", state: "entered" }); late = observe;
+      if (mode === "timeout") { const error = new Error(canary); error.name = "TimeoutError"; throw error; }
+      return new Promise(done => { release = done; });
+    } });
+    const result = useUnauthenticatedBookingChild(f.input);
+    if (mode === "abort") f.controller.abort(canary);
+    assert.equal(await result, false); assert.equal(f.calls(), 1);
+    assert.deepEqual(f.writes, [report.formatUnauthenticatedBookingFailure({ entered: "dom-401", confirmed: "worker-start" })]);
+    late({ phase: "dom-401", state: "confirmed" }); late({ phase: "secret-scan", state: "entered" });
+    if (release) release(good()); await new Promise(done => setImmediate(done));
+    assert.equal(f.writes.length, 1);
+  }
+});
+
+test("#1018 import failure progress and report writer failure do not regenerate absent files", async () => {
+  for (const when of ["import", "inner"]) {
+    const dir = mkdtempSync(join(tmpdir(), "nssscdl-negative-observation-"));
+    try {
+      let attempts = 0;
+      const f = fixture({ inner: (_, observe) => {
+        observe({ phase: "import", state: "entered" });
+        if (when === "inner") observe({ phase: "import", state: "confirmed" });
+        throw new Error(canary);
+      } });
+      f.input.write = text => { attempts++; assert.equal(text, report.formatUnauthenticatedBookingFailure({ entered: "import", confirmed: when === "inner" ? "import" : "unknown" }));
+        throw new Error(canary); };
+      assert.equal(await useUnauthenticatedBookingChild(f.input), false);
+      assert.equal(attempts, 1); assert.equal(f.calls(), 1); assert.deepEqual(readdirSync(dir), []);
+    } finally { rmSync(dir, { recursive: true }); }
+  }
 });
