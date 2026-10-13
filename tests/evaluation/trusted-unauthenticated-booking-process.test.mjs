@@ -315,7 +315,7 @@ const phaseOracle = [
   ["home", "home", "seed"], ["tls", "tls-setup", "home"],
   ["worker-create", "worker-start", "tls-setup"], ["start", "worker-stop", "worker-stop"],
   ["context", "worker-stop", "worker-stop"], ["dom", "worker-stop", "worker-stop"],
-  ["browser-close", "worker-stop", "worker-stop"], ["stop", "worker-stop", "dom-401"],
+  ["browser-close", "tls-cleanup", "worker-stop"], ["stop", "worker-stop", "dom-401"],
   ["readback", "d1-unchanged", "worker-stop"], ["scan", "secret-scan", "d1-unchanged"],
 ];
 test("#1018 exact last entered/confirmed at each failing Port, including emergency stop", async () => {
@@ -380,6 +380,22 @@ test("#930 first-failure event occurs before cleanup progress, with one immutabl
     assert.ok(first.every(Object.isFrozen));
     assert.equal(observations.filter(event => event.state === "entered").at(-1).phase,
       fault === "worker-create" ? "worker-start" : "worker-stop", fault);
+    assert.ok(!JSON.stringify(observations).includes(canary));
+    atMostOnce(f);
+  }
+});
+
+test("#930 completed Worker stop must not be mistaken for the first TLS cleanup fault", async () => {
+  for (const fault of ["browser-close", "wrong-home", "inspect-skipped"]) {
+    const f = fixture(fault), observations = [];
+    await assert.rejects(useUnauthenticatedBookingProcess(f.ports, f.controller.signal,
+      event => observations.push(event)), fixed);
+    assert.equal(f.events.filter(v => v === "stop").length, 1, fault);
+    assert.equal(f.events.filter(v => v === "worker-port").length, 1, fault);
+    const first = observations.filter(event => event.state === "first-failure");
+    assert.deepEqual(first.map(event => event.phase), ["tls-cleanup"], fault);
+    assert.equal(observations.filter(event => event.state === "confirmed").at(-1).phase, "worker-stop", fault);
+    assert.ok(observations.every(Object.isFrozen));
     assert.ok(!JSON.stringify(observations).includes(canary));
     atMostOnce(f);
   }
