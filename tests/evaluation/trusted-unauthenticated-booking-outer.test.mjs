@@ -14,12 +14,13 @@ import { useUnauthenticatedBookingOuter, unauthenticatedBookingOuterCheckpoint,
   unauthenticatedBookingTerminalGrammar, unauthenticatedBookingTerminalMaxBytes } from "./trusted-unauthenticated-booking-outer.mjs";
 import { parseUnauthenticatedBookingReport, readUnauthenticatedBookingReport, writeUnauthenticatedBookingReport,
   unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingChildUnknown,
-  unauthenticatedBookingPhases, formatUnauthenticatedBookingFailure } from "./trusted-unauthenticated-booking-report.mjs";
+  unauthenticatedBookingPhases, unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup,
+  unauthenticatedBookingTlsErrors, formatUnauthenticatedBookingFailure } from "./trusted-unauthenticated-booking-report.mjs";
 
 const canary = "private-session-csrf-sql-cause";
 const failed = stage => `TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=${stage}; retain owned files; do not retry`;
 const good = () => ({ execution: "isolated", phase: "complete", status: "prepared", readback: "unchanged" });
-function fixture(fault = "", preflightTime = 0) {
+function fixture(fault = "", preflightTime = 0, tlsEvents = []) {
   const events = [], controller = new AbortController();
   let time = 0, shows = 0, text;
   const f = { events, controller, fault, hook: () => {}, time: value => { time = value; } };
@@ -34,7 +35,7 @@ function fixture(fault = "", preflightTime = 0) {
         assert.ok(args.includes(`--property=RuntimeMaxSec=${unit.runtime}s`));
         if (fault === "start") throw new Error(canary);
         const completed = await useUnauthenticatedBookingChild({ isolated: true, signal: controller.signal,
-          runInner: async () => { events.push("inner"); if (fault === "child") throw new Error(canary);
+          runInner: async ({ observeTls }) => { events.push("inner"); for (const event of tlsEvents) observeTls(event); if (fault === "child") throw new Error(canary);
             events.push("unchanged/secret-scan"); if (fault === "secret-scan") throw new Error(canary); return { phase: "complete", status: "prepared" }; },
           write: wire => { events.push("child-report"); text = wire; if (fault === "write") throw new Error(canary); } });
         f.exit = completed ? "0" : "1"; f.hook("child"); return "";
@@ -130,12 +131,13 @@ test("failure matrix retains files, first latch and at most one start/stop; no n
 });
 
 const terminalRecord = overrides => ({ reason: "manager", boundary: "first-exit", state: "exited", result: "success",
-  exit: "nonzero", invocation: "matched", cgroup: "expected", second: "not-observed", budget: "adequate", stop: "confirmed", unit_stop: "confirmed", report: "unknown", entered: "unknown", confirmed: "unknown", ...overrides });
+  exit: "nonzero", invocation: "matched", cgroup: "expected", second: "not-observed", budget: "adequate", stop: "confirmed", unit_stop: "confirmed", report: "unknown", entered: "unknown", confirmed: "unknown",
+  tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown", ...overrides });
 
 test("#1020 real BrowserUnit finite terminal fault families; success report/retry/deletion forbidden", async () => {
   // Expected classifications derive from the existing manager checks and #1015 enums.
   const matrix = [
-    ["child", {}], ["write", {}], ["secret-scan", {}],
+    ["child", { report: "observed" }], ["write", {}], ["secret-scan", { report: "observed" }],
     ["unknown-exit", { exit: "abnormal-code" }],
     ["invocation", { reason: "mismatch", boundary: "second-show", exit: "zero", invocation: "mismatched", second: "observed" }],
     ["cgroup", { reason: "mismatch", boundary: "pre-show", exit: "zero", cgroup: "other" }],
@@ -232,8 +234,9 @@ test("#1015 exact terminal codec rejects hostile records without invoking getter
   let touched = 0;
   const wire = formatUnauthenticatedBookingTerminal(terminalRecord());
   assert.deepEqual(parseUnauthenticatedBookingTerminal(wire), terminalRecord());
+  const proxy = new Proxy(terminalRecord(), { ownKeys() { touched++; throw new Error(canary); } });
   const accessor = terminalRecord(); Object.defineProperty(accessor, "reason", { get() { touched++; throw new Error(canary); } });
-  for (const record of [null, {}, Object.create(terminalRecord()), accessor, { ...terminalRecord(), extra: canary },
+  for (const record of [null, {}, Object.create(terminalRecord()), accessor, proxy, { ...terminalRecord(), extra: canary },
     { ...terminalRecord(), [Symbol("extra")]: true }, ...Object.keys(terminalRecord()).flatMap(key => {
       const missing = terminalRecord(); delete missing[key];
       return [missing, terminalRecord({ [key]: canary }), terminalRecord({ [key]: "" }), terminalRecord({ [key]: undefined })];
@@ -296,6 +299,9 @@ async function terminalDiagnostic(f) {
     assert.ok(Buffer.byteLength(error.message + "\n") <= 512);
     return true;
   });
+  if (record.report !== "observed") for (const key of ["entered", "confirmed", "tls_primary", "tls_cleanup", "tls_err"]) {
+    assert.equal(record[key], "unknown", key);
+  }
   assert.ok(f.events.filter(e => e === "stop").length <= 1);
   for (const event of ["report", "final-check", "remove-check", "delete"]) assert.equal(f.events.includes(event), false);
   return record;
@@ -399,7 +405,7 @@ test("#1020 start eligibility, disposal rejection, private false/throw and ident
   }
 });
 
-test("#1020 no-live failure Port accepts only four fixed failed own data fields; reader errors stay unknown", async () => {
+test("#1020 no-live failure Port accepts only legacy four or TLS seven fixed failed own data fields; reader errors stay unknown", async () => {
   let getters = 0;
   const accessor = progress(); Object.defineProperty(accessor, "entered", { get() { getters++; throw new Error(canary); } });
   const proxy = new Proxy(progress(), { ownKeys() { throw new Error(canary); } });
@@ -423,13 +429,15 @@ test("#1020 no-live failure Port accepts only four fixed failed own data fields;
     assert.equal(record.entered, "unknown"); assert.equal(record.confirmed, "unknown");
     assert.equal(f.events.filter(e => e === "failure-read").length, missing ? 0 : 1);
   }
-  for (const fault of ["valid", "absent", "partial", "old", "complete", "invalid", "mode", "link", "oversize", "directory-mode", "symlink"]) {
+  for (const fault of ["valid", "tls-valid", "absent", "partial", "old", "complete", "invalid", "mode", "link", "oversize", "directory-mode", "symlink"]) {
     const dir = mkdtempSync(join(tmpdir(), "unauthenticated-failure-fixture-"));
     try {
       const path = join(dir, "unauthenticated-booking-report");
       if (fault !== "absent") writeFileSync(path, fault === "old" ? unauthenticatedBookingChildUnknown :
         fault === "complete" ? unauthenticatedBookingChildComplete : fault === "invalid" ? canary :
-        fault === "oversize" ? "x".repeat(161) : formatUnauthenticatedBookingFailure({ entered: "tls-cleanup", confirmed: "dom-401" }), { mode: 0o600 });
+        fault === "oversize" ? "x".repeat(257) :
+        fault === "tls-valid" ? formatUnauthenticatedBookingFailure({ entered: "tls-cleanup", confirmed: "dom-401",
+          tls_primary: "tls-san", tls_cleanup: "browser-close", tls_err: "ERR_CERT_COMMON_NAME_INVALID" }) : formatUnauthenticatedBookingFailure({ entered: "tls-cleanup", confirmed: "dom-401" }), { mode: 0o600 });
       if (fault === "partial") writeFileSync(path + ".partial", canary, { mode: 0o600 });
       if (fault === "mode") chmodSync(path, 0o644);
       if (fault === "link") linkSync(path, path + "-alias");
@@ -438,11 +446,98 @@ test("#1020 no-live failure Port accepts only four fixed failed own data fields;
       const before = readdirSync(dir);
       const f = managerFailureFixture(); f.ports.failureReport = () => { f.events.push("failure-read"); return readUnauthenticatedBookingReport(dir); };
       const record = await terminalDiagnostic(f);
-      assert.equal(record.report, fault === "valid" ? "observed" : "unknown", fault);
-      assert.equal(record.confirmed, fault === "valid" ? "dom-401" : "unknown");
+      assert.equal(record.report, ["valid", "tls-valid"].includes(fault) ? "observed" : "unknown", fault);
+      assert.equal(record.confirmed, ["valid", "tls-valid"].includes(fault) ? "dom-401" : "unknown");
+      for (const [key, value] of Object.entries({ tls_primary: "tls-san", tls_cleanup: "browser-close", tls_err: "ERR_CERT_COMMON_NAME_INVALID" })) {
+        assert.equal(record[key], fault === "tls-valid" ? value : "unknown");
+      }
       assert.deepEqual(readdirSync(dir), before);
     } finally { rmSync(dir, { recursive: true }); }
   }
+});
+
+// #1024 consumes the current #1023 report; it never reconstructs raw Helper output.
+const tlsProgress = overrides => ({ ...progress(), tls_primary: "tls-san", tls_cleanup: "browser-close",
+  tls_err: "ERR_CERT_COMMON_NAME_INVALID", ...overrides });
+test("#1024 real Child codec preserves primary/cleanup, cleanup-only and unobserved TLS axes", async () => {
+  for (const [events, expected] of [
+    [[{ tls_primary: "tls-san", tls_err: "ERR_CERT_COMMON_NAME_INVALID" }, { tls_cleanup: "browser-close" }],
+      { tls_primary: "tls-san", tls_cleanup: "browser-close", tls_err: "ERR_CERT_COMMON_NAME_INVALID" }],
+    [[{ tls_cleanup: "owned-remove" }], { tls_primary: "unknown", tls_cleanup: "owned-remove", tls_err: "unknown" }],
+    [[], { tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown" }],
+  ]) {
+    const f = fixture("child", 0, events), record = await terminalDiagnostic(f);
+    assert.deepEqual(record, terminalRecord({ report: "observed", ...expected }));
+    assert.equal(f.unit.failure, "MANAGER");
+    assert.equal(f.events.filter(e => e === "failure-read").length, 1);
+    assert.deepEqual(f.events.slice(-3), ["stop", "disposed-show", "failure-read"]);
+  }
+});
+
+test("#1024 legacy/new own-data reports reflect only after accepted or private no-live gate", async () => {
+  for (const privateGate of [false, true]) for (const value of [progress(), tlsProgress(),
+    tlsProgress({ entered: "tls-setup", confirmed: "home" }),
+    tlsProgress({ entered: "unknown", confirmed: "unknown", tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown" })]) {
+    const f = privateGate ? managerFailureFixture() : fixture("child");
+    f.ports.failureReport = () => {
+      assert.equal(f.unit.stopped, true);
+      if (privateGate) assert.deepEqual(f.counts(), { samples: 2, apis: 1, confirms: 1 });
+      f.events.push("failure-read"); return value;
+    };
+    const record = await terminalDiagnostic(f);
+    assert.deepEqual(record, terminalRecord({ stop: privateGate ? "failed-state" : "confirmed", report: "observed",
+      entered: value.entered, confirmed: value.confirmed,
+      ...Object.fromEntries(["tls_primary", "tls_cleanup", "tls_err"].map(key => [key, value[key] ?? "unknown"])) }));
+    assert.equal(f.events.filter(e => e === "failure-read").length, 1);
+    const before = f.events.length;
+    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), { message: failed("start") });
+    assert.equal(f.events.length, before);
+  }
+});
+
+test("#1024 pre-try Child failure stays unknown; TLS never overwrites mismatch or nonterminal stage", async () => {
+  const controller = new AbortController(); controller.abort(); let text, calls = 0;
+  assert.equal(await useUnauthenticatedBookingChild({ signal: controller.signal, isolated: true,
+    runInner: () => { calls++; }, write: wire => { text = wire; } }), false);
+  assert.equal(calls, 0);
+  const f = fixture("child"); f.ports.failureReport = () => parseUnauthenticatedBookingReport(text);
+  assert.deepEqual(await terminalDiagnostic(f), terminalRecord({ report: "observed" }));
+  const mismatch = fixture("invocation"); mismatch.ports.failureReport = () => tlsProgress({ entered: "tls-setup", confirmed: "home" });
+  const record = await terminalDiagnostic(mismatch);
+  assert.equal(record.reason, "mismatch"); assert.equal(mismatch.unit.failure, "MISMATCH");
+  assert.equal(record.tls_primary, "tls-san"); assert.equal(record.entered, "tls-setup"); assert.equal(record.confirmed, "home");
+  for (const [fault, stage] of [["preflight", "preflight"], ["start", "start"], ["ownership", "ownership"], ["remove", "remove"]]) {
+    const f = fixture(fault); let reads = 0;
+    f.ports.failureReport = () => { reads++; return tlsProgress(); };
+    await assert.rejects(useUnauthenticatedBookingOuter(f.unit, f.ports), { message: failed(stage) });
+    assert.equal(reads, 0);
+  }
+});
+
+test("#1024 hostile TLS fields close all progress to unknown without getters/proxy traps", async () => {
+  let touched = 0;
+  const values = [Object.create(tlsProgress()),
+    new Proxy(tlsProgress(), { ownKeys() { touched++; throw new Error(canary); } }),
+    { ...tlsProgress(), extra: canary }, { ...tlsProgress(), [Symbol("extra")]: canary },
+    { ...tlsProgress(), ...Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`extra${i}`, canary])) }];
+  for (const key of Object.keys(tlsProgress())) {
+    const missing = tlsProgress(); delete missing[key]; values.push(missing);
+    const accessor = tlsProgress(); Object.defineProperty(accessor, key, { get() { touched++; throw new Error(canary); } }); values.push(accessor);
+    for (const value of [undefined, null, "", canary, "秘密", "unknown\n", "unknown\r\n", "unknown\nunknown", "x".repeat(513)]) {
+      values.push(tlsProgress({ [key]: value }));
+    }
+  }
+  for (const value of values) {
+    const f = managerFailureFixture(); f.ports.failureReport = () => { f.events.push("failure-read"); return value; };
+    const record = await terminalDiagnostic(f);
+    assert.equal(record.unit_stop, "confirmed"); assert.equal(record.report, "unknown");
+    assert.equal(f.events.filter(e => e === "failure-read").length, 1);
+  }
+  assert.equal(touched, 0);
+  // A valid new report cannot open a rejected manager gate.
+  const f = managerFailureFixture({ fault: "api-throw" });
+  f.ports.failureReport = () => { touched++; return tlsProgress(); };
+  assert.equal((await terminalDiagnostic(f)).report, "unread"); assert.equal(touched, 0);
 });
 
 test("only exact four own data fields; old normal, fixture, unknown, extra symbol and getters rejected", async () => {
@@ -552,7 +647,7 @@ async function operatorFixture(fault = "", injectedRun, failureOptions = {}) {
   const proc = { platform: "linux", version: "v24.0.0", execPath: process.execPath, argv: ["fixture-node", "fixture-outer", "--run"],
     on: (name, fn) => listeners.set(name, fn), removeListener: name => listeners.delete(name) };
   const context = { process: proc, AbortController, Date: { now: () => 0 }, join, resolve: value => value,
-    types, unauthenticatedBookingPhases,
+    types, unauthenticatedBookingPhases, unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors,
     fileURLToPath: value => value, tmpdir: () => "/fixture-tmp", constants: { X_OK: 1 },
     load: async name => { assert.ok(Object.hasOwn(dependencies, name)); return dependencies[name]; },
     mkdtempSync: () => { f.events.push("temporary"); return temporary; }, lstatSync: stat, ownedIdentity: owned, verifyOwned: verify,
@@ -903,13 +998,15 @@ test("#1020 terminal failure through sealed operator/CLI and exact proofStep; on
 });
 
 test("#1020 sealed failure report Port and proofStep publish progress only after stop/owner/stat checks", async () => {
-  for (const options of [{ value: progress() }, { value: progress(), owner: "inode" },
+  for (const options of [{ value: progress() }, { value: tlsProgress() }, { value: tlsProgress(), owner: "inode" },
+    { value: tlsProgress(), owner: "mode" }, { value: tlsProgress(), reportDrift: true }, { value: progress(), owner: "inode" },
     { value: progress(), owner: "mode" }, { value: progress(), reportDrift: true }]) {
     const r = await operatorFixture("terminal-child", undefined, options);
     const record = parseUnauthenticatedBookingTerminal(r.stderr[0]);
     const observed = !options.owner && !options.reportDrift;
     assert.equal(record.report, observed ? "observed" : "unknown");
     assert.equal(record.confirmed, observed ? "dom-401" : "unknown");
+    for (const key of ["tls_primary", "tls_cleanup", "tls_err"]) assert.equal(record[key], observed ? options.value[key] ?? "unknown" : "unknown");
     assert.equal(record.unit_stop, "confirmed");
     assert.equal(r.reads, options.owner ? 0 : 1); assert.equal(r.probes, 4);
     assert.deepEqual(proofFixture({ status: 1, signal: null, stdout: "", stderr: r.stderr[0] + "\n" }), {
@@ -949,7 +1046,7 @@ test("#1012 bounded single spawn; exact success or fixed failure stage; raw/norm
     stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=unknown"], status: 1 }, `output denial ${index}`);
 });
 
-test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/normal/raw closes without retry", () => {
+test("#1015/#1024 exact CLI/proofStep publishes only each fixed terminal enum; unknown/normal/raw closes without retry", async () => {
   // Independent reviewed enum inventory: additions require codec and wrapper synchronization.
   const enums = {
     reason: ["cancel", "timeout", "manager", "mismatch", "unknown", "unavailable", "none"],
@@ -963,6 +1060,9 @@ test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/nor
     unit_stop: ["confirmed", "unknown"], report: ["observed", "unknown", "unread"],
     entered: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
     confirmed: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
+    tls_primary: ["none", "unknown", "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch", "tls-browser-ownership", "tls-browser-context", "tls-browser-nss", "tls-positive", "tls-san", "tls-untrusted", "tls-consumer"],
+    tls_cleanup: ["none", "unknown", "browser-close", "browser-ownership", "browser-process", "proof-listener", "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"],
+    tls_err: ["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "TIMEOUT", "UNCLASSIFIED", "unknown"],
   };
   const result = { status: 1, signal: null, stdout: "", stderr: "" };
   const unknown = { stdout: [], stderr: ["UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=unknown"], status: 1 };
@@ -971,8 +1071,27 @@ test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/nor
   const wire = formatUnauthenticatedBookingTerminal(terminalRecord());
   const longest = Object.fromEntries(Object.entries(enums).map(([key, values]) => [key, values.reduce((a, b) => a.length > b.length ? a : b)]));
   const longestWire = formatUnauthenticatedBookingTerminal(longest);
-  assert.equal(Buffer.byteLength(longestWire + "\n"), 405); // Fixed enum maxima + ASCII grammar + LF.
+  const expectedWire = prefix + "; stage=terminal" + Object.entries(longest).map(([key, value]) => `; ${key}=${value}`).join("") +
+    "; evidence=unproved; retain owned files; do not retry";
+  assert.equal(longestWire, expectedWire); // Independently fixes all 17 fields, their order and end markers.
+  assert.equal(unauthenticatedBookingTerminalMaxBytes, 512);
+  const cli = await operatorFixture("", async () => { throw new Error(expectedWire); });
+  assert.deepEqual(cli.stderr, [expectedWire]); assert.deepEqual(cli.stdout, []); assert.equal(cli.status, 1);
+  assert.deepEqual(enums.tls_primary, unauthenticatedBookingTlsPrimary);
+  assert.deepEqual(enums.tls_cleanup, unauthenticatedBookingTlsCleanup);
+  assert.deepEqual(enums.tls_err, unauthenticatedBookingTlsErrors);
+  const legacyWire = longestWire.replace(/; tls_primary=.*?; evidence=/, "; evidence=");
+  assert.equal(Buffer.byteLength(legacyWire + "\n"), 405);
+  assert.equal(Buffer.byteLength(legacyWire.replace("; evidence=", "; tls_primary=tls-browser-ownership; evidence=") + "\n"), 440);
+  assert.equal(Buffer.byteLength(longestWire.replace(/; tls_err=.*?; evidence=/, "; evidence=") + "\n"), 471);
+  assert.equal(Buffer.byteLength(longestWire.replace("tls_err=", "tls_category=") + "\n"), 514);
+  assert.equal(Buffer.byteLength(longestWire + "\n"), 509); // Fixed enum maxima + ASCII grammar + LF.
   assert.ok(Buffer.byteLength(longestWire + "\n") <= 512);
+  for (const key of ["tls_primary", "tls_cleanup", "tls_err"]) for (const report of ["unknown", "unread"]) {
+    const value = enums[key].find(value => value !== "unknown");
+    assert.equal(formatUnauthenticatedBookingTerminal(terminalRecord({ report, [key]: value })), undefined);
+    assert.deepEqual(sealed(wire.replace(`${key}=unknown`, `${key}=${value}`).replace("report=unknown", `report=${report}`)), unknown);
+  }
   for (const record of [terminalRecord({ report: "unread", entered: "dom-401" }),
     terminalRecord({ report: "unknown", confirmed: "dom-401" }),
     terminalRecord({ unit_stop: "unknown", report: "observed" })]) {
@@ -984,12 +1103,12 @@ test("#1015 exact proofStep publishes only each fixed terminal enum; unknown/nor
   for (const [key, values] of Object.entries(enums)) {
     for (const value of values) {
       const record = terminalRecord({ [key]: value });
-      if (["entered", "confirmed"].includes(key) && value !== "unknown") record.report = "observed";
+      if (["entered", "confirmed", "tls_primary", "tls_cleanup", "tls_err"].includes(key) && value !== "unknown") record.report = "observed";
       const text = formatUnauthenticatedBookingTerminal(record);
       assert.deepEqual(parseUnauthenticatedBookingTerminal(text), record);
       assert.deepEqual(sealed(text), { stdout: [], stderr: [text.replace(prefix, "UNAUTHENTICATED_BOOKING_PROOF_FAILED")], status: 1 });
     }
-    for (const value of ["", "invalid-enum", canary, "active", "dead", "1", "success\n"]) {
+    for (const value of ["", "invalid-enum", canary, "秘密", "active", "dead", "1", "success\n"]) {
       assert.deepEqual(sealed(wire.replace(`${key}=${terminalRecord()[key]}`, `${key}=${value}`)), unknown, key);
     }
     assert.deepEqual(sealed(wire.replace(`; ${key}=${terminalRecord()[key]}`, "")), unknown);
