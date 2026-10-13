@@ -37,9 +37,19 @@ export async function assertBookingReviewDom(page, view, classification, run = a
 // #1002: prepared negative consumer only. The owner supplies a fresh, empty
 // strict-TLS / serviceWorkers:"block" context and owns its terminal teardown.
 // No Cookie injection, synthetic responses, lifecycle, D1, report, or CLI.
-export async function proveUnauthenticatedBookingDom({ context, fixture, signal }) {
+export async function proveUnauthenticatedBookingDom({ context, fixture, signal, onFault }) {
   const failed = () => new Error("TRUSTED_UNAUTHENTICATED_BOOKING_DOM_FAILED");
   let terminal = false, page, navigationCount = 0, explicitPath;
+  // Passive bounded first-fault classification only. No headers, routes, URLs,
+  // response bodies, identities or exception strings leave the DOM helper.
+  let observingFault = true, faultReported = false, faultStage = "dom-setup";
+  const stages = new Set(["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui"]);
+  const reportFault = stage => {
+    if (faultReported || !observingFault || !stages.has(stage)) return;
+    faultReported = true;
+    try { if (typeof onFault === "function") onFault(stage); }
+    catch { /* A diagnostic consumer cannot change DOM behavior. */ }
+  };
   let rejectStopped;
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
   stopped.catch(() => {});
@@ -150,7 +160,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal 
           await emptyJar(); alive();
           requests.set(request, path);
           await step(() => route.continue()); // No fetch/fulfill/header rewrite/retry.
-        } catch { stop(); try { await route.abort(); } catch { /* owner teardown */ } }
+        } catch { reportFault("dom-request"); stop(); try { await route.abort(); } catch { /* owner teardown */ } }
       })();
       pending.add(task); task.finally(() => pending.delete(task));
       return task;
@@ -169,7 +179,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal 
         if (frame !== page.mainFrame() || ++navigationCount !== 1 || frame.url() !== bookingOrigin + "/student") stop();
       } catch { stop(); }
     });
-    page.on("requestfailed", stop);
+    page.on("requestfailed", () => { reportFault("dom-request"); stop(); });
     page.on("response", response => {
       if (terminal) return;
       const task = step(async () => {
@@ -181,12 +191,14 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal 
         safeHeaders(await step(() => response.allHeaders()), path, api);
         if (api) require(await step(() => response.text()) === body);
         await emptyJar();
-      }).catch(() => stop());
+      }).catch(() => { reportFault("dom-response"); stop(); });
       pending.add(task); task.finally(() => pending.delete(task));
     });
+    faultStage = "dom-net";
     const navigation = await step(() => page.goto(bookingOrigin + "/student", { waitUntil: "load", timeout }));
     require(navigation && navigation.status() === 200 && navigationCount === 1);
     await step(() => page.getByRole("heading", { name: "生徒の予定・本人履歴", exact: true }).waitFor({ timeout }));
+    faultStage = "dom-ui";
     const inspectDom = async () => {
       await step(() => page.waitForFunction(() => ["#schedule-content", "section ol", "#operation-content"]
         .every(selector => document.querySelector(selector)?.getAttribute("aria-busy") === "false"), undefined, { timeout }));
@@ -225,8 +237,9 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal 
     require(context.pages().length === 1 && context.serviceWorkers().length === 0);
     terminal = true;
     return undefined; // No live proof/report checkpoint or booking identity.
-  } catch { stop(); throw failed(); }
+  } catch { reportFault(faultStage); stop(); throw failed(); }
   finally {
+    observingFault = false;
     try { signal?.removeEventListener?.("abort", onAbort); } catch { throw failed(); }
   }
 }
