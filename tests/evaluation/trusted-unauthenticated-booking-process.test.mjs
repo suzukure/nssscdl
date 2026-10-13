@@ -378,7 +378,8 @@ test("#930 first-failure event occurs before cleanup progress, with one immutabl
     assert.equal(first.length, 1, fault);
     assert.deepEqual(first.map(event => event.phase), [expected[0]], fault);
     assert.ok(first.every(Object.isFrozen));
-    assert.ok(observations.filter(event => event.state === "entered").at(-1).phase === "worker-stop", fault);
+    assert.equal(observations.filter(event => event.state === "entered").at(-1).phase,
+      fault === "worker-create" ? "worker-start" : "worker-stop", fault);
     assert.ok(!JSON.stringify(observations).includes(canary));
     atMostOnce(f);
   }
