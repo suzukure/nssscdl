@@ -49,7 +49,8 @@ jobs:
           [[ "$EVENT_ACTION" == "opened" && "$EVENT_ATTEMPT" == "1" &&
              "$EVENT_DRAFT" == "true" &&
              "$EVENT_HEAD_REF" == "investigate/issue-1055-stage3-cft157-ubuntu22-once" ]] || fail_gate scope-disallowed
-          [[ "$(git rev-parse HEAD)" == "$EVENT_HEAD_SHA" ]] || fail_gate head-mismatch
+          export CHECKED_OUT_HEAD_SHA="$(git rev-parse HEAD)"
+          [[ "$CHECKED_OUT_HEAD_SHA" == "$EVENT_HEAD_SHA" ]] || fail_gate head-mismatch
           [[ "$(lsb_release -rs 2>/dev/null)" == "22.04" &&
              "$(uname -m)" == "x86_64" && "$(id -u)" != "0" ]] || fail_gate os-mismatch
           [[ -x /usr/bin/openssl && -x /usr/bin/certutil ]] || fail_gate tls-tools-missing
@@ -126,7 +127,7 @@ jobs:
           const result=classifyStage3Handoff({
             action:env.EVENT_ACTION,attempt:Number(env.EVENT_ATTEMPT),draft:env.EVENT_DRAFT==="true",
             headRef:env.EVENT_HEAD_REF,baseSha:env.BASE_SHA,approvedBaseSha:env.APPROVED_BASE_SHA,
-            eventHeadSha:env.EVENT_HEAD_SHA,checkedOutHeadSha:env.EVENT_HEAD_SHA,
+            eventHeadSha:env.EVENT_HEAD_SHA,checkedOutHeadSha:env.CHECKED_OUT_HEAD_SHA,
             sourcePinned:env.H9_SOURCE_PINNED==="true",runnerLabel:env.RUNNER_LABEL,
             arch:process.arch==="x64"?"x86_64":"other",nonroot:process.getuid()!==0,
             strictSandbox:true,hostMutation:false,env,ownerEvidence:evidence
