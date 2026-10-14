@@ -212,7 +212,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
           const bodyFaults = path === monthPath(initialMonth) || path === monthPath(fixture.month) ? ["rb-month-ot", "rb-month-it"] :
             path === confirmPath ? ["rb-hist-ot", "rb-hist-it"] : path === csrfPath ? ["rb-csrf-ot", "rb-csrf-it"] : undefined;
           responseGuard("dom-rsp-id")(bodyFaults && bodyFaults.every(value => stages.has(value)));
-          // #930 investigation: Playwright client timing only; no driver RPC,
+          // #930: bounded Playwright client timing only; no driver RPC,
           // requestfinished listener, body read or raw timestamp escapes.
           // -1 means not observed by this client, not 'server unfinished'.
           // RequestFailed can also update responseEnd; first-fault wins.
