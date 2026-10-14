@@ -3,6 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { unauthenticatedBookingResponseFaults } from "./trusted-unauthenticated-booking-report.mjs";
 import { readFileSync, readdirSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
@@ -323,7 +325,7 @@ function unauthenticatedFixture(options = {}) {
       if (path === csrfPath) options.afterCsrf?.({ document, controls, texts, lengths });
       if (options.duplicateResponse && path === csrfPath) page.emit("response", response);
       for (const waiter of [...waiters]) if (waiter.match(response)) { waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(response); }
-      if (api && response.status() === 401) stoppedUi = true;
+      if (api) stoppedUi = true; // Fixed 401 UI oracle; do not invoke the injected driver twice.
     } });
     return passed ? response : null;
   };
@@ -458,11 +460,11 @@ test("#1044 response guard first-failure buckets, Cookie mismatch versus driver 
     ["dom-rsp-hdr", { change: ({ headers }) => { delete headers["set-cookie"]; } }],
     ["dom-rsp-body", { change: ({ response }) => { response.text = async () => canary; } }],
     ["dom-rsp-jar", { cookieResult: "mismatch" }],
-    ["dom-rsp-drv", { cookieResult: "reject" }],
+    ["rsp-jar-err", { cookieResult: "reject" }],
     ...["request", "url", "status", "fromServiceWorker", "allHeaders", "text"].map(method =>
-      ["dom-rsp-drv", { change: ({ response }) => { response[method] = () => { throw new Error(canary); }; } }]),
+      [method === "allHeaders" ? "rsp-hdr-err" : method === "text" ? "rsp-body-err" : "rsp-meta-err", { change: ({ response }) => { response[method] = () => { throw new Error(canary); }; } }]),
   ];
-  assert.deepEqual([...new Set(cases.map(([bucket]) => bucket))], responseFaultOracle);
+  assert.deepEqual([...new Set(cases.map(([bucket]) => bucket))], [...responseFaultOracle.slice(0, 5), "rsp-jar-err", "rsp-meta-err", "rsp-hdr-err", "rsp-body-err"]);
   for (const [expected, options] of cases) {
     const f = unauthenticatedFixture(options), observed = [];
     if (options.cookieResult) {
@@ -503,10 +505,130 @@ test("#1044 response-body driver timeout notifies before stop, late completion i
   const operation = proveUnauthenticatedBookingDom(f.input);
   await f.pending;
   await assert.rejects(operation, unauthenticatedError);
-  assert.deepEqual(observed, ["dom-rsp-drv"]);
+  assert.deepEqual(observed, ["rsp-body-to"]);
   const saved = [...f.forwarded]; f.resume(); await new Promise(resolve => setImmediate(resolve));
   f.lateResponse(); await f.emit(confirmPath, "POST");
-  assert.deepEqual(observed, ["dom-rsp-drv"]); assert.deepEqual(f.forwarded, saved);
+  assert.deepEqual(observed, ["rsp-body-to"]); assert.deepEqual(f.forwarded, saved);
+});
+
+// Isolated finite clock/observer fixture. No production injection Port or listener.
+function responseClockFixture(mode = "", reverse = false) {
+  let source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8");
+  source = source.slice(source.indexOf("export async function proveUnauthenticatedBookingDom"),
+    source.indexOf("export async function proveTrustedBookingDom")).replace("export async", "async");
+  const seam = 'const responseGuard = stage =>';
+  assert.equal(source.split(seam).length, 2);
+  if (mode) source = source.replace(seam, (mode === "unknown" ? 'throw new Error("private-canary"); ' :
+    'await new Promise(() => {}); ') + seam);
+  const timers = new Map(); let next = 0, selected;
+  const prove = runInNewContext(source + "; proveUnauthenticatedBookingDom", {
+    timeout: 5000, spent: new WeakSet(), bookingOrigin, confirmPath, csrfPath, tokyoNowMonth, URL,
+    unauthenticatedBookingResponseFaults,
+    isDeepStrictEqual: (a, b) => isDeepStrictEqual(structuredClone(a), structuredClone(b)),
+    validMonth: value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value),
+    assets: new Map([['/student', 'text/html'], ['/student.css', 'text/css'],
+      ...['student', 'view', 'controller', 'model'].map(n => [`/${n}.js`, 'text/javascript'])]),
+    setTimeout: (callback, ms) => { assert.equal(ms, 5000); timers.set(++next, callback); return next; },
+    clearTimeout: id => timers.delete(id),
+  });
+  return { prove, capture: () => { selected = [...timers].slice(-2); }, expire: () => {
+    const entries = [...(selected ?? timers)]; if (reverse) entries.reverse();
+    for (const [id, callback] of entries) if (timers.has(id)) { timers.delete(id); callback(); }
+  } };
+}
+
+test("#1047 acquisition reject/pending, both timer orders, abort first and late completion keep one fixed fault", async () => {
+  for (const kind of ["hdr", "body", "jar"]) for (const outcome of ["reject", "timeout", "abort"]) {
+    for (const reverse of [false, true]) {
+      let release, entered; const ready = new Promise(resolve => { entered = resolve; });
+      const calls = { hdr: 0, body: 0, jar: 0 }, observed = [];
+      const options = { change: ({ response }) => {
+        const headers = response.allHeaders, text = response.text;
+        response.allHeaders = () => {
+          calls.hdr++;
+          return kind === "hdr" ? injected() : headers();
+        };
+        response.text = () => { calls.body++; return kind === "body" ? injected() : text(); };
+        if (kind === "jar") {
+          const original = response.text;
+          response.text = async () => {
+            const value = await original();
+            f.context.cookies = () => { calls.jar++; return injected(); };
+            return value;
+          };
+        }
+      } };
+      const injected = () => {
+        clock.capture(); // Only the response observer and acquisition timers compete.
+        entered();
+        if (outcome === "reject") return Promise.reject(new Error(canary));
+        return new Promise(resolve => { release = () => resolve(kind === "jar" ? [] : canary); });
+      };
+      const f = unauthenticatedFixture(options), clock = responseClockFixture("", reverse);
+      f.input.onFault = value => observed.push(value);
+      const operation = clock.prove(f.input), rejected = assert.rejects(operation, unauthenticatedError);
+      await Promise.race([ready, operation.then(() => assert.fail("fixture did not inject"),
+        () => assert.fail(`fixture stopped before injection: ${observed.join(",")}`))]);
+      await new Promise(resolve => setImmediate(resolve));
+      if (outcome === "abort") f.controller.abort(canary);
+      else if (outcome === "timeout") clock.expire();
+      await rejected;
+      const expected = outcome === "abort" ? "dom-ui" : `rsp-${kind}-${outcome === "reject" ? "err" : "to"}`;
+      assert.deepEqual(observed, [expected], `${kind}/${outcome}/${reverse}`);
+      assert.deepEqual(calls, { hdr: 1, body: kind === "hdr" ? 0 : 1, jar: kind === "jar" ? 1 : 0 });
+      const saved = [...f.forwarded]; release?.();
+      await new Promise(resolve => setImmediate(resolve)); clock.expire(); f.lateResponse();
+      await f.emit(confirmPath, "POST"); await f.emit("/unexpected");
+      assert.deepEqual(f.forwarded, saved); assert.deepEqual(observed, [expected]);
+      assert.ok(!JSON.stringify(observed).includes(canary));
+    }
+  }
+});
+
+test("#1047 unexpected safeHeaders exception differs from demand mismatch, metadata and outer fallback", async () => {
+  for (const [expected, change] of [
+    ["rsp-guard-ex", ({ response }) => { response.allHeaders = async () => null; }],
+    ["rsp-guard-ex", ({ headers }) => { Object.defineProperty(headers, "date", { enumerable: true, get() { throw new Error(canary); } }); }],
+    ["dom-rsp-hdr", ({ headers }) => { headers["cache-control"] = canary; }],
+    ["rsp-meta-err", ({ request }) => { request.url = () => { throw new Error(canary); }; }],
+  ]) {
+    // request.url must throw only after request admission.
+    const f = unauthenticatedFixture({ change: values => {
+      if (expected === "rsp-meta-err") {
+        const original = values.response.request;
+        values.response.request = () => { change(values); return original(); };
+      } else change(values);
+    } }), observed = [];
+    f.input.onFault = value => observed.push(value);
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(observed, [expected]);
+  }
+  for (const mode of ["unknown", "pending"]) {
+    const f = unauthenticatedFixture(), clock = responseClockFixture(mode), observed = [];
+    f.input.onFault = value => observed.push(value);
+    const rejected = assert.rejects(clock.prove(f.input), unauthenticatedError);
+    await new Promise(resolve => setImmediate(resolve));
+    if (mode === "pending") clock.expire();
+    await rejected;
+    assert.deepEqual(observed, [mode === "unknown" ? "dom-rsp-drv" : "rsp-outer-to"]);
+    f.lateResponse(); clock.expire(); assert.equal(observed.length, 1);
+  }
+});
+
+test("#1047 concurrent duplicate response wins once over pending body's late mismatch", async () => {
+  const f = unauthenticatedFixture({ stall: "body", change: ({ response }) => {
+    const original = response.text;
+    response.text = async () => { await original(); return canary; };
+  } }), observed = [];
+  f.input.onFault = value => observed.push(value);
+  const rejected = assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+  await f.pending; f.lateResponse(); f.lateResponse();
+  await rejected;
+  assert.deepEqual(observed, ["dom-rsp-id"]);
+  const saved = [...f.forwarded]; f.resume();
+  await new Promise(resolve => setImmediate(resolve));
+  await f.emit(confirmPath, "POST");
+  assert.deepEqual(observed, ["dom-rsp-id"]); assert.deepEqual(f.forwarded, saved);
 });
 
 test("#1002 asset headers match Worker contract; bad/missing/extra headers stop further traffic", { timeout: 15000 }, async () => {

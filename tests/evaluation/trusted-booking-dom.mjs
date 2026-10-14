@@ -60,14 +60,15 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     require(!terminal && !signal.aborted);
     if (navigationCount) require(page.url() === bookingOrigin + "/student");
   };
-  const step = async (action, fault) => {
+  const step = async (action, fault, timeoutFault = fault) => {
     alive(); let timer;
+    const report = value => { if (!terminal && value) reportFault(typeof value === "function" ? value() : value); };
     try {
       const result = await Promise.race([stopped,
         Promise.resolve().then(() => { alive(); return action(); }),
-        new Promise((_, reject) => { timer = setTimeout(() => { if (fault) reportFault(fault); stop(); reject(failed()); }, timeout); })]);
+        new Promise((_, reject) => { timer = setTimeout(() => { report(timeoutFault); stop(); reject(failed()); }, timeout); })]);
       alive(); return result;
-    } catch { if (fault) reportFault(fault); stop(); throw failed(); }
+    } catch { report(fault); stop(); throw failed(); }
     finally { clearTimeout(timer); }
   };
   const requests = new Map(), responses = new Map(), counts = new Map(), pending = new Set();
@@ -98,7 +99,14 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     else demand(headers["x-content-type-options"] === "nosniff" && headers["referrer-policy"] === "no-referrer");
     if (path === csrfPath) demand(headers["referrer-policy"] === "no-referrer");
   };
-  const emptyJar = async (demand = require, fault) => demand(isDeepStrictEqual(await step(() => context.cookies(), fault), []));
+  const emptyJar = async (demand = require, fault, timeoutFault = fault) => {
+    const jar = await step(() => context.cookies(), fault, timeoutFault);
+    try { demand(isDeepStrictEqual(jar, [])); }
+    catch {
+      if (!terminal && fault) reportFault("rsp-guard-ex");
+      stop(); throw failed();
+    }
+  };
   const drain = async () => {
     await step(async () => {
       // Route completion can enqueue response validation. Drain both generations
@@ -184,17 +192,34 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     page.on("requestfailed", () => { reportFault("dom-request"); stop(); });
     page.on("response", response => {
       if (terminal) return;
+      // Per-response cursor: the outer timer was registered first, so it must
+      // retain the pending acquisition's timeout bucket too. No extra API/await.
+      let errorFault = "dom-rsp-drv", timeoutFault = "rsp-outer-to";
       const task = step(async () => {
         const responseGuard = stage => ok => { if (!ok) reportFault(stage); require(ok); };
+        errorFault = "rsp-meta-err";
         const request = response.request(), path = requests.get(request);
         responseGuard("dom-rsp-id")(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
         responses.set(request, response);
         const api = !assets.has(path);
         responseGuard("dom-rsp-code")(response.status() === (api ? 401 : 200));
-        safeHeaders(await step(() => response.allHeaders(), "dom-rsp-drv"), path, api, responseGuard("dom-rsp-hdr"));
-        if (api) responseGuard("dom-rsp-body")(await step(() => response.text(), "dom-rsp-drv") === body);
-        await emptyJar(responseGuard("dom-rsp-jar"), "dom-rsp-drv");
-      }, "dom-rsp-drv").catch(() => { reportFault("dom-rsp-drv"); stop(); });
+        errorFault = "rsp-hdr-err"; timeoutFault = "rsp-hdr-to";
+        const headers = await step(() => response.allHeaders(), errorFault, timeoutFault);
+        errorFault = "rsp-guard-ex"; timeoutFault = "rsp-outer-to";
+        safeHeaders(headers, path, api, responseGuard("dom-rsp-hdr"));
+        if (api) {
+          errorFault = "rsp-body-err"; timeoutFault = "rsp-body-to";
+          const text = await step(() => response.text(), errorFault, timeoutFault);
+          errorFault = "rsp-guard-ex"; timeoutFault = "rsp-outer-to";
+          responseGuard("dom-rsp-body")(text === body);
+        }
+        errorFault = "rsp-jar-err"; timeoutFault = "rsp-jar-to";
+        await emptyJar(responseGuard("dom-rsp-jar"), errorFault, timeoutFault);
+        errorFault = "dom-rsp-drv"; timeoutFault = "rsp-outer-to";
+      }, () => errorFault, () => timeoutFault).catch(() => {
+        if (!terminal) reportFault("dom-rsp-drv");
+        stop();
+      });
       pending.add(task); task.finally(() => pending.delete(task));
     });
     faultStage = "dom-net";

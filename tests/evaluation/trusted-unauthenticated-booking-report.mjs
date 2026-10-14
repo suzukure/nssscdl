@@ -13,6 +13,8 @@ export const unauthenticatedBookingChildUnknown = "TRUSTED_UNAUTHENTICATED_BOOKI
 // the existing Cartesian grammar still fits Child256B / Outer512B unchanged.
 export const unauthenticatedBookingResponseFaults = Object.freeze([
   "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv",
+  "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to",
+  "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to",
 ]);
 // #1018: observations are progress only, never success/cleanup evidence.
 export const unauthenticatedBookingPhases = Object.freeze([
