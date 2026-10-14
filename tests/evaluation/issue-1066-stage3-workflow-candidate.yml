@@ -63,7 +63,7 @@ jobs:
           check_pin() {
             [[ "$(git hash-object "$1")" == "$2" ]] || fail_gate source-hash-mismatch
           }
-          check_pin tests/evaluation/issue-1055-cft-archive-preflight.py f2bb75285ef9f8a8a9b624f80c1d11eaf3d70fef
+          check_pin tests/evaluation/issue-1055-cft-archive-preflight.py 57d470415fd40e50212e1770331493ea6da0eb23
           check_pin tests/evaluation/issue-1055-cft157-admission.mjs 37ee890dcca4ce6b1db316be0026a20f45fa8e36
           check_pin tests/evaluation/issue-1055-cft157-lifecycle.mjs 46f1dbbee87ac5079bedf6ddbc9bf738a5245231
           check_pin tests/evaluation/issue-1055-cft157-version-preflight.mjs 4a0210e95c8c306c9d6f4fedbb6a0558b81a425d

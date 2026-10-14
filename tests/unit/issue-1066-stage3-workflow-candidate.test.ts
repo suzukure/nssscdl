@@ -140,6 +140,13 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
     }
   });
 
+  it("requires ZIP streaming hash compatible with Python 3.10", () => {
+    expect(archiveCode.includes("hashlib.file_digest")).toBe(false);
+    expect(archiveCode).toContain("sha256 = hashlib.sha256()");
+    expect(archiveCode).toContain("block = stream.read(CHUNK)");
+    expect(archiveCode).toContain("sha256.update(block)");
+  });
+
   it("records a pinned archive observation without treating it as a provider signature", () => {
     expect(candidate).toContain("28d4f185c9047a91fe79ee8d31e5e0b5b858fc107129b3df361fdd095dbb2ace");
     expect(candidate).toContain("https://storage.googleapis.com/chrome-for-testing-public/157.0.8092.0/linux64/chrome-linux64.zip");

@@ -103,8 +103,16 @@ def verify_extract(archive_path: Path, destination: Path) -> dict[str, int | str
                     out.chmod(0o700)
             if actual != planned:
                 raise ArchiveReject("total-size")
+        # Python 3.10 (Ubuntu22 runner) has no hashlib.file_digest (introduced in 3.11).
+        # Hash in bounded chunks; the caller also checks the pinned ZIP SHA before extraction.
+        sha256 = hashlib.sha256()
         with archive_path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            while True:
+                block = stream.read(CHUNK)
+                if not block:
+                    break
+                sha256.update(block)
+        digest = sha256.hexdigest()
         return {"entries": len(infos), "uncompressed": actual,
                 "largest_entry": maximum_entry, "sha256": digest}
     except BaseException:
@@ -141,6 +149,7 @@ class FiniteArchiveTests(unittest.TestCase):
         result = verify_extract(p, out)
         self.assertEqual(result["uncompressed"], 10)
         self.assertEqual((out / REQUIRED).read_bytes(), b"chrome")
+        self.assertEqual(result["sha256"], hashlib.sha256(p.read_bytes()).hexdigest())
 
     def test_traversal(self):
         p, out = self.fixture([(REQUIRED, b"chrome", None),
