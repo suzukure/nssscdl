@@ -108,3 +108,46 @@ jobs:
       - name: Local D1 smoke
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
+
+      - name: "#1055 Chrome157 comparison (one-shot synthetic only)"
+        if: ${{ github.event.action == 'opened' && github.run_attempt == 1 && github.event.pull_request.draft == true && github.head_ref == 'investigate/issue-1055-cft157-one-shot' }}
+        timeout-minutes: 5
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$BASE_SHA" = "cc082886519e9e2df9273f84a0b8295bb8d5a49e"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(uname -m)" = "x86_64"
+          node --check tests/evaluation/issue-1055-cft157-chrome.mjs
+          TEMP_CFT="$(mktemp -d "$RUNNER_TEMP/nssscdl-cft157-XXXXXXXX")"
+          trap 'rm -rf -- "$TEMP_CFT"' EXIT
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --location --fail --silent --show-error \
+            --max-time 110 --max-filesize 300000000 \
+            'https://storage.googleapis.com/chrome-for-testing-public/157.0.8092.0/linux64/chrome-linux64.zip' \
+            -o "$TEMP_CFT/chrome.zip"
+          python3 - "$TEMP_CFT/chrome.zip" <<'PY'
+          import stat
+          import sys
+          import zipfile
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              infos = archive.infolist()
+              assert 1 <= len(infos) <= 5000
+              assert sum(info.file_size for info in infos) < 850_000_000
+              for info in infos:
+                  name = info.filename
+                  parts = name.split('/')
+                  assert name.startswith('chrome-linux64/')
+                  assert '..' not in parts and not name.startswith('/')
+                  assert not stat.S_ISLNK(info.external_attr >> 16)
+                  assert info.file_size <= 200_000_000
+          PY
+          ( cd "$TEMP_CFT" && unzip -q chrome.zip )
+          test -f "$TEMP_CFT/chrome-linux64/chrome"
+          chmod +x "$TEMP_CFT/chrome-linux64/chrome"
+          export H9_CHROME_EXECUTABLE="$TEMP_CFT/chrome-linux64/chrome"
+          "$H9_CHROME_EXECUTABLE" --version | grep -E '^(Google Chrome( for Testing)?|Chromium) 157\.0\.8092\.0$'
+          sha256sum "$TEMP_CFT/chrome.zip"
+          timeout --signal=TERM --kill-after=5s 145s node tests/evaluation/issue-1055-cft157-chrome.mjs
