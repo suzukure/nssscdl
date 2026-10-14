@@ -1,7 +1,7 @@
 // #1055 synthetic investigation ONLY. Not a trusted #930 booking/Worker/D1 proof.
 // Chrome is launched only via a separately approved one-shot temporary Draft PR.
 // No cookies, POSTs, credentials, production service, raw diagnostic exceptions or URLs.
-import { chromium } from "playwright-core";
+// Import Playwright only after Node parent TMPDIR is owned; chromium.ts caches an artifact path at import time.
 import { execFileSync, spawnSync } from "node:child_process";
 import { classifyVersion, classifyResponse, classifyOwnedAssets } from "./issue-1055-cft157-admission.mjs";
 import { createServer } from "node:https";
@@ -88,6 +88,7 @@ try {
   if (!address || typeof address === "string") throw Error("setup");
   const origin = "https://127.0.0.1:" + address.port;
   stage = "browser-launch";
+  const { chromium } = await import("playwright-core");
   childTmpOwned = temporary.length > 0 && parentTmpOwned;
   browser = await chromium.launch({
     executablePath: binary, headless: true, chromiumSandbox: true, timeout: 30000,
