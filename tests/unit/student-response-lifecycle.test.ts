@@ -5,12 +5,14 @@
 import { describe, expect, it } from "vitest";
 import { StudentReadController } from "../../src/web/controller";
 
-type DrainResult = "eof" | "absent" | "limit" | "deadline" | "unavailable";
+type DrainResult = "eof" | "absent" | "limit" | "deadline" | "aborted" | "unavailable";
 const bytes = new TextEncoder().encode("private-canary");
 
 // Experimental bounded discard: no decoded text, accumulation, logging,
 // refetch, or successful completion inferred from status alone.
-function discard(response: Response, maximum: number, milliseconds: number): Promise<DrainResult> {
+function discard(response: Response, maximum: number, milliseconds: number, signal?: AbortSignal): Promise<DrainResult> {
+  // This is an experiment-only owner cancellation seam, not a product policy.
+  if (signal?.aborted) return Promise.resolve("aborted");
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
     if (!response.body) return Promise.resolve("absent");
@@ -18,13 +20,21 @@ function discard(response: Response, maximum: number, milliseconds: number): Pro
   } catch { return Promise.resolve("unavailable"); }
   return (async () => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
     let count = 0, complete = false;
     const deadline = new Promise<"deadline">((resolve) => {
       timer = setTimeout(() => resolve("deadline"), milliseconds);
     });
+    const aborted = new Promise<"aborted">(resolve => {
+      if (!signal) return;
+      abortListener = () => resolve("aborted");
+      signal.addEventListener("abort", abortListener, { once: true });
+      if (signal.aborted) resolve("aborted");
+    });
     try {
       for (;;) {
-        const part = await Promise.race([reader.read(), deadline]);
+        const part = await Promise.race([reader.read(), deadline, aborted]);
+        if (part === "aborted") return "aborted";
         if (part === "deadline") return "deadline";
         if (part.done) { complete = true; return "eof"; }
         count += part.value.byteLength;
@@ -33,6 +43,7 @@ function discard(response: Response, maximum: number, milliseconds: number): Pro
     } catch { return "unavailable"; }
     finally {
       clearTimeout(timer);
+      if (abortListener) signal?.removeEventListener("abort", abortListener);
       // A hostile underlying cancel promise must not extend the deadline.
       // Cancellation is failure cleanup, never evidence of network EOF.
       if (!complete) void reader.cancel().catch(() => {});
@@ -209,6 +220,56 @@ describe("#1055 finite 401 lifecycle candidate comparison (not browser proof)", 
     expect(JSON.stringify(c.state)).toBe(stoppedState);
     await c.loadMonth("2027-01"); await c.loadHistory(); await c.confirm();
     expect(requests).toHaveLength(2);
+  });
+
+  it("owner abort before read leaves 401 body untouched and does not acquire a lock", async () => {
+    const s = source(), owner = new AbortController();
+    owner.abort();
+    expect(await discard(s.response, 64, 1000, owner.signal)).toBe("aborted");
+    expect(s.response.bodyUsed).toBe(false);
+    expect(s.response.body!.locked).toBe(false);
+    expect(s.cancelled()).toBe(0);
+    await s.response.body!.cancel();
+  });
+
+  it("owner abort during pending 401 read settles independently of EOF and preserves stop", async () => {
+    const s = source(), owner = new AbortController();
+    let draining!: Promise<DrainResult>, calls = 0;
+    const c = controller(async () => {
+      calls++;
+      draining = discard(s.response, 64, 1000, owner.signal);
+      return s.response;
+    });
+    await c.loadMonth("2026-12");
+    stopped(c);
+    owner.abort();
+    expect(await draining).toBe("aborted");
+    expect(s.cancelled()).toBe(1);
+    expect(s.response.body!.locked).toBe(false);
+    stopped(c);
+    await c.loadMonth("2027-01"); await c.loadHistory(); await c.confirm();
+    expect(calls).toBe(1);
+  });
+
+  it("late abort cannot turn observed EOF into failure or cancel complete body", async () => {
+    const s = source(), owner = new AbortController();
+    const draining = discard(s.response, 64, 1000, owner.signal);
+    s.producer.enqueue(bytes); s.producer.close();
+    expect(await draining).toBe("eof");
+    owner.abort();
+    expect(s.cancelled()).toBe(0);
+    expect(s.response.body!.locked).toBe(false);
+  });
+
+  it("owner abort never awaits an underlying cancel promise that remains pending", async () => {
+    const owner = new AbortController();
+    const response = new Response(new ReadableStream({
+      cancel: () => new Promise<void>(() => {}),
+    }), { status: 401 });
+    const draining = discard(response, 64, 1000, owner.signal);
+    owner.abort();
+    expect(await draining).toBe("aborted");
+    expect(response.body!.locked).toBe(false);
   });
 
 });
