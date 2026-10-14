@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 // #1055 investigation only. Real controller + Web Streams; NOT Chromium,
 // Playwright, HTTP framing, Worker/D1, or formal proof evidence.
 // The candidate lives only here. Limits below are fixture parameters, not
@@ -178,4 +179,74 @@ describe("#1055 finite 401 lifecycle candidate comparison (not browser proof)", 
     s.producer.enqueue(bytes); s.producer.close();
     expect(await draining).toBe("eof"); stopped(c); expect(calls).toBe(2);
   });
+  it("loopback HTTP 401 staged EOF: immediate stop and same-GET nonblocking drain", async () => {
+    // Node/undici loopback only: not a Chrome, CDP, Wrangler, or product-limit test.
+    for (const mode of ["baseline", "discard"] as const) {
+      let release!: () => void;
+      const finishBody = new Promise<void>(resolve => { release = resolve; });
+      const requests: Array<{ get: boolean; noCookie: boolean }> = [];
+      let wireEnded = false;
+      const server = createServer((request, response) => {
+        const get = request.method === "GET" && request.url === "/api/me/schedule-months/2026-12";
+        requests.push({ get, noCookie: request.headers.cookie === undefined });
+        if (!get) { response.writeHead(405).end(); return; }
+        response.writeHead(401, { "Cache-Control": "no-store", "Content-Type": "application/json" });
+        response.write('{"error":');
+        void finishBody.then(() => {
+          wireEnded = true;
+          response.end('{"code":"UNAUTHENTICATED"}}');
+        });
+      });
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        server.once("error", onError);
+        server.listen(0, "127.0.0.1", () => { server.off("error", onError); resolve(); });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("loopback listener unavailable");
+      const origin = `http://127.0.0.1:${address.port}`;
+      let actual: Response | undefined, completion: Promise<DrainResult> | undefined;
+      let drainSettled = false;
+      try {
+        const fetcher: typeof fetch = async (path, options) => {
+          const response = await fetch(origin + String(path), options);
+          actual = response;
+          if (mode === "discard" && response.status === 401)
+            completion = discard(response, 128, 2000).then(result => {
+              drainSettled = true;
+              return result;
+            });
+          return response;
+        };
+        const c = new StudentReadController("2026-12", fetcher, () => {});
+        await c.loadMonth("2026-12");
+        stopped(c);
+        expect(wireEnded).toBe(false);
+        expect(requests).toEqual([{ get: true, noCookie: true }]);
+        expect(actual?.status).toBe(401);
+        if (mode === "baseline") {
+          expect(actual?.bodyUsed).toBe(false);
+        } else {
+          expect(actual?.bodyUsed).toBe(true);
+          expect(drainSettled).toBe(false);
+        }
+        // Only now send EOF; no new request, no UI resumption and no POST.
+        release();
+        if (mode === "baseline") {
+          expect(actual?.bodyUsed).toBe(false);
+          await actual?.body?.cancel();
+        } else {
+          expect(await completion).toBe("eof");
+          expect(actual?.body?.locked).toBe(false);
+        }
+        stopped(c);
+        expect(requests).toEqual([{ get: true, noCookie: true }]);
+      } finally {
+        release();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    }
+  });
+
 });
