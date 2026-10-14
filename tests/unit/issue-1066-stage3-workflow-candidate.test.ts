@@ -1,13 +1,25 @@
 // #1066 INERT YAML candidate checks: no Actions activation and no Chrome execution.
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import candidate from "../evaluation/issue-1066-stage3-workflow-candidate.yml?raw";
+import archiveCode from "../evaluation/issue-1055-cft-archive-preflight.py?raw";
+import admissionCode from "../evaluation/issue-1055-cft157-admission.mjs?raw";
+import lifecycleCode from "../evaluation/issue-1055-cft157-lifecycle.mjs?raw";
+import versionCode from "../evaluation/issue-1055-cft157-version-preflight.mjs?raw";
+import browserCode from "../evaluation/issue-1055-cft157-synthetic-plan.mjs?raw";
+import handoffCode from "../evaluation/issue-1066-stage3-handoff.mjs?raw";
 import { spawnSync } from "node:child_process";
 import { STAGE3_HANDOFF } from "../evaluation/issue-1066-stage3-handoff.mjs";
 
-const candidate = readFileSync(new URL("../evaluation/issue-1066-stage3-workflow-candidate.yml", import.meta.url), "utf8");
-const scriptPath = new URL("../evaluation/issue-1055-cft157-synthetic-plan.mjs", import.meta.url);
-const scriptText = readFileSync(scriptPath, "utf8");
+const scriptText = browserCode;
+const pinnedFiles: Record<string, string> = {
+  "issue-1055-cft-archive-preflight.py": archiveCode,
+  "issue-1055-cft157-admission.mjs": admissionCode,
+  "issue-1055-cft157-lifecycle.mjs": lifecycleCode,
+  "issue-1055-cft157-version-preflight.mjs": versionCode,
+  "issue-1055-cft157-synthetic-plan.mjs": browserCode,
+  "issue-1066-stage3-handoff.mjs": handoffCode,
+};
 
 function bashBody(yaml: string) {
   const chunks = yaml.split("\n        run: |\n");
@@ -119,17 +131,9 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
   });
 
   it("pins actual study source blobs, not merely arbitrary 40-character strings", () => {
-    const paths = [
-      "issue-1055-cft-archive-preflight.py",
-      "issue-1055-cft157-admission.mjs",
-      "issue-1055-cft157-lifecycle.mjs",
-      "issue-1055-cft157-version-preflight.mjs",
-      "issue-1055-cft157-synthetic-plan.mjs",
-      "issue-1066-stage3-handoff.mjs",
-    ];
-    for (const path of paths) {
-      const data = readFileSync(new URL("../evaluation/" + path, import.meta.url));
-      const pin = "check_pin tests/evaluation/" + path + " " + gitBlobSha(data);
+    for (const [path, source] of Object.entries(pinnedFiles)) {
+      const pin = "check_pin tests/evaluation/" + path +
+        " " + gitBlobSha(Buffer.from(source, "utf8"));
       expect(bashBody(candidate)).toContain(pin);
     }
   });
