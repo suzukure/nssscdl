@@ -196,12 +196,7 @@ try {
 } catch {
   state = "setup-unavailable";
 } finally {
-  // Restore global Node owner state after the browser/session teardown.
-  // The dedicated directory remains in place until owned cleanup checks.
-  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
-    if (previousTmp[key] === undefined) delete process.env[key];
-    else process.env[key] = previousTmp[key];
-  }
+  // Keep parent Node's TMPDIR owned until Playwright's close/disposal completes.
   if (browser) {
     try { await browser.close(); } catch { clean = false; }
   }
@@ -226,9 +221,14 @@ try {
       }
       profileGone = !readdirSync(temporary).some(entry => entry.startsWith("playwright_") ||
           entry.startsWith("playwright-artifacts-"));
-      if (!profileGone || !parentTmpOwned || !childTmpOwned) clean = false;
+      if (!profileGone || !parentTmpOwned || (browser && !childTmpOwned)) clean = false;
       if (clean) rmSync(temporary, { recursive: true, force: false });
     } catch { clean = false; }
+  }
+  // Restore the caller's Node environment AFTER managed browser resources close.
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+    if (previousTmp[key] === undefined) delete process.env[key];
+    else process.env[key] = previousTmp[key];
   }
   for (const r of records) {
     console.log("H9_SYNTHETIC arm=" + r.arm + "; response=" + r.response +
