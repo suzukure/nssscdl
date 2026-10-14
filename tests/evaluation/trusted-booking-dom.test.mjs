@@ -635,6 +635,88 @@ test("#1050 missing closed class enum fails before body acquisition, unknown pat
   assert.deepEqual(observed, ["dom-request"]);
 });
 
+
+test("#930 request timing finite: 3 classes x 2 timeout origins x client finished/unseen/unreadable", { timeout: 15000 }, async () => {
+  for (const [kind, target] of [["month", "/api/me/schedule-months/" + tokyoNowMonth()],
+    ["hist", confirmPath], ["csrf", csrfPath]]) for (const origin of ["ot", "it"])
+    for (const timing of ["unseen", "finished", "unreadable"]) {
+      let entered, release, timingReads = 0;
+      const ready = new Promise(resolve => { entered = resolve; }), observed = [];
+      const clock = responseClockFixture();
+      const f = unauthenticatedFixture({ target, change: ({ request, response }) => {
+        // Mirrors Playwright 1.64 client: responseEnd starts -1, _onRequestFinished
+        // updates it synchronously. This fixture does not claim actual Chrome proof.
+        request.timing = () => {
+          timingReads++;
+          if (timing === "unreadable") throw new Error(canary);
+          return { responseEnd: timing === "finished" ? 42 : -1 };
+        };
+        const headers = response.allHeaders;
+        response.allHeaders = () => { clock.elapse(17); return headers(); };
+        response.text = () => {
+          clock.capture(); entered();
+          return new Promise(resolve => { release = () => resolve(canary); });
+        };
+      } });
+      f.input.onFault = value => observed.push(value);
+      const rejected = assert.rejects(clock.prove(f.input), unauthenticatedError);
+      await ready;
+      clock.bodyDeadline(origin);
+      await rejected;
+      const prefix = timing === "finished" ? "bf" : timing === "unseen" ? "bn" : "rb";
+      assert.deepEqual(observed, [prefix + "-" + kind + "-" + origin]);
+      assert.equal(timingReads, 1, "only one synchronous private timing read at first timeout");
+      const forwarded = [...f.forwarded], explicit = [...f.explicit];
+      release(); await new Promise(resolve => setImmediate(resolve));
+      clock.expire(); f.lateResponse(); await f.emit(confirmPath, "POST");
+      assert.deepEqual(observed, [prefix + "-" + kind + "-" + origin]);
+      assert.deepEqual(f.forwarded, forwarded); assert.deepEqual(f.explicit, explicit);
+      assert.ok(!JSON.stringify(observed).includes(canary));
+    }
+});
+
+test("#930 invalid timing values fail closed and requestfailed first fault is never overwritten", async () => {
+  for (const read of [
+    () => null, () => ({ responseEnd: NaN }), () => ({ responseEnd: -2 }),
+    () => ({ responseEnd: "42" }), () => ({ responseEnd: Infinity }),
+    () => ({ get responseEnd() { throw new Error(canary); } }),
+  ]) {
+    const clock = responseClockFixture(), observed = [];
+    let entered, release, reads = 0;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const f = unauthenticatedFixture({ change: ({ request, response }) => {
+      request.timing = () => { reads++; return read(); };
+      const headers = response.allHeaders;
+      response.allHeaders = () => { clock.elapse(17); return headers(); };
+      response.text = () => { clock.capture(); entered(); return new Promise(resolve => { release = () => resolve(canary); }); };
+    } });
+    f.input.onFault = value => observed.push(value);
+    const rejected = assert.rejects(clock.prove(f.input), unauthenticatedError);
+    await ready; clock.bodyDeadline("ot"); await rejected;
+    assert.deepEqual(observed, ["rb-csrf-ot"]);
+    assert.equal(reads, 1);
+    release(); clock.expire();
+  }
+  const clock = responseClockFixture(), observed = [];
+  let entered, request, release, reads = 0;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = unauthenticatedFixture({ change: ({ request: candidate, response }) => {
+    request = candidate;
+    candidate.timing = () => { reads++; return { responseEnd: 42 }; };
+    const headers = response.allHeaders;
+    response.allHeaders = () => { clock.elapse(17); return headers(); };
+    response.text = () => { clock.capture(); entered(); return new Promise(resolve => { release = () => resolve(canary); }); };
+  } });
+  f.input.onFault = value => observed.push(value);
+  const rejected = assert.rejects(clock.prove(f.input), unauthenticatedError);
+  await ready;
+  f.page.emit("requestfailed", request);
+  await rejected;
+  clock.expire(); release(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(observed, ["dom-request"]);
+  assert.equal(reads, 0, "first requestfailed latch must make later timing inspection inert");
+});
+
 test("#1047 acquisition reject/pending, both timer orders, abort first and late completion keep one fixed fault", async () => {
   for (const kind of ["hdr", "body", "jar"]) for (const outcome of ["reject", "timeout", "abort"]) {
     for (const reverse of [false, true]) {
