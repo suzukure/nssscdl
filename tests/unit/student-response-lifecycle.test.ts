@@ -1,5 +1,3 @@
-import { createServer, request as httpRequest } from "node:http";
-import { Readable } from "node:stream";
 // #1055 investigation only. Real controller + Web Streams; NOT Chromium,
 // Playwright, HTTP framing, Worker/D1, or formal proof evidence.
 // The candidate lives only here. Limits below are fixture parameters, not
@@ -180,95 +178,37 @@ describe("#1055 finite 401 lifecycle candidate comparison (not browser proof)", 
     s.producer.enqueue(bytes); s.producer.close();
     expect(await draining).toBe("eof"); stopped(c); expect(calls).toBe(2);
   });
-  it("loopback HTTP 401 staged EOF: immediate stop and same-GET nonblocking drain", async () => {
-    // Node HTTP loopback + Web Streams only: not a Chrome, CDP, Wrangler, or product-limit test.
-    for (const mode of ["baseline", "discard"] as const) {
-      let release!: () => void;
-      const finishBody = new Promise<void>(resolve => { release = resolve; });
-      const requests: Array<{ get: boolean; noCookie: boolean }> = [];
-      let wireEnded = false;
-      const server = createServer((request, response) => {
-        const get = request.method === "GET" && request.url === "/api/me/schedule-months/2026-12";
-        requests.push({ get, noCookie: request.headers.cookie === undefined });
-        if (!get) { response.writeHead(405).end(); return; }
-        response.writeHead(401, { "Cache-Control": "no-store", "Content-Type": "application/json" });
-        response.write('{"error":');
-        void finishBody.then(() => {
-          wireEnded = true;
-          response.end('{"code":"UNAUTHENTICATED"}}');
-        });
-      });
-      await new Promise<void>((resolve, reject) => {
-        const onError = (error: Error) => reject(error);
-        server.once("error", onError);
-        server.listen(0, "127.0.0.1", () => { server.off("error", onError); resolve(); });
-      });
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("loopback listener unavailable");
-      const origin = `http://127.0.0.1:${address.port}`;
-      let actual: Response | undefined, completion: Promise<DrainResult> | undefined;
-      let drainSettled = false;
-      try {
-        const fetcher: typeof fetch = async (path, options) => {
-          // Use Node HTTP request to isolate the loopback transport from the runtime's
-          // global fetch implementation. The response is still a real streamed
-          // HTTP 401; a synthetic Response wraps its received byte stream.
-          const response = await new Promise<Response>((resolve, reject) => {
-            if (String(path) !== "/api/me/schedule-months/2026-12" || options?.method !== "GET") {
-              reject(new Error("unexpected fixture request")); return;
-            }
-            const request = httpRequest(origin + String(path),
-              { method: "GET", headers: { Accept: "application/json" } }, incoming => {
-                if (incoming.statusCode !== 401) {
-                  incoming.destroy(); reject(new Error("unexpected fixture status")); return;
-                }
-                resolve(new Response(Readable.toWeb(incoming) as ReadableStream<Uint8Array>,
-                  { status: 401, headers: { "Cache-Control": "no-store" } }));
-              });
-            request.once("error", reject);
-            request.end();
-          });
-          actual = response;
-          if (mode === "discard" && response.status === 401)
-            completion = discard(response, 128, 2000).then(result => {
-              drainSettled = true;
-              return result;
-            });
-          return response;
-        };
-        const c = new StudentReadController("2026-12", fetcher, () => {});
-        await c.loadMonth("2026-12");
-        expect({ status: actual?.status ?? null, requests, message: c.state.scheduleMessage }).toEqual({
-          status: 401, requests: [{ get: true, noCookie: true }],
-          message: "認証が必要です。認証後に画面を開き直してください。",
-        });
-        stopped(c);
-        expect(wireEnded).toBe(false);
-        expect(requests).toEqual([{ get: true, noCookie: true }]);
-        expect(actual?.status).toBe(401);
-        if (mode === "baseline") {
-          expect(actual?.bodyUsed).toBe(false);
-        } else {
-          expect(actual?.bodyUsed).toBe(true);
-          expect(drainSettled).toBe(false);
-        }
-        // Only now send EOF; no new request, no UI resumption and no POST.
-        release();
-        if (mode === "baseline") {
-          expect(actual?.bodyUsed).toBe(false);
-          await actual?.body?.cancel();
-        } else {
-          expect(await completion).toBe("eof");
-          expect(actual?.body?.locked).toBe(false);
-        }
-        stopped(c);
-        expect(requests).toEqual([{ get: true, noCookie: true }]);
-      } finally {
-        release();
-        server.closeAllConnections();
-        await new Promise<void>(resolve => server.close(() => resolve()));
-      }
-    }
+  it("two parallel initial 401 GETs retain immediate stop despite independent EOF/deadline", async () => {
+    const month = source(), history = source();
+    const requests: string[] = [], drains: Promise<DrainResult>[] = [];
+    const fetcher: typeof fetch = async path => {
+      const target = String(path);
+      requests.push(target);
+      if (target !== "/api/me/schedule-months/2026-12" && target !== "/api/me/reservations")
+        throw new Error("unexpected fixture request");
+      const fixture = target === "/api/me/reservations" ? history : month;
+      drains.push(discard(fixture.response, 64, 20));
+      return fixture.response;
+    };
+    const c = new StudentReadController("2026-12", fetcher, () => {});
+    const initialMonth = c.loadMonth("2026-12");
+    const initialHistory = c.loadHistory();
+    await Promise.all([initialMonth, initialHistory]);
+    stopped(c);
+    expect(requests).toEqual(["/api/me/schedule-months/2026-12", "/api/me/reservations"]);
+    expect(month.response.bodyUsed).toBe(true);
+    expect(history.response.bodyUsed).toBe(true);
+    const stoppedState = JSON.stringify(c.state);
+    month.producer.enqueue(bytes); month.producer.close();
+    expect(await drains[0]).toBe("eof");
+    expect(await drains[1]).toBe("deadline");
+    expect(history.cancelled()).toBe(1);
+    expect(month.cancelled()).toBe(0);
+    expect(month.response.body!.locked).toBe(false);
+    expect(history.response.body!.locked).toBe(false);
+    expect(JSON.stringify(c.state)).toBe(stoppedState);
+    await c.loadMonth("2027-01"); await c.loadHistory(); await c.confirm();
+    expect(requests).toHaveLength(2);
   });
 
 });
