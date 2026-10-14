@@ -192,8 +192,8 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     page.on("requestfailed", () => { reportFault("dom-request"); stop(); });
     page.on("response", response => {
       if (terminal) return;
-      // Per-response cursor: the outer timer was registered first, so it must
-      // retain the pending acquisition's timeout bucket too. No extra API/await.
+      // Per-response cursor; the outer cumulative deadline is registered first.
+      // Only body acquisition distinguishes that deadline from its own timer.
       let errorFault = "dom-rsp-drv", timeoutFault = "rsp-outer-to";
       const task = step(async () => {
         const responseGuard = stage => ok => { if (!ok) reportFault(stage); require(ok); };
@@ -208,8 +208,12 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
         errorFault = "rsp-guard-ex"; timeoutFault = "rsp-outer-to";
         safeHeaders(headers, path, api, responseGuard("dom-rsp-hdr"));
         if (api) {
-          errorFault = "rsp-body-err"; timeoutFault = "rsp-body-to";
-          const text = await step(() => response.text(), errorFault, timeoutFault);
+          // Classify only the path retained by the completed request guard.
+          const bodyFaults = path === monthPath(initialMonth) || path === monthPath(fixture.month) ? ["rb-month-ot", "rb-month-it"] :
+            path === confirmPath ? ["rb-hist-ot", "rb-hist-it"] : path === csrfPath ? ["rb-csrf-ot", "rb-csrf-it"] : undefined;
+          responseGuard("dom-rsp-id")(bodyFaults && bodyFaults.every(value => stages.has(value)));
+          errorFault = "rsp-body-err"; timeoutFault = bodyFaults[0];
+          const text = await step(() => response.text(), errorFault, bodyFaults[1]);
           errorFault = "rsp-guard-ex"; timeoutFault = "rsp-outer-to";
           responseGuard("dom-rsp-body")(text === body);
         }

@@ -314,7 +314,7 @@ function unauthenticatedFixture(options = {}) {
         if (options.stall === "body" && path === csrfPath) { entered(); await new Promise(resolve => { resume = resolve; }); }
         return '{"error":{"code":"UNAUTHENTICATED","message":"認証が必要です。","retry":"none"}}';
       }, arrayBuffer: async () => new ArrayBuffer(0) };
-    if (path === (options.target ?? csrfPath)) options.change?.({ request, response, requestHeaders, headers });
+    if ((options.targets ?? [options.target ?? csrfPath]).includes(path)) options.change?.({ request, response, requestHeaders, headers });
     if (options.absentSite) delete requestHeaders["sec-fetch-site"];
     let passed = false;
     await handler({ request: () => request, abort: async () => { denied.push(path); }, continue: async (...args) => {
@@ -505,14 +505,14 @@ test("#1044 response-body driver timeout notifies before stop, late completion i
   const operation = proveUnauthenticatedBookingDom(f.input);
   await f.pending;
   await assert.rejects(operation, unauthenticatedError);
-  assert.deepEqual(observed, ["rsp-body-to"]);
+  assert.deepEqual(observed, ["rb-csrf-ot"]);
   const saved = [...f.forwarded]; f.resume(); await new Promise(resolve => setImmediate(resolve));
   f.lateResponse(); await f.emit(confirmPath, "POST");
-  assert.deepEqual(observed, ["rsp-body-to"]); assert.deepEqual(f.forwarded, saved);
+  assert.deepEqual(observed, ["rb-csrf-ot"]); assert.deepEqual(f.forwarded, saved);
 });
 
 // Isolated finite clock/observer fixture. No production injection Port or listener.
-function responseClockFixture(mode = "", reverse = false) {
+function responseClockFixture(mode = "", reverse = false, faults = unauthenticatedBookingResponseFaults) {
   let source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8");
   source = source.slice(source.indexOf("export async function proveUnauthenticatedBookingDom"),
     source.indexOf("export async function proveTrustedBookingDom")).replace("export async", "async");
@@ -520,22 +520,120 @@ function responseClockFixture(mode = "", reverse = false) {
   assert.equal(source.split(seam).length, 2);
   if (mode) source = source.replace(seam, (mode === "unknown" ? 'throw new Error("private-canary"); ' :
     'await new Promise(() => {}); ') + seam);
-  const timers = new Map(); let next = 0, selected;
+  const timers = new Map(); let next = 0, selected, now = 0;
   const prove = runInNewContext(source + "; proveUnauthenticatedBookingDom", {
     timeout: 5000, spent: new WeakSet(), bookingOrigin, confirmPath, csrfPath, tokyoNowMonth, URL,
-    unauthenticatedBookingResponseFaults,
+    unauthenticatedBookingResponseFaults: faults,
     isDeepStrictEqual: (a, b) => isDeepStrictEqual(structuredClone(a), structuredClone(b)),
     validMonth: value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value),
     assets: new Map([['/student', 'text/html'], ['/student.css', 'text/css'],
       ...['student', 'view', 'controller', 'model'].map(n => [`/${n}.js`, 'text/javascript'])]),
-    setTimeout: (callback, ms) => { assert.equal(ms, 5000); timers.set(++next, callback); return next; },
+    setTimeout: (callback, ms) => { assert.equal(ms, 5000); timers.set(++next, { callback, due: now + ms }); return next; },
     clearTimeout: id => timers.delete(id),
   });
-  return { prove, capture: () => { selected = [...timers].slice(-2); }, expire: () => {
+  return { prove, elapse: ms => { now += ms; }, capture: () => (selected = [...timers].slice(-2)),
+    bodyDeadline: (origin, captured = selected) => {
+      assert.equal(captured.length, 2);
+      const [[outerId, outer], [innerId, inner]] = captured;
+      assert.ok(outerId < innerId, "real registration order: observer before body");
+      assert.equal(inner.due - outer.due, 17, "header time consumes only the outer budget");
+      // Normal delivery fires the earlier outer deadline. Inner-first models
+      // delayed outer callback delivery, as the legacy reverse race did; it
+      // does not claim equal timers naturally have an earlier inner deadline.
+      now = origin === "ot" ? outer.due : inner.due;
+      const [id, timer] = origin === "ot" ? [outerId, outer] : [innerId, inner];
+      assert.ok(timer.due <= now); timers.delete(id); timer.callback();
+    }, expire: () => {
     const entries = [...(selected ?? timers)]; if (reverse) entries.reverse();
-    for (const [id, callback] of entries) if (timers.has(id)) { timers.delete(id); callback(); }
+    for (const [id, timer] of entries) if (timers.has(id)) { timers.delete(id); timer.callback(); }
   } };
 }
+
+test("#1050 admitted API class x actual timer origin; deferred body, first latch and late traffic", { timeout: 15000 }, async () => {
+  for (const [kind, target] of [["month", `/api/me/schedule-months/${tokyoNowMonth()}`],
+    ["hist", confirmPath], ["csrf", csrfPath]]) for (const origin of ["ot", "it"]) {
+    let entered, release;
+    const ready = new Promise(resolve => { entered = resolve; }), observed = [];
+    const clock = responseClockFixture();
+    let headers = 0, bodies = 0;
+    const f = unauthenticatedFixture({ target, change: ({ response }) => {
+      const allHeaders = response.allHeaders, text = response.text;
+      response.allHeaders = () => { headers++; clock.elapse(17); return allHeaders(); };
+      response.text = () => {
+        bodies++; clock.capture(); entered();
+        return new Promise(resolve => { release = async () => resolve(await text()); });
+      };
+    } });
+    f.input.onFault = value => observed.push(value);
+    const rejected = assert.rejects(clock.prove(f.input), unauthenticatedError);
+    await ready; await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(observed, [], "response headers can precede body completion");
+    assert.equal(headers, 1); assert.equal(bodies, 1);
+    clock.bodyDeadline(origin); await rejected;
+    assert.deepEqual(observed, [`rb-${kind}-${origin}`]);
+    const saved = [...f.forwarded], explicit = [...f.explicit];
+    await release(); await new Promise(resolve => setImmediate(resolve));
+    clock.expire(); f.lateResponse(); await f.emit(confirmPath, "POST"); await f.emit("/" + canary);
+    assert.deepEqual(observed, [`rb-${kind}-${origin}`]);
+    assert.deepEqual(f.forwarded, saved); assert.deepEqual(f.explicit, explicit);
+    assert.ok(saved.every(value => value.startsWith("GET ")));
+    assert.ok(!JSON.stringify(observed).includes(canary));
+  }
+});
+
+test("#1050 all three admitted classes retain body rejection and body mismatch guards", async () => {
+  for (const target of [`/api/me/schedule-months/${tokyoNowMonth()}`, confirmPath, csrfPath]) {
+    for (const reject of [false, true]) {
+      const f = unauthenticatedFixture({ target, change: ({ response }) => {
+        response.text = async () => { if (reject) throw new Error(canary); return canary; };
+      } }), observed = [];
+      f.input.onFault = fault => observed.push(fault);
+      await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+      assert.deepEqual(observed, [reject ? "rsp-body-err" : "dom-rsp-body"]);
+    }
+  }
+});
+
+test("#1050 simultaneous distinct responses latch the first delivered body timer only", { timeout: 15000 }, async () => {
+  for (const winner of [0, 1]) {
+    const clock = responseClockFixture(), captured = [], release = [], observed = [];
+    let entered;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const f = unauthenticatedFixture({ targets: [`/api/me/schedule-months/${tokyoNowMonth()}`, confirmPath], change: ({ response }) => {
+      const headers = response.allHeaders;
+      response.allHeaders = () => { clock.elapse(17); return headers(); };
+      response.text = () => {
+        captured.push(clock.capture());
+        if (captured.length === 2) entered();
+        return new Promise(resolve => release.push(() => resolve(canary)));
+      };
+    } });
+    f.input.onFault = value => observed.push(value);
+    const rejected = assert.rejects(clock.prove(f.input), unauthenticatedError);
+    await ready;
+    clock.bodyDeadline("ot", captured[winner]); await rejected;
+    assert.deepEqual(observed, [winner === 0 ? "rb-month-ot" : "rb-hist-ot"]);
+    for (const complete of release) complete();
+    await new Promise(resolve => setImmediate(resolve)); clock.expire(); f.lateResponse();
+    assert.equal(observed.length, 1);
+  }
+});
+
+test("#1050 missing closed class enum fails before body acquisition, unknown path stays denied", async () => {
+  for (const value of ["rb-csrf-ot", "rb-csrf-it"]) {
+    const f = unauthenticatedFixture({ change: ({ response }) => {
+      response.text = () => assert.fail("incomplete class must fail closed before body");
+    } }), observed = [];
+    f.input.onFault = fault => observed.push(fault);
+    await assert.rejects(responseClockFixture("", false,
+      unauthenticatedBookingResponseFaults.filter(fault => fault !== value)).prove(f.input), unauthenticatedError);
+    assert.deepEqual(observed, ["dom-rsp-id"]);
+  }
+  const f = unauthenticatedFixture({ initial: ["/api/" + canary] }), observed = [];
+  f.input.onFault = fault => observed.push(fault);
+  await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+  assert.deepEqual(observed, ["dom-request"]);
+});
 
 test("#1047 acquisition reject/pending, both timer orders, abort first and late completion keep one fixed fault", async () => {
   for (const kind of ["hdr", "body", "jar"]) for (const outcome of ["reject", "timeout", "abort"]) {
@@ -573,7 +671,8 @@ test("#1047 acquisition reject/pending, both timer orders, abort first and late 
       if (outcome === "abort") f.controller.abort(canary);
       else if (outcome === "timeout") clock.expire();
       await rejected;
-      const expected = outcome === "abort" ? "dom-ui" : `rsp-${kind}-${outcome === "reject" ? "err" : "to"}`;
+      const expected = outcome === "abort" ? "dom-ui" : kind === "body" && outcome === "timeout" ?
+        (reverse ? "rb-csrf-it" : "rb-csrf-ot") : `rsp-${kind}-${outcome === "reject" ? "err" : "to"}`;
       assert.deepEqual(observed, [expected], `${kind}/${outcome}/${reverse}`);
       assert.deepEqual(calls, { hdr: 1, body: kind === "hdr" ? 0 : 1, jar: kind === "jar" ? 1 : 0 });
       const saved = [...f.forwarded]; release?.();
