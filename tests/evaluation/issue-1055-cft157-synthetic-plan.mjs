@@ -4,13 +4,14 @@
 // Import Playwright only after Node parent TMPDIR is owned; chromium.ts caches an artifact path at import time.
 import { execFileSync, spawnSync } from "node:child_process";
 import { classifyVersion } from "./issue-1055-cft157-admission.mjs";
-import { classifyThreeArm, createTerminalObserver, boundedSettlement, classifyRunRoot } from "./issue-1055-cft157-lifecycle.mjs";
+import { classifyThreeArm, createTerminalObserver, boundedSettlement } from "./issue-1055-cft157-lifecycle.mjs";
+import { STAGE3_HANDOFF, classifyStage3Owner } from "./issue-1066-stage3-handoff.mjs";
 import { createServer } from "node:https";
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, lstatSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, isAbsolute, resolve } from "node:path";
+import { join } from "node:path";
 
-const binary = process.env.H9_CHROME_EXECUTABLE || "/bin/false";
+const binary = process.env[STAGE3_HANDOFF.requiredEnv[2]] || "/bin/false";
 const path = "/api/me/schedule-months/2026-12";
 const fixedBody = JSON.stringify({ error: { code: "UNAUTHENTICATED", message: "認証が必要です。", retry: "none" } });
 const timeout = 5000;
@@ -40,18 +41,18 @@ try {
   }) !== "version-confirmed") throw Error("setup");
   version = [null, "157", "0", "8092", "0"];
   // Only create a child of the job's private, explicitly owned runner root.
-  const parent = process.env.H9_OWNED_ROOT, runner = process.env.RUNNER_TEMP;
+  const parent = process.env[STAGE3_HANDOFF.requiredEnv[1]];
+  const runner = process.env[STAGE3_HANDOFF.requiredEnv[0]];
   let admitted = false;
   try {
     const info = parent && lstatSync(parent);
-    admitted = classifyRunRoot({
-      rootAbsolute: Boolean(parent && isAbsolute(parent)),
-      rootReal: Boolean(parent && realpathSync(parent) === parent),
-      rootOwned: Boolean(info && info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid()),
+    admitted = classifyStage3Owner({
+      runnerTemp: runner, ownedRoot: parent, chromeExecutable: binary,
+      rootCanonical: Boolean(parent && realpathSync(parent) === parent),
+      rootDirectory: Boolean(info && info.isDirectory() && !info.isSymbolicLink()),
+      rootOwned: Boolean(info && info.uid === process.getuid()),
       rootPrivate: Boolean(info && (info.mode & 0o077) === 0),
-      underRunner: Boolean(parent && runner && isAbsolute(runner) &&
-        parent.startsWith(resolve(runner) + "/nssscdl-1055-")),
-    }) === "root-admitted";
+    }) === "owner-admitted";
   } catch { admitted = false; }
   if (!admitted) throw Error("owner");
   temporary = mkdtempSync(join(parent, "synthetic-owned-"));
