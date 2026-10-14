@@ -73,7 +73,7 @@ test("#930 first-failure finite snapshot is latched before cleanup and separate 
 });
 
 test("#1044 response first-failure phases pass the existing Child enum and latch once", async () => {
-  for (const selected of ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"]) {
+  for (const selected of ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to"]) {
     const f = fixture({ inner: (_, observe) => {
       const emit = (phase, state) => observe(Object.freeze({ phase, state }));
       emit("dom-context", "entered"); emit("dom-context", "confirmed");
