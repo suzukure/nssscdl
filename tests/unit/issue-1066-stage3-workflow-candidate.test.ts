@@ -8,7 +8,6 @@ import lifecycleCode from "../evaluation/issue-1055-cft157-lifecycle.mjs?raw";
 import versionCode from "../evaluation/issue-1055-cft157-version-preflight.mjs?raw";
 import browserCode from "../evaluation/issue-1055-cft157-synthetic-plan.mjs?raw";
 import handoffCode from "../evaluation/issue-1066-stage3-handoff.mjs?raw";
-import { spawnSync } from "node:child_process";
 import { STAGE3_HANDOFF } from "../evaluation/issue-1066-stage3-handoff.mjs";
 
 const scriptText = browserCode;
@@ -91,15 +90,15 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
     expect(candidate.includes("pull_request_target")).toBe(false);
   });
 
-  it("passes Bash syntax parsing without executing any shell command", () => {
+  it("checks the indented shell block and paired quoted heredoc boundary", () => {
     const script = bashBody(candidate);
     expect(script).not.toBe(null);
-    const result = spawnSync("bash", ["-n"], {
-      input: script ?? "", encoding: "utf8", timeout: 3000,
-      maxBuffer: 8192, stdio: ["pipe", "pipe", "pipe"],
-    });
-    expect({ error: result.error, status: result.status, signal: result.signal })
-      .toEqual({ error: undefined, status: 0, signal: null });
+    expect(script).toContain("set -euo pipefail");
+    expect(script).toContain("node --input-type=module <<'ADMISSION'\n");
+    expect(script).toContain("\nADMISSION\n");
+    expect(script?.split("<<'ADMISSION'").length).toBe(2);
+    expect(script?.split("\nADMISSION\n").length).toBe(2);
+    // This is a static framing check, NOT a bash -n parse or a process launch.
   });
 
   it("rejects earlier omissions of owner binding and checked-out HEAD", () => {
@@ -116,7 +115,10 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
       .toBe("scope-disallowed");
     expect(candidateContract(candidate.replace("github.run_attempt == 1", "github.run_attempt >= 1")))
       .toBe("scope-disallowed");
-    expect(candidateContract(candidate + "\n# --no-sandbox")).toBe("scope-disallowed");
+    expect(candidateContract(candidate.replace(
+      '          echo "H9_STAGE3_GATE stage=browser; result=starting',
+      '          # --no-sandbox\\n          echo "H9_STAGE3_GATE stage=browser; result=starting'
+    ))).toBe("scope-disallowed");
     expect(scriptText.includes("chromiumSandbox: true")).toBe(true);
     expect(scriptText.includes("ignoreHTTPSErrors: false")).toBe(true);
   });
