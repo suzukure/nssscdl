@@ -21,6 +21,7 @@ const previousTmp = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: pr
 let temporary, server, browser, clean = true, state = "setup-unavailable";
 const records = [];
 let count = 0, wrong = 0;
+let parentTmpOwned = false, childTmpOwned = false, profileGone = false;
 try {
   if (process.platform !== "linux" || !/^v24\./.test(process.version)) throw Error("setup");
   // Version subprocess failure is inside try/finally; never prints its raw output.
@@ -43,6 +44,7 @@ try {
   process.env.TMPDIR = temporary;
   process.env.TMP = temporary;
   process.env.TEMP = temporary;
+  parentTmpOwned = process.env.TMPDIR === temporary && tmpdir() === temporary;
   const home = join(temporary, "home");
   mkdirSync(home, { mode: 0o700 });
   const key = join(temporary, "key.pem");
@@ -86,6 +88,7 @@ try {
   if (!address || typeof address === "string") throw Error("setup");
   const origin = "https://127.0.0.1:" + address.port;
   stage = "browser-launch";
+  childTmpOwned = temporary.length > 0 && parentTmpOwned;
   browser = await chromium.launch({
     executablePath: binary, headless: true, chromiumSandbox: true, timeout: 30000,
     env: { PATH: process.env.PATH, HOME: home, TMPDIR: temporary,
@@ -221,8 +224,9 @@ try {
           if (error.code !== "ENOENT" && error.code !== "ESRCH" && error.code !== "EACCES") clean = false;
         }
       }
-      if (readdirSync(temporary).some(entry => entry.startsWith("playwright_") ||
-          entry.startsWith("playwright-artifacts-"))) clean = false;
+      profileGone = !readdirSync(temporary).some(entry => entry.startsWith("playwright_") ||
+          entry.startsWith("playwright-artifacts-"));
+      if (!profileGone || !parentTmpOwned || !childTmpOwned) clean = false;
       if (clean) rmSync(temporary, { recursive: true, force: false });
     } catch { clean = false; }
   }
@@ -245,8 +249,8 @@ try {
     terminal: response.request, hostBody: response.body, drain: response.drain,
   }) === "host-confirmed" && response.drain === "eof";
   const passed = repaired(manual) && repaired(native) &&
-    classifyOwnedAssets({ parentTmp: true, childTmp: true,
-      profile: clean, complete: clean }) === "owner-precheck-pass";
+    classifyOwnedAssets({ parentTmp: parentTmpOwned, childTmp: childTmpOwned,
+      profile: profileGone, complete: clean }) === "owner-precheck-pass";
   console.log("H9_SYNTHETIC_VERDICT repaired=" + (passed ? "supported" : "unproved") + "; protocol=chrome157");
   if (!clean || state !== "observed" || !passed) process.exitCode = 1;
 }
