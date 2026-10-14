@@ -220,6 +220,10 @@ describe("#1055 finite 401 lifecycle candidate comparison (not browser proof)", 
         };
         const c = new StudentReadController("2026-12", fetcher, () => {});
         await c.loadMonth("2026-12");
+        expect({ status: actual?.status ?? null, requests, message: c.state.scheduleMessage }).toEqual({
+          status: 401, requests: [{ get: true, noCookie: true }],
+          message: "認証が必要です。認証後に画面を開き直してください。",
+        });
         stopped(c);
         expect(wireEnded).toBe(false);
         expect(requests).toEqual([{ get: true, noCookie: true }]);
