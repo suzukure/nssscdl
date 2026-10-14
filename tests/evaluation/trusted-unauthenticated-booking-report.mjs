@@ -15,6 +15,8 @@ export const unauthenticatedBookingResponseFaults = Object.freeze([
   "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv",
   "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to",
   "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to",
+  // #1050: admitted API class x outer cumulative / inner body deadline.
+  "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it",
 ]);
 // #1018: observations are progress only, never success/cleanup evidence.
 export const unauthenticatedBookingPhases = Object.freeze([

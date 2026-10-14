@@ -478,7 +478,7 @@ test("#1024 real Child codec preserves primary/cleanup, cleanup-only and unobser
 test("#1024 legacy/new own-data reports reflect only after accepted or private no-live gate", async () => {
   for (const privateGate of [false, true]) for (const value of [progress(), tlsProgress(),
     tlsProgress({ entered: "tls-setup", confirmed: "home" }),
-    ...["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to"].map(entered =>
+    ...["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it"].map(entered =>
       parseUnauthenticatedBookingReport(formatUnauthenticatedBookingFailure({ entered, confirmed: "dom-context",
         tls_primary: "tls-consumer", tls_cleanup: "owned-inspect", tls_err: "UNCLASSIFIED" }))),
     tlsProgress({ entered: "unknown", confirmed: "unknown", tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown" })]) {
@@ -813,10 +813,16 @@ test("#1044 current grammar candidate branches deny pre-bucket suffix without la
   const oldAcquisitionSuffix = proofStep.replaceAll(acquisitionSuffix, "");
   assert.notEqual(oldAcquisitionSuffix, proofStep);
   assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldAcquisitionSuffix]]), f.context), false);
+  const bodySuffix = "|rb-month-ot|rb-month-it|rb-hist-ot|rb-hist-it|rb-csrf-ot|rb-csrf-it";
+  assert.equal(proofStep.split(bodySuffix).length - 1, 2);
+  const oldBodySuffix = proofStep.replaceAll(bodySuffix, "");
+  assert.notDeepEqual(Buffer.from(baseline + oldBodySuffix), Buffer.from(baseline + proofStep));
+  assert.deepEqual(Buffer.from(f.files.get(productWorkflow)), Buffer.from(baseline + proofStep));
+  assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldBodySuffix]]), f.context), false);
   const oldSuffix = proofStep.replaceAll(phaseSuffix, "");
   assert.notEqual(oldSuffix, proofStep);
   assert.equal(allowsUnauthenticatedCaller(new Map([[productWorkflow, baseline + oldSuffix]]), f.context), false);
-  for (const candidate of [oldSuffix, oldResponseSuffix, oldAcquisitionSuffix, proofStep + "      - run: echo stale\n",
+  for (const candidate of [oldSuffix, oldResponseSuffix, oldAcquisitionSuffix, oldBodySuffix, proofStep + "      - run: echo stale\n",
     proofStep + proofStep,
     proofStep.replace("github.run_attempt == 1", "github.run_attempt >= 1")]) {
     assert.notEqual(baseline + candidate, baseline + proofStep);
@@ -1105,8 +1111,8 @@ test("#1015/#1024 exact CLI/proofStep publishes only each fixed terminal enum; u
     second: ["observed", "not-observed"], budget: ["adequate", "exhausted", "aborted", "unknown"],
     stop: ["confirmed", "failed-state", "identity-mismatch", "state-unaccepted", "stop-budget", "show-unavailable", "not-attempted", "unknown"],
     unit_stop: ["confirmed", "unknown"], report: ["observed", "unknown", "unread"],
-    entered: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
-    confirmed: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
+    entered: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
+    confirmed: ["unknown", "import", "preflight", "seed", "home", "tls-setup", "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it", "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"],
     tls_primary: ["none", "unknown", "tls-preflight", "tls-cert", "tls-listener", "tls-browser-launch", "tls-browser-ownership", "tls-browser-context", "tls-browser-nss", "tls-positive", "tls-san", "tls-untrusted", "tls-consumer"],
     tls_cleanup: ["none", "unknown", "browser-close", "browser-ownership", "browser-process", "proof-listener", "worker-stop", "port-close", "generated-files", "owned-inspect", "owned-remove"],
     tls_err: ["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID", "ERR_CERT_INVALID", "ERR_SSL_PROTOCOL_ERROR", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "TIMEOUT", "UNCLASSIFIED", "unknown"],
