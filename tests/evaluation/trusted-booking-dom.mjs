@@ -234,7 +234,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
         errorFault = "rsp-jar-err"; timeoutFault = "rsp-jar-to";
         await emptyJar(responseGuard("dom-rsp-jar"), errorFault, timeoutFault);
         errorFault = "dom-rsp-drv"; timeoutFault = "rsp-outer-to";
-      }, () => errorFault, () => timeoutFault).catch(() => {
+      }, () => errorFault, () => typeof timeoutFault === "function" ? timeoutFault() : timeoutFault).catch(() => {
         if (!terminal) reportFault("dom-rsp-drv");
         stop();
       });
