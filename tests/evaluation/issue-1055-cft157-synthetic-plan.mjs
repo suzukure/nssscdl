@@ -3,11 +3,12 @@
 // No cookies, POSTs, credentials, production service, raw diagnostic exceptions or URLs.
 // Import Playwright only after Node parent TMPDIR is owned; chromium.ts caches an artifact path at import time.
 import { execFileSync, spawnSync } from "node:child_process";
-import { classifyVersion, classifyResponse, classifyOwnedAssets } from "./issue-1055-cft157-admission.mjs";
+import { classifyVersion } from "./issue-1055-cft157-admission.mjs";
+import { classifyThreeArm, createTerminalObserver, boundedSettlement, classifyRunRoot } from "./issue-1055-cft157-lifecycle.mjs";
 import { createServer } from "node:https";
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, lstatSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute, resolve } from "node:path";
 
 const binary = process.env.H9_CHROME_EXECUTABLE || "/bin/false";
 const path = "/api/me/schedule-months/2026-12";
@@ -38,7 +39,22 @@ try {
     failure: Boolean(attempt?.error || attempt?.signal),
   }) !== "version-confirmed") throw Error("setup");
   version = [null, "157", "0", "8092", "0"];
-  temporary = mkdtempSync(join(tmpdir(), "nssscdl-1055-owned-"));
+  // Only create a child of the job's private, explicitly owned runner root.
+  const parent = process.env.H9_OWNED_ROOT, runner = process.env.RUNNER_TEMP;
+  let admitted = false;
+  try {
+    const info = parent && lstatSync(parent);
+    admitted = classifyRunRoot({
+      rootAbsolute: Boolean(parent && isAbsolute(parent)),
+      rootReal: Boolean(parent && realpathSync(parent) === parent),
+      rootOwned: Boolean(info && info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid()),
+      rootPrivate: Boolean(info && (info.mode & 0o077) === 0),
+      underRunner: Boolean(parent && runner && isAbsolute(runner) &&
+        parent.startsWith(resolve(runner) + "/nssscdl-1055-")),
+    }) === "root-admitted";
+  } catch { admitted = false; }
+  if (!admitted) throw Error("owner");
+  temporary = mkdtempSync(join(parent, "synthetic-owned-"));
   // Playwright's profile/artifact mkdtemp runs in the PARENT Node process.
   // The child's env.TMPDIR alone is insufficient to own these resources.
   process.env.TMPDIR = temporary;
@@ -101,16 +117,17 @@ try {
   stage = "network";
   async function compare(arm) {
     const context = await browser.newContext({ ignoreHTTPSErrors: false, serviceWorkers: "block" });
-    let terminal = "unobserved", responseCount = 0;
+    const terminals = createTerminalObserver({ timeoutMs: 1500 });
+    let responseCount = 0;
     try {
       const page = await context.newPage();
       const target = origin + path;
       const matches = request => request.method() === "GET" && request.url() === target;
       page.on("requestfinished", request => {
-        if (matches(request)) terminal = terminal === "unobserved" ? "finished" : "ambiguous";
+        if (matches(request)) terminals.record(request, "finished");
       });
       page.on("requestfailed", request => {
-        if (matches(request)) terminal = terminal === "unobserved" ? "failed" : "ambiguous";
+        if (matches(request)) terminals.record(request, "failed");
       });
       await page.goto(origin + "/", { waitUntil: "load", timeout });
       const waitResponse = page.waitForResponse(response => matches(response.request()), { timeout });
@@ -167,7 +184,15 @@ try {
         response.text().then(text => text === fixedBody ? "matched" : "mismatch", () => "error"),
         delay(timeout, "timeout")
       ]);
-      await delay(100);
+      const terminal = await terminals.waitFor(response.request());
+      // Observe async drains to a bounded terminal state; never equate "running" with EOF.
+      if (arm !== "baseline") {
+        await Promise.race([
+          page.waitForFunction(() => window.__h9DrainState !== "running", undefined,
+            { timeout: 4500 }).catch(() => null),
+          delay(4700, null),
+        ]);
+      }
       const candidate = await Promise.race([
         page.evaluate(() => ({ stopped: window.__h9Stopped === true, drain: window.__h9DrainState }))
           .then(value => value, () => ({ stopped: false, drain: "unknown" })),
@@ -185,7 +210,8 @@ try {
         response: response.status() === 401 && responseCount === 1 ? "401" : "unknown",
         jar: afterJar };
     } finally {
-      try { await context.close(); } catch { clean = false; }
+      terminals.dispose();
+      if (await boundedSettlement(() => context.close(), 1500) !== "settled") clean = false;
     }
   }
   records.push(await compare("baseline"));
@@ -199,12 +225,14 @@ try {
 } finally {
   // Keep parent Node's TMPDIR owned until Playwright's close/disposal completes.
   if (browser) {
-    try { await browser.close(); } catch { clean = false; }
+    if (await boundedSettlement(() => browser.close(), 2000) !== "settled") clean = false;
   }
   if (server) {
     try {
       server.closeAllConnections();
-      if (server.listening) await new Promise((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+      if (server.listening && await boundedSettlement(() =>
+        new Promise((resolve, reject) => server.close(err => err ? reject(err) : resolve())), 1500
+      ) !== "settled") clean = false;
       if (server.listening) clean = false;
     } catch { clean = false; }
   }
@@ -242,16 +270,12 @@ try {
   console.log("H9_SYNTHETIC_TERMINAL state=" + state + "; expected_get=" + (count === 3 ? "yes" : "no") +
     "; unexpected_request=" + (wrong === 0 ? "absent" : "present") + "; cleanup=" + (clean ? "confirmed" : "unknown") +
     "; chrome=" + (version ? version.slice(1).join(".") : "unknown") + "; formal_proof=unproved");
-  const manual = records.find(r => r.arm === "treatment");
-  const native = records.find(r => r.arm === "native");
-  const repaired = response => response && classifyResponse({
-    status: response.response === "401" ? 401 : null,
-    authStopped: response.page === "stopped",
-    terminal: response.request, hostBody: response.body, drain: response.drain,
-  }) === "host-confirmed" && response.drain === "eof";
-  const passed = repaired(manual) && repaired(native) &&
-    classifyOwnedAssets({ parentTmp: parentTmpOwned, childTmp: childTmpOwned,
-      profile: profileGone, complete: clean }) === "owner-precheck-pass";
-  console.log("H9_SYNTHETIC_VERDICT repaired=" + (passed ? "supported" : "unproved") + "; protocol=chrome157");
-  if (!clean || state !== "observed" || !passed) process.exitCode = 1;
+  const verdict = classifyThreeArm({
+    records, getCount: count, wrongCount: wrong,
+    ownedClean: clean && parentTmpOwned && childTmpOwned && profileGone,
+  });
+  console.log("H9_SYNTHETIC_VERDICT result=" + verdict +
+    "; cause=unproved; protocol=chrome157; formal_proof=unproved");
+  if (state !== "observed" || !clean || verdict === "unproved" ||
+      verdict === "mixed-inconclusive" || verdict === "all-unproved") process.exitCode = 1;
 }
