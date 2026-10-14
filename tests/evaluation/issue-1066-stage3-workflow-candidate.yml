@@ -1,0 +1,139 @@
+# #1066 INERT CANDIDATE: deliberately NOT in .github/workflows/.
+# No execution or installation without a new, explicit human Stage3 approval.
+name: "#1066 inert strict CFT157 Stage3 candidate"
+on:
+  pull_request:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  stage3:
+    name: "#1055 Ubuntu22 strict sandbox synthetic 401 (one shot)"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    if: ${{ github.event.action == 'opened' && github.run_attempt == 1 && github.event.pull_request.draft == true && github.head_ref == 'investigate/issue-1055-stage3-cft157-ubuntu22-once' && github.event.pull_request.base.sha == '25fecbf1059844a462a0d2ba22b147453f7b33a4' }}
+    steps:
+      - name: Checkout exact PR event HEAD without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Setup pinned Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Handoff, owned archive and strict Chrome synthetic comparison
+        timeout-minutes: 6
+        shell: bash
+        env:
+          APPROVED_BASE_SHA: 25fecbf1059844a462a0d2ba22b147453f7b33a4
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_ATTEMPT: ${{ github.run_attempt }}
+          EVENT_DRAFT: ${{ github.event.pull_request.draft }}
+          EVENT_HEAD_REF: ${{ github.head_ref }}
+          RUNNER_LABEL: ubuntu-22.04
+        run: |
+          set -euo pipefail
+          umask 077
+          fail_gate() {
+            echo "H9_STAGE3_GATE result=$1"
+            exit 1
+          }
+          [[ "$APPROVED_BASE_SHA" == "$BASE_SHA" ]] || fail_gate scope-disallowed
+          [[ "$EVENT_ACTION" == "opened" && "$EVENT_ATTEMPT" == "1" &&
+             "$EVENT_DRAFT" == "true" &&
+             "$EVENT_HEAD_REF" == "investigate/issue-1055-stage3-cft157-ubuntu22-once" ]] || fail_gate scope-disallowed
+          [[ "$(git rev-parse HEAD)" == "$EVENT_HEAD_SHA" ]] || fail_gate head-mismatch
+          [[ "$(lsb_release -rs 2>/dev/null)" == "22.04" &&
+             "$(uname -m)" == "x86_64" && "$(id -u)" != "0" ]] || fail_gate os-mismatch
+          [[ -x /usr/bin/openssl && -x /usr/bin/certutil ]] || fail_gate tls-tools-missing
+          [[ -x /usr/bin/unshare ]] || fail_gate userns-unavailable
+          [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]] || fail_gate owner-root-invalid
+          if ! timeout --signal=TERM --kill-after=2s 8s /usr/bin/unshare -Ur /usr/bin/true >/dev/null 2>&1; then
+            fail_gate userns-blocked
+          fi
+          echo "H9_STAGE3_GATE stage=userns; result=allowed; sandbox=unproved"
+          check_pin() {
+            [[ "$(git hash-object "$1")" == "$2" ]] || fail_gate source-hash-mismatch
+          }
+          check_pin tests/evaluation/issue-1055-cft-archive-preflight.py f2bb75285ef9f8a8a9b624f80c1d11eaf3d70fef
+          check_pin tests/evaluation/issue-1055-cft157-admission.mjs 37ee890dcca4ce6b1db316be0026a20f45fa8e36
+          check_pin tests/evaluation/issue-1055-cft157-lifecycle.mjs 46f1dbbee87ac5079bedf6ddbc9bf738a5245231
+          check_pin tests/evaluation/issue-1055-cft157-version-preflight.mjs 4a0210e95c8c306c9d6f4fedbb6a0558b81a425d
+          check_pin tests/evaluation/issue-1055-cft157-synthetic-plan.mjs ae69d38dfb63de1db5504d30894227ac398cc0b6
+          check_pin tests/evaluation/issue-1066-stage3-handoff.mjs 43d5c29af23bcbaea994156d5d91cda4e47f8cb7
+          echo "H9_STAGE3_GATE stage=source; result=source-pinned"
+          npm ci --ignore-scripts --no-audit --no-fund --silent
+          [[ -d node_modules/playwright-core ]] || fail_gate dependency-missing
+          export H9_OWNED_ROOT
+          H9_OWNED_ROOT="$(mktemp -d "$RUNNER_TEMP/nssscdl-1055-XXXXXX")"
+          export H9_CHROME_EXECUTABLE="$H9_OWNED_ROOT/owned-extract/chrome-linux64/chrome"
+          cleanup_stage3() {
+            status=$?
+            trap - EXIT
+            set +e
+            if [[ -n "${H9_OWNED_ROOT:-}" &&
+                  "$H9_OWNED_ROOT" == "$RUNNER_TEMP"/nssscdl-1055-* &&
+                  -d "$H9_OWNED_ROOT" && ! -L "$H9_OWNED_ROOT" ]]; then
+              rm -rf -- "$H9_OWNED_ROOT"
+              if [[ ! -e "$H9_OWNED_ROOT" ]]; then
+                echo "H9_STAGE3_GATE stage=cleanup; result=owned-confirmed"
+              else
+                echo "H9_STAGE3_GATE stage=cleanup; result=unknown"
+                status=1
+              fi
+            else
+              echo "H9_STAGE3_GATE stage=cleanup; result=unknown"
+              status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup_stage3 EXIT
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --location --fail --silent --show-error \
+            --max-time 100 --max-filesize 300000000 \
+            'https://storage.googleapis.com/chrome-for-testing-public/157.0.8092.0/linux64/chrome-linux64.zip' \
+            -o "$H9_OWNED_ROOT/chrome.zip"
+          [[ "$(sha256sum "$H9_OWNED_ROOT/chrome.zip" | cut -d ' ' -f1)" == "28d4f185c9047a91fe79ee8d31e5e0b5b858fc107129b3df361fdd095dbb2ace" ]] || fail_gate archive-hash-mismatch
+          timeout --signal=TERM --kill-after=5s 30s \
+            python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py --self-test
+          timeout --signal=TERM --kill-after=5s 115s \
+            python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py "$H9_OWNED_ROOT/chrome.zip" "$H9_OWNED_ROOT/owned-extract"
+          if [[ -f "$H9_CHROME_EXECUTABLE" && ! -L "$H9_CHROME_EXECUTABLE" ]]; then
+            chmod u+x "$H9_CHROME_EXECUTABLE"
+          fi
+          for executable in chrome_crashpad_handler chrome-sandbox; do
+            helper="$H9_OWNED_ROOT/owned-extract/chrome-linux64/$executable"
+            if [[ -f "$helper" && ! -L "$helper" ]]; then chmod u+x "$helper"; fi
+          done
+          node tests/evaluation/issue-1055-cft157-version-preflight.mjs "$H9_CHROME_EXECUTABLE" || fail_gate binary-version-mismatch
+          export H9_SOURCE_PINNED=true
+          node --input-type=module <<'ADMISSION'
+          import { lstatSync, realpathSync } from "node:fs";
+          import { classifyStage3Handoff } from "./tests/evaluation/issue-1066-stage3-handoff.mjs";
+          const env=process.env, root=env.H9_OWNED_ROOT;
+          let evidence={};
+          try {
+            const s=lstatSync(root);
+            evidence={rootCanonical:realpathSync(root)===root,rootDirectory:s.isDirectory()&&!s.isSymbolicLink(),
+              rootOwned:s.uid===process.getuid(),rootPrivate:(s.mode&0o077)===0};
+          } catch {}
+          const result=classifyStage3Handoff({
+            action:env.EVENT_ACTION,attempt:Number(env.EVENT_ATTEMPT),draft:env.EVENT_DRAFT==="true",
+            headRef:env.EVENT_HEAD_REF,baseSha:env.BASE_SHA,approvedBaseSha:env.APPROVED_BASE_SHA,
+            eventHeadSha:env.EVENT_HEAD_SHA,checkedOutHeadSha:env.EVENT_HEAD_SHA,
+            sourcePinned:env.H9_SOURCE_PINNED==="true",runnerLabel:env.RUNNER_LABEL,
+            arch:process.arch==="x64"?"x86_64":"other",nonroot:process.getuid()!==0,
+            strictSandbox:true,hostMutation:false,env,ownerEvidence:evidence
+          });
+          console.log("H9_STAGE3_GATE stage=handoff; result="+result);
+          if(result!=="pass")process.exitCode=1;
+          ADMISSION
+          echo "H9_STAGE3_GATE stage=browser; result=starting; sandbox=strict; formal_proof=unproved"
+          timeout --signal=TERM --kill-after=5s 135s \
+            node tests/evaluation/issue-1055-cft157-synthetic-plan.mjs
