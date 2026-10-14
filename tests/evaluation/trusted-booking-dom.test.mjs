@@ -417,7 +417,7 @@ test("#930 finite first DOM fault only: setup/navigation/request/response/UI; ne
     ["dom-request", () => unauthenticatedFixture({
       change: ({ requestHeaders }) => { requestHeaders["x-private"] = canary; },
     })],
-    ["dom-response", () => unauthenticatedFixture({
+    ["dom-rsp-hdr", () => unauthenticatedFixture({
       change: ({ headers }) => { headers["cache-control"] = canary; },
     })],
     ["dom-ui", () => unauthenticatedFixture({ enabledMonth: true })],
@@ -442,6 +442,71 @@ test("#930 finite first DOM fault only: setup/navigation/request/response/UI; ne
   const f = unauthenticatedFixture({ enabledMonth: true });
   f.input.onFault = () => { throw new Error(canary); }; // Observer rejection must be passive.
   await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+});
+
+// #1044 oracle: closed Issue buckets and unchanged #1002 guards, not raw errors.
+const responseFaultOracle = ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"];
+test("#1044 response guard first-failure buckets, Cookie mismatch versus driver refusal; late traffic denied", async () => {
+  const cases = [
+    ["dom-rsp-id", { duplicateResponse: true }],
+    ["dom-rsp-id", { change: ({ response }) => { response.request = () => ({}); } }],
+    ["dom-rsp-id", { change: ({ response }) => { response.url = () => "https://private.invalid/" + canary; } }],
+    ["dom-rsp-id", { change: ({ response }) => { response.fromServiceWorker = () => true; } }],
+    ["dom-rsp-code", { change: ({ response }) => { response.status = () => 200; } }],
+    ["dom-rsp-code", { target: "/student.css", change: ({ response }) => { response.status = () => 401; } }],
+    ["dom-rsp-hdr", { change: ({ headers }) => { headers["x-private"] = canary; } }],
+    ["dom-rsp-hdr", { change: ({ headers }) => { delete headers["set-cookie"]; } }],
+    ["dom-rsp-body", { change: ({ response }) => { response.text = async () => canary; } }],
+    ["dom-rsp-jar", { cookieResult: "mismatch" }],
+    ["dom-rsp-drv", { cookieResult: "reject" }],
+    ...["request", "url", "status", "fromServiceWorker", "allHeaders", "text"].map(method =>
+      ["dom-rsp-drv", { change: ({ response }) => { response[method] = () => { throw new Error(canary); }; } }]),
+  ];
+  assert.deepEqual([...new Set(cases.map(([bucket]) => bucket))], responseFaultOracle);
+  for (const [expected, options] of cases) {
+    const f = unauthenticatedFixture(options), observed = [];
+    if (options.cookieResult) {
+      // Change the jar only from inside response validation, after request admission.
+      // This isolates response-cookie mismatch from setup/request-cookie guards.
+      options.change = ({ response }) => {
+        const body = response.text;
+        response.text = async () => {
+          const value = await body();
+          f.context.cookies = async () => {
+            if (options.cookieResult === "reject") throw new Error(canary);
+            return [{ name: canary, value: canary }];
+          };
+          return value;
+        };
+      };
+    }
+    f.input.onFault = stage => { observed.push(stage); throw new Error(canary); }; // Passive even on rejection.
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(observed, [expected]);
+    assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+    const saved = [...f.forwarded], explicit = [...f.explicit];
+    f.lateResponse(); await f.emit(confirmPath, "POST"); await f.emit("/unexpected");
+    assert.deepEqual(f.forwarded, saved); assert.deepEqual(f.explicit, explicit);
+    assert.deepEqual(observed, [expected]); assert.ok(!JSON.stringify(observed).includes(canary));
+    await assert.rejects(proveUnauthenticatedBookingDom(f.input), unauthenticatedError);
+    assert.deepEqual(f.forwarded, saved);
+  }
+  const f = unauthenticatedFixture(), observed = [];
+  f.input.onFault = stage => observed.push(stage);
+  assert.equal(await proveUnauthenticatedBookingDom(f.input), undefined);
+  assert.deepEqual(observed, []); // No classification is success evidence.
+});
+
+test("#1044 response-body driver timeout notifies before stop, late completion is inert", { timeout: 15000 }, async () => {
+  const f = unauthenticatedFixture({ stall: "body" }), observed = [];
+  f.input.onFault = stage => observed.push(stage);
+  const operation = proveUnauthenticatedBookingDom(f.input);
+  await f.pending;
+  await assert.rejects(operation, unauthenticatedError);
+  assert.deepEqual(observed, ["dom-rsp-drv"]);
+  const saved = [...f.forwarded]; f.resume(); await new Promise(resolve => setImmediate(resolve));
+  f.lateResponse(); await f.emit(confirmPath, "POST");
+  assert.deepEqual(observed, ["dom-rsp-drv"]); assert.deepEqual(f.forwarded, saved);
 });
 
 test("#1002 asset headers match Worker contract; bad/missing/extra headers stop further traffic", { timeout: 15000 }, async () => {

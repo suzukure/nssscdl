@@ -176,8 +176,11 @@ test("#1008 read-time tampering, directory replacement, partial, uid/mode/stat d
 
 const failureText = (entered, confirmed) => `TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=${entered}; confirmed=${confirmed}; status=failed\n`;
 test("#1018 finite phase codec roundtrip, exact bytes/ownership and old unknown compatibility", () => {
+  assert.deepEqual(report.unauthenticatedBookingResponseFaults,
+    ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv"]);
+  assert.equal(Object.isFrozen(report.unauthenticatedBookingResponseFaults), true);
   assert.deepEqual(report.unauthenticatedBookingPhases, ["unknown", "import", "preflight", "seed", "home", "tls-setup",
-    "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui",
+    "worker-start", "dom-401", "dom-context", "dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv",
     "tls-cleanup", "worker-stop", "d1-unchanged", "secret-scan", "report-write"]);
   for (const entered of report.unauthenticatedBookingPhases) for (const confirmed of report.unauthenticatedBookingPhases) {
     const expected = { phase: "failed", entered, confirmed, status: "failed" };

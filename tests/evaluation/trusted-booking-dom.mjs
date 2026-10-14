@@ -1,6 +1,7 @@
 // #941: dormant, test-only, one-booking DOM consumer. No CLI/runtime wiring.
 // Owner supplies a fresh strict context (ignoreHTTPSErrors:false,
 // serviceWorkers:"block"), injected self Cookie, and owns all teardown.
+import { unauthenticatedBookingResponseFaults } from "./trusted-unauthenticated-booking-report.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import { parsePreview, parseConfirm, intervalLabel, dateTimeLabel, validMonth,
@@ -43,7 +44,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
   // Passive bounded first-fault classification only. No headers, routes, URLs,
   // response bodies, identities or exception strings leave the DOM helper.
   let observingFault = true, faultReported = false, faultStage = "dom-setup";
-  const stages = new Set(["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui"]);
+  const stages = new Set(["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", ...unauthenticatedBookingResponseFaults]);
   const reportFault = stage => {
     if (faultReported || !observingFault || !stages.has(stage)) return;
     faultReported = true;
@@ -59,14 +60,14 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     require(!terminal && !signal.aborted);
     if (navigationCount) require(page.url() === bookingOrigin + "/student");
   };
-  const step = async action => {
+  const step = async (action, fault) => {
     alive(); let timer;
     try {
       const result = await Promise.race([stopped,
         Promise.resolve().then(() => { alive(); return action(); }),
-        new Promise((_, reject) => { timer = setTimeout(() => { stop(); reject(failed()); }, timeout); })]);
+        new Promise((_, reject) => { timer = setTimeout(() => { if (fault) reportFault(fault); stop(); reject(failed()); }, timeout); })]);
       alive(); return result;
-    } catch { stop(); throw failed(); }
+    } catch { if (fault) reportFault(fault); stop(); throw failed(); }
     finally { clearTimeout(timer); }
   };
   const requests = new Map(), responses = new Map(), counts = new Map(), pending = new Set();
@@ -97,7 +98,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     else demand(headers["x-content-type-options"] === "nosniff" && headers["referrer-policy"] === "no-referrer");
     if (path === csrfPath) demand(headers["referrer-policy"] === "no-referrer");
   };
-  const emptyJar = async () => require(isDeepStrictEqual(await step(() => context.cookies()), []));
+  const emptyJar = async (demand = require, fault) => demand(isDeepStrictEqual(await step(() => context.cookies(), fault), []));
   const drain = async () => {
     await step(async () => {
       // Route completion can enqueue response validation. Drain both generations
@@ -184,16 +185,16 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     page.on("response", response => {
       if (terminal) return;
       const task = step(async () => {
-        const responseGuard = ok => { if (!ok) reportFault("dom-response"); require(ok); };
+        const responseGuard = stage => ok => { if (!ok) reportFault(stage); require(ok); };
         const request = response.request(), path = requests.get(request);
-        responseGuard(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
+        responseGuard("dom-rsp-id")(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
         responses.set(request, response);
         const api = !assets.has(path);
-        responseGuard(response.status() === (api ? 401 : 200));
-        safeHeaders(await step(() => response.allHeaders()), path, api, responseGuard);
-        if (api) responseGuard(await step(() => response.text()) === body);
-        await emptyJar();
-      }).catch(() => { reportFault("dom-response"); stop(); });
+        responseGuard("dom-rsp-code")(response.status() === (api ? 401 : 200));
+        safeHeaders(await step(() => response.allHeaders(), "dom-rsp-drv"), path, api, responseGuard("dom-rsp-hdr"));
+        if (api) responseGuard("dom-rsp-body")(await step(() => response.text(), "dom-rsp-drv") === body);
+        await emptyJar(responseGuard("dom-rsp-jar"), "dom-rsp-drv");
+      }, "dom-rsp-drv").catch(() => { reportFault("dom-rsp-drv"); stop(); });
       pending.add(task); task.finally(() => pending.delete(task));
     });
     faultStage = "dom-net";

@@ -2,7 +2,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors } from "./trusted-unauthenticated-booking-report.mjs";
+import { unauthenticatedBookingResponseFaults, unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors } from "./trusted-unauthenticated-booking-report.mjs";
 
 const origin = "https://127.0.0.1:8789";
 // The sealed operator forwards only these fixed synchronous records. Observer
@@ -34,7 +34,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
   let firstFailureObserved = false, currentPhase = "unknown", workerStopConfirmed = false;
   // The DOM helper reports only its first definite failure from a closed set.
   // Observer events are private; no changed report fields or browser actions.
-  const domFaults = new Set(["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui"]);
+  const domFaults = new Set(["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui", ...unauthenticatedBookingResponseFaults]);
   let consumed = false, handed = false, seedDone = false, tlsDone = false;
   let worker, startAttempted = false, stopAttempted = false, stopped = false;
   let domDone = false, inspectAttempted = false, inspected = false;
