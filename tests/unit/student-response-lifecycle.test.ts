@@ -1,4 +1,5 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { Readable } from "node:stream";
 // #1055 investigation only. Real controller + Web Streams; NOT Chromium,
 // Playwright, HTTP framing, Worker/D1, or formal proof evidence.
 // The candidate lives only here. Limits below are fixture parameters, not
@@ -180,7 +181,7 @@ describe("#1055 finite 401 lifecycle candidate comparison (not browser proof)", 
     expect(await draining).toBe("eof"); stopped(c); expect(calls).toBe(2);
   });
   it("loopback HTTP 401 staged EOF: immediate stop and same-GET nonblocking drain", async () => {
-    // Node/undici loopback only: not a Chrome, CDP, Wrangler, or product-limit test.
+    // Node HTTP loopback + Web Streams only: not a Chrome, CDP, Wrangler, or product-limit test.
     for (const mode of ["baseline", "discard"] as const) {
       let release!: () => void;
       const finishBody = new Promise<void>(resolve => { release = resolve; });
@@ -209,7 +210,24 @@ describe("#1055 finite 401 lifecycle candidate comparison (not browser proof)", 
       let drainSettled = false;
       try {
         const fetcher: typeof fetch = async (path, options) => {
-          const response = await fetch(origin + String(path), options);
+          // Use Node HTTP request to isolate the loopback transport from the runtime's
+          // global fetch implementation. The response is still a real streamed
+          // HTTP 401; a synthetic Response wraps its received byte stream.
+          const response = await new Promise<Response>((resolve, reject) => {
+            if (String(path) !== "/api/me/schedule-months/2026-12" || options?.method !== "GET") {
+              reject(new Error("unexpected fixture request")); return;
+            }
+            const request = httpRequest(origin + String(path),
+              { method: "GET", headers: { Accept: "application/json" } }, incoming => {
+                if (incoming.statusCode !== 401) {
+                  incoming.destroy(); reject(new Error("unexpected fixture status")); return;
+                }
+                resolve(new Response(Readable.toWeb(incoming) as ReadableStream<Uint8Array>,
+                  { status: 401, headers: { "Cache-Control": "no-store" } }));
+              });
+            request.once("error", reject);
+            request.end();
+          });
           actual = response;
           if (mode === "discard" && response.status === 401)
             completion = discard(response, 128, 2000).then(result => {
