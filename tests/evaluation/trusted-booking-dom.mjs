@@ -212,8 +212,22 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
           const bodyFaults = path === monthPath(initialMonth) || path === monthPath(fixture.month) ? ["rb-month-ot", "rb-month-it"] :
             path === confirmPath ? ["rb-hist-ot", "rb-hist-it"] : path === csrfPath ? ["rb-csrf-ot", "rb-csrf-it"] : undefined;
           responseGuard("dom-rsp-id")(bodyFaults && bodyFaults.every(value => stages.has(value)));
-          errorFault = "rsp-body-err"; timeoutFault = bodyFaults[0];
-          const text = await step(() => response.text(), errorFault, bodyFaults[1]);
+          // #930 investigation: Playwright client timing only; no driver RPC,
+          // requestfinished listener, body read or raw timestamp escapes.
+          // -1 means not observed by this client, not 'server unfinished'.
+          // RequestFailed can also update responseEnd; first-fault wins.
+          const bodyTimeout = stage => {
+            let state;
+            try {
+              const end = request.timing()?.responseEnd;
+              state = end === -1 ? "bn" :
+                typeof end === "number" && Number.isFinite(end) && end >= 0 ? "bf" : undefined;
+            } catch { /* unreadable timing stays an unknown legacy bucket */ }
+            const result = state ? state + stage.slice(2) : stage;
+            return stages.has(result) ? result : stage;
+          };
+          errorFault = "rsp-body-err"; timeoutFault = () => bodyTimeout(bodyFaults[0]);
+          const text = await step(() => response.text(), errorFault, () => bodyTimeout(bodyFaults[1]));
           errorFault = "rsp-guard-ex"; timeoutFault = "rsp-outer-to";
           responseGuard("dom-rsp-body")(text === body);
         }
