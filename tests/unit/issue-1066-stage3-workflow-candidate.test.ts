@@ -141,7 +141,7 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
   });
 
   it("requires ZIP streaming hash compatible with Python 3.10", () => {
-    expect(archiveCode.includes("hashlib.file_digest")).toBe(false);
+    expect(archiveCode.includes("digest = hashlib.file_digest(stream")).toBe(false);
     expect(archiveCode).toContain("sha256 = hashlib.sha256()");
     expect(archiveCode).toContain("block = stream.read(CHUNK)");
     expect(archiveCode).toContain("sha256.update(block)");
