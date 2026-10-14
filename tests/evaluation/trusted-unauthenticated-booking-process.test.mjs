@@ -395,7 +395,7 @@ test("#930 first-failure event occurs before cleanup progress, with one immutabl
 
 test("#930 finite DOM subphase callback: first fault stays fixed, invalid/late callback is inert", async () => {
   for (const selected of ["dom-setup", "dom-net", "dom-request", "dom-response", "dom-ui",
-    "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it"]) {
+    "dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it", "bn-month-ot", "bn-month-it", "bn-hist-ot", "bn-hist-it", "bn-csrf-ot", "bn-csrf-it", "bf-month-ot", "bf-month-it", "bf-hist-ot", "bf-hist-it", "bf-csrf-ot", "bf-csrf-it"]) {
     const f = fixture(), writes = [], calls = [];
     f.ports.proveUnauthenticatedBookingDom = async input => {
       assert.equal(typeof input.onFault, "function");
@@ -422,7 +422,7 @@ test("#930 finite DOM subphase callback: first fault stays fixed, invalid/late c
 });
 
 test("#1044 DOM first-failure causes owned-inspect precondition refusal after successful owned stop", async () => {
-  for (const selected of ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it"]) {
+  for (const selected of ["dom-rsp-id", "dom-rsp-code", "dom-rsp-hdr", "dom-rsp-body", "dom-rsp-jar", "dom-rsp-drv", "rsp-meta-err", "rsp-hdr-err", "rsp-hdr-to", "rsp-body-err", "rsp-body-to", "rsp-jar-err", "rsp-jar-to", "rsp-guard-ex", "rsp-outer-to", "rb-month-ot", "rb-month-it", "rb-hist-ot", "rb-hist-it", "rb-csrf-ot", "rb-csrf-it", "bn-month-ot", "bn-month-it", "bn-hist-ot", "bn-hist-it", "bn-csrf-ot", "bn-csrf-it", "bf-month-ot", "bf-month-it", "bf-hist-ot", "bf-hist-it", "bf-csrf-ot", "bf-csrf-it"]) {
     const f = fixture(), writes = [], gates = [], observations = [];
     const tls = f.ports.withIsolatedBrowserTls;
     f.ports.withIsolatedBrowserTls = (consume, options) => tls(async input => {
