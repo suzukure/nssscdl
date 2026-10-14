@@ -108,3 +108,50 @@ jobs:
       - name: Local D1 smoke
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
+
+      - name: "#1055 Stage2 runner environment survey (no browser session)"
+        if: ${{ github.event.action == 'opened' && github.run_attempt == 1 && github.event.pull_request.draft == true && github.head_ref == 'investigate/issue-1055-stage2-runner-once' }}
+        timeout-minutes: 7
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$BASE_SHA" = "25fecbf1059844a462a0d2ba22b147453f7b33a4"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(uname -m)" = "x86_64"
+          node --check tests/evaluation/issue-1055-cft157-runner-preflight.mjs
+          node tests/evaluation/issue-1055-cft157-runner-preflight.mjs --self-test
+          TEMP_CFT="$(mktemp -d "$RUNNER_TEMP/nssscdl-1055-XXXXXXXX")"
+          cleanup_stage2() {
+            set +e
+            if [[ -n "$TEMP_CFT" && "$TEMP_CFT" == "$RUNNER_TEMP"/nssscdl-1055-* && -d "$TEMP_CFT" ]]; then
+              rm -rf -- "$TEMP_CFT"
+              if [[ ! -e "$TEMP_CFT" ]]; then
+                echo "H9_STAGE2 stage=cleanup; result=owned-confirmed"
+              else
+                echo "H9_STAGE2 stage=cleanup; result=unknown"
+              fi
+            else
+              echo "H9_STAGE2 stage=cleanup; result=unknown"
+            fi
+          }
+          trap cleanup_stage2 EXIT
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --location --fail --silent --show-error \
+            --max-time 120 --max-filesize 300000000 \
+            'https://storage.googleapis.com/chrome-for-testing-public/157.0.8092.0/linux64/chrome-linux64.zip' \
+            -o "$TEMP_CFT/chrome.zip"
+          ACTUAL_HASH="$(sha256sum "$TEMP_CFT/chrome.zip" | cut -d ' ' -f1)"
+          if [[ "$ACTUAL_HASH" != "28d4f185c9047a91fe79ee8d31e5e0b5b858fc107129b3df361fdd095dbb2ace" ]]; then
+            echo "H9_STAGE2 stage=archive; result=observed-hash-drift"
+            exit 1
+          fi
+          echo "H9_STAGE2 stage=archive; result=observed-zip-match"
+          python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py --self-test
+          python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py \
+            "$TEMP_CFT/chrome.zip" "$TEMP_CFT/owned-extract"
+          BINARY="$TEMP_CFT/owned-extract/chrome-linux64/chrome"
+          if [[ -f "$BINARY" && ! -L "$BINARY" ]]; then chmod u+x "$BINARY"; fi
+          timeout --signal=TERM --kill-after=5s 100s \
+            node tests/evaluation/issue-1055-cft157-runner-preflight.mjs --probe "$TEMP_CFT" "$BINARY"
