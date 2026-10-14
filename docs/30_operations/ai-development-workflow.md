@@ -428,6 +428,16 @@ opt-in entryは初回実行前に人間Code Owner reviewを経てmainへ反映�
 
 WACはR1 / C0 / P1 / B1、Green / bounded activation、forced splitなしとする。検証は上記の既存fixtureでexact単一entry、#635のopt-in、隣接・未知Issueと#802のdefault経路、3経路のgated identity、malformed / duplicate / unknown modelのfail-closedを確認し、current-head正式AI Workflow Regression / PR Traceability / Claude Reviewを別途確認する。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
 
+### Codex rollout response usage抽出（#1061、prepared / dormant）
+
+機械正本は `.github/scripts/extract-codex-rollout-usage.py`。pure API `extract(prepared_bytes)` はcallerが用意したbounded bytesだけを受け、canonical ASCII JSON bytesを返す。I/O・CLI・network・path探索・CODEX_HOME参照はなく、production callerへ接続しない。供給IssueのCodex 0.159.3 rollout形状 `type=token_usage_record` の `payload.response_id` / `payload.usage.input_tokens` のみを観測単位とし、他種別のpayloadと追加metadataを出力しない。既存exec extractor / evidence schemaは変更しない。
+
+input_tokensは必須整数、既知のoptional usage counterは存在時に型・範囲・内数制約を検査し、欠落を0補完しない。cached / cache-writeは個別にinput以下とし、両者の非重複は仮定しない。reasoning存在時はoutput必須、total存在時はinput + outputとの整合を要求する。exact field集合、数値・file / line / record上限とclosed出力schemaはhelperを正本とする。上限はprepared parserの運用上限であり実rollout規模の保証ではない。UTF-8 / JSON / 重複key / response_id重複 / 整合性 / overflowの不正は入力全体を `unknown / invalid_input` とし、部分成功値を返さない。0 record・空入力は `unknown / no_records`。unknownでは3指標すべてnullとする。
+
+成功時の入力由来値は `recorded_completed_response_count` / `max_observed_response_input_tokens` / `observed_above_272k_completed_response_count` の数値だけとし、厳密に `> 272000` を数える。固定metadataは常に `billing_status=unverified` / `coverage=observed_only`。rolloutに記録されたsuccessful upstream completionの観測であり、全API request件数・失敗途中のusage・課金確定・USDを示さない。raw rollout・response_id・prompt / tool / path・生例外は返却やログへ反射しない。
+
+検証は `test-extract-codex-rollout-usage.sh` の有限secretless synthetic fixture、`test-production-unreachable.sh` の未知caller / copy / loader拒否、selector / shard inventoryと既存AI Workflow Regressionで行う。R0 / C0相当 / P1 / B0を維持する。実rolloutとの照合・取得provenance・natural-run read-only collectionの可否は後続のfresh判断とし、本fixtureの成功で実統合済みとは主張しない。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+
 ### fresh Codex exec usage抽出（#753 / #772）
 
 機械正本は `.github/scripts/extract-codex-exec-usage.py` とする。pure API `extract(jsonl_bytes, context_bytes)` はcaller供給のbounded JSONL bytesと単一context JSON bytesからcanonical JSON bytesを返し、file I/Oを行わない。CLIは `--context PATH` の明示contextとstdinだけをbounded readし、正常時は単一canonical JSON行とexit 0、不正入力時はstdoutなし・固定非反射診断と非0を返す。contextは `schema/version/mode/process_outcome` だけで、`mode=fresh_exec` に限定する。callerによるprovenance取得は別責務であり、contextをtrusted authorityとして証明しない。
