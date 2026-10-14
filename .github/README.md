@@ -30,6 +30,8 @@ snapshotは `git ls-files --stage -z` でscripts / workflows配下のtracked fil
 
 #772ではprepared Codex supervisor / extractorのproducer-only接続として、`ai-developer.yml` の2つのexact reviewed実行step（initial/resume共通・Claude follow-up）を追加許容する。trusted base source / blob照合・通常file型・service argv・metadata / gates / timeoutを含むstepをdigestで閉じ、未知caller・PR/worktree source・hash bypass・重複 `--json` 等の負例を維持する。usageのdownstream consumerやpersistenceは許可しない。詳細は[stream supervisor運用契約](../docs/30_operations/ai-development-workflow.md)を正本とし、static guardの成功をactual native proofと扱わない。
 
+#1061の `extract-codex-rollout-usage.py` はprepared bytes専用のpure / dormant部品である。common guardは提案時のuntracked helperも明示読込し、selectorのexact inventory / mappingと直下test fixture以外の参照、未知production caller・追加loader・schema literalを含むsource copyを拒否する。新fixtureをAI Developer-Codex suiteへ1件登録し、selector / shard / regression fixtureの現inventoryを87件へ同期する。入力・出力・非反射・observed-only / billing未検証の契約は[rollout usage運用節](../docs/30_operations/ai-development-workflow.md#codex-rollout-response-usage抽出1061prepared--dormant)とhelperを正本とし、production wiring・artifact upload・natural-run proofは追加しない。
+
 ## Product runtime exact staging（#738、prepared / dormant）
 
 [`product-runtime-staging.py`](scripts/product-runtime-staging.py) の `PreparedRuntime(rows, trusted_uids=..., excluded_roots=..., root_api=...)` はtrusted parent保持のprepared Contractである。`root_api`には既存#710の `CanonicalRoot` を渡し、そのancestry / mount identityとphysical座標を再利用する。trusted base由来module・parent memory・sourceをmodel変更から隔離し、Product workspace / cache等の全workload変更可能rootを `excluded_roots` に指定する責務はtrusted callerにある。UIDやmodeだけをprovenanceの根拠にせず、同一trusted UIDの並行攻撃からの隔離は本synthetic fixtureでは実証しない。

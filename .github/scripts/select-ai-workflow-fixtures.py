@@ -82,7 +82,7 @@ EXTENSIONS = {
                            "supervise-codex-exec-stream", "validate-codex-usage-identity",
                            "validate-codex-usage-stream", "build-codex-usage-evidence",
                            "systemd-transient-lifecycle", "select-codex-usage-journal",
-                           "collect-codex-usage-evidence"),
+                           "collect-codex-usage-evidence", "extract-codex-rollout-usage"),
     "common": ("select-ai-workflow-fixtures", "production-unreachable", "plan-ai-workflow-shards"),
 }
 INVENTORY = {
@@ -129,6 +129,7 @@ PATH_SUITES = (
     (SCRIPTS + "evaluate-codex-diff-gate.sh", ("ai-developer-codex", "claude")),
     (SCRIPTS + "classify-ai-developer-decision-marker.sh", ("ai-developer-codex",)),
     (SCRIPTS + "select-codex-issue-model.py", ("ai-developer-codex",)),
+    (SCRIPTS + "extract-codex-rollout-usage.py", ("ai-developer-codex",)),
     (SCRIPTS + "extract-codex-exec-usage.py", ("ai-developer-codex",)),
     (SCRIPTS + "supervise-codex-exec-stream.py", ("ai-developer-codex",)),
     (SCRIPTS + "validate-codex-usage-identity.py", ("ai-developer-codex",)),

@@ -28,6 +28,7 @@ runtime_supply = 'trusted-runtime-supply.py'
 supply_proof = 'runtime-supply-proof.py'
 model_selector = 'select-codex-issue-model.py'
 model_policy = 'codex-issue-model-policy.json'
+rollout_usage = 'extract-codex-rollout-usage.py'
 exec_usage = 'extract-codex-exec-usage.py'
 stream_supervisor = 'supervise-codex-exec-stream.py'
 usage_identity = 'validate-codex-usage-identity.py'
@@ -54,6 +55,7 @@ contracts = ((product, product + '.py', 'product-npm', product),
              (trusted_proof, trusted_proof, 'product-npm', None),
              (packet, packet, 'failure-evidence', None),
              (model_selector[:-3], model_selector, 'ai-developer-codex', None),
+             (rollout_usage[:-3], rollout_usage, 'ai-developer-codex', None),
              (exec_usage[:-3], exec_usage, 'ai-developer-codex', None),
              (stream_supervisor[:-3], stream_supervisor, 'ai-developer-codex', None),
              (usage_identity[:-3], usage_identity, 'ai-developer-codex', None),
@@ -71,7 +73,7 @@ def python_body(text):
     assert all(needle not in prefix + suffix for needle in (product, packet, verifier,
                                                            session_runtime, session_probe, runtime_staging,
                                                            *session_symbols, model_selector[:-3], model_policy,
-                                                           exec_usage[:-3], stream_supervisor[:-3], usage_identity[:-3], usage_stream[:-3], usage_evidence[:-3], usage_journal[:-3], usage_collector[:-3]))
+                                                           rollout_usage[:-3], exec_usage[:-3], stream_supervisor[:-3], usage_identity[:-3], usage_stream[:-3], usage_evidence[:-3], usage_journal[:-3], usage_collector[:-3]))
     return body
 
 
@@ -144,7 +146,7 @@ def assert_declarative(path, text):
         for row in matches:
             allowed.extend(n for n in ast.walk(row)
                            if isinstance(n, ast.Constant) and n.value == filename)
-        if filename in (model_selector, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector) and not is_fixture:
+        if filename in (model_selector, rollout_usage, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector) and not is_fixture:
             # Exact fixture registration is data, never an executable reference.
             extension = declaration(tree, 'EXTENSIONS', ast.Dict)
             ast.literal_eval(extension)
@@ -329,6 +331,8 @@ def assert_unreachable(sources):
             usage_text = mask_trusted_usage_callers(text) if path == workflows + 'ai-developer.yml' else text
             if path == workflows + 'ai-developer.yml':
                 stream_text = mask_trusted_usage_callers(text, stream_text)
+            assert rollout_usage[:-3] not in text and 'codex-rollout-usage' not in text, (
+                'rollout usage production connection', path)
             assert exec_usage[:-3] not in stream_text, ('unknown exec usage production connection', path)
             assert stream_supervisor[:-3] not in stream_text, ('unknown stream supervisor production connection', path)
             assert usage_identity[:-3] not in usage_text, ('usage identity production connection', path)
@@ -364,6 +368,8 @@ def assert_unreachable(sources):
         elif path.startswith(scripts):
             if path in (selector_path, selector_fixture) or is_test_fixture(path):
                 continue
+            if path != scripts + rollout_usage:
+                assert 'codex-rollout-usage' not in text, ('copied rollout extractor', path)
             if path != scripts + product + '.py':
                 assert verifier not in text, ('unknown verifier caller', path)
                 for symbol in session_symbols:
@@ -490,7 +496,7 @@ sources = {p: data.decode('utf-8') for p, data in before.items()}
 # Include the proposed new dormant sources before workflow orchestration stages
 # them. After merge they are covered by the tracked snapshot as well.
 for name in (session_runtime, session_probe, runtime_staging, runtime_supply, trusted_proof,
-             model_selector, model_policy, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector):
+             model_selector, model_policy, rollout_usage, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector):
     path = repo / scripts / name
     assert stat.S_ISREG(path.lstat().st_mode), 'invalid dormant source type'
     sources[scripts + name] = path.read_bytes().decode('utf-8', 'strict')
@@ -666,7 +672,7 @@ for name in ('BASELINE', 'PATH_SUITES'):
 
 # The new extension exception admits only one declarative fixture identity.
 original = sources[selector_path]
-for filename in (model_selector, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector):
+for filename in (model_selector, rollout_usage, exec_usage, stream_supervisor, usage_identity, usage_stream, usage_evidence, usage_journal, usage_collector):
     literal = '"' + filename[:-3] + '"'
     for replacement in ('"other"', literal + ', ' + literal,
                         f'run({filename[:-3]!r})'):
@@ -674,6 +680,14 @@ for filename in (model_selector, exec_usage, stream_supervisor, usage_identity, 
 for assignment in ('EXTENSIONS = {}', 'EXTENSIONS += {}',
                    'def extra():\n    EXTENSIONS = {}'):
     rejected(selector_path, original + '\n' + assignment + '\n')
+
+# #1061 permits no production caller, additional loader or source copy.
+rollout_source = sources[scripts + rollout_usage]
+for path in (scripts + 'unknown-loader.py', scripts + 'copy-' + rollout_usage,
+             scripts + usage_evidence, workflows + 'caller.yml'):
+    rejected(path, rollout_source)
+    rejected(path, "load('extract-codex-rollout-usage.py')\n")
+    rejected(path, "load('extract-codex-rollout-usage.py')\n" * 2)
 
 # The only new prepared caller exception is exact source, never a filename-wide
 # permission. Copies, extra loads, changed source/API and workflow callers fail.
