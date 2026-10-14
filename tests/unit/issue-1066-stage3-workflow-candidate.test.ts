@@ -117,7 +117,7 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
       .toBe("scope-disallowed");
     expect(candidateContract(candidate.replace(
       '          echo "H9_STAGE3_GATE stage=browser; result=starting',
-      '          # --no-sandbox\\n          echo "H9_STAGE3_GATE stage=browser; result=starting'
+      '          # --no-sandbox\n          echo "H9_STAGE3_GATE stage=browser; result=starting'
     ))).toBe("scope-disallowed");
     expect(scriptText.includes("chromiumSandbox: true")).toBe(true);
     expect(scriptText.includes("ignoreHTTPSErrors: false")).toBe(true);
