@@ -123,7 +123,7 @@ describe("#1055 settlement and owned-root boundary", () => {
     await Promise.resolve();
   });
 
-  it("requires an absolute, real, private, owned descendant of RUNNER_TEMP", () => {
+  it("requires an absolute, real, private, owned descendant of RUNNER_TEMP", async () => {
     const complete = { rootAbsolute: true, rootReal: true, rootOwned: true,
       rootPrivate: true, underRunner: true };
     expect(classifyRunRoot(complete)).toBe("root-admitted");
