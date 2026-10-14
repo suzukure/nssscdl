@@ -61,6 +61,15 @@ function candidateContract(yaml: string): string {
     !script.includes("rootPrivate:(s.mode&0o077)===0") ||
     !script.includes("rootOwned:s.uid===process.getuid()"))
     return "owner-root-invalid";
+
+  const ownedTmp = 'export TMPDIR="$H9_OWNED_ROOT" TMP="$H9_OWNED_ROOT" TEMP="$H9_OWNED_ROOT"';
+  const py310 = "python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 10) else 1)'";
+  const selfTest = "python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py --self-test";
+  if (![ownedTmp, py310, selfTest, "curl --proto"].every(x => script.includes(x)) ||
+    !(script.indexOf(ownedTmp) < script.indexOf(py310) &&
+      script.indexOf(py310) < script.indexOf(selfTest) &&
+      script.indexOf(selfTest) < script.indexOf("curl --proto")))
+    return "python-preflight-unproved";
   if (!script.includes("source-hash-mismatch") || !script.includes('git hash-object "$1"') ||
     !script.includes("archive-hash-mismatch"))
     return "source-hash-mismatch";
@@ -108,6 +117,20 @@ describe("#1066 inert Stage3 candidate vs shared handoff", () => {
       "checkedOutHeadSha:env.EVENT_HEAD_SHA"))).toBe("head-mismatch");
     expect(candidateContract(candidate.replace('ref: ${{ github.event.pull_request.head.sha }}',
       'ref: main'))).toBe("scope-disallowed");
+  });
+
+  it("keeps Python3.10 admission and large self-test inside the trap-owned root before the download", () => {
+    expect(candidateContract(candidate)).toBe("candidate-admitted-static");
+    expect(candidateContract(candidate.replace(
+      'export TMPDIR="$H9_OWNED_ROOT" TMP="$H9_OWNED_ROOT" TEMP="$H9_OWNED_ROOT"', "true"
+    ))).toBe("python-preflight-unproved");
+    expect(candidateContract(candidate.replace(
+      "python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 10) else 1)'", "true"
+    ))).toBe("python-preflight-unproved");
+    expect(candidateContract(candidate.replace(
+      "python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py --self-test",
+      "python3 -B tests/evaluation/issue-1055-cft-archive-preflight.py --skipped"
+    ))).toBe("python-preflight-unproved");
   });
 
   it("rejects disabled sandbox, changed runner or allowed reruns", () => {
