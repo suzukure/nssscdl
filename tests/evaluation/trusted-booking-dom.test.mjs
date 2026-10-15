@@ -9,7 +9,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { useTrustedBookingProcess } from "./trusted-booking-process.mjs";
 import { encodeBookingDiagnostic, parseBookingDiagnostic } from "./trusted-booking-report.mjs";
-import { proveTrustedBookingDom, proveUnauthenticatedBookingDom, assertBookingReviewDom, bookingOrigin } from "./trusted-booking-dom.mjs";
+import { proveTrustedBookingDom, proveUnauthenticatedBookingDom, proveUnauthenticatedBookingUi, assertBookingReviewDom, bookingOrigin } from "./trusted-booking-dom.mjs";
 import { tokyoNowMonth } from "../../src/web/model.ts";
 
 const previewName = "選択枠の予約内容をPreview", confirmName = "内容を確認して予約を確定";
@@ -265,7 +265,7 @@ test("#941 dormant helper has no production/default workflow caller or launch/cl
   const scan = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
     entry.isDirectory() ? scan(`${directory}/${entry.name}`) : [`${directory}/${entry.name}`]);
   for (const file of [...scan("src"), ...scan(".github/workflows")]) {
-    assert.doesNotMatch(readFileSync(file, "utf8"), /trusted-booking-dom|proveTrustedBookingDom|proveUnauthenticatedBookingDom|assertBookingReviewDom/, file);
+    assert.doesNotMatch(readFileSync(file, "utf8"), /trusted-booking-dom|proveTrustedBookingDom|proveUnauthenticatedBookingDom|proveUnauthenticatedBookingUi|assertBookingReviewDom/, file);
   }
   const source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8");
   assert.doesNotMatch(source, /route\.(?:fetch|fulfill)|\.reload\(|\.addCookies\(|browser\.newContext|\.launch\(|\.close\(|child_process|wrangler|systemd/);
@@ -303,6 +303,7 @@ function unauthenticatedFixture(options = {}) {
       ...(!api || path === csrfPath ? { "referrer-policy": "no-referrer" } : {}) };
     const request = { url: () => url, method: () => method, postData: () => null, redirectedFrom: () => null,
       frame: () => frame, isNavigationRequest: () => navigation,
+      resourceType: () => api ? "fetch" : path === "/student" ? "document" : path === "/student.css" ? "stylesheet" : "script",
       allHeaders: async () => {
         if (options.stall === "headers" && path === csrfPath) { entered(); await new Promise(resolve => { resume = resolve; }); }
         if (options.abortHeaders && path === csrfPath) controller.abort(canary);
@@ -1210,4 +1211,224 @@ test("#984 Confirm forwarded with pending HTTP response freezes at route-allowed
     assert.equal(f.forwarded.filter(v => v === `POST ${confirmPath}`).length, 1);
     assert.equal(f.denied.includes(confirmPath), true);
   }
+});
+
+// #1073 oracle: Issue UI-only boundary + TestPlan §7.1/12, Application §9.3;
+// controller.ts throws on 401 before JSON and invalidates both reads, view.ts
+// renders the stop. These finite doubles do not prove Browser/TLS/D1 behavior.
+function unauthenticatedUiFixture(options = {}) {
+  const initialSchedule = `/api/me/schedule-months/${tokyoNowMonth()}`;
+  let bodies = 0;
+  const f = unauthenticatedFixture({ ...options, targets: [initialSchedule, confirmPath],
+    change: value => {
+      value.request.timing = () => ({ responseStart: 1, responseEnd: -1 });
+      for (const name of ["text", "json", "arrayBuffer", "body", "finished"])
+        value.response[name] = () => { bodies++; throw new Error(canary); };
+      options.change?.(value);
+    } });
+  return Object.assign(f, { bodies: () => bodies });
+}
+const unauthenticatedUiError = error => {
+  assert.equal(error.message, "TRUSTED_UNAUTHENTICATED_BOOKING_UI_FAILED");
+  assert.equal("cause" in error, false);
+  assert.doesNotMatch(String(error), /private-canary|https:|SQL|Session/);
+  return true;
+};
+
+test("#1073 UI-only initial month/history 401, no driver body read or added GET; retained deny guard", async () => {
+  for (const initial of [[`/api/me/schedule-months/${tokyoNowMonth()}`], [confirmPath], undefined]) {
+    const f = unauthenticatedUiFixture({ initial });
+    assert.equal(await proveUnauthenticatedBookingUi(f.input), "ui-only-401-partial");
+    assert.equal(f.bodies(), 0); assert.deepEqual(f.explicit, []);
+    assert.deepEqual(f.forwarded, [...f.assets, ...(initial ?? [f.initialSchedule, confirmPath])].map(path => `GET ${path}`));
+    const before = [...f.forwarded];
+    await f.emit(confirmPath, "POST"); await f.emit(f.initialSchedule); await f.emit(csrfPath);
+    f.lateResponse(); f.socket({ connectToServer: () => assert.fail("never connect") });
+    assert.deepEqual(f.forwarded, before);
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+    assert.deepEqual(f.forwarded, before);
+  }
+  // responseEnd observed is also allowed, without a body-completion assertion.
+  const f = unauthenticatedUiFixture({ change: ({ request }) => { request.timing = () => ({ responseStart: 1, responseEnd: 2 }); } });
+  assert.equal(await proveUnauthenticatedBookingUi(f.input), "ui-only-401-partial");
+  assert.equal(f.bodies(), 0);
+});
+
+test("#1073 UI-only rejects missing/fake HTTP, unsafe metadata and unobserved client timing", async () => {
+  const cases = [
+    { initial: [] }, { missingAsset: "/model.js" },
+    ...[200, 403].map(status => ({ change: ({ response }) => { response.status = () => status; } })),
+    { change: ({ response }) => { response.request = () => ({}); } },
+    { change: ({ response }) => { response.url = () => "https://private.invalid/" + canary; } },
+    { change: ({ response }) => { response.fromServiceWorker = () => true; } },
+    { change: ({ headers }) => { delete headers["set-cookie"]; } },
+    { change: ({ headers }) => { headers["set-cookie"] += ", other=" + canary; } },
+    { change: ({ headers }) => { headers.cookie = canary; } },
+    { change: ({ headers }) => { headers["x-private"] = canary; } },
+    { change: ({ headers }) => { headers["cache-control"] = "public"; } },
+    { change: ({ request }) => { request.timing = () => ({}); } },
+    { change: ({ request }) => { request.timing = () => ({ responseStart: -1, responseEnd: -1 }); } },
+    { change: ({ request }) => { request.timing = () => ({ responseStart: 1, responseEnd: NaN }); } },
+    ...["request", "url", "status", "fromServiceWorker", "allHeaders"].map(name =>
+      ({ change: ({ response }) => { response[name] = () => { throw new Error(canary); }; } })),
+  ];
+  for (const [index, options] of cases.entries()) {
+    const f = unauthenticatedUiFixture(options);
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError, `response case ${index}`);
+    assert.equal(f.bodies(), 0); assert.deepEqual(f.explicit, []);
+    const before = [...f.forwarded]; await f.emit(confirmPath, "POST");
+    assert.deepEqual(f.forwarded, before);
+  }
+  const duplicate = unauthenticatedUiFixture(), emit = duplicate.page.emit;
+  duplicate.page.emit = function(event, response) {
+    if (event === "response" && response.request().url().includes("/api/")) emit.call(this, event, response);
+    return emit.call(this, event, response);
+  };
+  await assert.rejects(proveUnauthenticatedBookingUi(duplicate.input), unauthenticatedUiError);
+});
+
+test("#1073 UI-only rejects unsafe request before forwarding, never retries", async () => {
+  const cases = [
+    ...["cookie", "authorization", "x-csrf-token", "x-private"].map(name =>
+      ({ change: ({ requestHeaders }) => { requestHeaders[name] = canary; } })),
+    { change: ({ request }) => { request.postData = () => canary; } },
+    { change: ({ request }) => { request.redirectedFrom = () => ({}); } },
+    { change: ({ request }) => { request.frame = () => ({}); } },
+    { change: ({ request }) => { request.isNavigationRequest = () => true; } },
+    { change: ({ request }) => { request.resourceType = () => "other"; } },
+    { extra: [confirmPath, "POST"] }, { extra: ["https://private.invalid/" + canary] },
+    { extra: ["/unknown.js"] }, { extra: [csrfPath] }, { extra: [confirmPath] },
+  ];
+  for (const options of cases) {
+    const f = unauthenticatedUiFixture(options);
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+    assert.ok(f.denied.length > 0);
+    assert.ok(f.forwarded.every(value => value.startsWith("GET ")));
+    assert.ok(f.forwarded.every(value => !/private|csrf|unknown/.test(value)));
+    assert.equal(f.forwarded.filter(value => value === `GET ${confirmPath}`).length <= 1, true);
+    const before = [...f.forwarded]; await f.emit(confirmPath, "POST");
+    assert.deepEqual(f.forwarded, before);
+  }
+});
+
+test("#1073 UI-only rejects Cookie/DOM data residue, enabled controls and observer failures", async () => {
+  const cases = [
+    { cookie: true }, { enabledMonth: true },
+    ...["#schedule-status", "#history-status", "#operation-status", "#selection-status"].map(selector =>
+      ({ dom: ({ texts }) => texts.set(selector, canary) })),
+    ...["section ol li", ".slot", "#operation-content > *"].map(selector =>
+      ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
+    ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", previewName, confirmName].map(name =>
+      ({ dom: ({ controls }) => controls.set(name, false) })),
+    { dom: ({ document }) => { document.cookie = canary; } },
+    ...["csrfToken", "expectedStateToken", "studentId", "reservationId", "seed-other", "seed-reservation-self",
+      "__Host-student_session", "A".repeat(43)].map(secret =>
+      ({ dom: ({ document }) => { document.documentElement.outerHTML += secret + canary; } })),
+    { dom: ({ document }) => { document.querySelector = () => ({ getAttribute: () => "true" }); } },
+    { dom: ({ document }) => { document.querySelector = () => { throw new Error(canary); }; } },
+  ];
+  for (const options of cases) {
+    const f = unauthenticatedUiFixture(options);
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+    assert.equal(f.bodies(), 0); assert.deepEqual(f.explicit, []);
+  }
+  for (const event of ["requestfailed", "popup", "websocket", "download", "crash", "close", "framenavigated"]) {
+    const f = unauthenticatedUiFixture(), evaluate = f.page.evaluate;
+    f.page.evaluate = (...args) => { f.page.emit(event, {}); return evaluate(...args); };
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+  }
+  for (const event of ["page", "serviceworker", "close"]) {
+    const f = unauthenticatedUiFixture(), evaluate = f.page.evaluate;
+    f.page.evaluate = (...args) => { f.context.emit(event, {}); return evaluate(...args); };
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+  }
+  const f = unauthenticatedUiFixture();
+  f.context.on = () => { throw new Error(canary); };
+  await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+});
+
+test("#1073 UI-only rechecks DOM after pending response validation; network/jar failures after admission", async () => {
+  for (const fault of ["resume-ui", "network", "jar"]) {
+    let release, entered, rendered = 0;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const f = unauthenticatedUiFixture({ initial: [confirmPath], change: ({ response }) => {
+      const headers = response.allHeaders;
+      response.allHeaders = async () => {
+        entered(); await new Promise(resolve => { release = resolve; });
+        if (fault === "network") f.page.emit("requestfailed", {});
+        if (fault === "jar") f.context.cookies = async () => [{ name: canary, value: canary }];
+        return headers();
+      };
+    } });
+    const evaluate = f.page.evaluate;
+    f.page.evaluate = async (...args) => {
+      const value = await evaluate(...args);
+      if (++rendered === 1) {
+        if (fault === "resume-ui") f.page.locator = () => ({ textContent: async () => canary });
+        release();
+      }
+      return value;
+    };
+    const rejected = assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+    await ready; await rejected;
+    const before = [...f.forwarded]; await f.emit(confirmPath, "POST");
+    assert.deepEqual(f.forwarded, before); assert.equal(f.bodies(), 0);
+  }
+});
+
+test("#1073 UI-only abort/pending driver, late admission, concurrent reentry and network failure", async () => {
+  for (const stage of ["headers", "continue", "response", "dom"]) {
+    let entered, release;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const f = unauthenticatedUiFixture({ initial: [confirmPath], change: ({ request, response }) => {
+      const holder = stage === "headers" ? request : response;
+      if (stage === "headers" || stage === "response") holder.allHeaders = () => {
+        entered(); return new Promise(resolve => { release = () => resolve({}); });
+      };
+    } });
+    if (stage === "dom") f.page.evaluate = () => { entered(); return new Promise(resolve => { release = () => resolve(true); }); };
+    if (stage === "continue") {
+      const route = f.context.route;
+      f.context.route = (pattern, callback) => route(pattern, actual => callback({ ...actual,
+        continue: () => { entered(); return new Promise(resolve => { release = resolve; }); } }));
+    }
+    const rejected = assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+    await ready;
+    await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+    f.controller.abort(canary); await rejected;
+    const before = [...f.forwarded]; release(); await new Promise(resolve => setImmediate(resolve));
+    await f.emit(confirmPath, "POST"); await f.emit("/unknown.js");
+    assert.deepEqual(f.forwarded, before); assert.equal(f.bodies(), 0);
+  }
+  const f = unauthenticatedUiFixture({ change: () => { f.page.emit("requestfailed", {}); } });
+  await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+  const aborted = unauthenticatedUiFixture(); aborted.controller.abort(canary);
+  await assert.rejects(proveUnauthenticatedBookingUi(aborted.input), unauthenticatedUiError);
+  assert.deepEqual(aborted.forwarded, []);
+});
+
+test("#1073 UI-only driver timeout is bounded; fake UI cannot replace missing response", { timeout: 15000 }, async () => {
+  // Existing 5s per-operation bound, exercised without a new clock/Port contract.
+  const f = unauthenticatedUiFixture({ initial: [confirmPath] });
+  let release;
+  f.page.evaluate = () => new Promise(resolve => { release = () => resolve(true); });
+  await assert.rejects(proveUnauthenticatedBookingUi(f.input), unauthenticatedUiError);
+  const before = [...f.forwarded]; release(); await f.emit(confirmPath, "POST");
+  assert.deepEqual(f.forwarded, before);
+  const fake = unauthenticatedUiFixture({ initial: [confirmPath] }), emit = fake.page.emit;
+  fake.page.emit = function(event, value) {
+    if (event === "response" && value.request().url().includes("/api/")) return true;
+    return emit.call(this, event, value);
+  };
+  await assert.rejects(proveUnauthenticatedBookingUi(fake.input), unauthenticatedUiError);
+  assert.equal(fake.bodies(), 0); assert.deepEqual(fake.explicit, []);
+});
+
+test("#1073 UI-only is unreachable from existing owners and has independent result/state", () => {
+  for (const name of ["process", "child", "outer", "report"]) {
+    const source = readFileSync(`tests/evaluation/trusted-unauthenticated-booking-${name}.mjs`, "utf8");
+    assert.doesNotMatch(source, /proveUnauthenticatedBookingUi|ui-only-401-partial/);
+  }
+  const source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8").split("export async function proveUnauthenticatedBookingUi")[1];
+  assert.doesNotMatch(source, /\bspent\b|response\.(?:text|json|body|arrayBuffer|finished)\(|\bfetch\(|onFault|observe\(/);
 });
