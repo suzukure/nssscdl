@@ -271,7 +271,11 @@ cursor用鍵はoperator / trusted server setupでWeb CryptoのHMAC-SHA-256署名
 
 #929は `tests/evaluation/reservation-worker.ts` / `wrangler.reservation.jsonc` の独立localhost入口で#928 factoryを利用する。固定HTTPS `127.0.0.1:8789`、専用 `EVALUATION_BOOKING_DB`、6静的資産・既存3 GET・Preview / Confirmの2 POSTだけを許可し、Origin / Session / CSRF / Transactionの判断は既存Adapterへ委譲する。read-only `worker.ts` / `wrangler.jsonc`、8788の証拠・seed / snapshot・通常Production全503は維持する。strict config検査とisolated HTTP fixtureの証明範囲・専用persist境界は `../../tests/README.md` の#929節を正とする。実HTTPS / Chrome・owned cleanupを起動せず、新proof infrastructureを追加しない。実D1の先行部分証拠#931とsynthetic HTTP応答を区別し、実画面の統合証明は#930へ残す。
 
-Gateの証跡・完了判定は `../40_test/01_TestPlan.md` §7 / §9 / §12、deploy / migration / rollback / cleanupの共通正本は `../10_basic_design/01_SystemArchitecture.md` §6とする。順序はA: local HTTPS Browser + isolated D1、B: 必要性と人間承認後の隔離remote対象環境D1 proof、C: #537の正式Browser Matrix / 実mobile / deploy・rollback / Backup-Restore、D: Production readiness / #534 Business Cutoverである。Aの成功をB〜DのPassへ読み替えない。
+Gate A〜Dの評価責務・検証層分担は [`01_TestPlan.md` §7.1](../40_test/01_TestPlan.md#71-608初回隔離評価のgate892)、証跡・完了判定は同§9 / §12を正本とする。deploy / migration / rollback / cleanupの共通正本は `../10_basic_design/01_SystemArchitecture.md` §6とする。
+
+正常1予約は同じ本人・対象buildのUI Preview→明示Confirm一回→同じ予約IDの本人History / DB readbackを統合して評価する。拒否時のAPI / Browser認証・認可・UI停止と同じ拒否操作のD1不変確認、Browser固有の代表試験、環境管理の安全性確認はTestPlanの因果境界・同一性条件に従って分担できる。D1原子的Transactionの正本は `../10_basic_design/05_BookingAndConcurrency.md` §5と `02_StudentReservationD1.md` のままとし、ここに別の検証ルールを定義しない。
+
+2026-10-12の#994（source / Proof SHAはTestPlan §7.1）は正常系positive partialに限定する。#1054のCookieなし401は `bn-month-ot; evidence=unproved`、#1055の合成401は原因探索であり、401 Browser負例の成功へ算入しない。Gate A残件〜D / #608 Done / Production Readyは未達で、#1071の文書同期は#930の実行実証Doneを意味しない。
 
 | 後続の責務単位 | 依存・Doneの引継ぎ |
 | --- | --- |
