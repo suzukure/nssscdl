@@ -284,3 +284,38 @@ test("#1023 every TLS field rejects unknown/raw, omission, duplicate, order, get
     assert.deepEqual(fs.readFileSync(path + ".partial"), bytes);
   });
 });
+
+
+test("#1077 exact UI-only partial record is distinct from complete and preserved by owned one-shot codec", () => {
+  const partial = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=ui-only; status=partial; readback=unchanged\n";
+  const fixturePartial = partial.replace("isolated", "fixture");
+  assert.equal(report.unauthenticatedBookingUiChildPartial, partial);
+  assert.equal(report.unauthenticatedBookingUiFixturePartial, fixturePartial);
+  for (const [text, execution] of [[partial, "isolated"], [fixturePartial, "fixture"]]) {
+    const expected = { execution, phase: "ui-only", status: "partial", readback: "unchanged" };
+    assert.deepEqual(report.parseUnauthenticatedBookingReport(text), expected);
+    assert.equal(Object.isFrozen(report.parseUnauthenticatedBookingReport(text)), true);
+    assert.notDeepEqual(expected, report.parseUnauthenticatedBookingReport(complete));
+    fixture((dir, path) => {
+      write(report, dir, text); assert.equal(fs.readFileSync(path, "utf8"), text);
+      assert.equal(fs.statSync(path).mode & 0o7777, 0o600);
+      assert.deepEqual(read(codec(), dir), expected);
+      assert.throws(() => write(report, dir, complete), fixed);
+      assert.deepEqual(fs.readdirSync(dir), [name]);
+    });
+  }
+  for (const text of [partial.replace("\n", "\r\n"), partial.trimEnd(), partial + "\n",
+    partial.replace("status=partial", "status=prepared"),
+    partial.replace("phase=ui-only", "phase=complete"),
+    partial.replace("execution=isolated", "execution=real"),
+    partial.replace("readback=unchanged", "readback=" + canary),
+    partial.replace("; phase=ui-only", "; phase=ui-only; raw=" + canary),
+    partial.replace("; status=partial", "; raw=" + canary + "; status=partial")]) {
+    assert.throws(() => report.parseUnauthenticatedBookingReport(text), fixed);
+    fixture(dir => {
+      const api = codec(); assert.throws(() => write(api, dir, text), fixed);
+      assert.throws(() => write(api, dir, partial), fixed);
+      assert.deepEqual(fs.readdirSync(dir), []);
+    });
+  }
+});
