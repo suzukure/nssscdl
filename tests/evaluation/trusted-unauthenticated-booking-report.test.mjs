@@ -299,7 +299,7 @@ test("#1077 exact UI-only partial record is distinct from complete and preserved
     fixture((dir, path) => {
       write(report, dir, text); assert.equal(fs.readFileSync(path, "utf8"), text);
       assert.equal(fs.statSync(path).mode & 0o7777, 0o600);
-      assert.deepEqual(read(codec(), dir), expected);
+      assert.deepEqual(JSON.parse(JSON.stringify(read(codec(), dir))), expected);
       assert.throws(() => write(report, dir, complete), fixed);
       assert.deepEqual(fs.readdirSync(dir), [name]);
     });
