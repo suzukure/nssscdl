@@ -28,6 +28,18 @@ const tlsCleanupFailure = new RegExp("^cleanup failure: stage=(" + unauthenticat
 
 // Finite test-only Port seam; the operator function below seals every Port.
 export async function useUnauthenticatedBookingProcess(ports, signal, observe, observeTls) {
+  return await useProcess(ports, signal, false, observe, observeTls);
+}
+
+// #1075: finite Ports only. No sealed operator, observer/report or live caller.
+// This partial result cannot authorize the Full Child/Outer prepared terminal.
+export async function useUnauthenticatedBookingUiProcess(ports, signal) {
+  return await useProcess(ports, signal, true);
+}
+
+// Share the existing one-shot ownership/cleanup gates without adapting a UI
+// response into the void Full DOM contract.
+async function useProcess(ports, signal, uiOnly, observe, observeTls) {
   let failed = false, open = true, seedOpen = false, tlsOpen = false;
   // #930 Draft-only finite trial: freeze the first failing operation *before*
   // the cleanup observer can overwrite entered/confirmed with worker-stop.
@@ -115,8 +127,13 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
               };
               // The #1002 helper checks the actual empty Cookie jar and GET/POST
               // traffic. No Session, Cookie injection, ID or positive write latch.
-              check(await ports.proveUnauthenticatedBookingDom({ context, fixture: { month: seed.month }, signal: tlsSignal, onFault }) === undefined);
-              alive(); domDone = true; enter("dom-401"); confirm("dom-401");
+              if (uiOnly) {
+                check(await ports.proveUnauthenticatedBookingUi({ context, fixture: { month: seed.month }, signal: tlsSignal }) === "ui-only-401-partial");
+              } else {
+                check(await ports.proveUnauthenticatedBookingDom({ context, fixture: { month: seed.month }, signal: tlsSignal, onFault }) === undefined);
+              }
+              alive(); domDone = true;
+              if (!uiOnly) { enter("dom-401"); confirm("dom-401"); }
               enter("tls-cleanup");
             });
           }, {
@@ -162,7 +179,7 @@ export async function useUnauthenticatedBookingProcess(ports, signal, observe, o
       finally { seedOpen = false; }
     }, () => { confirm("preflight"); enter("seed"); }));
     alive(); check(consumed && handed && seedDone && tlsDone && inspected);
-    return Object.freeze({ phase: "complete", status: "prepared" });
+    return uiOnly ? Object.freeze({ phase: "ui-only", status: "partial" }) : Object.freeze({ phase: "complete", status: "prepared" });
   } catch { firstFailure(); throw failure(); }
   finally { open = false; seedOpen = false; tlsOpen = false; }
 }
