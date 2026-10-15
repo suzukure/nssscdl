@@ -12,6 +12,7 @@ import { tokyoNowMonth } from "../../src/web/model.ts";
 export const bookingOrigin = "https://127.0.0.1:8789";
 const timeout = 5000; // Same per-operation bound as the existing read-only DOM helper.
 const spent = new WeakSet();
+const uiSpent = new WeakSet(); // Independent of the full-proof consumers.
 const assets = new Map([["/student", "text/html"], ["/student.css", "text/css"],
   ...["student", "view", "controller", "model"].map(n => [`/${n}.js`, "text/javascript"])]);
 const previewPath = "/api/me/reservations/preview", confirmPath = "/api/me/reservations";
@@ -519,4 +520,180 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
       assertions.has(error) ? "assertion" : "unknown");
     throw failure(reason); // No raw error, cause, URL, headers, payload, or PII.
   } finally { signal?.removeEventListener?.("abort", onAbort); }
+}
+
+// #1073: dormant UI-only partial consumer. Owner supplies a fresh empty strict
+// context (ignoreHTTPSErrors:false, serviceWorkers:"block") and owns teardown.
+// The observation interval starts at DOM inspection and must end at owner
+// Context close. Retained deny guards are not a closed-lifecycle proof: until a
+// compatible owner Port is connected this result cannot become formal evidence.
+// No body delivery/driver-body completion, D1, full dom-401, or cleanup claim.
+export async function proveUnauthenticatedBookingUi({ context, fixture, signal }) {
+  const failed = () => new Error("TRUSTED_UNAUTHENTICATED_BOOKING_UI_FAILED");
+  let terminal = false, sealed = false, page, navigationCount = 0;
+  let rejectStopped;
+  const stopped = new Promise((_, reject) => { rejectStopped = reject; });
+  stopped.catch(() => {});
+  const stop = () => { terminal = true; rejectStopped(failed()); };
+  const demand = ok => { if (!ok) { stop(); throw failed(); } };
+  const alive = () => {
+    demand(!terminal && !signal.aborted);
+    if (navigationCount) demand(page.url() === bookingOrigin + "/student");
+  };
+  const step = async action => {
+    alive(); let timer;
+    try {
+      const result = await Promise.race([stopped,
+        Promise.resolve().then(() => { alive(); return action(); }),
+        new Promise((_, reject) => { timer = setTimeout(() => { stop(); reject(failed()); }, timeout); })]);
+      alive(); return result;
+    } catch { stop(); throw failed(); }
+    finally { clearTimeout(timer); }
+  };
+  const requests = new Map(), responses = new Map(), checked = new Set(), counts = new Set(), pending = new Set();
+  const initialPaths = new Set([`/api/me/schedule-months/${tokyoNowMonth()}`, confirmPath]);
+  const track = task => {
+    pending.add(task);
+    task.then(() => pending.delete(task), () => { pending.delete(task); stop(); });
+    return task;
+  };
+  const emptyJar = async () => demand(isDeepStrictEqual(await step(() => context.cookies()), []));
+  const safeHeaders = (headers, path, api) => {
+    // Same closed response metadata as #1002; deliberately no body acquisition.
+    const rules = {
+      "content-type": api ? /^application\/json(?:;\s*charset=utf-8)?$/i :
+        new RegExp(`^${assets.get(path)}(?:;\\s*charset=utf-8)?$`, "i"),
+      "cache-control": /^no-store$/, "content-length": /^\d{1,8}$/,
+      "date": /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/,
+      "connection": /^(keep-alive|close)$/, "keep-alive": /^timeout=\d{1,3}(?:, max=\d{1,6})?$/,
+      "transfer-encoding": /^chunked$/, "content-encoding": /^(gzip|br|deflate)$/,
+      "vary": /^Accept-Encoding$/i, "referrer-policy": /^no-referrer$/,
+      ...(api ? { "set-cookie": { test: value => value ===
+        "__Host-student_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT" } } :
+        { "x-content-type-options": /^nosniff$/ }),
+    };
+    demand(Object.entries(headers).every(([name, value]) => typeof value === "string" && rules[name]?.test(value)));
+    demand(rules["content-type"].test(headers["content-type"]) && headers["cache-control"] === "no-store");
+    if (api) demand(rules["set-cookie"].test(headers["set-cookie"]));
+    else demand(headers["x-content-type-options"] === "nosniff" && headers["referrer-policy"] === "no-referrer");
+  };
+  const drain = async () => {
+    await step(async () => {
+      do {
+        alive(); await Promise.all([...pending]); alive();
+        const missing = [...requests.keys()].filter(request => !responses.has(request));
+        await Promise.all(missing.map(request => page.waitForResponse(response => response.request() === request, { timeout })));
+        alive();
+      } while (pending.size);
+      demand([...requests.keys()].every(request => checked.has(request)));
+    });
+  };
+  const onAbort = () => stop();
+  try {
+    demand(signal && typeof signal.addEventListener === "function" && !signal.aborted);
+    demand(context && typeof context === "object" && !uiSpent.has(context));
+    uiSpent.add(context);
+    demand(context.browser() && context.pages().length === 0 && context.serviceWorkers().length === 0);
+    demand(fixture && isDeepStrictEqual(Object.keys(fixture), ["month"]) && validMonth(fixture.month));
+    signal.addEventListener("abort", onAbort, { once: true });
+    await emptyJar();
+    // Keep guards installed after failure/return; delayed driver completions
+    // must recheck alive before forwarding. Only the owner closes the Context.
+    await step(() => context.route("**/*", route => track((async () => {
+      try {
+        alive(); demand(!sealed);
+        const request = route.request(), rawUrl = request.url(), url = new URL(rawUrl), path = url.pathname;
+        demand(url.origin === bookingOrigin && rawUrl === bookingOrigin + path && !url.username && !url.password &&
+          !url.search && !url.hash && request.method() === "GET" && request.postData() === null &&
+          request.redirectedFrom() === null && request.frame() === page.mainFrame());
+        demand(assets.has(path) || initialPaths.has(path));
+        demand(request.resourceType() === (path === "/student" ? "document" :
+          path === "/student.css" ? "stylesheet" : assets.has(path) ? "script" : "fetch"));
+        demand(!counts.has(path)); counts.add(path);
+        demand(request.isNavigationRequest() === (path === "/student") && (path !== "/student" || navigationCount === 0));
+        const headers = await step(() => request.allHeaders());
+        const allowed = new Set(["accept", "accept-language", "accept-encoding", "user-agent", "host",
+          "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest",
+          "sec-fetch-user", "priority", "cache-control", "pragma", "upgrade-insecure-requests", "origin", "referer", "content-length"]);
+        demand(Object.keys(headers).every(name => allowed.has(name)));
+        demand(!Object.hasOwn(headers, "content-length") || headers["content-length"] === "0");
+        demand(!Object.hasOwn(headers, "origin") || headers.origin === bookingOrigin);
+        demand(!Object.hasOwn(headers, "host") || headers.host === "127.0.0.1:8789");
+        demand(!Object.hasOwn(headers, "sec-fetch-site") || headers["sec-fetch-site"] === "same-origin" ||
+          path === "/student" && headers["sec-fetch-site"] === "none");
+        demand(!Object.hasOwn(headers, "referer") || headers.referer === bookingOrigin + "/student");
+        demand(!Object.hasOwn(headers, "sec-fetch-mode") || headers["sec-fetch-mode"] ===
+          (path === "/student" ? "navigate" : path === "/student.css" ? "no-cors" : "cors"));
+        demand(!Object.hasOwn(headers, "sec-fetch-dest") || headers["sec-fetch-dest"] ===
+          (path === "/student" ? "document" : path === "/student.css" ? "style" : assets.has(path) ? "script" : "empty"));
+        demand(!Object.hasOwn(headers, "sec-fetch-user") || path === "/student" && headers["sec-fetch-user"] === "?1");
+        if (!assets.has(path)) demand(headers.accept === "application/json");
+        await emptyJar(); alive(); demand(!sealed);
+        requests.set(request, path);
+        await step(() => route.continue());
+      } catch { stop(); try { await route.abort(); } catch { /* owner teardown */ } }
+    })())));
+    await step(() => context.routeWebSocket("**/*", () => stop()));
+    context.on("page", candidate => { if (page && candidate !== page) stop(); });
+    context.on("serviceworker", stop);
+    context.on("close", stop);
+    page = await step(() => context.newPage());
+    demand(context.pages().length === 1 && context.pages()[0] === page);
+    for (const event of ["popup", "websocket", "download", "requestfailed", "crash", "close"]) page.on(event, stop);
+    page.on("framenavigated", frame => {
+      try { demand(frame === page.mainFrame() && ++navigationCount === 1 && frame.url() === bookingOrigin + "/student"); }
+      catch { stop(); }
+    });
+    page.on("response", response => {
+      if (terminal) return;
+      track(step(async () => {
+        const request = response.request(), path = requests.get(request);
+        demand(path && !responses.has(request) && response.url() === request.url() && !response.fromServiceWorker());
+        responses.set(request, response);
+        const api = initialPaths.has(path);
+        demand(response.status() === (api ? 401 : 200));
+        safeHeaders(await step(() => response.allHeaders()), path, api);
+        if (api) {
+          // Client-observed response headers, never a body-terminal predicate.
+          // -1 responseEnd remains allowed; missing/invalid timing is unproved.
+          const timing = request.timing();
+          demand(Number.isFinite(timing?.responseStart) && timing.responseStart >= 0 &&
+            (timing.responseEnd === -1 || Number.isFinite(timing.responseEnd) && timing.responseEnd >= timing.responseStart));
+        }
+        await emptyJar(); checked.add(request);
+      }).catch(() => stop()));
+    });
+    const navigation = await step(() => page.goto(bookingOrigin + "/student", { waitUntil: "load", timeout }));
+    demand(navigation && navigationCount === 1 && [...responses].some(([request, response]) =>
+      requests.get(request) === "/student" && response === navigation));
+    await step(() => page.getByRole("heading", { name: "生徒の予定・本人履歴", exact: true }).waitFor({ timeout }));
+    const inspectDom = async () => {
+      await step(() => page.waitForFunction(() => ["#schedule-content", "section ol", "#operation-content"]
+        .every(selector => document.querySelector(selector)?.getAttribute("aria-busy") === "false"), undefined, { timeout }));
+      for (const selector of ["#schedule-status", "#history-status", "#operation-status"])
+        demand(await step(() => page.locator(selector).textContent()) === "認証が必要です。認証後に画面を開き直してください。");
+      for (const selector of ["section ol li", ".slot", "#operation-content > *"])
+        demand(await step(() => page.locator(selector).count()) === 0);
+      demand(await step(() => page.locator("#selection-status").textContent()) === "");
+      demand(await step(() => page.locator("#schedule-month").isDisabled()));
+      for (const name of ["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ",
+        "選択枠の予約内容をPreview", "内容を確認して予約を確定"])
+        demand(await step(() => page.getByRole("button", { name, exact: true }).isDisabled()));
+      demand(await step(() => page.evaluate(() => document.cookie === "" &&
+        !document.querySelector('[aria-pressed="true"].slot') &&
+        !/expectedStateToken|csrf|studentId|reservationId|token_hash|__Host-student_session|seed-(?:self|other|reservation-|slot-|account-|occupancy-)|[A-Za-z0-9_-]{43}|@/i
+          .test(document.documentElement.outerHTML))));
+    };
+    await inspectDom(); await drain();
+    demand([...assets.keys()].every(path => counts.has(path)));
+    demand([...checked].some(request => initialPaths.has(requests.get(request))));
+    sealed = true; // No subsequent/duplicate GET or POST may be forwarded.
+    await inspectDom(); await drain(); await emptyJar();
+    demand(context.pages().length === 1 && context.pages()[0] === page && context.serviceWorkers().length === 0);
+    alive(); terminal = true;
+    return "ui-only-401-partial"; // Never undefined, prepared/readback, or dom-401.
+  } catch { stop(); throw failed(); }
+  finally {
+    try { signal?.removeEventListener?.("abort", onAbort); } catch { throw failed(); }
+  }
 }
