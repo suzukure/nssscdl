@@ -181,6 +181,17 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #984は任意の同期fixed enum observerを既存DOM helper→processの単一検証seam→V2 private snapshotへ接続する。既存Unit stepのDOM / process finite fixtureで、context / cookie-check / cookie-injectとcookie-jar〜completeのlast entered、固定制御位置のfirst fault、Confirmのaction-start / request-seen / route-allowed / 同一request identityのPage HTTP201 responseを区別する。各checkpoint正負・月 / 初期History / review / ID検査、abort / timeout / unknown error・observer throw / 非同期戻り値、遅延route / response / pending操作解決・identity不一致・重複POSTのfail-closedと再Confirm禁止、helper hookなし・返却後 / Worker stop / readback / cleanupで3軸不変、実helper→process→strict codecを検査する。real process→停止済みouter→CLIの直接影響fixtureだけを同期し、未観測none・全enum codec / bad data拒否を保持する。意味・制御位置と未実証境界の正本は `../../tests/README.md` の#984節とDOM / process / outer testsを参照する。クリック開始は送信、forward許可は配送 / Commit、HTTP201はD1 5表readbackの証明ではなく、未観測も未送信の証明ではない。R0 / C1 / P1 / B1 Yellow prepared、TC-F-003/005・TC-NF-902/914のpartial evidenceのみ。POL→BR→REQ→AC→TC・CON-001/002/009・OOS-001/002、識別子・予約 / HTTP / 成功 / 停止 / cleanup・時間上限は不変。実Chrome / Playwright / Worker / systemd / D1・snapshot新鮮さ、正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは未実証の別証拠とし、追加実Chrome / Confirm一回・一時Proofは#930の別事前人間承認に残す。#537 Gate A〜D / #608 Done / Production Readyを主張しない。
 
+#1071の検証層分担方針：初回#608の保証と下表A〜D、既存AC / TCの手順・合否・IDは維持し、必要な因果一体性を保ってAPI / 実D1結合 / 実Browser / 環境管理へ確認を分担する。層別の局所成功を無条件に合算せず、§12で保証対象と証拠の同一性・補完関係を追跡する。
+
+| 保証対象 | 必要な検証層・因果境界 |
+| --- | --- |
+| 正常1予約の統合証拠 | 同じ本人・対象buildでUI Preview→明示Confirm一回→本人History→対応DB readbackを一つの統合シナリオとして証明する。Confirmで生成された同じ予約IDをHistory / readbackで照合し、独立した正常試験の寄せ集めで代替しない。GuardとReservation / Occupancy / 再分類 / Audit / Intent / Outbox等の原子性は実D1結合で厳密に評価する。Transactionの正本は `../10_basic_design/05_BookingAndConcurrency.md` §5と `../20_detailed_design/02_StudentReservationD1.md` とし、競合時は先行Commitと後続拒否の対応を明示する。 |
+| 拒否操作とDB不変 | 401 / 403 / 409等の認証・認可とBrowser UI停止をAPI / Browserで確認し、未書込み・DB不変を同じ拒否操作に紐付くbefore / after D1 snapshot・schema / integrity確認で評価する。異なる層を使う場合もHEAD / build / config / fixture、actor、operation correlation、readbackの前提・採取時刻を対応付ける。競合では先行Commitを反映した比較基準と後続拒否操作を区別する。全19表を全Browser requestと常に同一Invocationへ連結すること自体は必須としないが、不変性の保証を省略したり無関係な結果で補ったりしない。既存helperの同一Invocation・停止後readback・cleanup等の成功条件は変更しない。 |
+| Browser固有の証拠 | Cookie、失効時表示、未認証レスポンス等は実Browserの代表試験を維持し、API / D1だけでは代替しない。401を受けた画面の安全な停止、未承認書込み・再送・秘密漏洩がないことを確認する。Playwright `response.text()` の内部RPC / terminal callback取得完了そのものを本体REQ / ACの必須業務結果へ自動追加しないが、必須HTTP code / headers / body contractを免除しない。keyboard / focus / 320 CSS pxもGate Aに残す。 |
+| 実行安全性の証拠 | 製品合否とは別に、run-owned資産、一時秘密・権限、Production / Providerとの分離、厳格sandbox / TLS、未知停止のfail-closed、資産の保持 / 片付け / 廃棄を判定する。自己申告やephemeral runnerだけでcleanup完了とはせず、観測可能な所有・残存検証と環境の信頼できる廃棄 / 隔離根拠を残す。未確認なら実行安全側を未証明と記録し、製品の局所成功で補わない。 |
+
+証拠の現状は上記2026-10-12の[#994](https://github.com/suzukure/nssscdl/pull/994)を正常系positive partialとして保持する。[#1054のCookieなし401失敗](https://github.com/suzukure/nssscdl/issues/930#issuecomment-6161369259)は `bn-month-ot; evidence=unproved` であり、401 Browser負例の成功には算入しない。[#1055の合成401](https://github.com/suzukure/nssscdl/issues/1055#issuecomment-6181964238)は原因探索であり製品Passではない。source / Proof identityと限界は§12で区別する。#930の正式負例・Gate A残件〜D、#608 Done / Production Readyは未達のままであり、本方針の文書同期完了を実行実証の完了としない。#930は実証と受入判断、#1066は安全な環境 / 探索手続、#1055は合成401の因果切分けを継続する（本Issueでは実行・環境方式を変更しない）。
+
 | Gate | 検証範囲と証拠の限界 |
 | --- | --- |
 | A: local操作評価 | local HTTPS Worker + local D1 + test-owned Sessionで実画面の正常・409再確認・401失効・403拒否・503 / 結果不明非再送を確認する。keyboard / focus / narrow viewportとdefault到達不可も検証する。fake Providerの結果とTransaction内Reservation / Audit / Intent / outboxのCommitを別々に観察する。local成功は実Provider配送・対象環境D1・System / Acceptance TC全体のPassではない。 |
@@ -248,6 +259,8 @@ child120秒・owner180秒の共通残予算と停止margin、固定report・有�
 
 #892の完了は詳細設計の正本・PlantUML同期と後続責務の引継ぎであり、Gate A〜Dを実行したことを意味しない。後続#608操作評価は§12の証跡へTC / AC、source commit SHA、migration revision、binding / config identity（secret値なし）、実行日時、Actor、架空test data区分、正常 / 409 / 401 / 403 / 503、画面と安全な業務状態、観察 / Defect / 制約を紐付ける。TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-003-01〜09 / TC-F-005-01と、追補 `04a_RequirementsTestTraceability_v1.6_v1.7.md` のAC-003-021対応を既存仕様に照合し、部分証拠とTC全体Passを分離する。deploy / migration / check / rollback / cleanupのexact手順と実行結果は#537の後続で正式化し、Worker rollbackとDB復旧を区別する。
 
+#1071の完了は§7.1 / §12と詳細設計§9.3の文書同期であり、#930の実行実証Doneとは別である。main反映前には現在PR HEADの正式Product CI / PR TraceabilityとClaude独立レビューを既存Gateで確認する。ローカル文書検査をこれらの正式証拠やBrowser / D1実証の代用にしない。
+
 この単位の完了は初期リリースの判定ではない。次節の全REQ / AC対応、P0 / P1、欠陥、非機能・Browser等のExit Criteriaは維持する。
 
 ## 10. 初期リリース全体のExit Criteria
@@ -271,6 +284,15 @@ child120秒・owner180秒の共通残予算と停止margin、固定report・有�
 ## 12. 証跡
 
 テスト結果には最低限、TC ID、Build/Commit、実行日時、環境、Actor/Test Data、結果、必要なScreenshot/Response/Audit evidence、Defect IDを残す。
+
+§7.1の初回#608評価では、次を対応付けて記録する。
+
+- 対象TC / ACと保証対象、試験層（API / D1 / Browser / 環境管理）、局所結果、未実施・失敗・未証明事項。
+- 実行証拠のsource SHA / Proof SHA、対象build、binding / config identity、migration revision / fixture identity、実行時刻、actor、架空データ等のデータ種類（秘密値は記録しない）。
+- 同じ操作・予約のcorrelation、層間の同一性・補完関係、before / after snapshotとreadbackの前提・採取時刻。正常統合証拠と拒否不変証拠を区別し、利用者画面の結果とDB観察を追跡する。
+- 製品合否とは分けた環境安全の判定と根拠、所有・残存の観測、cleanup結果（保持 / 片付け / 廃棄 / 隔離と未確認事項を含む）。
+
+過去runや異なるHEADの証拠は、保証対象に対するbuild / config / fixture等の同等性と因果上の補完関係を説明できるまで足し合わせてGate passにしない。部分証拠は対象範囲に限定し、未証明事項を成功へ読み替えない。
 
 PIIを証跡へ不要に複製しない。テスト用の架空データを優先する。
 
