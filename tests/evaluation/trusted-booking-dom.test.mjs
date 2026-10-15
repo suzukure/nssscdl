@@ -1424,11 +1424,14 @@ test("#1073 UI-only driver timeout is bounded; fake UI cannot replace missing re
   assert.equal(fake.bodies(), 0); assert.deepEqual(fake.explicit, []);
 });
 
-test("#1073 UI-only is unreachable from existing owners and has independent result/state", () => {
-  for (const name of ["process", "child", "outer", "report"]) {
+test("#1073/#1075 UI-only is unreachable from sealed owners and has independent result/state", () => {
+  for (const name of ["child", "outer", "report"]) {
     const source = readFileSync(`tests/evaluation/trusted-unauthenticated-booking-${name}.mjs`, "utf8");
     assert.doesNotMatch(source, /proveUnauthenticatedBookingUi|ui-only-401-partial/);
   }
+  const processSource = readFileSync("tests/evaluation/trusted-unauthenticated-booking-process.mjs", "utf8");
+  const operator = processSource.slice(processSource.indexOf("export async function runUnauthenticatedBookingProcess"));
+  assert.doesNotMatch(operator, /(?:prove|use|run)UnauthenticatedBookingUi|ui-only-401-partial/);
   const source = readFileSync("tests/evaluation/trusted-booking-dom.mjs", "utf8").split("export async function proveUnauthenticatedBookingUi")[1];
   assert.doesNotMatch(source, /\bspent\b|response\.(?:text|json|body|arrayBuffer|finished)\(|\bfetch\(|onFault|observe\(/);
 });

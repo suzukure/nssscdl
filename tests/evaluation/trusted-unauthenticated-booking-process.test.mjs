@@ -9,19 +9,20 @@ import { runInNewContext } from "node:vm";
 import { handoffListener, cleanupOwned } from "./browser-tls-trust.mjs";
 import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
 import * as report from "./trusted-unauthenticated-booking-report.mjs";
-import { useUnauthenticatedBookingProcess } from "./trusted-unauthenticated-booking-process.mjs";
+import { useUnauthenticatedBookingProcess, useUnauthenticatedBookingUiProcess } from "./trusted-unauthenticated-booking-process.mjs";
 const { parseUnauthenticatedBookingReport } = report;
 
 const canary = "private-session-csrf-sql-https://private.invalid/error";
 const fixed = error => error?.message === "TRUSTED_UNAUTHENTICATED_BOOKING_PROCESS_FAILED" &&
   !("cause" in error) && !String(error.stack).includes(canary);
 
-function fixture(fault = "") {
+function fixture(fault = "", uiOnly = false) {
   // Oracle: #1006 ordering; existing #914 sealed handoff/cleanup, #939 stop
   // result, #1002 void DOM/empty Cookie jar and #1004 same opaque capability.
   const observations = [], events = [], controller = new AbortController(), tlsController = new AbortController();
   const home = "/fixture/browser-home", identity = Object.freeze({ dev: 1, ino: 2, uid: 3 });
   const handle = Object.freeze({}), seed = { month: "2026-11" };
+  const calls = { full: 0, ui: 0 };
   const certificate = { key: `${home}/server.key`, cert: `${home}/server.pem` };
   let proofClosed = false, contextClosed = false, browserClosed = false, workerClosed = false, options, seedCallback, tlsCallback;
   let resume;
@@ -109,6 +110,7 @@ function fixture(fault = "") {
       };
     },
     async proveUnauthenticatedBookingDom(actual) {
+      calls.full++;
       hit("dom");
       const { onFault, ...wire } = actual;
       assert.equal(typeof onFault, "function");
@@ -116,6 +118,16 @@ function fixture(fault = "") {
       assert.deepEqual(await actual.context.cookies(), []);
       if (fault === "pending-dom") await new Promise(done => { resume = done; });
       if (fault === "unexpected-dom-value") return canary;
+    },
+    async proveUnauthenticatedBookingUi(actual) {
+      calls.ui++;
+      hit("dom"); // Shared lifecycle event; calls distinguishes the two Ports.
+      assert.equal(actual.context, context); assert.equal(actual.signal, tlsController.signal);
+      assert.deepEqual(actual, { context, fixture: { month: seed.month }, signal: tlsController.signal });
+      assert.deepEqual(await actual.context.cookies(), []);
+      if (fault === "pending-dom") await new Promise(done => { resume = done; });
+      if (fault === "unexpected-dom-value") return canary;
+      return "ui-only-401-partial";
     },
     async inspectTrustedBookingUnchanged(actual) {
       hit("readback"); assert.equal(contextClosed && browserClosed && workerClosed, true);
@@ -125,8 +137,9 @@ function fixture(fault = "") {
     scanOwnedSecrets(actual, path) { hit("scan"); assert.equal(actual, seed); assert.equal(path, home); },
     inspectTrustedBooking: fail, writeBookingDiagnostic: fail,
   };
-  return { ports, observations, events, seed, home, identity, controller, tlsController, input,
-    run: () => useUnauthenticatedBookingProcess(ports, controller.signal, event => observations.push(event)), resume: () => resume(),
+  return { ports, observations, events, seed, home, identity, controller, tlsController, input, context, handle, calls,
+    run: () => uiOnly ? useUnauthenticatedBookingUiProcess(ports, controller.signal) :
+      useUnauthenticatedBookingProcess(ports, controller.signal, event => observations.push(event)), resume: () => resume(),
     options: () => options, seedCallback: () => seedCallback, tlsCallback: () => tlsCallback };
 }
 
@@ -598,4 +611,185 @@ test("#1023 observer throw is passive and latched; abort closes reports without 
   assert.equal(parseUnauthenticatedBookingReport(writes[0]).tls_primary, "tls-positive");
   assert.equal(parseUnauthenticatedBookingReport(writes[0]).tls_err, "TIMEOUT");
   assert.equal(parseUnauthenticatedBookingReport(writes[0]).tls_cleanup, "unknown");
+});
+
+// #1075 oracle: Issue-defined finite-only Port, never real Chrome/D1 proof.
+const uiFixture = fault => fixture(fault, true);
+const partial = Object.freeze({ phase: "ui-only", status: "partial" });
+const noInspection = f => {
+  assert.equal(f.events.includes("readback"), false);
+  assert.equal(f.events.includes("scan"), false);
+};
+test("#1075 UI-only isolated actor/fixture, exact partial result and one-shot close→stop→readback→scan", async () => {
+  const full = fixture(), ui = uiFixture();
+  const [fullResult, uiResult] = await Promise.all([full.run(), ui.run()]);
+  assert.deepEqual(fullResult, { phase: "complete", status: "prepared" });
+  assert.deepEqual(uiResult, partial); assert.equal(Object.isFrozen(uiResult), true);
+  assert.notEqual(full.context, ui.context); assert.notEqual(full.handle, ui.handle);
+  assert.deepEqual(ui.calls, { full: 0, ui: 1 }); assert.deepEqual(full.calls, { full: 1, ui: 0 });
+  assert.deepEqual(ui.events, ["preflight", "seed", "home", "tls", "proof-close", "proof-port", "identity", "worker-create", "start", "ready",
+    "context", "dom", "after-dom", "context-close", "browser-close", "identity", "stop", "worker-port", "identity",
+    "tls-port", "identity", "readback", "identity", "scan"]);
+  assert.deepEqual(ui.events, full.events); atMostOnce(ui); atMostOnce(full);
+  assert.deepEqual(ui.observations, []); assert.equal(JSON.stringify(uiResult).includes(canary), false);
+});
+
+test("#1075 exact UI reply and missing/throw/reject Port never fall back into Full void success", async () => {
+  for (const value of [undefined, null, false, "", canary, "prepared", new String("ui-only-401-partial"), partial,
+    { phase: "complete", status: "prepared" }, { toString() { throw new Error(canary); } }]) {
+    const f = uiFixture(); let calls = 0;
+    f.ports.proveUnauthenticatedBookingUi = () => { calls++; return value; };
+    await assert.rejects(f.run(), fixed); assert.equal(calls, 1); noInspection(f); atMostOnce(f);
+    assert.equal(f.calls.full, 0); assert.equal(f.events.filter(e => e === "stop").length, 1);
+  }
+  for (const kind of ["missing", "nonfunction", "getter", "throw", "reject"]) {
+    const f = uiFixture(); let calls = 0;
+    if (kind === "missing") delete f.ports.proveUnauthenticatedBookingUi;
+    else if (kind === "nonfunction") f.ports.proveUnauthenticatedBookingUi = canary;
+    else if (kind === "getter") Object.defineProperty(f.ports, "proveUnauthenticatedBookingUi", { get() { calls++; throw new Error(canary); } });
+    else f.ports.proveUnauthenticatedBookingUi = () => {
+      calls++; if (kind === "throw") throw new Error(canary); return Promise.reject(new Error(canary));
+    };
+    await assert.rejects(f.run(), fixed); assert.equal(calls, ["missing", "nonfunction"].includes(kind) ? 0 : 1);
+    noInspection(f); atMostOnce(f); assert.equal(f.calls.full, 0);
+  }
+  const full = fixture();
+  full.ports.proveUnauthenticatedBookingDom = async () => "ui-only-401-partial";
+  await assert.rejects(full.run(), fixed); assert.equal(full.calls.ui, 0); noInspection(full);
+  const missing = fixture(); delete missing.ports.proveUnauthenticatedBookingDom;
+  await assert.rejects(missing.run(), fixed); assert.equal(missing.calls.ui, 0); noInspection(missing);
+});
+
+test("#1075 UI-only owner failures/unknowns and identity drift preserve Full fail-closed gates", async () => {
+  for (const fault of ["seed", "home", "tls", "proof-close", "proof-port", "handoff-port-unknown", "worker-create", "start",
+    "wrong-origin", "not-ready", "ready", "context", "dom", "timeout-dom", "unexpected-dom-value",
+    "context-close", "browser-close", "stop", "stop-unknown", "stopped-unknown", "worker-port-open", "worker-port",
+    "tls-port", "tls-port-unknown", "stop-skipped", "wrong-home", "identity-1", "identity-2", "identity-3", "identity-4",
+    "identity-5", "readback", "scan", "seed-skipped", "handoff-skipped", "inspect-skipped", "tls-after-cleanup"]) {
+    const f = uiFixture(fault); await assert.rejects(f.run(), fixed, fault); atMostOnce(f);
+    assert.equal(f.calls.full, 0); assert.ok(f.calls.ui <= 1);
+    if (!["identity-5", "readback", "scan", "tls-after-cleanup"].includes(fault)) noInspection(f);
+    if (!["scan", "tls-after-cleanup"].includes(fault)) assert.equal(f.events.includes("scan"), false, fault);
+    if (["start", "dom", "context-close", "browser-close", "identity-2", "identity-3"].includes(fault))
+      assert.equal(f.events.filter(e => e === "stop").length, 1, fault);
+  }
+});
+
+test("#1075 UI-only duplicate/early/late/reentrant callbacks cannot authorize additional effects", async () => {
+  for (const fault of ["duplicate-seed", "duplicate-handoff", "duplicate-stop", "duplicate-inspect", "early-inspect", "late-handoff"]) {
+    const f = uiFixture(fault); await assert.rejects(f.run(), fixed); atMostOnce(f);
+    if (!["duplicate-seed", "duplicate-inspect"].includes(fault)) noInspection(f);
+  }
+  for (const fault of ["", "dom", "browser-close"]) {
+    const f = uiFixture(fault);
+    if (fault) await assert.rejects(f.run(), fixed); else assert.deepEqual(await f.run(), partial);
+    const before = [...f.events];
+    await assert.rejects(f.seedCallback()(f.seed, f.handle), fixed);
+    await assert.rejects(f.tlsCallback()(f.input), fixed);
+    await assert.rejects(f.tlsCallback()(null), fixed);
+    await assert.rejects(f.options().stopConsumer(), fixed);
+    await assert.rejects(f.options().inspectOwned(f.home), fixed);
+    assert.deepEqual(f.events, before);
+  }
+  for (const boundary of ["seed", "tls"]) {
+    const f = uiFixture(); let results;
+    if (boundary === "seed") f.ports.prepareTrustedBooking = async consume => {
+      results = await Promise.allSettled([consume(f.seed, f.handle), consume(f.seed, f.handle)]);
+    };
+    else f.ports.withIsolatedBrowserTls = async consume => {
+      results = await Promise.allSettled([consume(f.input), consume(f.input)]);
+    };
+    await assert.rejects(f.run(), fixed); noInspection(f); atMostOnce(f);
+    assert.equal(results.length, 2);
+    assert.ok(results.every(result => result.status === "rejected" && fixed(result.reason)));
+  }
+});
+
+test("#1075 UI-only parent/TLS abort and timeout never promote partial success", async () => {
+  const pre = uiFixture(); pre.controller.abort(canary);
+  await assert.rejects(pre.run(), fixed); assert.deepEqual(pre.events, []);
+  await assert.rejects(useUnauthenticatedBookingUiProcess({}, undefined), fixed);
+  for (const prefix of ["abort", "tls-abort", "timeout"]) {
+    for (const name of ["seed", "home", "tls", "start", "context", "dom", "after-dom", "context-close", "browser-close", "stop",
+      "worker-port", "readback", "scan"]) {
+      // after-dom is an owner-fixture checkpoint, not a bounded operation. A
+      // hidden owner throw there is observed only on return, like tls-after-cleanup.
+      if (prefix === "timeout" && name === "after-dom") continue;
+      const f = uiFixture(`${prefix}-${name}`); await assert.rejects(f.run(), fixed); atMostOnce(f);
+      if (!["readback", "scan"].includes(name)) noInspection(f);
+      if (name === "readback") assert.equal(f.events.includes("scan"), false);
+    }
+  }
+  for (const controller of ["controller", "tlsController"]) {
+    const f = uiFixture("pending-dom"), operation = f.run();
+    while (!f.events.includes("dom")) await new Promise(done => setImmediate(done));
+    f[controller].abort(canary); f.resume();
+    await assert.rejects(operation, fixed); noInspection(f); atMostOnce(f);
+  }
+});
+
+test("#1075 UI-only premature stop and unawaited owner close pending continuations", async () => {
+  for (const boundary of ["seed", "tls", "stop"]) {
+    const f = uiFixture("pending-dom"); let pending;
+    if (boundary === "seed") f.ports.prepareTrustedBooking = consume => { pending = consume(f.seed, f.handle); pending.catch(() => {}); };
+    else f.ports.withIsolatedBrowserTls = async (consume, options) => {
+      pending = consume(f.input); pending.catch(() => {});
+      if (boundary === "stop") {
+        while (!f.events.includes("dom")) await new Promise(done => setImmediate(done));
+        await options.stopConsumer(); f.resume();
+        await assert.rejects(pending, fixed);
+        await assert.rejects(options.inspectOwned(f.home), fixed);
+      }
+    };
+    // This isolated owner represents completed TLS handoff, as in #1006.
+    f.ports.createBookingWorkerPort = () => ({ start: async () => "https://127.0.0.1:8789", isReady: () => true,
+      stop: async () => { f.events.push("stop"); return { stopped: true, portClosed: true }; } });
+    await assert.rejects(f.run(), fixed);
+    if (boundary !== "stop" && f.events.includes("dom")) f.resume();
+    await assert.rejects(pending, fixed); noInspection(f); atMostOnce(f);
+  }
+});
+
+test("#1075 no UI Full observer/fault hook; malformed TLS diagnostics stay passive and non-secret", async () => {
+  const f = uiFixture(), original = f.ports.withIsolatedBrowserTls; let observed = 0, coerced = 0;
+  f.ports.withIsolatedBrowserTls = (consume, options) => original(consume, { ...options, report() {
+    for (const value of [canary, null, {}, { toString() { coerced++; throw new Error(canary); } },
+      primaryLine("preflight"), cleanupLine("owned-inspect")]) assert.equal(options.report(value), undefined);
+  } });
+  const observe = () => { observed++; throw new Error(canary); };
+  assert.deepEqual(await useUnauthenticatedBookingUiProcess(f.ports, f.controller.signal, observe, observe), partial);
+  assert.equal(observed, 0); assert.equal(coerced, 0); atMostOnce(f);
+});
+
+test("#1075 existing Child rejects UI-only completed Process without prepared/unchanged report or replay", async () => {
+  const f = uiFixture(), writes = []; let calls = 0;
+  const input = { isolated: true, signal: f.controller.signal,
+    runInner: ({ signal }) => { calls++; return useUnauthenticatedBookingUiProcess(f.ports, signal); },
+    write: text => writes.push(text) };
+  assert.equal(await useUnauthenticatedBookingChild(input), false);
+  assert.equal(calls, 1); assert.equal(writes.length, 1);
+  assert.deepEqual(parseUnauthenticatedBookingReport(writes[0]), { phase: "failed", entered: "unknown", confirmed: "unknown",
+    tls_primary: "unknown", tls_cleanup: "unknown", tls_err: "unknown", status: "failed" });
+  assert.doesNotMatch(writes[0], /prepared|readback=unchanged|ui-only/); assert.equal(writes[0].includes(canary), false);
+  assert.equal(await useUnauthenticatedBookingChild(input), false); assert.equal(calls, 1); assert.equal(writes.length, 1);
+  atMostOnce(f); assert.deepEqual(f.calls, { full: 0, ui: 1 });
+});
+
+test("#1075 finite Port export only, no default/live/Production/Workflow UI wiring", async () => {
+  const api = await import("./trusted-unauthenticated-booking-process.mjs");
+  assert.deepEqual(Object.keys(api).sort(), ["runUnauthenticatedBookingProcess", "useUnauthenticatedBookingProcess", "useUnauthenticatedBookingUiProcess"]);
+  const source = readFileSync("tests/evaluation/trusted-unauthenticated-booking-process.mjs", "utf8");
+  const operator = source.slice(source.indexOf("export async function runUnauthenticatedBookingProcess"));
+  assert.doesNotMatch(operator, /UnauthenticatedBookingUi|ui-only-401-partial/);
+  assert.doesNotMatch(source, /--run|import\.meta\.url|process\.argv\[1\]|runUnauthenticatedBookingUiProcess/);
+  const scan = directory => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const file = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) scan(file);
+      else assert.doesNotMatch(readFileSync(file, "utf8"), /UnauthenticatedBookingUi|ui-only-401-partial/, file);
+    }
+  };
+  scan("src"); scan(".github/workflows");
+  for (const name of ["child", "outer", "report"])
+    assert.doesNotMatch(readFileSync(`tests/evaluation/trusted-unauthenticated-booking-${name}.mjs`, "utf8"), /UnauthenticatedBookingUi|ui-only-401-partial/);
 });
