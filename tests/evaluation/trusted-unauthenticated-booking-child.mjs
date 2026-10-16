@@ -2,12 +2,15 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { types } from "node:util";
-import { unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete,
+import { unauthenticatedBookingChildComplete, unauthenticatedBookingFixtureComplete, unauthenticatedBookingUiChildPartial, unauthenticatedBookingUiFixturePartial,
   unauthenticatedBookingPhases, unauthenticatedBookingTlsPrimary, unauthenticatedBookingTlsCleanup, unauthenticatedBookingTlsErrors,
   formatUnauthenticatedBookingFailure, writeUnauthenticatedBookingReport } from "./trusted-unauthenticated-booking-report.mjs";
 
 const consumed = new WeakSet();
-export async function useUnauthenticatedBookingChild({ runInner, write, signal, isolated = false }) {
+export function useUnauthenticatedBookingChild(options) { return useChild(options, false); }
+// Dormant, test-only producer: no CLI or Outer caller. Full remains isolated.
+export function useUnauthenticatedBookingUiChild(options) { return useChild(options, true); }
+async function useChild({ runInner, write, signal, isolated = false }, uiOnly) {
   // The single-use inner Port also prevents parallel/repeated entry from replacing a report.
   if (typeof runInner !== "function" || consumed.has(runInner)) return false;
   consumed.add(runInner);
@@ -60,13 +63,17 @@ export async function useUnauthenticatedBookingChild({ runInner, write, signal, 
     try { inner = runInner({ signal, observe, observeTls }); } catch { inner = Promise.reject(new Error("TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_FAILED")); }
     const result = await Promise.race([inner, aborted]); // Never replay, including abort + synchronous throw.
     signal.throwIfAborted();
-    if (!result || typeof result !== "object" || Reflect.ownKeys(result).length !== 2 ||
+    if (!result || typeof result !== "object" || types.isProxy(result) || Reflect.ownKeys(result).length !== 2 ||
       !["phase", "status"].every(key => Object.hasOwn(result, key))) throw new Error();
     const phase = Object.getOwnPropertyDescriptor(result, "phase"), status = Object.getOwnPropertyDescriptor(result, "status");
     if (!Object.hasOwn(phase, "value") || !Object.hasOwn(status, "value") ||
-      phase.value !== "complete" || status.value !== "prepared") throw new Error();
+      phase.value !== (uiOnly ? "ui-only" : "complete") ||
+      status.value !== (uiOnly ? "partial" : "prepared")) throw new Error();
     observing = false; entered = "report-write"; writeAttempted = true;
-    await Promise.race([write(isolated === true ? unauthenticatedBookingChildComplete : unauthenticatedBookingFixtureComplete), aborted]);
+    const text = uiOnly
+      ? (isolated === true ? unauthenticatedBookingUiChildPartial : unauthenticatedBookingUiFixturePartial)
+      : (isolated === true ? unauthenticatedBookingChildComplete : unauthenticatedBookingFixtureComplete);
+    await Promise.race([write(text), aborted]);
     signal.throwIfAborted();
     return true;
   } catch {

@@ -790,6 +790,12 @@ test("#1075 finite Port export only, no default/live/Production/Workflow UI wiri
     }
   };
   scan("src"); scan(".github/workflows");
-  for (const name of ["child", "outer", "report"])
-    assert.doesNotMatch(readFileSync(`tests/evaluation/trusted-unauthenticated-booking-${name}.mjs`, "utf8"), /UnauthenticatedBookingUi|ui-only-401-partial/);
+  const childSource = readFileSync("tests/evaluation/trusted-unauthenticated-booking-child.mjs", "utf8");
+  const sealedCli = childSource.slice(childSource.indexOf("if (process.argv[1] && resolve(process.argv[1])"));
+  assert.ok(sealedCli.length > 200);
+  assert.doesNotMatch(sealedCli, /useUnauthenticatedBookingUiChild|unauthenticatedBookingUiChildPartial|ui-only-401-partial/);
+  assert.match(childSource, /export function useUnauthenticatedBookingUiChild/);
+  const reportSource = readFileSync("tests/evaluation/trusted-unauthenticated-booking-report.mjs", "utf8");
+  assert.match(reportSource, /export const unauthenticatedBookingUiChildPartial/);
+  assert.doesNotMatch(readFileSync("tests/evaluation/trusted-unauthenticated-booking-outer.mjs", "utf8"), /UnauthenticatedBookingUi|ui-only-401-partial/);
 });
