@@ -14,21 +14,22 @@
 |---|---:|
 | 要求ベースライン | v1.21 |
 | 対象REQ | 64（機能44 + 非機能20） |
-| 対象AC | 227 |
-| 対応済AC | 214 |
-| AC未対応 | 13 |
-| 機能TC | 121 |
-| 非機能TC | 41 |
-| 合計TC | 162 |
-| AC Coverage | 94.3% |
+| 対象AC | 236 |
+| 対応済AC | 229 |
+| AC未対応 | 7 |
+| 機能TC | 134 |
+| 非機能TC | 42 |
+| 合計TC | 176 |
+| AC Coverage | 97.0% (229/236) |
 
-Coverageは、`04_FunctionalRequirements.md` および `05_NonFunctionalRequirements.md` に定義された227件のACを母数とし、既存の `04_RequirementsTestTraceability.md` と `04a_RequirementsTestTraceability_v1.6_v1.7.md` で対応済みの204件に、本書で対応付ける `AC-008-001〜010` の10件を加えた214件を分子とする。したがって、`214 / 227 × 100 = 94.3%`（小数第1位丸め）である。v1.21は6件のACと対応TCを追加し、通知ライフサイクルの回帰内容を `02_FunctionalTestSpecification.md` へ反映する。
+Coverageは、要求正本 `docs/00_requirements/04_FunctionalRequirements.md` と `05_NonFunctionalRequirements.md` のAC定義236件を母数とする。全追跡表（`04_RequirementsTestTraceability.md`、`04a_RequirementsTestTraceability_v1.6_v1.7.md`、本書）のAC行を合算し、全主・補足テスト仕様（`02_FunctionalTestSpecification.md`、`02a_ReservationOwnershipTestSpecification.md`、`02b_RequirementsV1.6V1.7TestSpecification.md`、`02c_BulkReservationTestSpecification.md`、`03_NonFunctionalTestSpecification.md`）に定義されたTCへの有効な対応を持つACを、ID単位で重複排除した229件を分子とする。`229 / 236 × 100 = 97.0%`（小数第1位丸め）であり、テスト実行成功率を表さない。追補中の履歴Summaryは現行集計に加算しない。
 
-未対応の13件は、本書の対象外である既存の要求変更分である。
+機能TCは主仕様121件＋所有者同一性追補2件＋v1.6/v1.7追補3件＋一括予約追補8件の134件、非機能TCは42件で、定義IDの重複はない。合計176件はAC対応TCの定義数であり、CON/OOSのScope Guardは含めない。Issue #1082で6 TCを追加し、事後スクール都合キャンセル・通知の6 ACを補完した。
 
-- `AC-004-006`, `AC-103-004`, `AC-301-010`
+残る未対応7 ACはIssue #1082の対象外とし、親Issue #551で管理する。
+
+- `AC-004-006`, `AC-301-010`
 - `AC-308-002`, `AC-308-003`
-- `AC-313-005〜009`
 - `AC-315-005`
 - `AC-913-005`, `AC-913-006`
 
