@@ -197,7 +197,6 @@ def prepare(number):
     git("merge", "--ff-only", "origin/main")
     if git("rev-parse", "HEAD") != sha:
         raise Stop("mainの同期結果が予期したSHAと不一致です")
-    git("switch", "-c", branch)
     # Remove stale inputs before building: Codex must not read the old Issue.
     context = root / ".ai-context"
     context.mkdir(exist_ok=True)
@@ -223,6 +222,8 @@ def prepare(number):
         (context / "AGENTS.base.md").write_text(base, encoding="utf-8")
         (context / "diff-guard-contract.json").write_text(json.dumps(contract) + "\n", encoding="utf-8")
         (context / "request.md").write_text(req, encoding="utf-8")
+    # Only create the branch after context generation and guard verification succeed.
+    git("switch", "-c", branch)
     print(f"準備完了: {branch} / Issue #{number}。Codexは編集・有限検証のみ実行してください。")
 
 

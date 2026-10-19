@@ -126,6 +126,12 @@ class SafetyTests(unittest.TestCase):
                 self.assertIn("Issue context", str(ctx_err.exception))
             self.assertFalse(subprocess.check_output(["git", "diff", "--cached", "--name-only"], text=True))
 
+    def test_subprocess_timeout_fails_closed(self):
+        with patch.object(ld.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=40)):
+            with self.assertRaises(ld.Stop) as err:
+                ld.call("gh", "issue", "view")
+            self.assertIn("TimeoutExpired", str(err.exception))
+
     def test_subprocess_failure_is_not_raw_stderr(self):
         with patch.object(ld.subprocess, "run") as mock:
             mock.return_value.returncode = 13
