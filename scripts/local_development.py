@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -126,6 +127,29 @@ def confirm(message, number):
         raise Stop("人間承認が得られませんでした")
 
 
+def resolve_bash(windows=None):
+    """Locate the Git for Windows Bash wrapper without editing process PATH."""
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        # Git for Windows exposes <Git>/cmd/git.exe in PATH, while
+        # <Git>/bin/bash.exe need not be in PATH. Use the SAME installation.
+        git_executable = shutil.which("git")
+        if git_executable:
+            executable = Path(git_executable)
+            if (executable.name.casefold() == "git.exe"
+                    and executable.parent.name.casefold() in {"cmd", "bin"}):
+                candidate = executable.parent.parent / "bin" / "bash.exe"
+                if candidate.is_file() and not candidate.is_symlink():
+                    return str(candidate)
+        # Do not fall back to the unrelated WSL/System32 bash.exe.
+        raise Stop("Git for Windowsのbash.exeをgit.exeの同一インストール先で検出できません")
+    bash_executable = shutil.which("bash")
+    if not bash_executable:
+        raise Stop("bashがPATHから見つかりません")
+    return bash_executable
+
+
 def bash_guard(repo_root, contract=False):
     script = repo_root / ".github" / "scripts" / "evaluate-codex-diff-gate.sh"
     if not script.is_file():
@@ -134,11 +158,12 @@ def bash_guard(repo_root, contract=False):
     # Use only this child Bash process, without altering the canonical guard.
     env = os.environ.copy()
     env.pop("BASH_ENV", None)
-    call("bash", "-c", "python -c 'import sys; assert sys.version_info.major == 3'", env=env)
-    args = ["bash", "-c",
+    bash = resolve_bash()
+    call(bash, "-c", "python -c 'import sys; assert sys.version_info.major == 3'", env=env)
+    args = [bash, "-c",
             'python3() { python "$@"; }; export -f python3; '
             'if command -v cygpath >/dev/null 2>&1; then guard=$(cygpath -u "$1") || exit 1; '
-            'else guard="$1"; fi; shift; exec bash "$guard" "$@"',
+            'else guard="$1"; fi; shift; exec "$BASH" "$guard" "$@"',
             "local-guard", str(script)]
     if contract:
         args.append("--contract")

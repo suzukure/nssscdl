@@ -5,6 +5,7 @@ Maintenance, backup, validation, and project utility scripts live here.
 ## 人間管理のCodex Local受け渡し（#1086）
 
 Windows PowerShellでリポジトリルートに移動し、既存Git・GitHub CLI認証・Python 3・Git Bashを使用する。
+Windowsでは、Git for Windowsの`git.exe`が通常のPATHで使えれば、同じインストール先の`bin/bash.exe`をCLIが直接検出する。PowerShell profileやユーザー/システムPATHを補正する必要はない。検出に失敗した場合は停止し、`git.exe`がGit for Windowsの`cmd/`または`bin/`から解決できることを確認する。WSLの`bash.exe`で代用しない。
 
 ```powershell
 python scripts/local_development.py prepare 1086

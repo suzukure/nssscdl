@@ -83,6 +83,52 @@ class SafetyTests(unittest.TestCase):
         with patch("builtins.input", return_value="YES 123"):
             ld.confirm("submit", 123)
 
+    def test_windows_git_bash_resolves_beside_git_cmd_without_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "Git"
+            (folder / "cmd").mkdir(parents=True)
+            (folder / "bin").mkdir()
+            git_exe = folder / "cmd" / "git.exe"
+            bash_exe = folder / "bin" / "bash.exe"
+            git_exe.write_bytes(b"test")
+            bash_exe.write_bytes(b"test")
+            with patch.object(ld.shutil, "which",
+                              side_effect=lambda name: str(git_exe) if name == "git" else None):
+                self.assertEqual(ld.resolve_bash(windows=True), str(bash_exe))
+
+    def test_windows_missing_wrapper_does_not_use_wsl_bash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "Git"
+            (folder / "cmd").mkdir(parents=True)
+            git_exe = folder / "cmd" / "git.exe"
+            git_exe.write_bytes(b"test")
+            with patch.object(ld.shutil, "which",
+                              side_effect=lambda name: str(git_exe) if name == "git"
+                              else r"C:\Windows\System32\bash.exe"):
+                with self.assertRaises(ld.Stop):
+                    ld.resolve_bash(windows=True)
+
+    def test_nonwindows_resolves_bash_from_path(self):
+        with patch.object(ld.shutil, "which",
+                          side_effect=lambda name: "/usr/bin/bash" if name == "bash" else None):
+            self.assertEqual(ld.resolve_bash(windows=False), "/usr/bin/bash")
+        with patch.object(ld.shutil, "which", return_value=None):
+            with self.assertRaises(ld.Stop):
+                ld.resolve_bash(windows=False)
+
+    def test_guard_launches_selected_bash_without_path_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / ".github" / "scripts" / "evaluate-codex-diff-gate.sh"
+            path.parent.mkdir(parents=True)
+            path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            with patch.object(ld, "resolve_bash", return_value="/Git/bin/bash.exe"), \
+                 patch.object(ld, "call", side_effect=["", '{"result":"pass","changed_files":1}']) as proc:
+                self.assertEqual(ld.bash_guard(root)["result"], "pass")
+                self.assertEqual(proc.call_args_list[0].args[0], "/Git/bin/bash.exe")
+                self.assertEqual(proc.call_args_list[1].args[0], "/Git/bin/bash.exe")
+                self.assertIn('exec "$BASH"', proc.call_args_list[1].args[2])
+
     def test_guard_python3_alias_compatibility(self):
         # The canonical guard is not edited; the subprocess alone defines python3.
         with tempfile.TemporaryDirectory() as tmp:
