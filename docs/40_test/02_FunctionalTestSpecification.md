@@ -36,11 +36,26 @@
 ### REQ-004 生徒キャンセル
 | TC ID | 対応AC | P | 技法 | 前提・手順 | 期待結果 | 自動化 |
 |---|---|:---:|---|---|---|---|
-| `TC-F-004-01` | AC-004-001, AC-004-005 | P0 | 状態遷移 | S1の将来予約と後続additional予約を用意。Commit時刻<Tstart。将来予約をキャンセルする。 | 対象予約は生徒キャンセルとなり枠を再開放する。影響する未開始Reservationのみ必要に応じ再分類される。 | 自動化候補 |
+| `TC-F-004-01` | AC-004-001, AC-004-005, AC-004-006 | P0 | 状態遷移 / Decision Table / Metamorphic | 下記の有限代表例を独立に用意し、S1本人が対象予約をキャンセルする。取消前後のautomatic_classificationと実効classificationをReservation単位で比較する。 | 対象はstudent_cancelled・分類対象外（classification=NULL）となり、automatic_classificationは保持する。開始前なら枠を再開放し、同一生徒・同一月の必要な未開始予約を再分類する。取消対象以外の未開始・有効な予約の実効standard/additional差分はadditional→standardのみで、standard→additionalは0件。不変の行は差分に含めない。各例の具体的期待値と非干渉は下記で照合する。 | 自動化候補 |
 | `TC-F-004-02` | AC-004-002 | P0 | 境界値 / 状態遷移 | 予約済み枠、Tstart<=Server Commit時刻<=Tend。S1がキャンセルする。 | キャンセルは成立するが枠は新規予約可能へ戻らない。 | 自動化候補 |
 | `TC-F-004-03` | AC-004-003 | P0 | 境界値分析 | 予約済み枠。Server Commit時刻をTendとTend+1msに制御。各時刻でS1がキャンセルを確定する。 | Tendまでは仕様上許可され、Tend後は拒否される。判定はServer Commit時刻基準。 | 自動化候補 |
 | `TC-F-004-04` | AC-004-004 | P0 | Concurrency / 状態遷移 | S1キャンセルPreview後にA1が同予約をスクール都合キャンセルする。A1を先行Commit後、S1キャンセルを確定する。 | 最新予約状態を再検証しS1操作はConflict等で成立しない。スクール都合キャンセル状態を上書きしない。 | 自動化候補 |
 | `TC-F-004-05` | AC-004-005 | P0 | 状態遷移 | 同月に開始済みReservationと未開始Reservationを用意し、キャンセルで分類再計算が起きる状態。未開始予約をキャンセルし再計算を発生させる。 | 開始済みReservationの自動分類は変更されず、未開始Reservationだけが再計算対象となる。 | 自動化候補 |
+
+TC-F-004-01の有限代表例では、S1・同一暦月、予定日時順R1<R2<R3、全予約confirmed・未開始・月間算入対象、欠席・月間回数除外・ClassificationOverrideなし、開始済み消費枠C=0を基本とする。Nは各行の値を用い、Server Commit時刻は全未開始予約のTstartより前に固定する。他生徒S2・別月の予約を対照に置き、取消前後で状態・自動分類・実効分類が不変であることも確認する。各行は初期状態から独立に実施し、取消以外の操作や開始境界通過を混在させない。
+
+| 代表例 | 前提・取消対象 | 取消後の期待値（他の未開始予約） |
+|---|---|---|
+| 標準予約取消・改善 | N=2、R1/R2=standard、R3=additional。R1を取消。 | R2はstandard維持、R3だけadditional→standard。自動分類と実効分類は一致する。 |
+| 追加予約取消・変化なし | 上行と同じ初期状態でR3を取消。 | R1/R2はstandard維持、差分集合は空。 |
+| 残枠1件・影響範囲 | N=1、R1=standard、R2/R3=additional。R1を取消。 | R2だけadditional→standard、R3はadditional維持。 |
+| 開始済み消費枠の解放 | N=1。R1だけ開始済み・算入対象の自動standard、未開始R2/R3=additional。R1のTstart<Server Commit時刻<TendでR1を取消。 | C=1→0、残枠=max(N-C,0)=0→1となりR2だけadditional→standard、R3はadditional維持。R1のautomatic_classificationはstandardを保持し、開始後の枠は再開放しない。TC-F-004-05 / TC-F-309-01と連携し、他の開始済み予約も自動再分類しない。 |
+| Override非干渉・実効区分の分離 | N=1、R1=standard・R2/R3=additionalの基本状態でR2にadditional Overrideを保持した例と、R3にstandard Overrideを保持した例を独立に用意する。Overrideなしの対照と比較し、各例でR1を取消。 | 両例ともR2の自動分類はadditional→standard、R3は自動additional維持で、対照と割当て・枠消費が一致する。R2 Override例はR2の実効additionalを維持し、R3 Override例はR2の実効additional→standard・R3の実効standard維持。Overrideを保持したまま、実効差分を自動分類差分と別に照合する（TC-F-309-02）。 |
+| 算入除外の非干渉 | N=1、R1=standard・R2/R3=additionalの基本状態に、R1<RX<R2の未開始RXを加え、RXのみ月間回数除外済みとする。RXの保持済みautomatic_classification=standard、実効classification=NULL。R1を取消。 | RXは分類対象外・NULLと保持済み自動分類を維持し、割当て集合へ入らない。R2だけadditional→standard、R3はadditional維持。TC-F-309-01/02と連携し、対象外をstandard/additional差分へ含めない。 |
+
+全例で、取消対象を除く他の未開始・有効かつ算入対象のReservationについて実効区分の前後対を全件照合し、standard→additionalが0件、変化があればadditional→standardのみであることを明示assertする。分類対象外の対照は別に照合する。時刻境界の可否はTC-F-004-02/03、競合・上書き禁止はTC-F-004-04、一般分類とOverride算出はTC-F-309-01/02を正とする。確定後通知・影響日時と変更前後の完了表示はTC-F-104-01/02を適用し、キャンセル前の影響Previewや専用Preview APIは要求しない。
+
+期待値の根拠はREQ-004 / AC-004-001/005/006、REQ-309 / AC-309-001/002、REQ-104 / AC-104-003、BR-053/054/058/059/060/067、および基本設計 `docs/10_basic_design/04_ReservationModel.md` §8〜9.6、`05_BookingAndConcurrency.md` §6、`06_APIOverview.md` §11.6とする。取消と新規予約は独立とし、CON/OOSの意味と既存TCの責務を変更しない。
 
 ### REQ-005 予約履歴
 | TC ID | 対応AC | P | 技法 | 前提・手順 | 期待結果 | 自動化 |
