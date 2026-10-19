@@ -95,6 +95,37 @@ class SafetyTests(unittest.TestCase):
                 encoding="utf-8")
             self.assertEqual(ld.bash_guard(root)["result"], "pass")
 
+    def test_submit_refuses_stale_issue_context_before_stage(self):
+        with repository() as root:
+            (root / "AGENTS.md").write_text("base instructions\n", encoding="utf-8")
+            (root / ".gitignore").write_text(".ai-context/\n", encoding="utf-8")
+            builder = root / ".github" / "scripts" / "build-development-context.py"
+            builder.parent.mkdir(parents=True)
+            builder.write_text(
+                "import sys\nfrom pathlib import Path\n"
+                "Path(sys.argv[2]).write_text('# Development request\\nIssue #123: updated\\n', encoding='utf-8')\n",
+                encoding="utf-8")
+            subprocess.run(["git", "add", "AGENTS.md", ".gitignore", str(builder.relative_to(root))], check=True)
+            subprocess.run(["git", "commit", "-qm", "test setup"], check=True)
+            subprocess.run(["git", "switch", "-qc", "human/issue-123-local"], check=True)
+            ctx = root / ".ai-context"
+            ctx.mkdir()
+            (ctx / "request.md").write_text("# Development request\nIssue #123: older\n", encoding="utf-8")
+            (ctx / "AGENTS.base.md").write_text("base instructions\n", encoding="utf-8")
+            (ctx / "diff-guard-contract.json").write_text('{"max_changed_files": 25}', encoding="utf-8")
+            (root / "docs" / "a.md").write_text("changed\n")
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            with patch.object(ld, "check_root", return_value=root), \
+                 patch.object(ld, "remote_branch_exists", return_value=False), \
+                 patch.object(ld, "fresh_main", return_value=sha), \
+                 patch.object(ld, "check_issue", return_value=({"updatedAt": "unchanged"}, '{}')), \
+                 patch.object(ld, "bash_guard", return_value={"max_changed_files": 25}), \
+                 patch.object(ld, "check_no_pr"):
+                with self.assertRaises(ld.Stop) as ctx_err:
+                    ld.submit()
+                self.assertIn("Issue context", str(ctx_err.exception))
+            self.assertFalse(subprocess.check_output(["git", "diff", "--cached", "--name-only"], text=True))
+
     def test_subprocess_failure_is_not_raw_stderr(self):
         with patch.object(ld.subprocess, "run") as mock:
             mock.return_value.returncode = 13
