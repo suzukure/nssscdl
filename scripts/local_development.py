@@ -135,7 +135,10 @@ def bash_guard(repo_root, contract=False):
     env = os.environ.copy()
     env.pop("BASH_ENV", None)
     call("bash", "-c", "python -c 'import sys; assert sys.version_info.major == 3'", env=env)
-    args = ["bash", "-c", 'python3() { python "$@"; }; export -f python3; exec bash "$@"',
+    args = ["bash", "-c",
+            'python3() { python "$@"; }; export -f python3; '
+            'if command -v cygpath >/dev/null 2>&1; then guard=$(cygpath -u "$1") || exit 1; '
+            'else guard="$1"; fi; shift; exec bash "$guard" "$@"',
             "local-guard", str(script)]
     if contract:
         args.append("--contract")
@@ -164,6 +167,8 @@ def candidate_paths():
     if not names:
         raise Stop("提出する差分がありません")
     for p in names:
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in p):
+            raise Stop("制御文字を含む変更パスは利用できません")
         if forbidden(p) or Path(p).is_symlink() or (Path(p).exists() and not Path(p).is_file()):
             raise Stop("禁止または検証できない変更パスがあります。停止します")
     return names
@@ -243,7 +248,16 @@ def submit():
         raise Stop("trusted AGENTSとbase SHAが一致しません")
     if decode_json(contract.read_text(encoding="utf-8"), "guard契約") != bash_guard(root, contract=True):
         raise Stop("guard契約が一致しません")
-    info, _ = check_issue(number)
+    info, raw = check_issue(number)
+    # Verify that Codex was given this Issue snapshot, not an older body/comment set.
+    builder = root / ".github" / "scripts" / "build-development-context.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        issue_json, built, summary = directory / "issue.json", directory / "request.md", directory / "summary.txt"
+        issue_json.write_text(raw, encoding="utf-8")
+        call(sys.executable, str(builder), str(issue_json), str(built), str(summary))
+        if built.read_text(encoding="utf-8") != req:
+            raise Stop("Issue contextがprepare以降に更新されています。人間による再評価が必要です")
     check_no_pr(number, branch)
     paths = candidate_paths()
     print(f"Issue #{number} / 提出予定 {len(paths)} files:")
