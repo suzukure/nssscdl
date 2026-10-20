@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { types } from "node:util";
-import { useUnauthenticatedBookingChild } from "./trusted-unauthenticated-booking-child.mjs";
+import { useUnauthenticatedBookingChild, useUnauthenticatedBookingUiChild } from "./trusted-unauthenticated-booking-child.mjs";
 import { useUnauthenticatedBookingProcess } from "./trusted-unauthenticated-booking-process.mjs";
 import * as report from "./trusted-unauthenticated-booking-report.mjs";
 
@@ -379,4 +379,80 @@ test("#1023 TLS diagnostics remain passive on complete; failed report uses new s
   const before = fixture(); before.controller.abort(canary);
   assert.equal(await useUnauthenticatedBookingChild(before.input), false); assert.equal(before.calls(), 0);
   assert.equal(before.writes[0], "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=failed; entered=unknown; confirmed=unknown; tls_primary=unknown; tls_cleanup=unknown; tls_err=unknown; status=failed\n");
+});
+
+
+test("#1077 finite UI Child writes only fixed partial evidence and shares one-shot ownership", async () => {
+  const ui = () => ({ phase: "ui-only", status: "partial" });
+  const expected = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=ui-only; status=partial; readback=unchanged\n";
+  const fixtureExpected = expected.replace("isolated", "fixture");
+  assert.equal(report.unauthenticatedBookingUiChildPartial, expected);
+  assert.equal(report.unauthenticatedBookingUiFixturePartial, fixtureExpected);
+  for (const isolated of [true, false]) {
+    const f = fixture({ inner: ui }); f.input.isolated = isolated;
+    assert.equal(await useUnauthenticatedBookingUiChild(f.input), true);
+    assert.equal(f.calls(), 1); assert.deepEqual(f.writes, [isolated ? expected : fixtureExpected]);
+    assert.equal(await useUnauthenticatedBookingChild(f.input), false);
+    assert.equal(await useUnauthenticatedBookingUiChild(f.input), false);
+    assert.equal(f.calls(), 1); assert.equal(f.writes.length, 1);
+  }
+  // The same inner Port cannot be reused in either direction.
+  const full = fixture(); assert.equal(await useUnauthenticatedBookingChild(full.input), true);
+  assert.equal(await useUnauthenticatedBookingUiChild(full.input), false);
+  const wrongFull = fixture({ inner: ui });
+  assert.equal(await useUnauthenticatedBookingChild(wrongFull.input), false);
+  assert.deepEqual(wrongFull.writes, [unknown]);
+  const wrongUi = fixture();
+  assert.equal(await useUnauthenticatedBookingUiChild(wrongUi.input), false);
+  assert.deepEqual(wrongUi.writes, [unknown]);
+});
+
+test("#1077 UI Child rejects malformed/proxy/accessor values without reflecting raw data", async () => {
+  let getters = 0, traps = 0;
+  const bad = [null, undefined, false, [], {}, "ui-only", { phase: "ui-only" },
+    { phase: "ui-only", status: "prepared" }, good(),
+    { phase: "ui-only", status: "partial", raw: canary },
+    { phase: "ui-only", status: "partial", [Symbol("secret")]: canary },
+    { get phase() { getters++; throw new Error(canary); }, status: "partial" },
+    { phase: "ui-only", get status() { getters++; throw new Error(canary); } },
+    new Proxy({ phase: "ui-only", status: "partial" }, { ownKeys() { traps++; throw new Error(canary); } })];
+  for (const value of bad) {
+    const f = fixture({ inner: () => value });
+    assert.equal(await useUnauthenticatedBookingUiChild(f.input), false);
+    assert.deepEqual(f.writes, [unknown]); assert.equal(f.calls(), 1);
+    assert.equal(await useUnauthenticatedBookingUiChild(f.input), false);
+  }
+  assert.equal(getters, 0); assert.equal(traps, 0);
+  for (const inner of [() => { throw new Error(canary); }, () => Promise.reject(new Error(canary))]) {
+    const f = fixture({ inner }); assert.equal(await useUnauthenticatedBookingUiChild(f.input), false);
+    assert.deepEqual(f.writes, [unknown]);
+  }
+});
+
+test("#1077 UI Child abort, pending writer, and late inner reply fail closed without retry", async () => {
+  const ui = () => ({ phase: "ui-only", status: "partial" });
+  const partial = report.unauthenticatedBookingUiChildPartial;
+  const before = fixture({ inner: ui }); before.controller.abort(canary);
+  assert.equal(await useUnauthenticatedBookingUiChild(before.input), false);
+  assert.equal(before.calls(), 0); assert.deepEqual(before.writes, [unknown]);
+  let resolveInner;
+  const during = fixture({ inner: () => new Promise(done => { resolveInner = done; }) });
+  const pending = useUnauthenticatedBookingUiChild(during.input);
+  during.controller.abort(canary);
+  assert.equal(await pending, false); resolveInner(ui());
+  await new Promise(done => setImmediate(done));
+  assert.deepEqual(during.writes, [unknown]); assert.equal(during.calls(), 1);
+  let release;
+  const writer = fixture({ inner: ui, write: text => {
+    assert.equal(text, partial);
+    return new Promise(done => { release = done; });
+  } });
+  const writing = useUnauthenticatedBookingUiChild(writer.input);
+  await new Promise(done => setImmediate(done)); writer.controller.abort(canary);
+  assert.equal(await writing, false); release();
+  await new Promise(done => setImmediate(done));
+  assert.deepEqual(writer.writes, [partial]); assert.equal(writer.calls(), 1);
+  const error = fixture({ inner: ui, write: () => { throw new Error(canary); } });
+  assert.equal(await useUnauthenticatedBookingUiChild(error.input), false);
+  assert.deepEqual(error.writes, [partial]);
 });

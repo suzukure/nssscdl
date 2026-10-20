@@ -8,6 +8,9 @@ const fail = () => new Error("TRUSTED_UNAUTHENTICATED_BOOKING_REPORT_FAILED");
 export const unauthenticatedBookingReportName = "unauthenticated-booking-report";
 export const unauthenticatedBookingChildComplete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=complete; status=prepared; readback=unchanged\n";
 export const unauthenticatedBookingFixtureComplete = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=fixture; phase=complete; status=prepared; readback=unchanged\n";
+// #1077 finite partial evidence: not a complete/proof/cleanup result.
+export const unauthenticatedBookingUiChildPartial = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=isolated; phase=ui-only; status=partial; readback=unchanged\n";
+export const unauthenticatedBookingUiFixturePartial = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; execution=fixture; phase=ui-only; status=partial; readback=unchanged\n";
 export const unauthenticatedBookingChildUnknown = "TRUSTED_UNAUTHENTICATED_BOOKING_CHILD_V1; phase=unknown; status=failed\n";
 // #1044: closed response first-failure buckets. Each is <=12 ASCII bytes so
 // the existing Cartesian grammar still fits Child256B / Outer512B unchanged.
@@ -78,6 +81,8 @@ const statKeys = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeMs"
 export function parseUnauthenticatedBookingReport(text) {
   if (text === unauthenticatedBookingChildComplete) return Object.freeze({ execution: "isolated", phase: "complete", status: "prepared", readback: "unchanged" });
   if (text === unauthenticatedBookingFixtureComplete) return Object.freeze({ execution: "fixture", phase: "complete", status: "prepared", readback: "unchanged" });
+  if (text === unauthenticatedBookingUiChildPartial) return Object.freeze({ execution: "isolated", phase: "ui-only", status: "partial", readback: "unchanged" });
+  if (text === unauthenticatedBookingUiFixturePartial) return Object.freeze({ execution: "fixture", phase: "ui-only", status: "partial", readback: "unchanged" });
   if (text === unauthenticatedBookingChildUnknown) return Object.freeze({ phase: "unknown", status: "failed" });
   if (typeof text === "string" && Buffer.byteLength(text) <= unauthenticatedBookingReportMaxBytes) {
     const tls = tlsFailureGrammar.exec(text);
