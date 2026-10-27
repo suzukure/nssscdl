@@ -124,4 +124,13 @@ assert_rejected pre-resume-id-not-in-records "$(envelope "$(chain "$(pre_resume 
 assert_rejected multiple-json-values "$active_input
 $active_input"
 
+# #1097: terminal ai-resume-accepted remains consumed for new handoff action.
+# Existing transition-failure actions stay closed: handoff must not create a
+# replacement resume_transition_failed pause after acceptance.
+handoff_accepted="$(jq -c '.record.payload = {action:"handoff",actor:"suzukure",pr_number:500,pr_head:("a" * 40)}' <<< "$accepted_103")"
+handoff_chain="$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$handoff_accepted")"
+handoff_expected="$(jq -c --argjson accepted "$handoff_accepted" '.chains[0].records[-1] = $accepted' <<< "$consumed_expected")"
+assert_reconciles handoff-terminal-accepted-consumed "$(envelope "$handoff_chain")" "$handoff_expected"
+assert_rejected handoff-must-not-transition-failure "$(envelope "$(chain "$(pre_resume 102 scope_decision)" "$root_101" "$replacement_102" "$handoff_accepted" "$(jq -c '.record.payload.failed_action="handoff"' <<< "$transition_pause")")")"
+
 echo 'reconcile-human-pause-resume-acceptance tests passed.'

@@ -74,6 +74,29 @@ done
 assert_result unrelated "$(command_input '/codex develop')" '{"result":"ignore"}'
 assert_result untrusted "$(command_input '/ai resume develop' CONTRIBUTOR)" '{"result":"ignore"}'
 
+# #1097 Prepared handoff parser. No production job consumes this result yet.
+head_sha="$(printf 'a%.0s' {1..40})"
+assert_result handoff "$(command_input "/ai resume handoff pause:101 pr:500 head:$head_sha")" \
+  "$(jq -cn --arg head "$head_sha" '{result:"accepted",actor:"suzukure",action:"handoff",pause_id:"101",pr_number:500,head_sha:$head}')"
+for assoc in MEMBER COLLABORATOR; do
+  assert_result "trusted handoff association $assoc" \
+    "$(command_input "/ai resume handoff pause:101 pr:500 head:$head_sha" "$assoc")" \
+    "$(jq -cn --arg head "$head_sha" '{result:"accepted",actor:"suzukure",action:"handoff",pause_id:"101",pr_number:500,head_sha:$head}')"
+done
+assert_result untrusted-handoff "$(command_input "/ai resume handoff pause:101 pr:500 head:$head_sha" CONTRIBUTOR)" '{"result":"ignore"}'
+for malformed_handoff in \
+  "/ai resume handoff pause:0 pr:500 head:$head_sha" \
+  "/ai resume handoff pause:01 pr:500 head:$head_sha" \
+  "/ai resume handoff pause:101 pr:0500 head:$head_sha" \
+  "/ai resume handoff pause:101 pr:0 head:$head_sha" \
+  "/ai resume handoff pause:101 pr:500 head:ZZZZ" \
+  "/ai resume handoff pause:101 pr:500 head:$head_sha extra" \
+  " /ai resume handoff pause:101 pr:500 head:$head_sha" \
+  "/ai resume handoff pause:101 pr:500 head:$head_sha " \
+  $'/ai resume handoff pause:101 pr:500 head:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nextra'; do
+  assert_result "bad handoff $malformed_handoff" "$(command_input "$malformed_handoff")" '{"result":"reject","code":"invalid_command"}'
+done
+
 for malformed in \
   ' /ai resume develop' \
   '/ai resume develop ' \

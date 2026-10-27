@@ -12,6 +12,9 @@ fail_closed() {
 input="$(cat)" || fail_closed '入力を読み取れませんでした'
 
 jq -cse '
+  def handoff:
+    [capture("\\A/ai resume handoff pause:(?<pause>[1-9][0-9]*) pr:(?<pr>[1-9][0-9]*) head:(?<head>[0-9a-f]{40})\\z")]
+    | first // null;
   def follow_up:
     [capture("\\A/ai resume follow-up #(?<issue>[1-9][0-9]*)\\z")]
     | first // null;
@@ -41,6 +44,12 @@ jq -cse '
       elif $input.body == "/ai resume no-action" then
         {result: "accepted", actor: $input.actor, action: "no-action"}
       else
+        ($input.body | handoff) as $handoff
+        | if $handoff != null then
+            {result:"accepted", actor:$input.actor, action:"handoff",
+             pause_id:$handoff.pause, pr_number:($handoff.pr | tonumber),
+             head_sha:$handoff.head}
+          else
         ($input.body | follow_up) as $follow_up
         | if $follow_up == null then
             {result: "reject", code: "invalid_command"}
@@ -48,6 +57,7 @@ jq -cse '
             ($follow_up.issue | tonumber) as $follow_up_issue
             | {result: "accepted", actor: $input.actor, action: "follow-up",
                follow_up_issue: $follow_up_issue}
+          end
           end
       end
   end
