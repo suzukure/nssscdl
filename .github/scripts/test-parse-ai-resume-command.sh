@@ -32,6 +32,47 @@ awk '
 jq -e '. == {body:"/ai resume develop",actor:"alice",author_association:"OWNER"}' \
   "$test_dir/envelope.json" > /dev/null
 
+# #1097 Prepared: the real producer admits develop/review only, even though
+# its pure parser recognizes handoff for the later #1098 Activation.
+awk '
+  /^      - name: Prepare and dispatch trusted resume command$/ { in_step = 1; next }
+  in_step && /^  [[:alnum:]_-]+:$/ { exit }
+  in_step && /^      - name: / { exit }
+  in_step && /^          if ! jq -e / && /action == "develop"/ && /action == "review"/ {
+    in_gate = 1
+    gates++
+  }
+  in_gate {
+    sub(/^          /, "")
+    print
+    if ($0 == "fi") in_gate = 0
+  }
+  END { if (gates != 1 || in_gate) exit 1 }
+' "$workflow" > "$test_dir/producer-action-gate.sh"
+[ "$(wc -l < "$test_dir/producer-action-gate.sh")" -eq 4 ]
+
+assert_producer_action() {
+  local name="$1" body="$2" expected="$3" actual=0
+  (
+    cd "$repo_root"
+    COMMENT_BODY="$body"
+    COMMENT_ACTOR=alice
+    COMMENT_ASSOCIATION=OWNER
+    source "$test_dir/producer.sh"
+    source "$test_dir/producer-action-gate.sh"
+  ) > /dev/null 2>&1 || actual=$?
+  if [ "$expected" = accepted ]; then
+    [ "$actual" -eq 0 ] || { echo "Production producer rejected $name." >&2; exit 1; }
+  else
+    [ "$actual" -ne 0 ] || { echo "Production producer activated $name." >&2; exit 1; }
+  fi
+}
+assert_producer_action develop '/ai resume develop' accepted
+assert_producer_action review '/ai resume review' accepted
+assert_producer_action handoff \
+  "/ai resume handoff pause:101 pr:500 head:$(printf 'a%.0s' {1..40})" rejected
+assert_producer_action validate '/ai resume validate' rejected
+
 command_input() {
   jq -cn --arg body "$1" --arg association "${2:-OWNER}" \
     '{body: $body, actor: "suzukure", author_association: $association}'

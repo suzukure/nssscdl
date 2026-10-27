@@ -1300,4 +1300,85 @@ if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 traceabili
 fi
 unset MOCK_ISSUE_STATE
 
+# #1097 Prepared: production reachability is a separate contract from
+# recognizing handoff syntax in the pure parser. #1098 must replace this
+# dormant-only assertion when it activates the reviewed handoff entry.
+python3 -B - "$repo_root" <<'PY_PREPARED_UNREACHABLE'
+from pathlib import Path
+import sys
+import yaml
+
+root = Path(sys.argv[1])
+workflow_dir = root / '.github/workflows'
+sources = {
+    p.name: p.read_text()
+    for p in sorted((*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')))
+    if p.is_file()
+}
+assert 'ai-developer.yml' in sources and len(sources) > 1
+
+forbidden = (
+    'prepare-ai-resume-handoff.sh',
+    'inspect-ai-handoff-ownership.sh',
+    '/ai resume handoff',
+)
+expected_if = (
+    "github.event_name == 'issue_comment' && "
+    "(github.event.comment.body == '/ai resume develop' || "
+    "github.event.comment.body == '/ai resume review')"
+)
+expected_filter = (
+    """if ! jq -e '.result == "accepted" and (.action == "develop" """
+    """or .action == "review")' <<< "$command" >/dev/null; then"""
+)
+
+def prepared_unreachable(snapshot):
+    for name, content in snapshot.items():
+        for marker in forbidden:
+            assert marker not in content, (name, marker)
+    workflow = yaml.safe_load(snapshot['ai-developer.yml'])
+    entry = workflow['jobs']['prepare-resume-command']
+    assert ' '.join(entry['if'].split()) == expected_if, 'resume job entry changed'
+    producer = [s.get('run', '') for s in entry['steps']
+                if s.get('name') == 'Prepare and dispatch trusted resume command']
+    assert len(producer) == 1 and expected_filter in producer[0], 'resume action gate changed'
+
+prepared_unreachable(sources)
+original = sources['ai-developer.yml']
+prefix = '          command="$(jq -cn'
+assert prefix in original
+for marker in forbidden[:2]:
+    changed = original.replace(prefix, '          bash .github/scripts/' + marker + '\n' + prefix, 1)
+    assert changed != original
+    bad = dict(sources, **{'ai-developer.yml': changed})
+    try:
+        prepared_unreachable(bad)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('unexpectedly admitted new producer caller: ' + marker)
+
+changed = original.replace(
+    "github.event.comment.body == '/ai resume review'",
+    "github.event.comment.body == '/ai resume validate'", 1)
+assert changed != original
+try:
+    prepared_unreachable(dict(sources, **{'ai-developer.yml': changed}))
+except AssertionError:
+    pass
+else:
+    raise AssertionError('unexpectedly admitted modified resume job entry')
+
+other = next(name for name in sources if name != 'ai-developer.yml')
+bad = dict(sources)
+bad[other] += '\n# /ai resume handoff pause:101 pr:500 head:' + 'a' * 40 + '\n'
+try:
+    prepared_unreachable(bad)
+except AssertionError:
+    pass
+else:
+    raise AssertionError('unexpectedly admitted handoff reference in other workflow')
+print('Prepared production-unreachable assertions passed.')
+PY_PREPARED_UNREACHABLE
+
 echo 'AI workflow fixture tests passed.'
