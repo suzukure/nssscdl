@@ -30,6 +30,22 @@ if [ "$issue_paused" = true ]; then
   exit 0
 fi
 
+# Fixed Developer App identity verified from GitHub's performed_via_github_app
+# on #1077 source 6184255042 (#1098). No private-App lookup or token mint is
+# needed under GITHUB_TOKEN. Never accept an App ID from event/caller input.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ownership="$(bash "$script_dir/inspect-ai-handoff-ownership.sh" "$repo" "$issue_number" 4777726)"
+if ! jq -es 'length == 1 and (.[0] |
+    (.result == "no_handoff_record" and .deny_develop == false) or
+    (.result == "handoff_owned" and .deny_develop == true))' <<< "$ownership" >/dev/null; then
+  echo 'handoff所有権を確認できないため開発を停止します。' >&2
+  exit 1
+fi
+if [ "$(jq -r .deny_develop <<< "$ownership")" = true ]; then
+  jq -cn '{continue:false, reason:"handoff受理済みIssueのCodex再入は禁止されています。"}'
+  exit 0
+fi
+
 prs_json="$(gh pr list --repo "$repo" --head "ai/issue-${issue_number}" --state open --json number,labels)"
 if ! jq -es 'length == 1 and (.[0] | type == "array" and
     all(.[]; type == "object" and

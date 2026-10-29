@@ -1300,9 +1300,7 @@ if bash "$repo_root/.github/scripts/verify-pr-gates.sh" owner/repo 37 traceabili
 fi
 unset MOCK_ISSUE_STATE
 
-# #1097 Prepared: production reachability is a separate contract from
-# recognizing handoff syntax in the pure parser. #1098 must replace this
-# dormant-only assertion when it activates the reviewed handoff entry.
+# #1098: only the dedicated atomic job may reach the prepared consumer.
 python3 -B - "$repo_root" <<'PY_PREPARED_UNREACHABLE'
 from pathlib import Path
 import sys
@@ -1334,10 +1332,23 @@ expected_filter = (
 )
 
 def prepared_unreachable(snapshot):
+    workflow = yaml.safe_load(snapshot['ai-developer.yml'])
+    handoff = workflow['jobs']['handoff-from-issue']
+    # Inspect raw text too: a reference hidden in an unrelated step/comment is
+    # not an additional authorized caller. Gate inspector calls live in script.
+    allowed = snapshot['ai-developer.yml'].split('  handoff-from-issue:\n', 1)
+    assert len(allowed) == 2
+    boundary = allowed[1].split('\n  prepare-resume-command:', 1)
+    assert len(boundary) == 2
+    stripped = allowed[0] + '\n  prepare-resume-command:' + boundary[1]
+    assert sum(s.get('run', '').count('consume-ai-resume-handoff.sh')
+               for s in handoff['steps']) == 1
+    assert snapshot['ai-developer.yml'].count('consume-ai-resume-handoff.sh') == 1
     for name, content in snapshot.items():
+        if name == 'ai-developer.yml':
+            content = stripped
         for marker in forbidden:
             assert marker not in content, (name, marker)
-    workflow = yaml.safe_load(snapshot['ai-developer.yml'])
     entry = workflow['jobs']['prepare-resume-command']
     assert ' '.join(entry['if'].split()) == expected_if, 'resume job entry changed'
     producer = [s.get('run', '') for s in entry['steps']
@@ -1406,7 +1417,7 @@ except AssertionError:
 else:
     raise AssertionError('unexpectedly admitted indirect dormant-consumer caller')
 
-print('Prepared production-unreachable assertions passed.')
+print('Atomic handoff single production caller / indirect caller mutations passed.')
 PY_PREPARED_UNREACHABLE
 
 echo 'AI workflow fixture tests passed.'
