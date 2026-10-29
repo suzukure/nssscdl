@@ -570,7 +570,7 @@ for changed_workflow, patterns in (
 prefix = '.github/scripts/'
 actual = sorted(prefix + p.name for p in (repo / prefix).glob('test-*.sh'))
 assert actual == sorted(p for fixtures in policy.INVENTORY.values() for p in fixtures)
-assert len(actual) == 89
+assert len(actual) == 90
 common_guard = prefix + 'test-production-unreachable.sh'
 local_path = prefix + 'deepinfra-usage-ledger.py'
 selected = sorted(policy.INVENTORY['deepinfra'] + policy.INVENTORY['common'])
@@ -1320,6 +1320,7 @@ assert 'ai-developer.yml' in sources and len(sources) > 1
 forbidden = (
     'prepare-ai-resume-handoff.sh',
     'inspect-ai-handoff-ownership.sh',
+    'consume-ai-resume-handoff.sh',
     '/ai resume handoff',
 )
 expected_if = (
@@ -1347,7 +1348,7 @@ prepared_unreachable(sources)
 original = sources['ai-developer.yml']
 prefix = '          command="$(jq -cn'
 assert prefix in original
-for marker in forbidden[:2]:
+for marker in forbidden[:3]:
     changed = original.replace(prefix, '          bash .github/scripts/' + marker + '\n' + prefix, 1)
     assert changed != original
     bad = dict(sources, **{'ai-developer.yml': changed})
@@ -1378,6 +1379,33 @@ except AssertionError:
     pass
 else:
     raise AssertionError('unexpectedly admitted handoff reference in other workflow')
+
+# The dormant consumer may call production *helpers* but production must never
+# call the new consumer, directly or via another non-test script. Existing
+# resume producer gate is also pinned above; it cannot enable the command.
+consumer_name = 'consume-ai-resume-handoff.sh'
+script_files = sorted((root / '.github/scripts').glob('*'))
+production_scripts = {
+    p.name: p.read_text()
+    for p in script_files
+    if p.is_file() and p.suffix in ('.sh', '.py', '.js')
+    and not p.name.startswith('test-')
+    and p.name not in ('consume-ai-resume-handoff.sh',
+                       'select-ai-workflow-fixtures.py')
+}
+def no_production_consumer_callers(scripts):
+    for name, content in scripts.items():
+        assert consumer_name not in content, ('indirect producer caller', name)
+no_production_consumer_callers(production_scripts)
+a_script = next(iter(production_scripts))
+try:
+    no_production_consumer_callers(dict(production_scripts, **{
+        a_script: production_scripts[a_script] + '\nbash .github/scripts/' + consumer_name}))
+except AssertionError:
+    pass
+else:
+    raise AssertionError('unexpectedly admitted indirect dormant-consumer caller')
+
 print('Prepared production-unreachable assertions passed.')
 PY_PREPARED_UNREACHABLE
 
