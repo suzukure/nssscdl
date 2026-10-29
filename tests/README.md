@@ -816,6 +816,21 @@ real Session Cookie → CSRF GET → Preview 200 → 正規tokenのConfirm 201�
 local DB試験をProduction readinessや#537 / #608全体Doneへ読み替えず、後続順序#931 → #929 → #930を維持する。
 
 
+## #1081 Controller→実service→隔離local D1の409再確認・明示Confirm（部分証拠）
+
+`d1/reservation-student-controller.test.ts` は既存 `vitest.d1.config.ts` とfile-isolated `AUTH_DB`を用いる。
+Production migrations `0001`〜`0012`、#898 trusted empty-only seed、#931のreal reservation serviceと
+Production Guard / CSRF / Transactionを再利用し、`StudentReadController`の既存fetch injectionを接続する。
+test-owned Cookie、same-origin Fetch Metadata、POST Originだけを追加し、Controllerのpath/method/body/CSRFは補正しない。
+月GET→明示Preview200→fixtureの公開version変更→旧Confirm409 `RESERVATION_STATE_CHANGED/repreview`
+（拒否前後の全業務DB digest不変・暗黙再送0）→fresh月GET・再選択→新Preview200→
+明示Confirm201一度だけ→本人History/同一reservationIdの実D1 Reservation・Occupancy・Audit・Intent・Outbox照合を行う。
+秘密を含む失敗原因・SQL・DB rowはCIに反射させず、固定phaseのみを通知する。既存#931 atomic/rollback試験は残す。
+通常`npm run test:d1` / current-head Product CIで実行するが、追加したテスト自体は合格証拠ではない。
+`TC-F-003-01` / `TC-F-003-05` / `TC-F-005-01` / `TC-NF-914-04`の**部分証拠**に限り、
+実競合者の先行Commit barrier・実Browser/HTTPS wire・#930正式401・#537 Gate A〜D・#608 Done/Releaseを証明しない。
+REQ/AC/TCの意味およびProduction Worker/Schema/Providerの挙動は変更しない。
+
 ## #929 独立localhost予約Worker（isolated HTTP fixture）
 
 `evaluation/reservation-worker.ts` と `evaluation/wrangler.reservation.jsonc` は#928 factoryだけを合成する独立入口。
