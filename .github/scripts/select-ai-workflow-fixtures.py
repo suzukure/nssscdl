@@ -75,7 +75,8 @@ BASELINE_COUNTS = {
 }
 # Explicit extensions: #692 / #684, selector, #701 common guard, and #756 shard planner.
 EXTENSIONS = {
-    "resume-human-pause": ("prepare-ai-resume-handoff", "inspect-ai-handoff-ownership"),
+    "resume-human-pause": ("prepare-ai-resume-handoff", "inspect-ai-handoff-ownership",
+                           "consume-ai-resume-handoff"),
     "product-npm": ("product-npm-bootstrap-preparation", "product-npm-post-workload",
                     "product-npm-production-session", "product-runtime-staging", "trusted-runtime-supply",
                     "trusted-main-npm-bootstrap"),
@@ -143,6 +144,7 @@ PATH_SUITES = (
     (SCRIPTS + "parse-ai-resume-command.sh", ("resume-human-pause",)),
     (SCRIPTS + "prepare-ai-resume-handoff.sh", ("resume-human-pause",)),
     (SCRIPTS + "inspect-ai-handoff-ownership.sh", ("resume-human-pause",)),
+    (SCRIPTS + "consume-ai-resume-handoff.sh", ("resume-human-pause",)),
     (SCRIPTS + "classify-claude-human-escalation.sh", ("claude",)),
     (SCRIPTS + "classify-claude-review-risk.sh", ("claude",)),
     (SCRIPTS + "classify-claude-review-execution.sh", ("claude",)),
