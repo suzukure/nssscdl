@@ -11,6 +11,7 @@ valid_pr='{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaa
 valid_issue='{"number":36,"state":"open","labels":[]}'
 valid_pr_list='[]'
 export MOCK_PR_JSON="$valid_pr" MOCK_PR_LIST_JSON="$valid_pr_list" MOCK_API_JSON="$valid_issue"
+export MOCK_OWNERSHIP='{"result":"no_handoff_record","deny_develop":false}'
 
 gh() {
   printf '%s\n' "$*" >> "$GH_LOG"
@@ -31,7 +32,15 @@ jq() {
 }
 export -f jq
 
-issue_gate="$repo_root/.github/scripts/evaluate-issue-entry-gate.sh"
+cp "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" "$test_dir/"
+issue_gate="$test_dir/evaluate-issue-entry-gate.sh"
+cat > "$test_dir/inspect-ai-handoff-ownership.sh" <<'INSPECTOR'
+set -euo pipefail
+[ "$*" = 'owner/repo 36 4777726' ]
+printf '%s\n' "$*" >> "$GH_LOG.inspector"
+[ "${MOCK_FAIL:-}" != inspector ] || exit 1
+printf '%s\n' "$MOCK_OWNERSHIP"
+INSPECTOR
 review_gate="$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
 followup_gate="$repo_root/.github/scripts/evaluate-followup-gate.sh"
 review_body=$'--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| ordinary finding\n--- END REVIEW SUMMARY DATA ---'
@@ -74,6 +83,17 @@ assert_followup_skips() {
 }
 
 assert_passes bash "$issue_gate" owner/repo 36
+# Ownership persists without any current PR lookup (close, new HEAD, review failure).
+MOCK_OWNERSHIP='{"result":"handoff_owned","deny_develop":true}' \
+  MOCK_FAIL=list bash "$issue_gate" owner/repo 36 > "$test_dir/owned"
+jq -e '.continue == false' "$test_dir/owned" >/dev/null
+for bad in '{}' '{"result":"no_handoff_record","deny_develop":true}' \
+  '{"result":"unknown","deny_develop":false}' '['; do
+  MOCK_OWNERSHIP="$bad" assert_stops 'invalid ownership' bash "$issue_gate" owner/repo 36
+done
+for failure in inspector; do
+  MOCK_FAIL="$failure" assert_stops "ownership $failure" bash "$issue_gate" owner/repo 36
+done
 assert_passes bash "$review_gate" owner/repo 37 "$reviewed_head"
 assert_passes bash "$followup_gate" owner/repo 37 review dev "$review_body"
 

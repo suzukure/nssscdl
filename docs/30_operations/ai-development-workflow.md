@@ -1108,7 +1108,31 @@ bash .github/scripts/test-ai-developer-workflow.sh
 
 AI Workflow Regressionの起動対象path一覧は `.github/workflows/ai-workflow-regression.yml` の `on.pull_request.paths` を唯一の機械正本とし、この運用文書では完全な一覧を複製しない。正本の対象pathに一致するPRでは、独立した `AI Workflow Regression` が現在PR headのfixtureをselectedでは `Fixtures`、fullでは上記parallel workersで実行し、`Regression Result` を含む結果をGitHub Actionsへ残す。known local changeはtrusted event base SHA版のselectorが返すselected fixturesとcommon guardを実行する。unknown / shared boundaryで全件が必要な変更、selector失敗・出力不正、base object / selector取得不能、SHA不一致、merge-base取得不能・形式不正、diff失敗・予期しない空diffではselectionをfullへ戻し、上記planner gateへ進む。`BASE_SHA`不正・base commit確認不能はそのgateでFAILし、full fixture executionへfallbackしない。selector自身・selector fixture・regression workflowの変更もfullとする。fullではcallerがPR head上の全 `.github/scripts/test-*.sh` を再列挙し、両modeとも0件・missing・symlink・不正file型はFAILにする。producer checkoutはexact event head SHA、`persist-credentials: false`、`fetch-depth: 0`とし、shellへtokenを渡さずbase policyを取得する。changed pathsは検証済みbase/head SHAからread-onlyに `git merge-base BASE HEAD` を取得し、`git diff --no-renames --name-only -z MERGE_BASE HEAD` でPR変更集合を3-dot相当として取得する。base-only変更を混ぜず、rename両pathをNUL-safeに観測する。trusted base selectorはparse後に正本と同期したtrigger domainだけを評価し、対象外pathはselectionへ影響させず、対象内unknownはfull、filter後0件も `full / empty_selection` とする。workerもexact event head SHA / `persist-credentials: false`でcheckoutする。read-only / secretless、producer / worker各10分timeout（延長なし）、terminal 1分timeout、PR単位concurrency、retryなしを維持し、fixture failureは全実行結果の集計後にjob failureへ伝播する。Job Summaryにはmode / fixed reason / selected count（実行集合件数）/ full count / suites / 各jobのPASS・FAILだけを記録し、full producerのPASSはhandoff validation成功を意味する。fixture名はworker / selected producerのgroup logで確認する。自然なPR runで件数とActionsのwall-clockを確認する。初回導入PRはBootstrap制約に従い、このworkflowがdefault branchへ反映された後の対象PRから通常のCI証跡となる。これは専用fixtureと横断fixtureの両方を実行するrepository側の独立証跡であり、Codex自身の関連validation実行・結果報告責務を置き換えない。Codex側でvalidationを実行できない場合は理由を記録し、CI結果を確認する。対象fixtureは外部サービスへ実アクセスせず、repository内で完結する。event、実行順、timeout、concurrencyなどの詳細も同workflowを正本とする。`test-ai-workflow.sh` は正本workflowの実run blockをsynthetic fixtureで実行し、selected/fullの探索・全選択fixture実行・失敗伝播・fallbackと実行行改変の検出、およびworkflowの `on.pull_request.paths` とselectorの `TRIGGER_PATTERNS` のexact集合同期・未対応patternの拒否を含むtrigger contractを検証するfixtureであり、trigger集合全体の独立した正本ではない。`docs/00_requirements/01_Introduction.md` は内容をfixtureで読む対象ではないが、`test-ai-developer-workflow.sh` がAGENTS固定参照のfile existenceを機械contractとして直接assertするためexact trigger対象とする。`docs/diagrams/README.md` は同file existenceに加え、`test-ai-workflow.sh` が生成push後のReady-based current-head validation契約を直接assertするためexact trigger対象とする。`docs/30_operations/ai-development-workflow.md` は同fixtureが停止・Draft復帰等の運用安全契約とscope-out参照先のcanonical headingを実ファイルから直接assertするためexact trigger対象とする。その他のproduct / requirements / diagrams文書はAI workflow fixtureの直接依存ではないためtriggerへ広げない。Claude review / mergeのprotected-path classifierはCode Owner保護のため `CODEOWNERS` やその他の `.github/**` もhigh-riskに含めるが、AI Workflow RegressionはAI instruction / runtime fixtureが直接依存するsubsetだけを起動対象とし、通常のIssue templateやその他のrepository governance文書の変更だけでは起動しない。この差は意図的であり、protected-path判定そのものを弱めるものではない。PR本文で上記コードブロックの手動fixtureを対象外と記録しても、このselected/fullの自動実行は免除されない。
 
-### #1100 handoff consumer Prepared契約（本番未接続）
+### #1098 atomic handoff Activation契約
+
+#1097/#1100のPrepared契約を、`ai-developer.yml`の専用`handoff-from-issue`
+jobだけから接続する。Issue側のOWNER commentを候補選別し、厳密parserを通した後、
+既存Developer App tokenでconsumerを呼ぶ。eventのPR/head/pauseやlabelをauthorityに
+せず、`codex-writer-ai/issue-N`（`cancel-in-progress:false`）取得後にfresh検証する。
+trusted mainのみcheckoutし、人間PRのbranchやコードは実行しない。
+
+専用jobは11分、既存consumerの内側deadlineは500秒（各read上限60秒・POST45秒、
+POST前90秒reserve）。setupとApp tokenのpost cleanupに外側余白を残す。
+timeout/cancel/runner lossや結果不明では自動retryせず、人間が同一accepted identityと
+残labelを照合してから明示的なreconcileを判断する。新acceptance/失敗recordを足さない。
+PR close/HEAD変更後のaccepted再入はPOSTもlabel writeも行わず停止する。
+
+通常Issue entry事前gateと同concurrency内writer再検査（resume developを含む）は、
+GitHubが実#1077 source `6184255042`に付与した固定App ID `4777726`を使用し、
+trusted inspectorの`handoff_owned`をlabel解除後も恒久denyする。事前gateはprivate App
+の公開lookupや新token mintに依存しない。専用jobは既存App tokenでID/slug/client IDを
+突合する。PR close/HEAD変更/
+review failureでCodexへ戻さない。API/編集済みApp記録/未知判定はfail-closed。
+既存develop/review producerはhandoffをdispatchしない。単一consumer callerと間接caller
+拒否を既存fixtureで検証する。mock成功はActions concurrencyや本番handoffの証明ではない。
+protected提出、production Activation、実#1077 handoff、#1079 Ready/mergeは別の人間Go。
+
+### #1100 handoff consumer Prepared契約（先行段階）
 
 #1095の3段階分割では、#1097 read-only Preparedから#1100 dormant consumer Preparedへ
 進み、#1098が最後にatomic production Activationを実施する。#1100は
@@ -1128,18 +1152,18 @@ HEAD／base整合、および対象Issueに紐づく `human/issue-N-*` branch名
 最終push者を暗号学的に証明するものではない。別命名の人間管理branchを
 無条件に受理せず、必要になった場合はIssueで事前判断する。
 
-本段階では上記helperを本番workflow・別のproduction scriptから呼ばず、
+#1100の単独merge段階では上記helperを本番workflow・別のproduction scriptから呼ばず、
 `ai-developer.yml`のentry判定も変更しない。
 `test-consume-ai-resume-handoff.sh`はsecretless mock限定、
-`test-ai-workflow.sh`はworkflow直接呼出しと既存production scriptからの
-間接呼出しをnegative mutation込みで監視する。**mockでの成功は実handoffの
+`test-ai-workflow.sh`は#1098で専用jobだけの単一呼出しとproduction scriptからの
+間接呼出し拒否をnegative mutation込みで監視する。**mockでの成功は実handoffの
 本番証拠でも、concurrency取得の証明でもない**。#1098では専用jobの
 `codex-writer-ai/issue-N` concurrency取得後にfresh revalidationし、
 通常Issue entryとwriter内の恒久denyを同一atomic PRで同時有効化する。
 未受理のsource active pauseと、受理済みのsource consumedを同じpreflight条件で
 扱ってはならない。#1077のmachine pause／PR #1079 Draftは引き続き維持する。
 
-### #1097 handoff Prepared契約（本番未接続）
+### #1097 handoff Prepared契約（先行段階）
 
 #1097では、`/ai resume handoff pause:<id> pr:<number> head:<40hex>` の厳密parser、
 GitHubのtrusted/fresh情報を後続callerから受け取るread-only preflight、および
@@ -1148,7 +1172,7 @@ trusted Developer App由来のIssue Conversation記録だけを読取るownershi
 CI、writer排他が証明されたことにならない。preflight出力は
 `prepared_snapshot_only`、`write_authorized:false`であり、操作権限ではない。
 
-本番の `ai-developer.yml`、Issue entry gate、既存resume producer/consumerには接続せず、
+#1097の単独merge段階では `ai-developer.yml`、Issue entry gateには接続せず、
 Codex再開、`ai-resume-accepted` POST、label解除、Draft→Ready、Claudeレビュー、
 PR/mergeを発火させない。#1100でfresh GitHub API収集・source provenance検証を
 dormant consumerとして用意し、#1098で同一concurrency内の再照合と

@@ -9,6 +9,89 @@ requirements_intro="$repo_root/docs/00_requirements/01_Introduction.md"
 diagrams_readme="$repo_root/docs/diagrams/README.md"
 operations_doc="$repo_root/docs/30_operations/ai-development-workflow.md"
 
+# Check actual job wiring and execute its run bodies with secretless transport.
+python3 -B - "$repo_root" <<'PY_HANDOFF'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import yaml
+
+root = Path(sys.argv[1])
+text = (root / '.github/workflows/ai-developer.yml').read_text()
+w = yaml.safe_load(text)
+jobs = w['jobs']
+j = jobs['handoff-from-issue']
+assert j['permissions'] == {'contents': 'read'}
+assert j['timeout-minutes'] == 11
+assert j['concurrency'] == {'group': 'codex-writer-ai/issue-${{ github.event.issue.number }}',
+                            'cancel-in-progress': False}
+assert 'codex-writer-ai/issue-' in jobs['develop-from-issue']['concurrency']['group']
+assert "github.event.comment.author_association == 'OWNER'" in j['if']
+for condition in ("github.event_name == 'issue_comment'", 'github.event.issue.pull_request == null',
+                  "github.event.issue.state == 'open'", "github.repository == 'suzukure/nssscdl'",
+                  "startsWith(github.event.comment.body, '/ai resume handoff pause:')"):
+    assert condition in j['if']
+assert '||' not in j['if'] and 'needs' not in j
+checkout, strict, token, fresh = j['steps']
+assert checkout['uses'] == 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
+assert checkout['with'] == {'ref': 'refs/heads/main', 'persist-credentials': False}
+assert token['uses'] == 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1'
+assert token['with'] == {'client-id': '${{ vars.DEV_APP_CLIENT_ID }}',
+                         'private-key': '${{ secrets.DEV_APP_PRIVATE_KEY }}'}
+assert fresh['env']['COMMENT_ID'] == '${{ github.event.comment.id }}'
+assert fresh['env']['GH_TOKEN'] == '${{ steps.dev-token.outputs.token }}'
+assert fresh['env']['APP_SLUG'] == '${{ steps.dev-token.outputs.app-slug }}'
+assert fresh['env']['DEV_APP_CLIENT_ID'] == '${{ vars.DEV_APP_CLIENT_ID }}'
+assert fresh['env']['ISSUE_NUMBER'] == '${{ github.event.issue.number }}'
+assert 'continue-on-error' not in fresh and 'retry' not in fresh['run']
+for name, job in jobs.items():
+    if name != 'handoff-from-issue':
+        assert '/ai resume handoff' not in json.dumps(job)
+        assert 'consume-ai-resume-handoff.sh' not in json.dumps(job)
+recheck = next(s for s in jobs['develop-from-issue']['steps']
+               if s.get('name') == 'Recheck current Issue inside Issue concurrency')
+assert 'if' not in recheck  # Initial and resumed develop must both recheck.
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d)
+    scripts = p / '.github/scripts'
+    scripts.mkdir(parents=True)
+    (scripts / 'parse-ai-resume-command.sh').write_bytes(
+        (root / '.github/scripts/parse-ai-resume-command.sh').read_bytes())
+    (scripts / 'consume-ai-resume-handoff.sh').write_text(
+        'printf "%s\\n" "$*" >> "$CALLS"\nexit "${CONSUMER_RC:-0}"\n')
+    bin_dir = p / 'bin'
+    bin_dir.mkdir()
+    gh = bin_dir / 'gh'
+    gh.write_text('#!/bin/bash\n[ "$*" = "api /apps/nssscdl-chatgpt-dev" ] || exit 9\n'
+                  '[ "${APP_FAIL:-0}" = 0 ] || exit 1\nprintf "%s\\n" "$APP_JSON"\n')
+    gh.chmod(0o755)
+    env = dict(os.environ, PATH=str(bin_dir)+':'+os.environ['PATH'], CALLS=str(p/'calls'),
+        GITHUB_REPOSITORY='suzukure/nssscdl', ISSUE_NUMBER='36', COMMENT_ID='201',
+        APP_SLUG='nssscdl-chatgpt-dev', DEV_APP_CLIENT_ID='fixture-client',
+        COMMENT_ACTOR='suzukure', COMMENT_ASSOCIATION='OWNER',
+        APP_JSON=json.dumps({'id':4777726,'slug':'nssscdl-chatgpt-dev','client_id':'fixture-client'}))
+    valid = '/ai resume handoff pause:101 pr:37 head:' + 'a'*40
+    for command, ok in ((valid,True), (valid+'\n',False), (valid+' extra',False),
+                        ('/ai resume develop',False), (valid.replace('pause:101','pause:0'),False)):
+        r = subprocess.run(['bash','-c',strict['run']], cwd=p, env=dict(env, COMMENT_BODY=command),
+                           capture_output=True, timeout=5)
+        assert (r.returncode == 0) == ok, command
+    for overrides, calls, success in (({},1,True), ({'APP_FAIL':'1'},0,False),
+        ({'DEV_APP_CLIENT_ID':'wrong'},0,False), ({'APP_SLUG':'other'},0,False),
+        ({'APP_JSON':'{"id":42}'},0,False), ({'GITHUB_REPOSITORY':'other/repo'},0,False),
+        ({'CONSUMER_RC':'1'},1,False), ({'CONSUMER_RC':'124'},1,False)):
+        (p/'calls').unlink(missing_ok=True)
+        r = subprocess.run(['bash','-c',fresh['run']], cwd=p, env=dict(env,**overrides),
+                           capture_output=True, timeout=5)
+        assert (r.returncode == 0) == success
+        log = (p/'calls').read_text().splitlines() if (p/'calls').exists() else []
+        assert log == ['suzukure/nssscdl 36 201 4777726'] * calls
+print('Atomic handoff job: wiring / strict command / App boundary / no retry PASS')
+PY_HANDOFF
+
 [ -f "$workflow" ]
 [ -f "$agents" ]
 
@@ -222,7 +305,9 @@ awk '
   in_step { print }
 ' "$workflow" > "$recheck"
 [ -s "$recheck" ]
-grep -Fq "if: github.event_name == 'issue_comment'" "$recheck"
+if grep -Fq '        if:' "$recheck"; then
+  echo 'Issue writer must recheck ownership for initial and resumed develop.' >&2; exit 1
+fi
 grep -Fq 'bash .github/scripts/evaluate-issue-entry-gate.sh "$GITHUB_REPOSITORY" "$ISSUE_NUMBER"' "$recheck"
 grep -Fq "jq -e '.continue == true'" "$recheck"
 prewrite="$test_dir/prewrite-remote-head.yml"
@@ -1972,13 +2057,17 @@ if grep -Eq '^(label create|issue edit) ' "$MOCK_GH_LOG"; then
 fi
 unset MOCK_GH_LOG
 
-entry="$(bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+mkdir "$test_dir/entry"
+cp "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" "$test_dir/entry/"
+printf '%s\n' 'echo '\''{"result":"no_handoff_record","deny_develop":false}'\''' > "$test_dir/entry/inspect-ai-handoff-ownership.sh"
+entry_gate="$test_dir/entry/evaluate-issue-entry-gate.sh"
+entry="$(bash "$entry_gate" owner/repo 36)"
 jq -e '.continue == true' <<< "$entry" > /dev/null
-entry="$(MOCK_ISSUE_PAUSED=true bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+entry="$(MOCK_ISSUE_PAUSED=true bash "$entry_gate" owner/repo 36)"
 jq -e '.continue == false and (.reason | contains("Issue"))' <<< "$entry" > /dev/null
-entry="$(MOCK_PR_PAUSED=true bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36)"
+entry="$(MOCK_PR_PAUSED=true bash "$entry_gate" owner/repo 36)"
 jq -e '.continue == false and (.reason | contains("PR"))' <<< "$entry" > /dev/null
-if MOCK_ENTRY_FETCH_FAIL=true bash "$repo_root/.github/scripts/evaluate-issue-entry-gate.sh" owner/repo 36; then
+if MOCK_ENTRY_FETCH_FAIL=true bash "$entry_gate" owner/repo 36; then
   echo 'Expected Issue-entry gate to fail when GitHub lookup fails.' >&2
   exit 1
 fi

@@ -12,6 +12,65 @@ permissions:
   contents: read
 
 jobs:
+  handoff-from-issue:
+    name: Handoff from Issue
+    # Snapshot selects candidates only; the consumer re-fetches authority.
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'suzukure/nssscdl' &&
+      github.event.issue.pull_request == null &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.author_association == 'OWNER' &&
+      startsWith(github.event.comment.body, '/ai resume handoff pause:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    permissions:
+      contents: read
+    concurrency:
+      group: codex-writer-ai/issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - name: Reject malformed handoff before credential creation
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ASSOCIATION: ${{ github.event.comment.author_association }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -cn --arg body "$COMMENT_BODY" --arg actor "$COMMENT_ACTOR" \
+            --arg author_association "$COMMENT_ASSOCIATION" \
+            '{body:$body,actor:$actor,author_association:$author_association}' |
+            bash .github/scripts/parse-ai-resume-command.sh |
+            jq -e '.result == "accepted" and .action == "handoff"' >/dev/null
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: dev-token
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+      - name: Fresh handoff inside Issue concurrency
+        env:
+          GH_TOKEN: ${{ steps.dev-token.outputs.token }}
+          APP_SLUG: ${{ steps.dev-token.outputs.app-slug }}
+          DEV_APP_CLIENT_ID: ${{ vars.DEV_APP_CLIENT_ID }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = suzukure/nssscdl ]
+          [ "$APP_SLUG" = nssscdl-chatgpt-dev ]
+          app="$(gh api /apps/nssscdl-chatgpt-dev)"
+          jq -es --arg client "$DEV_APP_CLIENT_ID" 'length == 1 and (.[0] |
+            .id == 4777726 and .slug == "nssscdl-chatgpt-dev" and
+            ($client | length > 0) and .client_id == $client)' <<< "$app" >/dev/null
+          bash .github/scripts/consume-ai-resume-handoff.sh \
+            "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$COMMENT_ID" 4777726
+
   prepare-resume-command:
     if: >-
       github.event_name == 'issue_comment' &&
@@ -174,7 +233,6 @@ jobs:
 
       # The event snapshot is not evidence of Issue state after the writer wait.
       - name: Recheck current Issue inside Issue concurrency
-        if: github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ steps.dev-token.outputs.token }}
           ISSUE_NUMBER: ${{ github.event_name == 'repository_dispatch' && steps.resume-gate.outputs.issue_number || github.event.issue.number }}

@@ -159,20 +159,22 @@ run_good() {
   actual=0
   if [ -f "$MOCK_DIR/posts" ]; then actual="$(grep -c '^POST$' "$MOCK_DIR/posts" || true)"; fi
   [ "$actual" = "$posts" ] || { echo "unexpected POST count $name: $actual" >&2; exit 1; }
-  [ ! -f "$MOCK_DIR/issue-label" ] && [ ! -f "$MOCK_DIR/pr-label" ]
+  [ ! -f "$MOCK_DIR/issue-label" ]
+  [ ! -f "$MOCK_DIR/pr-label" ]
   echo "$name: PASS"
 }
 run_bad() {
   local name="$1" bad="$2" posts="$3"
   reset_state; export MOCK_BAD="$bad"
-  if [ "$bad" = duplicate_accepted ] || [ "$bad" = accepted_wrong_actor ]; then touch "$MOCK_DIR/accepted"; fi
+  if [ "$bad" = duplicate_accepted ] || [ "$bad" = accepted_wrong_actor ] || [ "${4:-}" = accepted ]; then touch "$MOCK_DIR/accepted"; fi
   if bash "$tmp/scripts/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 42 > "$tmp/output" 2> "$tmp/error"; then
     echo "unsafe success $name" >&2; exit 1
   fi
   actual=0
   if [ -f "$MOCK_DIR/posts" ]; then actual="$(grep -c '^POST$' "$MOCK_DIR/posts" || true)"; fi
   [ "$actual" = "$posts" ] || { echo "unexpected POST count $name: $actual" >&2; exit 1; }
-  [ -f "$MOCK_DIR/issue-label" ] && [ -f "$MOCK_DIR/pr-label" ]
+  [ -f "$MOCK_DIR/issue-label" ]
+  [ -f "$MOCK_DIR/pr-label" ]
   # Require the specific fail-closed decision, not a mock syntax/API failure.
   local reason=""
   case "$bad" in
@@ -181,7 +183,7 @@ run_bad() {
     wrong_record_target) reason=wrong_record_target ;;
     different_active_pause) reason=different_active_pause ;;
     canonical_wrong_author) reason=pr_canonical_identity_mismatch ;;
-    rest_wrong_author|closed_pr) reason=stale_or_invalid_pr ;;
+    rest_wrong_author|closed_pr|stale_head) reason=stale_or_invalid_pr ;;
     pagination_bound) reason=pr_listing_incomplete ;;
     pr_count_bound) reason=pr_listing_bound ;;
     accepted_wrong_actor) reason=accepted_identity_mismatch ;;
@@ -192,7 +194,7 @@ run_bad() {
     }
   fi
   case "$bad" in
-    foreign_*_ci|no_pr_ci|untrusted_branch|missing_*_timestamp|wrong_record_target|different_active_pause|canonical_wrong_author|rest_wrong_author|pagination_bound|pr_count_bound|closed_pr|accepted_wrong_actor)
+    foreign_*_ci|no_pr_ci|untrusted_branch|missing_*_timestamp|wrong_record_target|different_active_pause|canonical_wrong_author|rest_wrong_author|pagination_bound|pr_count_bound|closed_pr|stale_head|accepted_wrong_actor)
       [ ! -f "$MOCK_DIR/labels" ] || { echo "unexpected label write $name" >&2; exit 1; } ;;
   esac
   echo "$name: PASS"
@@ -236,6 +238,8 @@ run_bad graphql_page_limit pagination_bound 0
 run_bad graphql_pr_count_limit pr_count_bound 0
 run_bad pr_closed closed_pr 0
 run_bad accepted_wrong_actor accepted_wrong_actor 0
+run_bad accepted_pr_closed closed_pr 0 accepted
+run_bad accepted_head_changed stale_head 0 accepted
 
 # Integration contract: use the *actual* main #1097 / human-pause helpers,
 # retaining a secretless gh mock solely at the GitHub trust boundary. The
@@ -274,7 +278,8 @@ reset_state; unset MOCK_BAD REAL_BAD
 bash "$tmp/real/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 42 > "$tmp/real-output"
 jq -e '.result=="handoff_consumer_complete" and .accepted_record_id=="102"' "$tmp/real-output" >/dev/null
 [ "$(grep -c '^POST$' "$MOCK_DIR/posts")" = 1 ]
-[ ! -f "$MOCK_DIR/issue-label" ] && [ ! -f "$MOCK_DIR/pr-label" ]
+[ ! -f "$MOCK_DIR/issue-label" ]
+[ ! -f "$MOCK_DIR/pr-label" ]
 echo 'real_helpers_normal: PASS'
 # After the accepted record exists, reentry verifies the real graph again;
 # there must be no second POST and no accidental relapse into active-pause gate.
@@ -287,4 +292,4 @@ if bash "$tmp/real/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 42 > "$
 fi
 [ ! -f "$MOCK_DIR/posts" ] && echo 'real_helpers_edited_trusted_comment: PASS'
 
-printf '%s\n' 'consumer Prepared mock: 42 cases PASS (no real GitHub/API access)'
+printf '%s\n' 'consumer mock: 44 cases PASS (no real GitHub/API access)'
