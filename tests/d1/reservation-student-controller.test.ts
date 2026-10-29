@@ -50,8 +50,14 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
       headers.set("cookie", cookie.name + "=" + cookie.value);
       headers.set("sec-fetch-site", "same-origin");
       if (method === "POST") headers.set("origin", origin);
+      // Browser fetch options are observed as issued, but cache/credentials/
+      // redirect are not Request-construction inputs in this Worker test port.
+      // Preserve the HTTP path, method, body and every Controller-owned header.
+      if (init?.credentials !== "same-origin" || init.cache !== "no-store" || init.redirect !== "error") {
+        throw new Error("unexpected_controller_fetch_options");
+      }
       bridgePhase = "request-construction";
-      const request = new Request(origin + input, { ...init, headers });
+      const request = new Request(origin + input, { method, headers, ...(init.body ? { body: init.body } : {}) });
       bridgePhase = "service-fetch";
       const result = await service.fetch(request);
       bridgePhase = "service-returned";
