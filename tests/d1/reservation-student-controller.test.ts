@@ -34,6 +34,7 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
       cursorKey: await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
     });
     const trace: { method: string; path: string; status: number }[] = [];
+    let bridgePhase = "not-entered";
     const allowed = new Set([confirmPath, previewPath, monthPath, csrfPath]);
     const fetcher: typeof fetch = async (input, init) => {
       if (typeof input !== "string" || !allowed.has(input)) throw new Error("unexpected_controller_path");
@@ -49,8 +50,11 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
       headers.set("cookie", cookie.name + "=" + cookie.value);
       headers.set("sec-fetch-site", "same-origin");
       if (method === "POST") headers.set("origin", origin);
+      bridgePhase = "request-construction";
       const request = new Request(origin + input, { ...init, headers });
+      bridgePhase = "service-fetch";
       const result = await service.fetch(request);
+      bridgePhase = "service-returned";
       // Only fixed whitelisted path/method/status; never persist raw requests.
       trace.push({ method, path: input, status: result.status });
       if (input === confirmPath && method === "POST" && result.status === 409) {
@@ -82,7 +86,18 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
 
     stage = "initial-month";
     await controller.loadMonth(seed.month);
+    const initialReads = trace.filter((call) => call.method === "GET" && call.path === monthPath);
+    if (initialReads.length !== 1) {
+      stage = "initial-month-no-service-response-" + bridgePhase;
+      throw new Error("initial_month_unavailable");
+    }
+    if (initialReads[0].status !== 200) {
+      stage = "initial-month-http-" + String(initialReads[0].status);
+      throw new Error("initial_month_wrong_status");
+    }
+    stage = "initial-month-model";
     expect(controller.state.slots.some((slot) => slot.slotId === slotId && slot.view === "bookable")).toBe(true);
+    stage = "initial-month-counts";
     expect(await counts()).toEqual([2, 4, 0, 0, 0]);
     stage = "first-preview";
     controller.select(slotId);
