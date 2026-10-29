@@ -1150,8 +1150,9 @@ CI、writer排他が証明されたことにならない。preflight出力は
 
 本番の `ai-developer.yml`、Issue entry gate、既存resume producer/consumerには接続せず、
 Codex再開、`ai-resume-accepted` POST、label解除、Draft→Ready、Claudeレビュー、
-PR/mergeを発火させない。#1098でfresh GitHub API収集・source provenance・
-同一concurrency内の再照合とconsumer/Issue entry一括接続が完了するまで、
+PR/mergeを発火させない。#1100でfresh GitHub API収集・source provenance検証を
+dormant consumerとして用意し、#1098で同一concurrency内の再照合と
+consumer/Issue entry一括接続が完了するまで、
 このコマンドは**運用として使用不可**。PR close、HEAD変更、review failureでは
 受理済みのhandoff ownershipを自動的にCodexへ戻さない。曖昧なrecordはfail-closed。
 

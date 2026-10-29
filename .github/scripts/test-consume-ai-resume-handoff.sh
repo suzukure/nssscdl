@@ -14,7 +14,7 @@ set -euo pipefail
 kind="$(basename "$0" .sh)"
 accepted=no; [ ! -e "$MOCK_DIR/accepted" ] || accepted=yes
 pause='{"version":1,"kind":"pause","target":"issue:36","reason":"developer_execution_failed","payload":{"failed_action":"develop"}}'
-record="$(jq -nc --arg h "$MOCK_HEAD" '{version:1,kind:"ai-resume-accepted",target:"issue:36",reason:"developer_execution_failed",source_pause_id:"101",payload:{action:"handoff",actor:"suzukure",pr_number:37,pr_head:$h}}')"
+record="$(jq -nc --arg bad "${MOCK_BAD:-}" --arg h "$MOCK_HEAD" '{version:1,kind:"ai-resume-accepted",target:"issue:36",reason:"developer_execution_failed",source_pause_id:"101",payload:{action:"handoff",actor:(if $bad=="accepted_wrong_actor" then "other-user" else "suzukure" end),pr_number:37,pr_head:$h}}')"
 case "$kind" in
   parse-ai-resume-command)
     jq -e --arg h "$MOCK_HEAD" 'if .body == ("/ai resume handoff pause:101 pr:37 head:"+$h) and .actor=="suzukure" and .author_association=="OWNER" then {result:"accepted",action:"handoff",actor:"suzukure",pause_id:"101",pr_number:37,head_sha:$h} else error("wrong command") end' ;;
@@ -31,8 +31,8 @@ case "$kind" in
     else echo '{"result":"no_handoff_record","deny_develop":false}'; fi ;;
   list-human-pause-records)
     if [ "$accepted" = yes ]; then
-      jq -cn --arg bad "${MOCK_BAD:-}" --argjson p "$pause" --argjson r "$record" '{target:"issue:36",records:([{pause_id:"101",record:$p},{pause_id:"102",record:$r}] + (if $bad=="duplicate_accepted" then [{pause_id:"103",record:$r}] else [] end))}'
-    else jq -cn --argjson p "$pause" '{target:"issue:36",records:[{pause_id:"101",record:$p}]}'; fi ;;
+      jq -cn --arg bad "${MOCK_BAD:-}" --argjson p "$pause" --argjson r "$record" '{target:(if $bad=="wrong_record_target" then "issue:99" else "issue:36" end),records:([{pause_id:"101",record:$p},{pause_id:"102",record:$r}] + (if $bad=="duplicate_accepted" then [{pause_id:"103",record:$r}] else [] end))}'
+    else jq -cn --arg bad "${MOCK_BAD:-}" --argjson p "$pause" '{target:(if $bad=="wrong_record_target" then "issue:99" else "issue:36" end),records:[{pause_id:"101",record:$p}]}'; fi ;;
   validate-human-pause-record-graph) cat ;;
   decompose-human-pause-record-graph) jq '{target,chains:[{records:.records}]}' ;;
   derive-human-pause-pre-resume-state) jq '.chains |= map(. + {pre_resume:{status:"active",pause_id:"101",reason:"developer_execution_failed"}})' ;;
@@ -50,6 +50,7 @@ case "$kind" in
     else jq '.chains |= map(. + {effective:{status:"active",pause_id:"101",reason:"developer_execution_failed"}})'; fi ;;
   reconcile-human-pause-active-pause)
     if [ "$accepted" = yes ]; then echo '{"target":"issue:36","result":"no_active_pause"}'
+    elif [ "${MOCK_BAD:-}" = different_active_pause ]; then echo '{"target":"issue:36","result":"active","active_pause":{"pause_id":"999","reason":"developer_execution_failed"}}'
     else echo '{"target":"issue:36","result":"active","active_pause":{"pause_id":"101","reason":"developer_execution_failed"}}'; fi ;;
   *) echo "unexpected helper: $kind" >&2; exit 7;;
 esac
@@ -68,7 +69,7 @@ repo=suzukure/nssscdl; sha="$MOCK_HEAD"
 if [ "$1" = api ] && [ "$2" = graphql ]; then
   jq -cn --arg h "$sha" --arg bad "${MOCK_BAD:-}" '
     [{data:{repository:{pullRequests:{nodes:([
-      {number:37,state:"OPEN",isDraft:true,headRefOid:$h,baseRefName:"main",author:{login:"suzukure"},
+      {number:37,state:"OPEN",isDraft:true,headRefOid:$h,baseRefName:"main",author:{login:(if $bad=="canonical_wrong_author" then "someone-else" else "suzukure" end)},
        headRepository:{nameWithOwner:"suzukure/nssscdl"},baseRepository:{nameWithOwner:"suzukure/nssscdl"},
        closingIssuesReferences:{nodes:([{number:36,repository:{nameWithOwner:"suzukure/nssscdl"}}]
          + (if $bad=="two_closings" then [{number:35,repository:{nameWithOwner:"suzukure/nssscdl"}}] else [] end)),
@@ -76,6 +77,18 @@ if [ "$1" = api ] && [ "$2" = graphql ]; then
       + (if $bad=="duplicate_pr" then [{number:40,state:"OPEN",isDraft:true,headRefOid:$h,baseRefName:"main",
          closingIssuesReferences:{nodes:[{number:36,repository:{nameWithOwner:"suzukure/nssscdl"}}],pageInfo:{hasNextPage:false}}}] else [] end)),
         pageInfo:{hasNextPage:($bad=="incomplete_pages"),endCursor:(if $bad=="incomplete_pages" then "cursor-x" else null end)}}}}}]
+  | if $bad=="pagination_bound" then .[0] as $page | [range(0;11) | $page]
+    elif $bad=="pr_count_bound" then .[0] as $base |
+      [range(0;10) as $i |
+        ($base
+         | .data.repository.pullRequests.nodes =
+             [range(0;100) as $j |
+              ($base.data.repository.pullRequests.nodes[0]
+               | .number = (1000 + $i*100 + $j)
+               | .closingIssuesReferences.nodes = [])]
+         | .data.repository.pullRequests.pageInfo =
+             {hasNextPage:($i < 9),endCursor:(if $i < 9 then ("cursor"+($i|tostring)) else null end)})]
+    else . end
   ' ; exit
 fi
 if [ "$1" = api ] && [ "$2" = --paginate ]; then
@@ -95,15 +108,15 @@ if [ "$1" = api ]; then
   endpoint="$2"
   case "$endpoint" in
     /repos/$repo/issues/comments/201)
-      jq -cn --arg h "$sha" --arg bad "${MOCK_BAD:-}" '{id:201,issue_url:"https://api.github.com/repos/suzukure/nssscdl/issues/36",user:{login:"suzukure"},author_association:"OWNER",created_at:"2026-10-27T03:00:00Z",updated_at:(if $bad=="edited_command" then "2026-10-27T03:01:00Z" else "2026-10-27T03:00:00Z" end),body:("/ai resume handoff pause:101 pr:37 head:"+$h)}' ;;
+      jq -cn --arg h "$sha" --arg bad "${MOCK_BAD:-}" '{id:201,issue_url:"https://api.github.com/repos/suzukure/nssscdl/issues/36",user:{login:"suzukure"},author_association:"OWNER",created_at:(if $bad=="missing_command_timestamp" then null else "2026-10-27T03:00:00Z" end),updated_at:(if $bad=="edited_command" then "2026-10-27T03:01:00Z" else "2026-10-27T03:00:00Z" end),body:("/ai resume handoff pause:101 pr:37 head:"+$h)}' ;;
     /repos/$repo/issues/comments/101)
-      jq -cn --arg bad "${MOCK_BAD:-}" '{id:101,issue_url:"https://api.github.com/repos/suzukure/nssscdl/issues/36",performed_via_github_app:{id:(if $bad=="wrong_app" then 99 else 42 end)},created_at:"2026-10-27T02:00:00Z",updated_at:"2026-10-27T02:00:00Z"}' ;;
+      jq -cn --arg bad "${MOCK_BAD:-}" '{id:101,issue_url:"https://api.github.com/repos/suzukure/nssscdl/issues/36",performed_via_github_app:{id:(if $bad=="wrong_app" then 99 else 42 end)},created_at:(if $bad=="missing_source_timestamp" then null else "2026-10-27T02:00:00Z" end),updated_at:"2026-10-27T02:00:00Z"}' ;;
     /repos/$repo/issues/36|/repos/$repo/issues/37)
       number="${endpoint##*/}"; if [ "$number" = 36 ]; then state=issue; else state=pr; fi
       if [ -e "$MOCK_DIR/$state-label" ]; then label='[{"name":"human-review-required"}]'; else label='[]'; fi
       jq -cn --argjson n "$number" --argjson labels "$label" '{number:$n,state:"open",labels:$labels}' ;;
     /repos/$repo/pulls/37)
-      jq -cn --arg h "$sha" --arg bad "${MOCK_BAD:-}" '{number:37,state:"open",draft:true,user:{login:"suzukure"},head:{sha:(if $bad=="stale_head" then "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" else $h end),ref:(if $bad=="untrusted_branch" then "ai/other-36-work" else "human/issue-36-work" end),repo:{full_name:"suzukure/nssscdl"}},base:{ref:"main",repo:{full_name:"suzukure/nssscdl"}}}' ;;
+      jq -cn --arg h "$sha" --arg bad "${MOCK_BAD:-}" '{number:37,state:(if $bad=="closed_pr" then "closed" else "open" end),draft:true,user:{login:(if $bad=="rest_wrong_author" then "someone-else" else "suzukure" end)},head:{sha:(if $bad=="stale_head" then "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" else $h end),ref:(if $bad=="untrusted_branch" then "ai/other-36-work" else "human/issue-36-work" end),repo:{full_name:"suzukure/nssscdl"}},base:{ref:"main",repo:{full_name:"suzukure/nssscdl"}}}' ;;
     /repos/$repo/actions/runs/600)
       jq -cn --arg h "$sha" --arg bad "${MOCK_BAD:-}" '{id:600,head_sha:(if $bad=="stale_ci_run" then "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" else $h end),
         path:(if $bad=="wrong_ci_workflow" then ".github/workflows/other.yml" else ".github/workflows/product-ci.yml" end),
@@ -152,7 +165,7 @@ run_good() {
 run_bad() {
   local name="$1" bad="$2" posts="$3"
   reset_state; export MOCK_BAD="$bad"
-  if [ "$bad" = duplicate_accepted ]; then touch "$MOCK_DIR/accepted"; fi
+  if [ "$bad" = duplicate_accepted ] || [ "$bad" = accepted_wrong_actor ]; then touch "$MOCK_DIR/accepted"; fi
   if bash "$tmp/scripts/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 42 > "$tmp/output" 2> "$tmp/error"; then
     echo "unsafe success $name" >&2; exit 1
   fi
@@ -160,8 +173,26 @@ run_bad() {
   if [ -f "$MOCK_DIR/posts" ]; then actual="$(grep -c '^POST$' "$MOCK_DIR/posts" || true)"; fi
   [ "$actual" = "$posts" ] || { echo "unexpected POST count $name: $actual" >&2; exit 1; }
   [ -f "$MOCK_DIR/issue-label" ] && [ -f "$MOCK_DIR/pr-label" ]
+  # Require the specific fail-closed decision, not a mock syntax/API failure.
+  local reason=""
   case "$bad" in
-    foreign_*_ci|no_pr_ci|untrusted_branch)
+    missing_command_timestamp) reason=command_provenance_invalid ;;
+    missing_source_timestamp) reason=source_provenance_invalid ;;
+    wrong_record_target) reason=wrong_record_target ;;
+    different_active_pause) reason=different_active_pause ;;
+    canonical_wrong_author) reason=pr_canonical_identity_mismatch ;;
+    rest_wrong_author|closed_pr) reason=stale_or_invalid_pr ;;
+    pagination_bound) reason=pr_listing_incomplete ;;
+    pr_count_bound) reason=pr_listing_bound ;;
+    accepted_wrong_actor) reason=accepted_identity_mismatch ;;
+  esac
+  if [ -n "$reason" ]; then
+    grep -Fq "consume-ai-resume-handoff: STOP $reason" "$tmp/error" || {
+      echo "unexpected stop reason $name" >&2; cat "$tmp/error" >&2; exit 1;
+    }
+  fi
+  case "$bad" in
+    foreign_*_ci|no_pr_ci|untrusted_branch|missing_*_timestamp|wrong_record_target|different_active_pause|canonical_wrong_author|rest_wrong_author|pagination_bound|pr_count_bound|closed_pr|accepted_wrong_actor)
       [ ! -f "$MOCK_DIR/labels" ] || { echo "unexpected label write $name" >&2; exit 1; } ;;
   esac
   echo "$name: PASS"
@@ -195,6 +226,16 @@ run_bad active_writer active_writer 0
 run_bad post_unknown_not_verified post_no_record 1
 run_bad accepted_duplicate duplicate_accepted 0
 run_bad label_removal_unconfirmed label_still_present 1
+run_bad missing_command_created_at missing_command_timestamp 0
+run_bad missing_source_created_at missing_source_timestamp 0
+run_bad wrong_record_target wrong_record_target 0
+run_bad different_active_pause different_active_pause 0
+run_bad canonical_author_mismatch canonical_wrong_author 0
+run_bad pr_author_mismatch rest_wrong_author 0
+run_bad graphql_page_limit pagination_bound 0
+run_bad graphql_pr_count_limit pr_count_bound 0
+run_bad pr_closed closed_pr 0
+run_bad accepted_wrong_actor accepted_wrong_actor 0
 
 # Integration contract: use the *actual* main #1097 / human-pause helpers,
 # retaining a secretless gh mock solely at the GitHub trust boundary. The
@@ -246,4 +287,4 @@ if bash "$tmp/real/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 42 > "$
 fi
 [ ! -f "$MOCK_DIR/posts" ] && echo 'real_helpers_edited_trusted_comment: PASS'
 
-printf '%s\n' 'consumer Prepared mock: 32 cases PASS (no real GitHub/API access)'
+printf '%s\n' 'consumer Prepared mock: 42 cases PASS (no real GitHub/API access)'
