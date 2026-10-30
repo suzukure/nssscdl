@@ -134,6 +134,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 #1104の `booking-operator.test.mjs` は、人間用の別User unit／限定Worker Port、同一InvocationとPID再利用・cgroup／listener拒否、私有seed capability→終端→独立readback→所有cleanup、Preview/Confirm一回と同一ID History、未知／timeout／abortでの保持をfinite effectsだけで検証する。起動手順・環境境界は `../../tests/README.md` の#1104節を正とし、WSLg／実Chrome／実D1予約・実cleanupの成功とは区別する。formal自動proofの120/180秒・system.slice、既存AC→TCとGate全体条件は不変。
 
+#1106は同testでcompiler子process限定のcache抑止と、同じtemporaryからseedのempty検査への接続、準備拒否後の入力解放・outer固定通知を有限検証する。実compiler／Node pipeの部分証拠と、合成effectsによる所有・停止回帰を区別し、実unit／Browser／D1は起動しない。詳細は上記READMEの同節を正とし、Gate・製品AC/TC・実操作Goは不変更。
+
 構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。静的WebのHTTPS配信 / read-only DOM compositionは#922で準備し、正式normal単発Run #38025821104で部分実証した。#926は単一予約Preview / Confirm UIをsynthetic fetch / structural DOMで検証し、unsafe POSTを既存read-only評価Workerへ接続しない。actual isolated HTTP / D1 Commitを伴うPreview / Confirm、Production preauth / Auth flowと以下Gate全体は後続検証の責務である。
 
 #928の非公開factoryは既存D1 / HTTP部品のsynthetic compositionだけを検証する。対象fixture・既存TCへの部分証拠対応は `../../tests/README.md` の#928節を参照する。実local D1 migration / atomic Commit / 読取照合 / 失敗後cleanupは#931、Worker activationは#929、実Chrome / 通信は#930の責務とし、#928の完了をこれらのPassへ読み替えない。
