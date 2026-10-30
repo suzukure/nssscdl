@@ -269,6 +269,8 @@ cursor用鍵はoperator / trusted server setupでWeb CryptoのHMAC-SHA-256署名
 
 ### 9.3 評価Gateと後続責務
 
+#1104の人間用Operatorは `tests/evaluation/booking-operator.mjs` の明示opt-inだけを入口とする。credential-free controllerとBrowser/Workerを別の非root User transient unitへ置き、controller側の同一Runのseed capabilityを保持したまま、Browser/Worker unitの同一Invocation終端・cgroup空・両port閉鎖後に独立D1 readbackを行う。既存予約Worker/config、empty-only seed、TLS/NSS・公開Playwright APIを再利用し、formal system.slice / 120秒child・180秒ownerは変更しない。準備5分・人間操作20分・cleanup3分・総30分（controller User unitのhard cap）、未知・中断・期限切れでは単発所有停止後に保持する。手順・finite fixtureと実WSLg操作の証拠境界は `../../tests/README.md` の#1104節を正とする。実機実行は別Goで、実装／CIからGate A〜D・#930 401・#608受入を主張しない。
+
 #929は `tests/evaluation/reservation-worker.ts` / `wrangler.reservation.jsonc` の独立localhost入口で#928 factoryを利用する。固定HTTPS `127.0.0.1:8789`、専用 `EVALUATION_BOOKING_DB`、6静的資産・既存3 GET・Preview / Confirmの2 POSTだけを許可し、Origin / Session / CSRF / Transactionの判断は既存Adapterへ委譲する。read-only `worker.ts` / `wrangler.jsonc`、8788の証拠・seed / snapshot・通常Production全503は維持する。strict config検査とisolated HTTP fixtureの証明範囲・専用persist境界は `../../tests/README.md` の#929節を正とする。実HTTPS / Chrome・owned cleanupを起動せず、新proof infrastructureを追加しない。実D1の先行部分証拠#931とsynthetic HTTP応答を区別し、実画面の統合証明は#930へ残す。
 
 Gate A〜Dの評価責務・検証層分担は [`01_TestPlan.md` §7.1](../40_test/01_TestPlan.md#71-608初回隔離評価のgate892)、証跡・完了判定は同§9 / §12を正本とする。deploy / migration / rollback / cleanupの共通正本は `../10_basic_design/01_SystemArchitecture.md` §6とする。

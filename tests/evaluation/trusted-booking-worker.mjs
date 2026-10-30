@@ -33,7 +33,7 @@ export function checkBookingCertificate(certificate, parent, identity, temporary
   } catch { throw failure(); }
 }
 
-function preflight(input) {
+export function bookingWorkerPreflight(input) {
   check(process.platform === "linux" && /^v24\./.test(process.version));
   const env = Object.freeze({ ...process.env });
   checkBookingEnvironment(env, JSON.parse(readFileSync(proxyOptions.configPath, "utf8")),
@@ -62,7 +62,7 @@ function preflight(input) {
 }
 
 const runtime = {
-  preflight,
+  preflight: bookingWorkerPreflight,
   spawn,
   read: readFileSync,
   async command(file, args, timeout, env) {
@@ -77,7 +77,7 @@ const runtime = {
   sleep: () => new Promise((done) => setTimeout(done, 100)),
 };
 
-const rows = (output) => {
+export const bookingListenerRows = (output) => {
   check(typeof output === "string" && output.length <= 65536 && !/[\r\x00]/.test(output));
   if (output === "") return [];
   const lines = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
@@ -93,6 +93,7 @@ const rows = (output) => {
     return { address: match[1], pids, cgroup: match[4] };
   });
 };
+const rows = bookingListenerRows;
 const live = (child) => child && !child.spawnFailed && child.exitCode === null && child.signalCode === null;
 const exited = (child) => Number.isInteger(child.exitCode) || typeof child.signalCode === "string";
 

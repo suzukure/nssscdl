@@ -132,6 +132,8 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 
 ### 7.1 #608初回隔離評価のGate（#892）
 
+#1104の `booking-operator.test.mjs` は、人間用の別User unit／限定Worker Port、同一InvocationとPID再利用・cgroup／listener拒否、私有seed capability→終端→独立readback→所有cleanup、Preview/Confirm一回と同一ID History、未知／timeout／abortでの保持をfinite effectsだけで検証する。起動手順・環境境界は `../../tests/README.md` の#1104節を正とし、WSLg／実Chrome／実D1予約・実cleanupの成功とは区別する。formal自動proofの120/180秒・system.slice、既存AC→TCとGate全体条件は不変。
+
 構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。静的WebのHTTPS配信 / read-only DOM compositionは#922で準備し、正式normal単発Run #38025821104で部分実証した。#926は単一予約Preview / Confirm UIをsynthetic fetch / structural DOMで検証し、unsafe POSTを既存read-only評価Workerへ接続しない。actual isolated HTTP / D1 Commitを伴うPreview / Confirm、Production preauth / Auth flowと以下Gate全体は後続検証の責務である。
 
 #928の非公開factoryは既存D1 / HTTP部品のsynthetic compositionだけを検証する。対象fixture・既存TCへの部分証拠対応は `../../tests/README.md` の#928節を参照する。実local D1 migration / atomic Commit / 読取照合 / 失敗後cleanupは#931、Worker activationは#929、実Chrome / 通信は#930の責務とし、#928の完了をこれらのPassへ読み替えない。
@@ -249,6 +251,8 @@ child120秒・owner180秒の共通残予算と停止margin、固定report・有�
 
 ## 9. 開発単位の検証・完了
 
+#1104はOperatorの実装・有限検証と同HEAD CIの単位であり、人間による最初の実操作は別Goとする。正常1予約の採用には、同Runの人間Confirm一回、201、本人HistoryのID、Browser/Worker停止・cgroup空、独立5表readback、所有cleanupの連続した証拠を要する。合成成功やhard lifetime終了だけで正常cleanup／Gate合格にしない。
+
 基本設計後の価値単位と実施Issueの選択・分割・Done判断は `docs/30_operations/ai-development-workflow.md` の「基本設計後の価値単位の開発」を正本とする。開発単位では、対象REQ / ACと既存TCを要求側Matrixおよび本ディレクトリのAC→TC追跡表で照合し、正常・境界・競合・失敗の具体例と期待結果を実装前に確認する。テストの期待結果は要求・基本設計を正とし、実装出力から導出しない。
 
 実施Issueの完了には変更内容に応じた設計整合とAC→TC対応、現在PR headの該当CI証跡を確認する。実装を含むIssueでは対象AC→TC→自動テストと実行結果の対応、該当するDB / API結合・競合・外部依存失敗の検証、影響する既存機能の回帰を確認する。TDD対象の重要業務ロジックは失敗確認・最小実装・構造改善後の再実行を記録する。未実施・失敗を成功と扱わず、Defectと残課題をIssueに記録する。
@@ -282,6 +286,8 @@ child120秒・owner180秒の共通残予算と停止margin、固定report・有�
 | Minor | 代替手段がある表示・文言・局所的UI不具合 |
 
 ## 12. 証跡
+
+#1104の成功出力はHEAD、UI build各file hash、固定config／migration hash、架空fixture・actor、時刻、同一予約ID、独立5表readbackとowned cleanupを対応付ける。失敗出力は固定unknown／保持のみで、201不明・重複・中断／期限切れから成功／無書込みを推定しない。Cookie／CSRF／鍵／raw error／DB行は記録せず、実WSLg操作の未実施は#1104／#537／#608 checkpointで明示する。
 
 テスト結果には最低限、TC ID、Build/Commit、実行日時、環境、Actor/Test Data、結果、必要なScreenshot/Response/Audit evidence、Defect IDを残す。
 

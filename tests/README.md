@@ -1,5 +1,62 @@
 # Tests
 
+## #1104 WSLg人間用の単一予約Operator（明示opt-in、実機は別Go）
+
+`evaluation/booking-operator.mjs` はimportや引数不足では起動しない。
+既存Linux native checkout、Node24、locked dependencies、build済みUI、WSLg、
+非root systemd user manager／cgroup v2、Chrome、certutil、openssl、ssを前提とし、
+導入／権限追加／fallbackは行わない。**以下は後日の人間Go後の手順であり、本実装中には実行しない。**
+
+```sh
+node tests/evaluation/booking-operator.mjs --run --head <確認済みの40桁HEAD>
+```
+
+tracked/untracked差分、HEAD、依存、固定config、12 migration、distの再compileとのbyte一致、
+8788/8789空、両評価persist不在、秘密／proxy／debug環境の不在を検査する。
+既存profile／persistをadopt・上書き・自動削除しない。失敗後の同条件再実行は禁止。
+GUI変数は実測したWSLgの`:0`、`wayland-0`、`/run/user/<uid>`からの正規socket、
+必要時の固定Pulse socketだけをChromeへ渡す。seed／Workerのenv allowlistへGUIを追加しない。
+
+controllerも別Browser/Workerも非root User transient unitに収容し、controllerには
+総30分hard capを設定する。準備はseed/TLS/起動を通して5分、画面引渡しから人間操作20分、
+明示終了後cleanup3分、余白2分。
+Browser/Worker unitのhard capもcontroller残予算から停止余白2秒を控除して固定し、別の30分を追加しない。
+`systemd-run --pipe`の既存FD継承を使い、
+Session Cookieは認証済みのtrusted childへの私有pipeだけで搬送し、argv/env/URL/fileへ保存しない。
+HTTP debug loginやSession URL、恒久daemon、Secrets／sudoers／Ruleset変更はない。
+controllerは一回限りの元のseed/readback capabilityを外側のmemoryに保持する。
+
+seedは既存 `trusted-booking-seed.mjs` のempty-onlyローカルD1と架空Session、
+予約入口は既存 `reservation-worker.ts` / `wrangler.reservation.jsonc` の8789と
+`EVALUATION_BOOKING_DB`を使う。TLS SAN／NSS P,,・strict HTTPSの正負probeは既存機能を再利用し、
+headless probeを閉じた後、Cookie jarを検証してから人間用headed pageを作る。
+Browser sandboxとTLSを有効に保ち、通常Chrome profileやremote／Providerへ接続しない。
+正式 `trusted-booking-worker.mjs` のsystem.slice判定・生成argvは不変更。
+新 `booking-operator-worker.mjs` は共有preflight／listener parserだけを再利用し、
+User unitのname＋InvocationID＋kernel cgroup＋UID＋PID starttime＋PGID／listenerを別に照合する。
+
+引渡し後、人間が案内された公開月15日10:00の枠を選び、Preview→全内容を確認→
+明示Confirm一回→本人履歴を操作する。コードはclick/fill/Confirm再送を行わない。
+固定origin／route／CSRF／body、native trusted Confirm click一回、201とHistoryの同一IDを観測する。
+終わったら端末へ **操作終了** と入力する。新規Browser通信の受付を閉じてWorkerを止め、
+画面を検査し、Browserを閉じる。User unitの同一Invocation正常終了・kernel cgroup空・
+両port閉鎖を2回確認した後だけ元の一回限りの独立readbackで5表を照合し、秘密scan、
+所有Unit解放、全directory identity／tree再検証、owned persist/HOME/NSS/profile/key/logの削除へ進む。
+Unit名／UID／PIDだけではsignalや削除を許さず、owned group／managerへ各一回だけ停止要求する。
+Ctrl-C／pipe EOF（端末／parent喪失）／20分期限／不明HTTP／identity drift／停止不明では、
+成功・無書込み・cleanupへ昇格せず資産を保持する。hard capによる終了も正常cleanup証拠にしない。
+
+finite testsは通常Unit stepの `booking-operator.test.mjs` と、既存Worker／seed／TLS／process／outerの回帰を使う。
+これらは合成effects／静的検査で、実WSLg socket互換性、GUI操作、実Chrome予約、D1実書込み、
+実User unit終端／cleanupの成功を証明しない。TC-F-003/005・TC-NF-902/914の関連するprepared partialに限定し、
+既存POL→BR→REQ→AC→TC、formal auto proofの120/180秒とsystem.slice、Gate A〜D／#930 401／#608受入・Releaseは不変。
+実操作Goと結果checkpointは別の人間判断に残す。
+
+`--pipe`のFD継承・同期動作の根拠：
+[systemd-run(258)公式](https://www.freedesktop.org/software/systemd/man/258/systemd-run.html#--pipe)。
+`RemainAfterExit=yes`のBrowser unitは完了message後にmanager／kernelを照合し、readback後のstopで解放する。
+bridge process終了だけをunit終端の証拠にはしない。実環境のこの組合せは未実証。
+
 自動Unit / Integration / End-to-End Testを格納する。
 
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。
