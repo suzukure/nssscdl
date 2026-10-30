@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { useOperator, cleanEnvironment } from "./booking-operator.mjs";
 import { humanBookingObservation, observeHumanBrowser } from "./booking-operator-browser.mjs";
 import { createOperatorWorker } from "./booking-operator-worker.mjs";
-import { budget, userGroup, parseUnit, unitProperties, procIdentity, sameProcess, guiEnvironment, emptyGroup } from "./booking-operator-unit.mjs";
+import { budget, userGroup, parseUnit, unitProperties, procIdentity, sameProcess, guiEnvironment, emptyGroup, unitDuration } from "./booking-operator-unit.mjs";
 import { origin } from "./trusted-booking-seed.mjs";
 const name = `nssscdl-operator-${"a".repeat(32)}.service`, group = userGroup(1000, name);
 const id = "11111111-1111-4111-8111-111111111111", token = "v1." + "a".repeat(42) + "A";
@@ -96,6 +96,16 @@ test("#1104 exact user manager identity / lifetime / exit; unit name or UID alon
     { NoNewPrivileges: "no" }, { KillMode: "process" }, { ControlPID: "44" }, { ...terminal, ExecMainCode: "2" }, { ...terminal, ExecMainStatus: "1" }])
     assert.throws(() => parseUnit(unitText(changes), expected, Boolean(changes.SubState)));
   assert.throws(() => userGroup(0, name)); assert.throws(() => parseUnit(unitText() + "MainPID=42\n", expected));
+});
+test("#1104 Browser unit lifetime consumes the controller remaining budget, never another fresh 30 minutes", () => {
+  assert.equal(unitDuration("29min 58s"), 1798000000);
+  assert.equal(parseUnit(unitText({ RuntimeMaxUSec: "24min 58s" }), { group, runtimeSeconds: 1498 }).pid, 42);
+  assert.throws(() => parseUnit(unitText(), { group, runtimeSeconds: 1498 }));
+  for (const value of ["infinity", "30min extra", "1min 1min", "1.5s", "-1s", "30000000000000000000000000h"])
+    assert.throws(() => unitDuration(value));
+  const source = readFileSync("tests/evaluation/booking-operator.mjs", "utf8");
+  assert.match(source, /Math.floor\(\(remaining\(\) - 2000\) \/ 1000\)/);
+  assert.match(source, /RuntimeMaxSec=\$\{runtimeSeconds\}s/);
 });
 const statLine = (start = "7") => "42 (node) " + ["S", ...Array(18).fill("0"), start, "0"].join(" ") + "\n";
 test("#1104 PID reuse/cgroup/owner/read uncertainty deny ownership", () => {

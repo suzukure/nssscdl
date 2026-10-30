@@ -19,7 +19,9 @@ GUI変数は実測したWSLgの`:0`、`wayland-0`、`/run/user/<uid>`からの�
 
 controllerも別Browser/Workerも非root User transient unitに収容し、controllerには
 総30分hard capを設定する。準備はseed/TLS/起動を通して5分、画面引渡しから人間操作20分、
-明示終了後cleanup3分、余白2分。`systemd-run --pipe`の既存FD継承を使い、
+明示終了後cleanup3分、余白2分。
+Browser/Worker unitのhard capもcontroller残予算から停止余白2秒を控除して固定し、別の30分を追加しない。
+`systemd-run --pipe`の既存FD継承を使い、
 Session Cookieは認証済みのtrusted childへの私有pipeだけで搬送し、argv/env/URL/fileへ保存しない。
 HTTP debug loginやSession URL、恒久daemon、Secrets／sudoers／Ruleset変更はない。
 controllerは一回限りの元のseed/readback capabilityを外側のmemoryに保持する。

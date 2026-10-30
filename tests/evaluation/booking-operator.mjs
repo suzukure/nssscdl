@@ -58,7 +58,7 @@ async function owner(head, gui) {
   const name = `nssscdl-operator-${randomBytes(16).toString("hex")}.service`, group = userGroup(process.getuid(), name);
   const managerEnv = { PATH: env.PATH, HOME: temporary, XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
     DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
-  let invocation, main, unitStarted = false, stopAttempted = false, bridge, browserHome, persistIdentity, parentIdentity;
+  let invocation, main, unitStarted = false, stopAttempted = false, bridge, browserHome, persistIdentity, parentIdentity, runtimeSeconds;
   let aborted = false, endInteraction, reservationId, finishedAt, cleanupEnd = deadline;
   const interrupt = () => { aborted = true; bridge?.stdin.end(); endInteraction?.(); };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt); process.stdin.on("end", interrupt); process.stdin.resume();
@@ -67,7 +67,7 @@ async function owner(head, gui) {
     timeout: Math.max(1, Math.min(5000, manager ? cleanupEnd - performance.now() : remaining())), maxBuffer: 65536 })).stdout;
   const show = () => command("systemctl", ["--user", "show", name, ...unitProperties.split(",").map(k => `--property=${k}`)], true);
   const closed = async () => { for (const port of [8788, 8789]) demand((await command("ss", ["-H", "-ltn", `sport = :${port}`])).trim() === ""); };
-  const expected = () => ({ group, invocation });
+  const expected = () => ({ group, invocation, runtimeSeconds });
   const checkOwned = () => {
     supply.checkDirectoryIdentity(temporary, temporaryIdentity);
     supply.checkDirectoryIdentity(join(root, ".wrangler"), parentIdentity);
@@ -135,8 +135,10 @@ async function owner(head, gui) {
         remaining(); demand(performance.now() < preparationEnd);
         await checkSource();
         demand(/^LoadState=not-found$/m.test(await show()));
+        runtimeSeconds = Math.floor((remaining() - 2000) / 1000);
+        demand(runtimeSeconds > 0 && runtimeSeconds <= 1800);
         const args = ["--user", "--pipe", "--quiet", "--no-ask-password", `--unit=${name}`, `--working-directory=${root}`,
-          "--property=Type=exec", "--property=RemainAfterExit=yes", "--property=Restart=no", "--property=RuntimeMaxSec=1800s",
+          "--property=Type=exec", "--property=RemainAfterExit=yes", "--property=Restart=no", `--property=RuntimeMaxSec=${runtimeSeconds}s`,
           "--property=TimeoutStopSec=2s", "--property=KillMode=control-group", "--property=NoNewPrivileges=yes",
           "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
           process.execPath, join(root, "tests/evaluation/booking-operator-child.mjs"), "--unit-child", name, JSON.stringify([name, gui])];
@@ -176,7 +178,7 @@ async function owner(head, gui) {
           while (!snapshot && performance.now() < startEnd) {
             const text = await show();
             if (/^LoadState=not-found$/m.test(text)) await new Promise(done => setTimeout(done, 100));
-            else snapshot = parseUnit(text, { group });
+            else snapshot = parseUnit(text, { group, runtimeSeconds });
           }
           demand(snapshot); invocation = snapshot.invocation; main = procIdentity(snapshot.pid, group);
           demand(handshake.pid === main.pid && handshake.start === main.start && bridge.exitCode === null);

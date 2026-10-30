@@ -25,6 +25,17 @@ export function procIdentity(pid, group, io = { read: readFileSync, stat: lstatS
   return Object.freeze({ pid, start: fields[19], group });
 }
 export function sameProcess(a, b) { demand(a.pid === b.pid && a.start === b.start && a.group === b.group); }
+export function unitDuration(text) {
+  // systemctl's fixed C-locale presentation, e.g. 29min 58s. No rounding.
+  demand(typeof text === "string" && /^(?:\d+(?:h|min|s|ms|us))(?: \d+(?:h|min|s|ms|us))*$/.test(text));
+  const weights = { h: 3600000000, min: 60000000, s: 1000000, ms: 1000, us: 1 };
+  const seen = new Set(); let total = 0;
+  for (const part of text.split(" ")) {
+    const [, count, unit] = /^(\d+)(h|min|s|ms|us)$/.exec(part);
+    demand(!seen.has(unit)); seen.add(unit); total += Number(count) * weights[unit];
+  }
+  demand(Number.isSafeInteger(total)); return total;
+}
 export function parseUnit(text, expected, terminal = false) {
   const keys = ["LoadState", "ActiveState", "SubState", "Result", "InvocationID", "ControlGroup", "MainPID",
     "ControlPID", "RuntimeMaxUSec", "TimeoutStopUSec", "KillMode", "Restart", "RemainAfterExit", "NoNewPrivileges", "ExecMainCode", "ExecMainStatus"];
@@ -36,7 +47,9 @@ export function parseUnit(text, expected, terminal = false) {
   }
   demand(data.LoadState === "loaded" && /^[a-f0-9]{32}$/.test(data.InvocationID) && !/^0+$/.test(data.InvocationID));
   demand(!expected.invocation || data.InvocationID === expected.invocation);
-  demand(data.RuntimeMaxUSec === "30min" && data.TimeoutStopUSec === "2s" && data.KillMode === "control-group" &&
+  const lifetime = expected.runtimeSeconds ?? 1800;
+  demand(Number.isSafeInteger(lifetime) && lifetime > 0 && lifetime <= 1800);
+  demand(unitDuration(data.RuntimeMaxUSec) === lifetime * 1000000 && unitDuration(data.TimeoutStopUSec) === 2000000 && data.KillMode === "control-group" &&
     data.Restart === "no" && data.RemainAfterExit === "yes" && data.NoNewPrivileges === "yes");
   demand(data.ControlPID === "0");
   if (terminal === "stop") demand(["", expected.group].includes(data.ControlGroup) && /^\d+$/.test(data.MainPID));
