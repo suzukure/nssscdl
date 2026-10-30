@@ -4,9 +4,14 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { intervalLabel } from "../../src/web/model.ts";
-import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { useOperator, cleanEnvironment } from "./booking-operator.mjs";
+import { readFileSync, mkdtempSync, readdirSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync, spawn, execFile } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
+import { useOperator, cleanEnvironment, verifyOperatorBuild } from "./booking-operator.mjs";
 import { humanBookingObservation, observeHumanBrowser } from "./booking-operator-browser.mjs";
 import { createOperatorWorker } from "./booking-operator-worker.mjs";
 import { budget, userGroup, parseUnit, unitProperties, procIdentity, sameProcess, guiEnvironment, emptyGroup, unitDuration } from "./booking-operator-unit.mjs";
@@ -232,4 +237,141 @@ test("#1104 all imports/non-opt-in CLI are inert, internal owner cannot run outs
   assert.match(worker, /system.slice/); assert.doesNotMatch(worker, /user.slice|booking-operator/);
   for (const file of ["src/index.ts", "tests/evaluation/worker.ts", ".github/workflows/product-ci.yml"])
     assert.doesNotMatch(readFileSync(file, "utf8"), /booking-operator/);
+});
+
+// #1106 uses the actual compiler in the existing Linux Unit job, and the actual
+// seed function's empty-home gate with all DB writes stopped at the first mkdir.
+function seedEmptyGate(env) {
+  const source = readFileSync("tests/evaluation/trusted-booking-seed.mjs", "utf8");
+  const fn = source.slice(source.indexOf("export async function prepareTrustedBooking("), source.indexOf("// Separate read-only proxy;"));
+  let writes = 0;
+  const prepare = runInNewContext(`(${fn.replace("export ", "")})`, {
+    process: { env }, preflight: async () => {}, present: () => false, persistence: "/finite/persist", root: "/finite", resolve,
+    readdirSync, check: ok => { if (!ok) throw Error("finite-rejected"); }, failure: () => Error("TRUSTED_BOOKING_SEED_FAILED"),
+    mkdirSync: () => { writes++; throw Error("finite-stop-before-write"); },
+  });
+  return { prepare, writes: () => writes };
+}
+
+test("#1106 actual compiler leaves the same seed home empty; cache suppression is compiler-local", async t => {
+  const temporary = mkdtempSync(join(tmpdir(), "nssscdl-finite-build-"));
+  t.after(() => rmSync(temporary, { recursive: true }));
+  const env = cleanEnvironment(temporary), before = { ...env }, parentCache = process.env.NODE_DISABLE_COMPILE_CACHE;
+  let calls = 0;
+  const command = promisify(execFile);
+  const evidence = await verifyOperatorBuild(env, async (file, args, options) => {
+    calls++;
+    assert.equal(file, process.execPath);
+    assert.deepEqual(args.slice(0, 4), [join(process.cwd(), "node_modules/typescript/bin/tsc"), "-p", "src/web/tsconfig.json", "--outDir"]);
+    assert.equal(resolve(args[4], ".."), temporary);
+    assert.deepEqual(options, { cwd: process.cwd(), env: { ...env, NODE_DISABLE_COMPILE_CACHE: "1" }, timeout: 60000, maxBuffer: 65536 });
+    return command(file, args, options);
+  });
+  assert.equal(calls, 1); assert.equal(Object.keys(evidence.build).length, 6);
+  assert.deepEqual(env, before); assert.equal(process.env.NODE_DISABLE_COMPILE_CACHE, parentCache);
+  assert.deepEqual(readdirSync(temporary), []);
+  const gate = seedEmptyGate(env);
+  await assert.rejects(gate.prepare(() => assert.fail("no seed handoff")), /TRUSTED_BOOKING_SEED_FAILED/);
+  assert.equal(gate.writes(), 1); // Passed empty gate; first mkdir was intercepted before mutation.
+  mkdirSync(join(temporary, "node-compile-cache"));
+  const occupied = seedEmptyGate(env);
+  await assert.rejects(occupied.prepare(() => assert.fail("no seed handoff")), /TRUSTED_BOOKING_SEED_FAILED/);
+  assert.equal(occupied.writes(), 0); // Existing cache is still refused, never adopted/deleted.
+});
+
+test("#1106 compiler failure or byte mismatch retains the build and prevents seed", async t => {
+  for (const mode of ["compiler-failure", "byte-mismatch"]) {
+    const temporary = mkdtempSync(join(tmpdir(), "nssscdl-finite-build-"));
+    t.after(() => rmSync(temporary, { recursive: true }));
+    let seeded = false, calls = 0;
+    await assert.rejects(useOperator({
+      preflight: () => verifyOperatorBuild(cleanEnvironment(temporary), async (_file, args) => {
+        calls++;
+        if (mode === "compiler-failure") throw Error("finite-compiler-canary");
+        for (const file of ["student.js", "view.js", "controller.js", "model.js"]) writeFileSync(join(args[4], file), "finite mismatch");
+      }),
+      prepare: () => { seeded = true; },
+    }), error => /retain/.test(error.message) && !error.message.includes("finite-compiler-canary"));
+    assert.equal(calls, 1); assert.equal(seeded, false);
+    assert.equal(readdirSync(temporary).length, 1);
+    assert.ok(readdirSync(temporary)[0].startsWith("nssscdl-operator-build-"));
+  }
+});
+
+async function finiteNode(code, input) {
+  // The bounded child is only a Node fixture: never the opt-in Operator/systemd.
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+  child.stdin.on("error", () => {});
+  const completed = new Promise((done, bad) => { child.once("error", bad); child.once("close", (status, signal) => done({ status, signal, stdout, stderr })); });
+  if (input !== undefined) child.stdin.end(input);
+  return completed; // Default deliberately leaves the parent input pipe open.
+}
+const operatorUrl = pathToFileURL(resolve("tests/evaluation/booking-operator.mjs")).href;
+
+test("#1106 actual owner preparation rejection releases stdin without waiting for parent EOF", async () => {
+  const result = await finiteNode(`
+    import { readFileSync } from 'node:fs'; import { randomBytes } from 'node:crypto'; import { join } from 'node:path';
+    import { runInNewContext } from 'node:vm'; import { useOperator, listenOperatorInput } from ${JSON.stringify(operatorUrl)};
+    const all = readFileSync('tests/evaluation/booking-operator.mjs', 'utf8');
+    const source = all.slice(all.indexOf('async function owner('), all.indexOf('\\nif (process.argv[1]'));
+    const env = { TMPDIR: '/finite/home' }; let seedCalls = 0, commands = 0;
+    const fixtureProcess = new Proxy(process, { get: (p, key) => key === 'platform' ? 'linux' : key === 'getuid' ? () => 1000 : key === 'env' ? env : Reflect.get(p, key) });
+    const owner = runInNewContext('(' + source + ')', { process: fixtureProcess, performance, console, randomBytes, join, useOperator, listenOperatorInput,
+      root: '/finite', budget: { total: 1800000, prepare: 300000 }, demand: ok => { if (!ok) throw Error('finite-private-failure'); },
+      fail: () => Error('finite-private-failure'), userGroup: () => '/finite/group', guiEnvironment: g => g,
+      readFileSync: p => p === '/proc/self/cgroup' ? '0::/finite/group\\n' : p === '/proc/1/comm' ? 'systemd\\n' : p === '/sys/fs/cgroup/cgroup.controllers' ? 'cpu\\n' : '{}',
+      lstatSync: () => ({ mode: 0o40700 }), present: () => false, readdirSync: p => p === env.TMPDIR ? ['node-compile-cache'] : [],
+      supply: { checkBookingEnvironment() {}, directoryIdentity: () => ({}), proxyOptions: { configPath: '/finite/config' }, persistence: '/finite/persist',
+        prepareTrustedBooking() { seedCalls++; throw Error('unexpected-seed'); } },
+      exec: async (file, args) => { if (file !== 'git') throw Error('unexpected-command'); commands++; return { stdout: args[0] === 'rev-parse' ? 'a'.repeat(40) : '' }; } });
+    try { await owner('a'.repeat(40), {}); } catch { process.exitCode = 1; }
+    console.log(JSON.stringify({ seedCalls, commands, paused: process.stdin.isPaused(), sigint: process.listenerCount('SIGINT'), sigterm: process.listenerCount('SIGTERM') }));
+  `);
+  assert.equal(result.signal, null); assert.equal(result.status, 1); assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), { seedCalls: 0, commands: 2, paused: true, sigint: 0, sigterm: 0 });
+});
+
+function bridgeCliFixture(mode) {
+  const success = 'let input=""; process.stdin.on("data", chunk => { input += chunk; }); process.stdin.on("end",()=>{ if (input !== "操作終了\\n") { process.exitCode=1; return; } console.log(JSON.stringify({finite:"unchanged-success"})); })';
+  return `
+    import { readFileSync } from 'node:fs'; import { randomBytes } from 'node:crypto'; import { join, resolve } from 'node:path';
+    import { spawn } from 'node:child_process'; import { runInNewContext } from 'node:vm';
+    import { cleanEnvironment, bridgeOperator } from ${JSON.stringify(operatorUrl)};
+    const script = resolve('tests/evaluation/booking-operator.mjs'), all = readFileSync(script, 'utf8'); let starts = 0;
+    const mode = ${JSON.stringify(mode)};
+    const fixtureProcess = new Proxy(process, { get: (p, key) => key === 'platform' ? 'linux' : key === 'getuid' ? () => 1000 :
+      key === 'stdin' ? { isTTY: true } : key === 'env' ? {} : key === 'argv' ? ['node', script, '--run', '--head', 'a'.repeat(40)] : Reflect.get(p, key) });
+    const cli = runInNewContext('(async () => {' + all.slice(all.indexOf('if (process.argv[1]')) + '})', {
+      process: fixtureProcess, console, script, resolve, join, randomBytes, root: process.cwd(), cleanEnvironment, bridgeOperator,
+      demand: ok => { if (!ok) throw Error('finite-private-failure'); }, guiEnvironment: () => ({}), tmpdir: () => '/finite', mkdtempSync: () => '/finite/home',
+      spawn: (file, args, options) => {
+        if (++starts !== 1 || file !== 'systemd-run' || options.stdio.join(',') !== 'pipe,pipe,ignore' || !args.includes('--private-owner')) throw Error('unexpected-start');
+        const code = mode === 'success' ? ${JSON.stringify(success)} :
+          mode === 'signal' ? 'process.stdin.resume()' : mode === 'eof' ? 'process.stdin.resume(); process.stdin.on("end",()=>{process.exitCode=1})' :
+          mode === 'signal-exit' ? 'process.kill(process.pid,"SIGTERM")' :
+          'process.stderr.write("FINITE_SECRET_STDERR_CANARY"); process.exitCode=1';
+        const child = mode === 'spawn-error' ? spawn(process.execPath + '-finite-absent', [], { stdio: options.stdio }) : spawn(process.execPath, ['-e', code], { stdio: options.stdio });
+        if (mode === 'signal') setImmediate(() => { process.emit('SIGINT'); process.emit('SIGTERM'); });
+        return child;
+      } });
+    await cli();
+    if (starts !== 1) throw Error('unexpected-call-count');
+    if (!process.stdin.isPaused() || process.listenerCount('SIGINT') || process.listenerCount('SIGTERM')) throw Error('finite-input-not-released');
+  `;
+}
+
+test("#1106 actual outer CLI: failure/spawn error/signal/EOF notify once, suppress raw stderr, and never wait for parent EOF", async () => {
+  for (const mode of ["exit1", "spawn-error", "signal", "signal-exit", "eof"]) {
+    const result = await finiteNode(bridgeCliFixture(mode), mode === "eof" ? "" : undefined);
+    assert.equal(result.signal, null, mode); assert.equal(result.status, 1, mode); assert.equal(result.stdout, "", mode);
+    assert.equal(result.stderr, "BOOKING_OPERATOR_UNKNOWN; owned resources retained; do not retry\n", mode);
+  }
+});
+
+test("#1106 actual outer CLI preserves success output and finite signal/EOF listener disposal", async () => {
+  const result = await finiteNode(bridgeCliFixture("success"), "操作終了\n");
+  assert.equal(result.signal, null); assert.equal(result.status, 0); assert.equal(result.stderr, "");
+  assert.equal(result.stdout, '{"finite":"unchanged-success"}\n');
 });

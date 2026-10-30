@@ -17,6 +17,13 @@ tracked/untracked差分、HEAD、依存、固定config、12 migration、distの�
 GUI変数は実測したWSLgの`:0`、`wayland-0`、`/run/user/<uid>`からの正規socket、
 必要時の固定Pulse socketだけをChromeへ渡す。seed／Workerのenv allowlistへGUIを追加しない。
 
+#1106では再compileの子processだけに `NODE_DISABLE_COMPILE_CACHE=1` を渡す。
+TypeScriptのcompile cacheで同じHOME/TMPDIRを汚して後続seedのempty-only検査を壊さないためで、
+親環境・seed／Workerのallowlistは変えず、既存cacheを許容・削除する処理も追加しない。
+失敗時はowner／outer bridgeの入力待機を解放し、非zero終了をouter CLIの固定
+`BOOKING_OPERATOR_UNKNOWN; owned resources retained; do not retry` 一回で通知する。
+childのraw stderr／例外本文は公開せず、既存の単発停止・未知時保持・成功条件を維持する。
+
 controllerも別Browser/Workerも非root User transient unitに収容し、controllerには
 総30分hard capを設定する。準備はseed/TLS/起動を通して5分、画面引渡しから人間操作20分、
 明示終了後cleanup3分、余白2分。
@@ -47,7 +54,10 @@ Ctrl-C／pipe EOF（端末／parent喪失）／20分期限／不明HTTP／identi
 成功・無書込み・cleanupへ昇格せず資産を保持する。hard capによる終了も正常cleanup証拠にしない。
 
 finite testsは通常Unit stepの `booking-operator.test.mjs` と、既存Worker／seed／TLS／process／outerの回帰を使う。
-これらは合成effects／静的検査で、実WSLg socket互換性、GUI操作、実Chrome予約、D1実書込み、
+#1106の回帰は実compilerのbuild／byte一致後に同じtemporaryをseedの実empty検査へ渡し、
+DB作成前で止める。compiler失敗／不一致の保持と、開いた入力pipeのままのowner準備拒否、
+outer CLIのfailure／spawn error／signal／EOFの固定通知・正常出力を有限Node fixtureで検証する。
+これらは合成effects／compiler・pipeの有限検査で、実WSLg socket互換性、GUI操作、実Chrome予約、D1実書込み、
 実User unit終端／cleanupの成功を証明しない。TC-F-003/005・TC-NF-902/914の関連するprepared partialに限定し、
 既存POL→BR→REQ→AC→TC、formal auto proofの120/180秒とsystem.slice、Gate A〜D／#930 401／#608受入・Releaseは不変。
 実操作Goと結果checkpointは別の人間判断に残す。

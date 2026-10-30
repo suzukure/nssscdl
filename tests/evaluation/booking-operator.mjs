@@ -19,6 +19,47 @@ const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex
 export const cleanEnvironment = temporary => Object.freeze({ PATH: "/usr/local/bin:/usr/bin:/bin", HOME: temporary, TMPDIR: temporary,
   XDG_CONFIG_HOME: temporary, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(temporary, "wrangler.log"), CI: "true" });
 
+// Only the compiler may receive this extra key. The subsequent seed must still
+// enter with its original credential-free environment and a genuinely empty home.
+export async function verifyOperatorBuild(env, compile = exec) {
+  const build = mkdtempSync(join(env.TMPDIR, "nssscdl-operator-build-")), identity = supply.directoryIdentity(build);
+  await compile(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", "src/web/tsconfig.json", "--outDir", build],
+    { cwd: root, env: { ...env, NODE_DISABLE_COMPILE_CACHE: "1" }, timeout: 60000, maxBuffer: 65536 });
+  for (const file of ["student.js", "view.js", "controller.js", "model.js"]) demand(hash(join(build, file)) === hash(join(root, "dist/student", file)));
+  for (const file of ["student.html", "student.css"]) demand(hash(join(root, "src/web", file)) === hash(join(root, "dist/student", file)));
+  const evidence = { config: hash(supply.proxyOptions.configPath), build: Object.fromEntries(readdirSync(join(root, "dist/student")).sort().map(file => [file, hash(join(root, "dist/student", file))])),
+    migrations: migrations().map(file => [file, hash(join(root, "migrations", file))]), fixture: "trusted-booking-seed/empty-only/self/standard-slot", startedAt: new Date().toISOString() };
+  supply.checkDirectoryIdentity(build, identity); supply.checkOwnedTree(build); rmSync(build, { recursive: true });
+  return evidence;
+}
+
+export function listenOperatorInput(interrupt, input = process.stdin, signals = process) {
+  signals.on("SIGINT", interrupt); signals.on("SIGTERM", interrupt);
+  input.on("end", interrupt); input.resume();
+  return () => {
+    input.removeListener("end", interrupt); input.pause();
+    signals.removeListener("SIGINT", interrupt); signals.removeListener("SIGTERM", interrupt);
+  };
+}
+
+// stderr remains private. A failed bridge throws only the fixed failure, so the
+// outer CLI's existing catch emits one public unknown/retained notice.
+export async function bridgeOperator(child, input = process.stdin, output = process.stdout, signals = process) {
+  let interrupted = false;
+  const abort = () => { if (!interrupted) { interrupted = true; child.stdin.end(); } };
+  child.stdin.on("error", () => {});
+  signals.on("SIGINT", abort); signals.on("SIGTERM", abort);
+  try {
+    const completion = new Promise(done => { child.on("error", () => done(1)); child.on("exit", code => done(code)); });
+    input.pipe(child.stdin); child.stdout.pipe(output);
+    const code = await completion;
+    demand(!interrupted && code === 0);
+  } finally {
+    input.unpipe(child.stdin); input.pause();
+    signals.removeListener("SIGINT", abort); signals.removeListener("SIGTERM", abort);
+  }
+}
+
 // The seed handle never enters argv/IPC/report; the independent read remains in
 // this credential-free owner, outside the Browser/Worker unit being proved empty.
 export async function useOperator(ports) {
@@ -61,7 +102,7 @@ async function owner(head, gui) {
   let invocation, main, unitStarted = false, stopAttempted = false, bridge, browserHome, persistIdentity, parentIdentity, runtimeSeconds;
   let aborted = false, endInteraction, reservationId, finishedAt, cleanupEnd = deadline;
   const interrupt = () => { aborted = true; bridge?.stdin.end(); endInteraction?.(); };
-  process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt); process.stdin.on("end", interrupt); process.stdin.resume();
+  const releaseInput = listenOperatorInput(interrupt);
   const remaining = () => { demand(!aborted && performance.now() < deadline); return deadline - performance.now(); };
   const command = async (file, args, manager = false) => (await exec(file, args, { cwd: root, env: manager ? managerEnv : env,
     timeout: Math.max(1, Math.min(5000, manager ? cleanupEnd - performance.now() : remaining())), maxBuffer: 65536 })).stdout;
@@ -113,14 +154,7 @@ async function owner(head, gui) {
           demand(lstatSync(realpathSync(binary)).isFile());
         // Compile the existing UI into a fresh owned directory and compare bytes;
         // file presence alone does not establish that dist belongs to this HEAD.
-        const build = mkdtempSync(join(tmpdir(), "nssscdl-operator-build-")), identity = supply.directoryIdentity(build);
-        await exec(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", "src/web/tsconfig.json", "--outDir", build],
-          { cwd: root, env, timeout: 60000, maxBuffer: 65536 });
-        for (const file of ["student.js", "view.js", "controller.js", "model.js"]) demand(hash(join(build, file)) === hash(join(root, "dist/student", file)));
-        for (const file of ["student.html", "student.css"]) demand(hash(join(root, "src/web", file)) === hash(join(root, "dist/student", file)));
-        evidence = { config: hash(supply.proxyOptions.configPath), build: Object.fromEntries(readdirSync(join(root, "dist/student")).sort().map(file => [file, hash(join(root, "dist/student", file))])),
-          migrations: migrations().map(file => [file, hash(join(root, "migrations", file))]), fixture: "trusted-booking-seed/empty-only/self/standard-slot", startedAt: new Date().toISOString() };
-        supply.checkDirectoryIdentity(build, identity); supply.checkOwnedTree(build); rmSync(build, { recursive: true });
+        evidence = await verifyOperatorBuild(env);
         demand(performance.now() < preparationEnd); remaining();
       },
       async prepare(consume) {
@@ -220,8 +254,7 @@ async function owner(head, gui) {
     console.log(JSON.stringify({ issue: 1104, head, ...evidence, completedAt: finishedAt, actor: "fictional-self", reservationId,
       browser: "human-one-confirm-history", readback: "five-tables", cleanup: "owned-removed", evidence: "local-human-partial; Gate-A-D/930-401/608-release-unproved" }));
   } finally {
-    bridge?.stdin.end(); process.stdin.removeListener("end", interrupt);
-    process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", interrupt);
+    bridge?.stdin.end(); releaseInput();
   }
 }
 
@@ -247,13 +280,7 @@ if (process.argv[1] && resolve(process.argv[1]) === script) {
         process.execPath, script, "--private-owner", process.argv[4], JSON.stringify(gui), name],
       { cwd: root, env: manager, stdio: ["pipe", "pipe", "ignore"] });
       // Private pipe EOF is observable even when a parent dies without a signal.
-      process.stdin.pipe(child.stdin); child.stdout.pipe(process.stdout);
-      child.stdin.on("error", () => {});
-      let interrupted = false;
-      const abort = () => { if (!interrupted) { interrupted = true; child.stdin.end(); } };
-      process.on("SIGINT", abort); process.on("SIGTERM", abort);
-      try { process.exitCode = await new Promise(done => { child.on("error", () => done(1)); child.on("exit", code => done(!interrupted && code === 0 ? 0 : 1)); }); }
-      finally { process.stdin.unpipe(child.stdin); process.stdin.pause(); process.removeListener("SIGINT", abort); process.removeListener("SIGTERM", abort); }
+      await bridgeOperator(child);
     }
   } catch { console.error("BOOKING_OPERATOR_UNKNOWN; owned resources retained; do not retry"); process.exitCode = 1; }
 }
