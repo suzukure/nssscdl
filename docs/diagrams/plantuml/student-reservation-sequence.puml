@@ -1,5 +1,5 @@
 @startuml
-title Student single reservation - isolated Browser flow (#892)
+title Student single reservation - isolated Browser flow (#892 / #1108)
 
 actor Student
 participant "Web/UI" as UI
@@ -32,13 +32,26 @@ D1 --> Repo: Committed state
 Repo --> Schedule: State
 Schedule -> Domain: Derive one view per slot
 Domain --> Schedule: bookable / reserved_by_me / group_lesson / unavailable
-Schedule --> HTTP: Month view
-HTTP --> UI: 200 JSON
-opt Initial month has no bookable or unpublished 404
-  UI -> HTTP: GET next month once
-  HTTP --> UI: Month or safe error; no further automatic traversal
+alt Current month is published (200)
+  Schedule --> HTTP: Month view
+  HTTP --> UI: 200 JSON
+else Current month is unpublished (404)
+  Schedule --> HTTP: SCHEDULE_MONTH_NOT_AVAILABLE
+  HTTP --> UI: 404
 end
-UI --> Student: Calendar and selected day's slots; earliest bookable day
+opt Initial month is 200 without bookable, or 404 unpublished
+  UI -> HTTP: GET next month once
+  HTTP --> UI: 200 / 404 / safe error; no further automatic traversal
+end
+note over UI,HTTP
+  401 / 403 / 503, network and invalid response stop auto traversal.
+  A stale initial response cannot replace a manual month/day choice.
+end note
+alt A loaded month has bookable slots
+  UI --> Student: Calendar + daily list; earliest bookable date selected
+else No bookable date or current month unavailable
+  UI --> Student: Calendar/notice; no invented selected date
+end
 note over UI,Student
   Explicit day selection scrolls to day heading.
   Manual month change reads only requested month.
