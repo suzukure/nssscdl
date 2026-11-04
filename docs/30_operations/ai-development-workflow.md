@@ -724,6 +724,40 @@ secretless fixtureは既存 `test-claude-review-workflow.sh` が `fixtures/merge
 
 ## 人間エスカレーション
 
+### PR #1110限定のClaude pause復旧（#1111）
+
+`recover-pr1110-claude-pause.yml` / `recover-pr1110-claude-pause.sh` は、
+PR #1110・closing Issue #1109・Reviewer App ID `4777865` の源pause
+`6625324624`・旧HEAD `ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1`・
+許容HEAD `50ac09107c1d80fdcdbb03dc0e0a63e012be9137` だけを扱う限定経路である。
+一般 `/ai resume review` のsame-HEAD、canonical branch、Developer Appの契約は変更しない。
+この実装の準備・mock検証はproduction復旧承認を意味しない。独立review・人間Code Owner承認・
+main反映と、Issueに記録する別途の実行Goが必要であり、確認目的のpaid AI診断は行わない。
+
+入口はmain上の手動dispatchだけで、対象の差替え入力は持たない。`mode=check` を既定とし、
+repo、main先端、起動actorと再実行actor（`suzukure`）、現在のwrite/admin権限を検証する。
+`apply` はread-only check成功後、`codex-writer-ai/issue-1109` 内で再qualificationする。
+固定14ファイル、PR/Issue関係、旧runのmodel実行前failure、正式review不在、Reviewer Appの
+source/graph、現在baseに対するCI証跡、Renderer provenance、trusted mainの隔離context builder成功を
+要求する。baseより古いCIは合格と扱わず、必要証跡がなければwriteしない。
+PRコード・hooks・依存installは実行せず、builderとActions読取にwrite tokenを渡さない。
+
+正式acceptedを既存schemaで生成し、同Appのfresh graphでexact一意・source consumed・no activeを
+確認した後だけIssue→PRの順で解除し、各writeをreadbackする。POST/DELETEの応答が不明でも再送しない。
+新規受理前には当該workflowのrun番号が1から連続する履歴と全attemptを確認し、履歴欠損・期限切れ・
+過去apply開始・再実行attemptを拒否する。check-only実行は新規受理の妨げにしない。
+受理済みの再入では、双方label absentかつ現在HEADの正常Review所有を確認できる場合だけread-onlyで終了する。
+部分解除、逆順、新replacement、所有不明、HEAD/base driftでは自動継続・再発火しない。
+hard kill後のcleanupやlabel再同期は保証せず、停止位置・graph・labels・過去attemptを人間が確認する。
+通常Reviewの失敗後は通常failure handlerの新pauseを維持し、paid retry・auto-mergeはしない。
+
+限定経路のoffline/mockは既存 `test-recover-ai-resume-review.sh` 内に置く。
+API・git・builderのprocess境界をmockし、既存のrecord schema、App provenanceによるlisting、
+graph reconciliationは実物を使う。二重dispatchはwriter直列化後の履歴・replayとして検証し、
+実際のActions並列実行、current-head builder実成功、Appの実write権限を証明したとは扱わない。
+
+### 共通の停止・解除契約
+
 次のいずれかで `human-review-required` を付け、自動修正と自動マージを停止する。
 
 - Codexが、plain textの単独行で完全一致する `[REQUIREMENTS_CHANGE_REQUIRED]` を返した。backtick・code block・字下げ・前後空白は付けず、CRLFは通常のplain-text行末として扱う。説明文中の言及は停止シグナルにしない。Codex最終応答が欠落または空の場合、または検出helperかtrusted bootstrapが失敗した場合も「マーカーなし」と扱わず、Issue起点とClaude review follow-upの両方で安全側に停止する。
