@@ -4,19 +4,19 @@
 
 ## 現行ベースライン
 
-- 要求仕様: v1.21
+- 要求仕様: v1.23
 - 対象REQ: 64（機能44 + 非機能20）
-- 対象AC: 236
-- 対応済AC: 233
+- 対象AC: 242
+- 対応済AC: 239
 - AC未対応: 3
-- 機能TC: 137
+- 機能TC: 142
 - 非機能TC: 42
-- 合計TC: 179
-- AC Coverage: 98.7%（233/236）
+- 合計TC: 184
+- AC Coverage: 98.8%（239/242）
 
-全主・補足テスト仕様（02*/03*）の定義TCと全追跡表（04*）の有効なAC→TC対応を重複排除して集計する。集計方法は `04b_BulkReservationTraceability.md` §2を参照する。Issue #1082の事後スクール都合キャンセル・通知6 ACに続き、Issue #1084で月間回数除外の解除・設定のAC-308-002/003を補完し、Issue #1088で欠席設定・解除の確定前区分影響提示AC-315-005を補完した。Issue #1092で既存TC-F-004-01を拡張して生徒キャンセル時の区分単調性AC-004-006を補完した（新TC追加なし）。残りの `AC-301-010`, `AC-913-005`, `AC-913-006` は未対応のまま親Issue #551で管理する。このCoverageは仕様上の対応率であり、テスト実行の成功率ではない。
+全主・補足テスト仕様（02*/03*）の定義TCと全追跡表（04*）の有効なAC→TC対応を重複排除して集計する。集計方法は `04b_BulkReservationTraceability.md` §2を参照する。Issue #1082の事後スクール都合キャンセル・通知6 ACに続き、Issue #1084で月間回数除外の解除・設定のAC-308-002/003を補完し、Issue #1088で欠席設定・解除の確定前区分影響提示AC-315-005を補完した。Issue #1092で既存TC-F-004-01を拡張して生徒キャンセル時の区分単調性AC-004-006を補完した（新TC追加なし）。#1108で新規6 AC・5 TCを追加し、初回日付・Calendar/1日一覧・自動Preview/Confirm・今後の予約表示を追跡した。残りの `AC-301-010`, `AC-913-005`, `AC-913-006` は未対応のまま親Issue #551で管理する。このCoverageは仕様上の対応率であり、テスト実行の成功率ではない。
 
-v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_RequirementsV1.6V1.7TestSpecification.md` および `04a_RequirementsTestTraceability_v1.6_v1.7.md` で、一括予約を追加したv1.18 / v1.19の変更は `02c_BulkReservationTestSpecification.md` および `04b_BulkReservationTraceability.md` で追補する。v1.20は既存REQ / ACの通知ライフサイクル意味を明確化し新規AC IDを追加しないため、既存TCを拡張して回帰確認した。v1.21は認証・所有確認・Security Noticeの通常通知再送対象外境界を新規ACと `02_FunctionalTestSpecification.md` の追加TCで確認する。
+v1.5までのベース仕様に対し、v1.6 / v1.7の変更は `02b_RequirementsV1.6V1.7TestSpecification.md` および `04a_RequirementsTestTraceability_v1.6_v1.7.md` で、一括予約を追加したv1.18 / v1.19の変更は `02c_BulkReservationTestSpecification.md` および `04b_BulkReservationTraceability.md` で追補する。v1.20は既存REQ / ACの通知ライフサイクル意味を明確化し新規AC IDを追加しないため、既存TCを拡張して回帰確認した。v1.23は認証・所有確認・Security Noticeの通常通知再送対象外境界を新規ACと `02_FunctionalTestSpecification.md` の追加TCで確認する。
 
 ## 適用方針
 

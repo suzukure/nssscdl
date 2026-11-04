@@ -21,8 +21,7 @@ note over UI,D1
   Dedicated HTTPS entrypoint/config; default Worker stays 503.
   No production Provider / Scheduled activation.
 end note
-Student -> UI: Open /student and choose YYYY-MM
-Student -> UI: Request selected month (no published-month list API)
+Student -> UI: Open /student in current JST month
 UI -> HTTP: GET /api/me/schedule-months/{month}
 HTTP -> Guard: Validate session, role, access, lifecycle
 Guard --> HTTP: Resolved student
@@ -35,10 +34,19 @@ Schedule -> Domain: Derive one view per slot
 Domain --> Schedule: bookable / reserved_by_me / group_lesson / unavailable
 Schedule --> HTTP: Month view
 HTTP --> UI: 200 JSON
-UI --> Student: Calendar / list; 4 labeled views
-note over HTTP,UI: Unpublished/absent month: existing 404; choose another month
+opt Initial month has no bookable or unpublished 404
+  UI -> HTTP: GET next month once
+  HTTP --> UI: Month or safe error; no further automatic traversal
+end
+UI --> Student: Calendar and selected day's slots; earliest bookable day
+note over UI,Student
+  Explicit day selection scrolls to day heading.
+  Manual month change reads only requested month.
+  Glyphs ○ × 済 グ are start-time ordered; Group times below.
+  Initial day/month selection does not Preview/Confirm.
+end note
 
-Student -> UI: Select slot and request preview
+Student -> UI: Select/reselect bookable slot (automatic Preview)
 UI -> HTTP: GET /api/auth/student/csrf (same-origin fetch)
 HTTP -> HTTP: Check canonical origin / Fetch Metadata
 note over HTTP,UI: Origin rejection is 403; stop and retain cookie
@@ -74,11 +82,18 @@ Preview -> Domain: Check eligibility and compute classification effects
 Domain --> Preview: Preview result and canonical business snapshot
 Preview --> HTTP: Preview view + opaque state token
 HTTP --> UI: 200 JSON
+UI -> UI: Check month/day/slot and latest request generation
 UI --> Student: Start/end, classification, all dated before/after changes
 UI --> Student: Additional may be reclassified before start; no prices/N
+UI -> UI: Enable "予約する" only after valid Preview
+note over UI
+  New slot/day/month invalidates old Preview and token.
+  Stale CSRF/Preview/finally cannot overwrite the new busy state.
+  Returning to calendar alone preserves valid confirmation.
+end note
 
-Student -> UI: Explicitly confirm reviewed preview
-UI -> UI: Disable duplicate confirm while pending
+Student -> UI: Press "予約する" once after reviewing Preview
+UI -> UI: Consume token; disallow duplicate Confirm and date/month/slot changes
 UI -> HTTP: POST /api/me/reservations {slotId, expectedStateToken}
 HTTP -> Guard: Validate this request
 Guard --> HTTP: Resolved student + server-internal session context
@@ -103,7 +118,12 @@ alt token matches and all guards hold
   note over Repo,D1: Intent/outbox commit does not prove Provider delivery.
   Confirm --> HTTP: Reservation, slot and classification changes
   HTTP --> UI: 201 JSON; no delivery result
-  UI --> Student: Show confirmed business state
+  UI --> Student: Show confirmed business state; retain day
+  UI --> Student: Calendar 済 + 今後の予約一覧 (displayed month)
+  UI -> UI: Mark latest successful slot in page-only memory
+  UI -> HTTP: Read-only refresh Schedule and History
+  HTTP --> UI: Current state or separate GET error
+  note over UI: GET failure does not revoke received 201
 else session / authorization fails
   Repo -> D1: Rollback; fresh Primary session lookup
   Confirm --> HTTP: 401 / 403; lookup failure is 503
@@ -124,12 +144,12 @@ end
 note over UI,HTTP
   Lost response discards confirmation and never resends Confirm automatically.
   Safe Schedule/history reread observes current state, not a write retry.
-  Month/slot change discards token; stale response cannot enable Confirm.
+  Month/day/slot change discards token; stale response cannot enable Confirm.
 end note
 
 end
 
-Student -> UI: Open reservation history
+Student -> UI: Inspect or explicitly refresh reservation history
 UI -> HTTP: GET /api/me/reservations?limit=50
 HTTP -> Guard: Validate this request
 Guard --> HTTP: Resolved student

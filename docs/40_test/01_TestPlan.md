@@ -251,6 +251,8 @@ child120秒・owner180秒の共通残予算と停止margin、固定report・有�
 - Server Clock、Provider Stub、Concurrency Harness等、該当試験に必要な制御点が利用可能
 - P0テストについて観測すべきAudit / Log / Business Stateの確認手段がある
 
+#1108のUI契約：初回最大2か月の有限探索→選択日1日分一覧→枠選択による自動Preview→区分と他予約への全変更差分確認→明示「予約する」1回→201後の「済」／表示月内の「今後の予約一覧」／本人履歴read-only更新を統合シナリオとする。新TC-F-001-03、002-03/04、003-10、005-02と既存TC-F-003-01/02/05/08/09で観点を分担する。逆順応答・旧finallyはUnit/DOM、業務競合・認可・DB readbackはAPI/D1、keyboard/focus/320px・操作理解は実Browserで確認し、201とGET再取得失敗を区別する。従前HEADのProofは新UIの正式受入結果としない。
+
 ## 9. 開発単位の検証・完了
 
 #1104はOperatorの実装・有限検証と同HEAD CIの単位であり、人間による最初の実操作は別Goとする。正常1予約の採用には、同Runの人間Confirm一回、201、本人HistoryのID、Browser/Worker停止・cgroup空、独立5表readback、所有cleanupの連続した証拠を要する。合成成功やhard lifetime終了だけで正常cleanup／Gate合格にしない。
@@ -263,7 +265,7 @@ child120秒・owner180秒の共通残予算と停止margin、固定report・有�
 
 #894の表示部品・要求世代制御・暦・cursor・安全なエラー・structural DOM試験は `tests/README.md` のpartial evidenceとする。CSSの局所scroll / 折返しとDOM focus設計を実320px / keyboard / screen reader受入や正式Browser MatrixのPassへ読み替えない。build / typecheck / lint / testのローカル報告とformal current-head Product CIを区別する。
 
-#892の完了は詳細設計の正本・PlantUML同期と後続責務の引継ぎであり、Gate A〜Dを実行したことを意味しない。後続#608操作評価は§12の証跡へTC / AC、source commit SHA、migration revision、binding / config identity（secret値なし）、実行日時、Actor、架空test data区分、正常 / 409 / 401 / 403 / 503、画面と安全な業務状態、観察 / Defect / 制約を紐付ける。TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-003-01〜09 / TC-F-005-01と、追補 `04a_RequirementsTestTraceability_v1.6_v1.7.md` のAC-003-021対応を既存仕様に照合し、部分証拠とTC全体Passを分離する。deploy / migration / check / rollback / cleanupのexact手順と実行結果は#537の後続で正式化し、Worker rollbackとDB復旧を区別する。
+#892の完了は詳細設計の正本・PlantUML同期と後続責務の引継ぎであり、Gate A〜Dを実行したことを意味しない。後続#608操作評価は§12の証跡へTC / AC、source commit SHA、migration revision、binding / config identity（secret値なし）、実行日時、Actor、架空test data区分、正常 / 409 / 401 / 403 / 503、画面と安全な業務状態、観察 / Defect / 制約を紐付ける。TC-F-001-01〜03 / TC-F-002-01〜04 / TC-F-003-01〜10 / TC-F-005-01〜02と、追補 `04a_RequirementsTestTraceability_v1.6_v1.7.md` のAC-003-021対応を既存仕様に照合し、部分証拠とTC全体Passを分離する。deploy / migration / check / rollback / cleanupのexact手順と実行結果は#537の後続で正式化し、Worker rollbackとDB復旧を区別する。
 
 #1071の完了は§7.1 / §12と詳細設計§9.3の文書同期であり、#930の実行実証Doneとは別である。main反映前には現在PR HEADの正式Product CI / PR TraceabilityとClaude独立レビューを既存Gateで確認する。ローカル文書検査をこれらの正式証拠やBrowser / D1実証の代用にしない。
 
