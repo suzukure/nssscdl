@@ -55,7 +55,7 @@ end
 note over UI,Student
   Explicit day selection scrolls to day heading.
   Manual month change reads only requested month.
-  Glyphs ○ × 済 グ are start-time ordered; Group times below.
+  Glyphs ○ × 済 グ are time ordered; Group time and name appear below.
   Initial day/month selection does not Preview/Confirm.
 end note
 
@@ -133,7 +133,7 @@ alt token matches and all guards hold
   HTTP --> UI: 201 JSON; no delivery result
   UI --> Student: Show confirmed business state; retain day
   UI --> Student: Calendar 済 + 今後の予約一覧 (displayed month)
-  UI -> UI: Mark latest successful slot in page-only memory
+  UI -> UI: Mark latest successful slot in page-only memory; clear on reload/401
   UI -> HTTP: Read-only refresh Schedule and History
   HTTP --> UI: Current state or separate GET error
   note over UI: GET failure does not revoke received 201
