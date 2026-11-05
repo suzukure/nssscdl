@@ -739,7 +739,7 @@ repo、main先端、起動actorと再実行actor（`suzukure`）、現在のwrit
 `apply` はread-only check成功後、`codex-writer-ai/issue-1109` 内で再qualificationする。
 固定14ファイル、PR/Issue関係、旧runのmodel実行前failure、正式review不在、Reviewer Appの
 source/graph、現在baseに対するCI証跡、Renderer provenance、trusted mainの隔離context builder成功を
-要求する。baseより古いCIは合格と扱わず、必要証跡がなければwriteしない。
+要求する。原則としてbaseより古いCIは合格と扱わず、必要証跡がなければwriteしない。
 
 PR #1110のbase SHAが旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留まるため、
 この限定consumerにだけ、HEADを更新しない例外的な再qualificationを設ける。
@@ -750,6 +750,9 @@ PR #1110のbase SHAが旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留�
 双方の変更ファイル内容不変をread-onlyで照合する。
 Product CI / Traceabilityの旧base成功はworkflow/関連scriptが非変更である
 このケースの限定証拠としてのみ扱い、**新mainでCIを実行したとは記録しない**。
+trusted mainから取得するreview context builderのSVG provenance用 `SOURCE_BASE_SHA` /
+`BASE_SHA` は実際のPR base（旧SHA）に合わせる。統合mainとの整合は別のgit検証で担保し、
+両者を混同しない。
 Gitの証跡を取得できない場合、予期しないmain更新や統合差分がある場合は停止し、
 汎用resumeやCI証跡の条件は緩和しない。
 PRコード・hooks・依存installは実行せず、builderとActions読取にwrite tokenを渡さない。
