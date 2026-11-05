@@ -744,8 +744,11 @@ source/graph、現在baseに対するCI証跡、Renderer provenance、trusted ma
 PR #1110のbase SHAが旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留まるため、
 この限定consumerにだけ、HEADを更新しない例外的な再qualificationを設ける。
 復旧経路初回反映のanchor `637278268f8269d31187674c21adb69dc4f55aac` と
-その単一親の次のsquash commit以外のmain進行は拒否する。
-旧base→anchorの既知4ファイル、anchor→実装修正の既知3ファイル、
+その直後の既知squash `c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107`、
+さらにその直後に本読取修正の3ファイルだけを含む単一親squashを1件だけ許可する。
+この固定履歴以外のmain進行は、受理済みの再入でも拒否する。
+旧base→anchorの既知4ファイル、anchor→既知squashの既知3ファイル、
+既知squash→本読取修正の同じ既知3ファイル、
 旧base→PR HEADの14ファイル、共通祖先、Gitによる衝突のない統合tree、
 双方の変更ファイル内容不変をread-onlyで照合する。
 Product CI / Traceabilityの旧base成功はworkflow/関連scriptが非変更である
@@ -756,6 +759,19 @@ trusted mainから取得するreview context builderのSVG provenance用 `SOURCE
 Gitの証跡を取得できない場合、予期しないmain更新や統合差分がある場合は停止し、
 汎用resumeやCI証跡の条件は緩和しない。
 PRコード・hooks・依存installは実行せず、builderとActions読取にwrite tokenを渡さない。
+
+元pauseとacceptedの出所確認は、単体comment GETではなく、固定PR #1110のConversationを
+`Accept: application/vnd.github+json`・100件/ページ・最大10ページでfreshに列挙して行う。
+選択するREST comment IDが全取得集合で一意で、そのcomment自身の
+`performed_via_github_app.id` が整数 `4777865` であることを要求する。
+Appのnull/欠落/異App、ID欠落/重複、API失敗/不正ページ/走査上限は固定非機密codeで停止する。
+bot名や過去の成功から出所を推測しない。本文は既存schema parserを通し、sourceの
+kind/target/reason/旧HEAD、acceptedの既存JSON完全一致を検証する。
+qualificationで確認したsource recordは後続のfresh graphと完全一致を要求し、
+本文の取得間変更では新規受理や後続writeへ進まない。
+accepted自身の有効なUTC `created_at` だけをReview候補runの時刻境界に使用する。
+単体GETでApp=nullとなった観測のGitHub側理由は未確定であり、nullをtrustedと認める例外ではない。
+raw API本文・stderr・argv・例外本文を診断へ転載せず、追加権限・credential・paid retryを導入しない。
 
 正式acceptedを既存schemaで生成し、同Appのfresh graphでexact一意・source consumed・no activeを
 確認した後だけIssue→PRの順で解除し、各writeをreadbackする。POST/DELETEの応答が不明でも再送しない。
