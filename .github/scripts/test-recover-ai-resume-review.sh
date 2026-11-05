@@ -185,6 +185,20 @@ with patch.object(sys, 'argv', ['-', 'apply', str(scripts)]):
 HEAD = '50ac09107c1d80fdcdbb03dc0e0a63e012be9137'
 OLD = 'ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
+ANCHOR = '637278268f8269d31187674c21adb69dc4f55aac'
+TRUSTED_MAIN = '8888888888888888888888888888888888888888'
+MERGED_TREE = '7777777777777777777777777777777777777777'
+ANCHOR_PATHS = {
+    '.github/scripts/recover-pr1110-claude-pause.sh',
+    '.github/scripts/test-recover-ai-resume-review.sh',
+    '.github/workflows/recover-pr1110-claude-pause.yml',
+    'docs/30_operations/ai-development-workflow.md',
+}
+PATCH_PATHS = {
+    '.github/scripts/recover-pr1110-claude-pause.sh',
+    '.github/scripts/test-recover-ai-resume-review.sh',
+    'docs/30_operations/ai-development-workflow.md',
+}
 PARENT = '5cc1448038e0963b6bb826b53f44870376fc94c4'
 REPO = 'suzukure/nssscdl'
 BRANCH = 'docs/issue-1108-student-booking-ux-contract'
@@ -240,6 +254,7 @@ class Case:
         if fault == 'target': self.comments[0]['body'] = self.comments[0]['body'].replace('pr:1110', 'pr:1112')
         if fault == 'schema': self.comments[0]['body'] = self.comments[0]['body'].replace('"version": 1', '"version": 99')
         if fault == 'head': self.pr['head']['sha'] = OLD
+        if fault == 'pr-base': self.pr['base']['sha'] = TRUSTED_MAIN
         if fault == 'branch': self.pr['head']['ref'] = 'ai/issue-1109'
         if fault == 'fork': self.pr['head']['repo']['full_name'] = 'other/repo'
         if fault == 'draft': self.pr['draft'] = True
@@ -259,7 +274,8 @@ class Case:
         if path == 'collaborators/suzukure/permission':
             return {'user': {'login': 'suzukure'}, 'permission': 'read' if self.fault == 'permission' else 'admin'}
         if path == 'git/ref/heads/main':
-            return {'object': {'sha': OLD if self.writes and self.fault == 'base-drift' else BASE}}
+            drift = self.fault == 'main-before' or (self.writes and self.fault == 'base-drift')
+            return {'object': {'sha': OLD if drift else TRUSTED_MAIN}}
         if path == 'pulls/1110':
             value = deepcopy(self.pr)
             if self.writes and self.fault == 'head-after-post': value['head']['sha'] = OLD
@@ -367,18 +383,61 @@ class Case:
             assert args[-1].startswith(repository_endpoint + '/'), args
             return result(self.api(args[-1][len(repository_endpoint) + 1:]))
         if args[0] == 'git':
-            if '-C' in args: return result(BASE + '\n')
+            if '-C' in args: return result(TRUSTED_MAIN + '\n')
             if args[1:3] == ['rev-parse', 'HEAD']: return result(HEAD + '\n')
             if '--is-shallow-repository' in args: return result('false\n')
+            if args[1] == 'rev-parse':
+                commit = args[-1]
+                if commit.endswith('^{commit}'):
+                    value = commit[:-9]
+                    if self.fault == 'unavailable-main' and value == TRUSTED_MAIN: value = OLD
+                    return result(value + '\n')
+                if commit == HEAD + '^': return result(PARENT + '\n')
+            if args[1] == 'rev-list' and args[2:5] == ['--parents', '-n', '1']:
+                commit = args[-1]
+                if commit == ANCHOR:
+                    return result(ANCHOR + ' ' + (OLD if self.fault == 'anchor-parent' else BASE))
+                if commit == TRUSTED_MAIN:
+                    parent = BASE if self.fault == 'main-parent' else ANCHOR
+                    extra = ' ' + BASE if self.fault == 'main-multiparent' else ''
+                    return result(TRUSTED_MAIN + ' ' + parent + extra)
+            if args[1] == 'merge-base':
+                return result(OLD if self.fault == 'merge-base' else BASE)
+            if args[1] == 'merge-tree':
+                return result(MERGED_TREE, rc=1 if self.fault == 'merge-conflict' else 0)
+            if args[1] == 'diff':
+                if '--name-only' in args:
+                    before, after = args[-2:]
+                    if (before, after) == (BASE, ANCHOR):
+                        changes = ANCHOR_PATHS
+                    elif (before, after) == (ANCHOR, TRUSTED_MAIN):
+                        changes = PATCH_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
+                                               else {'.github/workflows/claude-review.yml'} if self.fault == 'main-extra-file'
+                                               else set())
+                    elif (before, after) == (BASE, HEAD):
+                        changes = set(paths[:-1]) if self.fault == 'pr-diff' else set(paths)
+                    elif (before, after) == (BASE, TRUSTED_MAIN):
+                        changes = ANCHOR_PATHS | PATCH_PATHS | (
+                            {paths[0]} if self.fault == 'main-oldbase-overlap' else set())
+                    else:
+                        raise AssertionError(args)
+                    return result('\0'.join(sorted(changes)) + '\0')
+                if '--quiet' in args:
+                    if args[4:6] == [HEAD, MERGED_TREE]:
+                        return result(rc=1 if self.fault == 'merged-pr-changed' else 0)
+                    if args[4:6] == [TRUSTED_MAIN, MERGED_TREE]:
+                        return result(rc=1 if self.fault == 'merged-main-changed' else 0)
+                raise AssertionError(args)
             if args[1] == 'show' and '--format=%an%n%ae%n%cn%n%ce%n%s' in args:
                 return result('github-actions[bot]\n41898282+github-actions[bot]@users.noreply.github.com\n' * 2 + 'Render PlantUML diagrams\n')
             if args[1] == 'show': return result('# trusted builder mock\n')
             if args[1] == 'log': return result(OLD if self.fault == 'svg' else HEAD)
-            if args[-1] == HEAD + '^': return result(PARENT)
             raise AssertionError(args)
         if args[0] == 'bash' and Path(args[1]).name == 'builder.sh':
             assert env['GH_TOKEN'] == 'mock-read' and 'GH_WRITE_TOKEN' not in env
-            assert env['BASE_SHA'] == BASE and args[-1] == HEAD
+            # compact() requires both hints to equal GitHub's actual baseRefOid.
+            assert env['BASE_SHA'] == env['SOURCE_BASE_SHA'] == self.pr['base']['sha'] == BASE
+            assert args[-1] == HEAD
             assert Path(args[1]).read_text() == '# trusted builder mock\n'
             self.builder += 1
             return result(rc=1 if self.fault == 'builder' else 0)
@@ -400,7 +459,7 @@ class Case:
         count += 1
         env = dict(os.environ, GITHUB_REPOSITORY=REPO, GITHUB_EVENT_NAME='workflow_dispatch',
             GITHUB_REF='refs/heads/main', GITHUB_ACTOR='suzukure', GITHUB_TRIGGERING_ACTOR='suzukure',
-            GITHUB_SHA=BASE, GITHUB_RUN_ID='800', GITHUB_RUN_ATTEMPT='1', RECOVERY_SOURCE='/mock/source',
+            GITHUB_SHA=TRUSTED_MAIN, GITHUB_RUN_ID='800', GITHUB_RUN_ATTEMPT='1', RECOVERY_SOURCE='/mock/source',
             GH_TOKEN='mock-read', GH_WRITE_TOKEN='mock-write', REVIEWER_APP_SLUG='nssscdl-claude-review')
         if self.fault == 'actor': env['GITHUB_ACTOR'] = 'outsider'
         if self.fault == 'rerun-actor': env['GITHUB_TRIGGERING_ACTOR'] = 'outsider'
@@ -429,9 +488,12 @@ for fault in ('', 'post-loss', 'delete-loss', 'check-before-apply'):
     case.writes.clear()
     assert case.invoke() and case.writes == [], 'completed replay: ' + fault
 for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-head', 'reason', 'target', 'schema', 'head', 'branch',
-              'fork', 'draft', 'closed', 'missing-label', 'multiple-active', 'broken-graph', 'files',
+              'fork', 'draft', 'closed', 'pr-base', 'missing-label', 'multiple-active', 'broken-graph', 'files',
               'verdict', 'relation', 'model-ran', 'ci', 'stale-ci', 'base-ci', 'renderer', 'svg', 'builder',
-              'writer-app', 'api-unknown', 'repository-api', 'truncated-api', 'truncated-comments', 'prior-apply', 'deleted-history', 'rerun'):
+              'writer-app', 'api-unknown', 'repository-api', 'truncated-api', 'truncated-comments', 'prior-apply', 'deleted-history', 'rerun',
+               'main-before', 'unavailable-main', 'anchor-parent', 'main-parent', 'main-multiparent',
+               'merge-base', 'merge-conflict', 'main-overlap', 'main-extra-file', 'pr-diff',
+               'main-oldbase-overlap', 'merged-pr-changed', 'merged-main-changed'):
     case = Case(fault)
     assert not case.invoke() and case.writes == [], fault
 for fault, writes in [('post-no-commit', expected[:1]), ('head-after-post', expected[:1]),
