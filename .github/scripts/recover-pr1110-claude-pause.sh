@@ -22,6 +22,21 @@ BRANCH = 'docs/issue-1108-student-booking-ux-contract'
 SOURCE = '6625324624'
 APP = 4777865
 WORKFLOW = '.github/workflows/recover-pr1110-claude-pause.yml'
+BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
+ANCHOR = '637278268f8269d31187674c21adb69dc4f55aac'
+# This one-off consumer is valid only for the next single-parent squash on ANCHOR.
+# Future main commits require another explicit qualification decision.
+ANCHOR_FILES = {
+    '.github/scripts/recover-pr1110-claude-pause.sh',
+    '.github/scripts/test-recover-ai-resume-review.sh',
+    '.github/workflows/recover-pr1110-claude-pause.yml',
+    'docs/30_operations/ai-development-workflow.md',
+}
+PATCH_FILES = {
+    '.github/scripts/recover-pr1110-claude-pause.sh',
+    '.github/scripts/test-recover-ai-resume-review.sh',
+    'docs/30_operations/ai-development-workflow.md',
+}
 FILES = {
     'docs/00_requirements/00_RevisionHistory.md',
     'docs/00_requirements/04_FunctionalRequirements.md',
@@ -127,14 +142,15 @@ def labels(number):
     return any(x['name'] == 'human-review-required' for x in value['labels'])
 
 
-def current(base):
+def current(trusted_main):
     pr = api('pulls/1110')
     require(pr['number'] == 1110 and pr['state'] == 'open' and pr['draft'] is False
             and pr['head']['sha'] == HEAD and pr['head']['ref'] == BRANCH
             and pr['head']['repo']['full_name'] == REPO
             and pr['base']['repo']['full_name'] == REPO
-            and pr['base']['ref'] == 'main' and pr['base']['sha'] == base
-            and api('git/ref/heads/main')['object']['sha'] == base, 'PR/head/base drift')
+            and pr['base']['ref'] == 'main' and pr['base']['sha'] == BASE
+            and api('git/ref/heads/main')['object']['sha'] == trusted_main,
+            'PR/head/base drift')
     return pr
 
 
@@ -153,6 +169,49 @@ def authorize():
     require(run(['git', '-C', str(SCRIPTS.parent.parent), 'rev-parse', 'HEAD']).strip() == base,
             'trusted checkout mismatch')
     return base
+
+
+def changed_paths(source, before, after):
+    value = run(['git', 'diff', '--no-renames', '--name-only', '-z', before, after], cwd=source)
+    require(not value or value.endswith('\0'), 'invalid diff framing')
+    paths = value.split('\0')[:-1] if value else []
+    require(all(paths) and len(paths) == len(set(paths)), 'invalid changed paths')
+    return set(paths)
+
+
+def verify_relation(trusted_main):
+    # A fresh, unshallow checkout of the fixed PR HEAD is the only source of
+    # git ancestry and merged-tree evidence; neither branch is modified.
+    source = os.environ['RECOVERY_SOURCE']
+    require(run(['git', 'rev-parse', 'HEAD'], cwd=source).strip() == HEAD
+            and run(['git', 'rev-parse', '--is-shallow-repository'], cwd=source).strip() == 'false',
+            'qualification checkout mismatch')
+    for commit in (BASE, ANCHOR, trusted_main):
+        require(run(['git', 'rev-parse', commit + '^{commit}'], cwd=source).strip() == commit,
+                'qualification commit unavailable')
+    require(run(['git', 'rev-list', '--parents', '-n', '1', ANCHOR], cwd=source).split()
+            == [ANCHOR, BASE], 'anchor ancestry drift')
+    require(run(['git', 'rev-list', '--parents', '-n', '1', trusted_main], cwd=source).split()
+            == [trusted_main, ANCHOR], 'main is not the single approved squash')
+    require(run(['git', 'merge-base', BASE, HEAD], cwd=source).strip() == BASE
+            and run(['git', 'merge-base', trusted_main, HEAD], cwd=source).strip() == BASE,
+            'PR/main common ancestor changed')
+    require(changed_paths(source, BASE, ANCHOR) == ANCHOR_FILES
+            and changed_paths(source, ANCHOR, trusted_main) == PATCH_FILES,
+            'unexpected main changes')
+    require(changed_paths(source, BASE, HEAD) == FILES
+            and not (changed_paths(source, BASE, trusted_main) & FILES),
+            'PR diff or path isolation changed')
+    # Git's actual merge engine must produce a clean tree. Verify every PR doc
+    # blob comes from HEAD and every trusted recovery blob comes from main.
+    merged_tree = run(['git', 'merge-tree', '--write-tree', trusted_main, HEAD],
+                      cwd=source).strip()
+    require(len(merged_tree) == 40 and all(c in '0123456789abcdef' for c in merged_tree),
+            'invalid merged tree')
+    run(['git', 'diff', '--quiet', '--no-ext-diff', HEAD, merged_tree, '--', *sorted(FILES)],
+        cwd=source)
+    run(['git', 'diff', '--quiet', '--no-ext-diff', trusted_main, merged_tree, '--',
+         *sorted(ANCHOR_FILES)], cwd=source)
 
 
 def jobs(run_id, attempt):
@@ -215,8 +274,8 @@ def first_apply():
                              and job['conclusion'] != 'skipped'), 'prior apply may have written; human inspection required')
 
 
-def qualify(base):
-    pr = current(base)
+def qualify(trusted_main):
+    pr = current(trusted_main)
     metadata = json.loads(run(['gh', 'pr', 'view', '1110', '--repo', REPO,
                               '--json', 'closingIssuesReferences']))
     require([i['number'] for i in metadata['closingIssuesReferences']] == [1109], 'closing issue relation')
@@ -225,7 +284,7 @@ def qualify(base):
             and {f['filename'] for f in files} == FILES
             and all(f['status'] == 'modified' for f in files), 'PR file inventory changed')
     require(pages('pulls/1110/reviews') == [], 'unexpected formal review')
-    base_date = datetime.fromisoformat(api('commits/' + base)['commit']['committer']['date'].replace('Z', '+00:00'))
+    base_date = datetime.fromisoformat(api('commits/' + BASE)['commit']['committer']['date'].replace('Z', '+00:00'))
     source = api('issues/comments/' + SOURCE)
     require(source['id'] == int(SOURCE) and source['performed_via_github_app']['id'] == APP,
             'source App provenance')
@@ -256,7 +315,7 @@ def qualify(base):
                    and r['event'] == 'pull_request' and r['head_sha'] == HEAD
                    and r['head_repository']['full_name'] == REPO
                    and any(p['number'] == 1110 and p['head']['sha'] == HEAD
-                           and p['base']['sha'] == base for p in r['pull_requests'])]
+                           and p['base']['sha'] == BASE for p in r['pull_requests'])]
         require(matches, 'no CI evidence for current base')
         latest = max(matches, key=lambda r: r['id'])
         require(latest['status'] == 'completed' and latest['conclusion'] == 'success', 'CI is not successful')
@@ -284,14 +343,14 @@ def qualify(base):
                     'generated SVG last commit mismatch')
     with tempfile.TemporaryDirectory() as directory:
         builder = Path(directory) / 'builder.sh'
-        builder.write_text(run(['git', 'show', base + ':.github/scripts/build-review-context.sh'],
+        builder.write_text(run(['git', 'show', trusted_main + ':.github/scripts/build-review-context.sh'],
                                cwd=source_dir), encoding='utf-8')
         env = read_env()
-        env.update(SOURCE_BASE_SHA=base, BASE_SHA=base)
+        env.update(SOURCE_BASE_SHA=trusted_main, BASE_SHA=trusted_main)
         run(['bash', str(builder), REPO, '1110', str(Path(directory) / 'review.md'),
              'nssscdl-chatgpt-dev[bot],nssscdl-claude-review[bot]',
              'nssscdl-claude-review[bot]', '', HEAD], cwd=source_dir, env=env)
-    current(base)
+    current(trusted_main)
 
 
 def write_once(path, method, body=None):
@@ -309,16 +368,18 @@ def write_once(path, method, body=None):
 
 def main():
     os.environ['AI_RESUME_MAX_HISTORY_PAGES'] = '10'
-    base = authorize()
+    trusted_main = authorize()
+    current(trusted_main)
+    verify_relation(trusted_main)
     accepted = graph()
     if accepted:
-        current(base)
+        current(trusted_main)
         if not labels(1109) and not labels(1110) and normal_review(accepted):
             print('normal_review_owns; no writes')
             return
         raise ValueError('accepted transition interrupted or ownership unknown; no automatic continuation')
     require(labels(1109) and labels(1110), 'both pause labels required')
-    qualify(base)
+    qualify(trusted_main)
     require(graph() is None and labels(1109) and labels(1110), 'state changed during qualification')
     if MODE == 'check':
         print('check passed; no writes; production execution requires separate human Go')
@@ -329,20 +390,20 @@ def main():
     app = json.loads(run(['gh', 'api', '/apps/' + slug]))
     require(app['id'] == APP, 'writer App ID mismatch')
     body = helper('human-pause-record', None, 'create', json.dumps(ACCEPTED))
-    current(base)
+    current(trusted_main)
     require(graph() is None and labels(1109) and labels(1110), 'state changed before acceptance')
     write_once('issues/1110/comments', 'POST', body)
     accepted = graph()
     require(accepted is not None, 'acceptance outcome unknown; never re-POST')
     for number in (1109, 1110):
-        current(base)
+        current(trusted_main)
         require(graph() == accepted and labels(number), 'state changed before label removal')
         if number == 1110:
             require(not labels(1109), 'Issue must be cleared before PR')
         write_once(f'issues/{number}/labels/human-review-required', 'DELETE')
         require(not labels(number), 'label outcome unknown; never re-DELETE')
     for poll in range(9):
-        current(base)
+        current(trusted_main)
         require(graph() == accepted and not labels(1109) and not labels(1110), 'handoff state changed')
         if normal_review(accepted):
             print('normal_review_owns; no automatic paid retry or merge')
