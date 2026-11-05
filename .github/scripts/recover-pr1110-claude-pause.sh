@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,7 +25,8 @@ APP = 4777865
 WORKFLOW = '.github/workflows/recover-pr1110-claude-pause.yml'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
 ANCHOR = '637278268f8269d31187674c21adb69dc4f55aac'
-# This one-off consumer is valid only for the next single-parent squash on ANCHOR.
+PATCH_BASE = 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
+# This one-off consumer is valid only for the next single-parent squash on PATCH_BASE.
 # Future main commits require another explicit qualification decision.
 ANCHOR_FILES = {
     '.github/scripts/recover-pr1110-claude-pause.sh',
@@ -77,16 +79,20 @@ def read_env():
     return env
 
 
-def api(path):
+def api(path, *, comments=False):
     endpoint = '/repos/' + REPO + ('/' + path if path else '')
-    return json.loads(run(['gh', 'api', endpoint]))
+    args = ['gh', 'api']
+    if comments:
+        args += ['-H', 'Accept: application/vnd.github+json']
+    return json.loads(run([*args, endpoint]))
 
 
-def pages(path, key=None):
+def pages(path, key=None, *, comments=False):
     result = []
     total = None
     for page in range(1, 11):
-        value = api(path + ('&' if '?' in path else '?') + f'per_page=100&page={page}')
+        value = api(path + ('&' if '?' in path else '?') + f'per_page=100&page={page}',
+                    comments=comments)
         items = value if key is None else value[key]
         require(isinstance(items, list) and len(items) <= 100, 'invalid API page')
         if key:
@@ -105,7 +111,35 @@ def helper(name, data, *args):
     return run(['bash', str(SCRIPTS / (name + '.sh')), *args], data)
 
 
-def graph():
+def listed_record(comment_id):
+    # Match the proven Conversation-list reader, including its Accept header.
+    # A null App on the single-comment endpoint is never a trust fallback.
+    require(isinstance(comment_id, str) and re.fullmatch(r'[1-9][0-9]*', comment_id),
+            'comment_id_invalid')
+    try:
+        comments = pages('issues/1110/comments', comments=True)
+    except (ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        raise ValueError('comment_list_read_failed') from None
+    require(all(isinstance(c, dict) for c in comments), 'comment_list_invalid')
+    matches = [c for c in comments if type(c.get('id')) is int and c['id'] == int(comment_id)]
+    require(len(matches) == 1, 'comment_missing_or_duplicate')
+    fact = matches[0]
+    app = fact.get('performed_via_github_app')
+    require(isinstance(app, dict) and type(app.get('id')) is int and app['id'] == APP,
+            'comment_app_unverified')
+    require(isinstance(fact.get('body'), str), 'comment_body_invalid')
+    with tempfile.TemporaryDirectory() as directory:
+        file = Path(directory) / 'record.md'
+        file.write_text(fact['body'], encoding='utf-8')
+        try:
+            record = json.loads(helper('human-pause-record', None, 'parse', str(file)))
+        except (ValueError, subprocess.SubprocessError):
+            raise ValueError('comment_record_invalid') from None
+    require(record['target'] == 'pr:1110', 'comment_target_mismatch')
+    return fact, record
+
+
+def graph(expected_source=None):
     value = helper('list-human-pause-records', None, REPO, '1109', '1110', str(APP))
     for stage in ('validate-human-pause-record-graph', 'decompose-human-pause-record-graph',
                   'derive-human-pause-pre-resume-state', 'reconcile-human-pause-resume-acceptance'):
@@ -120,6 +154,8 @@ def graph():
     require(len(source) == 1 and source[0]['record']['kind'] == 'pause'
             and source[0]['record']['paused_head'] == OLD
             and chain['pre_resume']['reason'] == 'claude_execution_failed', 'source identity')
+    require(expected_source is None or source[0]['record'] == expected_source,
+            'source_record_changed_during_read')
     accepted = [r for c in chains for r in c['records']
                 if r['record']['kind'] == 'ai-resume-accepted']
     if accepted:
@@ -186,18 +222,21 @@ def verify_relation(trusted_main):
     require(run(['git', 'rev-parse', 'HEAD'], cwd=source).strip() == HEAD
             and run(['git', 'rev-parse', '--is-shallow-repository'], cwd=source).strip() == 'false',
             'qualification checkout mismatch')
-    for commit in (BASE, ANCHOR, trusted_main):
+    for commit in (BASE, ANCHOR, PATCH_BASE, trusted_main):
         require(run(['git', 'rev-parse', commit + '^{commit}'], cwd=source).strip() == commit,
                 'qualification commit unavailable')
     require(run(['git', 'rev-list', '--parents', '-n', '1', ANCHOR], cwd=source).split()
             == [ANCHOR, BASE], 'anchor ancestry drift')
+    require(run(['git', 'rev-list', '--parents', '-n', '1', PATCH_BASE], cwd=source).split()
+            == [PATCH_BASE, ANCHOR], 'previous squash ancestry drift')
     require(run(['git', 'rev-list', '--parents', '-n', '1', trusted_main], cwd=source).split()
-            == [trusted_main, ANCHOR], 'main is not the single approved squash')
+            == [trusted_main, PATCH_BASE], 'main is not the single approved squash')
     require(run(['git', 'merge-base', BASE, HEAD], cwd=source).strip() == BASE
             and run(['git', 'merge-base', trusted_main, HEAD], cwd=source).strip() == BASE,
             'PR/main common ancestor changed')
     require(changed_paths(source, BASE, ANCHOR) == ANCHOR_FILES
-            and changed_paths(source, ANCHOR, trusted_main) == PATCH_FILES,
+            and changed_paths(source, ANCHOR, PATCH_BASE) == PATCH_FILES
+            and changed_paths(source, PATCH_BASE, trusted_main) == PATCH_FILES,
             'unexpected main changes')
     require(changed_paths(source, BASE, HEAD) == FILES
             and not (changed_paths(source, BASE, trusted_main) & FILES),
@@ -219,12 +258,18 @@ def jobs(run_id, attempt):
 
 
 def normal_review(accepted):
-    fact = api('issues/comments/' + accepted)
-    require(fact['id'] == int(accepted) and fact['performed_via_github_app']['id'] == APP,
-            'accepted provenance')
+    fact, record = listed_record(accepted)
+    require(record == ACCEPTED, 'accepted_record_mismatch')
+    created = fact.get('created_at')
+    require(isinstance(created, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', created),
+            'accepted_timestamp_invalid')
+    try:
+        datetime.fromisoformat(created.replace('Z', '+00:00'))
+    except ValueError:
+        raise ValueError('accepted_timestamp_invalid') from None
     candidates = [r for r in pages('actions/workflows/claude-review.yml/runs?event=pull_request', 'workflow_runs')
                   if r['head_sha'] == HEAD and r['head_branch'] == BRANCH
-                  and r['created_at'] >= fact['created_at']
+                  and r['created_at'] >= created
                   and r['event'] == 'pull_request' and r['path'] == '.github/workflows/claude-review.yml'
                   and r['head_repository']['full_name'] == REPO
                   and any(p['number'] == 1110 and p['head']['sha'] == HEAD for p in r['pull_requests'])]
@@ -285,13 +330,7 @@ def qualify(trusted_main):
             and all(f['status'] == 'modified' for f in files), 'PR file inventory changed')
     require(pages('pulls/1110/reviews') == [], 'unexpected formal review')
     base_date = datetime.fromisoformat(api('commits/' + BASE)['commit']['committer']['date'].replace('Z', '+00:00'))
-    source = api('issues/comments/' + SOURCE)
-    require(source['id'] == int(SOURCE) and source['performed_via_github_app']['id'] == APP,
-            'source App provenance')
-    with tempfile.TemporaryDirectory() as directory:
-        record = Path(directory) / 'source.md'
-        record.write_text(source['body'], encoding='utf-8')
-        parsed = json.loads(helper('human-pause-record', None, 'parse', str(record)))
+    _, parsed = listed_record(SOURCE)
     require(parsed['kind'] == 'pause' and parsed['target'] == 'pr:1110'
             and parsed['reason'] == 'claude_execution_failed' and parsed['paused_head'] == OLD,
             'source record changed')
@@ -353,6 +392,7 @@ def qualify(trusted_main):
              'nssscdl-chatgpt-dev[bot],nssscdl-claude-review[bot]',
              'nssscdl-claude-review[bot]', '', HEAD], cwd=source_dir, env=env)
     current(trusted_main)
+    return parsed
 
 
 def write_once(path, method, body=None):
@@ -381,8 +421,9 @@ def main():
             return
         raise ValueError('accepted transition interrupted or ownership unknown; no automatic continuation')
     require(labels(1109) and labels(1110), 'both pause labels required')
-    qualify(trusted_main)
-    require(graph() is None and labels(1109) and labels(1110), 'state changed during qualification')
+    qualified_source = qualify(trusted_main)
+    require(graph(qualified_source) is None and labels(1109) and labels(1110),
+            'state changed during qualification')
     if MODE == 'check':
         print('check passed; no writes; production execution requires separate human Go')
         return
@@ -393,20 +434,22 @@ def main():
     require(app['id'] == APP, 'writer App ID mismatch')
     body = helper('human-pause-record', None, 'create', json.dumps(ACCEPTED))
     current(trusted_main)
-    require(graph() is None and labels(1109) and labels(1110), 'state changed before acceptance')
+    require(graph(qualified_source) is None and labels(1109) and labels(1110),
+            'state changed before acceptance')
     write_once('issues/1110/comments', 'POST', body)
-    accepted = graph()
+    accepted = graph(qualified_source)
     require(accepted is not None, 'acceptance outcome unknown; never re-POST')
     for number in (1109, 1110):
         current(trusted_main)
-        require(graph() == accepted and labels(number), 'state changed before label removal')
+        require(graph(qualified_source) == accepted and labels(number), 'state changed before label removal')
         if number == 1110:
             require(not labels(1109), 'Issue must be cleared before PR')
         write_once(f'issues/{number}/labels/human-review-required', 'DELETE')
         require(not labels(number), 'label outcome unknown; never re-DELETE')
     for poll in range(9):
         current(trusted_main)
-        require(graph() == accepted and not labels(1109) and not labels(1110), 'handoff state changed')
+        require(graph(qualified_source) == accepted and not labels(1109) and not labels(1110),
+                'handoff state changed')
         if normal_review(accepted):
             print('normal_review_owns; no automatic paid retry or merge')
             return

@@ -186,6 +186,7 @@ HEAD = '50ac09107c1d80fdcdbb03dc0e0a63e012be9137'
 OLD = 'ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
 ANCHOR = '637278268f8269d31187674c21adb69dc4f55aac'
+PATCH_BASE = 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
 TRUSTED_MAIN = '8888888888888888888888888888888888888888'
 MERGED_TREE = '7777777777777777777777777777777777777777'
 ANCHOR_PATHS = {
@@ -269,6 +270,7 @@ class Case:
 
     def api(self, path):
         self.reads.append(path)
+        page = int(path.rsplit('page=', 1)[1]) if 'page=' in path else 1
         path = path.split('?', 1)[0]
         if path == '': return {'default_branch': 'main'}
         if path == 'collaborators/suzukure/permission':
@@ -282,7 +284,41 @@ class Case:
             if len(self.writes) >= 2 and self.fault == 'head-after-issue': value['head']['sha'] = OLD
             return value
         if path.startswith('issues/comments/'):
-            return next(c for c in self.comments if str(c['id']) == path.rsplit('/', 1)[1])
+            raise AssertionError('single-comment endpoint must not be used')
+        if path == 'issues/1110/comments':
+            if self.fault == 'list-api':
+                raise subprocess.CalledProcessError(1, ['gh', 'api'], stderr='SECRET_API_BODY')
+            if self.fault == 'list-bound': return [{}] * 100
+            if self.fault == 'list-shape': return {}
+            value = deepcopy(self.comments)
+            if self.fault == 'list-missing': value = []
+            if self.fault == 'list-duplicate': value += deepcopy(value)
+            if self.fault == 'list-nonobject': value += [None]
+            for comment in value:
+                if not isinstance(comment, dict): continue
+                if comment['id'] == 6625324624:
+                    if self.fault == 'list-app-null': comment['performed_via_github_app'] = None
+                    if self.fault == 'list-app-missing': del comment['performed_via_github_app']
+                    if self.fault == 'list-app-wrong': comment['performed_via_github_app']['id'] = 4777726
+                    if self.fault == 'list-app-type': comment['performed_via_github_app']['id'] = '4777865'
+                    if self.fault == 'list-id-type': comment['id'] = '6625324624'
+                    if self.fault == 'list-body': comment['body'] = 'SECRET_INVALID_BODY'
+                    if self.fault == 'list-target': comment['body'] = comment['body'].replace('pr:1110', 'pr:1112')
+                    if self.fault == 'source-body-drift':
+                        comment['body'] = comment['body'].replace('"kind": "pause"',
+                            '"payload": {"detail": "changed"}, "kind": "pause"')
+                if comment['id'] == 700:
+                    if self.fault == 'accepted-app-null': comment['performed_via_github_app'] = None
+                    if self.fault == 'accepted-app-wrong': comment['performed_via_github_app']['id'] = 4777726
+                    if self.fault == 'accepted-body': comment['body'] = comment['body'].replace('1111', '1112')
+                    if self.fault == 'accepted-time-missing': del comment['created_at']
+                    if self.fault == 'accepted-time-type': comment['created_at'] = 42
+                    if self.fault == 'accepted-time-invalid': comment['created_at'] = '2026-02-30T10:00:00Z'
+                    if self.fault == 'accepted-time-offset': comment['created_at'] = '2026-11-04T10:00:00+00:00'
+                    if self.fault == 'accepted-time-late': comment['created_at'] = '2026-11-04T10:02:00Z'
+            if self.fault == 'list-second-page':
+                value = [{'id': n + 10000} for n in range(100)] + value
+            return value[(page - 1) * 100:page * 100]
         if path in ('issues/1109', 'issues/1110'):
             number = int(path.split('/')[1])
             return {'number': number, 'state': 'open', 'labels':
@@ -361,12 +397,18 @@ class Case:
                     assert parsed == ACCEPTED
                     assert self.label == {1109: True, 1110: True}
                     if self.fault != 'post-no-commit': self.comments.append(record_comment(700, parsed))
+                    if self.fault == 'source-after-post':
+                        self.comments[0]['body'] = self.comments[0]['body'].replace('"kind": "pause"',
+                            '"payload": {"detail": "changed"}, "kind": "pause"')
                     if self.fault == 'crash-post': raise Crash()
                     return result(rc=1 if self.fault in ('post-loss', 'post-no-commit') else 0)
                 number = int(path.split('/')[1])
                 assert any(c['id'] == 700 for c in self.comments), 'remove before acceptance'
                 if number == 1110: assert not self.label[1109], 'wrong label order'
                 if self.fault != 'delete-no-commit': self.label[number] = False
+                if self.fault == 'source-after-issue' and number == 1109:
+                    self.comments[0]['body'] = self.comments[0]['body'].replace('"kind": "pause"',
+                        '"payload": {"detail": "changed"}, "kind": "pause"')
                 if self.fault == 'crash-issue' and number == 1109: raise Crash()
                 return result(rc=1 if self.fault in ('delete-loss', 'delete-no-commit') else 0)
             assert env['GH_TOKEN'] == 'mock-read' and 'GH_WRITE_TOKEN' not in env
@@ -381,6 +423,8 @@ class Case:
             if args[-1] == repository_endpoint:
                 return result(rc=1) if self.fault == 'repository-api' else result(self.api(''))
             assert args[-1].startswith(repository_endpoint + '/'), args
+            if '/issues/1110/comments?' in args[-1]:
+                assert args[2:4] == ['-H', 'Accept: application/vnd.github+json']
             return result(self.api(args[-1][len(repository_endpoint) + 1:]))
         if args[0] == 'git':
             if '-C' in args: return result(TRUSTED_MAIN + '\n')
@@ -397,8 +441,12 @@ class Case:
                 commit = args[-1]
                 if commit == ANCHOR:
                     return result(ANCHOR + ' ' + (OLD if self.fault == 'anchor-parent' else BASE))
+                if commit == PATCH_BASE:
+                    parent = BASE if self.fault == 'previous-parent' else ANCHOR
+                    extra = ' ' + BASE if self.fault == 'previous-multiparent' else ''
+                    return result(PATCH_BASE + ' ' + parent + extra)
                 if commit == TRUSTED_MAIN:
-                    parent = BASE if self.fault == 'main-parent' else ANCHOR
+                    parent = BASE if self.fault == 'main-parent' else PATCH_BASE
                     extra = ' ' + BASE if self.fault == 'main-multiparent' else ''
                     return result(TRUSTED_MAIN + ' ' + parent + extra)
             if args[1] == 'merge-base':
@@ -410,7 +458,10 @@ class Case:
                     before, after = args[-2:]
                     if (before, after) == (BASE, ANCHOR):
                         changes = ANCHOR_PATHS
-                    elif (before, after) == (ANCHOR, TRUSTED_MAIN):
+                    elif (before, after) == (ANCHOR, PATCH_BASE):
+                        changes = PATCH_PATHS | ({'.github/workflows/claude-review.yml'}
+                                                if self.fault == 'previous-paths' else set())
+                    elif (before, after) == (PATCH_BASE, TRUSTED_MAIN):
                         changes = PATCH_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
                                                else {'.github/workflows/claude-review.yml'} if self.fault == 'main-extra-file'
                                                else set())
@@ -481,7 +532,7 @@ expected = [('POST', 'issues/1110/comments'), ('DELETE', 'issues/1109/labels/hum
             ('DELETE', 'issues/1110/labels/human-review-required')]
 case = Case()
 assert case.invoke('check') and case.writes == [] and case.builder == 1, getattr(case, 'error', case.reads)
-for fault in ('', 'post-loss', 'delete-loss', 'check-before-apply'):
+for fault in ('', 'post-loss', 'delete-loss', 'check-before-apply', 'list-second-page'):
     case = Case(fault)
     assert case.invoke(), (fault, getattr(case, 'error', ''))
     assert case.writes == expected and not any(case.label.values()), fault
@@ -491,12 +542,38 @@ for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-hea
               'fork', 'draft', 'closed', 'pr-base', 'missing-label', 'multiple-active', 'broken-graph', 'files',
               'verdict', 'relation', 'model-ran', 'ci', 'stale-ci', 'base-ci', 'renderer', 'svg', 'builder',
               'writer-app', 'api-unknown', 'repository-api', 'truncated-api', 'truncated-comments', 'prior-apply', 'deleted-history', 'rerun',
-               'main-before', 'unavailable-main', 'anchor-parent', 'main-parent', 'main-multiparent',
+               'main-before', 'unavailable-main', 'anchor-parent', 'previous-parent',
+               'previous-multiparent', 'previous-paths', 'main-parent', 'main-multiparent',
                'merge-base', 'merge-conflict', 'main-overlap', 'main-extra-file', 'pr-diff',
-               'main-oldbase-overlap', 'merged-pr-changed', 'merged-main-changed'):
+               'main-oldbase-overlap', 'merged-pr-changed', 'merged-main-changed',
+               'list-api', 'list-bound', 'list-shape', 'list-missing', 'list-duplicate', 'list-nonobject',
+               'list-app-null', 'list-app-missing', 'list-app-wrong', 'list-app-type', 'list-id-type',
+               'list-body', 'list-target', 'source-body-drift'):
     case = Case(fault)
     assert not case.invoke() and case.writes == [], fault
+    if fault == 'source-body-drift':
+        assert 'source_record_changed_during_read' in case.error, case.error
+    if fault in ('list-api', 'list-body'):
+        assert 'SECRET' not in case.error, case.error
+# The original single-comment API may return null App provenance. It is never
+# called: the mock rejects it, while source AND accepted use the verified list.
+case = Case()
+assert case.invoke() and case.writes == expected
+assert not any(path.startswith('issues/comments/') for path in case.reads)
+for fault in ('accepted-app-null', 'accepted-app-wrong', 'accepted-body',
+              'accepted-time-missing', 'accepted-time-type', 'accepted-time-invalid',
+              'accepted-time-offset', 'accepted-time-late'):
+    case = Case(fault)
+    case.comments.append(record_comment(700, ACCEPTED))
+    case.label = {1109: False, 1110: False}
+    assert not case.invoke() and case.writes == [], fault
+    # These same faults after new acceptance must not resend the POST/labels.
+    case = Case(fault)
+    assert not case.invoke() and case.writes == expected, fault
+    case.writes.clear()
+    assert not case.invoke() and case.writes == [], fault
 for fault, writes in [('post-no-commit', expected[:1]), ('head-after-post', expected[:1]),
+                      ('source-after-post', expected[:1]), ('source-after-issue', expected[:2]),
                       ('head-after-issue', expected[:2]), ('base-drift', expected[:1]),
                       ('delete-no-commit', expected[:2]), ('crash-post', expected[:1]), ('crash-issue', expected[:2])]:
     case = Case(fault)
@@ -506,6 +583,10 @@ for fault, writes in [('post-no-commit', expected[:1]), ('head-after-post', expe
     case.fault = 'prior-apply' if fault == 'post-no-commit' else ''
     case.writes.clear()
     assert not case.invoke() and case.writes == [], 'interrupted replay: ' + fault
+case = Case('main-before')
+case.comments.append(record_comment(700, ACCEPTED))
+case.label = {1109: False, 1110: False}
+assert not case.invoke() and case.writes == [], 'accepted replay after main drift'
 for issue, pr in ((True, True), (False, True), (True, False), (False, False)):
     case = Case()
     case.comments.append(record_comment(700, ACCEPTED))
