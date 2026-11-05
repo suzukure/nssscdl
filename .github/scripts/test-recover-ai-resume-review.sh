@@ -359,7 +359,13 @@ class Case:
             if args[-1].startswith('/apps/'):
                 return result({'id': 4777726 if self.fault == 'writer-app' else 4777865})
             if self.fault == 'api-unknown' and '/pulls/1110' in args[-1]: return result(rc=1)
-            return result(self.api(args[-1].split('/' + REPO + '/', 1)[1]))
+            repository_endpoint = '/repos/' + REPO
+            if args[-1] == repository_endpoint + '/':
+                return result(rc=1)  # GitHub REST returns 404 for the trailing slash.
+            if args[-1] == repository_endpoint:
+                return result(rc=1) if self.fault == 'repository-api' else result(self.api(''))
+            assert args[-1].startswith(repository_endpoint + '/'), args
+            return result(self.api(args[-1][len(repository_endpoint) + 1:]))
         if args[0] == 'git':
             if '-C' in args: return result(BASE + '\n')
             if args[1:3] == ['rev-parse', 'HEAD']: return result(HEAD + '\n')
@@ -425,7 +431,7 @@ for fault in ('', 'post-loss', 'delete-loss', 'check-before-apply'):
 for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-head', 'reason', 'target', 'schema', 'head', 'branch',
               'fork', 'draft', 'closed', 'missing-label', 'multiple-active', 'broken-graph', 'files',
               'verdict', 'relation', 'model-ran', 'ci', 'stale-ci', 'base-ci', 'renderer', 'svg', 'builder',
-              'writer-app', 'api-unknown', 'truncated-api', 'truncated-comments', 'prior-apply', 'deleted-history', 'rerun'):
+              'writer-app', 'api-unknown', 'repository-api', 'truncated-api', 'truncated-comments', 'prior-apply', 'deleted-history', 'rerun'):
     case = Case(fault)
     assert not case.invoke() and case.writes == [], fault
 for fault, writes in [('post-no-commit', expected[:1]), ('head-after-post', expected[:1]),

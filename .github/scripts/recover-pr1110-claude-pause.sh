@@ -63,7 +63,8 @@ def read_env():
 
 
 def api(path):
-    return json.loads(run(['gh', 'api', '/repos/' + REPO + '/' + path]))
+    endpoint = '/repos/' + REPO + ('/' + path if path else '')
+    return json.loads(run(['gh', 'api', endpoint]))
 
 
 def pages(path, key=None):
