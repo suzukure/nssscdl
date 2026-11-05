@@ -156,7 +156,8 @@ def main():
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     pr = event['pull_request']
     if not (os.environ['GITHUB_EVENT_NAME'] == 'pull_request'
-            and event['action'] == 'reopened' and pr['number'] == 1117
+            and event['action'] == 'synchronize' and pr['number'] == 1117
+            and event['before'] == '9703d6ad7e0285f1be11692dfca8ab696f2c4df3'
             and os.environ['GITHUB_RUN_ATTEMPT'] == '1'
             and os.environ['GITHUB_ACTOR'] == os.environ['GITHUB_TRIGGERING_ACTOR'] == 'suzukure'
             and pr['user']['login'] == 'suzukure' and pr['draft'] is True

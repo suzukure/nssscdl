@@ -112,16 +112,9 @@ jobs:
   pr1110-diagnostic:
     name: PR1110 読取専用の限定診断
     if: >-
-      github.event_name == 'pull_request' && github.event.action == 'reopened' &&
-      github.run_attempt == 1 && github.actor == 'suzukure' &&
-      github.triggering_actor == 'suzukure' &&
-      github.event.pull_request.user.login == 'suzukure' &&
-      github.event.pull_request.number == 1117 &&
-      github.event.pull_request.draft == true &&
-      github.event.pull_request.head.repo.full_name == 'suzukure/nssscdl' &&
-      github.event.pull_request.base.repo.full_name == 'suzukure/nssscdl' &&
-      github.event.pull_request.head.ref == 'diagnostic/issue-1111-qualification-stage' &&
-      github.event.pull_request.base.sha == 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
+      github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.before == '9703d6ad7e0285f1be11692dfca8ab696f2c4df3' &&
+      github.actor == 'suzukure' && github.run_attempt == 1
     permissions:
       contents: read
       actions: read
