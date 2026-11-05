@@ -108,21 +108,3 @@ jobs:
       - name: Local D1 smoke
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
-
-  public-app-diagnostic:
-    name: PR1110 公開App情報の無認証確認
-    if: >-
-      github.event.action == 'synchronize' &&
-      github.event.before == '4fc4e1fe78eb60729ffde14388736c4ba0058188' &&
-      github.actor == 'suzukure' && github.run_attempt == 1
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - name: 固定公開URLを1回だけGET
-        run: python3 -I -B .github/scripts/diagnose-pr1110-public-app.py
