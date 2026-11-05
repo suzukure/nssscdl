@@ -187,6 +187,8 @@ OLD = 'ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
 ANCHOR = '637278268f8269d31187674c21adb69dc4f55aac'
 PATCH_BASE = 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
+READ_FIX_BASE = '09759be3c42eb00b3120a4e777715d3c2a9b4bda'
+ADJUDICATED_RUN = 42033641429
 TRUSTED_MAIN = '8888888888888888888888888888888888888888'
 MERGED_TREE = '7777777777777777777777777777777777777777'
 ANCHOR_PATHS = {
@@ -245,7 +247,7 @@ class Case:
         self.pr = {'number': 1110, 'state': 'open', 'draft': False, 'changed_files': 14,
                    'head': {'sha': HEAD, 'ref': BRANCH, 'repo': {'full_name': REPO}},
                    'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': REPO}}}
-        self.run = {'id': 800, 'run_number': 1, 'run_attempt': 1,
+        self.run = {'id': 800, 'run_number': 4, 'run_attempt': 1,
                     'path': '.github/workflows/recover-pr1110-claude-pause.yml',
                     'event': 'workflow_dispatch', 'head_repository': {'full_name': REPO}}
         if fault == 'app': self.comments[0]['performed_via_github_app']['id'] = 4777726
@@ -355,13 +357,58 @@ class Case:
                     'conclusion': 'failure' if self.fault == 'renderer' else 'success',
                     'head_repository': {'full_name': REPO}, 'head_branch': BRANCH,
                     'run_attempt': 1, 'head_sha': PARENT}
+        if path == 'actions/runs/42033641429':
+            value = {'id': ADJUDICATED_RUN, 'run_number': 3, 'run_attempt': 1,
+                'workflow_id': 407813204, 'path': '.github/workflows/recover-pr1110-claude-pause.yml',
+                'event': 'workflow_dispatch', 'head_branch': 'main', 'head_sha': READ_FIX_BASE,
+                'head_repository': {'full_name': REPO}, 'actor': {'login': 'suzukure'},
+                'triggering_actor': {'login': 'suzukure'}, 'status': 'completed', 'conclusion': 'failure'}
+            if self.fault == 'retired-head': value['head_sha'] = PATCH_BASE
+            if self.fault == 'retired-actor': value['triggering_actor']['login'] = 'other'
+            if self.fault == 'retired-number': value['run_number'] = 2
+            if self.fault == 'retired-rerun': value['run_attempt'] = 2
+            if self.fault == 'retired-workflow': value['workflow_id'] = 999
+            if self.fault == 'retired-repo': value['head_repository']['full_name'] = 'other/repo'
+            if self.fault == 'retired-result': value['conclusion'] = 'success'
+            return value
+        if path == 'actions/runs/42033641429/attempts/1/jobs':
+            def step(name, result): return {'name': name, 'status': 'completed', 'conclusion': result}
+            jobs = [
+                {'id': 127266077905, 'name': 'Read-only qualification', 'status': 'completed',
+                 'started_at': '2026-11-05T13:12:00Z', 'conclusion': 'success',
+                 'steps': [step('Check fixed recovery target', 'success')]},
+                {'id': 127266269509, 'name': 'Apply fixed recovery', 'status': 'completed',
+                 'started_at': '2026-11-05T13:12:33Z', 'conclusion': 'failure',
+                 'steps': [step('Recheck after writer wait', 'success'),
+                    step('Create reviewer App token', 'success'), step('Consume and hand off once', 'failure'),
+                    step('Post Create reviewer App token', 'success')]},
+            ]
+            if self.fault == 'retired-job-id': jobs[1]['id'] = 123
+            if self.fault == 'retired-check': jobs[0]['conclusion'] = 'failure'
+            if self.fault == 'retired-recheck': jobs[1]['steps'][0]['conclusion'] = 'failure'
+            if self.fault == 'retired-token': jobs[1]['steps'][1]['conclusion'] = 'failure'
+            if self.fault == 'retired-consume': jobs[1]['steps'][2]['conclusion'] = 'success'
+            if self.fault == 'retired-cleanup': jobs[1]['steps'][3]['conclusion'] = 'failure'
+            if self.fault == 'retired-step-duplicate': jobs[1]['steps'].append(deepcopy(jobs[1]['steps'][0]))
+            if self.fault == 'retired-step-missing': jobs[1]['steps'].pop()
+            if self.fault == 'retired-jobs-missing': jobs.pop()
+            return {'total_count': len(jobs), 'jobs': jobs}
         if path == 'actions/workflows/recover-pr1110-claude-pause.yml/runs':
-            runs = [deepcopy(self.run)]
+            if self.fault == 'history-api':
+                raise subprocess.CalledProcessError(1, ['gh', 'api'], stderr='SECRET_HISTORY')
+            runs = [deepcopy(self.run), dict(self.run, id=ADJUDICATED_RUN, run_number=3),
+                    dict(self.run, id=796, run_number=2), dict(self.run, id=795, run_number=1)]
+            if self.fault == 'retired-missing': runs.pop(1)
+            if self.fault == 'retired-zero-attempt': runs[1]['run_attempt'] = 0
+            if self.fault == 'retired-attempt-type': runs[1]['run_attempt'] = '1'
             if self.fault in ('prior-apply', 'check-before-apply', 'deleted-history'):
-                runs[0]['run_number'] = 2
+                runs[0]['run_number'] = 5
                 if self.fault != 'deleted-history':
-                    runs.append(dict(self.run, id=799, run_number=1))
+                    runs.append(dict(self.run, id=799, run_number=4))
             return {'total_count': len(runs), 'workflow_runs': runs}
+        if path in ('actions/runs/795/attempts/1/jobs', 'actions/runs/796/attempts/1/jobs'):
+            return {'total_count': 1, 'jobs': [{'name': 'Apply fixed recovery',
+                'started_at': '2026-11-05T10:00:00Z', 'conclusion': 'skipped'}]}
         if path == 'actions/runs/799/attempts/1/jobs':
             return {'total_count': 1, 'jobs': [{'name': 'Apply fixed recovery',
                 'started_at': '2026-11-04T09:00:00Z',
@@ -415,7 +462,7 @@ class Case:
             if args[1:3] == ['pr', 'view']:
                 return result({'closingIssuesReferences': [{'number': 1112 if self.fault == 'relation' else 1109}]})
             if args[-1].startswith('/apps/'):
-                return result({'id': 4777726 if self.fault == 'writer-app' else 4777865})
+                raise AssertionError('App GET with repository token is forbidden')
             if self.fault == 'api-unknown' and '/pulls/1110' in args[-1]: return result(rc=1)
             repository_endpoint = '/repos/' + REPO
             if args[-1] == repository_endpoint + '/':
@@ -445,8 +492,11 @@ class Case:
                     parent = BASE if self.fault == 'previous-parent' else ANCHOR
                     extra = ' ' + BASE if self.fault == 'previous-multiparent' else ''
                     return result(PATCH_BASE + ' ' + parent + extra)
+                if commit == READ_FIX_BASE:
+                    parent = ANCHOR if self.fault == 'read-fix-parent' else PATCH_BASE
+                    return result(READ_FIX_BASE + ' ' + parent)
                 if commit == TRUSTED_MAIN:
-                    parent = BASE if self.fault == 'main-parent' else PATCH_BASE
+                    parent = BASE if self.fault == 'main-parent' else READ_FIX_BASE
                     extra = ' ' + BASE if self.fault == 'main-multiparent' else ''
                     return result(TRUSTED_MAIN + ' ' + parent + extra)
             if args[1] == 'merge-base':
@@ -461,8 +511,11 @@ class Case:
                     elif (before, after) == (ANCHOR, PATCH_BASE):
                         changes = PATCH_PATHS | ({'.github/workflows/claude-review.yml'}
                                                 if self.fault == 'previous-paths' else set())
-                    elif (before, after) == (PATCH_BASE, TRUSTED_MAIN):
-                        changes = PATCH_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
+                    elif (before, after) == (PATCH_BASE, READ_FIX_BASE):
+                        changes = PATCH_PATHS | ({'.github/workflows/product-ci.yml'}
+                                                if self.fault == 'read-fix-paths' else set())
+                    elif (before, after) == (READ_FIX_BASE, TRUSTED_MAIN):
+                        changes = ANCHOR_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
                                                else {'.github/workflows/claude-review.yml'} if self.fault == 'main-extra-file'
                                                else set())
                     elif (before, after) == (BASE, HEAD):
@@ -512,6 +565,10 @@ class Case:
             GITHUB_REF='refs/heads/main', GITHUB_ACTOR='suzukure', GITHUB_TRIGGERING_ACTOR='suzukure',
             GITHUB_SHA=TRUSTED_MAIN, GITHUB_RUN_ID='800', GITHUB_RUN_ATTEMPT='1', RECOVERY_SOURCE='/mock/source',
             GH_TOKEN='mock-read', GH_WRITE_TOKEN='mock-write', REVIEWER_APP_SLUG='nssscdl-claude-review')
+        env['REVIEWER_INSTALLATION_ID'] = '12345'
+        if self.fault == 'writer-app': env['REVIEWER_APP_SLUG'] = 'other'
+        if self.fault == 'installation-missing': del env['REVIEWER_INSTALLATION_ID']
+        if self.fault == 'installation-invalid': env['REVIEWER_INSTALLATION_ID'] = '0'
         if self.fault == 'actor': env['GITHUB_ACTOR'] = 'outsider'
         if self.fault == 'rerun-actor': env['GITHUB_TRIGGERING_ACTOR'] = 'outsider'
         if self.fault == 'rerun': env['GITHUB_RUN_ATTEMPT'] = '2'
@@ -532,6 +589,12 @@ expected = [('POST', 'issues/1110/comments'), ('DELETE', 'issues/1109/labels/hum
             ('DELETE', 'issues/1110/labels/human-review-required')]
 case = Case()
 assert case.invoke('check') and case.writes == [] and case.builder == 1, getattr(case, 'error', case.reads)
+case = Case()
+assert case.invoke('identity') and case.writes == [] and case.builder == 0
+assert not any(path.startswith('actions/') for path in case.reads)
+for fault in ('writer-app', 'installation-missing', 'installation-invalid', 'rerun', 'main-before'):
+    case = Case(fault)
+    assert not case.invoke('identity') and case.writes == [], fault
 for fault in ('', 'post-loss', 'delete-loss', 'check-before-apply', 'list-second-page'):
     case = Case(fault)
     assert case.invoke(), (fault, getattr(case, 'error', ''))
@@ -543,12 +606,13 @@ for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-hea
               'verdict', 'relation', 'model-ran', 'ci', 'stale-ci', 'base-ci', 'renderer', 'svg', 'builder',
               'writer-app', 'api-unknown', 'repository-api', 'truncated-api', 'truncated-comments', 'prior-apply', 'deleted-history', 'rerun',
                'main-before', 'unavailable-main', 'anchor-parent', 'previous-parent',
-               'previous-multiparent', 'previous-paths', 'main-parent', 'main-multiparent',
+               'previous-multiparent', 'previous-paths', 'read-fix-parent', 'read-fix-paths',
+               'main-parent', 'main-multiparent',
                'merge-base', 'merge-conflict', 'main-overlap', 'main-extra-file', 'pr-diff',
                'main-oldbase-overlap', 'merged-pr-changed', 'merged-main-changed',
                'list-api', 'list-bound', 'list-shape', 'list-missing', 'list-duplicate', 'list-nonobject',
                'list-app-null', 'list-app-missing', 'list-app-wrong', 'list-app-type', 'list-id-type',
-               'list-body', 'list-target', 'source-body-drift'):
+               'list-body', 'list-target', 'source-body-drift', 'installation-missing', 'installation-invalid'):
     case = Case(fault)
     assert not case.invoke() and case.writes == [], fault
     if fault == 'source-body-drift':
@@ -560,6 +624,18 @@ for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-hea
 case = Case()
 assert case.invoke() and case.writes == expected
 assert not any(path.startswith('issues/comments/') for path in case.reads)
+for fault in ('retired-missing', 'retired-zero-attempt', 'retired-attempt-type',
+              'retired-head', 'retired-actor', 'retired-number', 'retired-rerun',
+              'retired-workflow', 'retired-repo', 'retired-result', 'retired-job-id', 'retired-check',
+              'retired-recheck', 'retired-token', 'retired-consume', 'retired-cleanup',
+              'retired-step-duplicate', 'retired-step-missing', 'retired-jobs-missing',
+              'history-api', 'prior-apply'):
+    # Check must detect a blocked fence BEFORE the workflow can issue its token.
+    for mode in ('check', 'apply'):
+        case = Case(fault)
+        assert not case.invoke(mode) and case.writes == [], (mode, fault)
+        if fault == 'history-api':
+            assert 'recovery_history_read_failed' in case.error and 'SECRET' not in case.error
 for fault in ('accepted-app-null', 'accepted-app-wrong', 'accepted-body',
               'accepted-time-missing', 'accepted-time-type', 'accepted-time-invalid',
               'accepted-time-offset', 'accepted-time-late'):
@@ -616,5 +692,25 @@ assert workflow.index('Recheck after writer wait') < workflow.index('Create revi
 assert 'GH_WRITE_TOKEN:' not in workflow.split('  apply:', 1)[0]
 assert 'permission-actions: write' not in workflow
 assert 'ANTHROPIC' not in workflow and 'claude-code-action' not in workflow
+def identity_contract(text):
+    check, apply = text.split('  apply:', 1)
+    return (text.count("app-id: '4777865'") == 2 and 'client-id:' not in text
+        and text.count('actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1') == 2
+        and text.count('private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}') == 2
+        and 'github.run_attempt == 1' in check
+        and check.index('Check fixed recovery target') < check.index('Authenticate reviewer identity')
+        and 'permission-issues: read' in check and 'permission-pull-requests: read' in check
+        and 'permission-issues: write' not in check and 'permission-pull-requests: write' not in check
+        and 'reviewer_check.outputs.token' not in check and 'GH_WRITE_TOKEN:' not in check
+        and 'reviewer_check.outputs.installation-id' in check and 'recover-pr1110-claude-pause.sh identity' in check
+        and 'permission-issues: write' in apply and 'permission-pull-requests: write' in apply
+        and 'reviewer.outputs.installation-id' in apply and 'skip-token-revoke: true' not in text)
+assert identity_contract(workflow)
+for broken in (workflow.replace("app-id: '4777865'", "app-id: '4777726'", 1),
+               workflow.replace("app-id: '4777865'", "client-id: wrong", 1),
+               workflow.replace('permission-issues: read', 'permission-issues: write', 1),
+               workflow.replace('reviewer_check.outputs.installation-id', 'reviewer_check.outputs.token', 1),
+               workflow.replace('github.run_attempt == 1', 'github.run_attempt >= 1')):
+    assert not identity_contract(broken)
 print(f'PR1110 exceptional recovery: {count} offline invocations passed')
 PY
