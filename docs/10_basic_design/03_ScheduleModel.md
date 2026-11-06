@@ -195,4 +195,4 @@ ScheduleMonth
 
 PlantUML source: `docs/diagrams/plantuml/data-model-overview.puml`
 
-Rendered SVG: `docs/diagrams/rendered/data-model-overview.svg`（自動生成）
+図正本: [data-model-overview.puml](../diagrams/plantuml/data-model-overview.puml)。SVGは[Artifact閲覧手順](../diagrams/README.md#レンダリング)を参照。

@@ -116,126 +116,81 @@ import tempfile
 import yaml
 
 repo = Path(sys.argv[1])
-# #845 / #562: generated SVG writeback is confined to the current non-main branch.
+# #1134: read-only rendering, exact source, isolated complete artifact.
 render_source = (repo / '.github/workflows/render-plantuml.yml').read_text()
-assert 'actions/create-github-app-token@' not in render_source
-assert 'DEV_APP_' not in render_source and 'secrets.' not in render_source
 render = yaml.safe_load(render_source)
-assert set(render) == {'name', True, 'permissions', 'jobs'}
-assert render[True] == {
-    'push': {'branches-ignore': ['main'], 'paths': [
-        'docs/diagrams/plantuml/**/*.puml', '.github/workflows/render-plantuml.yml',
-        '.gitattributes']},
-    'workflow_dispatch': None}
-assert render['permissions'] == {'contents': 'write'}
-assert list(render['jobs']) == ['render']
-render_job = render['jobs']['render']
-assert set(render_job) == {'if', 'runs-on', 'steps'}
-assert render_job['if'] == (
-    "startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && "
-    "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')")
-checkout, guard, java, graphviz, download, generate, commit = render_job['steps']
-assert checkout['uses'] == 'actions/checkout@v4'
-assert checkout['with'] == {'ref': '${{ github.ref }}',
-                            'token': '${{ github.token }}'}
-assert guard['env'] == commit['env'] == {'TARGET_REF': '${{ github.ref }}'}
+assert render['permissions'] == {'contents': 'read'}
+assert set(render[True]) == {'pull_request', 'workflow_dispatch'}
+assert render[True]['pull_request']['types'] == ['opened', 'synchronize', 'reopened', 'ready_for_review']
+assert 'head.repo.full_name == github.repository' in render['jobs']['render']['if']
+assert "github.ref == 'refs/heads/main'" in render['jobs']['render']['if']
+assert render['jobs']['render']['env']['SOURCE_SHA'] == '${{ github.event.pull_request.head.sha || github.sha }}'
+steps = render['jobs']['render']['steps']
+checkout, guard, java, graphviz, download, generate, current, upload = steps
+assert checkout['with'] == {'ref': '${{ env.SOURCE_SHA }}', 'persist-credentials': False}
+assert 'git rev-parse HEAD' in guard['run']
 assert java['with'] == {'distribution': 'temurin', 'java-version': '21'}
+assert 'sudo apt-get install -y graphviz' in graphviz['run']
 assert 'v1.2026.6/plantuml-1.2026.6.jar' in download['run']
 assert '89948f14c93756c7a3fb7b69078ff37e8489fd79dd430c582b931e2f65358690' in download['run']
-assert "src_root='docs/diagrams/plantuml'" in generate['run']
-assert "dst_root='docs/diagrams/rendered'" in generate['run']
-assert "find \"$dst_root\" -type f -name '*.svg' -delete" in generate['run']
-assert "find \"$src_root\" -type f -name '*.puml' -print0" in generate['run']
-assert 'sudo apt-get install -y graphviz' in graphviz['run']
-assert '[skip ci]' not in commit['run']
-assert commit['shell'] == 'bash'
-for step in (guard, graphviz, download, generate, commit):
-    subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
-# Execute the actual commit block with a test-only git fake; no repository writes.
-with tempfile.TemporaryDirectory() as temporary:
-    log = Path(temporary) / 'git-log'
-    fake_git = '''git() {
-  printf '%s\\n' "$*" >> "$GIT_LOG"
-  case "$1" in
-    check-ref-format) return 0 ;;
-    symbolic-ref) printf '%s\\n' "$CHECKOUT_REF"; return "$SYMBOLIC_STATUS" ;;
-    add|config|commit) return 0 ;;
-    diff) return "$DIFF_STATUS" ;;
-    push) return "$PUSH_STATUS" ;;
-    *) return 90 ;;
-  esac
-}
-'''
-    branch = 'refs/heads/ai/issue-845'
-    env = {**os.environ, 'GIT_LOG': str(log), 'TARGET_REF': branch,
-           'CHECKOUT_REF': branch, 'SYMBOLIC_STATUS': '0'}
-    for block in (guard['run'], commit['run']):
-        for target, checkout_ref, symbolic_status in (
-                ('refs/heads/main', 'refs/heads/main', '0'),
-                ('refs/tags/v1', 'refs/tags/v1', '0'), ('', '', '0'),
-                (branch, 'refs/heads/other', '0'), (branch, '', '1')):
-            log.unlink(missing_ok=True)
-            result = subprocess.run(['bash', '-c', fake_git + block], capture_output=True,
-                                    env={**env, 'TARGET_REF': target,
-                                         'CHECKOUT_REF': checkout_ref,
-                                         'SYMBOLIC_STATUS': symbolic_status})
-            assert result.returncode != 0
-            calls = log.read_text().splitlines() if log.exists() else []
-            assert not any(call.startswith(('add ', 'commit ', 'push ')) for call in calls)
-    for changed, push_status in ((False, 0), (True, 0), (True, 1)):
-        log.unlink(missing_ok=True)
-        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c',
-                                 fake_git + commit['run']], capture_output=True,
-                                env={**env,
-                                     'DIFF_STATUS': str(int(changed)),
-                                     'PUSH_STATUS': str(push_status)})
-        assert (result.returncode == 0) == (push_status == 0)
-        calls = log.read_text().splitlines()
-        assert calls[:4] == [f'check-ref-format {branch}', 'symbolic-ref --quiet HEAD',
-                             'add docs/diagrams/rendered', 'diff --cached --quiet']
-        if changed:
-            assert calls[4:] == [
-                'config user.name github-actions[bot]',
-                'config user.email 41898282+github-actions[bot]@users.noreply.github.com',
-                'commit -m Render PlantUML diagrams',
-                f'push origin HEAD:{branch}']
-        else:
-            assert len(calls) == 4
-# Real Git attribute/diff proof using only a temporary index; no commit or remote.
+assert 'sha256sum --check' in download['run']
+assert '-failfast2 -tsvg' in generate['run']
+assert 'find "$src_root"' in generate['run']
+assert 'renderer-info.txt' in generate['run']
+assert 'test "$current" = "$SOURCE_SHA"' in current['run']
+assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+assert upload['with']['if-no-files-found'] == 'error'
+assert upload['with']['retention-days'] == 7
+for forbidden in ('git add', 'git commit', 'git push', 'contents: write', 'secrets.'):
+    assert forbidden not in render_source
+for step in steps:
+    if 'run' in step:
+        subprocess.run(['bash', '-n'], input=step['run'].encode(), check=True)
+# Source mismatch is rejected before rendering.
+for actual in ('a'*40, 'b'*40):
+    fake = 'git() { printf "%s\\n" "' + actual + '"; };\n'
+    result = subprocess.run(['bash', '-c', fake + guard['run']],
+        env={**os.environ, 'SOURCE_SHA': 'a'*40}, capture_output=True)
+    assert (result.returncode == 0) == (actual == 'a'*40)
+for actual in ('a'*40, 'b'*40):
+    fake = 'gh() { printf "%s\\n" "' + actual + '"; };\n'
+    result = subprocess.run(['bash', '-c', fake + current['run']],
+        env={**os.environ, 'SOURCE_SHA': 'a'*40, 'GITHUB_REPOSITORY': 'o/r', 'PR_NUMBER': '1'}, capture_output=True)
+    assert (result.returncode == 0) == (actual == 'a'*40)
+# Execute actual generator against nested sources with a local Java stand-in.
+# This checks shell failure propagation/output isolation, not PlantUML syntax.
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
-    env = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
-
-    def git(*args):
-        return subprocess.run(['git', '-C', str(root), *args], env=env,
-                              capture_output=True, check=True).stdout
-
-    git('init', '--quiet')
-    (root / '.gitattributes').write_bytes((repo / '.gitattributes').read_bytes())
-    svg_paths = ['docs/diagrams/rendered/root.svg',
-                 'docs/diagrams/rendered/nested/one.svg',
-                 'docs/diagrams/rendered/nested/deeper/two.svg']
-    text_paths = ['docs/diagrams/plantuml/root.puml',
-                  'docs/diagrams/plantuml/nested/source.puml', 'outside.svg',
-                  'docs/diagrams/rendered/data.txt', 'docs/diagrams/rendered-other/x.svg']
-    for path in svg_paths + text_paths:
-        file = root / path
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text('<svg>old XML</svg>\n' if path.endswith('.svg') else 'old text\n')
-    git('add', '.')
-    for path in svg_paths:
-        assert git('check-attr', 'diff', '--', path).decode().strip() == f'{path}: diff: unset'
-        (root / path).write_text('<svg>' + 'XML_BODY_SENTINEL' * 30000 + '</svg>\n')
-    for path in text_paths:
-        assert git('check-attr', 'diff', '--', path).decode().strip() == f'{path}: diff: unspecified'
-        (root / path).write_text('new text\n')
-    patch = git('diff').decode()
-    assert patch.count('Binary files ') == 3 and 'XML_BODY_SENTINEL' not in patch
-    assert len(patch.encode()) < 10000  # Three large SVG changes stay well below 400,000 bytes.
-    for path in text_paths:
-        diff = git('diff', '--', path).decode()
-        assert '@@' in diff and '+new text' in diff and 'Binary files ' not in diff
-print('PlantUML: 非main/current branch guard・pin・no-op・non-force push失敗伝播・SVG binary/text diff fixture成功。GitHub natural proofは別途必要です。')
+    sources = root / 'docs/diagrams/plantuml'
+    sources.mkdir(parents=True)
+    (sources / 'one.puml').write_text('@startuml\n@enduml\n')
+    (sources / 'nested').mkdir()
+    (sources / 'nested/two.puml').write_text('@startuml\n@enduml\n')
+    (root / 'plantuml.jar').write_text('fixture')
+    fake = """java() {
+      if [ "$1" = '-version' ]; then echo fixture-java; return; fi
+      local file="${@: -1}"
+      if [ "${JAVA_EXCEPTION:-0}" = 1 ]; then echo Exception >&2; fi
+      if grep -q INVALID "$file"; then return 1; fi
+      if [ "${EMPTY_OUTPUT:-0}" = 0 ]; then printf '<svg/>' > "${file%.puml}.svg"; fi
+    }
+    dot() { echo fixture-dot; }
+"""
+    for case in ('valid', 'invalid', 'empty', 'exception'):
+        out = root / case
+        out.mkdir()
+        (sources / 'one.puml').write_text('INVALID' if case == 'invalid' else '@startuml\n@enduml\n')
+        result = subprocess.run(['bash', '-c', fake + generate['run']], cwd=root,
+            env={**os.environ, 'RUNNER_TEMP': str(out), 'SOURCE_SHA': 'a'*40,
+                 'GITHUB_SERVER_URL': 'https://github.invalid', 'GITHUB_REPOSITORY': 'owner/repo',
+                 'GITHUB_RUN_ID': '1', 'EMPTY_OUTPUT': str(int(case == 'empty')), 'JAVA_EXCEPTION': str(int(case == 'exception'))}, capture_output=True)
+        assert (result.returncode == 0) == (case == 'valid'), result.stderr
+        if case == 'valid':
+            assert len(list((out / 'plantuml-artifact').rglob('*.svg'))) == 2
+            assert 'source_sha=' + 'a'*40 in (out / 'plantuml-artifact/renderer-info.txt').read_text()
+assert not (repo / '.gitattributes').exists()
+assert '/docs/diagrams/rendered/**/*.svg' in (repo / '.gitignore').read_text()
+print('PlantUML read-only/source/artifact and failure propagation fixtures passed; real Actions proof remains required.')
 
 ci = yaml.safe_load((repo / '.github/workflows/product-ci.yml').read_text())
 # PyYAML's YAML 1.1 loader treats the Actions key "on" as boolean True.
@@ -252,12 +207,10 @@ for name in ('traceability-check', 'claude-review'):
     assert 'ready_for_review' in workflow[True]['pull_request']['types']
 # Keep the documented human Ready boundary aligned with the token/trigger contract.
 diagrams = (repo / 'docs/diagrams/README.md').read_text()
-assert '`GITHUB_TOKEN` による生成 push は後続 workflow の trigger を期待しない。' in diagrams
-assert 'Ready にする前に、Render workflow の成功、生成コミット反映済みの current head' in diagrams
-assert '人間の `ready_for_review` event を、同 head の Product CI / AI Workflow Regression / PR Traceability / Claude Review の明示的な開始点' in diagrams
+assert 'Ready にする前に、Render workflow の成功とcurrent head一致' in diagrams
 assert 'Ready 後に各 check / review の対象 head と結果を確認' in diagrams
 operations = (repo / 'docs/30_operations/ai-development-workflow.md').read_text()
-assert '生成push後のcurrent-head formal checksは人間Ready eventを開始点' in operations
+assert 'Rendererのcurrent-head formal checksは人間Ready eventを開始点' in operations
 assert '全PRの `opened / synchronize / reopened / ready_for_review`' in operations
 # Include nested application/test/migration changes and the introduction PR.
 required = (

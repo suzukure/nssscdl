@@ -472,7 +472,7 @@ Student
 
 PlantUML source: `docs/diagrams/plantuml/data-model-overview.puml`
 
-Rendered SVG: `docs/diagrams/rendered/data-model-overview.svg`（自動生成）
+図正本: [data-model-overview.puml](../diagrams/plantuml/data-model-overview.puml)。SVGは[Artifact閲覧手順](../diagrams/README.md#レンダリング)を参照。
 
 `data-model-overview` は通常業務の主要論理概念を俯瞰する概要図であり、全Entity一覧ではない。§2.1の認証・Account系と予約・占有系の関係を含み、認証・Account系の詳細な意味は§2.1を正とする。通知の `NotificationIntent` / `NotificationDelivery` とDelivery Attempt等の関係・状態境界は `05_BookingAndConcurrency.md` §13を正とし、概要図には含めない。
 
