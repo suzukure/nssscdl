@@ -190,9 +190,10 @@ PATCH_BASE = 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
 READ_FIX_BASE = '09759be3c42eb00b3120a4e777715d3c2a9b4bda'
 AUTH_FIX_BASE = '035dfa0677fa980c204e500ab9420aae6ec8d67f'
 CONTEXT_FIX_BASE = 'f4a152780f76d8cf8dfaa6143646e4cba93dfd45'
+RESUME_FIX_BASE = '82a3ca6cfc394341eb4b9c8d8fcdb1a6e10ab496'
 ADJUDICATED_RUN = 42033641429
 PREVIOUS_APPLY_RUN = 42046727170
-FAILED_REVIEW = 42047011487
+FAILED_REVIEW = 42158784510
 TRUSTED_MAIN = '8888888888888888888888888888888888888888'
 MERGED_TREE = '7777777777777777777777777777777777777777'
 ANCHOR_PATHS = {
@@ -206,15 +207,17 @@ PATCH_PATHS = {
     '.github/scripts/test-recover-ai-resume-review.sh',
     'docs/30_operations/ai-development-workflow.md',
 }
+CURRENT_PATHS = PATCH_PATHS | {'.github/workflows/claude-review.yml'}
 CONTEXT_PATHS = PATCH_PATHS | {'.github/scripts/build-review-context.sh',
                               '.github/scripts/test-build-review-context.sh'}
 PARENT = '5cc1448038e0963b6bb826b53f44870376fc94c4'
 REPO = 'suzukure/nssscdl'
 BRANCH = 'docs/issue-1108-student-booking-ux-contract'
 ACCEPTED = {'version': 1, 'kind': 'ai-resume-accepted', 'reason': 'claude_execution_failed',
-            'target': 'pr:1110', 'source_pause_id': '6660775078', 'paused_head': HEAD,
+            'target': 'pr:1110', 'source_pause_id': '6676369307', 'paused_head': HEAD,
             'payload': {'action': 'review', 'recovery_issue': 1111}}
 PREVIOUS_ACCEPTED = dict(ACCEPTED, source_pause_id='6625324624')
+SECOND_ACCEPTED = dict(ACCEPTED, source_pause_id='6660775078')
 PREVIOUS_PAUSE = {'version': 1, 'kind': 'pause', 'reason': 'claude_execution_failed',
     'target': 'pr:1110', 'paused_head': OLD,
     'payload': {'detail': 'Claude Review jobが正常完了しませんでした。実行結果を確認してください。'}}
@@ -233,7 +236,9 @@ def record_comment(id, record, app=4777865):
     return {'id': id, 'performed_via_github_app': {'id': app},
             'created_at': {6625324624: '2026-11-04T07:34:10Z',
                            6660744739: '2026-11-05T14:38:36Z',
-                           6660775078: '2026-11-05T14:39:58Z'}.get(id, '2026-11-05T14:41:00Z'),
+                           6660775078: '2026-11-05T14:39:58Z',
+                           6676352162: '2026-11-06T03:48:48Z',
+                           6676369307: '2026-11-06T03:50:08Z'}.get(id, '2026-11-06T04:00:00Z'),
             'body': '<!-- ai-human-pause-record:start -->\n' + json.dumps(record)
                     + '\n<!-- ai-human-pause-record:end -->'}
 
@@ -249,9 +254,11 @@ count = 0
 class Case:
     def __init__(self, fault=''):
         self.fault = fault
-        self.comments = [record_comment(6660775078, {'version': 1, 'kind': 'pause',
+        self.comments = [record_comment(6676369307, {'version': 1, 'kind': 'pause',
             'reason': 'claude_execution_failed', 'target': 'pr:1110', 'paused_head': HEAD}),
-            record_comment(6625324624, PREVIOUS_PAUSE), record_comment(6660744739, PREVIOUS_ACCEPTED)]
+            record_comment(6625324624, PREVIOUS_PAUSE), record_comment(6660744739, PREVIOUS_ACCEPTED),
+            record_comment(6660775078, dict(PREVIOUS_PAUSE, paused_head=HEAD)),
+            record_comment(6676352162, SECOND_ACCEPTED)]
         self.label = {1109: True, 1110: True}
         self.writes = []
         self.builder = 0
@@ -260,7 +267,7 @@ class Case:
         self.pr = {'number': 1110, 'state': 'open', 'draft': False, 'changed_files': 14,
                    'head': {'sha': HEAD, 'ref': BRANCH, 'repo': {'full_name': REPO}},
                    'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': REPO}}}
-        self.run = {'id': 800, 'run_number': 6, 'run_attempt': 1,
+        self.run = {'id': 800, 'run_number': 8, 'run_attempt': 1,
                     'path': '.github/workflows/recover-pr1110-claude-pause.yml',
                     'event': 'workflow_dispatch', 'head_repository': {'full_name': REPO}}
         if fault == 'app': self.comments[0]['performed_via_github_app']['id'] = 4777726
@@ -281,7 +288,7 @@ class Case:
                 'reason': 'state_inconsistent', 'target': 'pr:1110'}))
         if fault == 'broken-graph':
             self.comments.append(record_comment(43, ACCEPTED))
-            self.comments[-1]['body'] = self.comments[-1]['body'].replace('6660775078', '999')
+            self.comments[-1]['body'] = self.comments[-1]['body'].replace('6676369307', '999')
         if fault == 'previous-source-missing': self.comments.pop(1)
         if fault == 'previous-accepted-missing': self.comments.pop(2)
         if fault == 'previous-accepted-id': self.comments[2]['id'] = 6660744740
@@ -292,11 +299,19 @@ class Case:
         if fault == 'old-accepted-only': self.comments.pop(0)
         if fault == 'source-before-failure': self.comments[0]['created_at'] = '2026-11-05T14:38:40Z'
         if fault == 'previous-accepted-late': self.comments[2]['created_at'] = '2026-11-05T14:39:00Z'
+        if fault == 'second-source-missing': self.comments.pop(3)
+        if fault == 'second-accepted-missing': self.comments.pop(4)
+        if fault == 'second-accepted-id': self.comments[4]['id'] = 999
+        if fault == 'second-accepted-app': self.comments[4]['performed_via_github_app'] = None
+        if fault == 'second-accepted-body': self.comments[4]['body'] = self.comments[4]['body'].replace('1111', '1112')
+        if fault == 'second-source-head': self.comments[3]['body'] = self.comments[3]['body'].replace(HEAD, OLD)
+        if fault == 'second-accepted-late': self.comments[4]['created_at'] = '2026-11-06T03:49:30Z'
         if fault == 'source-time-invalid': self.comments[0]['created_at'] = 'not-a-time'
 
     def api(self, path):
         self.reads.append(path)
         page = int(path.rsplit('page=', 1)[1]) if 'page=' in path else 1
+        query = path.split('?', 1)[1] if '?' in path else ''
         path = path.split('?', 1)[0]
         if path == '': return {'default_branch': 'main'}
         if path == 'collaborators/suzukure/permission':
@@ -322,12 +337,12 @@ class Case:
             if self.fault == 'list-nonobject': value += [None]
             for comment in value:
                 if not isinstance(comment, dict): continue
-                if comment['id'] == 6660775078:
+                if comment['id'] == 6676369307:
                     if self.fault == 'list-app-null': comment['performed_via_github_app'] = None
                     if self.fault == 'list-app-missing': del comment['performed_via_github_app']
                     if self.fault == 'list-app-wrong': comment['performed_via_github_app']['id'] = 4777726
                     if self.fault == 'list-app-type': comment['performed_via_github_app']['id'] = '4777865'
-                    if self.fault == 'list-id-type': comment['id'] = '6660775078'
+                    if self.fault == 'list-id-type': comment['id'] = '6676369307'
                     if self.fault == 'list-body': comment['body'] = 'SECRET_INVALID_BODY'
                     if self.fault == 'list-target': comment['body'] = comment['body'].replace('pr:1110', 'pr:1112')
                     if self.fault == 'source-body-drift':
@@ -341,7 +356,7 @@ class Case:
                     if self.fault == 'accepted-time-type': comment['created_at'] = 42
                     if self.fault == 'accepted-time-invalid': comment['created_at'] = '2026-02-30T10:00:00Z'
                     if self.fault == 'accepted-time-offset': comment['created_at'] = '2026-11-05T14:41:00+00:00'
-                    if self.fault == 'accepted-time-late': comment['created_at'] = '2026-11-05T14:43:00Z'
+                    if self.fault == 'accepted-time-late': comment['created_at'] = '2026-11-06T04:02:00Z'
             if self.fault == 'list-second-page':
                 value = [{'id': n + 10000} for n in range(100)] + value
             return value[(page - 1) * 100:page * 100]
@@ -355,10 +370,23 @@ class Case:
         if path == 'pulls/1110/reviews': return [{}] if self.fault == 'verdict' else []
         if path == 'commits/' + BASE: return {'commit': {'committer': {'date': '2026-10-30T07:51:29Z'}}}
         if path == 'actions/runs/42047011487':
-            value = {'id': FAILED_REVIEW, 'workflow_id': 346485833,
+            return {'id': 42047011487, 'workflow_id': 346485833,
                     'path': '.github/workflows/claude-review.yml', 'event': 'pull_request',
                     'head_branch': BRANCH, 'head_repository': {'full_name': REPO}, 'head_sha': HEAD,
                     'created_at': '2026-11-05T14:38:47Z', 'updated_at': '2026-11-05T14:39:06Z',
+                    'status': 'completed', 'run_attempt': 1, 'conclusion': 'failure',
+                    'pull_requests': [{'number': 1110, 'head': {'sha': HEAD}}]}
+        if path == 'actions/runs/42047011487/attempts/1/jobs':
+            return {'total_count': 1, 'jobs': [{'name': 'Review', 'id': 127312601026,
+                'status': 'completed', 'conclusion': 'failure', 'steps': [
+                {'name': n, 'status': 'completed', 'conclusion': c} for n, c in (
+                ('Build review context', 'failure'), ('Select Claude review model', 'skipped'),
+                ('Run Claude review', 'skipped'), ('Submit reviewer verdict', 'skipped'))]}]}
+        if path == 'actions/runs/42158784510':
+            value = {'id': FAILED_REVIEW, 'workflow_id': 346485833,
+                    'path': '.github/workflows/claude-review.yml', 'event': 'pull_request',
+                    'head_branch': BRANCH, 'head_repository': {'full_name': REPO}, 'head_sha': HEAD,
+                    'created_at': '2026-11-06T03:48:57Z', 'updated_at': '2026-11-06T03:49:52Z',
                     'status': 'completed', 'run_attempt': 1, 'conclusion': 'failure',
                     'pull_requests': [{'number': 1110, 'head': {'sha': HEAD}}]}
             if self.fault == 'failed-head': value['head_sha'] = OLD
@@ -368,16 +396,20 @@ class Case:
             if self.fault == 'failed-not-complete': value['status'] = 'in_progress'
             if self.fault == 'failed-time-invalid': value['created_at'] = 42
             return value
-        if path == 'actions/runs/42047011487/attempts/1/jobs':
+        if path == 'actions/runs/42158784510/attempts/1/jobs':
             steps = [{'name': n, 'status': 'completed', 'conclusion': c} for n, c in (
-                ('Build review context', 'failure'), ('Select Claude review model', 'skipped'),
-                ('Run Claude review', 'skipped'), ('Submit reviewer verdict', 'skipped'))]
-            if self.fault == 'model-ran': steps[2]['conclusion'] = 'success'
+                ('Build review context', 'success'), ('Gate Claude review entry', 'success'),
+                ('Select Claude review model', 'success'), ('Prepare native review schema', 'success'),
+                ('Run Claude review', 'success'), ('Validate Claude review', 'success'),
+                ('Save structured review', 'failure'), ('Submit reviewer verdict', 'skipped'),
+                ('Post Create developer App token for identity allowlist', 'success'),
+                ('Post Create reviewer App token', 'success'))]
+            if self.fault == 'model-ran': steps[6]['conclusion'] = 'success'
             if self.fault == 'failed-step-duplicate': steps.append(deepcopy(steps[0]))
             if self.fault == 'failed-step-missing': steps.pop()
             if self.fault == 'failed-step-running': steps[0]['status'] = 'in_progress'
             return {'total_count': 1, 'jobs': [{'name': 'Review', 'steps': steps,
-                    'id': 123 if self.fault == 'failed-job-id' else 127312601026,
+                    'id': 123 if self.fault == 'failed-job-id' else 127699190932,
                     'status': 'completed', 'conclusion': 'failure'}]}
         if path == 'actions/runs':
             runs = [{'id': n, 'path': '.github/workflows/' + w, 'event': 'pull_request',
@@ -389,6 +421,27 @@ class Case:
             if self.fault == 'stale-ci': runs[0]['created_at'] = '2026-10-29T00:00:00Z'
             if self.fault == 'base-ci': runs[0]['pull_requests'][0]['base']['sha'] = OLD
             runs.append(self.api('actions/runs/42047011487'))
+            runs.append(self.api('actions/runs/42158784510'))
+            if 'event=pull_request' in query:
+                assert ('head_sha=' + HEAD) in query, 'ownership query must bind HEAD at the API'
+                if self.owner != 'none':
+                    runs.append({'id': 900, 'head_sha': HEAD, 'head_branch': BRANCH,
+                        'created_at': '2026-11-06T04:01:00Z', 'event': 'pull_request', 'run_attempt': 1,
+                        'path': '.github/workflows/claude-review.yml', 'head_repository': {'full_name': REPO},
+                        'pull_requests': [{'number': 1110, 'head': {'sha': HEAD}}]})
+                    candidate = runs[-1]
+                    if self.owner == 'duplicate': runs.append(dict(candidate, id=901))
+                    if self.owner == 'rerun': candidate['run_attempt'] = 2
+                    if self.owner == 'old': candidate['created_at'] = '2026-11-06T03:49:00Z'
+                    if self.owner == 'wrong-pr': candidate['pull_requests'][0]['number'] = 1112
+                    if self.owner == 'wrong-branch': candidate['head_branch'] = 'other'
+                    if self.owner == 'wrong-head': candidate['head_sha'] = OLD
+                    if self.owner == 'wrong-repo': candidate['head_repository']['full_name'] = 'other/repo'
+                    if self.owner == 'wrong-workflow': candidate['path'] = '.github/workflows/product-ci.yml'
+                # Other PRs can grow without changing this API's scoped result.
+                # The unscoped workflow endpoint below is deliberately forbidden.
+            else:
+                assert 'head_sha=' + HEAD in query
             if self.fault == 'extra-review': runs.append(dict(runs[-1], id=901))
             if self.fault == 'truncated-api': return {'total_count': len(runs) + 1, 'workflow_runs': runs}
             return {'total_count': len(runs), 'workflow_runs': runs}
@@ -470,27 +523,45 @@ class Case:
             if self.fault == 'previous-step-missing': value[1]['steps'].pop()
             if self.fault == 'previous-jobs-missing': value.pop()
             return {'total_count': len(value), 'jobs': value}
+        if path == 'actions/runs/42158645486':
+            value = self.api('actions/runs/42046727170')
+            value.update(id=42158645486, run_number=7, head_sha=RESUME_FIX_BASE)
+            if self.fault == 'latest-run-head': value['head_sha'] = CONTEXT_FIX_BASE
+            if self.fault == 'latest-run-actor': value['actor']['login'] = 'other'
+            if self.fault == 'latest-run-attempt': value['run_attempt'] = 2
+            return value
+        if path == 'actions/runs/42158645486/attempts/1/jobs':
+            value = self.api('actions/runs/42046727170/attempts/1/jobs')
+            value['jobs'][0]['id'] = 127698737202
+            value['jobs'][1]['id'] = 127698881204
+            if self.fault == 'latest-job-id': value['jobs'][1]['id'] = 999
+            if self.fault == 'latest-read-cleanup': value['jobs'][0]['steps'][-1]['conclusion'] = 'failure'
+            if self.fault == 'latest-write-cleanup': value['jobs'][1]['steps'][-1]['conclusion'] = 'failure'
+            return value
         if path == 'actions/workflows/recover-pr1110-claude-pause.yml/runs':
             if self.fault == 'history-api':
                 raise subprocess.CalledProcessError(1, ['gh', 'api'], stderr='SECRET_HISTORY')
             runs = [deepcopy(self.run), dict(self.run, id=ADJUDICATED_RUN, run_number=3),
                     dict(self.run, id=PREVIOUS_APPLY_RUN, run_number=5),
+                    dict(self.run, id=42155234932, run_number=6),
+                    dict(self.run, id=42158645486, run_number=7),
                     dict(self.run, id=42046054836, run_number=4),
                     dict(self.run, id=42032705936, run_number=2), dict(self.run, id=42006744571, run_number=1)]
             if self.fault == 'retired-missing': runs.pop(1)
             if self.fault == 'retired-zero-attempt': runs[1]['run_attempt'] = 0
             if self.fault == 'retired-attempt-type': runs[1]['run_attempt'] = '1'
             if self.fault in ('prior-apply', 'check-before-apply', 'deleted-history'):
-                runs[0]['run_number'] = 7
+                runs[0]['run_number'] = 9
                 if self.fault != 'deleted-history':
-                    runs.append(dict(self.run, id=799, run_number=6))
+                    runs.append(dict(self.run, id=799, run_number=8))
             if self.fault == 'previous-history-missing': runs.pop(2)
             if self.fault == 'previous-history-rerun': runs[2]['run_attempt'] = 2
-            if self.fault == 'prefix-id-changed': runs[3]['id'] = 123
+            if self.fault == 'prefix-id-changed': runs[-3]['id'] = 123
             return {'total_count': len(runs), 'workflow_runs': runs}
         if path in ('actions/runs/42006744571/attempts/1/jobs',
                     'actions/runs/42032705936/attempts/1/jobs',
-                    'actions/runs/42046054836/attempts/1/jobs'):
+                    'actions/runs/42046054836/attempts/1/jobs',
+                    'actions/runs/42155234932/attempts/1/jobs'):
             if self.fault == 'job-history-empty': return {'total_count': 0, 'jobs': []}
             return {'total_count': 1, 'jobs': [{'name': 'Apply fixed recovery',
                 'started_at': '2026-11-05T10:00:00Z', 'conclusion': 'skipped'}]}
@@ -499,16 +570,20 @@ class Case:
                 'started_at': '2026-11-04T09:00:00Z',
                 'conclusion': 'skipped' if self.fault == 'check-before-apply' else 'cancelled'}]}
         if path == 'actions/workflows/claude-review.yml/runs':
-            runs = [] if self.owner == 'none' else [{'id': 900, 'head_sha': HEAD, 'head_branch': BRANCH,
-                'created_at': '2026-11-05T14:42:00Z', 'event': 'pull_request', 'run_attempt': 1,
-                'path': '.github/workflows/claude-review.yml', 'head_repository': {'full_name': REPO},
-                'pull_requests': [{'number': 1110, 'head': {'sha': HEAD}}]}]
-            return {'total_count': len(runs), 'workflow_runs': runs}
+            raise AssertionError('unscoped Review history must not be fetched')
         if path == 'actions/runs/900/attempts/1/jobs':
+            steps = [{'name': 'Select Claude review model', 'status': 'completed', 'conclusion': 'success'},
+                     {'name': 'Run Claude review', 'status': 'in_progress', 'conclusion': None},
+                     {'name': 'Save structured review', 'status': 'queued', 'conclusion': None}]
+            if self.owner in ('queued', 'model-only'):
+                steps[1]['status'] = 'queued'
+            if self.owner in ('outer-success', 'saved', 'invalid-output'):
+                steps[1].update(status='completed', conclusion='success')
+            if self.owner == 'saved': steps[2].update(status='completed', conclusion='success')
+            if self.owner == 'invalid-output': steps[2].update(status='completed', conclusion='failure')
+            if self.owner == 'duplicate-step': steps.append(deepcopy(steps[1]))
             return {'total_count': 1, 'jobs': [{'name': 'Review', 'status': 'in_progress',
-                'conclusion': 'failure' if self.owner == 'failed' else None,
-                'steps': [{'name': 'Select Claude review model',
-                           'status': 'in_progress' if self.owner == 'entered' else 'queued', 'conclusion': None}]}]}
+                'conclusion': 'failure' if self.owner == 'failed' else None, 'steps': steps}]}
         raise AssertionError('unexpected API: ' + path)
 
     def process(self, args, **kw):
@@ -586,8 +661,10 @@ class Case:
                 if commit == CONTEXT_FIX_BASE:
                     parent = BASE if self.fault == 'context-fix-parent' else AUTH_FIX_BASE
                     return result(CONTEXT_FIX_BASE + ' ' + parent)
+                if commit == RESUME_FIX_BASE:
+                    return result(RESUME_FIX_BASE + ' ' + (BASE if self.fault == 'resume-fix-parent' else CONTEXT_FIX_BASE))
                 if commit == TRUSTED_MAIN:
-                    parent = BASE if self.fault == 'main-parent' else CONTEXT_FIX_BASE
+                    parent = BASE if self.fault == 'main-parent' else RESUME_FIX_BASE
                     extra = ' ' + BASE if self.fault == 'main-multiparent' else ''
                     return result(TRUSTED_MAIN + ' ' + parent + extra)
             if args[1] == 'merge-base':
@@ -611,14 +688,16 @@ class Case:
                     elif (before, after) == (AUTH_FIX_BASE, CONTEXT_FIX_BASE):
                         changes = CONTEXT_PATHS | ({'.github/workflows/claude-review.yml'}
                                                  if self.fault == 'context-fix-paths' else set())
-                    elif (before, after) == (CONTEXT_FIX_BASE, TRUSTED_MAIN):
-                        changes = PATCH_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
-                                               else {'.github/workflows/claude-review.yml'} if self.fault == 'main-extra-file'
+                    elif (before, after) == (CONTEXT_FIX_BASE, RESUME_FIX_BASE):
+                        changes = PATCH_PATHS | ({'.github/workflows/claude-review.yml'} if self.fault == 'resume-fix-paths' else set())
+                    elif (before, after) == (RESUME_FIX_BASE, TRUSTED_MAIN):
+                        changes = CURRENT_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
+                                               else {'.github/workflows/product-ci.yml'} if self.fault == 'main-extra-file'
                                                else set())
                     elif (before, after) == (BASE, HEAD):
                         changes = set(paths[:-1]) if self.fault == 'pr-diff' else set(paths)
                     elif (before, after) == (BASE, TRUSTED_MAIN):
-                        changes = ANCHOR_PATHS | CONTEXT_PATHS | (
+                        changes = ANCHOR_PATHS | CONTEXT_PATHS | CURRENT_PATHS | (
                             {paths[0]} if self.fault == 'main-oldbase-overlap' else set())
                     else:
                         raise AssertionError(args)
@@ -627,12 +706,23 @@ class Case:
                     if args[4:6] == [HEAD, MERGED_TREE]:
                         return result(rc=1 if self.fault == 'merged-pr-changed' else 0)
                     if args[4:6] == [TRUSTED_MAIN, MERGED_TREE]:
-                        assert set(args[7:]) == ANCHOR_PATHS | CONTEXT_PATHS
+                        assert set(args[7:]) == ANCHOR_PATHS | CONTEXT_PATHS | CURRENT_PATHS
                         return result(rc=1 if self.fault == 'merged-main-changed' else 0)
                 raise AssertionError(args)
             if args[1] == 'show' and '--format=%an%n%ae%n%cn%n%ce%n%s' in args:
                 return result('github-actions[bot]\n41898282+github-actions[bot]@users.noreply.github.com\n' * 2 + 'Render PlantUML diagrams\n')
-            if args[1] == 'show': return result('# trusted builder mock\n')
+            if args[1] == 'show':
+                if args[-1].endswith(':.github/workflows/claude-review.yml'):
+                    value = (root / '.github/workflows/claude-review.yml').read_text()
+                    if self.fault == 'bot-old-allowlist':
+                        value = value.replace(',${{ steps.review-token.outputs.app-slug }}[bot]', '')
+                    if self.fault == 'bot-wildcard':
+                        value = value.replace('allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]', 'allowed_bots: *')
+                    if self.fault == 'bot-wrong-pin': value = value.replace('8ce9314fa9a404564fa7e954cd84f25bcba2b829', '0' * 40)
+                    if self.fault == 'bot-nonwrite-bypass': value += '\n          allowed_non_write_users: *\n'
+                    if self.fault == 'bot-wrong-token': value = value.replace('github_token: ${{ steps.review-token.outputs.token }}', 'github_token: other')
+                    return result(value)
+                return result('# trusted builder mock\n')
             if args[1] == 'log': return result(OLD if self.fault == 'svg' else HEAD)
             raise AssertionError(args)
         if args[0] == 'bash' and Path(args[1]).name == 'builder.sh':
@@ -789,7 +879,9 @@ for issue, pr in ((True, True), (False, True), (True, False), (False, False)):
     case.label = {1109: issue, 1110: pr}
     case.owner = 'none'
     assert not case.invoke() and case.writes == [], ('partial/unknown', issue, pr)
-for owner in ('none', 'queued', 'failed'):
+for owner in ('none', 'queued', 'failed', 'model-only', 'outer-success', 'invalid-output',
+              'duplicate', 'rerun', 'old', 'wrong-pr', 'wrong-branch', 'wrong-head',
+              'wrong-repo', 'wrong-workflow', 'duplicate-step'):
     case = Case()
     case.owner = owner
     assert not case.invoke() and case.writes == expected, owner
@@ -802,6 +894,20 @@ for duplicate in (True, False):
         'version': 1, 'kind': 'pause', 'reason': 'resume_transition_failed', 'target': 'pr:1110',
         'source_pause_id': '700', 'payload': {'failed_action': 'review'}}))
     assert not case.invoke() and case.writes == [], 'duplicate/replacement'
+
+for fault in ('bot-old-allowlist', 'bot-wildcard', 'bot-wrong-pin', 'bot-nonwrite-bypass', 'bot-wrong-token',
+              'second-source-missing', 'second-accepted-missing', 'second-accepted-id', 'second-accepted-app',
+              'second-accepted-body', 'second-source-head', 'second-accepted-late',
+              'latest-run-head', 'latest-run-actor', 'latest-run-attempt', 'latest-job-id',
+              'latest-read-cleanup', 'latest-write-cleanup', 'resume-fix-parent', 'resume-fix-paths'):
+    for mode in ('check', 'apply'):
+        case = Case(fault)
+        assert not case.invoke(mode) and case.writes == [], (fault, mode, getattr(case, 'error', ''))
+case = Case()
+case.owner = 'saved'
+assert case.invoke() and case.writes == expected
+assert any('head_sha=' + HEAD + '&event=pull_request' in path for path in case.reads)
+assert not any(path.startswith('actions/workflows/claude-review.yml/runs') for path in case.reads)
 
 workflow = (root / '.github/workflows/recover-pr1110-claude-pause.yml').read_text()
 assert 'workflow_run:' not in workflow and 'pull_request:' not in workflow
