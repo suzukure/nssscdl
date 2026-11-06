@@ -20,10 +20,12 @@ REPO = 'suzukure/nssscdl'
 HEAD = '50ac09107c1d80fdcdbb03dc0e0a63e012be9137'
 OLD = 'ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1'
 BRANCH = 'docs/issue-1108-student-booking-ux-contract'
-SOURCE = '6660775078'
+SOURCE = '6676369307'
 PREVIOUS_SOURCE = '6625324624'
 PREVIOUS_ACCEPTED_ID = '6660744739'
-FAILED_REVIEW = 42047011487
+SECOND_SOURCE = '6660775078'
+SECOND_ACCEPTED_ID = '6676352162'
+FAILED_REVIEW = 42158784510
 APP = 4777865
 WORKFLOW = '.github/workflows/recover-pr1110-claude-pause.yml'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
@@ -32,11 +34,14 @@ PATCH_BASE = 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
 READ_FIX_BASE = '09759be3c42eb00b3120a4e777715d3c2a9b4bda'
 AUTH_FIX_BASE = '035dfa0677fa980c204e500ab9420aae6ec8d67f'
 CONTEXT_FIX_BASE = 'f4a152780f76d8cf8dfaa6143646e4cba93dfd45'
+RESUME_FIX_BASE = '82a3ca6cfc394341eb4b9c8d8fcdb1a6e10ab496'
 ADJUDICATED_RUN = 42033641429
 PREVIOUS_APPLY_RUN = 42046727170
+LATEST_APPLY_RUN = 42158645486
 HISTORY_PREFIX = {1: 42006744571, 2: 42032705936, 3: ADJUDICATED_RUN,
-                  4: 42046054836, 5: PREVIOUS_APPLY_RUN}
-# This one-off consumer is valid only for the next single-parent squash on CONTEXT_FIX_BASE.
+                  4: 42046054836, 5: PREVIOUS_APPLY_RUN,
+                  6: 42155234932, 7: LATEST_APPLY_RUN}
+# This one-off consumer is valid only for the next single-parent squash on RESUME_FIX_BASE.
 # Future main commits require another explicit qualification decision.
 ANCHOR_FILES = {
     '.github/scripts/recover-pr1110-claude-pause.sh',
@@ -51,6 +56,7 @@ PATCH_FILES = {
 }
 CONTEXT_FILES = PATCH_FILES | {'.github/scripts/build-review-context.sh',
                                '.github/scripts/test-build-review-context.sh'}
+CURRENT_FILES = PATCH_FILES | {'.github/workflows/claude-review.yml'}
 FILES = {
     'docs/00_requirements/00_RevisionHistory.md',
     'docs/00_requirements/04_FunctionalRequirements.md',
@@ -72,9 +78,11 @@ ACCEPTED = dict(version=1, kind='ai-resume-accepted',
                 source_pause_id=SOURCE, paused_head=HEAD,
                 payload=dict(action='review', recovery_issue=1111))
 PREVIOUS_ACCEPTED = dict(ACCEPTED, source_pause_id=PREVIOUS_SOURCE)
+SECOND_ACCEPTED = dict(ACCEPTED, source_pause_id=SECOND_SOURCE)
 PREVIOUS_PAUSE = dict(version=1, kind='pause', reason='claude_execution_failed',
                       target='pr:1110', paused_head=OLD,
                       payload=dict(detail='Claude Review jobが正常完了しませんでした。実行結果を確認してください。'))
+SECOND_PAUSE = dict(PREVIOUS_PAUSE, paused_head=HEAD)
 
 
 def require(condition, message):
@@ -164,7 +172,7 @@ def graph(expected_source=None):
     active = json.loads(helper('reconcile-human-pause-active-pause', value))
     require(active['result'] != 'state_inconsistent', 'ambiguous active graph')
     previous = [c for c in chains if c['pre_resume']['pause_id'] == PREVIOUS_SOURCE]
-    require(len(chains) == 2 and len(previous) == 1, 'previous/current chains changed')
+    require(len(chains) == 3 and len(previous) == 1, 'previous/current chains changed')
     previous = previous[0]
     require({r['pause_id']: r['record'] for r in previous['records']}
             == {PREVIOUS_SOURCE: PREVIOUS_PAUSE, PREVIOUS_ACCEPTED_ID: PREVIOUS_ACCEPTED}
@@ -172,6 +180,15 @@ def graph(expected_source=None):
             and previous['effective']['status'] == 'consumed'
             and previous['effective']['accepted_record_id'] == PREVIOUS_ACCEPTED_ID,
             'previous consumption changed')
+    second = [c for c in chains if c['pre_resume']['pause_id'] == SECOND_SOURCE]
+    require(len(second) == 1, 'second chain changed')
+    second = second[0]
+    require({r['pause_id']: r['record'] for r in second['records']}
+            == {SECOND_SOURCE: SECOND_PAUSE, SECOND_ACCEPTED_ID: SECOND_ACCEPTED}
+            and len(second['records']) == 2
+            and second['effective']['status'] == 'consumed'
+            and second['effective']['accepted_record_id'] == SECOND_ACCEPTED_ID,
+            'second consumption changed')
     matching = [c for c in chains if c['pre_resume']['pause_id'] == SOURCE]
     require(len(matching) == 1, 'source chain is not unique')
     chain = matching[0]
@@ -252,8 +269,10 @@ def verify_relation(trusted_main):
                    (PATCH_BASE, READ_FIX_BASE, PATCH_FILES),
                    (READ_FIX_BASE, AUTH_FIX_BASE, ANCHOR_FILES),
                    (AUTH_FIX_BASE, CONTEXT_FIX_BASE, CONTEXT_FILES),
-                   (CONTEXT_FIX_BASE, trusted_main, PATCH_FILES))
-    for commit in (BASE, ANCHOR, PATCH_BASE, READ_FIX_BASE, AUTH_FIX_BASE, CONTEXT_FIX_BASE, trusted_main):
+                   (CONTEXT_FIX_BASE, RESUME_FIX_BASE, PATCH_FILES),
+                   (RESUME_FIX_BASE, trusted_main, CURRENT_FILES))
+    for commit in (BASE, ANCHOR, PATCH_BASE, READ_FIX_BASE, AUTH_FIX_BASE, CONTEXT_FIX_BASE,
+                   RESUME_FIX_BASE, trusted_main):
         require(run(['git', 'rev-parse', commit + '^{commit}'], cwd=source).strip() == commit,
                 'qualification commit unavailable')
     for before, after, paths in transitions:
@@ -275,7 +294,24 @@ def verify_relation(trusted_main):
     run(['git', 'diff', '--quiet', '--no-ext-diff', HEAD, merged_tree, '--', *sorted(FILES)],
         cwd=source)
     run(['git', 'diff', '--quiet', '--no-ext-diff', trusted_main, merged_tree, '--',
-         *sorted(ANCHOR_FILES | CONTEXT_FILES)], cwd=source)
+         *sorted(ANCHOR_FILES | CONTEXT_FILES | CURRENT_FILES)], cwd=source)
+
+
+def verify_review_entry(trusted_main):
+    # Compare the actual unlabeled actor with the trusted downstream Action
+    # configuration before any acceptance/label write. This is a deliberately
+    # fixed contract, not a permissive YAML parser or a wildcard bot bypass.
+    workflow = run(['git', 'show', trusted_main + ':.github/workflows/claude-review.yml'],
+                   cwd=os.environ['RECOVERY_SOURCE'])
+    allowed = re.findall(r'^          allowed_bots: (.+)$', workflow, re.MULTILINE)
+    require(allowed == ['${{ steps.dev-token.outputs.app-slug }}[bot],'
+                        '${{ steps.review-token.outputs.app-slug }}[bot]'],
+            'normal Review bot allowlist mismatch')
+    require(workflow.count('uses: anthropics/claude-code-action@'
+                           '8ce9314fa9a404564fa7e954cd84f25bcba2b829') == 1
+            and workflow.count('github_token: ${{ steps.review-token.outputs.token }}') == 1
+            and re.search(r'^\s*allowed_non_write_users:', workflow, re.MULTILINE) is None,
+            'normal Review Action contract changed')
 
 
 def jobs(run_id, attempt):
@@ -292,8 +328,15 @@ def normal_review(accepted):
         datetime.fromisoformat(created.replace('Z', '+00:00'))
     except ValueError:
         raise ValueError('accepted_timestamp_invalid') from None
-    candidates = [r for r in pages('actions/workflows/claude-review.yml/runs?event=pull_request', 'workflow_runs')
-                  if r['head_sha'] == HEAD and r['head_branch'] == BRANCH
+    # Fetch only this HEAD/event. Unrelated PRs must not change pagination's
+    # total_count or exhaust the bounded reader before client-side filtering.
+    runs = pages(f'actions/runs?head_sha={HEAD}&event=pull_request', 'workflow_runs')
+    require(all(r['head_sha'] == HEAD and r['event'] == 'pull_request'
+                and r['head_repository']['full_name'] == REPO for r in runs),
+            'normal Review query scope changed')
+    candidates = [r for r in runs
+                  if r['path'] == '.github/workflows/claude-review.yml'
+                  and r['head_sha'] == HEAD and r['head_branch'] == BRANCH
                   and r['created_at'] >= created
                   and r['event'] == 'pull_request' and r['path'] == '.github/workflows/claude-review.yml'
                   and r['head_repository']['full_name'] == REPO
@@ -311,10 +354,17 @@ def normal_review(accepted):
     review = review[0]
     if review['conclusion'] in ('failure', 'cancelled', 'timed_out', 'stale'):
         raise ValueError('normal Review failed; retain normal failure-handler pause')
-    steps = [s for s in review['steps'] if s['name'] == 'Select Claude review model']
-    require(len(steps) <= 1, 'ambiguous model-selection step')
-    return bool(steps and (steps[0]['status'] == 'in_progress'
-                          or steps[0]['conclusion'] == 'success'))
+    steps = [s for s in review['steps'] if s['name'] == 'Run Claude review']
+    saved = [s for s in review['steps'] if s['name'] == 'Save structured review']
+    require(len(steps) <= 1 and len(saved) <= 1, 'ambiguous Claude handoff steps')
+    require(not any(s['conclusion'] in ('failure', 'cancelled') for s in steps + saved),
+            'normal Review execution failed; retain normal failure-handler pause')
+    # Ownership while the Action is running does not claim inference success.
+    # An outer Action "success" alone is insufficient: its internal preparation
+    # can have failed. Once it ends, require the validated structured result.
+    return bool((steps and steps[0]['status'] == 'in_progress')
+                or (saved and saved[0]['status'] == 'completed'
+                    and saved[0]['conclusion'] == 'success'))
 
 
 def reviewer_identity():
@@ -410,11 +460,50 @@ def inspect_apply_history():
                              'Verify authenticated reviewer identity',
                              'Post Authenticate reviewer identity with read-only token'])
                 continue
+            if value['id'] == LATEST_APPLY_RUN:
+                ended_apply(value, snapshot, LATEST_APPLY_RUN, 7, RESUME_FIX_BASE,
+                            127698737202, 127698881204,
+                            ['Check fixed recovery target', 'Authenticate reviewer identity with read-only token',
+                             'Verify authenticated reviewer identity',
+                             'Post Authenticate reviewer identity with read-only token'])
+                continue
             for job in snapshot:
                 require(not (job['name'] == 'Apply fixed recovery'
                              and job.get('started_at') is not None
                              and job['conclusion'] != 'skipped'),
                         'prior apply may have written; human inspection required')
+
+
+def failed_review(accepted_id, source_id, run_id, job_id, expected_steps):
+    previous_fact, previous_record = listed_record(accepted_id)
+    expected_record = PREVIOUS_ACCEPTED if accepted_id == PREVIOUS_ACCEPTED_ID else SECOND_ACCEPTED
+    require(previous_record == expected_record, 'previous acceptance identity')
+    source_fact, _ = listed_record(source_id)
+    failed = api('actions/runs/' + str(run_id))
+    require(failed['id'] == run_id and failed['workflow_id'] == 346485833
+            and failed['path'] == '.github/workflows/claude-review.yml'
+            and failed['event'] == 'pull_request' and failed['head_branch'] == BRANCH
+            and failed['head_repository']['full_name'] == REPO
+            and failed['head_sha'] == HEAD and failed['status'] == 'completed'
+            and failed['run_attempt'] == 1 and failed['conclusion'] == 'failure'
+            and any(p['number'] == 1110 and p['head']['sha'] == HEAD for p in failed['pull_requests']),
+            'failed Review identity')
+    def utc(value):
+        require(isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', value),
+                'source_failure_timestamp_invalid')
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    require(utc(previous_fact['created_at']) < utc(failed['created_at'])
+            <= utc(failed['updated_at']) < utc(source_fact['created_at']),
+            'source_failure_order_changed')
+    review = [j for j in jobs(run_id, 1) if j['name'] == 'Review']
+    require(len(review) == 1 and review[0]['id'] == job_id
+            and review[0]['status'] == 'completed' and review[0]['conclusion'] == 'failure',
+            'failed Review job changed')
+    for name, conclusion in expected_steps:
+        steps = [s for s in review[0]['steps'] if s['name'] == name]
+        require(len(steps) == 1 and steps[0]['status'] == 'completed'
+                and steps[0]['conclusion'] == conclusion, 'failed Review steps changed')
+    return failed
 
 
 def qualify(trusted_main):
@@ -432,33 +521,19 @@ def qualify(trusted_main):
     require(parsed['kind'] == 'pause' and parsed['target'] == 'pr:1110'
             and parsed['reason'] == 'claude_execution_failed' and parsed['paused_head'] == HEAD,
             'source record changed')
-    previous_fact, previous_record = listed_record(PREVIOUS_ACCEPTED_ID)
-    require(previous_record == PREVIOUS_ACCEPTED, 'previous acceptance identity')
-    failed = api('actions/runs/' + str(FAILED_REVIEW))
-    require(failed['id'] == FAILED_REVIEW and failed['workflow_id'] == 346485833
-            and failed['path'] == '.github/workflows/claude-review.yml'
-            and failed['event'] == 'pull_request' and failed['head_branch'] == BRANCH
-            and failed['head_repository']['full_name'] == REPO
-            and failed['head_sha'] == HEAD and failed['status'] == 'completed'
-            and failed['run_attempt'] == 1 and failed['conclusion'] == 'failure'
-            and any(p['number'] == 1110 and p['head']['sha'] == HEAD for p in failed['pull_requests']),
-            'failed Review identity')
-    def utc(value):
-        require(isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', value),
-                'source_failure_timestamp_invalid')
-        return datetime.fromisoformat(value.replace('Z', '+00:00'))
-    require(utc(previous_fact['created_at']) < utc(failed['created_at'])
-            <= utc(failed['updated_at']) < utc(source_fact['created_at']),
-            'source_failure_order_changed')
-    review = [j for j in jobs(FAILED_REVIEW, 1) if j['name'] == 'Review']
-    require(len(review) == 1 and review[0]['id'] == 127312601026
-            and review[0]['status'] == 'completed' and review[0]['conclusion'] == 'failure',
-            'failed Review job changed')
-    for name, conclusion in [('Build review context', 'failure'), ('Select Claude review model', 'skipped'),
-                             ('Run Claude review', 'skipped'), ('Submit reviewer verdict', 'skipped')]:
-        steps = [s for s in review[0]['steps'] if s['name'] == name]
-        require(len(steps) == 1 and steps[0]['status'] == 'completed'
-                and steps[0]['conclusion'] == conclusion, 'pre-model failure not proven')
+    failed_review(PREVIOUS_ACCEPTED_ID, SECOND_SOURCE, 42047011487, 127312601026,
+                  [('Build review context', 'failure'), ('Select Claude review model', 'skipped'),
+                   ('Run Claude review', 'skipped'), ('Submit reviewer verdict', 'skipped')])
+    # The outer Action step reports success even when its internal actor check
+    # fails. Bind the known failure to Save structured review, never infer a
+    # successful model call from that outer step.
+    failed = failed_review(SECOND_ACCEPTED_ID, SOURCE, FAILED_REVIEW, 127699190932,
+                  [('Build review context', 'success'), ('Gate Claude review entry', 'success'),
+                   ('Select Claude review model', 'success'), ('Prepare native review schema', 'success'),
+                   ('Run Claude review', 'success'), ('Validate Claude review', 'success'),
+                   ('Save structured review', 'failure'), ('Submit reviewer verdict', 'skipped'),
+                   ('Post Create developer App token for identity allowlist', 'success'),
+                   ('Post Create reviewer App token', 'success')])
     runs = pages(f'actions/runs?head_sha={HEAD}', 'workflow_runs')
     reviews = [r for r in runs if r['path'] == '.github/workflows/claude-review.yml'
                and r['created_at'] >= failed['created_at']]
@@ -534,6 +609,7 @@ def main():
         print('reviewer App identity verified; no writes')
         return
     verify_relation(trusted_main)
+    verify_review_entry(trusted_main)
     accepted = graph()
     if accepted:
         current(trusted_main)

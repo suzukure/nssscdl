@@ -730,21 +730,22 @@ secretless fixtureは既存 `test-claude-review-workflow.sh` が `fixtures/merge
 
 `recover-pr1110-claude-pause.yml` / `recover-pr1110-claude-pause.sh` は、
 PR #1110・closing Issue #1109・Reviewer App ID `4777865` の
-新source pause `6660775078`、許容HEAD
-`50ac09107c1d80fdcdbb03dc0e0a63e012be9137` だけを扱う。
-今回はsourceのpaused_headと現HEADが一致するが、human-ownedなdocs branchに対する
-一般resumeのcanonical branch / Developer App制約は変更しない。
+最新source pause `6676369307`、許容HEAD
+`50ac09107c1d80fdcdbb03dc0e0a63e012be9137` だけを扱う（準備 #1126）。
+human-ownedなdocs branchに対する一般resumeのcanonical branch / Developer App制約は変えない。
 準備・fixture成功は本番実行許可ではない。独立review・人間Code Owner承認・main反映後、
-親 #1111でread-only checkの結果を確認し、別途production Goを記録する。
+親 #1111でread-only checkの結果と全前提を確認し、別途production Goを記録する。
 
-元pause `6625324624`（旧HEAD `ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1`）は、
-accepted `6660744739` により消費済みである。apply `42046727170` は
-Issue→PR解除から通常Review `42047011487` に接続したが、context生成でモデル呼出し前に失敗した。
-その結果の新pause `6660775078` を、旧acceptedで受理済みとは扱わない。
-fresh graphは旧source/旧acceptedのexact IDs・正規record・消費済みchainと、
-新sourceのchainの2本だけを要求する。旧履歴の欠損・変更・重複・未消費、別chain、
-新replacement、複数activeは停止する。新規acceptedは既存schemaで
-`source_pause_id=6660775078` / `paused_head=50ac0910...` /
+元pause `6625324624`（旧HEAD `ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1`）は
+accepted `6660744739` で消費済み。apply `42046727170` / 通常Review `42047011487` は
+context生成でモデル呼出し前に失敗し、pause `6660775078` が成立した。
+これもapply `42158645486` のaccepted `6676352162` で消費済みだが、
+通常Review `42158784510` はReviewer App botの許可不一致で推論前に停止した。
+最新pause `6676369307` を旧acceptedで受理済みとは扱わない。
+fresh graphは旧2系列のexact pause/accepted IDs・正規record・消費済み状態と、
+最新source系列の合計3本だけを要求する。旧履歴の欠損・変更・重複・未消費、
+別chain・新replacement・複数activeは停止する。新規acceptedは既存schemaで
+`source_pause_id=6676369307` / `paused_head=50ac0910...` /
 `payload.action=review` / `payload.recovery_issue=1111` として1回だけ生成する。
 
 入口はmain上の手動dispatchだけで対象差替え入力を持たず、既定は `mode=check`。
@@ -754,72 +755,86 @@ repo・main先端・起動actorと再実行actor（`suzukure`）・現在のwrit
 PR/Issue関係、固定14ファイル、正式verdict不在、source/graph、CI、Renderer provenance、
 通常Reviewと同じ条件のcontext builder成功を要求する。PR code/hooks/依存installは実行しない。
 
-前回Reviewはrun `42047011487` / attempt1 / job `127312601026` /
-現HEADへのpull_request / 固定branch・repo・workflowに厳密固定する。
-completed failureと、Build review context失敗、Select model・Run Claude review・Submit verdictの
-completed skippedをfreshに照合する。旧acceptedの有効なUTC created_at < Review created_at
-<= Review updated_at < 新source created_atを要求する。同HEADのその後の予期しないReviewや
-正式verdictがあれば新規受理しない。context不一致は #1122 / PR #1123で修正済みで、
-main `f4a15278...` の実対象read-only job `127667299394` も成功したが、
-新main上の実checkと有料Reviewの結果を代替しない。
+過去Reviewはそれぞれrun `42047011487` / job `127312601026` と
+run `42158784510` / job `127699190932`、attempt1・固定HEAD/branch/repo/workflowへ限定する。
+前者はcontext failureとmodel/Action/verdict skipped、後者はcontext/entry/model/schema準備成功、
+Action外側step success・Validate success・Save structured review failure・verdict skipped、
+両App token cleanup successをfreshに照合する。後者の外側successは推論成功の証拠ではない。
+各accepted created_at < Review created_at <= Review updated_at < 後続pause created_atを
+有効なUTC時刻で確認する。同HEADの最新失敗以後の予期しないReviewや正式verdictがあれば受理しない。
+context不一致は #1122 / PR #1123で修正済みで、実対象read-only job `127667299394` と
+通常Review `42158784510` のcontext生成も成功済みだが、新main上の実checkを代替しない。
+
+通常Reviewの `allowed_bots` はDeveloper AppとReviewer Appの認証済みslugに対応するbotを
+明示列挙する。ワイルドカード・`allowed_non_write_users` によるbypassは使わない。
+check / applyのwrite前に、trusted mainのClaude workflowの実allowlist・Reviewer token入力・
+pinned Action `8ce9314fa9a404564fa7e954cd84f25bcba2b829` を固定契約と照合する。
+復旧時のunlabeled actorがReviewer Appであることを前提に、Developer Appだけの旧設定は拒否する。
+これは固定版上流のbot名正規化（小文字化・末尾[bot]除去）とagent modeのactor検査に対応する。
+check成功は外部のOIDC交換・モデル利用枠・推論・出力Schema・正式verdictの成功保証ではない。
+それらは実行時の分類と判定直前のHEAD/停止状態の再確認に従い、不明・失敗では自動retryしない。
 
 Reviewer認証はpinned create-github-app-token
 `bcd2ba49218906704ab6c1aa796996da409d3eb1` の数値 `app-id: '4777865'` と
 既存 `REVIEW_APP_PRIVATE_KEY` を使う。固定版がサポートするdeprecated inputを限定使用し、
-GitHubによる数値issuer/鍵認証後、認証済みinstallation由来slugを
-`nssscdl-claude-review` と照合し、installation-idは正の十進整数を要求する。
-read tokenのApp GET403や公開GET404へのfallbackは行わない。認証方式やApp最大権限は変えない。
-checkはqualification/history fence後、issues/pull-requests readだけの一時tokenでidentity preflightし、
-applyは既存write tokenで同じ検証を行う。両tokenはAction postでrevokeする。
+GitHubの数値issuer/鍵認証後、installation由来slugを `nssscdl-claude-review` と照合し、
+installation-idは正の十進整数を要求する。read tokenのApp GET403・公開GET404へのfallback、
+認証方式・App最大権限の変更はしない。checkはqualification/history fence後、issues/PR readだけの
+一時tokenでidentity preflightし、applyは既存write tokenで同じ検証を行う。Action postでrevokeする。
 鍵/tokenをbuilderへ渡さず、builder・Actions読取からwrite tokenを除去する。
-固定版やdeprecated inputを変更するときは認証境界を再検証する。
 
-PR metadata baseが旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留まるため、
-限定consumerはknown main履歴
-`17f63a0a→63727826→c9ed0a3c→09759be3→035dfa06→f4a15278` を固定する。
-各edgeは単一親かつ既知4/3/3/4/5パスとし、その直後に本helper/既存fixture/本運用文書の
-3ファイルだけを変更する単一親Squashを1件だけ許可する。それ以降のmain driftは再入でも拒否する。
-旧base→PR HEADの14ファイル、共通祖先、実merge-treeの衝突なし、
-PR全14パスとbuilderを含む全関連main変更パスのblob不変をread-onlyで確認する。
-旧baseのProduct CI/Traceability成功は関連workflow/script非変更の限定証拠としてだけ扱い、
-**新mainでCIを実行したとは記録しない**。context builderには通常Reviewと同じtrusted mainの
+PR metadata baseは旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留まる。
+known main履歴 `17f63a0a→63727826→c9ed0a3c→09759be3→035dfa06→f4a15278→82a3ca6c` の
+各edgeを単一親・既知4/3/3/4/5/3パスに固定し、その直後に本helper・既存fixture・本運用文書・
+Claude workflowの4ファイルだけを変更する単一親Squashを1件だけ許可する。
+以後のmain driftは再入でも拒否する。旧base→PR HEADの14ファイル、共通祖先、
+実merge-treeの衝突なし、PR全14パスと全関連main変更パスのblob不変をread-onlyで確認する。
+旧baseのProduct CI/Traceability成功は関連workflow/script非変更の限定証拠であり、
+新mainでCIを実行したとは記録しない。builderには通常Reviewと同じtrusted mainの
 `SOURCE_BASE_SHA` / `BASE_SHA`、固定Appの実allowlist、CI snapshotの現HEADを渡す。
-SVG metadata baseとの照合は[Claude Reviewの生成SVG差分](#claude-reviewの生成svg差分)に従い、
-隔離merge検証だけを理由に異なるenvで成功と判定しない。400,000-byte gateは維持する。
+SVG provenanceは[Claude Reviewの生成SVG差分](#claude-reviewの生成svg差分)に従い、
+400,000-byte gateを維持する。
 
 全recordは固定PRのConversationをAccept JSON・100件/ページ・最大10ページでfreshに列挙する。
 REST IDの一意性・整数App ID `4777865`・既存schema・target/reason/headを確認し、
 App null/欠落/異App、ID欠落/重複、不正ページ/上限/API失敗は停止する。
-sourceはqualificationから後続fresh graphまで同じ正規recordを要求し、本文変更後にwriteしない。
-単体GETでApp=nullとなった理由は未確定であり、nullをtrustedとする例外は設けない。
+sourceはqualificationから後続fresh graphまで同じ正規recordを要求する。
+単体GETのApp=nullをtrustedとする例外は設けない。
 raw API本文・stderr・argv・例外本文・credentialを診断へ転載しない。
 
-新規受理の履歴fenceはcheckにも適用し、workflowの1からの連続run番号と全attemptを確認する。
-prefix run1..5のIDは `42006744571/42032705936/42033641429/42046054836/42046727170`、
-全attempt1に固定し、履歴削除/期限切れ・ID/番号差替え・rerun・job履歴欠損は拒否する。
-run3は既存の人間裁定済み失敗として、main09759be3・exact jobs
-`127266077905/127266269509` と資格/再check/token発行/Consume failure/cleanup成功を照合し続ける。
-これは過去POST不在の機械証明ではない。
-run5は旧source消費済みchainと前回Review失敗に結び付いた履歴としてのみ認め、
-main035dfa06・exact jobs `127311590060/127311939569`・completed failure、
-qualification/identity/そのcleanup・再check/token発行成功、Consume failure・write token cleanup成功を
-freshに照合する。既知2run以外のstarted applyは例外化せず、
-**新sourceへのapplyが失敗した後も自動retryしない**。check-only runは妨げとしない。
+新規受理の履歴fenceはcheckにも適用する。workflowの1からの連続run番号と全attemptを確認し、
+prefix run1..7のIDを `42006744571/42032705936/42033641429/42046054836/42046727170/42155234932/42158645486`、
+全attempt1に固定する。履歴削除/期限切れ・差替え・rerun・job履歴欠損は拒否する。
+run3の既存人間裁定はmain09759be3・exact jobs `127266077905/127266269509` に固定し、
+過去POST不在の機械証明とは扱わない。
+run5はmain035dfa06・jobs `127311590060/127311939569`、
+run7はmain82a3ca6c・jobs `127698737202/127698881204` に固定する。
+各qualification/identity/cleanup・再check/token発行成功、Consume failure・write token cleanup成功を
+fresh照合し、消費済みchain・後続Review失敗との関係も要求する。
+既知3run以外のstarted applyは例外化せず、最新sourceのapply失敗後も自動retryしない。
+check-only runは妨げとしない。
 
-新acceptedをfresh graphでexact一意・新source consumed・no activeと確認した後だけ、
+新acceptedをfresh graphでexact一意・最新source consumed・no activeと確認した後だけ、
 Issue #1109→PR #1110の順で停止labelを解除し各writeをreadbackする。
-POST/DELETEの応答不明でも再送せず、hard kill後の自動継続やlabel再同期は保証しない。
-最後のunlabeled eventを通常Reviewの入口とし、別のworkflowからClaude APIを直接呼ばない。
-新accepted自身の有効なUTC created_at以後の正常Review候補だけを所有確認に使い、
-旧失敗Reviewは新しい所有と誤認しない。候補重複・rerun・失敗・所有不明は停止する。
+POST/DELETE応答不明でも再送せず、hard kill後の自動継続・label再同期は保証しない。
+最後のunlabeled eventを通常Reviewの入口とし、別workflowからClaude APIを直接呼ばない。
+所有観測は `actions/runs?head_sha=<固定HEAD>&event=pull_request` でサーバ側に対象を絞り、
+そのbounded snapshotをworkflow/repo/branch/PR/accepted created_at/attempt1で照合する。
+全Claude workflow履歴を取得してから絞る方式は使わない。対象外PRの履歴増加に依存せず、
+対象内のページ件数変動・上限・不正応答はfail closedを維持する。
+候補重複・rerun・失敗・所有不明は停止する。モデル選択開始だけでは所有成立としない。
+Run Claude reviewが実行中、またはSave structured reviewがcompleted successの場合だけ所有を認める。
+実行中の所有は推論成功を意味せず、Action外側successだけでは所有成立としない。
 受理済み再入は両label absentかつ正常Review所有を確認できた場合だけread-onlyで終える。
 部分解除・逆順・新replacement・source/HEAD/base/main driftでは再write・再発火せず、
 通常Review失敗時の新pauseを維持する。paid retry・auto-mergeは行わない。
 
 offline/mockは既存 `test-recover-ai-resume-review.sh` に置く。process/API境界だけをmockし、
 record schema・App provenance listing・graph reconciliationは実物を使う。
-旧chain保持・新source分離・前回run/Review/時刻/cleanup・履歴/固定main・応答喪失/部分解除/replayを検証する。
-fixtureや実snapshotの照合を、Actions並列実行・新mainでの実check/App write・有料Review成功とは扱わない。
+3系列・最新/過去runとReview・時系列・cleanup・固定main・通常Action設定のwrite前照合、
+APIのHEAD/event絞込み、モデル選択/Action外側successの誤認防止、
+応答喪失/部分解除/replayを検証する。
+fixture成功をActions並列実行・新mainの実check/App write・有料Review成功とは扱わない。
 
 ### 共通の停止・解除契約
 
