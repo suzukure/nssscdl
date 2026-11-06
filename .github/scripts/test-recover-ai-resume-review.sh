@@ -539,8 +539,9 @@ class Case:
             raise AssertionError(args)
         if args[0] == 'bash' and Path(args[1]).name == 'builder.sh':
             assert env['GH_TOKEN'] == 'mock-read' and 'GH_WRITE_TOKEN' not in env
-            # compact() requires both hints to equal GitHub's actual baseRefOid.
-            assert env['BASE_SHA'] == env['SOURCE_BASE_SHA'] == self.pr['base']['sha'] == BASE
+            # Preflight must use the same trusted-main identity as normal Review.
+            assert env['BASE_SHA'] == env['SOURCE_BASE_SHA'] == TRUSTED_MAIN
+            assert self.pr['base']['sha'] == BASE and BASE != TRUSTED_MAIN
             assert args[-1] == HEAD
             assert Path(args[1]).read_text() == '# trusted builder mock\n'
             self.builder += 1
