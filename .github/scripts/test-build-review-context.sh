@@ -443,6 +443,79 @@ grep -Fq 'DATA| +FULL_PUML_SOURCE' "$test_dir/trusted-svg.md"
 grep -Fq 'DATA| +FULL_RENDERER_WORKFLOW' "$test_dir/trusted-svg.md"
 ! grep -Fq 'large-generated-xml' "$test_dir/trusted-svg.md"
 
+# #1122: normal Review pins trusted code to current main, while GitHub PR
+# metadata may retain an older diff base. Use real diverged git branches; a
+# passing mock-only qualification must not hide a different builder input.
+(
+  cd "$svg_repo"
+  git checkout -q --detach "$svg_base"
+  printf '%s\n' 'trusted main only' > operations.txt
+  git add .
+  git commit -qm 'Advance trusted main without changing PR paths'
+  git rev-parse HEAD > "$test_dir/svg-trusted-main"
+  git checkout -q --detach "$svg_renderer"
+)
+svg_trusted_main="$(cat "$test_dir/svg-trusted-main")"
+SOURCE_BASE_SHA="$svg_base" BASE_SHA="$svg_base" svg_context "$test_dir/same-base-svg.md"
+SOURCE_BASE_SHA="$svg_trusted_main" BASE_SHA="$svg_trusted_main" svg_context "$test_dir/advanced-main-svg.md"
+cmp "$test_dir/same-base-svg.md" "$test_dir/advanced-main-svg.md"
+SOURCE_BASE_SHA="$svg_trusted_main" svg_context "$test_dir/source-only-svg.md"
+BASE_SHA="$svg_trusted_main" svg_context "$test_dir/base-only-svg.md"
+cmp "$test_dir/same-base-svg.md" "$test_dir/source-only-svg.md"
+cmp "$test_dir/same-base-svg.md" "$test_dir/base-only-svg.md"
+
+for fault in overlap-source overlap-svg rename-source directory-collision non-descendant merge-head; do
+  (
+    cd "$svg_repo"
+    git checkout -q --detach "$svg_base"
+    case "$fault" in
+      overlap-source) printf '%s\n' 'main source change' >> docs/diagrams/plantuml/c4/source.puml ;;
+      overlap-svg) printf '%s\n' 'main SVG change' >> docs/diagrams/rendered/1.svg ;;
+      rename-source) git mv docs/diagrams/plantuml/c4/source.puml relocated.puml ;;
+      directory-collision) mkdir operations.txt; printf '%s\n' 'nested' > operations.txt/nested ;;
+      non-descendant|merge-head) ;;
+    esac
+    git add .
+    case "$fault" in
+      non-descendant) git commit-tree "$svg_base^{tree}" -m 'Other root' > "$test_dir/svg-bad-main" ;;
+      merge-head) git commit-tree "$svg_trusted_main^{tree}" -p "$svg_trusted_main" -p "$svg_renderer" -m 'Main includes PR' > "$test_dir/svg-bad-main" ;;
+      *) git commit -qm "Main $fault"; git rev-parse HEAD > "$test_dir/svg-bad-main" ;;
+    esac
+    git checkout -q --detach "$svg_renderer"
+  )
+  svg_bad_main="$(cat "$test_dir/svg-bad-main")"
+  if [ "$fault" = directory-collision ]; then
+    # The PR adds operations.txt as a file; main adds a child under that path.
+    printf '%s\n' 'PR file' > "$svg_repo/operations.txt"
+    git -C "$svg_repo" add .
+    git -C "$svg_repo" commit -qm 'PR file-directory collision'
+    MOCK_METADATA="$(svg_metadata)"
+  fi
+  SOURCE_BASE_SHA="$svg_bad_main" BASE_SHA="$svg_bad_main" svg_rejected "advanced main $fault" '400000 bytes'
+  git -C "$svg_repo" checkout -q --detach "$svg_renderer"
+  MOCK_METADATA="$(svg_metadata)"
+done
+for bad_sha in invalid 0000000000000000000000000000000000000000; do
+  SOURCE_BASE_SHA="$bad_sha" BASE_SHA="$bad_sha" svg_rejected 'malformed / missing trusted history' '400000 bytes'
+done
+SOURCE_BASE_SHA="$svg_base" BASE_SHA="$svg_trusted_main" svg_rejected 'caller identities disagree' '400000 bytes'
+
+# Main renaming a path out of the PR is covered above. Also retain the source
+# side of PR renames when comparing changed paths (metadata lists the new path).
+git -C "$svg_repo" mv .gitattributes renamed-attributes
+git -C "$svg_repo" commit -qm 'PR renames an ordinary path'
+MOCK_METADATA="$(svg_metadata)"
+svg_rename_head="$(git -C "$svg_repo" rev-parse HEAD)"
+git -C "$svg_repo" checkout -q --detach "$svg_base"
+printf '%s\n' 'main attributes change' >> "$svg_repo/.gitattributes"
+git -C "$svg_repo" add .
+git -C "$svg_repo" commit -qm 'Main changes PR rename source'
+svg_bad_main="$(git -C "$svg_repo" rev-parse HEAD)"
+git -C "$svg_repo" checkout -q --detach "$svg_rename_head"
+SOURCE_BASE_SHA="$svg_bad_main" BASE_SHA="$svg_bad_main" svg_rejected 'PR rename source overlaps main' '400000 bytes'
+git -C "$svg_repo" checkout -q --detach "$svg_renderer"
+MOCK_METADATA="$(svg_metadata)"
+
 # An unrelated later commit does not invalidate rendering provenance.
 (
   cd "$svg_repo"

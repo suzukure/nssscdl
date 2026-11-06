@@ -52,6 +52,8 @@ formal Claude reviewがまだない初回reviewでは、trusted conversation全�
 
 対象は `docs/diagrams/rendered/**/*.svg`（直下を含む）だけとする。trusted PR metadataのbase/head SHAをcheckout・利用可能なbase identityと照合し、全対象を最後に変更したcommitが同一で、author/committerとsubjectが既存Render workflowの生成commit契約に一致すること、生成後current headまでに正本またはrenderer workflowの変更がないこと、対象SVGのtree objectが生成commitと一致することを確認する。履歴不足・merge等の曖昧さ、quoted SVG path・予期しないboundaryなどで証明できなければ全raw diffを保持し、上限超過時は停止する。`.gitattributes`は縮約の信頼根拠にしない。
 
+`SOURCE_BASE_SHA` / `BASE_SHA` はcallerが実装・policyを取得したtrusted mainのidentityであり、PR metadataの`baseRefOid`とは役割を分ける。指定された値は正規SHAかつ相互一致を要求する。GitHub metadataのbaseが旧SHAのままmainが進んだ場合は、trusted mainがそのbaseの子孫であり、headとの共通祖先が同一、base→trusted mainと共通祖先→PR headの変更パスが非重複である場合だけSVG縮約を許可する。renameの旧・新パスとfile/directory衝突も照合する。metadataのbaseをtrusted mainで上書きせず、SVG履歴と全raw patchの隔離tree再生はmetadataのbase/headに結び付ける。証明できなければ全raw diffと既存size gateを維持する。この検証はSVG省略の安全性だけを扱い、CIやmerge適格の証明を代替しない。callerが両identityを省略する既存経路はmetadata/checkoutによる既存の証明を維持する。
+
 raw diffの完全性はAPIのchanged-file総数・全pathの一覧・hunk件数で照合し、不足・不正・取得失敗ではreview contextを生成しない。縮約前には隔離したobject store/indexでpatchを再適用し、照合済みheadのtreeへ一致することも確認し、再適用失敗・tree不一致ならcontext生成を停止する。opaque binary blockはreviewに残し、再適用の検証に限ってlocal binary patchを使う。builderのコードは既存callerがbaseから取得する単一script内に保持し、PR headからhelperをロードしない。paid AI call・retryは追加しない。
 
 #848 / PR #849のraw diffがSVG 3ファイルで369,980 bytes、XML text展開ありだった事実を入力規模の根拠とする。既存fixtureでは3 SVG合計500,000 bytes超、正本/renderer全文保持、identity・生成後変更・SHA不一致・不完全なdiff・quoted boundary・非生成差分上限を検証する。local fixtureはGitHub実応答やcurrent-head checksの自然実証ではなく、merge後の #848 再実施、通常PRでのSVG同期、親 #562 への結果返却は人間/workflow側に残る。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
@@ -772,9 +774,10 @@ PR #1110のbase SHAが旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留�
 双方の変更ファイル内容不変をread-onlyで照合する。
 Product CI / Traceabilityの旧base成功はworkflow/関連scriptが非変更である
 このケースの限定証拠としてのみ扱い、**新mainでCIを実行したとは記録しない**。
-trusted mainから取得するreview context builderのSVG provenance用 `SOURCE_BASE_SHA` /
-`BASE_SHA` は実際のPR base（旧SHA）に合わせる。統合mainとの整合は別のgit検証で担保し、
-両者を混同しない。
+trusted mainから取得するreview context builderには、通常Reviewと同じtrusted mainの
+`SOURCE_BASE_SHA` / `BASE_SHA` を渡す。SVG provenanceのmetadata baseとtrusted mainの役割は
+[Claude Reviewの生成SVG差分](#claude-reviewの生成svg差分)に従って照合する。
+限定consumerの別の統合tree検証だけを理由に、通常Reviewと異なるenvで成功を判定しない。
 Gitの証跡を取得できない場合、予期しないmain更新や統合差分がある場合は停止し、
 汎用resumeやCI証跡の条件は緩和しない。
 PRコード・hooks・依存installは実行せず、builderとActions読取にwrite tokenを渡さない。
@@ -813,6 +816,12 @@ main反映と別途の実行Goに基づき、次の新規applyを1回だけ許�
 部分解除、逆順、新replacement、所有不明、HEAD/base driftでは自動継続・再発火しない。
 hard kill後のcleanupやlabel再同期は保証せず、停止位置・graph・labels・過去attemptを人間が確認する。
 通常Reviewの失敗後は通常failure handlerの新pauseを維持し、paid retry・auto-mergeはしない。
+
+2026-11-05 JSTのapply `42046727170` は元pauseをaccepted `6660744739` で消費し、
+通常Review `42047011487` へ接続したが、context生成の400,000-byte gateで停止した。
+事前checkだけ旧PR baseをenvへ渡していた不一致を #1122で修正する。
+新pause `6660775078` と両停止labelsを維持し、この限定workflowを再実行しない。
+本修正は旧applyへの追加例外や新pauseのconsumeを許可しない。以後の再開判断・実施は親 #1111に残す。
 
 限定経路のoffline/mockは既存 `test-recover-ai-resume-review.sh` 内に置く。
 API・git・builderのprocess境界をmockし、既存のrecord schema、App provenanceによるlisting、

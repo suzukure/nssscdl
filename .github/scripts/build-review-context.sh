@@ -116,9 +116,11 @@ def compact(metadata, blocks):
     base, head = metadata["baseRefOid"], metadata["headRefOid"]
     if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base, head)):
         return None
-    for key in ("SOURCE_BASE_SHA", "BASE_SHA"):
-        if os.environ.get(key) and os.environ[key] != base:
-            return None
+    # Caller hints identify trusted code/policy, not necessarily GitHub's
+    # stored PR diff base. Never replace the metadata base used for provenance.
+    trusted = [os.environ[key] for key in ("SOURCE_BASE_SHA", "BASE_SHA") if os.environ.get(key)]
+    if any(not re.fullmatch(r"[0-9a-f]{40}", sha) for sha in trusted) or len(set(trusted)) > 1:
+        return None
     if git("rev-parse", "HEAD").strip().decode() != head:
         return None
     merge_bases = git("merge-base", "--all", base, head).splitlines()
@@ -127,6 +129,22 @@ def compact(metadata, blocks):
     ancestor = merge_bases[0].decode()
     if git("rev-parse", "--is-shallow-repository").strip() != b"false":
         return None
+    if trusted and trusted[0] != base:
+        trusted_base = trusted[0]
+        # Advancing main may leave baseRefOid behind. Permit compaction only
+        # for a descendant with the same PR merge base and disjoint changes.
+        # --no-renames exposes both sides of renames, including ordinary files.
+        git("merge-base", "--is-ancestor", base, trusted_base)
+        if git("merge-base", "--all", trusted_base, head).splitlines() != merge_bases:
+            return None
+        def changed_paths(left, right):
+            return set(filter(None, git("diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                                        "--name-only", "-z", left, right).split(b"\0")))
+        main_paths = changed_paths(base, trusted_base)
+        pr_paths = changed_paths(ancestor, head)
+        if any(a == b or a.startswith(b + b"/") or b.startswith(a + b"/")
+               for a in main_paths for b in pr_paths):
+            return None
     # First-parent history is deliberately conservative around merges. Do not
     # accept ambiguous histories or path-limited simplification as provenance.
     commits = git("rev-list", "--parents", f"{ancestor}..{head}").splitlines()

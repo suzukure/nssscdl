@@ -451,9 +451,9 @@ def qualify(trusted_main):
         builder.write_text(run(['git', 'show', trusted_main + ':.github/scripts/build-review-context.sh'],
                                cwd=source_dir), encoding='utf-8')
         env = read_env()
-        # SVG provenance is bound to the actual PR base, not the trusted main.
-        # The separate merged-tree check already proves their isolation.
-        env.update(SOURCE_BASE_SHA=BASE, BASE_SHA=BASE)
+        # Match normal Review's caller identity. The builder separately binds
+        # SVG provenance to metadata's PR base and proves main/PR isolation.
+        env.update(SOURCE_BASE_SHA=trusted_main, BASE_SHA=trusted_main)
         run(['bash', str(builder), REPO, '1110', str(Path(directory) / 'review.md'),
              'nssscdl-chatgpt-dev[bot],nssscdl-claude-review[bot]',
              'nssscdl-claude-review[bot]', '', HEAD], cwd=source_dir, env=env)
