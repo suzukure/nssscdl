@@ -52,6 +52,8 @@ formal Claude reviewがまだない初回reviewでは、trusted conversation全�
 
 対象は `docs/diagrams/rendered/**/*.svg`（直下を含む）だけとする。trusted PR metadataのbase/head SHAをcheckout・利用可能なbase identityと照合し、全対象を最後に変更したcommitが同一で、author/committerとsubjectが既存Render workflowの生成commit契約に一致すること、生成後current headまでに正本またはrenderer workflowの変更がないこと、対象SVGのtree objectが生成commitと一致することを確認する。履歴不足・merge等の曖昧さ、quoted SVG path・予期しないboundaryなどで証明できなければ全raw diffを保持し、上限超過時は停止する。`.gitattributes`は縮約の信頼根拠にしない。
 
+`SOURCE_BASE_SHA` / `BASE_SHA` はcallerが実装・policyを取得したtrusted mainのidentityであり、PR metadataの`baseRefOid`とは役割を分ける。指定された値は正規SHAかつ相互一致を要求する。GitHub metadataのbaseが旧SHAのままmainが進んだ場合は、trusted mainがそのbaseの子孫であり、headとの共通祖先が同一、base→trusted mainと共通祖先→PR headの変更パスが非重複である場合だけSVG縮約を許可する。renameの旧・新パスとfile/directory衝突も照合する。metadataのbaseをtrusted mainで上書きせず、SVG履歴と全raw patchの隔離tree再生はmetadataのbase/headに結び付ける。証明できなければ全raw diffと既存size gateを維持する。この検証はSVG省略の安全性だけを扱い、CIやmerge適格の証明を代替しない。callerが両identityを省略する既存経路はmetadata/checkoutによる既存の証明を維持する。
+
 raw diffの完全性はAPIのchanged-file総数・全pathの一覧・hunk件数で照合し、不足・不正・取得失敗ではreview contextを生成しない。縮約前には隔離したobject store/indexでpatchを再適用し、照合済みheadのtreeへ一致することも確認し、再適用失敗・tree不一致ならcontext生成を停止する。opaque binary blockはreviewに残し、再適用の検証に限ってlocal binary patchを使う。builderのコードは既存callerがbaseから取得する単一script内に保持し、PR headからhelperをロードしない。paid AI call・retryは追加しない。
 
 #848 / PR #849のraw diffがSVG 3ファイルで369,980 bytes、XML text展開ありだった事実を入力規模の根拠とする。既存fixtureでは3 SVG合計500,000 bytes超、正本/renderer全文保持、identity・生成後変更・SHA不一致・不完全なdiff・quoted boundary・非生成差分上限を検証する。local fixtureはGitHub実応答やcurrent-head checksの自然実証ではなく、merge後の #848 再実施、通常PRでのSVG同期、親 #562 への結果返却は人間/workflow側に残る。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
@@ -736,26 +738,46 @@ main反映と、Issueに記録する別途の実行Goが必要であり、確認
 
 入口はmain上の手動dispatchだけで、対象の差替え入力は持たない。`mode=check` を既定とし、
 repo、main先端、起動actorと再実行actor（`suzukure`）、現在のwrite/admin権限を検証する。
+`run_attempt=1` だけを許可し、再実行はtoken発行前に停止する。
 `apply` はread-only check成功後、`codex-writer-ai/issue-1109` 内で再qualificationする。
 固定14ファイル、PR/Issue関係、旧runのmodel実行前failure、正式review不在、Reviewer Appの
 source/graph、現在baseに対するCI証跡、Renderer provenance、trusted mainの隔離context builder成功を
 要求する。原則としてbaseより古いCIは合格と扱わず、必要証跡がなければwriteしない。
 
+Reviewer認証は、この限定workflowで固定したcreate-github-app-token
+`bcd2ba49218906704ab6c1aa796996da409d3eb1` に、数値 `app-id: '4777865'` と
+既存 `REVIEW_APP_PRIVATE_KEY` を渡して行う。この固定版はdeprecated `app-id` inputを
+明示サポートし、client-id未指定時に数値issuerを用いたGitHub App署名認証を行う。
+数値App IDと鍵の組合せをGitHubが認証した後、認証済みrepository installation由来の
+出力slugを `nssscdl-claude-review` と照合し、installation-idが正の十進整数であることを要求する。
+read tokenの `GET /apps/{slug}` と、公開無認証GETには依存しない。
+前者は実403、後者は実404を観測しており、App確認の省略や権限追加で回避しない。
+
+checkはqualificationと新規受理の履歴fenceを検証した後、同じ数値App ID・鍵を使い、
+issues/pull-requests **readだけ**の一時installation tokenを発行してidentity preflightを行う。
+これはrepository writeやpaid AIを行わない認証確認で、成功後もproduction applyのGoではない。
+applyは同じ認証入口で既存のissues/pull-requests write tokenを作り、共通identity検証を行う。
+checkのtoken発行はcontext builder終了後の別stepとし、鍵・一時tokenをbuilderへ渡さない。
+両tokenともAction postがrevokeし、skip-token-revokeは有効にしない。
+固定版・deprecated inputを変更するときは、この認証境界を再検証する。
+
 PR #1110のbase SHAが旧main `17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5` に留まるため、
 この限定consumerにだけ、HEADを更新しない例外的な再qualificationを設ける。
 復旧経路初回反映のanchor `637278268f8269d31187674c21adb69dc4f55aac` と
 その直後の既知squash `c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107`、
-さらにその直後に本読取修正の3ファイルだけを含む単一親squashを1件だけ許可する。
+続く読取修正 `09759be3c42eb00b3120a4e777715d3c2a9b4bda` と、
+その直後に本認証・限定再開修正の4ファイルだけを含む単一親squashを1件だけ許可する。
 この固定履歴以外のmain進行は、受理済みの再入でも拒否する。
 旧base→anchorの既知4ファイル、anchor→既知squashの既知3ファイル、
-既知squash→本読取修正の同じ既知3ファイル、
+既知squash→読取修正の同じ既知3ファイル、読取修正→本修正の既知4ファイル、
 旧base→PR HEADの14ファイル、共通祖先、Gitによる衝突のない統合tree、
 双方の変更ファイル内容不変をread-onlyで照合する。
 Product CI / Traceabilityの旧base成功はworkflow/関連scriptが非変更である
 このケースの限定証拠としてのみ扱い、**新mainでCIを実行したとは記録しない**。
-trusted mainから取得するreview context builderのSVG provenance用 `SOURCE_BASE_SHA` /
-`BASE_SHA` は実際のPR base（旧SHA）に合わせる。統合mainとの整合は別のgit検証で担保し、
-両者を混同しない。
+trusted mainから取得するreview context builderには、通常Reviewと同じtrusted mainの
+`SOURCE_BASE_SHA` / `BASE_SHA` を渡す。SVG provenanceのmetadata baseとtrusted mainの役割は
+[Claude Reviewの生成SVG差分](#claude-reviewの生成svg差分)に従って照合する。
+限定consumerの別の統合tree検証だけを理由に、通常Reviewと異なるenvで成功を判定しない。
 Gitの証跡を取得できない場合、予期しないmain更新や統合差分がある場合は停止し、
 汎用resumeやCI証跡の条件は緩和しない。
 PRコード・hooks・依存installは実行せず、builderとActions読取にwrite tokenを渡さない。
@@ -767,20 +789,39 @@ PRコード・hooks・依存installは実行せず、builderとActions読取にw
 Appのnull/欠落/異App、ID欠落/重複、API失敗/不正ページ/走査上限は固定非機密codeで停止する。
 bot名や過去の成功から出所を推測しない。本文は既存schema parserを通し、sourceの
 kind/target/reason/旧HEAD、acceptedの既存JSON完全一致を検証する。
-qualificationで確認したsource recordは後続のfresh graphと完全一致を要求し、
+新規受理経路のqualificationで確認したsource recordは、同じ実行内の後続fresh graphと完全一致を要求し、
 本文の取得間変更では新規受理や後続writeへ進まない。
 accepted自身の有効なUTC `created_at` だけをReview候補runの時刻境界に使用する。
 単体GETでApp=nullとなった観測のGitHub側理由は未確定であり、nullをtrustedと認める例外ではない。
-raw API本文・stderr・argv・例外本文を診断へ転載せず、追加権限・credential・paid retryを導入しない。
+raw API本文・stderr・argv・例外本文を診断へ転載せず、Appの権限拡大・長期credential追加・paid retryを導入しない。
 
 正式acceptedを既存schemaで生成し、同Appのfresh graphでexact一意・source consumed・no activeを
 確認した後だけIssue→PRの順で解除し、各writeをreadbackする。POST/DELETEの応答が不明でも再送しない。
 新規受理前には当該workflowのrun番号が1から連続する履歴と全attemptを確認し、履歴欠損・期限切れ・
 過去apply開始・再実行attemptを拒否する。check-only実行は新規受理の妨げにしない。
+この履歴検証はcheckにも適用し、API/型/JSON取得異常は固定非機密codeで停止する。
+
+今回に限り、**run `42033641429` / attempt1 / main `09759be3...`** だけを、
+人間が失敗状況を調査して裁定した例外対象とする。固定run番号3、workflow ID407813204、
+path/repository/head/起動actor・再実行actor、exact job IDs `127266077905` / `127266269509`、
+qualification成功・writer待機後recheck成功・token発行成功・Consume失敗・token cleanup成功を
+fresh APIで照合する。元runの削除、差替え、rerun、job/step欠落・重複・状態変更は拒否する。
+sourceの唯一性・現在の両停止labels・qualificationは別に検証し続ける。
+これは過去POSTが絶対無かったという機械的証明ではなく、当該4ファイル差分の人間Code Owner承認・
+main反映と別途の実行Goに基づき、次の新規applyを1回だけ許す限定裁定である。
+他のstarted applyを例外化せず、次のapplyが途中停止した場合も再POST・自動継続・自動retryしない。
+既存acceptedや部分解除、source/HEAD driftは従来の停止・read-only再入契約に従う。
+
 受理済みの再入では、双方label absentかつ現在HEADの正常Review所有を確認できる場合だけread-onlyで終了する。
 部分解除、逆順、新replacement、所有不明、HEAD/base driftでは自動継続・再発火しない。
 hard kill後のcleanupやlabel再同期は保証せず、停止位置・graph・labels・過去attemptを人間が確認する。
 通常Reviewの失敗後は通常failure handlerの新pauseを維持し、paid retry・auto-mergeはしない。
+
+2026-11-05 JSTのapply `42046727170` は元pauseをaccepted `6660744739` で消費し、
+通常Review `42047011487` へ接続したが、context生成の400,000-byte gateで停止した。
+事前checkだけ旧PR baseをenvへ渡していた不一致を #1122で修正する。
+新pause `6660775078` と両停止labelsを維持し、この限定workflowを再実行しない。
+本修正は旧applyへの追加例外や新pauseのconsumeを許可しない。以後の再開判断・実施は親 #1111に残す。
 
 限定経路のoffline/mockは既存 `test-recover-ai-resume-review.sh` 内に置く。
 API・git・builderのprocess境界をmockし、既存のrecord schema、App provenanceによるlisting、

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 1 && ( $1 == check || $1 == apply ) ]] || exit 64
+[[ $# == 1 && ( $1 == check || $1 == apply || $1 == identity ) ]] || exit 64
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Embedded implementation keeps the exceptional consumer within the frozen path.
 # No PR code is executed. Existing schema and lifecycle primitives remain canonical.
@@ -26,7 +26,9 @@ WORKFLOW = '.github/workflows/recover-pr1110-claude-pause.yml'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
 ANCHOR = '637278268f8269d31187674c21adb69dc4f55aac'
 PATCH_BASE = 'c9ed0a3c4e6963e1fece9d96d2c3588c38cd3107'
-# This one-off consumer is valid only for the next single-parent squash on PATCH_BASE.
+READ_FIX_BASE = '09759be3c42eb00b3120a4e777715d3c2a9b4bda'
+ADJUDICATED_RUN = 42033641429
+# This one-off consumer is valid only for the next single-parent squash on READ_FIX_BASE.
 # Future main commits require another explicit qualification decision.
 ANCHOR_FILES = {
     '.github/scripts/recover-pr1110-claude-pause.sh',
@@ -195,7 +197,8 @@ def authorize():
             and os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'
             and os.environ['GITHUB_REF'] == 'refs/heads/main'
             and os.environ['GITHUB_ACTOR'] == 'suzukure'
-            and os.environ['GITHUB_TRIGGERING_ACTOR'] == 'suzukure', 'untrusted invocation')
+            and os.environ['GITHUB_TRIGGERING_ACTOR'] == 'suzukure'
+            and os.environ['GITHUB_RUN_ATTEMPT'] == '1', 'untrusted invocation')
     require(api('')['default_branch'] == 'main', 'default branch')
     permission = api('collaborators/suzukure/permission')
     require(permission['user']['login'] == 'suzukure'
@@ -222,21 +225,24 @@ def verify_relation(trusted_main):
     require(run(['git', 'rev-parse', 'HEAD'], cwd=source).strip() == HEAD
             and run(['git', 'rev-parse', '--is-shallow-repository'], cwd=source).strip() == 'false',
             'qualification checkout mismatch')
-    for commit in (BASE, ANCHOR, PATCH_BASE, trusted_main):
+    for commit in (BASE, ANCHOR, PATCH_BASE, READ_FIX_BASE, trusted_main):
         require(run(['git', 'rev-parse', commit + '^{commit}'], cwd=source).strip() == commit,
                 'qualification commit unavailable')
     require(run(['git', 'rev-list', '--parents', '-n', '1', ANCHOR], cwd=source).split()
             == [ANCHOR, BASE], 'anchor ancestry drift')
     require(run(['git', 'rev-list', '--parents', '-n', '1', PATCH_BASE], cwd=source).split()
             == [PATCH_BASE, ANCHOR], 'previous squash ancestry drift')
+    require(run(['git', 'rev-list', '--parents', '-n', '1', READ_FIX_BASE], cwd=source).split()
+            == [READ_FIX_BASE, PATCH_BASE], 'read fix ancestry drift')
     require(run(['git', 'rev-list', '--parents', '-n', '1', trusted_main], cwd=source).split()
-            == [trusted_main, PATCH_BASE], 'main is not the single approved squash')
+            == [trusted_main, READ_FIX_BASE], 'main is not the single approved squash')
     require(run(['git', 'merge-base', BASE, HEAD], cwd=source).strip() == BASE
             and run(['git', 'merge-base', trusted_main, HEAD], cwd=source).strip() == BASE,
             'PR/main common ancestor changed')
     require(changed_paths(source, BASE, ANCHOR) == ANCHOR_FILES
             and changed_paths(source, ANCHOR, PATCH_BASE) == PATCH_FILES
-            and changed_paths(source, PATCH_BASE, trusted_main) == PATCH_FILES,
+            and changed_paths(source, PATCH_BASE, READ_FIX_BASE) == PATCH_FILES
+            and changed_paths(source, READ_FIX_BASE, trusted_main) == ANCHOR_FILES,
             'unexpected main changes')
     require(changed_paths(source, BASE, HEAD) == FILES
             and not (changed_paths(source, BASE, trusted_main) & FILES),
@@ -292,13 +298,66 @@ def normal_review(accepted):
                           or steps[0]['conclusion'] == 'success'))
 
 
+def reviewer_identity():
+    # Both token steps use the same pinned Action, numeric app-id=APP and key.
+    # GitHub authenticates that issuer/key before returning the installation's
+    # slug. These outputs are never used as an alternative to that authentication.
+    require(os.environ.get('REVIEWER_APP_SLUG') == 'nssscdl-claude-review',
+            'reviewer_app_slug_mismatch')
+    require(re.fullmatch(r'[1-9][0-9]*', os.environ.get('REVIEWER_INSTALLATION_ID', '')),
+            'reviewer_installation_invalid')
+
+
+def adjudicated_apply(value, snapshot):
+    # Explicit human-adjudicated exception for this one inspected failure, NOT
+    # a claim that absence of an accepted record proves a POST never happened.
+    fact = api('actions/runs/' + str(ADJUDICATED_RUN))
+    require(value['id'] == fact['id'] == ADJUDICATED_RUN
+            and value['run_attempt'] == fact['run_attempt'] == 1
+            and value['run_number'] == fact['run_number'] == 3
+            and fact['workflow_id'] == 407813204 and fact['path'] == WORKFLOW
+            and fact['event'] == 'workflow_dispatch' and fact['head_branch'] == 'main'
+            and fact['head_sha'] == READ_FIX_BASE
+            and fact['head_repository']['full_name'] == REPO
+            and fact['actor']['login'] == fact['triggering_actor']['login'] == 'suzukure'
+            and fact['status'] == 'completed' and fact['conclusion'] == 'failure',
+            'adjudicated_run_changed')
+    require(len(snapshot) == 2
+            and {j['id'] for j in snapshot} == {127266077905, 127266269509},
+            'adjudicated_jobs_changed')
+    for name, job_id, conclusion, expected in (
+        ('Read-only qualification', 127266077905, 'success',
+         [('Check fixed recovery target', 'success')]),
+        ('Apply fixed recovery', 127266269509, 'failure',
+         [('Recheck after writer wait', 'success'), ('Create reviewer App token', 'success'),
+          ('Consume and hand off once', 'failure'), ('Post Create reviewer App token', 'success')]),
+    ):
+        matching = [j for j in snapshot if j['name'] == name and j['id'] == job_id]
+        require(len(matching) == 1 and matching[0]['status'] == 'completed'
+                and matching[0]['conclusion'] == conclusion and matching[0]['started_at'] is not None,
+                'adjudicated_job_changed')
+        for step_name, result in expected:
+            steps = [s for s in matching[0]['steps'] if s['name'] == step_name]
+            require(len(steps) == 1 and steps[0]['status'] == 'completed'
+                    and steps[0]['conclusion'] == result, 'adjudicated_step_changed')
+
+
 def first_apply():
+    try:
+        inspect_apply_history()
+    except (KeyError, TypeError, OSError, json.JSONDecodeError, subprocess.SubprocessError):
+        raise ValueError('recovery_history_read_failed') from None
+
+
+def inspect_apply_history():
     # Persisted Actions attempts are the conservative cross-run fence. Missing
     # history is NOT proof that an uncertain earlier POST never committed.
     own = int(os.environ['GITHUB_RUN_ID'])
     require(os.environ['GITHUB_RUN_ATTEMPT'] == '1', 're-run cannot make a new acceptance')
     runs = pages('actions/workflows/recover-pr1110-claude-pause.yml/runs', 'workflow_runs')
     require(sum(r['id'] == own for r in runs) == 1, 'current recovery run missing')
+    require(own != ADJUDICATED_RUN and sum(r['id'] == ADJUDICATED_RUN for r in runs) == 1,
+            'adjudicated_run_missing')
     numbers = [r['run_number'] for r in runs]
     require(numbers and all(type(n) is int and n > 0 for n in numbers)
             and len(numbers) == len(set(numbers))
@@ -311,12 +370,19 @@ def first_apply():
             continue
         # A job created for apply may already have sent a write, even after a
         # crash or lost response. Check-only dispatches have no started apply job.
-        require(value['run_attempt'] <= 20, 'attempt history exceeds bound')
+        require(type(value['run_attempt']) is int and 1 <= value['run_attempt'] <= 20,
+                'attempt history exceeds bound')
         for attempt in range(1, value['run_attempt'] + 1):
-            for job in jobs(value['id'], attempt):
+            snapshot = jobs(value['id'], attempt)
+            if value['id'] == ADJUDICATED_RUN:
+                # Validate even if an API response now calls this job skipped.
+                adjudicated_apply(value, snapshot)
+                continue
+            for job in snapshot:
                 require(not (job['name'] == 'Apply fixed recovery'
                              and job.get('started_at') is not None
-                             and job['conclusion'] != 'skipped'), 'prior apply may have written; human inspection required')
+                             and job['conclusion'] != 'skipped'),
+                        'prior apply may have written; human inspection required')
 
 
 def qualify(trusted_main):
@@ -385,9 +451,9 @@ def qualify(trusted_main):
         builder.write_text(run(['git', 'show', trusted_main + ':.github/scripts/build-review-context.sh'],
                                cwd=source_dir), encoding='utf-8')
         env = read_env()
-        # SVG provenance is bound to the actual PR base, not the trusted main.
-        # The separate merged-tree check already proves their isolation.
-        env.update(SOURCE_BASE_SHA=BASE, BASE_SHA=BASE)
+        # Match normal Review's caller identity. The builder separately binds
+        # SVG provenance to metadata's PR base and proves main/PR isolation.
+        env.update(SOURCE_BASE_SHA=trusted_main, BASE_SHA=trusted_main)
         run(['bash', str(builder), REPO, '1110', str(Path(directory) / 'review.md'),
              'nssscdl-chatgpt-dev[bot],nssscdl-claude-review[bot]',
              'nssscdl-claude-review[bot]', '', HEAD], cwd=source_dir, env=env)
@@ -412,6 +478,10 @@ def main():
     os.environ['AI_RESUME_MAX_HISTORY_PAGES'] = '10'
     trusted_main = authorize()
     current(trusted_main)
+    if MODE == 'identity':
+        reviewer_identity()
+        print('reviewer App identity verified; no writes')
+        return
     verify_relation(trusted_main)
     accepted = graph()
     if accepted:
@@ -424,14 +494,11 @@ def main():
     qualified_source = qualify(trusted_main)
     require(graph(qualified_source) is None and labels(1109) and labels(1110),
             'state changed during qualification')
-    if MODE == 'check':
-        print('check passed; no writes; production execution requires separate human Go')
-        return
     first_apply()
-    slug = os.environ['REVIEWER_APP_SLUG']
-    require(slug == 'nssscdl-claude-review', 'writer App slug mismatch')
-    app = json.loads(run(['gh', 'api', '/apps/' + slug]))
-    require(app['id'] == APP, 'writer App ID mismatch')
+    if MODE == 'check':
+        print('qualification/history passed; no writes; reviewer identity preflight follows')
+        return
+    reviewer_identity()
     body = helper('human-pause-record', None, 'create', json.dumps(ACCEPTED))
     current(trusted_main)
     require(graph(qualified_source) is None and labels(1109) and labels(1110),

@@ -108,3 +108,45 @@ jobs:
       - name: Local D1 smoke
         if: steps.applicability.outputs.applicable == 'true'
         run: npm run test:d1
+
+  pr1110-context-proof:
+    name: PR1110 real-input read-only context proof
+    if: >-
+      github.event.action == 'reopened' &&
+      github.event.pull_request.number == 1117 &&
+      github.event.pull_request.draft == true &&
+      github.event.pull_request.head.ref == 'diagnostic/issue-1111-qualification-stage' &&
+      github.event.pull_request.head.repo.full_name == 'suzukure/nssscdl' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.actor == 'suzukure' && github.triggering_actor == 'suzukure' &&
+      github.run_attempt == 1
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: f4a152780f76d8cf8dfaa6143646e4cba93dfd45
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 50ac09107c1d80fdcdbb03dc0e0a63e012be9137
+          path: qualification
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove context without writes or model call
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIAGNOSTIC_TRUSTED: ${{ github.workspace }}/trusted
+          RECOVERY_SOURCE: ${{ github.workspace }}/qualification
+        run: python3 -I -B diagnostic/.github/scripts/diagnose-pr1110-context.py
