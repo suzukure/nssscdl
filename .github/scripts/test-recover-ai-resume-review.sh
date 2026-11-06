@@ -260,6 +260,41 @@ class Crash(BaseException):
 
 real_run = subprocess.run
 count = 0
+# Only deterministic fixture primitives are memoized. The listing's gh is a
+# fixed cat of fixture_comments, so that subprocess is pure in this harness.
+# Production API reads, writer calls, main(), builder and eligibility checks
+# still execute on every invocation. All distinct inputs run the real CLIs.
+primitive_names = {
+    'human-pause-record.sh', 'list-human-pause-records.sh',
+    'validate-human-pause-record-graph.sh', 'decompose-human-pause-record-graph.sh',
+    'derive-human-pause-pre-resume-state.sh', 'reconcile-human-pause-resume-acceptance.sh',
+    'reconcile-human-pause-active-pause.sh',
+}
+primitive_version = hashlib.sha256(b''.join(
+    (scripts / name).read_bytes() for name in sorted(primitive_names))).digest()
+primitive_cache = {}
+primitive_stats = {'executions': 0, 'hits': 0}
+
+
+def fixture_primitive(args, *, fixture_comments=None, **kw):
+    normalized = list(args)
+    if fixture_comments is None:
+        assert args[0] == 'bash' and Path(args[1]).name in primitive_names
+        if Path(args[1]).name == 'human-pause-record.sh' and args[2] == 'parse':
+            normalized[3] = Path(args[3]).read_bytes()
+    else:
+        assert Path(args[4]).name == 'list-human-pause-records.sh'
+    key = (primitive_version, tuple(normalized), kw.get('input'), fixture_comments,
+           (kw.get('env') or os.environ).get('AI_RESUME_MAX_HISTORY_PAGES'))
+    if key in primitive_cache:
+        primitive_stats['hits'] += 1
+        stdout, stderr = primitive_cache[key]
+        return subprocess.CompletedProcess(args, 0, stdout, stderr)
+    primitive_stats['executions'] += 1
+    result = real_run(args, **kw)
+    if result.returncode == 0:
+        primitive_cache[key] = (result.stdout, result.stderr)
+    return result
 
 
 class Case:
@@ -824,9 +859,9 @@ class Case:
                 comments = Path(directory) / 'comments.json'
                 comments.write_text(json.dumps([{}] * 100 if self.fault == 'truncated-comments' else self.comments))
                 child_env = dict(env, CASE_COMMENTS=str(comments))
-                return real_run(['bash', '-c', 'gh() { cat "$CASE_COMMENTS"; }; export -f gh; bash "$@"',
-                                 '--', *args[1:]], **dict(kw, env=child_env))
-        if args[0] == 'bash': return real_run(args, **kw)
+                return fixture_primitive(['bash', '-c', 'gh() { cat "$CASE_COMMENTS"; }; export -f gh; bash "$@"',
+                                 '--', *args[1:]], fixture_comments=comments.read_bytes(), **dict(kw, env=child_env))
+        if args[0] == 'bash': return fixture_primitive(args, **kw)
         raise AssertionError('unexpected process: ' + repr(args))
 
     def invoke(self, mode='apply'):
@@ -1058,5 +1093,7 @@ for broken in (workflow.replace("app-id: '4777865'", "app-id: '4777726'", 1),
                workflow.replace('reviewer_check.outputs.installation-id', 'reviewer_check.outputs.token', 1),
                workflow.replace('github.run_attempt == 1', 'github.run_attempt >= 1')):
     assert not identity_contract(broken)
+assert primitive_stats['executions'] > 0 and primitive_stats['hits'] > 0
 print(f'PR1110 exceptional recovery: {count} offline invocations passed')
+print('Pure fixture primitives: ' + json.dumps(primitive_stats, sort_keys=True))
 PY

@@ -831,6 +831,9 @@ OIDC/利用枠・モデル/出力/Schema・判定直前のHEAD/labels/closing Is
 offline/mockは既存 `test-recover-ai-resume-review.sh` に集約する。
 実schema/list/graphを使い、4系列・成功run9・失敗Review/時系列/cleanup・main/ref/blob/actor、
 意図した人間待ちとcrash/応答喪失・部分解除/replay、PR DELETEゼロを検証する。
+fixture内では、helper版・完全な入力・引数・走査上限が同一の純粋CLI結果だけを再利用する。
+listingは固定コメント配列を返すgh mock下でのみ対象とし、異なる入力は実CLIで検証する。
+API読取・writer・consumer・builder・各eligibility確認と全ケースのassertは再利用しない。
 補助snapshotやfixture成功を新mainの実check/App write・有料Review成功とは扱わない。
 
 ### 共通の停止・解除契約
