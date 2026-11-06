@@ -8,7 +8,7 @@ Person(student, "Student", "Checks schedule, previews and confirms one reservati
 ContainerDb(db, "Isolated Evaluation Database", "Local D1 / approved remote D1", "Test-owned state; production migrations 0001-0012; single reservation physical adapter in 02_StudentReservationD1.md.")
 
 Container_Boundary(worker, "Evaluation Application Worker - dedicated entrypoint/config; default Worker remains 503") {
-  Component(ui, "Web/UI Presentation", "HTML / CSS / Browser JS", "/student: calendar/list, 4 views, explicit confirm, 201 result, self history. Memory-only CSRF/token.")
+  Component(ui, "Web/UI Presentation", "HTML / CSS / Browser JS", "/student: day-select calendar, automatic Preview, explicit Confirm, displayed-month future bookings + latest success marker, full history. Memory-only tokens.")
   Component(router, "HTTP Router / API Adapter", "HTTP / JSON", "Validates wire, Origin / Session CSRF and maps application results. Auth HTTP contract: Application section 10.")
   Component(csrf, "Student CSRF HTTP Adapter (design)", "HTTP / JSON", "Session-first isolated GET; shared pure digest with POST validation. Full session/preauth production contract retained.")
   Component(guard, "Student Session / Authorization Guard", "Application", "Validates each request and resolves the student.")

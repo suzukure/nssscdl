@@ -10,7 +10,7 @@
 
 | Component | 責務と境界 |
 | --- | --- |
-| Web/UI Presentation | 月間Calendar / List、Preview確認、確定状態、競合時の再確認、本人履歴を表示する。追加区分には `AC-003-008` の再分類可能性を示し、金額と配送成功を表示しない。 |
+| Web/UI Presentation | 日付選択型Calendarと1日分一覧、枠選択時自動Preview、明示Confirm、確定結果・今後の予約・既存本人履歴、競合再確認を表示する。`AC-003-008`の再分類可能性を示し、金額と配送成功を表示しない。 |
 | HTTP Router / API Adapter | Path、Method、JSON / Queryの形と型を検証し、Application View / ErrorをHTTPへ変換する。本人Identityや業務状態をRequest値から決定しない。 |
 | Student Session / Authorization Guard | 各Requestで`06a_APICommonPrinciples.md` §10のStudent Session、期限・失効、Account / Role、最新access state / lifecycleを検証し、内部生徒IDを解決する。生徒の予約操作可否も確認する。Session失効は401、有効な認証済みSessionにStudent操作権限がない場合は403とする。D1正本・Request解決・Write内部Contextは`02_StudentReservationD1.md` §8を参照する。 |
 | Schedule Query Application Service | 公開月と本人の確定状態から、各Slotにつき矛盾しない単一Viewを導出する。 |
@@ -200,9 +200,9 @@ Queryは`limit`（任意、既定50、1〜100の整数）と`cursor`（任意、
 
 ## 9. UI / API FlowとTraceability
 
-Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。Scheduleを取得しSlotを選択、Previewの日時・新規分類・既存予約への差分を確認した後だけConfirmを送る。`201`では確定状態を表示する。`409`では最新の安全なSlot Viewまたは再取得案内を示し、再Preview・再確認へ戻す。履歴は確定状態の参照手段とする。Google / Magic Linkの認証HTTP / Provider Flowは§10、永続化・Session発行合成はD1正本§9を参照する。
+Sequence正本はPlantUMLを参照する。各RequestでGuardを通す。初回JST月GETから最初の予約可能日を選び、日付選択で1日分一覧へ移動する。bookable枠選択で自動Previewし、日時・新規分類・既存未開始本人予約への全差分を確認した後だけ明示Confirmを許す。`201`では確定状態と今後の本人予約を表示する。`409`では安全な最新Slot Viewまたは再取得案内から新Preview・人間再確認へ戻す。開始済み等は既存履歴で確認する。Google / Magic Linkの認証HTTP / Provider Flowは§10、永続化・Session発行合成はD1正本§9を参照する。
 
-### 9.1 #608初回Browser presentationと状態遷移（#892）
+### 9.1 #608 Browser presentationと状態遷移（#892／#1108）
 
 対象は `/student` の公開月確認→単一Preview→明示Confirm→本人履歴である。標準HTML / CSS / Browser JavaScriptと既存TypeScript / Workers構成を最小選択とし、新SPA framework、router、状態管理package、汎用design system、E2E専用基盤を先行導入しない。配信・buildのexact方式は、既存CIで新Browser sourceのbuild / lint / testが可能なことを後続実装Issueが確認して定める。本設計は未検証の配信方式を固定しない。
 
@@ -216,34 +216,29 @@ Sequence正本は上記PlantUMLを参照する。各RequestでGuardを通す。S
 
 `npm run build` はWorker dry-run前に `tsc -p src/web/tsconfig.json` でBrowser ES modulesを `dist/student/` へ生成し、HTML / CSSを同directoryへコピーする。server moduleをBrowser buildへimportしない。#922段階1は評価専用configのWorker-first assetsを準備し、固定origin / URL / MIMEとbuild存在を検査する（詳細・正式normal部分実証と未検証境界は `../../tests/README.md` の#922節）。#537の隔離専用entrypoint / configからだけ参照する。通常 `wrangler.jsonc` のassets / route、`src/index.ts` の全503は変更しない。HTTPS / asset serving / Browser統合はこのbuildで成立したと扱わない。
 
-Calendarの日位置・曜日は `YYYY-MM` とUTC getterによる決定的な暦演算で求め、業務時刻をUTCと解釈しない。APIのRFC3339 `+09:00` を厳密検査・投影して端末timezoneによらない日本時間表示を行う。4 Viewは同じSlot投影を使い、`bookable`だけnative buttonで選択できる。他Viewは非活性の説明であり、内部占有理由を表示しない。選択はUI memoryだけで、Preview / Confirmを送信しない。
+Calendarの日位置・曜日は `YYYY-MM` とUTC getterを用い、業務時刻をUTC解釈しない。RFC3339 `+09:00` を厳密に検査しJSTを端末timezoneと独立して表示する。4 Slot Viewは同一投影を用い、`bookable`以外は新規予約不可。他生徒PIIや内部占有理由は表示しない。
 
-月GETと履歴GETはsame-origin / no-storeで個別の要求世代を照合する。月変更・再取得の開始時に前の表示・選択を破棄し、古い応答で新しい表示を上書きしない。履歴は返されたcursorをそのまま次Pageへ送り、最新再取得はcursorなしとする。Pageは置換し、Snapshot固定を主張しない。error bodyのmessageや内部詳細は表示せず、§8のcode / HTTPの組合せから固定の認証・操作不可・別月案内を出す。503 / 通信断 / 不正応答は状態不明として停止し、明示read-only再取得を案内する。401は要求世代によらず認証停止を優先し、本人表示・選択を破棄して双方の未完了応答を無効化し、認証後の画面再開始を案内する。
+#1108では従来のCalendar/List排他モードを廃止し、月間カレンダー下に「選択日の時間枠一覧」を常設する。初回はJST当月GET→最初の`bookable`日選択。当月200空き0または404 `SCHEDULE_MONTH_NOT_AVAILABLE`だけ翌月を最大1回確認する。401は古い要求でも認証停止、403/503/通信断・不正応答は空きなしと扱わず探索しない。手動月変更は指定月1回のGETとその月の最初のbookable日選択に限り、予約可能日なし／404では日付未選択を案内する。初回自動選択・手動月変更だけではPreview/Confirmや日別一覧へのscrollを行わない。遅延した初回応答は手動変更を上書きしない。
 
-native controlの順序・label・可視focus・状態のlive region、切替buttonのfocus維持、取得完了/失敗時のstatusへのfocusを用いる。Calendarは局所scroll領域、Listは折返しとし、複数枠を省略しない。DOM adapter / 暦 / API取得のunit証拠は `tests/README.md` を参照する。320pxの実layout、実keyboard / screen reader、Browser timezone差とGate A〜Dは#537で検証する。
+各日セル内に全Slotの`○` bookable／`×` unavailable／`済` reserved_by_me／`グ` group_lessonを左から開始時刻順（同時刻は安定順）に表示する。凡例には「左から開始時刻が早い順」と明記し、グループレッスンは同日記号列の下に各開始／終了時刻と「グループレッスン」を文字で併記する。選択日セル全体の背景色＋「選択中」文字・native button状態・accessible labelを同期し、色だけに依存しない。明示的な日付選択時は対象日の全Slot一覧へ非アニメーションでscrollし、見出しにkeyboard focusを移す。枠0件でも案内する。カレンダーへ戻る操作だけなら選択月日・枠・有効Previewは維持する。320 CSS pxではカレンダー内の局所scroll・折返しで情報を省略しない。
+
+月GETと履歴GETはsame-origin/no-storeで別々の要求世代を照合する。明示月／日／枠変更では旧Preview/tokenを無効化するが、**201後の同月read-only再取得は月変更ではないため予約確定した日付を維持**する。後着旧GET・取得失敗によって201成功・直近成功目印を消したように見せない。Historyは既存cursorでPage取得し、再読込はcursorなし、Page間Snapshot固定を主張しない。内部error messageは出さず§8の固定案内を使う。401は要求世代に関係なく認証停止、本人情報・memory CSRF/token・直近成功強調を破棄する。
 
 | Browser状態 / 操作 | 表示・遷移と送信条件 |
 | --- | --- |
-| 月選択・読込 | 指定した `YYYY-MM` に§4のGETを行う。公開月一覧APIは追加しない。404は§8の案内を表示し別月選択へ戻す。calendar / listは同じSlot Viewを用い、4値を文字で区別し、`bookable`だけを新規予約選択対象とする。 |
-| 枠選択・Preview中 | 選択だけでは通信しない。ユーザーの明示Preview時だけ§9.2のSession CSRF取得GETを行い、選択Slotに§5のPOSTを送る。読込中は確定操作を無効にする。 |
-| Preview確認 | 開始・終了日時をAsia/Tokyoで表示し、`previewClassification`、`classificationChanges`全件の日時とbefore / afterを提示する。差分は省略せず、追加はAC-003-008の説明を含め、継続を妨げない。内容を確認してからだけ明示Confirmを可能にする。 |
-| Confirm中 | §6の `slotId / expectedStateToken` のみを送る。二重操作を抑止し、同じ確認からの自動再送をしない。UIの抑止はServerのTransaction Guardを代替しない。 |
-| 201確定 | Commit済みResponseの日時・予約状態・分類・区分変更を表示する。NotificationIntent commitと配送成功を混同しない。Scheduleを更新し、§7の本人履歴へ進める。 |
-| 履歴 | 予約状態、欠席、現在の実効分類を分離し、返された `nextCursor` で次Pageを読む。最新状態の確認はcursorなしの再取得とし、Page間Snapshot固定は主張しない。 |
-| 月 / 枠変更、409、Session失効 | 保持したExpected State Tokenと確認状態を破棄し、fresh Schedule→必要なPreview→人間再確認へ戻す。古い非同期Responseを新しい月 / 枠の確認として採用しない。失効時は下記401の停止を優先する。 |
+| 初回表示 | JST当月GET、bookable0／404のみ翌月GET1回、最大2か月。最初のbookable日を選択。障害を空き0件と誤認せず、日付自動選択だけではPreview/Confirm/scrollなし。 |
+| 明示月変更 | 指定月GET1回と最初のbookable日選択。空き0・404なら日付未選択を案内。旧枠/Preview/token無効。追加翌月探索・自動scrollなし。 |
+| 明示日付選択／戻り | 日別全Slot一覧へ移動・focus。日付変更で旧Preview/tokenを無効化。カレンダーへ戻るだけでは月日枠・有効確認を変更しない。 |
+| bookable枠選択／再選択 | 旧Preview/tokenを直ちに無効化し、必要時§9.2 Session CSRF取得GET→§5 Preview POSTを自動Query。専用Previewボタンなし。年月日・Slot・要求世代を照合。 |
+| Preview中／200確認 | 取得中・失敗・現在選択との不一致では「予約する」無効。正常200の必須field／型／日時／分類・`classificationChanges`全件の日時とbefore/after・tokenを検証・提示し、AC-003-008の追加注意も表示した後だけ「予約する」を有効化。後着旧CSRF/Preview/旧finallyは新世代のbusy/確認状態を上書きしない。 |
+| Confirm中 | 明示「予約する」1回で§6の`slotId/expectedStateToken`のみをPOSTし、tokenは送信前に消費。結果判明まで月日枠変更と二重Confirmを抑止し、書込み自動再送なし。 |
+| 201成功 | 同月・同日を維持しCommit済みの予約と区分・全差分を提示。未開始の間、カレンダー「済」と日別詳細／確認領域下の「今後の予約一覧」を更新し、直近1件だけ文字色＋「今回予約」で強調。Schedule／Historyを独立にread-only再取得し、取得失敗や404は201失敗・空予約と読み替えない。通知Intent commitと配送成功は別。 |
+| 今後の予約一覧・本人履歴 | `GET /api/me/schedule-months/{month}`の`reserved_by_me`だけから、**表示月内の未開始・本人confirmed**を日時昇順に投影。見出し「今後の予約一覧」に「表示月：YYYY年MM月」を併記。取得成功で0件なら空案内。開始済みはSchedule上`unavailable`になり得るため一覧外。開始済み・取消・欠席等は既存§7本人履歴を維持し、全履歴cursor走査や月別APIは追加しない。 |
+| 強調・失敗・競合 | 直近成功IDはPreview/tokenと別のJS memory1件のみで月日移動でも対象月へ戻れば強調可能。次201で置換、reload/401で消去。409はfresh Schedule→新Preview・人間再確認。403は利用不可、503／通信断／結果不明は予約成功を推測・自動Confirm再送しない。read-only状態確認だけ許容。 |
 
-Expected State TokenはUI memoryに保持し、内部Snapshotを復元・表示しない。失効はServerのSession / Guard判定に従い、tokenの独自TTLやClient時刻によるCommit可否を追加しない。画面には他生徒PII、料金、月間標準回数N、内部Session / hash / Snapshotを出さない。日時・分類・差分は色だけに依存せず、月選択・表示切替・枠選択・Preview・Confirm・履歴をkeyboardで操作でき、focusが見えることを最小受入条件とする。Preview / 結果 / エラーへのfocus移動で現在状態を把握でき、320 CSS px以上の狭幅でも全差分と確定操作を確認できることを検証する。通常Page全体の横scrollを避け、calendar / table内部の局所scrollはREQ-902に従う。
+Expected State TokenはUI memoryのみでSnapshot・独自TTLを扱わない。Previewは書込みを伴わないQuery、ConfirmだけCommand。Session/CSRF/本人Guard、分類・占有・時刻・業務競合再検証、D1原子性は§3〜8のまま。旧要求世代の応答・終了処理で新しい確認を再有効化しないが、古い401でも停止する。未受信201をread-only履歴から「今回成功」と推定しない。
 
-エラーは§8 / §10.8のcode / message / retryを使用する。401は確認状態・memory CSRFを破棄し認証が必要と案内して停止する（隔離評価ではtrusted setupへ戻り、未実装loginを成功扱いしない）。403は操作不可、`CSRF_INVALID`は再読込・CSRF再取得と再確認を案内する。401以外はCookieを除去しない。409は安全な最新Viewを案内して上表へ戻す。503、通信断、応答不明は予約成立と表示せず、確認状態とExpected State Tokenを破棄して停止し、Confirmを自動再送しない。安全に本人履歴 / Scheduleを再取得できても、それはread-onlyの状態確認であり書込み再試行ではない。201を受け取らなかった操作の成功を推測せず、履歴では取得した現在状態だけを表示する。
-
-#926は既存6 Browser資産内でこの単一予約操作を実装する。CSRF / Expected State Tokenを表示stateから分離したprivate memoryに保持し、
-200 Preview / 201 Confirmの必須field・型・日時・選択Slot一致・分類と全差分を検査して投影する。
-同じ確認のtokenはConfirm送信前に消費し、月 / 枠変更後も進行中の操作が終わるまで新たな操作を送らない。
-確認済み枠の変更・再Previewは最新Scheduleの再取得と枠の選び直しを先行し、再度の明示Preview・人間確認を要求する。
-古い応答を新しい確認として採用せず、古いConfirmの結果不明も将来の書込みを停止する。401は古い要求からでも停止を優先する。
-201後はread-only Scheduleを更新し、本人履歴を明示再取得できる。結果不明後のread-only再取得はConfirm成功の推定に使わない。
-synthetic fetch / structural DOMのpartial evidenceと対応TCは `../../tests/README.md` を参照する。
-既存read-only評価Workerのunsafe POSTは503を維持する。#929の独立予約入口と部分証拠は§9.3を参照し、実Browser + actual isolated HTTP / D1 Commit、Gate A〜Dは#537の独立した後続責務である。
+Native control／label／live region／可視focus、calendar内部局所scroll、日別一覧折返しとkeyboard・320pxの操作性を維持。実Browser scroll/focus／本人による操作評価と、既存synthetic/DOM partial evidenceは別の保証。#926は旧明示Previewの歴史的実装証拠であり、新UI契約の成功証明ではない。#929の独立予約入口、旧read-only WorkerのPOST 503、§9.3 Gate A〜Dは不変。
 
 ### 9.2 Browser Session / CSRFと隔離composition
 
@@ -294,9 +289,9 @@ Gate A〜Dの評価責務・検証層分担は [`01_TestPlan.md` §7.1](../40_te
 
 | 詳細設計箇所 | 上位識別子 | 既存要求ベースTest |
 | --- | --- | --- |
-| §2〜4・§9.1 Schedule / Self Scope | REQ-001 / 002、AC-001-001〜004 / AC-002-001〜002、BR-015 / 017 / 067 / 068 / 090 | `docs/40_test/02_FunctionalTestSpecification.md` の対応TC |
-| §5〜6・§9.1 Preview / Confirm | REQ-003 / 101 / 911、AC-003-001〜008 / 016〜021、AC-101-001〜002、BR-050〜059 / 066〜068 / 112 | 同上、および `02a_ReservationOwnershipTestSpecification.md` / `02b_RequirementsV1.6V1.7TestSpecification.md`（TC-F-003-08〜09） |
-| §7・§9.1 履歴 | REQ-005、AC-005-001〜002、BR-066 | `02_FunctionalTestSpecification.md` の対応TC |
+| §2〜4・§9.1 Schedule / Self Scope | REQ-001 / 002 / 006、AC-001-001〜005 / AC-002-001〜005 / AC-006-001、BR-015 / 017 / 018 / 067 / 068 / 090 | `docs/40_test/02_FunctionalTestSpecification.md` の対応TC |
+| §5〜6・§9.1 Preview / Confirm | REQ-003 / 101 / 911、AC-003-001〜008 / 016〜022、AC-101-001〜002、BR-050〜059 / 066〜068 / 112 | 同上、および `02a_ReservationOwnershipTestSpecification.md` / `02b_RequirementsV1.6V1.7TestSpecification.md`（TC-F-003-08〜09） |
+| §7・§9.1 今後の予約一覧・本人履歴 | REQ-005、AC-005-001〜003、BR-062 / 066 / 067 / 068 | `02_FunctionalTestSpecification.md` の対応TC |
 | §9.1 Browser操作・日時表示 | REQ-902 / 903 / 907、AC-902-001〜003 / AC-903-001 / AC-907-001〜002 | `03_NonFunctionalTestSpecification.md` のTC-NF-902-01〜02 / TC-NF-903-01 / TC-NF-907-01〜02（初回対象の部分証拠） |
 | §8 Error / Audit | REQ-914 / 940、POL-014、BR-111 | `03_NonFunctionalTestSpecification.md` の対応TC |
 
