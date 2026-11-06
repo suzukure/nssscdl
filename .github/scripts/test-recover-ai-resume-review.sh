@@ -162,6 +162,8 @@ echo 'recover-ai-resume-review fixture passed.'
 # boundaries; record schema, listing provenance and lifecycle stages stay real.
 python3 -I -B - "$root" <<'PY'
 import ast
+import base64
+import hashlib
 from copy import deepcopy
 import json
 import os
@@ -191,9 +193,13 @@ READ_FIX_BASE = '09759be3c42eb00b3120a4e777715d3c2a9b4bda'
 AUTH_FIX_BASE = '035dfa0677fa980c204e500ab9420aae6ec8d67f'
 CONTEXT_FIX_BASE = 'f4a152780f76d8cf8dfaa6143646e4cba93dfd45'
 RESUME_FIX_BASE = '82a3ca6cfc394341eb4b9c8d8fcdb1a6e10ab496'
+BOT_FIX_BASE = 'dc166e971b8ba66f1eb67a04004e439b3837a8fc'
+EXECUTION_SHA = '63154976cb3053bf9817339287912716eb9f8233'
+OLD_WORKFLOW = 'bfa3a7c0e87674fd03a07aebc7f67457a8c81360'
+NEW_WORKFLOW = '8d500ae7882c25bac29057a46fbdee672535b970'
 ADJUDICATED_RUN = 42033641429
 PREVIOUS_APPLY_RUN = 42046727170
-FAILED_REVIEW = 42158784510
+FAILED_REVIEW = 42166545359
 TRUSTED_MAIN = '8888888888888888888888888888888888888888'
 MERGED_TREE = '7777777777777777777777777777777777777777'
 ANCHOR_PATHS = {
@@ -214,10 +220,13 @@ PARENT = '5cc1448038e0963b6bb826b53f44870376fc94c4'
 REPO = 'suzukure/nssscdl'
 BRANCH = 'docs/issue-1108-student-booking-ux-contract'
 ACCEPTED = {'version': 1, 'kind': 'ai-resume-accepted', 'reason': 'claude_execution_failed',
-            'target': 'pr:1110', 'source_pause_id': '6676369307', 'paused_head': HEAD,
-            'payload': {'action': 'review', 'recovery_issue': 1111}}
-PREVIOUS_ACCEPTED = dict(ACCEPTED, source_pause_id='6625324624')
-SECOND_ACCEPTED = dict(ACCEPTED, source_pause_id='6660775078')
+            'target': 'pr:1110', 'source_pause_id': '6677464836', 'paused_head': HEAD,
+            'payload': {'action': 'review', 'recovery_issue': 1111, 'handoff':'human-final-unlabel',
+                        'actor':'suzukure','execution_ref':'refs/pull/1110/merge',
+                        'merge_sha':EXECUTION_SHA,'workflow_blob':OLD_WORKFLOW}}
+PREVIOUS_ACCEPTED = dict(ACCEPTED, source_pause_id='6625324624', payload={'action':'review','recovery_issue':1111})
+SECOND_ACCEPTED = dict(PREVIOUS_ACCEPTED, source_pause_id='6660775078')
+THIRD_ACCEPTED = dict(PREVIOUS_ACCEPTED, source_pause_id='6676369307')
 PREVIOUS_PAUSE = {'version': 1, 'kind': 'pause', 'reason': 'claude_execution_failed',
     'target': 'pr:1110', 'paused_head': OLD,
     'payload': {'detail': 'Claude Review jobが正常完了しませんでした。実行結果を確認してください。'}}
@@ -238,7 +247,9 @@ def record_comment(id, record, app=4777865):
                            6660744739: '2026-11-05T14:38:36Z',
                            6660775078: '2026-11-05T14:39:58Z',
                            6676352162: '2026-11-06T03:48:48Z',
-                           6676369307: '2026-11-06T03:50:08Z'}.get(id, '2026-11-06T04:00:00Z'),
+                           6676369307: '2026-11-06T03:50:08Z',
+                           6677446829: '2026-11-06T05:07:37Z',
+                           6677464836: '2026-11-06T05:08:59Z'}.get(id, '2026-11-06T06:00:00Z'),
             'body': '<!-- ai-human-pause-record:start -->\n' + json.dumps(record)
                     + '\n<!-- ai-human-pause-record:end -->'}
 
@@ -249,25 +260,65 @@ class Crash(BaseException):
 
 real_run = subprocess.run
 count = 0
+# Only deterministic fixture primitives are memoized. The listing's gh is a
+# fixed cat of fixture_comments, so that subprocess is pure in this harness.
+# Production API reads, writer calls, main(), builder and eligibility checks
+# still execute on every invocation. All distinct inputs run the real CLIs.
+primitive_names = {
+    'human-pause-record.sh', 'list-human-pause-records.sh',
+    'validate-human-pause-record-graph.sh', 'decompose-human-pause-record-graph.sh',
+    'derive-human-pause-pre-resume-state.sh', 'reconcile-human-pause-resume-acceptance.sh',
+    'reconcile-human-pause-active-pause.sh',
+}
+primitive_version = hashlib.sha256(b''.join(
+    (scripts / name).read_bytes() for name in sorted(primitive_names))).digest()
+primitive_cache = {}
+primitive_stats = {'executions': 0, 'hits': 0}
+
+
+def fixture_primitive(args, *, fixture_comments=None, **kw):
+    normalized = list(args)
+    if fixture_comments is None:
+        assert args[0] == 'bash' and Path(args[1]).name in primitive_names
+        if Path(args[1]).name == 'human-pause-record.sh' and args[2] == 'parse':
+            normalized[3] = Path(args[3]).read_bytes()
+    else:
+        assert Path(args[4]).name == 'list-human-pause-records.sh'
+    key = (primitive_version, tuple(normalized), kw.get('input'), fixture_comments,
+           (kw.get('env') or os.environ).get('AI_RESUME_MAX_HISTORY_PAGES'))
+    if key in primitive_cache:
+        primitive_stats['hits'] += 1
+        stdout, stderr = primitive_cache[key]
+        return subprocess.CompletedProcess(args, 0, stdout, stderr)
+    primitive_stats['executions'] += 1
+    result = real_run(args, **kw)
+    if result.returncode == 0:
+        primitive_cache[key] = (result.stdout, result.stderr)
+    return result
 
 
 class Case:
     def __init__(self, fault=''):
         self.fault = fault
-        self.comments = [record_comment(6676369307, {'version': 1, 'kind': 'pause',
-            'reason': 'claude_execution_failed', 'target': 'pr:1110', 'paused_head': HEAD}),
+        self.comments = [record_comment(6677464836, dict(PREVIOUS_PAUSE, paused_head=HEAD)),
             record_comment(6625324624, PREVIOUS_PAUSE), record_comment(6660744739, PREVIOUS_ACCEPTED),
             record_comment(6660775078, dict(PREVIOUS_PAUSE, paused_head=HEAD)),
-            record_comment(6676352162, SECOND_ACCEPTED)]
+            record_comment(6676352162, SECOND_ACCEPTED),
+            record_comment(6676369307, dict(PREVIOUS_PAUSE, paused_head=HEAD)),
+            record_comment(6677446829, THIRD_ACCEPTED)]
         self.label = {1109: True, 1110: True}
         self.writes = []
         self.builder = 0
         self.reads = []
-        self.owner = 'entered'
-        self.pr = {'number': 1110, 'state': 'open', 'draft': False, 'changed_files': 14,
+        self.owner = 'none'
+        self.entry_reads = 0
+        self.ref_drifted = False
+        self.expected_accepted = deepcopy(ACCEPTED)
+        if fault == 'new-workflow': self.expected_accepted['payload']['workflow_blob'] = NEW_WORKFLOW
+        self.pr = {'number': 1110, 'state': 'open', 'draft': False, 'changed_files': 14, 'labels': [],
                    'head': {'sha': HEAD, 'ref': BRANCH, 'repo': {'full_name': REPO}},
                    'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': REPO}}}
-        self.run = {'id': 800, 'run_number': 8, 'run_attempt': 1,
+        self.run = {'id': 800, 'run_number': 10, 'run_attempt': 1,
                     'path': '.github/workflows/recover-pr1110-claude-pause.yml',
                     'event': 'workflow_dispatch', 'head_repository': {'full_name': REPO}}
         if fault == 'app': self.comments[0]['performed_via_github_app']['id'] = 4777726
@@ -281,6 +332,7 @@ class Case:
         if fault == 'branch': self.pr['head']['ref'] = 'ai/issue-1109'
         if fault == 'fork': self.pr['head']['repo']['full_name'] = 'other/repo'
         if fault == 'draft': self.pr['draft'] = True
+        if fault == 'machine-state': self.pr['labels'] = [{'name':'ai-followup-in-progress'}]
         if fault == 'closed': self.pr['state'] = 'closed'
         if fault == 'missing-label': self.label[1109] = False
         if fault == 'multiple-active':
@@ -288,7 +340,7 @@ class Case:
                 'reason': 'state_inconsistent', 'target': 'pr:1110'}))
         if fault == 'broken-graph':
             self.comments.append(record_comment(43, ACCEPTED))
-            self.comments[-1]['body'] = self.comments[-1]['body'].replace('6676369307', '999')
+            self.comments[-1]['body'] = self.comments[-1]['body'].replace('6677464836', '999')
         if fault == 'previous-source-missing': self.comments.pop(1)
         if fault == 'previous-accepted-missing': self.comments.pop(2)
         if fault == 'previous-accepted-id': self.comments[2]['id'] = 6660744740
@@ -306,6 +358,11 @@ class Case:
         if fault == 'second-accepted-body': self.comments[4]['body'] = self.comments[4]['body'].replace('1111', '1112')
         if fault == 'second-source-head': self.comments[3]['body'] = self.comments[3]['body'].replace(HEAD, OLD)
         if fault == 'second-accepted-late': self.comments[4]['created_at'] = '2026-11-06T03:49:30Z'
+        if fault == 'third-source-missing': self.comments.pop(5)
+        if fault == 'third-accepted-missing': self.comments.pop(6)
+        if fault == 'third-accepted-body': self.comments[6]['body'] = self.comments[6]['body'].replace('1111','1112')
+        if fault == 'third-accepted-app': self.comments[6]['performed_via_github_app'] = None
+        if fault == 'third-accepted-late': self.comments[6]['created_at'] = '2026-11-06T05:08:00Z'
         if fault == 'source-time-invalid': self.comments[0]['created_at'] = 'not-a-time'
 
     def api(self, path):
@@ -319,6 +376,37 @@ class Case:
         if path == 'git/ref/heads/main':
             drift = self.fault == 'main-before' or (self.writes and self.fault == 'base-drift')
             return {'object': {'sha': OLD if drift else TRUSTED_MAIN}}
+        if path == 'git/ref/pull/1110/merge':
+            self.entry_reads += 1
+            drift = (self.ref_drifted or (self.fault == 'ref-before-write' and self.entry_reads > 2)
+                     or (self.fault == 'ref-after-post' and len(self.writes) >= 1)
+                     or (self.fault == 'ref-after-issue' and len(self.writes) >= 2))
+            self.ref_drifted = drift
+            return {'ref':'refs/pull/1110/merge', 'object':{'sha':'6'*40 if drift else EXECUTION_SHA}}
+        if path.startswith('git/commits/'):
+            return {'sha':path.rsplit('/',1)[1], 'parents':[
+                {'sha':BASE if self.fault == 'execution-parent' else CONTEXT_FIX_BASE},
+                {'sha':OLD if self.fault == 'execution-head' else HEAD}]}
+        if path == 'contents/.github/workflows/claude-review.yml':
+            assert 'ref=' in query and ('ref='+EXECUTION_SHA in query or 'ref='+'6'*40 in query)
+            value=(root/'.github/workflows/claude-review.yml').read_text()
+            if self.fault != 'new-workflow':
+                value=value.replace('allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]',
+                                    'allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot]')
+            if self.fault == 'bot-wildcard': value=value.replace('allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot]', 'allowed_bots: *')
+            if self.fault == 'bot-wrong-pin': value=value.replace('8ce9314fa9a404564fa7e954cd84f25bcba2b829', '0'*40)
+            if self.fault == 'bot-nonwrite-bypass': value+='\n          allowed_non_write_users: *\n'
+            if self.fault == 'bot-wrong-token': value=value.replace('github_token: ${{ steps.review-token.outputs.token }}', 'github_token: other')
+            raw=value.encode()
+            sha=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+            result={'path':'.github/workflows/claude-review.yml','type':'file','encoding':'base64',
+                    'size':len(raw),'sha':sha,'content':base64.b64encode(raw).decode()}
+            if self.fault == 'execution-bytes': result['content']=base64.b64encode(b'changed').decode()
+            if self.fault == 'execution-sha': result['sha']='1'*40
+            if self.fault == 'execution-base64': result['content']='not base64!'
+            if self.fault == 'execution-shape': result['type']='symlink'
+            if self.fault == 'execution-size': result['size']+=1
+            return result
         if path == 'pulls/1110':
             value = deepcopy(self.pr)
             if self.writes and self.fault == 'head-after-post': value['head']['sha'] = OLD
@@ -337,17 +425,16 @@ class Case:
             if self.fault == 'list-nonobject': value += [None]
             for comment in value:
                 if not isinstance(comment, dict): continue
-                if comment['id'] == 6676369307:
+                if comment['id'] == 6677464836:
                     if self.fault == 'list-app-null': comment['performed_via_github_app'] = None
                     if self.fault == 'list-app-missing': del comment['performed_via_github_app']
                     if self.fault == 'list-app-wrong': comment['performed_via_github_app']['id'] = 4777726
                     if self.fault == 'list-app-type': comment['performed_via_github_app']['id'] = '4777865'
-                    if self.fault == 'list-id-type': comment['id'] = '6676369307'
+                    if self.fault == 'list-id-type': comment['id'] = '6677464836'
                     if self.fault == 'list-body': comment['body'] = 'SECRET_INVALID_BODY'
                     if self.fault == 'list-target': comment['body'] = comment['body'].replace('pr:1110', 'pr:1112')
                     if self.fault == 'source-body-drift':
-                        comment['body'] = comment['body'].replace('"kind": "pause"',
-                            '"payload": {"detail": "changed"}, "kind": "pause"')
+                        comment['body'] = comment['body'].replace(json.dumps('Claude Review jobが正常完了しませんでした。実行結果を確認してください。'), json.dumps('changed'))
                 if comment['id'] == 700:
                     if self.fault == 'accepted-app-null': comment['performed_via_github_app'] = None
                     if self.fault == 'accepted-app-wrong': comment['performed_via_github_app']['id'] = 4777726
@@ -356,7 +443,7 @@ class Case:
                     if self.fault == 'accepted-time-type': comment['created_at'] = 42
                     if self.fault == 'accepted-time-invalid': comment['created_at'] = '2026-02-30T10:00:00Z'
                     if self.fault == 'accepted-time-offset': comment['created_at'] = '2026-11-05T14:41:00+00:00'
-                    if self.fault == 'accepted-time-late': comment['created_at'] = '2026-11-06T04:02:00Z'
+                    if self.fault == 'accepted-time-late': comment['created_at'] = '2026-11-06T06:02:00Z'
             if self.fault == 'list-second-page':
                 value = [{'id': n + 10000} for n in range(100)] + value
             return value[(page - 1) * 100:page * 100]
@@ -383,10 +470,18 @@ class Case:
                 ('Build review context', 'failure'), ('Select Claude review model', 'skipped'),
                 ('Run Claude review', 'skipped'), ('Submit reviewer verdict', 'skipped'))]}]}
         if path == 'actions/runs/42158784510':
+            value=self.api('actions/runs/42166545359')
+            value.update(id=42158784510, created_at='2026-11-06T03:48:57Z', updated_at='2026-11-06T03:49:18Z')
+            return value
+        if path == 'actions/runs/42158784510/attempts/1/jobs':
+            value=self.api('actions/runs/42166545359/attempts/1/jobs')
+            value['jobs'][0]['id']=127699190932
+            return value
+        if path == 'actions/runs/42166545359':
             value = {'id': FAILED_REVIEW, 'workflow_id': 346485833,
                     'path': '.github/workflows/claude-review.yml', 'event': 'pull_request',
                     'head_branch': BRANCH, 'head_repository': {'full_name': REPO}, 'head_sha': HEAD,
-                    'created_at': '2026-11-06T03:48:57Z', 'updated_at': '2026-11-06T03:49:52Z',
+                    'created_at': '2026-11-06T05:07:46Z', 'updated_at': '2026-11-06T05:08:07Z',
                     'status': 'completed', 'run_attempt': 1, 'conclusion': 'failure',
                     'pull_requests': [{'number': 1110, 'head': {'sha': HEAD}}]}
             if self.fault == 'failed-head': value['head_sha'] = OLD
@@ -396,7 +491,7 @@ class Case:
             if self.fault == 'failed-not-complete': value['status'] = 'in_progress'
             if self.fault == 'failed-time-invalid': value['created_at'] = 42
             return value
-        if path == 'actions/runs/42158784510/attempts/1/jobs':
+        if path == 'actions/runs/42166545359/attempts/1/jobs':
             steps = [{'name': n, 'status': 'completed', 'conclusion': c} for n, c in (
                 ('Build review context', 'success'), ('Gate Claude review entry', 'success'),
                 ('Select Claude review model', 'success'), ('Prepare native review schema', 'success'),
@@ -409,7 +504,7 @@ class Case:
             if self.fault == 'failed-step-missing': steps.pop()
             if self.fault == 'failed-step-running': steps[0]['status'] = 'in_progress'
             return {'total_count': 1, 'jobs': [{'name': 'Review', 'steps': steps,
-                    'id': 123 if self.fault == 'failed-job-id' else 127699190932,
+                    'id': 123 if self.fault == 'failed-job-id' else 127724240242,
                     'status': 'completed', 'conclusion': 'failure'}]}
         if path == 'actions/runs':
             runs = [{'id': n, 'path': '.github/workflows/' + w, 'event': 'pull_request',
@@ -422,15 +517,18 @@ class Case:
             if self.fault == 'base-ci': runs[0]['pull_requests'][0]['base']['sha'] = OLD
             runs.append(self.api('actions/runs/42047011487'))
             runs.append(self.api('actions/runs/42158784510'))
+            runs.append(self.api('actions/runs/42166545359'))
             if 'event=pull_request' in query:
                 assert ('head_sha=' + HEAD) in query, 'ownership query must bind HEAD at the API'
                 if self.owner != 'none':
                     runs.append({'id': 900, 'head_sha': HEAD, 'head_branch': BRANCH,
-                        'created_at': '2026-11-06T04:01:00Z', 'event': 'pull_request', 'run_attempt': 1,
+                        'actor':{'login':'suzukure','type':'User'}, 'triggering_actor':{'login':'suzukure','type':'User'},
+                        'created_at': '2026-11-06T06:01:00Z', 'event': 'pull_request', 'run_attempt': 1,
                         'path': '.github/workflows/claude-review.yml', 'head_repository': {'full_name': REPO},
                         'pull_requests': [{'number': 1110, 'head': {'sha': HEAD}}]})
                     candidate = runs[-1]
                     if self.owner == 'duplicate': runs.append(dict(candidate, id=901))
+                    if self.owner == 'bot': candidate['actor']={'login':'nssscdl-claude-review[bot]','type':'Bot'}
                     if self.owner == 'rerun': candidate['run_attempt'] = 2
                     if self.owner == 'old': candidate['created_at'] = '2026-11-06T03:49:00Z'
                     if self.owner == 'wrong-pr': candidate['pull_requests'][0]['number'] = 1112
@@ -538,6 +636,25 @@ class Case:
             if self.fault == 'latest-read-cleanup': value['jobs'][0]['steps'][-1]['conclusion'] = 'failure'
             if self.fault == 'latest-write-cleanup': value['jobs'][1]['steps'][-1]['conclusion'] = 'failure'
             return value
+        if path == 'actions/runs/42166385390':
+            value=self.api('actions/runs/42158645486')
+            value.update(id=42166385390, run_number=9, head_sha=BOT_FIX_BASE, conclusion='success')
+            if self.fault == 'run9-result': value['conclusion']='failure'
+            if self.fault == 'run9-head': value['head_sha']=RESUME_FIX_BASE
+            if self.fault == 'run9-actor': value['actor']['login']='other'
+            if self.fault == 'run9-attempt': value['run_attempt']=2
+            return value
+        if path == 'actions/runs/42166385390/attempts/1/jobs':
+            value=self.api('actions/runs/42158645486/attempts/1/jobs')
+            value['jobs'][0]['id']=127723727029
+            value['jobs'][1]['id']=127723904663
+            value['jobs'][1]['conclusion']='success'
+            value['jobs'][1]['steps'][2]['conclusion']='success'
+            if self.fault == 'run9-job-id': value['jobs'][1]['id']=999
+            if self.fault == 'run9-consume': value['jobs'][1]['steps'][2]['conclusion']='failure'
+            if self.fault == 'run9-read-cleanup': value['jobs'][0]['steps'][-1]['conclusion']='failure'
+            if self.fault == 'run9-write-cleanup': value['jobs'][1]['steps'][-1]['conclusion']='failure'
+            return value
         if path == 'actions/workflows/recover-pr1110-claude-pause.yml/runs':
             if self.fault == 'history-api':
                 raise subprocess.CalledProcessError(1, ['gh', 'api'], stderr='SECRET_HISTORY')
@@ -545,15 +662,17 @@ class Case:
                     dict(self.run, id=PREVIOUS_APPLY_RUN, run_number=5),
                     dict(self.run, id=42155234932, run_number=6),
                     dict(self.run, id=42158645486, run_number=7),
+                    dict(self.run, id=42165919982, run_number=8),
+                    dict(self.run, id=42166385390, run_number=9),
                     dict(self.run, id=42046054836, run_number=4),
                     dict(self.run, id=42032705936, run_number=2), dict(self.run, id=42006744571, run_number=1)]
             if self.fault == 'retired-missing': runs.pop(1)
             if self.fault == 'retired-zero-attempt': runs[1]['run_attempt'] = 0
             if self.fault == 'retired-attempt-type': runs[1]['run_attempt'] = '1'
             if self.fault in ('prior-apply', 'check-before-apply', 'deleted-history'):
-                runs[0]['run_number'] = 9
+                runs[0]['run_number'] = 11
                 if self.fault != 'deleted-history':
-                    runs.append(dict(self.run, id=799, run_number=8))
+                    runs.append(dict(self.run, id=799, run_number=10))
             if self.fault == 'previous-history-missing': runs.pop(2)
             if self.fault == 'previous-history-rerun': runs[2]['run_attempt'] = 2
             if self.fault == 'prefix-id-changed': runs[-3]['id'] = 123
@@ -561,7 +680,8 @@ class Case:
         if path in ('actions/runs/42006744571/attempts/1/jobs',
                     'actions/runs/42032705936/attempts/1/jobs',
                     'actions/runs/42046054836/attempts/1/jobs',
-                    'actions/runs/42155234932/attempts/1/jobs'):
+                    'actions/runs/42155234932/attempts/1/jobs',
+                    'actions/runs/42165919982/attempts/1/jobs'):
             if self.fault == 'job-history-empty': return {'total_count': 0, 'jobs': []}
             return {'total_count': 1, 'jobs': [{'name': 'Apply fixed recovery',
                 'started_at': '2026-11-05T10:00:00Z', 'conclusion': 'skipped'}]}
@@ -601,21 +721,20 @@ class Case:
                 if method == 'POST':
                     body = args[-1].split('=', 1)[1]
                     parsed = json.loads(body.split('\n')[1])
-                    assert parsed == ACCEPTED
+                    assert parsed == self.expected_accepted
                     assert self.label == {1109: True, 1110: True}
                     if self.fault != 'post-no-commit': self.comments.append(record_comment(700, parsed))
                     if self.fault == 'source-after-post':
-                        self.comments[0]['body'] = self.comments[0]['body'].replace('"kind": "pause"',
-                            '"payload": {"detail": "changed"}, "kind": "pause"')
+                        self.comments[0]['body'] = self.comments[0]['body'].replace(json.dumps('Claude Review jobが正常完了しませんでした。実行結果を確認してください。'), json.dumps('changed'))
                     if self.fault == 'crash-post': raise Crash()
                     return result(rc=1 if self.fault in ('post-loss', 'post-no-commit') else 0)
+                assert path == 'issues/1109/labels/human-review-required', 'consumer must NEVER remove PR label'
                 number = int(path.split('/')[1])
                 assert any(c['id'] == 700 for c in self.comments), 'remove before acceptance'
                 if number == 1110: assert not self.label[1109], 'wrong label order'
                 if self.fault != 'delete-no-commit': self.label[number] = False
                 if self.fault == 'source-after-issue' and number == 1109:
-                    self.comments[0]['body'] = self.comments[0]['body'].replace('"kind": "pause"',
-                        '"payload": {"detail": "changed"}, "kind": "pause"')
+                    self.comments[0]['body'] = self.comments[0]['body'].replace(json.dumps('Claude Review jobが正常完了しませんでした。実行結果を確認してください。'), json.dumps('changed'))
                 if self.fault == 'crash-issue' and number == 1109: raise Crash()
                 return result(rc=1 if self.fault in ('delete-loss', 'delete-no-commit') else 0)
             assert env['GH_TOKEN'] == 'mock-read' and 'GH_WRITE_TOKEN' not in env
@@ -663,8 +782,10 @@ class Case:
                     return result(CONTEXT_FIX_BASE + ' ' + parent)
                 if commit == RESUME_FIX_BASE:
                     return result(RESUME_FIX_BASE + ' ' + (BASE if self.fault == 'resume-fix-parent' else CONTEXT_FIX_BASE))
+                if commit == BOT_FIX_BASE:
+                    return result(BOT_FIX_BASE+' '+(BASE if self.fault == 'bot-fix-parent' else RESUME_FIX_BASE))
                 if commit == TRUSTED_MAIN:
-                    parent = BASE if self.fault == 'main-parent' else RESUME_FIX_BASE
+                    parent = BASE if self.fault == 'main-parent' else BOT_FIX_BASE
                     extra = ' ' + BASE if self.fault == 'main-multiparent' else ''
                     return result(TRUSTED_MAIN + ' ' + parent + extra)
             if args[1] == 'merge-base':
@@ -690,8 +811,10 @@ class Case:
                                                  if self.fault == 'context-fix-paths' else set())
                     elif (before, after) == (CONTEXT_FIX_BASE, RESUME_FIX_BASE):
                         changes = PATCH_PATHS | ({'.github/workflows/claude-review.yml'} if self.fault == 'resume-fix-paths' else set())
-                    elif (before, after) == (RESUME_FIX_BASE, TRUSTED_MAIN):
-                        changes = CURRENT_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
+                    elif (before, after) == (RESUME_FIX_BASE, BOT_FIX_BASE):
+                        changes = CURRENT_PATHS | ({'.github/workflows/product-ci.yml'} if self.fault == 'bot-fix-paths' else set())
+                    elif (before, after) == (BOT_FIX_BASE, TRUSTED_MAIN):
+                        changes = PATCH_PATHS | ({'docs/40_test/README.md'} if self.fault == 'main-overlap'
                                                else {'.github/workflows/product-ci.yml'} if self.fault == 'main-extra-file'
                                                else set())
                     elif (before, after) == (BASE, HEAD):
@@ -712,16 +835,7 @@ class Case:
             if args[1] == 'show' and '--format=%an%n%ae%n%cn%n%ce%n%s' in args:
                 return result('github-actions[bot]\n41898282+github-actions[bot]@users.noreply.github.com\n' * 2 + 'Render PlantUML diagrams\n')
             if args[1] == 'show':
-                if args[-1].endswith(':.github/workflows/claude-review.yml'):
-                    value = (root / '.github/workflows/claude-review.yml').read_text()
-                    if self.fault == 'bot-old-allowlist':
-                        value = value.replace(',${{ steps.review-token.outputs.app-slug }}[bot]', '')
-                    if self.fault == 'bot-wildcard':
-                        value = value.replace('allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]', 'allowed_bots: *')
-                    if self.fault == 'bot-wrong-pin': value = value.replace('8ce9314fa9a404564fa7e954cd84f25bcba2b829', '0' * 40)
-                    if self.fault == 'bot-nonwrite-bypass': value += '\n          allowed_non_write_users: *\n'
-                    if self.fault == 'bot-wrong-token': value = value.replace('github_token: ${{ steps.review-token.outputs.token }}', 'github_token: other')
-                    return result(value)
+                assert not args[-1].endswith(':.github/workflows/claude-review.yml'), 'main-only entry proof forbidden'
                 return result('# trusted builder mock\n')
             if args[1] == 'log': return result(OLD if self.fault == 'svg' else HEAD)
             raise AssertionError(args)
@@ -745,9 +859,9 @@ class Case:
                 comments = Path(directory) / 'comments.json'
                 comments.write_text(json.dumps([{}] * 100 if self.fault == 'truncated-comments' else self.comments))
                 child_env = dict(env, CASE_COMMENTS=str(comments))
-                return real_run(['bash', '-c', 'gh() { cat "$CASE_COMMENTS"; }; export -f gh; bash "$@"',
-                                 '--', *args[1:]], **dict(kw, env=child_env))
-        if args[0] == 'bash': return real_run(args, **kw)
+                return fixture_primitive(['bash', '-c', 'gh() { cat "$CASE_COMMENTS"; }; export -f gh; bash "$@"',
+                                 '--', *args[1:]], fixture_comments=comments.read_bytes(), **dict(kw, env=child_env))
+        if args[0] == 'bash': return fixture_primitive(args, **kw)
         raise AssertionError('unexpected process: ' + repr(args))
 
     def invoke(self, mode='apply'):
@@ -778,7 +892,7 @@ class Case:
 
 
 expected = [('POST', 'issues/1110/comments'), ('DELETE', 'issues/1109/labels/human-review-required'),
-            ('DELETE', 'issues/1110/labels/human-review-required')]
+]
 case = Case()
 assert case.invoke('check') and case.writes == [] and case.builder == 1, getattr(case, 'error', case.reads)
 case = Case()
@@ -790,7 +904,7 @@ for fault in ('writer-app', 'installation-missing', 'installation-invalid', 'rer
 for fault in ('', 'post-loss', 'delete-loss', 'check-before-apply', 'list-second-page'):
     case = Case(fault)
     assert case.invoke(), (fault, getattr(case, 'error', ''))
-    assert case.writes == expected and not any(case.label.values()), fault
+    assert case.writes == expected and case.label == {1109:False,1110:True}, fault
     case.writes.clear()
     assert case.invoke() and case.writes == [], 'completed replay: ' + fault
 for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-head', 'reason', 'target', 'schema', 'head', 'branch',
@@ -808,7 +922,7 @@ for fault in ('actor', 'rerun-actor', 'permission', 'app', 'source-id', 'old-hea
     case = Case(fault)
     assert not case.invoke() and case.writes == [], fault
     if fault == 'source-body-drift':
-        assert 'source_record_changed_during_read' in case.error, case.error
+        assert 'source identity' in case.error or 'source_record_changed_during_read' in case.error, case.error
     if fault in ('list-api', 'list-body'):
         assert 'SECRET' not in case.error, case.error
 # The original single-comment API may return null App provenance. It is never
@@ -848,7 +962,7 @@ for fault in ('previous-source-missing', 'previous-accepted-missing', 'previous-
         assert not case.invoke(mode) and case.writes == [], (mode, fault, getattr(case, 'error', ''))
 for fault in ('accepted-app-null', 'accepted-app-wrong', 'accepted-body',
               'accepted-time-missing', 'accepted-time-type', 'accepted-time-invalid',
-              'accepted-time-offset', 'accepted-time-late'):
+              'accepted-time-offset'):
     case = Case(fault)
     case.comments.append(record_comment(700, ACCEPTED))
     case.label = {1109: False, 1110: False}
@@ -868,7 +982,8 @@ for fault, writes in [('post-no-commit', expected[:1]), ('head-after-post', expe
     # POST without a record is fenced by the preceding started apply attempt.
     case.fault = 'prior-apply' if fault == 'post-no-commit' else ''
     case.writes.clear()
-    assert not case.invoke() and case.writes == [], 'interrupted replay: ' + fault
+    resumed = case.invoke()
+    assert resumed == (fault in ('crash-issue','head-after-issue')) and case.writes == [], ('interrupted replay', fault, getattr(case,'error',''))
 case = Case('main-before')
 case.comments.append(record_comment(700, ACCEPTED))
 case.label = {1109: False, 1110: False}
@@ -878,13 +993,17 @@ for issue, pr in ((True, True), (False, True), (True, False), (False, False)):
     case.comments.append(record_comment(700, ACCEPTED))
     case.label = {1109: issue, 1110: pr}
     case.owner = 'none'
-    assert not case.invoke() and case.writes == [], ('partial/unknown', issue, pr)
+    resumed=case.invoke()
+    assert resumed == (not issue and pr) and case.writes == [], ('partial/unknown', issue, pr, getattr(case,'error',''))
 for owner in ('none', 'queued', 'failed', 'model-only', 'outer-success', 'invalid-output',
               'duplicate', 'rerun', 'old', 'wrong-pr', 'wrong-branch', 'wrong-head',
-              'wrong-repo', 'wrong-workflow', 'duplicate-step'):
+              'wrong-repo', 'wrong-workflow', 'duplicate-step', 'bot'):
     case = Case()
+    assert case.invoke() and case.writes == expected
+    case.writes.clear()
+    case.label[1110]=False  # External human operation; never a consumer write.
     case.owner = owner
-    assert not case.invoke() and case.writes == expected, owner
+    assert not case.invoke() and case.writes == [], owner
     case.writes.clear()
     assert not case.invoke() and case.writes == [], ('owner replay', owner)
 for duplicate in (True, False):
@@ -895,7 +1014,7 @@ for duplicate in (True, False):
         'source_pause_id': '700', 'payload': {'failed_action': 'review'}}))
     assert not case.invoke() and case.writes == [], 'duplicate/replacement'
 
-for fault in ('bot-old-allowlist', 'bot-wildcard', 'bot-wrong-pin', 'bot-nonwrite-bypass', 'bot-wrong-token',
+for fault in ('bot-wildcard', 'bot-wrong-pin', 'bot-nonwrite-bypass', 'bot-wrong-token',
               'second-source-missing', 'second-accepted-missing', 'second-accepted-id', 'second-accepted-app',
               'second-accepted-body', 'second-source-head', 'second-accepted-late',
               'latest-run-head', 'latest-run-actor', 'latest-run-attempt', 'latest-job-id',
@@ -904,10 +1023,46 @@ for fault in ('bot-old-allowlist', 'bot-wildcard', 'bot-wrong-pin', 'bot-nonwrit
         case = Case(fault)
         assert not case.invoke(mode) and case.writes == [], (fault, mode, getattr(case, 'error', ''))
 case = Case()
-case.owner = 'saved'
 assert case.invoke() and case.writes == expected
+case.writes.clear()
+case.label[1110]=False
+case.owner = 'saved'
+assert case.invoke() and case.writes == []
 assert any('head_sha=' + HEAD + '&event=pull_request' in path for path in case.reads)
 assert not any(path.startswith('actions/workflows/claude-review.yml/runs') for path in case.reads)
+
+for fault in ('machine-state','execution-parent','execution-head','execution-bytes','execution-sha','execution-base64',
+              'execution-shape','execution-size','ref-before-write','third-source-missing','third-accepted-missing',
+              'third-accepted-body','third-accepted-app','third-accepted-late','run9-result','run9-head',
+              'run9-actor','run9-attempt','run9-job-id','run9-consume','run9-read-cleanup','run9-write-cleanup',
+              'bot-fix-parent','bot-fix-paths'):
+    for mode in ('check','apply'):
+        case=Case(fault)
+        assert not case.invoke(mode) and not case.writes, (fault,mode,getattr(case,'error',''))
+for fault,n in (('ref-after-post',1),('ref-after-issue',2)):
+    case=Case(fault)
+    assert not case.invoke() and case.writes==expected[:n], (fault,getattr(case,'error',''))
+    case.writes.clear()
+    assert not case.invoke('check') and not case.writes
+for fault in ('','new-workflow'):
+    case=Case(fault)
+    assert case.invoke() and case.writes==expected
+    assert case.label=={1109:False,1110:True}
+    case.writes.clear()
+    assert case.invoke('check') and not case.writes
+    case.label[1110]=False
+    case.owner='entered'
+    assert case.invoke('check') and not case.writes, getattr(case,'error','')
+case=Case()
+assert case.invoke() and case.writes==expected
+case.writes.clear()
+case.owner='queued'  # A surprise request must not be called intentional waiting.
+assert not case.invoke('check') and not case.writes
+case=Case()
+assert case.invoke()
+case.writes.clear()
+case.comments[-1]['body']=case.comments[-1]['body'].replace('human-final-unlabel','automatic')
+assert not case.invoke('check') and not case.writes
 
 workflow = (root / '.github/workflows/recover-pr1110-claude-pause.yml').read_text()
 assert 'workflow_run:' not in workflow and 'pull_request:' not in workflow
@@ -938,5 +1093,7 @@ for broken in (workflow.replace("app-id: '4777865'", "app-id: '4777726'", 1),
                workflow.replace('reviewer_check.outputs.installation-id', 'reviewer_check.outputs.token', 1),
                workflow.replace('github.run_attempt == 1', 'github.run_attempt >= 1')):
     assert not identity_contract(broken)
+assert primitive_stats['executions'] > 0 and primitive_stats['hits'] > 0
 print(f'PR1110 exceptional recovery: {count} offline invocations passed')
+print('Pure fixture primitives: ' + json.dumps(primitive_stats, sort_keys=True))
 PY

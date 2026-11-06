@@ -6,6 +6,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # No PR code is executed. Existing schema and lifecycle primitives remain canonical.
 python3 -I -B - "$1" "$script_dir" <<'PY'
 import json
+import base64
+import hashlib
 from datetime import datetime
 import os
 from pathlib import Path
@@ -20,12 +22,14 @@ REPO = 'suzukure/nssscdl'
 HEAD = '50ac09107c1d80fdcdbb03dc0e0a63e012be9137'
 OLD = 'ad90e514aeac5789f7fdb4af600e6c3f60b6c4b1'
 BRANCH = 'docs/issue-1108-student-booking-ux-contract'
-SOURCE = '6676369307'
+SOURCE = '6677464836'
+THIRD_SOURCE = '6676369307'
+THIRD_ACCEPTED_ID = '6677446829'
 PREVIOUS_SOURCE = '6625324624'
 PREVIOUS_ACCEPTED_ID = '6660744739'
 SECOND_SOURCE = '6660775078'
 SECOND_ACCEPTED_ID = '6676352162'
-FAILED_REVIEW = 42158784510
+FAILED_REVIEW = 42166545359
 APP = 4777865
 WORKFLOW = '.github/workflows/recover-pr1110-claude-pause.yml'
 BASE = '17f63a0a9e9ebf2ecd03c1e9329f8200362aebc5'
@@ -35,13 +39,20 @@ READ_FIX_BASE = '09759be3c42eb00b3120a4e777715d3c2a9b4bda'
 AUTH_FIX_BASE = '035dfa0677fa980c204e500ab9420aae6ec8d67f'
 CONTEXT_FIX_BASE = 'f4a152780f76d8cf8dfaa6143646e4cba93dfd45'
 RESUME_FIX_BASE = '82a3ca6cfc394341eb4b9c8d8fcdb1a6e10ab496'
+BOT_FIX_BASE = 'dc166e971b8ba66f1eb67a04004e439b3837a8fc'
+HUMAN = 'suzukure'
+EXECUTION_REF = 'refs/pull/1110/merge'
+WORKFLOW_BLOBS = {'bfa3a7c0e87674fd03a07aebc7f67457a8c81360',
+                  '8d500ae7882c25bac29057a46fbdee672535b970'}
 ADJUDICATED_RUN = 42033641429
 PREVIOUS_APPLY_RUN = 42046727170
 LATEST_APPLY_RUN = 42158645486
+HANDOFF_APPLY_RUN = 42166385390
 HISTORY_PREFIX = {1: 42006744571, 2: 42032705936, 3: ADJUDICATED_RUN,
                   4: 42046054836, 5: PREVIOUS_APPLY_RUN,
-                  6: 42155234932, 7: LATEST_APPLY_RUN}
-# This one-off consumer is valid only for the next single-parent squash on RESUME_FIX_BASE.
+                  6: 42155234932, 7: LATEST_APPLY_RUN,
+                  8: 42165919982, 9: HANDOFF_APPLY_RUN}
+# This one-off consumer is valid only for the next single-parent squash on BOT_FIX_BASE.
 # Future main commits require another explicit qualification decision.
 ANCHOR_FILES = {
     '.github/scripts/recover-pr1110-claude-pause.sh',
@@ -76,9 +87,12 @@ FILES = {
 ACCEPTED = dict(version=1, kind='ai-resume-accepted',
                 reason='claude_execution_failed', target='pr:1110',
                 source_pause_id=SOURCE, paused_head=HEAD,
-                payload=dict(action='review', recovery_issue=1111))
-PREVIOUS_ACCEPTED = dict(ACCEPTED, source_pause_id=PREVIOUS_SOURCE)
-SECOND_ACCEPTED = dict(ACCEPTED, source_pause_id=SECOND_SOURCE)
+                payload=dict(action='review', recovery_issue=1111,
+                             handoff='human-final-unlabel', actor=HUMAN))
+LEGACY_PAYLOAD = dict(action='review', recovery_issue=1111)
+PREVIOUS_ACCEPTED = dict(ACCEPTED, source_pause_id=PREVIOUS_SOURCE, payload=LEGACY_PAYLOAD)
+SECOND_ACCEPTED = dict(ACCEPTED, source_pause_id=SECOND_SOURCE, payload=LEGACY_PAYLOAD)
+THIRD_ACCEPTED = dict(ACCEPTED, source_pause_id=THIRD_SOURCE, payload=LEGACY_PAYLOAD)
 PREVIOUS_PAUSE = dict(version=1, kind='pause', reason='claude_execution_failed',
                       target='pr:1110', paused_head=OLD,
                       payload=dict(detail='Claude Review jobが正常完了しませんでした。実行結果を確認してください。'))
@@ -172,7 +186,7 @@ def graph(expected_source=None):
     active = json.loads(helper('reconcile-human-pause-active-pause', value))
     require(active['result'] != 'state_inconsistent', 'ambiguous active graph')
     previous = [c for c in chains if c['pre_resume']['pause_id'] == PREVIOUS_SOURCE]
-    require(len(chains) == 3 and len(previous) == 1, 'previous/current chains changed')
+    require(len(chains) == 4 and len(previous) == 1, 'previous/current chains changed')
     previous = previous[0]
     require({r['pause_id']: r['record'] for r in previous['records']}
             == {PREVIOUS_SOURCE: PREVIOUS_PAUSE, PREVIOUS_ACCEPTED_ID: PREVIOUS_ACCEPTED}
@@ -189,13 +203,23 @@ def graph(expected_source=None):
             and second['effective']['status'] == 'consumed'
             and second['effective']['accepted_record_id'] == SECOND_ACCEPTED_ID,
             'second consumption changed')
+    third = [c for c in chains if c['pre_resume']['pause_id'] == THIRD_SOURCE]
+    require(len(third) == 1, 'third chain changed')
+    third = third[0]
+    require({r['pause_id']: r['record'] for r in third['records']}
+            == {THIRD_SOURCE: SECOND_PAUSE, THIRD_ACCEPTED_ID: THIRD_ACCEPTED}
+            and len(third['records']) == 2
+            and third['effective']['status'] == 'consumed'
+            and third['effective']['accepted_record_id'] == THIRD_ACCEPTED_ID,
+            'third consumption changed')
     matching = [c for c in chains if c['pre_resume']['pause_id'] == SOURCE]
     require(len(matching) == 1, 'source chain is not unique')
     chain = matching[0]
     source = [r for r in chain['records'] if r['pause_id'] == SOURCE]
     require(len(source) == 1 and source[0]['record']['kind'] == 'pause'
             and source[0]['record']['paused_head'] == HEAD
-            and chain['pre_resume']['reason'] == 'claude_execution_failed', 'source identity')
+            and chain['pre_resume']['reason'] == 'claude_execution_failed'
+            and source[0]['record'] == SECOND_PAUSE, 'source identity')
     require(expected_source is None or source[0]['record'] == expected_source,
             'source_record_changed_during_read')
     accepted = [r for r in chain['records'] if r['record']['kind'] == 'ai-resume-accepted']
@@ -227,6 +251,9 @@ def current(trusted_main):
             and pr['head']['repo']['full_name'] == REPO
             and pr['base']['repo']['full_name'] == REPO
             and pr['base']['ref'] == 'main' and pr['base']['sha'] == BASE
+            and isinstance(pr['labels'], list)
+            and all(isinstance(x, dict) and isinstance(x.get('name'), str) for x in pr['labels'])
+            and not any(x['name'] == 'ai-followup-in-progress' for x in pr['labels'])
             and api('git/ref/heads/main')['object']['sha'] == trusted_main,
             'PR/head/base drift')
     return pr
@@ -270,9 +297,10 @@ def verify_relation(trusted_main):
                    (READ_FIX_BASE, AUTH_FIX_BASE, ANCHOR_FILES),
                    (AUTH_FIX_BASE, CONTEXT_FIX_BASE, CONTEXT_FILES),
                    (CONTEXT_FIX_BASE, RESUME_FIX_BASE, PATCH_FILES),
-                   (RESUME_FIX_BASE, trusted_main, CURRENT_FILES))
+                   (RESUME_FIX_BASE, BOT_FIX_BASE, CURRENT_FILES),
+                   (BOT_FIX_BASE, trusted_main, PATCH_FILES))
     for commit in (BASE, ANCHOR, PATCH_BASE, READ_FIX_BASE, AUTH_FIX_BASE, CONTEXT_FIX_BASE,
-                   RESUME_FIX_BASE, trusted_main):
+                   RESUME_FIX_BASE, BOT_FIX_BASE, trusted_main):
         require(run(['git', 'rev-parse', commit + '^{commit}'], cwd=source).strip() == commit,
                 'qualification commit unavailable')
     for before, after, paths in transitions:
@@ -298,27 +326,42 @@ def verify_relation(trusted_main):
 
 
 def verify_review_entry(trusted_main):
-    # Compare the actual unlabeled actor with the trusted downstream Action
-    # configuration before any acceptance/label write. This is a deliberately
-    # fixed contract, not a permissive YAML parser or a wildcard bot bypass.
-    workflow = run(['git', 'show', trusted_main + ':.github/workflows/claude-review.yml'],
-                   cwd=os.environ['RECOVERY_SOURCE'])
-    allowed = re.findall(r'^          allowed_bots: (.+)$', workflow, re.MULTILINE)
-    require(allowed == ['${{ steps.dev-token.outputs.app-slug }}[bot],'
-                        '${{ steps.review-token.outputs.app-slug }}[bot]'],
-            'normal Review bot allowlist mismatch')
+    # The event's immutable merge commit, not main's YAML, selects its inputs.
+    fact = api('git/ref/pull/1110/merge')
+    require(fact['ref'] == EXECUTION_REF, 'execution ref changed')
+    merge = fact['object']['sha']
+    require(isinstance(merge, str) and re.fullmatch(r'[0-9a-f]{40}', merge), 'invalid execution SHA')
+    commit = api('git/commits/' + merge)
+    require(commit['sha'] == merge and len(commit['parents']) == 2
+            and commit['parents'][0]['sha'] in (CONTEXT_FIX_BASE, RESUME_FIX_BASE, BOT_FIX_BASE, trusted_main)
+            and commit['parents'][1]['sha'] == HEAD, 'execution merge ancestry changed')
+    path = '.github/workflows/claude-review.yml'
+    file = api('contents/' + path + '?ref=' + merge)
+    require(file['path'] == path and file['type'] == 'file' and file['encoding'] == 'base64'
+            and file['sha'] in WORKFLOW_BLOBS and isinstance(file['content'], str),
+            'unqualified execution workflow')
+    raw = base64.b64decode(file['content'].replace('\n', ''), validate=True)
+    require(file['size'] == len(raw)
+            and hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == file['sha'],
+            'execution workflow blob mismatch')
+    workflow = raw.decode('utf-8')
     require(workflow.count('uses: anthropics/claude-code-action@'
                            '8ce9314fa9a404564fa7e954cd84f25bcba2b829') == 1
             and workflow.count('github_token: ${{ steps.review-token.outputs.token }}') == 1
             and re.search(r'^\s*allowed_non_write_users:', workflow, re.MULTILINE) is None,
             'normal Review Action contract changed')
+    # These two exact blobs have the existing unlabeled/open/Ready/head/Issue
+    # gates. Their bot allowlists differ, but both admit User suzukure after
+    # GitHub's independent write/admin check. No bot wildcard is introduced.
+    require(api('git/ref/pull/1110/merge')['object']['sha'] == merge, 'execution ref drift')
+    return dict(execution_ref=EXECUTION_REF, merge_sha=merge, workflow_blob=file['sha'])
 
 
 def jobs(run_id, attempt):
     return pages(f'actions/runs/{run_id}/attempts/{attempt}/jobs', 'jobs')
 
 
-def normal_review(accepted):
+def normal_review(accepted, *, waiting=False):
     fact, record = listed_record(accepted)
     require(record == ACCEPTED, 'accepted_record_mismatch')
     created = fact.get('created_at')
@@ -345,7 +388,11 @@ def normal_review(accepted):
     require(len(candidates) <= 1, 'multiple normal Review candidates')
     if not candidates:
         return False
+    require(not waiting, 'Review already requested; inspect human handoff')
     candidate = candidates[0]
+    require(candidate['actor']['login'] == candidate['triggering_actor']['login'] == HUMAN
+            and candidate['actor']['type'] == candidate['triggering_actor']['type'] == 'User',
+            'normal Review actor is not the designated human')
     require(candidate['run_attempt'] == 1, 'normal Review rerun requires human inspection')
     review = [j for j in jobs(candidate['id'], 1) if j['name'] == 'Review']
     require(len(review) <= 1, 'ambiguous Review job')
@@ -377,7 +424,8 @@ def reviewer_identity():
             'reviewer_installation_invalid')
 
 
-def ended_apply(value, snapshot, run_id, number, main_sha, check_id, apply_id, check_steps):
+def ended_apply(value, snapshot, run_id, number, main_sha, check_id, apply_id, check_steps,
+                *, result='failure'):
     # Fixed historical runs only. No reset or wildcard exemption for prior writes.
     fact = api('actions/runs/' + str(run_id))
     require(value['id'] == fact['id'] == run_id
@@ -388,16 +436,16 @@ def ended_apply(value, snapshot, run_id, number, main_sha, check_id, apply_id, c
             and fact['head_sha'] == main_sha
             and fact['head_repository']['full_name'] == REPO
             and fact['actor']['login'] == fact['triggering_actor']['login'] == 'suzukure'
-            and fact['status'] == 'completed' and fact['conclusion'] == 'failure',
+            and fact['status'] == 'completed' and fact['conclusion'] == result,
             'historical_apply_run_changed')
     require(len(snapshot) == 2
             and {j['id'] for j in snapshot} == {check_id, apply_id},
             'historical_apply_jobs_changed')
     for name, job_id, conclusion, expected in (
         ('Read-only qualification', check_id, 'success', [(n, 'success') for n in check_steps]),
-        ('Apply fixed recovery', apply_id, 'failure',
+        ('Apply fixed recovery', apply_id, result,
          [('Recheck after writer wait', 'success'), ('Create reviewer App token', 'success'),
-          ('Consume and hand off once', 'failure'), ('Post Create reviewer App token', 'success')]),
+          ('Consume and hand off once', result), ('Post Create reviewer App token', 'success')]),
     ):
         matching = [j for j in snapshot if j['name'] == name and j['id'] == job_id]
         require(len(matching) == 1 and matching[0]['status'] == 'completed'
@@ -467,6 +515,13 @@ def inspect_apply_history():
                              'Verify authenticated reviewer identity',
                              'Post Authenticate reviewer identity with read-only token'])
                 continue
+            if value['id'] == HANDOFF_APPLY_RUN:
+                ended_apply(value, snapshot, HANDOFF_APPLY_RUN, 9, BOT_FIX_BASE,
+                            127723727029, 127723904663,
+                            ['Check fixed recovery target', 'Authenticate reviewer identity with read-only token',
+                             'Verify authenticated reviewer identity',
+                             'Post Authenticate reviewer identity with read-only token'], result='success')
+                continue
             for job in snapshot:
                 require(not (job['name'] == 'Apply fixed recovery'
                              and job.get('started_at') is not None
@@ -476,7 +531,8 @@ def inspect_apply_history():
 
 def failed_review(accepted_id, source_id, run_id, job_id, expected_steps):
     previous_fact, previous_record = listed_record(accepted_id)
-    expected_record = PREVIOUS_ACCEPTED if accepted_id == PREVIOUS_ACCEPTED_ID else SECOND_ACCEPTED
+    expected_record = {PREVIOUS_ACCEPTED_ID: PREVIOUS_ACCEPTED, SECOND_ACCEPTED_ID: SECOND_ACCEPTED,
+                       THIRD_ACCEPTED_ID: THIRD_ACCEPTED}[accepted_id]
     require(previous_record == expected_record, 'previous acceptance identity')
     source_fact, _ = listed_record(source_id)
     failed = api('actions/runs/' + str(run_id))
@@ -527,7 +583,14 @@ def qualify(trusted_main):
     # The outer Action step reports success even when its internal actor check
     # fails. Bind the known failure to Save structured review, never infer a
     # successful model call from that outer step.
-    failed = failed_review(SECOND_ACCEPTED_ID, SOURCE, FAILED_REVIEW, 127699190932,
+    failed_review(SECOND_ACCEPTED_ID, THIRD_SOURCE, 42158784510, 127699190932,
+                  [('Build review context', 'success'), ('Gate Claude review entry', 'success'),
+                   ('Select Claude review model', 'success'), ('Prepare native review schema', 'success'),
+                   ('Run Claude review', 'success'), ('Validate Claude review', 'success'),
+                   ('Save structured review', 'failure'), ('Submit reviewer verdict', 'skipped'),
+                   ('Post Create developer App token for identity allowlist', 'success'),
+                   ('Post Create reviewer App token', 'success')])
+    failed = failed_review(THIRD_ACCEPTED_ID, SOURCE, FAILED_REVIEW, 127724240242,
                   [('Build review context', 'success'), ('Gate Claude review entry', 'success'),
                    ('Select Claude review model', 'success'), ('Prepare native review schema', 'success'),
                    ('Run Claude review', 'success'), ('Validate Claude review', 'success'),
@@ -609,11 +672,30 @@ def main():
         print('reviewer App identity verified; no writes')
         return
     verify_relation(trusted_main)
-    verify_review_entry(trusted_main)
+    entry = verify_review_entry(trusted_main)
+    ACCEPTED['payload'] = dict(ACCEPTED['payload'], **entry)
+
+    def unchanged_entry():
+        current(trusted_main)
+        require(verify_review_entry(trusted_main) == entry, 'execution workflow changed during handoff')
+
+    def waiting(accepted):
+        require(not labels(1109) and labels(1110), 'not an intentional human waiting state')
+        require(not normal_review(accepted, waiting=True), 'unexpected Review before human handoff')
+        unchanged_entry()
+        require(graph() == accepted and not labels(1109) and labels(1110), 'human handoff state changed')
+        print('awaiting_human_unlabel; PR label retained; read-only recheck required before human action')
+
     accepted = graph()
     if accepted:
-        current(trusted_main)
+        if not labels(1109) and labels(1110):
+            # Intent is part of the exact accepted payload. No DELETE is ever
+            # repeated, including after a lost response or crash after Issue removal.
+            qualify(trusted_main)
+            waiting(accepted)
+            return
         if not labels(1109) and not labels(1110) and normal_review(accepted):
+            unchanged_entry()
             print('normal_review_owns; no writes')
             return
         raise ValueError('accepted transition interrupted or ownership unknown; no automatic continuation')
@@ -622,34 +704,24 @@ def main():
     require(graph(qualified_source) is None and labels(1109) and labels(1110),
             'state changed during qualification')
     first_apply()
+    unchanged_entry()
     if MODE == 'check':
         print('qualification/history passed; no writes; reviewer identity preflight follows')
         return
     reviewer_identity()
     body = helper('human-pause-record', None, 'create', json.dumps(ACCEPTED))
-    current(trusted_main)
+    unchanged_entry()
     require(graph(qualified_source) is None and labels(1109) and labels(1110),
             'state changed before acceptance')
     write_once('issues/1110/comments', 'POST', body)
     accepted = graph(qualified_source)
     require(accepted is not None, 'acceptance outcome unknown; never re-POST')
-    for number in (1109, 1110):
-        current(trusted_main)
-        require(graph(qualified_source) == accepted and labels(number), 'state changed before label removal')
-        if number == 1110:
-            require(not labels(1109), 'Issue must be cleared before PR')
-        write_once(f'issues/{number}/labels/human-review-required', 'DELETE')
-        require(not labels(number), 'label outcome unknown; never re-DELETE')
-    for poll in range(9):
-        current(trusted_main)
-        require(graph(qualified_source) == accepted and not labels(1109) and not labels(1110),
-                'handoff state changed')
-        if normal_review(accepted):
-            print('normal_review_owns; no automatic paid retry or merge')
-            return
-        if poll < 8:
-            time.sleep(10)
-    raise ValueError('normal Review ownership unknown; no further writes')
+    unchanged_entry()
+    require(graph(qualified_source) == accepted and labels(1109) and labels(1110),
+            'state changed before Issue label removal')
+    write_once('issues/1109/labels/human-review-required', 'DELETE')
+    require(not labels(1109), 'label outcome unknown; never re-DELETE')
+    waiting(accepted)
 
 
 try:
