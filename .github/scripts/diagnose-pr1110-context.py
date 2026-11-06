@@ -54,7 +54,8 @@ def main():
     global STAGE, OPERATION
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     pr = event['pull_request']
-    require(event['action'] == 'reopened' and pr['number'] == 1117 and pr['draft'] is True)
+    require(event['action'] == 'synchronize' and event['before'] == '66b1a9855a941e62aaec07674df4f1e358074254')
+    require(pr['number'] == 1117 and pr['draft'] is True)
     require(pr['head']['ref'] == 'diagnostic/issue-1111-qualification-stage')
     require(pr['head']['repo']['full_name'] == pr['base']['repo']['full_name'] == REPO)
     require(pr['base']['ref'] == 'main')
