@@ -1262,7 +1262,9 @@ Claude Review／mergeを開始してはならない。
 
 人間所有の有限な受理条件は、command actor＝PR author、same-repo Open Draft、
 HEAD／base整合、および対象Issueに紐づく `human/issue-N-*` branch名前空間とする。
-この名前空間はDeveloper App管理の `ai/issue-N` との差別化であり、
+#1136では、この人間所有ルートを維持したまま、OWNERがexact PR/HEAD/source pauseを指定する同じcommandによるDeveloper App Bot所有ルートを追加する。受理責任者actorは人間のままとし、固定App ID4777726/slug nssscdl-chatgpt-devが生成した未編集source pauseのBot account ID323046280/type Bot/loginと、PR REST authorの同じidentityを照合する。same-repo ID1348220387、recovery/issue-N-<20lowerhex>、canonical closing Issue一件、同一HEADの正規CIとwriter終端を要求する。suffixはnamespaceでありmanifestや最後のpush者の証明ではない。PRのperformed_via_github_appがnull、private App公開lookupが利用不能であることを許可の根拠にはしない。collectorが照合したstrict provenanceをpure preflightへ渡し、Bot表示名だけ・callerのboolean・任意Botを受理しない。accepted schema/action=handoffと人間actor、graph/readback、Issue→PR cleanup、handoff_ownedのDevelop denyは従来どおり。受理後のReady/Claude/mergeは別人間判断とし自動開始しない。
+
+人間所有の `human/issue-N-*` 名前空間はDeveloper App管理の `ai/issue-N` との差別化であり、
 最終push者を暗号学的に証明するものではない。別命名の人間管理branchを
 無条件に受理せず、必要になった場合はIssueで事前判断する。
 

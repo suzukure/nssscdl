@@ -47,3 +47,11 @@ for row in \
 done
 fail multiple-json $'{}\n{}'
 echo 'prepare-ai-resume-handoff tests passed.'
+
+# #1136: only the fixed Developer App provenance may replace author=actor.
+bot="$(jq -c '.pull_request.author_login="nssscdl-chatgpt-dev[bot]" | .pull_request.bot_provenance={app_id:4777726,app_slug:"nssscdl-chatgpt-dev",author_id:323046280,author_type:"Bot",source_author_id:323046280,source_author_type:"Bot",source_author_login:"nssscdl-chatgpt-dev[bot]",head_repo_id:1348220387,base_repo_id:1348220387,head_ref:"recovery/issue-278-0123456789abcdef0123"}' <<< "$input")"
+bash "$helper" <<< "$bot" | jq -e '.result=="prepared_snapshot_only" and .actor=="suzukure" and .write_authorized==false' >/dev/null
+for row in '.pull_request.bot_provenance.app_id=42' '.pull_request.bot_provenance.app_slug="other"' '.pull_request.bot_provenance.author_id=1' '.pull_request.bot_provenance.author_type="User"' '.pull_request.bot_provenance.source_author_id=1' '.pull_request.bot_provenance.source_author_type="User"' '.pull_request.bot_provenance.source_author_login="other[bot]"' '.pull_request.bot_provenance.head_repo_id=1' '.pull_request.bot_provenance.base_repo_id=1' '.pull_request.bot_provenance.head_ref="recovery/issue-279-0123456789abcdef0123"' '.pull_request.author_login="other[bot]"' '.pull_request.bot_provenance.extra=true' '.pull_request.bot_provenance=null'; do
+ fail "bot $row" "$(jq -c "$row" <<< "$bot")"
+done
+echo 'Fixed Bot provenance pure preflight fixtures passed.'

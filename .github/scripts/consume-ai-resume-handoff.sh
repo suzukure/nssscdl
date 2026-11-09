@@ -174,7 +174,29 @@ def accepted_status(snapshot, pause, actor, pr, head):
         stop('active_pause_persists')
     return match['pause_id'], None
 
-def facts(issue, pr, actor, head):
+def bot_provenance(pr_fact, source, issue):
+    # GitHub REST account IDs, not display names/branch claims, bind the fixed
+    # Developer App Bot to an unedited, App-proven source pause checked above.
+    user = pr_fact.get('user', {})
+    origin = source.get('user', {}) if type(source) is dict else {}
+    app = source.get('performed_via_github_app', {}) if type(source) is dict else {}
+    branch = pr_fact.get('head', {}).get('ref', '')
+    if (any(user.get(k) != v for k,v in {'id':323046280, 'type':'Bot', 'login':'nssscdl-chatgpt-dev[bot]'}.items())
+        or origin.get('id') != 323046280 or origin.get('type') != 'Bot'
+        or origin.get('login') != 'nssscdl-chatgpt-dev[bot]'
+        or app.get('id') != 4777726 or app.get('slug') != 'nssscdl-chatgpt-dev'
+        or type(branch) is not str
+        or re.fullmatch('recovery/issue-'+str(issue)+'-[0-9a-f]{20}', branch) is None
+        or any(pr_fact.get(side,{}).get('repo',{}).get('id') != 1348220387 for side in ('head','base'))):
+        stop('invalid_bot_handoff_provenance')
+    return {'app_id':4777726,'app_slug':'nssscdl-chatgpt-dev',
+            'author_id':323046280,'author_type':'Bot',
+            'source_author_id':323046280,'source_author_type':'Bot',
+            'source_author_login':'nssscdl-chatgpt-dev[bot]',
+            'head_repo_id':1348220387,'base_repo_id':1348220387,'head_ref':branch}
+
+
+def facts(issue, pr, actor, head, source=None):
     issue_fact = api('/repos/'+REPO+'/issues/'+str(issue))
     pr_fact = api('/repos/'+REPO+'/pulls/'+str(pr))
     pr_issue_fact = api('/repos/'+REPO+'/issues/'+str(pr))
@@ -183,13 +205,16 @@ def facts(issue, pr, actor, head):
     # No cryptographic claim about the last pusher: this is the repository's
     # positive *human-managed branch namespace* admission, not an author-only
     # negative match against developer-owned ai/issue-N.
+    author = pr_fact.get('user',{}).get('login')
+    human_route = author == actor and HUMAN.fullmatch(actor) is not None and pr_fact.get('head',{}).get('ref','').startswith('human/issue-'+str(issue)+'-')
+    if not human_route and author != 'nssscdl-chatgpt-dev[bot]':
+        stop('stale_or_invalid_pr')
+    proof = None if human_route else bot_provenance(pr_fact, source, issue)
     if (pr_fact.get('number') != pr or pr_fact.get('state') != 'open' or pr_fact.get('draft') is not True
-        or pr_fact.get('user',{}).get('login') != actor or not HUMAN.fullmatch(actor)
         or pr_fact.get('head',{}).get('sha') != head
         or pr_fact.get('head',{}).get('repo',{}).get('full_name') != REPO
         or pr_fact.get('base',{}).get('repo',{}).get('full_name') != REPO
-        or pr_fact.get('base',{}).get('ref') != 'main'
-        or not pr_fact.get('head',{}).get('ref','').startswith('human/issue-'+str(issue)+'-')):
+        or pr_fact.get('base',{}).get('ref') != 'main'):
         stop('stale_or_invalid_pr')
     def label_state(f, number):
         labels = f.get('labels')
@@ -198,7 +223,7 @@ def facts(issue, pr, actor, head):
         if any(type(x) is not dict or type(x.get('name')) is not str for x in labels):
             stop('invalid_labels')
         return 'human-review-required' in [l['name'] for l in labels]
-    return label_state(issue_fact,issue), label_state(pr_issue_fact,pr), pr_fact['head']['ref']
+    return label_state(issue_fact,issue), label_state(pr_issue_fact,pr), pr_fact['head']['ref'], {'author_login':author, 'bot_provenance':proof}
 
 def current_head_check(head, pr, branch):
     raw = parse(invoke(['gh','api','--paginate','--slurp',
@@ -275,6 +300,7 @@ def source_fact(pause, issue, command_id, command_time, app_id):
         or type(original.get('created_at')) is not str or original.get('updated_at') != original.get('created_at')
         or not original['created_at'] or original['created_at'] > command_time):
         stop('source_provenance_invalid')
+    return original
 
 def writer_terminal():
     # Conservative global absence proof; exclude only the verified current
@@ -294,14 +320,14 @@ def writer_terminal():
 
 def collector(issue, cid, pause, pr, head, app):
     actor, when = command_fact(cid,issue,pause,pr,head)
-    source_fact(pause,issue,cid,when,app)
+    source = source_fact(pause,issue,cid,when,app)
+    labels = facts(issue,pr,actor,head,source)
     candidate = canonical_pr(issue,pr)
     if (candidate['isDraft'] is not True or candidate['headRefOid'] != head or candidate['baseRefName'] != 'main'
-        or candidate.get('author',{}).get('login') != actor
+        or candidate.get('author',{}).get('login') not in ([actor] if labels[3]['bot_provenance'] is None else ['nssscdl-chatgpt-dev','nssscdl-chatgpt-dev[bot]','app/nssscdl-chatgpt-dev'])
         or candidate.get('headRepository',{}).get('nameWithOwner') != REPO
         or candidate.get('baseRepository',{}).get('nameWithOwner') != REPO):
         stop('pr_canonical_identity_mismatch')
-    labels = facts(issue,pr,actor,head)
     current_head_check(head, pr, labels[2])
     writer_terminal()
     return actor,labels
@@ -345,11 +371,13 @@ def main():
                     'target':'issue:'+issue,
                     'closing_issue':{'number':issue_number,'state':'open'},
                     'pause':{'result':'active','pause_id':pause,'reason':'developer_execution_failed','record':source},
-                    'pull_request':{'number':pr,'state':'open','draft':True,'author_login':actor,
+                    'pull_request':{'number':pr,'state':'open','draft':True,'author_login':labels[3]['author_login'],
                                     'head_repo':REPO,'base_repo':REPO,'base_ref':'main',
                                     'head_sha':head,'closing_issue_numbers':[issue_number],
                                     'writer_runs_terminal':True,
                                     'checks':{'current_head':head,'result':'success'}}}
+        if labels[3]['bot_provenance'] is not None:
+            envelope['pull_request']['bot_provenance'] = labels[3]['bot_provenance']
         output = parse(shell_helper('prepare-ai-resume-handoff',stdin=json.dumps(envelope)))
         if output.get('result') != 'prepared_snapshot_only' or output.get('write_authorized') is not False:
             stop('prepared_policy_failed')
@@ -389,7 +417,7 @@ def main():
         if present:
             transition_label(number)
         # Fail-closed readback whether edit succeeded, failed or was skipped.
-        fresh = facts(issue_number,pr,actor,head)
+        fresh = facts(issue_number,pr,actor,head,source_fact(pause,issue_number,cid,command_fact(cid,issue_number,pause,pr,head)[1],app))
         if (fresh[0] if number == issue_number else fresh[1]) is not False:
             stop('label_transition_unconfirmed')
         # Never touch PR label unless Issue is already verified unpaused.

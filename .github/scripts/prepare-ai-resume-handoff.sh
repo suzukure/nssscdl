@@ -15,12 +15,22 @@ jq -cse '
   def issue_number: type == "number" and . >= 1 and floor == .;
   def exact($expected): (type == "object") and ((. | keys) == ($expected | sort));
   def pr_ok($n; $cmd):
-    exact(["author_login","base_ref","base_repo","checks","closing_issue_numbers","draft","head_repo","head_sha","number","state","writer_runs_terminal"])
+    (exact(["author_login","base_ref","base_repo","checks","closing_issue_numbers","draft","head_repo","head_sha","number","state","writer_runs_terminal"])
+     or exact(["author_login","base_ref","base_repo","checks","closing_issue_numbers","draft","head_repo","head_sha","number","state","writer_runs_terminal","bot_provenance"]))
     and .number == $cmd.pr_number
     and .state == "open" and .draft == true
     and .base_ref == "main" and .base_repo == "suzukure/nssscdl"
     and .head_repo == "suzukure/nssscdl"
-    and .author_login == $cmd.actor
+    and (if has("bot_provenance") then
+      .author_login == "nssscdl-chatgpt-dev[bot]"
+      and (.bot_provenance | exact(["app_id","app_slug","author_id","author_type","source_author_id","source_author_type","source_author_login","head_repo_id","base_repo_id","head_ref"]))
+      and .bot_provenance.app_id == 4777726 and .bot_provenance.app_slug == "nssscdl-chatgpt-dev"
+      and .bot_provenance.author_id == 323046280 and .bot_provenance.author_type == "Bot"
+      and .bot_provenance.source_author_id == 323046280 and .bot_provenance.source_author_type == "Bot"
+      and .bot_provenance.source_author_login == .author_login
+      and .bot_provenance.head_repo_id == 1348220387 and .bot_provenance.base_repo_id == 1348220387
+      and (.bot_provenance.head_ref | type == "string" and test("^recovery/issue-" + ($n|tostring) + "-[0-9a-f]{20}$"))
+    else .author_login == $cmd.actor end)
     and .head_sha == $cmd.head_sha
     and .closing_issue_numbers == [$n]
     and .writer_runs_terminal == true
