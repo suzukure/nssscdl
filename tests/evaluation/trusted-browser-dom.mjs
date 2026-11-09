@@ -42,11 +42,11 @@ export async function proveStudentDom(page, signal, seed, secrets, revoked = fal
       await safeDom(page, secrets); return;
     }
     await choose(page, seed.month);
-    check(await page.locator(".slot").count() === 5);
+    check(await page.locator("#schedule-content .slot").count() === 5);
     const slots = expectedSchedule(seed, "self").slots;
     const labels = { bookable: "予約可能", reserved_by_me: "本人予約済み", group_lesson: "グループレッスン（予約不可）", unavailable: "予約不可" };
     for (const [i, slot] of slots.entries()) {
-      const node = page.locator(".slot").nth(i);
+      const node = page.locator("#daily-content .slot").nth(i);
       check((await node.textContent()).includes(labels[slot.view]));
       check((await node.evaluate(node => node.tagName === "BUTTON")) === (slot.view === "bookable"));
     }
@@ -55,11 +55,14 @@ export async function proveStudentDom(page, signal, seed, secrets, revoked = fal
       document.querySelector(".calendar-scroll").scrollWidth > document.querySelector(".calendar-scroll").clientWidth));
     check(await page.locator("section ol li").count() === 1);
     check((await page.locator("section ol").textContent()).includes("11:00") && !(await page.locator("section ol").textContent()).includes("12:00 ～"));
-    await page.getByRole("button", { name: "一覧表示", exact: true }).focus();
+    const day = page.getByRole("button", { name: `${seed.date.slice(0, 4)}年${seed.date.slice(5, 7)}月${Number(seed.date.slice(8))}日 選択中`, exact: true });
+    await day.focus();
     await page.keyboard.press("Enter");
-    check(await page.locator("#schedule-content ul .slot").count() === 5);
+    check(await page.locator("#daily-content .slot").count() === 5);
     check(await page.evaluate(() => document.documentElement.scrollWidth <= 320));
-    check(await page.evaluate(() => document.activeElement?.textContent === "一覧表示"));
+    check(await page.evaluate(() => document.activeElement?.id === "daily-heading"));
+    await page.getByRole("button", { name: "別の日を選ぶ（カレンダーへ）", exact: true }).click({ timeout });
+    check(await page.evaluate(() => document.activeElement?.id === "schedule-heading"));
     await page.locator("button.slot").focus(); await page.keyboard.press("Space");
     check((await page.locator("#selection-status").textContent()).includes("予約は確定していません"));
     await page.getByRole("button", { name: "履歴を最新から再取得", exact: true }).click({ timeout });
@@ -129,8 +132,8 @@ export async function proveSyntheticDom(page, signal) {
   await page.setViewportSize({ width: 320, height: 640 });
   check(await page.evaluate(() => document.documentElement.scrollWidth <= 320 &&
     document.querySelector(".calendar-scroll").scrollWidth > document.querySelector(".calendar-scroll").clientWidth));
-  // List must also fit; fixed fixture is independent of device timezone.
-  await page.getByRole("button", { name: "一覧表示", exact: true }).click({ timeout });
+  // The permanent day list must also fit, even after authentication stops.
+  check(await page.locator("#daily-content").count() === 1);
   check(await page.evaluate(() => document.documentElement.scrollWidth <= 320));
   await page.evaluate(() => { delete globalThis.__studentFixture; });
   signal.throwIfAborted();

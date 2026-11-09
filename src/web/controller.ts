@@ -1,8 +1,8 @@
-import { parseHistory, parseSchedule, parsePreview, parseConfirm, parseCsrf, validMonth, intervalLabel,
+import { parseHistory, parseSchedule, parsePreview, parseConfirm, parseCsrf, validMonth, monthDays, intervalLabel,
   type Slot, type HistoryPage, type PreviewView, type ConfirmView } from "./model.js";
-export type Area = "schedule" | "history" | "selection" | "view" | "operation";
+export type Area = "schedule" | "history" | "selection" | "day" | "operation";
 export interface ReadState {
-  month: string; view: "calendar" | "list"; slots: Slot[]; history: HistoryPage;
+  month: string; selectedDate: string | null; scheduleReady: boolean; slots: Slot[]; history: HistoryPage;
   scheduleMessage: string; historyMessage: string; selectionMessage: string;
   scheduleLoading: boolean; historyLoading: boolean; selectedId: string | null; stopped: boolean;
   operation: "idle" | "previewing" | "review" | "confirming" | "confirmed" | "halted";
@@ -33,7 +33,7 @@ export class StudentReadController {
   constructor(month: string, private readonly fetcher: typeof fetch,
     private readonly changed: (area: Area, focus: boolean) => void) {
     if (!validMonth(month)) throw new Error("Invalid month");
-    this.state = { month, view: "calendar", slots: [], history: { items: [], nextCursor: null },
+    this.state = { month, selectedDate: null, scheduleReady: false, slots: [], history: { items: [], nextCursor: null },
       scheduleMessage: "", historyMessage: "", selectionMessage: "枠の選択だけでは予約は確定しません。",
       scheduleLoading: false, historyLoading: false, selectedId: null, stopped: false,
       operation: "idle", operationMessage: "", operationBusy: false, operationHalted: false, preview: null, confirmed: null };
@@ -64,7 +64,7 @@ export class StudentReadController {
       // Invalidate both outstanding reads and discard all prior personal state.
       this.scheduleRevision++; this.historyRevision++; this.clearConfirmation(); this.#csrf = null;
       Object.assign(this.state, { stopped: true, slots: [], history: { items: [], nextCursor: null },
-        selectedId: null, selectionMessage: "", scheduleLoading: false, historyLoading: false,
+        selectedId: null, selectedDate: null, scheduleReady: false, selectionMessage: "", scheduleLoading: false, historyLoading: false,
         scheduleMessage: message(error), historyMessage: message(error), operationMessage: message(error), operationHalted: true, operation: "halted" });
       this.changed("operation", false);
       this.changed("schedule", area === "schedule" && focus);
@@ -76,11 +76,13 @@ export class StudentReadController {
     this.changed(area, focus);
   }
   async loadMonth(month: string, focus = true, preserveResult = false): Promise<void> {
-    if (this.state.stopped) return;
+    if (this.state.stopped || this.state.operation === "confirming") return;
+    const retainedDate = preserveResult && month === this.state.month ? this.state.selectedDate : null;
     if (!preserveResult) this.clearConfirmation();
     this.needsFreshSchedule = false;
     const revision = ++this.scheduleRevision;
-    Object.assign(this.state, { slots: [], selectedId: null, selectionMessage: "枠の選択だけでは予約は確定しません。", scheduleLoading: false });
+    Object.assign(this.state, { slots: [], selectedDate: retainedDate, scheduleReady: false, selectedId: null,
+      selectionMessage: "枠の選択だけでは予約は確定しません。", scheduleLoading: false });
     if (!validMonth(month)) {
       this.state.scheduleMessage = "月をYYYY-MM形式で選択してください。";
       this.changed("schedule", focus); return;
@@ -90,7 +92,10 @@ export class StudentReadController {
     try {
       const slots = parseSchedule(await this.get(`/api/me/schedule-months/${month}`), month);
       if (revision !== this.scheduleRevision || this.state.stopped) return;
-      Object.assign(this.state, { slots, scheduleLoading: false, scheduleMessage: slots.length ? "予定を取得しました。" : "この月の枠はありません。" });
+      const firstDate = slots.filter(slot => slot.view === "bookable").map(slot => slot.startsAt.slice(0, 10)).sort()[0] ?? null;
+      Object.assign(this.state, { slots, selectedDate: retainedDate ?? firstDate, scheduleReady: true, scheduleLoading: false,
+        scheduleMessage: !slots.length ? "この月の枠はありません。" : firstDate ? "予定を取得しました。"
+          : "この月に予約可能な枠はありません。日付を選んで予定を確認できます。" });
       this.changed("schedule", focus);
     } catch (error) {
       if (error instanceof ReadError && error.status === 401) { this.fail(error, "schedule", focus); return; }
@@ -117,10 +122,20 @@ export class StudentReadController {
       this.fail(error, "history", focus);
     }
   }
-  setView(view: "calendar" | "list"): void { this.state.view = view; this.changed("view", false); }
+  selectDate(date: string): void {
+    if (this.state.stopped || this.state.operation === "confirming" || this.state.scheduleLoading || !this.state.scheduleReady ||
+        !monthDays(this.state.month).some(day => day !== null && date === `${this.state.month}-${String(day).padStart(2, "0")}`)) return;
+    if (date !== this.state.selectedDate) {
+      this.clearConfirmation();
+      this.state.selectedDate = date; this.state.selectedId = null;
+      this.state.selectionMessage = "枠の選択だけでは予約は確定しません。";
+    }
+    this.changed("day", true);
+  }
   select(slotId: string): void {
     const slot = this.state.slots.find(item => item.slotId === slotId);
-    if (this.state.stopped || this.state.scheduleLoading || slot?.view !== "bookable") return;
+    if (this.state.stopped || this.state.operation === "confirming" || this.state.scheduleLoading ||
+        slot?.view !== "bookable" || slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
     this.clearConfirmation();
     this.state.selectedId = slotId;
     this.state.selectionMessage = `${intervalLabel(slot)}を選択しました。予約は確定していません。`;
@@ -128,14 +143,15 @@ export class StudentReadController {
   }
   private clearConfirmation(): void {
     this.needsFreshSchedule ||= this.state.preview !== null || this.state.operation === "previewing" || this.state.operation === "confirming";
-    this.operationRevision++; this.#token = null;
+    this.operationRevision++; this.#token = null; this.state.operationBusy = false;
     this.state.preview = null; this.state.confirmed = null;
     if (!this.state.operationHalted) { this.state.operation = "idle"; this.state.operationMessage = ""; }
   }
   private current(revision: number): boolean { return revision === this.operationRevision && !this.state.stopped; }
   async preview(): Promise<void> {
     const slot = this.state.slots.find(item => item.slotId === this.state.selectedId);
-    if (this.state.stopped || this.state.operationHalted || this.state.operationBusy || this.state.scheduleLoading || slot?.view !== "bookable") return;
+    if (this.state.stopped || this.state.operationHalted || this.state.operationBusy || this.state.scheduleLoading ||
+        slot?.view !== "bookable" || slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
     if (this.needsFreshSchedule || this.state.preview !== null) {
       this.clearConfirmation();
       this.state.operationMessage = "最新の予定を再取得します。予約可能枠を選び直し、再Previewして内容を確認してください。";
@@ -160,13 +176,16 @@ export class StudentReadController {
       Object.assign(this.state, { preview: parsed.view, operation: "review", operationMessage: "日時・区分・既存予約への変更を確認してから、予約を確定してください。" });
       this.changed("operation", true);
     } catch (error) { this.operationFailure(error, revision, false); }
-    finally { this.state.operationBusy = false; this.changed("operation", false); }
+    finally { if (this.current(revision)) { this.state.operationBusy = false; this.changed("operation", false); } }
   }
   async confirm(): Promise<void> {
     const view = this.state.preview, token = this.#token;
-    if (this.state.stopped || this.state.operationHalted || this.state.operationBusy || this.state.operation !== "review" || !view || !token || !this.#csrf) return;
+    if (this.state.stopped || this.state.operationHalted || this.state.operationBusy || this.state.scheduleLoading ||
+        this.state.operation !== "review" || !view || !token || !this.#csrf ||
+        view.slot.slotId !== this.state.selectedId || view.slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
     const revision = this.operationRevision;
     const slot: Slot = { ...view.slot, view: "bookable" };
+    this.scheduleRevision++; // Older Schedule reads must not overwrite the Command's readback.
     this.#token = null; // Consume before await: a confirmation can send at most one Command.
     Object.assign(this.state, { operation: "confirming", operationBusy: true, operationMessage: "予約の確定結果を確認しています。再送しないでください。" });
     this.changed("operation", false);
@@ -177,7 +196,7 @@ export class StudentReadController {
       this.changed("operation", true);
       void this.loadMonth(this.state.month, false, true);
     } catch (error) { this.operationFailure(error, revision, true); }
-    finally { this.state.operationBusy = false; this.changed("operation", false); }
+    finally { if (this.current(revision)) { this.state.operationBusy = false; this.changed("operation", false); } }
   }
   private operationFailure(error: unknown, revision: number, command: boolean): void {
     if (error instanceof ReadError && error.status === 401) { this.fail(error, "schedule", false); this.changed("operation", true); return; }
