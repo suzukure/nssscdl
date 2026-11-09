@@ -293,3 +293,96 @@ fi
 [ ! -f "$MOCK_DIR/posts" ] && echo 'real_helpers_edited_trusted_comment: PASS'
 
 printf '%s\n' 'consumer mock: 44 cases PASS (no real GitHub/API access)'
+
+# #1136 end-to-end: real helper graph/prepare and main consumer with fixed Bot.
+# Transform only synthetic GitHub responses, never publisher/consumer logic.
+mv "$tmp/bin/gh" "$tmp/bin/gh-human"
+cat > "$tmp/bin/bot-response.py" <<'PYRESPONSE'
+import json,sys,os
+value=json.load(sys.stdin)
+def convert(x):
+    if isinstance(x,list):return [convert(v) for v in x]
+    if not isinstance(x,dict):
+        return 'recovery/issue-36-0123456789abcdef0123' if x=='human/issue-36-work' else x
+    x={k:convert(v) for k,v in x.items()}
+    if 'performed_via_github_app' in x:
+        x['performed_via_github_app']={'id':4777726,'slug':'nssscdl-chatgpt-dev'}
+        x['user']={'id':323046280,'type':'Bot','login':'nssscdl-chatgpt-dev[bot]'}
+    if x.get('number')==37 and 'head' in x:
+        x['user']={'id':323046280,'type':'Bot','login':'nssscdl-chatgpt-dev[bot]'}
+        if os.environ.get('MOCK_BOT_BAD')=='wrong_id':x['user']['id']=99
+        for side in ('head','base'):x[side]['repo']['id']=1348220387
+    if 'headRefOid' in x and 'author' in x:x['author']={'login':'app/nssscdl-chatgpt-dev'}
+    return x
+print(json.dumps(convert(value)))
+PYRESPONSE
+cat > "$tmp/bin/gh" <<'BOT_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = api ] && [ "${2:-}" != -X ]; then
+ "$(dirname "$0")/gh-human" "$@" | python3 "$(dirname "$0")/bot-response.py"
+else exec "$(dirname "$0")/gh-human" "$@"; fi
+BOT_GH
+chmod +x "$tmp/bin/gh"
+reset_state; unset MOCK_BAD REAL_BAD MOCK_BOT_BAD
+bash "$tmp/real/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 4777726 > "$tmp/bot-output"
+jq -e '.result=="handoff_consumer_complete" and .draft_unchanged==true' "$tmp/bot-output" >/dev/null
+[ "$(grep -c '^POST$' "$MOCK_DIR/posts")" = 1 ]
+[ ! -f "$MOCK_DIR/issue-label" ] && [ ! -f "$MOCK_DIR/pr-label" ]
+: > "$MOCK_DIR/posts"
+bash "$tmp/real/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 4777726 > "$tmp/bot-output"
+[ ! -s "$MOCK_DIR/posts" ]
+reset_state; export MOCK_BOT_BAD=wrong_id
+if bash "$tmp/real/consume-ai-resume-handoff.sh" suzukure/nssscdl 36 201 4777726 > "$tmp/bot-output" 2> "$tmp/bot-error"; then
+ echo 'wrong Bot account admitted' >&2; exit 1
+fi
+[ ! -f "$MOCK_DIR/posts" ] && [ ! -f "$MOCK_DIR/labels" ]
+unset MOCK_BOT_BAD
+echo 'Fixed Bot real helpers: normal/reentry/wrong account passed; no live API.'
+
+# Exercise actual collector admission functions without API/network or writes.
+python3 - "$root/consume-ai-resume-handoff.sh" <<'PYBOT'
+import ast, re, sys, copy
+from pathlib import Path
+source=Path(sys.argv[1]).read_text().split("<<'PY'\n",1)[1].rsplit('\nPY',1)[0]
+tree=ast.parse(source)
+class Stop(Exception):pass
+def stop(code):raise Stop(code)
+ns={'re':re,'REPO':'suzukure/nssscdl','HUMAN':re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}\Z'),'stop':stop}
+functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('bot_provenance','facts','collector')]
+exec(compile(ast.Module(body=functions,type_ignores=[]),'<actual collector>','exec'),ns)
+repo={'id':1348220387,'full_name':'suzukure/nssscdl'}
+pr={'number':37,'state':'open','draft':True,'user':{'id':323046280,'type':'Bot','login':'nssscdl-chatgpt-dev[bot]'},'head':{'sha':'a'*40,'ref':'recovery/issue-36-0123456789abcdef0123','repo':repo},'base':{'ref':'main','repo':repo}}
+source={'user':dict(pr['user']),'performed_via_github_app':{'id':4777726,'slug':'nssscdl-chatgpt-dev'}}
+issue={'number':36,'state':'open','labels':[{'name':'human-review-required'}]};pr_issue={**issue,'number':37}
+ns['api']=lambda path: pr if '/pulls/' in path else issue if path.endswith('/36') else pr_issue
+ns['command_fact']=lambda *args:('suzukure','trusted-time')
+ns['source_fact']=lambda *args:source
+canonical={'isDraft':True,'headRefOid':'a'*40,'baseRefName':'main','author':{'login':'app/nssscdl-chatgpt-dev'},'headRepository':{'nameWithOwner':ns['REPO']},'baseRepository':{'nameWithOwner':ns['REPO']}}
+ns['canonical_pr']=lambda *args:canonical
+ns['current_head_check']=lambda *args:None
+ns['writer_terminal']=lambda:None
+actor,labels=ns['collector'](36,201,'101',37,'a'*40,4777726)
+assert actor=='suzukure' and labels[3]['author_login']==pr['user']['login'] and labels[3]['bot_provenance']['app_id']==4777726
+cases=[('user','id',1),('user','type','User'),('user','login','other[bot]'),('head','ref','human/issue-36-work')]
+for section,key,value in cases:
+ bad=copy.deepcopy(pr);bad[section][key]=value
+ try:ns['bot_provenance'](bad,source,36)
+ except Stop:pass
+ else:raise AssertionError('bad PR admitted')
+for section,key,value in [('user','id',1),('user','type','User'),('performed_via_github_app','id',42),('performed_via_github_app','slug','other')]:
+ bad=copy.deepcopy(source);bad[section][key]=value
+ try:ns['bot_provenance'](pr,bad,36)
+ except Stop:pass
+ else:raise AssertionError('bad source admitted')
+for side in ('head','base'):
+ bad=copy.deepcopy(pr);bad[side]['repo']['id']=1
+ try:ns['bot_provenance'](bad,source,36)
+ except Stop:pass
+ else:raise AssertionError('foreign repo ID admitted')
+canonical['author']['login']='other[bot]'
+try:ns['collector'](36,201,'101',37,'a'*40,4777726)
+except Stop as ex:assert str(ex)=='pr_canonical_identity_mismatch'
+else:raise AssertionError('canonical mismatch admitted')
+print('Fixed Bot REST/source provenance and actual collector fixtures passed; no network/writes.')
+PYBOT
