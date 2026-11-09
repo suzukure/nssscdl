@@ -23,19 +23,15 @@ C4 図では PlantUML 同梱の C4 Standard Library を使用する。外部 URL
 
 ## レンダリング
 
-`.puml` は通常の text diff として Claude / 人間がレビューする。`rendered/**/*.svg`（直下を含む）は root の `.gitattributes` で Git 標準の `-diff` を指定し、ローカル Git では binary diff として扱う。ただし #848 / PR #849 で、GitHub raw PR diff はこの指定があっても SVG XML を text 展開することを確認した。#850 の review context では、[生成SVG差分の縮約契約](../30_operations/ai-development-workflow.md#claude-reviewの生成svg差分)に従って provenance を証明できた生成物だけを要約する。attribute を review trust の根拠にはせず、正本と renderer workflow の差分は全文保持する。
+`.puml` は全文レビューする唯一の正本。Rendererはsame-repo PRのopened / synchronize / reopened / ready_for_reviewで、PUMLまたはWorkflow変更時にeventのexact HEADをcheckoutして照合する。手動workflow_dispatchはmainのrun確定SHAだけを対象にする。contents: read、checkout credential非保存とし、repositoryへadd / commit / pushしない。Java 21・Graphviz・checksum検証済PlantUML v1.2026.6と同梱C4 includeで全PUMLを毎回生成し、失敗・空出力は停止する。
 
-`.github/workflows/render-plantuml.yml` は非 main ブランチへの push で `plantuml/**/*.puml`、Workflow 自身、`.gitattributes` の変更を検出し、SVG を `rendered/` へ全件再生成する。差分がある場合だけ checkout と同じブランチへコミットし、最新なら何もしない。生成コミットに `[skip ci]` は付けず、SVG だけの変更は trigger path 外なので renderer の self-loop を起こさない。正本と生成物を一つの通常 PR で merge し、main へ直接書き込まない。
+Actionsの該当Render runから単一Artifact `plantuml-<source SHA>` をダウンロード・展開し、SVGをブラウザで開く。`renderer-info.txt`でsource SHA、run、version/checksumを確認する。保存期限は7日。期限切れはmainで手動再生成する。Artifact内SVGはGitHub Markdown相対画像として表示できない。チャットでの取得・表示は未実証。
 
-`workflow_dispatch` による手動生成も非 main ブランチ限定とし、main / tag 等は job 条件でスキップする。checkout が detached HEAD または対象ブランチと不一致なら書込み前に失敗する。生成中にブランチが進んで push が競合した場合は失敗とし、force push や自動 retry は行わない。
+Ready にする前に、Render workflow の成功とcurrent head一致、Artifact全件・C4/Sequence表示、raw diffの400,000-byte gate適合を確認する。stale headのArtifactや成功はcurrent headの証拠に使わない。Ready 後に各 check / review の対象 head と結果を確認し、Product CI / AI Workflow Regression / PR Traceability / Claude Reviewと人間Code Owner承認を維持する。ローカルfixtureは正式Actions成功を代替しない。
 
-checkout / push には ephemeral な `GITHUB_TOKEN` だけを、Workflow の `contents: write` 権限内で使用する。Render workflow は `DEV_APP_PRIVATE_KEY` / `DEV_APP_CLIENT_ID` / Developer App token を使用しない。App 権限・Ruleset・Secrets / Variables は変更しない。
+#1134 / PR1ではA群4 SVGの追跡を解除し、C4のB群3 SVGはPR2まで暫定保持する（更新しない）。生成SVGはignoreし再追跡しない。旧 #850 provenance縮約は[既存契約](../30_operations/ai-development-workflow.md#claude-reviewの生成svg差分)を維持し、PR2で退役する。削除差分を隠さずraw diffを計測する。
 
-`GITHUB_TOKEN` による生成 push は後続 workflow の trigger を期待しない。人間は PlantUML / renderer contract 変更 PR を Ready にする前に、Render workflow の成功、生成コミット反映済みの current head、取得した raw PR diff と review context の内容・サイズを確認する。Render failure 中は Ready / merge しない。3 SVG 変更を含む場合も、provenance 成立時には path・生成commit SHA・変更ありの要約が残り、正本と renderer の差分が全文保持され、縮約後の review diff が Claude Review の 400,000-byte 上限以内であることを確認する。provenance が証明できなければ raw diff を保持し、上限超過時は停止する。
-
-生成コミットが current head になった後の人間の `ready_for_review` event を、同 head の Product CI / AI Workflow Regression / PR Traceability / Claude Review の明示的な開始点とする。Ready 後に各 check / review の対象 head と結果を確認してから、既存の merge 条件に従う。ローカル fixture は GitHub 上の表示・diff 取得・Ready event による current-head checks 起動を実証するものではない。#845 の移行時に残った SVG 同期と、#850 の main 反映後の review context 縮約 / Ready lifecycle の自然実証は、latest main から再実施する #848 で確認する。成功後に stale SVG を通常 PR lifecycle で同期し、親 #562 へ結果を返す。
-
-PlantUML のバージョンは Workflow 内で固定し、更新は意図的に行う。
+移行時は旧Rendererのpush runとwriterが稼働していないことを提出直前に再確認する。旧branch上のpushは旧Workflowを実行し得るため、旧runが残る間は提出・Readyに進めない。workflow停止等が必要なら人間Goを得る。新Rendererはpush triggerを持たない。
 
 ## 命名例
 

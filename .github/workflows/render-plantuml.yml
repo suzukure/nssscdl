@@ -1,41 +1,41 @@
 name: Render PlantUML diagrams
 
 on:
-  push:
-    branches-ignore: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'docs/diagrams/plantuml/**/*.puml'
       - '.github/workflows/render-plantuml.yml'
-      - '.gitattributes'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: plantuml-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   render:
-    if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Check out repository
+      - name: Check out exact source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
-          token: ${{ github.token }}
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
 
-      - name: Verify writable branch
+      - name: Verify source SHA
         shell: bash
-        env:
-          TARGET_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          case "$TARGET_REF" in
-            refs/heads/main) exit 1 ;;
-            refs/heads/*) git check-ref-format "$TARGET_REF" ;;
-            *) exit 1 ;;
-          esac
-          test "$(git symbolic-ref --quiet HEAD)" = "$TARGET_REF"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -59,43 +59,49 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           src_root='docs/diagrams/plantuml'
-          dst_root='docs/diagrams/rendered'
-
-          find "$dst_root" -type f -name '*.svg' -delete
-
+          dst_root="$RUNNER_TEMP/plantuml-artifact"
+          # A new empty directory prevents stale or tracked SVG contamination.
+          mkdir "$dst_root"
+          count=0
           while IFS= read -r -d '' file; do
             rel="${file#${src_root}/}"
             dest="${dst_root}/${rel%.puml}.svg"
             mkdir -p "$(dirname "$dest")"
-
-            java -jar plantuml.jar -tsvg "$file"
+            java -jar plantuml.jar -failfast2 -tsvg "$file" 2> "$RUNNER_TEMP/plantuml.stderr"
+            if test -s "$RUNNER_TEMP/plantuml.stderr"; then
+              cat "$RUNNER_TEMP/plantuml.stderr" >&2
+              exit 1
+            fi
+            test -s "${file%.puml}.svg"
             mv "${file%.puml}.svg" "$dest"
+            count=$((count + 1))
           done < <(find "$src_root" -type f -name '*.puml' -print0)
+          test "$count" -gt 0
+          test "$(find "$dst_root" -type f -name '*.svg' | wc -l)" -eq "$count"
+          {
+            printf 'source_sha=%s\nrun=%s/%s/actions/runs/%s\n' "$SOURCE_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'plantuml=v1.2026.6\nsvg_count=%s\n' "$count"
+            sha256sum plantuml.jar
+            java -version 2>&1
+            dot -V 2>&1
+          } > "$dst_root/renderer-info.txt"
 
-      - name: Commit rendered SVG files
+      - name: Verify current PR head
+        if: github.event_name == 'pull_request'
         shell: bash
         env:
-          TARGET_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')
+          test "$current" = "$SOURCE_SHA"
 
-          case "$TARGET_REF" in
-            refs/heads/main) exit 1 ;;
-            refs/heads/*) git check-ref-format "$TARGET_REF" ;;
-            *) exit 1 ;;
-          esac
-          test "$(git symbolic-ref --quiet HEAD)" = "$TARGET_REF"
-
-          git add docs/diagrams/rendered
-
-          if git diff --cached --quiet; then
-            echo 'Rendered diagrams are already up to date.'
-            exit 0
-          fi
-
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Render PlantUML diagrams'
-          git push origin "HEAD:$TARGET_REF"
+      - name: Upload SVG bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plantuml-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/plantuml-artifact/
+          if-no-files-found: error
+          retention-days: 7
