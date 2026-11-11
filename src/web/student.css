@@ -15,7 +15,9 @@ button[aria-pressed="true"] { border-color: #17212b; background: #d8eaff; box-sh
 .calendar-scroll { max-width: 100%; overflow-x: auto; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 56rem; gap: .25rem; }
 .calendar-day { min-width: 0; border: 1px solid #7a8794; padding: .25rem; }
-.calendar-day h3 { margin: .25rem; font-size: 1rem; }
+.selected-day { background: #d8eaff; }
+h2 { scroll-margin-block: 1rem; }
+h2:focus { outline: 3px solid #6633cc; outline-offset: 3px; }
 .slot { display: block; width: 100%; margin-block: .5rem; padding: .5rem; overflow-wrap: anywhere; text-align: left; }
 .bookable { border-color: #14643a; }
 .reserved_by_me { border-left: 4px solid #164f99; }
