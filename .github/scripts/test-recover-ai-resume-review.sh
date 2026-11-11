@@ -389,7 +389,10 @@ class Case:
                 {'sha':OLD if self.fault == 'execution-head' else HEAD}]}
         if path == 'contents/.github/workflows/claude-review.yml':
             assert 'ref=' in query and ('ref='+EXECUTION_SHA in query or 'ref='+'6'*40 in query)
-            value=(root/'.github/workflows/claude-review.yml').read_text()
+            # Fixed PR #1110 execution-era workflow snapshot; do not read the mutable PR workflow.
+            snapshot = (scripts / 'fixtures/pr1110-claude-review-snapshot.yml').read_bytes()
+            assert hashlib.sha1(b'blob ' + str(len(snapshot)).encode() + b'\0' + snapshot).hexdigest() == NEW_WORKFLOW
+            value = snapshot.decode('utf-8')
             if self.fault != 'new-workflow':
                 value=value.replace('allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]',
                                     'allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot]')

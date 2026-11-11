@@ -19,6 +19,19 @@ gh() {
         ;;
     esac) | jq 'if has("changedFiles") then . else . + {changedFiles:(.files | length)} end'
   elif [ "$1" = 'api' ]; then
+    if [ "$*" = 'api graphql --input -' ]; then
+      [ "${MOCK_BOT_IDENTITY_FAILURE:-}" != api ] || return 1
+      jq -cn --argjson request "$(cat)" --argjson nodes "$MOCK_BOT_NODES" \
+        --arg failure "${MOCK_BOT_IDENTITY_FAILURE:-}" '
+        {data:{nodes:[$request.variables.ids[] as $id | $nodes[] | select(.id == $id)] | reverse}}
+        | if $failure == "id" then .data.nodes[0].author.databaseId = 1
+          elif $failure == "type" then .data.nodes[0].author.__typename = "User"
+          elif $failure == "login" then .data.nodes[0].author.login = "imposter"
+          elif $failure == "missing" then .data.nodes[0] = null
+          elif $failure == "errors" then .errors = [{message:"mock"}]
+          else . end'
+      return
+    fi
     if [ -n "${MOCK_CI_HEAD:-}" ] && [[ "$*" == *'/actions/runs?'* ]]; then
       [ "$*" = "api --paginate --slurp repos/owner/repo/actions/runs?head_sha=${MOCK_CI_HEAD}&per_page=100" ]
       [ "${MOCK_CI_API_FAIL:-false}" != true ] || return 1
@@ -249,6 +262,53 @@ if [ "$(grep -E '^### (Prior reviewer App review|Trusted review metadata):' "$te
   echo 'Selected review output was not ordered by submittedAt.' >&2
   exit 1
 fi
+
+# Use the same snapshot for both selection and per-post Bot identity checks.
+verified_metadata="$(jq -c '
+  .comments |= (to_entries | map(.value + {id:("c" + (.key | tostring))})) |
+  .reviews |= (to_entries | map(.value + {id:("r" + (.key | tostring))}))
+' <<< "$conversation_metadata")"
+MOCK_BOT_NODES="$(jq -c '
+  [(.comments[] | ["IssueComment", .]), (.reviews[] | ["PullRequestReview", .])] |
+  map(. as [$kind, $post] | $post.author.login as $login |
+    {id:$post.id,__typename:$kind,author:{login:$login,__typename:"Bot",
+      databaseId:(if $login | contains("review") then 92 else 91 end)}})
+' <<< "$verified_metadata")"
+export MOCK_BOT_NODES
+build_verified_conversation() {
+  MOCK_CASE=conversation MOCK_METADATA="$1" \
+    bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$2" \
+      'dev,dev[bot],app/dev,review,review[bot],app/review' 'review,review[bot],app/review' '' '' '91,92'
+}
+build_verified_conversation "$verified_metadata" "$test_dir/selected-verified.md"
+cmp "$test_dir/selected.md" "$test_dir/selected-verified.md"
+human_comments="$(jq -c '
+  .comments += (["OWNER", "MEMBER", "COLLABORATOR"] | map(. as $role |
+    {author:{login:($role | ascii_downcase)},authorAssociation:$role,
+     body:("human " + $role),createdAt:"2026-01-04T00:00:00Z"}))
+' <<< "$verified_metadata")"
+build_verified_conversation "$human_comments" "$test_dir/verified-human-comments.md"
+for role in OWNER MEMBER COLLABORATOR; do
+  grep -Fxq "DATA| human $role" "$test_dir/verified-human-comments.md"
+done
+timestamp_fault="$(jq -c '.comments[1].createdAt = "bad timestamp"' <<< "$verified_metadata")"
+build_verified_conversation "$timestamp_fault" "$test_dir/verified-time-fallback.md"
+grep -Fq 'Conversation selection fallback: relevant conversation timestamps are missing or invalid' "$test_dir/verified-time-fallback.md"
+no_bots="$(jq -c '.comments = [] | .reviews = []' <<< "$verified_metadata")"
+MOCK_BOT_IDENTITY_FAILURE=api build_verified_conversation "$no_bots" "$test_dir/verified-initial.md"
+for fault in id type login missing errors api; do
+  if MOCK_BOT_IDENTITY_FAILURE="$fault" build_verified_conversation "$verified_metadata" "$test_dir/verified-invalid.md"; then
+    echo "Unverified Bot conversation reached the context for $fault." >&2
+    exit 1
+  fi
+  [ ! -e "$test_dir/verified-invalid.md" ]
+done
+missing_post_id="$(jq -c 'del(.reviews[0].id)' <<< "$verified_metadata")"
+if build_verified_conversation "$missing_post_id" "$test_dir/verified-invalid.md"; then
+  echo 'Bot conversation without a node ID reached the context.' >&2
+  exit 1
+fi
+[ ! -e "$test_dir/verified-invalid.md" ]
 
 descriptive_marker_metadata="$(jq -c '
   .reviews[0].body = "## Claude review\n--- BEGIN REVIEW SUMMARY DATA ---\nSUMMARY| exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.\nSUMMARY| exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.\n--- END REVIEW SUMMARY DATA ---"
