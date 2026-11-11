@@ -1,4 +1,5 @@
 name: Claude Review
+# human-review-developer-bot: nssscdl-chatgpt-dev 323046280
 # review-json-schema: {"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"summary":{"type":"string"},"blocking_findings":{"type":"array","items":{"type":"string"}},"non_blocking_findings":{"type":"array","items":{"type":"string"}},"linked_issues_checked":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking_findings","non_blocking_findings","linked_issues_checked"],"additionalProperties":false}
 
 on:
@@ -91,23 +92,33 @@ jobs:
             fi
             exit 0
           fi
+          head_ref="$(jq -r .head_ref <<< "$facts")"
+          human_candidate=false
+          if [[ "${head_ref,,}" == human/issue-* ]]; then
+            if [[ ! "$head_ref" =~ ^human/issue-[1-9][0-9]*-.+$ ]] ||
+              ! jq -e --arg owner "${GITHUB_REPOSITORY%%/*}" '
+                .base.ref == "main" and .author_association == "OWNER" and
+                (.base.repo.id | type == "number" and . > 0 and floor == .) and
+                .head.repo.id == .base.repo.id and
+                (.base.repo.owner | .type == "User" and .login == $owner and
+                  (.id | type == "number" and . > 0 and floor == .)) and
+                (.user.type == "User" and .user.login == .base.repo.owner.login and
+                  .user.id == .base.repo.owner.id)
+              ' <<< "$pr" > /dev/null; then
+              echo '人間管理PRのbranch・base・repository ownerを確認できないため、レビューを停止します。' >&2
+              exit 1
+            fi
+            human_candidate=true
+          fi
           base_ref="$(jq -r .base_ref <<< "$facts")"
           base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${base_ref}" --jq '.object.sha')" || {
             echo '現在のbase先端を取得できないため、レビューを停止します。' >&2; exit 1;
           }
           [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || { echo '現在のbase先端が不正なため、レビューを停止します。' >&2; exit 1; }
-          jq -r --arg base_sha "$base_sha" '
-            . + {source_kind:"pull_request",base_sha:$base_sha,continue:true}
+          jq -r --arg base_sha "$base_sha" --argjson human_candidate "$human_candidate" '
+            . + {source_kind:"pull_request",base_sha:$base_sha,continue:true,human_candidate:$human_candidate}
             | to_entries[] | "\(.key)=\(.value)"
           ' <<< "$facts" >> "$GITHUB_OUTPUT"
-
-      - name: Create developer App token for identity allowlist
-        if: steps.review-source.outputs.continue == 'true'
-        id: dev-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
-          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
 
       - name: Check out pull request
         if: steps.review-source.outputs.continue == 'true'
@@ -117,8 +128,88 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Build review context
+      - name: Resolve review identities
         if: steps.review-source.outputs.continue == 'true'
+        id: review-identity
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          HUMAN_CANDIDATE: ${{ steps.review-source.outputs.human_candidate }}
+          BASE_SHA: ${{ steps.review-source.outputs.base_sha }}
+          PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
+          REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_MACHINE_STATE: ${{ steps.review-source.outputs.event_machine_state }}
+          REVIEW_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$HUMAN_CANDIDATE" = false ]; then
+            echo 'mode=legacy' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$HUMAN_CANDIDATE" = true ]
+          identity="$(git show "${BASE_SHA}:.github/workflows/claude-review.yml" | sed -n '/^# human-review-developer-bot:/p')"
+          if [ -z "$identity" ]; then
+            # The introducing PR is reviewed with the pre-introduction base contract.
+            echo 'mode=legacy' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          identity="${identity#'# human-review-developer-bot: '}"
+          if [[ ! "$identity" =~ ^([a-z0-9-]+)\ ([1-9][0-9]*)$ ]]; then
+            echo 'trusted mainのDeveloper Bot identity設定が不正です。' >&2
+            exit 1
+          fi
+          developer_slug="${BASH_REMATCH[1]}"
+          developer_id="${BASH_REMATCH[2]}"
+          [[ "$REVIEW_APP_SLUG" =~ ^[a-z0-9-]+$ && "$developer_slug" != "$REVIEW_APP_SLUG" ]]
+
+          git show "${BASE_SHA}:.github/scripts/evaluate-claude-review-entry-gate.sh" > "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh"
+          result="$(bash "$RUNNER_TEMP/evaluate-claude-review-entry-gate.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$REVIEWED_HEAD_SHA" "$EVENT_ACTION" "$EVENT_MACHINE_STATE")"
+          proceed="$(jq -ers 'select(length == 1) | .[0].continue | booleans | tostring' <<< "$result")"
+          if [ "$proceed" = false ]; then
+            echo 'mode=blocked' >> "$GITHUB_OUTPUT"
+            jq -r '.reason' <<< "$result" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          developer="$(gh api "user/${developer_id}")"
+          reviewer="$(gh api "users/${REVIEW_APP_SLUG}%5Bbot%5D")"
+          if ! jq -e --arg login "${developer_slug}[bot]" --argjson id "$developer_id" '
+            .type == "Bot" and .login == $login and .id == $id
+          ' <<< "$developer" > /dev/null || ! reviewer_id="$(jq -er --arg login "${REVIEW_APP_SLUG}[bot]" --argjson developer_id "$developer_id" '
+            select(.type == "Bot" and .login == $login) | .id
+            | select(type == "number" and . > 0 and floor == . and . != $developer_id)
+          ' <<< "$reviewer")"; then
+            echo 'Developer / Reviewer Botのidentityを照合できません。' >&2
+            exit 1
+          fi
+          case "${GITHUB_ACTOR,,}" in
+            "$developer_slug"|"${developer_slug}[bot]") expected_actor_id="$developer_id" ;;
+            "$REVIEW_APP_SLUG"|"${REVIEW_APP_SLUG}[bot]") expected_actor_id="$reviewer_id" ;;
+            *) expected_actor_id='' ;;
+          esac
+          if [ -n "$expected_actor_id" ] && ! jq -e --arg actor "$GITHUB_ACTOR" --argjson id "$expected_actor_id" '
+            .sender.type == "Bot" and .sender.id == $id and .sender.login == $actor
+          ' "$GITHUB_EVENT_PATH" > /dev/null; then
+            echo 'review eventのBot actor identityが一致しません。' >&2
+            exit 1
+          fi
+          {
+            echo 'mode=human'
+            echo "developer_slug=$developer_slug"
+            echo "bot_ids=$developer_id,$reviewer_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create developer App token for identity allowlist
+        if: steps.review-identity.outputs.mode == 'legacy'
+        id: dev-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEV_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
+
+      - name: Build review context
+        if: steps.review-identity.outputs.mode == 'legacy' || steps.review-identity.outputs.mode == 'human'
         id: build-review-context
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
@@ -126,8 +217,9 @@ jobs:
           BASE_REF: ${{ steps.review-source.outputs.base_ref }}
           SOURCE_BASE_SHA: ${{ steps.review-source.outputs.base_sha }}
           REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}
-          TRUSTED_LOGINS: ${{ steps.dev-token.outputs.app-slug }},${{ steps.dev-token.outputs.app-slug }}[bot],app/${{ steps.dev-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
+          TRUSTED_LOGINS: ${{ format('{0},{0}[bot],app/{0},{1},{1}[bot],app/{1}', steps.review-identity.outputs.developer_slug || steps.dev-token.outputs.app-slug, steps.review-token.outputs.app-slug) }}
           REVIEWER_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
+          VERIFIED_REVIEW_BOT_IDS: ${{ steps.review-identity.outputs.bot_ids }}
         shell: bash
         run: |
           set -euo pipefail
@@ -140,6 +232,11 @@ jobs:
           echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
+          if [ -n "${VERIFIED_REVIEW_BOT_IDS:-}" ]; then
+            grep -Fxq '# verified-review-bot-ids: v1' "$RUNNER_TEMP/build-review-context.sh" || {
+              echo 'trusted mainのreview context builderがBot照合に対応していません。' >&2; exit 1;
+            }
+          fi
           if git cat-file -e "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" 2> /dev/null; then
             git show "${BASE_SHA}:.github/scripts/validate-claude-review-output.sh" > "$RUNNER_TEMP/validate-claude-review-output.sh"
           else
@@ -437,7 +534,7 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
-          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA"
+          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA" "${VERIFIED_REVIEW_BOT_IDS:-}"
 
       - name: Gate Claude review entry
         if: steps.build-review-context.outcome == 'success'
@@ -526,7 +623,7 @@ jobs:
         uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # Upstream pin: Claude Code 2.1.284 / Agent SDK 0.3.284
         with:
           github_token: ${{ steps.review-token.outputs.token }}
-          allowed_bots: ${{ steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]
+          allowed_bots: ${{ steps.review-identity.outputs.developer_slug || steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]
           anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}

@@ -132,6 +132,16 @@ gh() {
       printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]'
       return
     fi
+    if [ "$*" = 'api user/323046280' ]; then
+      local developer='{"id":323046280,"type":"Bot","login":"nssscdl-chatgpt-dev[bot]"}'
+      printf '%s\n' "${MOCK_DEVELOPER_BOT:-$developer}"
+      return
+    fi
+    if [ "$*" = 'api users/reviewer%5Bbot%5D' ]; then
+      local reviewer='{"id":99,"type":"Bot","login":"reviewer[bot]"}'
+      printf '%s\n' "${MOCK_REVIEWER_BOT:-$reviewer}"
+      return
+    fi
     if [ "$2" = 'repos/owner/repo/pulls/37' ]; then
       if [ -n "${MOCK_SOURCE_PR_JSON:-}" ]; then
         printf '%s\n' "$MOCK_SOURCE_PR_JSON"
@@ -190,6 +200,7 @@ export expected_head
 extract_step_run 'Normalize trusted review source' "$test_dir/normalize-review-source.sh"
 assert_source() {
   local action="$1" expected="$2" event_machine_state="${3:-false}" output="$test_dir/source-$1.outputs"
+  local expected_ref="${4:-ai/issue-36}"
   : > "$output"
   : > "$test_dir/source-$1.summary"
   GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$output" \
@@ -202,7 +213,7 @@ assert_source() {
   grep -Fqx 'pr_number=37' "$output"
   grep -Fqx "reviewed_head_sha=$expected_head" "$output"
   grep -Fqx "event_machine_state=$event_machine_state" "$output"
-  grep -Fqx 'head_ref=ai/issue-36' "$output"
+  grep -Fqx "head_ref=$expected_ref" "$output"
   grep -Fqx 'base_ref=main' "$output"
   if [ "$expected" = true ]; then
     grep -Fqx "base_sha=$expected_head" "$output"
@@ -212,7 +223,41 @@ assert_source() {
 }
 for action in opened ready_for_review reopened; do
   assert_source "$action" true
+  grep -Fqx 'human_candidate=false' "$test_dir/source-$action.outputs"
 done
+human_source="$(jq -cn --arg head "$expected_head" '
+  {number:37,state:"open",draft:false,user:{login:"owner",type:"User",id:81},author_association:"OWNER",
+   head:{sha:$head,ref:"human/issue-36-local",repo:{full_name:"owner/repo",id:40}},
+   base:{ref:"main",repo:{full_name:"owner/repo",id:40,owner:{login:"owner",type:"User",id:81}}},labels:[]}
+')"
+export MOCK_SOURCE_PR_JSON="$human_source"
+assert_source ready_for_review true false human/issue-36-local
+grep -Fqx 'human_candidate=true' "$test_dir/source-ready_for_review.outputs"
+for edit in '.user.id=82' '.user.type="Bot"' '.user=null' '.author_association="COLLABORATOR"' \
+  '.base.repo.owner.type="Organization"' '.head.repo.id=41' '.head.ref="human/issue-36"' '.base.ref="release"'; do
+  MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$human_source")"
+  : > "$test_dir/human-source-invalid.outputs"
+  if GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/human-source-invalid.outputs" \
+    EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=false \
+    bash "$test_dir/normalize-review-source.sh" > /dev/null 2>&1; then
+    echo "Unexpected owner-managed route for $edit." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/human-source-invalid.outputs" ]
+done
+for edit in '.head.repo.full_name="other/repo"' '.draft=true' '.state="closed"' \
+  '.labels=[{name:"human-review-required"}]' '.labels=[{name:"ai-followup-in-progress"}]' \
+  '.head.sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'; do
+  MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$human_source")"
+  GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/human-source-blocked.outputs" \
+    GITHUB_STEP_SUMMARY="$test_dir/human-source-blocked.summary" \
+    EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=false \
+    bash "$test_dir/normalize-review-source.sh"
+done
+if grep -Eq '^(continue|human_candidate)=true$' "$test_dir/human-source-blocked.outputs"; then
+  echo 'Blocked owner-managed PR became a review candidate.' >&2
+  exit 1
+fi
 MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
   {number:37,state:"open",draft:false,
    head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
@@ -432,6 +477,57 @@ grep -Fqx "        if: steps.verdict-entry.outputs.continue == 'true'" <(sed -n 
 grep -Fq "        if: steps.submit-verdict.outcome == 'success'" "$workflow"
 grep -Fq -- '"--squash", "--match-head-commit", self.head' "$repo_root/.github/scripts/merge-approved-pr.py"
 
+extract_step_run 'Resolve review identities' "$test_dir/resolve-review-identities.sh"
+(
+  git() {
+    case "$*" in
+      "show $expected_head:.github/workflows/claude-review.yml")
+        if [ "${MOCK_OLD_BASE:-false}" = true ]; then
+          echo 'name: Claude Review'
+        else
+          cat "$workflow"
+        fi ;;
+      "show $expected_head:.github/scripts/evaluate-claude-review-entry-gate.sh")
+        cat "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" ;;
+      *) return 2 ;;
+    esac
+  }
+  export -f git
+  export repo_root RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo
+  export GITHUB_OUTPUT="$test_dir/review-identity.outputs" GITHUB_STEP_SUMMARY="$test_dir/review-identity.summary"
+  export BASE_SHA="$expected_head" PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head"
+  export EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=false REVIEW_APP_SLUG=reviewer GITHUB_ACTOR=owner
+  export HUMAN_CANDIDATE=true GITHUB_EVENT_PATH="$test_dir/review-event.json"
+  printf '%s\n' '{"sender":{"type":"Bot","id":82,"login":"reviewer[bot]"}}' > "$GITHUB_EVENT_PATH"
+  run_identity() {
+    : > "$GITHUB_OUTPUT"
+    bash "$test_dir/resolve-review-identities.sh"
+  }
+  run_identity
+  grep -Fqx 'mode=human' "$GITHUB_OUTPUT"
+  grep -Fqx 'developer_slug=nssscdl-chatgpt-dev' "$GITHUB_OUTPUT"
+  grep -Fqx 'bot_ids=323046280,99' "$GITHUB_OUTPUT"
+  MOCK_API_FAIL=true HUMAN_CANDIDATE=false run_identity
+  grep -Fqx 'mode=legacy' "$GITHUB_OUTPUT"
+  MOCK_API_FAIL=true MOCK_OLD_BASE=true run_identity
+  grep -Fqx 'mode=legacy' "$GITHUB_OUTPUT"
+  MOCK_ISSUE_PAUSED=true run_identity
+  grep -Fqx 'mode=blocked' "$GITHUB_OUTPUT"
+  for assignment in 'MOCK_DEVELOPER_BOT={}' 'MOCK_REVIEWER_BOT={}' 'GITHUB_ACTOR=reviewer[bot]'; do
+    if (export "$assignment"; run_identity) > /dev/null 2>&1; then
+      echo "Invalid identity reached review for $assignment." >&2
+      exit 1
+    fi
+    [ ! -s "$GITHUB_OUTPUT" ]
+  done
+)
+grep -Fq "if: steps.review-identity.outputs.mode == 'legacy'" "$workflow"
+grep -Fq 'developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}' "$workflow"
+grep -Fq 'allowed_bots: ${{ steps.review-identity.outputs.developer_slug || steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]' "$workflow"
+grep -Fq 'VERIFIED_REVIEW_BOT_IDS: ${{ steps.review-identity.outputs.bot_ids }}' "$workflow"
+grep -Fq "startsWith(needs.review.outputs.head_ref, 'ai/issue-')" "$workflow"
+[ "$(bash "$repo_root/.github/scripts/check-claude-followup-target.sh" owner/repo 37 99 "$expected_head" reviewer human/issue-36-local)" = skip ]
+
 # #919 fixtures live in this existing formal suite; no new runner or paid call.
 python3 -B "$repo_root/.github/scripts/fixtures/merge-approved-pr.py"
 
@@ -644,7 +740,9 @@ export repo_root
   REVIEWED_HEAD_SHA="$expected_head" \
   EVENT_BASE_SHA="$stale_event_base_sha" \
   PR_NUMBER=37 \
-  TRUSTED_LOGINS=dev \
+  TRUSTED_LOGINS='dev,dev[bot],app/dev,reviewer,reviewer[bot],app/reviewer' \
+  REVIEWER_LOGINS='reviewer,reviewer[bot],app/reviewer' \
+  VERIFIED_REVIEW_BOT_IDS='323046280,99' \
   bash "$build_context_step_script"
 )
 grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"

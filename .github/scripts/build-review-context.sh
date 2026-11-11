@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# verified-review-bot-ids: v1
 set -euo pipefail
 
 repo="${1:?repository is required}"
@@ -8,6 +9,7 @@ trusted_logins_csv="${4:-}"
 reviewer_logins_csv="${5:-}"
 summary_path="${6:-}" # Explicit opt-in; other callers retain their policy.
 ci_head="${7:-}" # Opt-in snapshot, bound to the caller's reviewed head SHA.
+verified_bot_ids="${8:-}" # Developer, Reviewer. Set only for the owner-managed route.
 follow_up_issue_limit=5
 
 mkdir -p "$(dirname "$output")"
@@ -20,6 +22,56 @@ gh pr view "$pr_number" \
   --repo "$repo" \
   --json number,title,body,url,author,baseRefName,headRefName,baseRefOid,headRefOid,changedFiles,isDraft,files,commits,reviews,comments,closingIssuesReferences \
   > "$metadata"
+
+if [ -n "$verified_bot_ids" ]; then
+  # Verify the author of each matching post from this exact context snapshot.
+  # GraphQL login representations vary, so a matching login only selects a candidate.
+  if ! [[ "$verified_bot_ids" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] ||
+    ! candidates="$(jq -ce --arg ids "$verified_bot_ids" --arg trusted "$trusted_logins_csv" --arg reviewer "$reviewer_logins_csv" '
+      ($ids | split(",") | map(tonumber)) as [$developer_id, $reviewer_id]
+      | ($trusted | split(",")) as $trusted_logins
+      | ($reviewer | split(",")) as $reviewer_logins
+      | if $developer_id == $reviewer_id or ($trusted_logins | length) != 6 or ($trusted_logins | unique | length) != 6
+        or ($reviewer_logins | length) != 3 or ($reviewer_logins | unique | length) != 3 or ($trusted_logins | index("")) != null
+        or ($reviewer_logins - $trusted_logins | length) != 0
+        or (.comments | type) != "array" or (.reviews | type) != "array"
+        then error("review identity inputs") else . end
+      | [(.comments[] | ["IssueComment", .]), (.reviews[] | ["PullRequestReview", .])]
+      | map(. as [$kind, $post] | (try $post.author.login catch null) as $login
+        | select($trusted_logins | index($login) != null)
+        | {kind:$kind, id:$post.id, login:$login,
+           bot_id:(if $reviewer_logins | index($login) != null then $reviewer_id else $developer_id end)})
+      | if all(.[]; (.id | type == "string" and length > 0)) and
+        ((map(.id) | unique | length) == length) then . else error("review post identity") end
+    ' "$metadata")"; then
+    echo 'Bot会話の照合に必要なmetadataが不正です。' >&2
+    exit 1
+  fi
+  candidate_count="$(jq 'length' <<< "$candidates")"
+  query='query($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      id __typename
+      ... on IssueComment { author { login __typename ... on Bot { databaseId } } }
+      ... on PullRequestReview { author { login __typename ... on Bot { databaseId } } }
+    }
+  }'
+  for ((offset=0; offset<candidate_count; offset+=50)); do
+    batch="$(jq -c --argjson offset "$offset" '.[$offset:$offset+50]' <<< "$candidates")"
+    if ! jq -c --arg query "$query" '{query:$query, variables:{ids:map(.id)}}' <<< "$batch" \
+      | gh api graphql --input - \
+      | jq -es --argjson batch "$batch" '
+        length == 1 and (.[0] | (has("errors") | not) and
+          (.data.nodes | type == "array" and length == ($batch | length) and
+            INDEX(.[]; .id) as $nodes | all($batch[]; . as $post |
+              $nodes[$post.id] as $node | $node.__typename == $post.kind and
+              $node.author.__typename == "Bot" and $node.author.login == $post.login and
+              $node.author.databaseId == $post.bot_id)))
+      ' > /dev/null; then
+      echo '会話のDeveloper / Reviewer Bot投稿者を照合できないため、レビューを停止します。' >&2
+      exit 1
+    fi
+  done
+fi
 
 gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
 # The API file inventory and hunk counts must cover the entire raw response.

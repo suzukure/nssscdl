@@ -30,6 +30,10 @@ trusted human（`OWNER` / `MEMBER` / `COLLABORATOR`）が `/codex context-checkp
 
 ## Claude Reviewへ渡すtrusted conversationの選択
 
+`main` 向けの同一repository `human/issue-N-*` PRでは、GitHubの現在のPR情報から作者がrepository owner本人であること、Openかつ非Draft、eventと現在のHEADの一致、PRとclosing Issueの停止状態を確認する。適格なPRではReviewer Appで通常レビューを実行し、Developer App tokenの生成を省略する。trusted mainのDeveloper Bot ID・slugとReviewer App認証由来のslugをGitHubのaccount情報と照合する。既存のApp login候補に当たるコメント・レビューは、選別に使う同じ投稿のnode IDからGitHub上のBot型とaccount IDを照合してから既存の会話選別へ渡す。本人性・metadataの照合に失敗した場合はpaid review前に停止する。
+
+`ai/issue-N` 等の従来経路ではDeveloper App認証と既存のmerge・follow-up条件を維持する。人間管理PRの正式レビュー後は人間が判断する。導入PRのレビューには現行mainの契約を適用し、main反映後の次の自然な人間管理PRでtoken生成のskipと正式レビューの成功を確認する。
+
 Claude Reviewのreview contextでは、reviewer Appによる最新のformal review（`APPROVED` または `CHANGES_REQUESTED`）を会話履歴の境界とする。境界より古いreviewer App reviewは本文を含めず、author、state、submittedAt、structured review summaryで単独行完全一致した `[REQUIREMENTS_CHANGE_REQUIRED]` と `[HUMAN_ESCALATION_RECOMMENDED]` の有無だけを保持する。境界より古いtrusted comment本文は含めない。一方、trusted humanまたはdeveloper Appによるreview本文と、最新formal review以後に必要なtrusted conversationは保持する。
 
 formal Claude reviewがまだない初回reviewでは、trusted conversation全文を保持する。identity、metadata、timestampなどから安全に選択できない場合も、黙って一部を省略せずtrusted conversation全文へfallbackし、その事実をreview contextに明記する。過去reviewのstateとmarker情報は、`REQUEST_CHANGES`後の復旧および停止判定に使うため、本文を短縮した場合も保持する。具体的な選択条件と実装は `build-review-context.sh` を正本とする。
