@@ -42,5 +42,5 @@ backups/
 # Logs
 *.log
 
-# Generated diagrams (tracked C4 SVGs remain until PR2)
+# Generated diagrams
 /docs/diagrams/rendered/**/*.svg

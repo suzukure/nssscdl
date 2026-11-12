@@ -416,312 +416,66 @@ if grep -Eq 'REVIEWER_LOGINS:.*pull_request\.head' "$repo_root/.github/workflows
 fi
 
 
-# #850 / #838: exercise the trusted builder with real, isolated git history and
-# three one-line XML changes totalling over 500 kB. No network or paid AI call.
-svg_repo="$test_dir/svg-repo"
-git init -q "$svg_repo"
-(
-  cd "$svg_repo"
-  git config user.name Developer
-  git config user.email developer@example.invalid
-  git config commit.gpgsign false
-  mkdir -p docs/diagrams/rendered/c4 docs/diagrams/plantuml/c4 .github/workflows
-  printf '%s\n' 'docs/diagrams/rendered/**/*.svg -diff' > .gitattributes
-  printf '%s\n' '@startuml' 'old source' '@enduml' > docs/diagrams/plantuml/c4/source.puml
-  printf '%s\n' 'old renderer workflow' > .github/workflows/render-plantuml.yml
-  for number in 1 2 3; do
-    path="docs/diagrams/rendered/c4/$number.svg"
-    [ "$number" -ne 1 ] || path=docs/diagrams/rendered/1.svg
-    printf '%s\n' '<svg>old</svg>' > "$path"
-  done
-  git add .
-  git commit -qm base
-  git rev-parse HEAD > "$test_dir/svg-base"
-  printf '%s\n' '@startuml' 'FULL_PUML_SOURCE' '@enduml' > docs/diagrams/plantuml/c4/source.puml
-  printf '%s\n' 'FULL_RENDERER_WORKFLOW' > .github/workflows/render-plantuml.yml
-  git add .
-  git commit -qm 'Update sources and renderer'
-  python3 - <<'SVG'
-from pathlib import Path
-for number in range(1, 4):
-    path = "docs/diagrams/rendered/1.svg" if number == 1 else f"docs/diagrams/rendered/c4/{number}.svg"
-    Path(path).write_text(
-        '<svg>' + 'large-generated-xml' * 10000 + '</svg>\n'
-    )
-SVG
-  git add .
-  git -c user.name='github-actions[bot]' \
-    -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-    commit -qm 'Render PlantUML diagrams'
-  git rev-parse HEAD > "$test_dir/svg-renderer"
-)
-svg_base="$(cat "$test_dir/svg-base")"
-svg_renderer="$(cat "$test_dir/svg-renderer")"
+# #1130: raw diff retains deleted SVG XML and the full PUML change. The same
+# inventory and size checks apply to both paths.
+svg_path=docs/diagrams/rendered/c4-container.svg
+puml_path=docs/diagrams/plantuml/c4-container.puml
+MOCK_DIFF_FILE="$test_dir/raw-diagram.diff"
+export MOCK_DIFF_FILE
+cat > "$MOCK_DIFF_FILE" <<DIFF
+diff --git a/$svg_path b/$svg_path
+deleted file mode 100644
+--- a/$svg_path
++++ /dev/null
+@@ -1 +0,0 @@
+-<svg>deleted XML</svg>
+diff --git a/$puml_path b/$puml_path
+--- a/$puml_path
++++ b/$puml_path
+@@ -1 +1 @@
+-@enduml
++' full PUML source
+DIFF
+diagram_metadata="$(jq -c --arg svg "$svg_path" --arg puml "$puml_path" '
+  .changedFiles = 2 | .files = [
+    {path:$svg, additions:0, deletions:1},
+    {path:$puml, additions:1, deletions:1}
+  ]
+' <<< "$conversation_metadata")"
+build_conversation "$diagram_metadata" "$test_dir/raw-diagram.md"
+sed -n '/^--- BEGIN DIFF DATA ---$/,/^--- END DIFF DATA ---$/s/^DATA| //p' \
+  "$test_dir/raw-diagram.md" | cmp "$MOCK_DIFF_FILE" -
 
-svg_metadata() {
-  local head
-  head="$(git -C "$svg_repo" rev-parse HEAD)"
-  git -C "$svg_repo" diff --text --no-ext-diff --no-textconv --no-renames "$svg_base" "$head" > "$test_dir/svg.diff"
-  git apply --numstat -z < "$test_dir/svg.diff" | python3 -c '
-import json, sys
-files = []
-for field in sys.stdin.buffer.read().split(b"\0"):
-    if field:
-        a, d, p = field.split(b"\t", 2)
-        files.append({"path":p.decode(), "additions":0 if a == b"-" else int(a), "deletions":0 if d == b"-" else int(d)})
-print(json.dumps(files))
-' | jq --arg base "$svg_base" --arg head "$head" '
-      . as $files |
-      {number:37,title:"SVG test",body:"Closes #36",url:"https://github.com/owner/repo/pull/37",
-       author:{login:"dev"},baseRefName:"main",headRefName:"ai/issue-36",
-       baseRefOid:$base,headRefOid:$head,changedFiles:($files|length),files:$files,
-       isDraft:false,commits:[],closingIssuesReferences:[{number:36,url:"https://github.com/owner/repo/issues/36"}],
-       comments:[],reviews:[]}'
-}
-svg_context() {
-  (cd "$svg_repo"; bash "$repo_root/.github/scripts/build-review-context.sh" owner/repo 37 "$1" dev review "$1.summary.md")
-}
-svg_rejected() {
-  rm -f "$test_dir/rejected-svg.md"
-  if svg_context "$test_dir/rejected-svg.md" > /dev/null 2> "$test_dir/rejected-svg.err"; then
-    echo "Expected generated SVG proof/size failure: $1" >&2
+expect_diff_rejection() {
+  if build_conversation "$1" "$test_dir/rejected-diff.md" 2>"$test_dir/rejected-diff.err"; then
+    echo 'Expected review-context failure for raw diff.' >&2
     exit 1
   fi
-  grep -Fq "$2" "$test_dir/rejected-svg.err"
-  [ ! -e "$test_dir/rejected-svg.md" ]
+  grep -Fq "$2" "$test_dir/rejected-diff.err"
+  [ ! -e "$test_dir/rejected-diff.md" ]
 }
-MOCK_CASE=conversation
-MOCK_DIFF_FILE="$test_dir/svg.diff"
-MOCK_METADATA="$(svg_metadata)"
-export MOCK_CASE MOCK_DIFF_FILE MOCK_METADATA
-[ "$(wc -c < "$MOCK_DIFF_FILE")" -gt 500000 ]
-svg_context "$test_dir/trusted-svg.md"
-[ "$(wc -c < "$test_dir/trusted-svg.md")" -lt 400000 ]
-[ "$(grep -c '^DATA| Generated SVG changed:' "$test_dir/trusted-svg.md")" -eq 3 ]
-grep -Fq "DATA| Renderer commit: $svg_renderer" "$test_dir/trusted-svg.md"
-grep -Fq 'DATA| +FULL_PUML_SOURCE' "$test_dir/trusted-svg.md"
-grep -Fq 'DATA| +FULL_RENDERER_WORKFLOW' "$test_dir/trusted-svg.md"
-! grep -Fq 'large-generated-xml' "$test_dir/trusted-svg.md"
 
-# #1122: normal Review pins trusted code to current main, while GitHub PR
-# metadata may retain an older diff base. Use real diverged git branches; a
-# passing mock-only qualification must not hide a different builder input.
-(
-  cd "$svg_repo"
-  git checkout -q --detach "$svg_base"
-  printf '%s\n' 'trusted main only' > operations.txt
-  git add .
-  git commit -qm 'Advance trusted main without changing PR paths'
-  git rev-parse HEAD > "$test_dir/svg-trusted-main"
-  git checkout -q --detach "$svg_renderer"
-)
-svg_trusted_main="$(cat "$test_dir/svg-trusted-main")"
-SOURCE_BASE_SHA="$svg_base" BASE_SHA="$svg_base" svg_context "$test_dir/same-base-svg.md"
-SOURCE_BASE_SHA="$svg_trusted_main" BASE_SHA="$svg_trusted_main" svg_context "$test_dir/advanced-main-svg.md"
-cmp "$test_dir/same-base-svg.md" "$test_dir/advanced-main-svg.md"
-SOURCE_BASE_SHA="$svg_trusted_main" svg_context "$test_dir/source-only-svg.md"
-BASE_SHA="$svg_trusted_main" svg_context "$test_dir/base-only-svg.md"
-cmp "$test_dir/same-base-svg.md" "$test_dir/source-only-svg.md"
-cmp "$test_dir/same-base-svg.md" "$test_dir/base-only-svg.md"
+expect_diff_rejection "$(jq '.changedFiles += 1' <<< "$diagram_metadata")" 'raw PR diff'
+expect_diff_rejection "$(jq '.files[1].additions += 1' <<< "$diagram_metadata")" 'raw PR diff'
+cp "$MOCK_DIFF_FILE" "$test_dir/full-diagram.diff"
+sed '/^diff --git .*plantuml/,$d' "$test_dir/full-diagram.diff" > "$MOCK_DIFF_FILE"
+expect_diff_rejection "$diagram_metadata" 'raw PR diff'
+cat "$test_dir/full-diagram.diff" "$test_dir/full-diagram.diff" > "$MOCK_DIFF_FILE"
+expect_diff_rejection "$diagram_metadata" 'raw PR diff'
 
-for fault in overlap-source overlap-svg rename-source directory-collision non-descendant merge-head; do
-  (
-    cd "$svg_repo"
-    git checkout -q --detach "$svg_base"
-    case "$fault" in
-      overlap-source) printf '%s\n' 'main source change' >> docs/diagrams/plantuml/c4/source.puml ;;
-      overlap-svg) printf '%s\n' 'main SVG change' >> docs/diagrams/rendered/1.svg ;;
-      rename-source) git mv docs/diagrams/plantuml/c4/source.puml relocated.puml ;;
-      directory-collision) mkdir operations.txt; printf '%s\n' 'nested' > operations.txt/nested ;;
-      non-descendant|merge-head) ;;
-    esac
-    git add .
-    case "$fault" in
-      non-descendant) git commit-tree "$svg_base^{tree}" -m 'Other root' > "$test_dir/svg-bad-main" ;;
-      merge-head) git commit-tree "$svg_trusted_main^{tree}" -p "$svg_trusted_main" -p "$svg_renderer" -m 'Main includes PR' > "$test_dir/svg-bad-main" ;;
-      *) git commit -qm "Main $fault"; git rev-parse HEAD > "$test_dir/svg-bad-main" ;;
-    esac
-    git checkout -q --detach "$svg_renderer"
-  )
-  svg_bad_main="$(cat "$test_dir/svg-bad-main")"
-  if [ "$fault" = directory-collision ]; then
-    # The PR adds operations.txt as a file; main adds a child under that path.
-    printf '%s\n' 'PR file' > "$svg_repo/operations.txt"
-    git -C "$svg_repo" add .
-    git -C "$svg_repo" commit -qm 'PR file-directory collision'
-    MOCK_METADATA="$(svg_metadata)"
-  fi
-  SOURCE_BASE_SHA="$svg_bad_main" BASE_SHA="$svg_bad_main" svg_rejected "advanced main $fault" '400000 bytes'
-  git -C "$svg_repo" checkout -q --detach "$svg_renderer"
-  MOCK_METADATA="$(svg_metadata)"
-done
-for bad_sha in invalid 0000000000000000000000000000000000000000; do
-  SOURCE_BASE_SHA="$bad_sha" BASE_SHA="$bad_sha" svg_rejected 'malformed / missing trusted history' '400000 bytes'
-done
-SOURCE_BASE_SHA="$svg_base" BASE_SHA="$svg_trusted_main" svg_rejected 'caller identities disagree' '400000 bytes'
-
-# Main renaming a path out of the PR is covered above. Also retain the source
-# side of PR renames when comparing changed paths (metadata lists the new path).
-git -C "$svg_repo" mv .gitattributes renamed-attributes
-git -C "$svg_repo" commit -qm 'PR renames an ordinary path'
-MOCK_METADATA="$(svg_metadata)"
-svg_rename_head="$(git -C "$svg_repo" rev-parse HEAD)"
-git -C "$svg_repo" checkout -q --detach "$svg_base"
-printf '%s\n' 'main attributes change' >> "$svg_repo/.gitattributes"
-git -C "$svg_repo" add .
-git -C "$svg_repo" commit -qm 'Main changes PR rename source'
-svg_bad_main="$(git -C "$svg_repo" rev-parse HEAD)"
-git -C "$svg_repo" checkout -q --detach "$svg_rename_head"
-SOURCE_BASE_SHA="$svg_bad_main" BASE_SHA="$svg_bad_main" svg_rejected 'PR rename source overlaps main' '400000 bytes'
-git -C "$svg_repo" checkout -q --detach "$svg_renderer"
-MOCK_METADATA="$(svg_metadata)"
-
-# An unrelated later commit does not invalidate rendering provenance.
-(
-  cd "$svg_repo"
-  printf '%s\n' 'full unrelated content' > notes.txt
-  git add .
-  git commit -qm 'Unrelated documentation'
-)
-svg_safe_head="$(git -C "$svg_repo" rev-parse HEAD)"
-MOCK_METADATA="$(svg_metadata)"
-svg_context "$test_dir/later-safe-svg.md"
-grep -Fq 'DATA| +full unrelated content' "$test_dir/later-safe-svg.md"
-grep -Fq "DATA| Renderer commit: $svg_renderer" "$test_dir/later-safe-svg.md"
-
-# The cap applies after compaction: a large non-generated body still stops.
-printf '%410001s\n' 'large non-generated content' > "$svg_repo/large.txt"
-git -C "$svg_repo" add .
-git -C "$svg_repo" commit -qm 'Large ordinary content'
-MOCK_METADATA="$(svg_metadata)"
-svg_rejected 'non-generated diff alone exceeds cap' '400000 bytes'
-git -C "$svg_repo" checkout -q --detach "$svg_safe_head"
-
-# An existing opaque binary marker is retained, never summarized as SVG.
-printf 'binary\0content' > "$svg_repo/attachment.bin"
-git -C "$svg_repo" add .
-git -C "$svg_repo" commit -qm 'Binary attachment'
-MOCK_METADATA="$(svg_metadata)"
-git -C "$svg_repo" diff --no-ext-diff --no-textconv --no-renames "$svg_base" HEAD -- attachment.bin > "$test_dir/binary-block.diff"
-python3 - "$MOCK_DIFF_FILE" "$test_dir/binary-block.diff" <<'BINARY'
+python3 - "$test_dir/full-diagram.diff" "$MOCK_DIFF_FILE" <<'SIZE_LIMIT'
 from pathlib import Path
-import re, sys
-patch, binary = map(Path, sys.argv[1:])
-blocks = re.split(rb"(?m)(?=^diff --git )", patch.read_bytes())[1:]
-patch.write_bytes(b"".join(binary.read_bytes() if b"a/attachment.bin b/attachment.bin" in b.split(b"\n", 1)[0] else b for b in blocks))
-BINARY
-MOCK_METADATA="$(jq '.files |= map(if .path == "attachment.bin" then .additions = 0 | .deletions = 0 else . end)' <<< "$MOCK_METADATA")"
-svg_context "$test_dir/binary-attachment.md"
-grep -Fq 'DATA| Binary files /dev/null and b/attachment.bin differ' "$test_dir/binary-attachment.md"
-grep -Fq "DATA| Renderer commit: $svg_renderer" "$test_dir/binary-attachment.md"
-git -C "$svg_repo" checkout -q --detach "$svg_safe_head"
+import sys
 
-# Each identity field and subject must match the existing renderer contract.
-# Make these variants using isolated commit objects, without altering repo refs.
-for identity in human developer-bot wrong-author-email wrong-committer wrong-committer-email wrong-subject; do
-  renderer_tree="$(git -C "$svg_repo" rev-parse "$svg_renderer^{tree}")"
-  renderer_parent="$(git -C "$svg_repo" rev-parse "$svg_renderer^")"
-  author_name='github-actions[bot]'
-  committer_name="$author_name"
-  author_email='41898282+github-actions[bot]@users.noreply.github.com'
-  committer_email="$author_email"
-  subject='Render PlantUML diagrams'
-  case "$identity" in
-    human) author_name=Human; committer_name=Human ;;
-    developer-bot) author_name='developer[bot]'; committer_name='developer[bot]' ;;
-    wrong-author-email) author_email=other@example.invalid ;;
-    wrong-committer) committer_name=Human ;;
-    wrong-committer-email) committer_email=other@example.invalid ;;
-    wrong-subject) subject='Render something else' ;;
-  esac
-  variant="$(GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
-    GIT_COMMITTER_NAME="$committer_name" GIT_COMMITTER_EMAIL="$committer_email" \
-    git -C "$svg_repo" commit-tree "$renderer_tree" -p "$renderer_parent" -m "$subject")"
-  # A metadata HEAD mismatch must preserve raw too. Use a detached checkout in
-  # this disposable fixture so each variant tests its actual identity fields.
-  git -C "$svg_repo" checkout -q --detach "$variant"
-  MOCK_METADATA="$(svg_metadata)"
-  svg_rejected "$identity" '400000 bytes'
-done
-git -C "$svg_repo" checkout -q --detach "$svg_safe_head"
-
-for changed_path in docs/diagrams/plantuml/c4/source.puml .github/workflows/render-plantuml.yml docs/diagrams/rendered/1.svg; do
-  git -C "$svg_repo" checkout -q --detach "$svg_safe_head"
-  printf '%s\n' 'later modification' >> "$svg_repo/$changed_path"
-  git -C "$svg_repo" add .
-  git -C "$svg_repo" commit -qm 'Later modification'
-  MOCK_METADATA="$(svg_metadata)"
-  svg_rejected "later $changed_path" '400000 bytes'
-  # Reverting bytes does not remove the disqualifying history.
-  git -C "$svg_repo" revert --no-edit HEAD > /dev/null
-  MOCK_METADATA="$(svg_metadata)"
-  svg_rejected "reverted $changed_path" '400000 bytes'
-done
-git -C "$svg_repo" checkout -q --detach "$svg_safe_head"
-MOCK_METADATA="$(svg_metadata)"
-svg_good_metadata="$MOCK_METADATA"
-
-# SHA mismatch, unavailable objects and changed API inventories fail closed.
-for metadata in \
-  "$(jq '.headRefOid = .baseRefOid' <<< "$svg_good_metadata")" \
-  "$(jq '.baseRefOid = "1111111111111111111111111111111111111111"' <<< "$svg_good_metadata")" \
-  "$(jq 'del(.baseRefOid)' <<< "$svg_good_metadata")"; do
-  MOCK_METADATA="$metadata"
-  svg_rejected 'SHA mismatch / missing history' '400000 bytes'
-done
-MOCK_METADATA="$(jq '.changedFiles += 1' <<< "$svg_good_metadata")"
-svg_rejected 'incomplete API file inventory' 'raw PR diff'
-MOCK_METADATA="$(jq '.files[0].additions += 1' <<< "$svg_good_metadata")"
-svg_rejected 'incomplete raw hunk counts' 'raw PR diff'
-MOCK_METADATA="$svg_good_metadata"
-cp "$MOCK_DIFF_FILE" "$test_dir/svg-good.diff"
-for corruption in truncate malformed duplicate unexpected; do
-  cp "$test_dir/svg-good.diff" "$MOCK_DIFF_FILE"
-  case "$corruption" in
-    truncate) python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_bytes(p.read_bytes()[:-15])' "$MOCK_DIFF_FILE" ;;
-    malformed) sed -i '0,/^@@ /s/^@@ /@@ malformed /' "$MOCK_DIFF_FILE" ;;
-    duplicate) cat "$test_dir/svg-good.diff" >> "$MOCK_DIFF_FILE" ;;
-    unexpected) printf '%s\n' 'diff --git a/other b/other' >> "$MOCK_DIFF_FILE" ;;
-  esac
-  svg_rejected "$corruption diff" 'raw PR diff'
-done
-cp "$test_dir/svg-good.diff" "$MOCK_DIFF_FILE"
-
-# Equal hunk counts cannot authorize bytes from another head.
-sed -i 's/FULL_PUML_SOURCE/WRONG_PUML_SOURCE/' "$MOCK_DIFF_FILE"
-svg_rejected 'raw bytes differ from checked head' 'raw PR diff'
-cp "$test_dir/svg-good.diff" "$MOCK_DIFF_FILE"
-
-# A failed proof below the cap retains the complete raw XML response.
-(
-  cd "$svg_repo"
-  for path in docs/diagrams/rendered/1.svg docs/diagrams/rendered/c4/2.svg docs/diagrams/rendered/c4/3.svg; do
-    printf '%s\n' '<svg>human XML must stay visible</svg>' > "$path"
-  done
-  git add .
-  git commit -qm 'Human SVG changes'
-)
-MOCK_METADATA="$(svg_metadata)"
-svg_context "$test_dir/small-human-svg.md"
-grep -Fq 'DATA| +<svg>human XML must stay visible</svg>' "$test_dir/small-human-svg.md"
-! grep -Fq 'Generated SVG changed:' "$test_dir/small-human-svg.md"
-git -C "$svg_repo" checkout -q --detach "$svg_safe_head"
-MOCK_METADATA="$(svg_metadata)"
-
-# A valid quoted *other* path remains byte-for-byte visible, while SVG summaries
-# still cannot consume it. A quoted SVG candidate keeps the entire raw diff.
-printf '%s\n' 'quoted path full content' > "$svg_repo/quoted\"file.txt"
-git -C "$svg_repo" add .
-git -C "$svg_repo" commit -qm 'Quoted other path'
-MOCK_METADATA="$(svg_metadata)"
-svg_context "$test_dir/quoted-other.md"
-grep -Fq 'DATA| +quoted path full content' "$test_dir/quoted-other.md"
-grep -Fq "DATA| Renderer commit: $svg_renderer" "$test_dir/quoted-other.md"
-mv "$svg_repo/docs/diagrams/rendered/c4/3.svg" "$svg_repo/docs/diagrams/rendered/c4/quoted\"3.svg"
-git -C "$svg_repo" add .
-git -C "$svg_repo" commit -qm 'Quoted SVG'
-MOCK_METADATA="$(svg_metadata)"
-svg_rejected 'quoted SVG candidate' '400000 bytes'
+source, target = map(Path, sys.argv[1:])
+raw = source.read_bytes()
+target.write_bytes(raw.replace(b"deleted XML", b"x" * (400000 - len(raw) + len(b"deleted XML"))))
+assert target.stat().st_size == 400000
+SIZE_LIMIT
+build_conversation "$diagram_metadata" "$test_dir/limit-diff.md"
+sed 's/^-<svg>/-<svg>x/' "$MOCK_DIFF_FILE" > "$test_dir/oversized.diff"
+mv "$test_dir/oversized.diff" "$MOCK_DIFF_FILE"
+expect_diff_rejection "$diagram_metadata" '400001 bytes'
 unset MOCK_DIFF_FILE
 
 # #853: measure actual emitted UTF-8 sections, including empty bodies and
@@ -882,7 +636,7 @@ headings = ["Pull request metadata", "Pull request body", "Changed files",
             "Existing conversation", "Linked Issue snapshots",
             "Follow-up Issue snapshots", "Same-head CI snapshot", "Pull request diff"]
 labels = ["PR本文", "採用した既存会話", "closing Issue snapshots",
-          "follow-up Issue snapshots", "同一head CI証拠", "レビューへ渡す差分（SVG縮約後）",
+          "follow-up Issue snapshots", "同一head CI証拠", "レビューへ渡すraw diff",
           "その他の書式・PR metadata・変更ファイル一覧", "最終review.md総bytes"]
 for summary_path in directory.glob("*.md.summary.md"):
     context_path = Path(str(summary_path).removesuffix(".summary.md"))
@@ -905,13 +659,12 @@ for summary_path in directory.glob("*.md.summary.md"):
     assert len(summary.splitlines()) == 17, context_path.name
     assert not re.search(r"DATA\||BEGIN .* DATA|採用する会話|要件の本文|large-generated-xml", summary)
 for name in ("initial", "selected", "fallback", "utf8-sizes", "empty-sizes",
-             "follow-up-review", "bilingual-review", "trusted-svg", "small-human-svg"):
+             "follow-up-review", "bilingual-review", "raw-diagram"):
     assert (directory / f"{name}.md.summary.md").exists(), name
 utf8 = (directory / "utf8-sizes.md").read_text(encoding="utf-8")
 assert len(utf8.encode("utf-8")) > len(utf8)
 assert "採用する会話📝" in utf8
 assert "| follow-up Issue snapshots | 0 |" in (directory / "empty-sizes.md.summary.md").read_text()
-assert len((directory / "trusted-svg.md").read_bytes()) < 400000
 ci_bytes = (directory / "ci.md").read_bytes()
 start = ci_bytes.index(b"## Same-head CI snapshot\n")
 end = ci_bytes.index(b"## Pull request diff\n")
