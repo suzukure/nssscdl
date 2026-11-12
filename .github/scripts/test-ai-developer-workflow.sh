@@ -2459,7 +2459,7 @@ case "$1 $2" in
     [ "$5" = -f ] && [[ "$6" == body=* ]]
     printf '%s' "${6#body=}" > "$PAUSE_RECORD"
     jq -n --rawfile body "$PAUSE_RECORD" \
-      '[{id:101,body:$body,performed_via_github_app:{id:123}}]' > "$PAUSE_COMMENTS"
+      '[{id:101,body:$body,performed_via_github_app:{id:123},created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"}]' > "$PAUSE_COMMENTS"
     printf '{"id":101}\n' ;;
   'label create'|'issue edit') exit 0 ;;
   'issue comment')
