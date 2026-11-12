@@ -263,4 +263,4 @@ D1、R2、Google認証、Resend、Turnstileはそれぞれ別のPlatform / Servi
 
 PlantUML Source: `docs/diagrams/plantuml/c4-container.puml`
 
-生成SVG: `docs/diagrams/rendered/c4-container.svg`（自動生成）
+閲覧用SVGは[レンダリング手順](../diagrams/README.md#レンダリング)に従って取得する。

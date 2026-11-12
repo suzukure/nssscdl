@@ -46,23 +46,15 @@ formal Claude reviewがまだない初回reviewでは、trusted conversation全�
 
 #853の読込順序は `CLAUDE.md` のreview sourcesを正本とする。収録済み差分・Issue snapshotを再利用し、関連文書は検索から必要な節・依存契約へ進み、矛盾・証拠不足・境界をまたぐ影響があれば範囲を拡大する。全差分、closing / 明示follow-up Issue、scope-out、traceability、security、fail-closed、Blocking基準を維持する。
 
-サイズ記録の機械正本は `build-review-context.sh` とし、通常 `claude-review.yml` だけが任意の第6引数に既存Job Summary出力先を渡して有効化する。引数未指定のauto-rereview / AI Developer follow-upの生成contextと計測policyは維持する。生成成功後の実ファイルからPR本文、採用した既存会話、closing Issue snapshots、follow-up Issue snapshots、同一head CI証拠、SVG縮約後のreview diff、最終 `review.md` のUTF-8 bytesを計測する。各sectionは見出し・DATA prefix・境界marker・次の見出し直前までの空行を含め、冒頭書式・PR metadata・変更ファイル一覧は「その他」へ計上する。未出力のfollow-up / CI sectionは0とし、内訳合計と最終ファイルbytesを照合する。Summaryへ本文・credentials・生ログを出さず、bytesをtoken数・費用推定や制御判断・verdict・budget・切捨て条件に使用しない。記録だけの失敗は非致命としpaid reviewの再実行を要求せず、既存context完全性のfail-closedと400,000-byte diff gateを維持する。
+サイズ記録の機械正本は `build-review-context.sh` とし、通常 `claude-review.yml` だけが任意の第6引数に既存Job Summary出力先を渡して有効化する。引数未指定のauto-rereview / AI Developer follow-upの生成contextと計測policyは維持する。生成成功後の実ファイルからPR本文、採用した既存会話、closing Issue snapshots、follow-up Issue snapshots、同一head CI証拠、レビューへ渡すraw diff、最終 `review.md` のUTF-8 bytesを計測する。各sectionは見出し・DATA prefix・境界marker・次の見出し直前までの空行を含め、冒頭書式・PR metadata・変更ファイル一覧は「その他」へ計上する。未出力のfollow-up / CI sectionは0とし、内訳合計と最終ファイルbytesを照合する。Summaryへ本文・credentials・生ログを出さず、bytesをtoken数・費用推定や制御判断・verdict・budget・切捨て条件に使用しない。記録だけの失敗は非致命としpaid reviewの再実行を要求せず、既存context完全性のfail-closedと400,000-byte diff gateを維持する。
 
 費用効果は実装Done・計測可能性と分け、十分な自然runが集まるまでは未検証とする。追加のpaid A/Bを行わず、同一model / risk classかつ近い変更規模・類型で、既存usageのcost、turns、duration、input/output、cache creation/readと併せて評価する。同じ変更目的の全子PRと失敗・再レビューを含め、有効なverdictと必要な承認へ至る総費用を見る。bytes減少だけで成功とせず、不要なBlocking、根拠不足、見逃しを示す後続修正、再実行増加も確認し、品質・総費用悪化時には読込指示を再評価する。main反映後の通常runで内訳とusageの取得を確認する。Product POL / BR / REQ / AC / TC / CON / OOSの意味とtraceabilityに変更はない。
 
-## Claude Reviewの生成SVG差分
+## Claude ReviewのPR差分
 
-#1134のPR1以降Rendererは非書込Artifact方式とする。[生成・閲覧・旧pushとの移行境界](../diagrams/README.md#レンダリング)を参照。B群3件と以下の旧provenance縮約はPR2まで維持する。A群削除はraw diffを実測し、400,000-byte gateを緩和しない。
+PlantUMLの正本はPUMLとし、SVGの生成・閲覧は[レンダリング手順](../diagrams/README.md#レンダリング)に従う。レビューにはGitHub raw PR diffの全文を渡す。#1130の移行で削除するSVGのXMLも差分に含め、Draftの時点でGitHub raw diffを取得して400,000 bytes以下であることを確認する。
 
-#850では `build-review-context.sh` を機械正本とし、GitHub raw PR diffを取得してから、trusted generated SVGだけのunified-diff blockをpath・renderer commit SHA・変更ありの短い要約へ置き換える。`.puml`、renderer workflow、その他の差分は全文保持する。400,000-byte hard stopは縮約後のreview diffへ適用し、非生成差分だけで上限を超える場合も停止する。
-
-対象は `docs/diagrams/rendered/**/*.svg`（直下を含む）だけとする。trusted PR metadataのbase/head SHAをcheckout・利用可能なbase identityと照合し、全対象を最後に変更したcommitが同一で、author/committerとsubjectが既存Render workflowの生成commit契約に一致すること、生成後current headまでに正本またはrenderer workflowの変更がないこと、対象SVGのtree objectが生成commitと一致することを確認する。履歴不足・merge等の曖昧さ、quoted SVG path・予期しないboundaryなどで証明できなければ全raw diffを保持し、上限超過時は停止する。`.gitattributes`は縮約の信頼根拠にしない。
-
-`SOURCE_BASE_SHA` / `BASE_SHA` はcallerが実装・policyを取得したtrusted mainのidentityであり、PR metadataの`baseRefOid`とは役割を分ける。指定された値は正規SHAかつ相互一致を要求する。GitHub metadataのbaseが旧SHAのままmainが進んだ場合は、trusted mainがそのbaseの子孫であり、headとの共通祖先が同一、base→trusted mainと共通祖先→PR headの変更パスが非重複である場合だけSVG縮約を許可する。renameの旧・新パスとfile/directory衝突も照合する。metadataのbaseをtrusted mainで上書きせず、SVG履歴と全raw patchの隔離tree再生はmetadataのbase/headに結び付ける。証明できなければ全raw diffと既存size gateを維持する。この検証はSVG省略の安全性だけを扱い、CIやmerge適格の証明を代替しない。callerが両identityを省略する既存経路はmetadata/checkoutによる既存の証明を維持する。
-
-raw diffの完全性はAPIのchanged-file総数・全pathの一覧・hunk件数で照合し、不足・不正・取得失敗ではreview contextを生成しない。縮約前には隔離したobject store/indexでpatchを再適用し、照合済みheadのtreeへ一致することも確認し、再適用失敗・tree不一致ならcontext生成を停止する。opaque binary blockはreviewに残し、再適用の検証に限ってlocal binary patchを使う。builderのコードは既存callerがbaseから取得する単一script内に保持し、PR headからhelperをロードしない。paid AI call・retryは追加しない。
-
-#848 / PR #849のraw diffがSVG 3ファイルで369,980 bytes、XML text展開ありだった事実を入力規模の根拠とする。既存fixtureでは3 SVG合計500,000 bytes超、正本/renderer全文保持、identity・生成後変更・SHA不一致・不完全なdiff・quoted boundary・非生成差分上限を検証する。local fixtureはGitHub実応答やcurrent-head checksの自然実証ではなく、merge後の #848 再実施、通常PRでのSVG同期、親 #562 への結果返却は人間/workflow側に残る。Product POL / BR / REQ / AC / TC / CON / OOSとtraceabilityへの影響はない。
+`build-review-context.sh` はraw diffの完全性をAPIのchanged-file総数・全pathの一覧・hunk件数で照合する。不足・不正・取得失敗または400,000-byte上限の超過時はreview context生成を停止する。callerのtrusted base取得とcurrent head照合に従い、builderはbaseから取得する単一scriptとして実行する。回帰fixtureはSVG削除とPUML変更の全文保持、差分不足・重複・hunk件数不一致の拒否、上限ちょうどの受理と1 byte超過時の停止を確認する。
 
 ## Work Admission Control
 
@@ -802,7 +794,7 @@ writer再check/token発行/Consume/cleanupすべて成功の**exact completed su
 旧base/HEADの14パス、共通祖先、実merge-treeの無衝突、PR側14blob・全関連main側blobの不変を確認する。
 旧baseのProduct CI/Traceabilityは関連gate非変更の限定証拠であり、新mainで実行済みとは記録しない。
 builderには通常Reviewと同じtrusted mainのSOURCE_BASE_SHA/BASE_SHA・App allowlist・CI HEADを渡し、
-[Claude Reviewの生成SVG差分](#claude-reviewの生成svg差分)の証明条件を省略しない。
+当時の固定履歴に含まれる生成SVG縮約の証明条件を適用した。
 
 recordはConversationをAccept JSON・100件/ページ・最大10ページでfreshに列挙し、
 REST ID一意性・整数App ID4777865・schema・target/reason/headを検証する。
