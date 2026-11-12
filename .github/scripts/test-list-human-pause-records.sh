@@ -20,6 +20,13 @@ $record_end"
 
 gh() {
   [ "$1" = api ] || { echo "Unexpected gh invocation: $*" >&2; return 2; }
+  if [[ "$*" == *'?per_page=100&page='* ]]; then
+    case "$*" in
+      */issues/37/comments*) jq -c '.[0] + .[1]' <<< "$MOCK_PR_COMMENTS" ;;
+      *) printf '[]\n' ;;
+    esac
+    return
+  fi
   [[ "$*" == *'--paginate --slurp'* ]] || { echo 'Expected paginated slurped REST request.' >&2; return 2; }
   case "$*" in
     */issues/37/comments*) printf '%s\n' "$MOCK_PR_COMMENTS" ;;
@@ -34,16 +41,19 @@ export -f gh
 
 MOCK_PR_COMMENTS="$(jq -cn --arg pause "$pause_body" --arg other_pr "$other_pr_body" '
   [[
-    {id:101, node_id:"MDQ6", body:$pause, performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"},
-    {id:102, body:$pause, performed_via_github_app:{id:88}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"},
-    {id:103, body:"not a record", performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"},
-    {id:104, body:( $pause | sub("pr:37"; "issue:36")), performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"},
-    {id:105, body:$pause, performed_via_github_app:null, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"},
-    {id:107, body:$other_pr, performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"},
-    {id:108, body:$pause, performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:01:00Z"}
+    {id:101, node_id:"MDQ6", body:$pause, performed_via_github_app:{id:99}},
+    {id:102, body:$pause, performed_via_github_app:{id:88}},
+    {id:103, body:"not a record", performed_via_github_app:{id:99}},
+    {id:104, body:( $pause | sub("pr:37"; "issue:36")), performed_via_github_app:{id:99}},
+    {id:105, body:$pause, performed_via_github_app:null},
+    {id:107, body:$other_pr, performed_via_github_app:{id:99}},
+    {id:108, body:$pause, performed_via_github_app:{id:99}}
   ], [
-    {id:106, body:$pause, performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"}
+    {id:106, body:$pause, performed_via_github_app:{id:99}}
   ]]
+  | map(map(. + {created_at:"2026-09-14T00:00:00Z",
+                 updated_at:"2026-09-14T00:00:00Z"}
+            | if .id == 108 then .updated_at = "2026-09-14T00:01:00Z" else . end))
 ')"
 MOCK_ISSUE_COMMENTS="$(jq -cn --arg issue "$issue_body" '[[{id:201, body:$issue, performed_via_github_app:{id:99}, created_at:"2026-09-14T00:00:00Z", updated_at:"2026-09-14T00:00:00Z"}]]')"
 MOCK_EMPTY_COMMENTS='[[]]'
@@ -57,6 +67,9 @@ jq -e '
   and [.records[].pause_id] == ["101", "106"]
   and all(.records[]; .record.target == "pr:37")
 ' "$test_dir/pr.json" > /dev/null
+
+AI_RESUME_MAX_HISTORY_PAGES=10 bash "$helper" owner/repo 36 37 99 > "$test_dir/bounded.json"
+jq -e '. == input' "$test_dir/pr.json" "$test_dir/bounded.json" > /dev/null
 
 bash "$helper" owner/repo 36 - 99 > "$test_dir/issue.json"
 jq -e '.target == "issue:36" and [.records[].pause_id] == ["201"]' "$test_dir/issue.json" > /dev/null

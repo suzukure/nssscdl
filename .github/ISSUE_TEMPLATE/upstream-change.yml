@@ -1,46 +1,46 @@
-name: Upstream change or clarification
-description: Pause dependent work while an earlier phase is clarified or changed.
-title: "[Upstream] "
+name: 上流工程の変更・明確化
+description: 上流工程の明確化や変更が済むまで、依存する作業を停止します。
+title: "[上流] "
 labels: []
 body:
   - type: dropdown
     id: upstream_phase
     attributes:
-      label: Upstream phase requiring work
+      label: 対応が必要な上流工程
       options:
-        - Requirements
-        - Basic design
-        - Detailed design
-        - Implementation
-        - Test
-        - Operations
+        - 要求
+        - 基本設計
+        - 詳細設計
+        - 実装
+        - テスト
+        - 運用
     validations:
       required: true
   - type: textarea
     id: trigger
     attributes:
-      label: Trigger and required clarification
-      description: Explain what was discovered and which earlier decision must be made.
+      label: 発端と必要な明確化
+      description: 発見した内容と、必要になった上流の決定を説明してください。
     validations:
       required: true
   - type: textarea
     id: blocked
     attributes:
-      label: Blocked downstream work
-      description: Link the original Issue/PR and identify the exact area that must stop.
+      label: 停止する下流作業
+      description: 元のIssue/PRをリンクし、停止が必要な範囲を具体的に示してください。
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
-      label: Completion criteria
-      description: State what must be confirmed before downstream work can resume.
+      label: 完了条件
+      description: 下流作業を再開する前に確認すべきことを記載してください。
     validations:
       required: true
   - type: textarea
     id: impact
     attributes:
-      label: Downstream impact checklist
-      description: List documents, code, tests, and Issues that must be reassessed after confirmation.
+      label: 下流への影響確認
+      description: 確定後に再評価する文書、コード、テスト、Issueを列挙してください。
     validations:
       required: true

@@ -1,0 +1,42 @@
+@startuml
+!include <C4/C4_Component>
+
+LAYOUT_WITH_LEGEND()
+title Student Authentication - C4 Level 3 (design only, Issue 840)
+
+Person(student, "Student", "Chooses Google or Magic Link; confirms registration and logout.")
+System_Ext(google, "Google OIDC", "Authorization Code Flow; external compatibility must be verified.")
+System_Ext(turnstile, "Cloudflare Turnstile", "Public Magic Link abuse mitigation.")
+System_Ext(mail, "Resend", "Sends short-lived links; delivery is not authentication.")
+ContainerDb(db, "Main Database", "Cloudflare D1", "Account, binding, flow, registration and opaque Session authority.")
+
+Container_Boundary(worker, "Application Worker - single deploy unit") {
+  Component(ui, "Student Auth UI", "Web UI", "Same-origin CSRF fetch; explicit Magic consume; registration. No bearer localStorage.")
+  Component(http, "Student Auth HTTP Adapter", "HTTP / JSON", "Host Cookie, Origin / CSRF, fixed redirect and safe errors; Application document section 10.")
+  Component(auth, "Student Auth Application Service", "Application", "Verified identity, existing binding, registration permission and issuance composition.")
+  Component(oidc, "Google OIDC Port / Adapter", "Infrastructure", "State / nonce / S256 PKCE, signature / claims; no raw provider tokens to Application.")
+  Component(bot, "Turnstile Port / Adapter", "Infrastructure", "Server verification; no client success flag.")
+  Component(send, "Magic Link Mail Port / Adapter", "Infrastructure", "Post-response best-effort send after Challenge commit; failure / unknown are abstracted.")
+  Component(repo, "Auth Transaction Port / D1 Adapter", "Infrastructure", "Rate reservations, pre-auth, single-use flows, binding and Session in atomic batches; D1 section 9.")
+  Component(guard, "Student Session / Authorization Guard", "Application", "Every business request resolves current student_session_access_v1; D1 section 8.")
+}
+
+Rel(student, ui, "Uses", "HTTPS")
+Rel(ui, http, "Auth endpoints; Cookie / X-CSRF-Token", "Same-origin HTTPS")
+Rel(http, auth, "Validated wire; no client Actor")
+Rel(auth, oidc, "Claimed flow / code; receives verified identity or safe classification")
+Rel(oidc, google, "Code exchange and trusted keys; no automatic Login retry", "HTTPS")
+Rel(student, google, "Top-level authorization navigation", "HTTPS")
+Rel(google, http, "GET callback; state + browser binding", "HTTPS")
+Rel(auth, bot, "Checks Magic request before issuance")
+Rel(bot, turnstile, "Verifies token / hostname / action", "HTTPS")
+Rel(auth, repo, "Atomic consume / binding / registration / Session; latest access guard")
+Rel(repo, db, "Primary reads and guarded batches; provider calls outside transaction", "D1 binding")
+Rel(auth, send, "Committed Challenge; memory-only raw link")
+Rel(send, mail, "Send after rate checks; acceptance / unknown / failure", "HTTPS")
+Rel(mail, student, "Purpose-bound expiring link", "Email")
+Rel(http, guard, "Validates Session for CSRF / logout")
+Rel(guard, db, "Shared view and predicate; server-internal Request Context", "D1 binding")
+
+SHOW_LEGEND()
+@enduml

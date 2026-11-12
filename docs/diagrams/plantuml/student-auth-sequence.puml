@@ -1,0 +1,84 @@
+@startuml
+title Student authentication - HTTP, Provider and Session composition (design only)
+actor Student
+participant "Auth UI" as UI
+participant "Auth HTTP Adapter" as HTTP
+participant "Auth Application" as App
+participant "Google OIDC Adapter" as OIDC
+participant "Google OIDC Provider" as Google
+participant "Turnstile Adapter" as Bot
+participant "Magic Mail Adapter" as Mail
+database "Main D1 / Auth Transaction Port" as D1
+
+UI -> HTTP: GET /api/auth/student/csrf (same-origin)
+HTTP -> D1: Read/create fixed-expiry pre-auth
+HTTP --> UI: 200 CSRF token + Host pre-auth Cookie
+alt Google
+  UI -> HTTP: POST google/start + Origin / pre-auth CSRF
+  HTTP -> App: Validated start
+  App -> D1: Rate check; supersede old flow/proof; store state / nonce / verifier
+  App --> UI: 200 authorizationUrl with S256 PKCE
+  UI -> Google: Top-level authorization navigation
+  Google -> HTTP: GET callback code + state
+  HTTP -> App: Validate wire and Browser Cookie
+  App -> D1: Assert state / pre-auth / purpose / expiry; claim once
+  D1 --> App: Claim committed (never restored)
+  App -> OIDC: Claimed flow / code / saved verifier
+  OIDC -> Google: HTTPS code exchange; trusted signing keys
+  Google --> OIDC: Provider response
+  OIDC -> OIDC: Verify signature / claims / nonce; discard raw tokens
+  OIDC --> App: Verified issuer / subject / email OR abstract failure
+  note over App, OIDC
+    No external call inside D1 batch.
+    No automatic Google Login retry.
+    Wrong state/browser does not terminate another valid flow.
+  end note
+else Magic Link
+  UI -> HTTP: POST magic/request {email, turnstileToken, invitationToken?}
+  HTTP -> App: Validated Origin / pre-auth CSRF
+  App -> D1: Reserve source rate budget
+  App -> Bot: Server token / hostname / action verification
+  Bot --> App: verified / rejected / unavailable
+  App -> D1: Reserve destination budget; decide purpose; supersede and store hash
+  D1 --> App: Committed OR no-send with same accepted outcome
+  HTTP --> UI: 202 accepted (no enumeration or delivery result)
+  opt Committed sendable Challenge
+    App -> Mail: Post-response best-effort send; memory-only token
+    Mail --> Student: /student/login/magic#token=...
+  end
+  Student -> UI: Open link; remove fragment; preview and explicitly confirm
+  UI -> HTTP: POST magic/consume {token} + current Browser pre-auth CSRF
+  HTTP -> App: Validate current Browser, token format and purpose
+end
+
+alt Provider / Challenge valid; existing binding or verified contact match
+  App -> D1: One batch: assert flow / binding / latest access; consume; issue NEW Session
+  D1 -> D1: Initial + final section 8.4 issuance predicate; full rollback on failure
+  D1 --> App: Commit
+  App --> HTTP: Authenticated result (no Account ID or provider token)
+  HTTP --> UI: Session Cookie; Google 303 /student or Magic 200 next=student
+else Valid new identity
+  App -> D1: Consume flow + save Browser-bound proof with original expiry
+  HTTP --> UI: Google 303 /student/register or Magic 200 next=registration
+  UI -> HTTP: GET registration (same-origin pre-auth)
+  HTTP --> UI: 200 Server-verified email
+  Student -> UI: Enter name and confirm
+  UI -> HTTP: POST registration {name} + Origin / pre-auth CSRF
+  HTTP -> App: Server proof only; no client identity / role
+  App -> D1: Recheck binding; for NEW Student recheck current mode and Invitation
+  D1 -> D1: One batch: proof / Invitation consume, Student / Account / binding, Session guards
+  D1 --> App: Commit OR all-or-nothing rollback
+  HTTP --> UI: 201 + NEW Session Cookie OR safe error
+else Invalid / unavailable
+  App --> HTTP: Stable safe Application Error
+  HTTP --> UI: Safe JSON or fixed Google failure redirect; no raw error / token
+end
+
+UI -> HTTP: Business request with Session Cookie; unsafe also Origin / Session CSRF
+HTTP -> D1: section 8.3 latest Session / role / lifecycle / access
+HTTP --> UI: Authorized result OR 401 / 403 / 503
+UI -> HTTP: POST logout {} + Origin / Session CSRF
+HTTP -> D1: Revoke only this Session; assert final revocation
+D1 --> HTTP: Confirmed server revocation OR unavailable
+HTTP --> UI: 204 + Cookie removal OR 503 (no success assumption)
+@enduml

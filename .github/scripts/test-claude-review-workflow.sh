@@ -47,6 +47,27 @@ extract_step_run() {
   fi
 }
 
+extract_job_if() {
+  local job_name="${1:?job name is required}"
+  local output_path="${2:?output path is required}"
+
+  awk -v job_name="$job_name" '
+    $0 == "  " job_name ":" { job = 1; next }
+    job && /^  [[:alnum:]_-]+:$/ { exit }
+    job && /^    if: >-$/ { condition = 1; next }
+    condition && /^    [[:alnum:]_-]+:/ { exit }
+    condition {
+      line = $0
+      sub(/^      /, "", line)
+      print line
+    }
+  ' "$workflow" > "$output_path"
+  if [ ! -s "$output_path" ]; then
+    echo "Could not extract $job_name job if condition." >&2
+    exit 1
+  fi
+}
+
 assert_bootstrap_matches VALIDATOR "$repo_root/.github/scripts/validate-claude-review-output.sh"
 assert_bootstrap_matches SUMMARIZER "$repo_root/.github/scripts/summarize-claude-usage.sh"
 assert_bootstrap_matches REVIEW_GATE "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh"
@@ -56,21 +77,81 @@ grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution
 # This mock is intentionally limited to Claude Review workflow fixtures.
 # Cross-workflow gates remain covered by test-ai-workflow.sh.
 gh() {
-  if [ "$1 $2" = 'pr view' ]; then
+  if [ "$1 $2" = 'api /apps/reviewer' ]; then
+    printf '%s\n' "${MOCK_REVIEWER_APP_ID:-99}"
+  elif [ "$1 $2" = 'pr view' ]; then
+    if [ "${MOCK_PR_FAIL:-false}" = true ]; then
+      return 1
+    fi
     case "${MOCK_CASE:-valid}" in
       no-links)
-        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[]}'
+        ;;
+      foreign-link)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/other/repo/issues/36"}]}'
+        ;;
+      malformed-link)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[{"number":36}]}'
         ;;
       pr-paused)
-        printf '%s\n' '{"labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"human-review-required"}],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      machine-state)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"ai-followup-in-progress"}],"closingIssuesReferences":[]}'
+        ;;
+      draft)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":true,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[],"closingIssuesReferences":[]}'
+        ;;
+      stale)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","labels":[],"closingIssuesReferences":[]}'
+        ;;
+      bad-head)
+        printf '%s\n' '{"number":37,"state":"OPEN","isDraft":false,"headRefOid":"invalid","labels":[],"closingIssuesReferences":[]}'
+        ;;
+      closed)
+        printf '%s\n' '{"state":"CLOSED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      merged)
+        printf '%s\n' '{"state":"MERGED","labels":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}]}'
+        ;;
+      state-missing)
+        printf '%s\n' '{"labels":[],"closingIssuesReferences":[]}'
+        ;;
+      unknown-state)
+        printf '%s\n' '{"state":"DRAFT","labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
-        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","state":"OPEN","isDraft":false,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"changedFiles":1,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
         ;;
     esac
   elif [ "$1" = api ]; then
     if [ "${MOCK_API_FAIL:-false}" = true ]; then
       return 1
+    fi
+    if [ "$*" = "api --paginate --slurp repos/owner/repo/actions/runs?head_sha=${expected_head}&per_page=100" ]; then
+      printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]'
+      return
+    fi
+    if [ "$*" = 'api user/323046280' ]; then
+      local developer='{"id":323046280,"type":"Bot","login":"nssscdl-chatgpt-dev[bot]"}'
+      printf '%s\n' "${MOCK_DEVELOPER_BOT:-$developer}"
+      return
+    fi
+    if [ "$*" = 'api users/reviewer%5Bbot%5D' ]; then
+      local reviewer='{"id":99,"type":"Bot","login":"reviewer[bot]"}'
+      printf '%s\n' "${MOCK_REVIEWER_BOT:-$reviewer}"
+      return
+    fi
+    if [ "$2" = 'repos/owner/repo/pulls/37' ]; then
+      if [ -n "${MOCK_SOURCE_PR_JSON:-}" ]; then
+        printf '%s\n' "$MOCK_SOURCE_PR_JSON"
+      else
+        jq -cn --arg head "$expected_head" '
+          {number:37,state:"open",draft:false,
+           head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
+           base:{ref:"main",repo:{full_name:"owner/repo"}},labels:[]}'
+      fi
+      return
     fi
     if [[ "$2" =~ ^repos/owner/repo/git/ref/heads/ ]]; then
       base_ref="${2#repos/owner/repo/git/ref/heads/}"
@@ -102,7 +183,7 @@ gh() {
     if [[ "$*" == *'--name-only'* ]]; then
       printf '%s\n' "${MOCK_CHANGED_PATH:-x}"
     elif [ "${MOCK_FULL_DIFF:-false}" = true ]; then
-      printf '%s\n' 'diff --git a/x b/x'
+      printf '%s\n' 'diff --git a/x b/x' 'new file mode 100644' '--- /dev/null' '+++ b/x' '@@ -0,0 +1 @@' '+changed'
     else
       echo "Unexpected PR diff invocation: $*" >&2
       return 2
@@ -114,35 +195,341 @@ gh() {
 }
 export -f gh
 
+expected_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export expected_head
+extract_step_run 'Normalize trusted review source' "$test_dir/normalize-review-source.sh"
+assert_source() {
+  local action="$1" expected="$2" event_machine_state="${3:-false}" output="$test_dir/source-$1.outputs"
+  local expected_ref="${4:-ai/issue-36}"
+  : > "$output"
+  : > "$test_dir/source-$1.summary"
+  GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$output" \
+    GITHUB_STEP_SUMMARY="$test_dir/source-$1.summary" \
+    EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION="$action" \
+    EVENT_MACHINE_STATE="$event_machine_state" \
+    bash "$test_dir/normalize-review-source.sh"
+  grep -Fqx "continue=$expected" "$output"
+  grep -Fqx 'source_kind=pull_request' "$output"
+  grep -Fqx 'pr_number=37' "$output"
+  grep -Fqx "reviewed_head_sha=$expected_head" "$output"
+  grep -Fqx "event_machine_state=$event_machine_state" "$output"
+  grep -Fqx "head_ref=$expected_ref" "$output"
+  grep -Fqx 'base_ref=main' "$output"
+  if [ "$expected" = true ]; then
+    grep -Fqx "base_sha=$expected_head" "$output"
+  else
+    grep -Fqx 'base_sha=' "$output"
+  fi
+}
+for action in opened ready_for_review reopened; do
+  assert_source "$action" true
+  grep -Fqx 'human_candidate=false' "$test_dir/source-$action.outputs"
+done
+human_source="$(jq -cn --arg head "$expected_head" '
+  {number:37,state:"open",draft:false,user:{login:"owner",type:"User",id:81},author_association:"OWNER",
+   head:{sha:$head,ref:"human/issue-36-local",repo:{full_name:"owner/repo",id:40}},
+   base:{ref:"main",repo:{full_name:"owner/repo",id:40,owner:{login:"owner",type:"User",id:81}}},labels:[]}
+')"
+export MOCK_SOURCE_PR_JSON="$human_source"
+assert_source ready_for_review true false human/issue-36-local
+grep -Fqx 'human_candidate=true' "$test_dir/source-ready_for_review.outputs"
+for edit in '.user.id=82' '.user.type="Bot"' '.user=null' '.author_association="COLLABORATOR"' \
+  '.base.repo.owner.type="Organization"' '.head.repo.id=41' '.head.ref="human/issue-36"' '.base.ref="release"'; do
+  MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$human_source")"
+  : > "$test_dir/human-source-invalid.outputs"
+  if GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/human-source-invalid.outputs" \
+    EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=false \
+    bash "$test_dir/normalize-review-source.sh" > /dev/null 2>&1; then
+    echo "Unexpected owner-managed route for $edit." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/human-source-invalid.outputs" ]
+done
+for edit in '.head.repo.full_name="other/repo"' '.draft=true' '.state="closed"' \
+  '.labels=[{name:"human-review-required"}]' '.labels=[{name:"ai-followup-in-progress"}]' \
+  '.head.sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"'; do
+  MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$human_source")"
+  GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/human-source-blocked.outputs" \
+    GITHUB_STEP_SUMMARY="$test_dir/human-source-blocked.summary" \
+    EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=false \
+    bash "$test_dir/normalize-review-source.sh"
+done
+if grep -Eq '^(continue|human_candidate)=true$' "$test_dir/human-source-blocked.outputs"; then
+  echo 'Blocked owner-managed PR became a review candidate.' >&2
+  exit 1
+fi
+MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
+  {number:37,state:"open",draft:false,
+   head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
+   base:{ref:"main",repo:{full_name:"owner/repo"}},
+   labels:[{name:"ai-followup-in-progress"}]}'
+)"
+export MOCK_SOURCE_PR_JSON
+assert_source ready_for_review false
+grep -Fq '通常のClaudeレビューを実行しません' "$test_dir/source-ready_for_review.summary"
+assert_source opened false
+assert_source unlabeled false
+MOCK_SOURCE_PR_JSON="$(jq -c '.labels=[{name:"unrelated"}]' <<< "$MOCK_SOURCE_PR_JSON")"
+assert_source ready_for_review true
+assert_source ready_for_review false true
+grep -Fq '通常のClaudeレビューを実行しません' "$test_dir/source-ready_for_review.summary"
+assert_source opened false true
+for edit in '.draft=true' '.state="closed"' '.head.repo.full_name="other/repo"' '.labels=[{name:"human-review-required"}]'; do
+  original_source="$MOCK_SOURCE_PR_JSON"
+  MOCK_SOURCE_PR_JSON="$(jq -c "$edit" <<< "$original_source")"
+  assert_source ready_for_review false
+  MOCK_SOURCE_PR_JSON="$original_source"
+done
+MOCK_SOURCE_PR_JSON="$(jq -c '.head.sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' <<< "$MOCK_SOURCE_PR_JSON")"
+GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/source-stale.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/source-stale.summary" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh"
+grep -Fqx 'continue=false' "$test_dir/source-stale.outputs"
+MOCK_SOURCE_PR_JSON='{"number":37,"state":"open","draft":false}'
+if GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/source-malformed.outputs" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=opened \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh" > /dev/null 2> "$test_dir/source-malformed.err"; then
+  echo 'Malformed fresh PR facts passed review source normalization.' >&2
+  exit 1
+fi
+MOCK_SOURCE_PR_JSON="$(jq -cn --arg head "$expected_head" '
+  {number:37,state:"open",draft:false,
+   head:{sha:$head,ref:"ai/issue-36",repo:{full_name:"owner/repo"}},
+   base:{ref:"main",repo:{full_name:"owner/repo"}},labels:[{}]}'
+)"
+if GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$test_dir/source-bad-label.outputs" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh" > /dev/null 2> "$test_dir/source-bad-label.err"; then
+  echo 'Malformed fresh PR labels passed review source normalization.' >&2
+  exit 1
+fi
+unset MOCK_SOURCE_PR_JSON
+if MOCK_BASE_TIP_SHA=invalid GITHUB_REPOSITORY=owner/repo \
+  GITHUB_OUTPUT="$test_dir/source-invalid-base.outputs" \
+  EVENT_PR_NUMBER=37 EVENT_HEAD_SHA="$expected_head" EVENT_ACTION=opened \
+  EVENT_MACHINE_STATE=false \
+  bash "$test_dir/normalize-review-source.sh" > /dev/null 2> "$test_dir/source-invalid-base.err"; then
+  echo 'Malformed fresh base facts passed review source normalization.' >&2
+  exit 1
+fi
 MOCK_CASE=valid
 export MOCK_CASE
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
 
-MOCK_CASE=no-links
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
-jq -e '.continue == true and .reason == ""' <<< "$review_entry" > /dev/null
+for link_case in no-links foreign-link malformed-link; do
+  MOCK_CASE="$link_case"
+  if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+    > "$test_dir/entry-gate-$link_case.out" 2> "$test_dir/entry-gate-$link_case.err"; then
+    echo "Expected $link_case to fail before Claude review." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/entry-gate-$link_case.out" ]
+done
+grep -Fq '同じリポジトリのclosing Issueがない' "$test_dir/entry-gate-no-links.err"
+grep -Fq '同じリポジトリのclosing Issueがない' "$test_dir/entry-gate-foreign-link.err"
+grep -Fq 'PRメタデータが不正' "$test_dir/entry-gate-malformed-link.err"
+
+for closed_case in closed merged; do
+  MOCK_CASE="$closed_case"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
+  jq -e '.continue == false and (.reason | contains("PR状態が"))' <<< "$review_entry" > /dev/null
+done
+
+MOCK_CASE=state-missing
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+  > /dev/null 2> "$test_dir/entry-gate-state-missing.err"; then
+  echo 'Expected Claude review entry to fail closed when PR state is missing.' >&2
+  exit 1
+fi
+grep -Fq 'PR状態を確認できないため、Claudeレビューを停止します。' "$test_dir/entry-gate-state-missing.err"
+
+MOCK_CASE=unknown-state
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+  > /dev/null 2> "$test_dir/entry-gate-state-unknown.err"; then
+  echo 'Expected Claude review entry to fail closed for an unsupported PR state.' >&2
+  exit 1
+fi
+grep -Fq '未対応のPR状態DRAFTのため、Claudeレビューを停止します。' "$test_dir/entry-gate-state-unknown.err"
 
 MOCK_CASE=pr-paused
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == false and (.reason | contains("PR"))' <<< "$review_entry" > /dev/null
+MOCK_CASE=machine-state
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" opened)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" unlabeled)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+MOCK_CASE=valid
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review true)"
+jq -e '.continue == false and (.reason | contains("machine-state"))' <<< "$review_entry" > /dev/null
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" ready_for_review false)"
+jq -e '.continue == true' <<< "$review_entry" > /dev/null
+
+for blocked_case in draft stale; do
+  MOCK_CASE="$blocked_case"
+  review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
+  jq -e '.continue == false and (.reason | length > 0)' <<< "$review_entry" > /dev/null
+done
+MOCK_CASE=bad-head
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+  > /dev/null 2> "$test_dir/entry-gate-bad-head.err"; then
+  echo 'Expected malformed current PR HEAD to fail closed.' >&2
+  exit 1
+fi
+grep -Fq 'PRメタデータが不正' "$test_dir/entry-gate-bad-head.err"
+MOCK_CASE=valid
+MOCK_PR_FAIL=true
+export MOCK_PR_FAIL
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
+  > /dev/null 2> "$test_dir/entry-gate-pr-api-failure.err"; then
+  echo 'Expected PR metadata lookup failure to fail closed.' >&2
+  exit 1
+fi
+grep -Fq '現在のPRメタデータを取得できない' "$test_dir/entry-gate-pr-api-failure.err"
+unset MOCK_PR_FAIL
 
 MOCK_CASE=valid
 MOCK_ISSUE_PAUSED=true
 export MOCK_CASE MOCK_ISSUE_PAUSED
-review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37)"
+review_entry="$(bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head")"
 jq -e '.continue == false and (.reason | contains("Issue #36"))' <<< "$review_entry" > /dev/null
 unset MOCK_ISSUE_PAUSED
 
 MOCK_API_FAIL=true
 export MOCK_API_FAIL
-if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 \
+if bash "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" owner/repo 37 "$expected_head" \
   > /dev/null 2> "$test_dir/entry-gate-api-failure.err"; then
   echo 'Expected Claude review entry to fail when a closing Issue cannot be fetched.' >&2
   exit 1
 fi
-grep -Fq 'Could not fetch closing Issue #36; refusing Claude review.' "$test_dir/entry-gate-api-failure.err"
+grep -Fq 'closing Issue #36を取得できないため、Claudeレビューを停止します。' "$test_dir/entry-gate-api-failure.err"
 unset MOCK_API_FAIL
+
+gate_runner_temp="$test_dir/gate-runner"
+mkdir "$gate_runner_temp"
+cp "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" "$gate_runner_temp/"
+extract_step_run 'Gate Claude review entry' "$test_dir/gate-entry-step.sh"
+extract_step_run 'Recheck Claude review HEAD before verdict' "$test_dir/gate-verdict-step.sh"
+for gate_phase in entry verdict; do
+  gate_step="$test_dir/gate-$gate_phase-step.sh"
+  for gate_case in valid stale closed draft pr-paused; do
+    MOCK_CASE="$gate_case" RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
+      GITHUB_OUTPUT="$test_dir/gate-$gate_phase-$gate_case.outputs" \
+      GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-$gate_case.summary" \
+      bash "$gate_step" > /dev/null
+    expected_continue=false
+    [ "$gate_case" = valid ] && expected_continue=true
+    grep -Fqx "continue=$expected_continue" "$test_dir/gate-$gate_phase-$gate_case.outputs"
+    if [ "$expected_continue" = false ]; then
+      grep -Fq '理由:' "$test_dir/gate-$gate_phase-$gate_case.summary"
+    fi
+  done
+  for link_case in no-links foreign-link malformed-link; do
+    if MOCK_CASE="$link_case" RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
+      GITHUB_OUTPUT="$test_dir/gate-$gate_phase-$link_case.outputs" \
+      GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-$link_case.summary" \
+      bash "$gate_step" > /dev/null 2> "$test_dir/gate-$gate_phase-$link_case.err"; then
+      echo "Expected $gate_phase to reject $link_case." >&2
+      exit 1
+    fi
+    [ ! -s "$test_dir/gate-$gate_phase-$link_case.outputs" ]
+  done
+  if MOCK_CASE=valid MOCK_PR_FAIL=true RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+    PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
+    GITHUB_OUTPUT="$test_dir/gate-$gate_phase-failed.outputs" \
+    GITHUB_STEP_SUMMARY="$test_dir/gate-$gate_phase-failed.summary" \
+    bash "$gate_step" > /dev/null 2> "$test_dir/gate-$gate_phase-failed.err"; then
+    echo "Expected $gate_phase PR API failure to stop review." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/gate-$gate_phase-failed.outputs" ]
+done
+MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=true \
+  GITHUB_OUTPUT="$test_dir/gate-ready-race.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/gate-ready-race.summary" \
+  bash "$test_dir/gate-entry-step.sh" > /dev/null
+grep -Fqx 'continue=false' "$test_dir/gate-ready-race.outputs"
+grep -Fq 'machine-state PR' "$test_dir/gate-ready-race.summary"
+# Model a HEAD update after the event gate has accepted the paid attempt.
+MOCK_CASE=valid RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" EVENT_ACTION=opened EVENT_MACHINE_STATE=false \
+  GITHUB_OUTPUT="$test_dir/gate-during-entry.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/gate-during-entry.summary" \
+  bash "$test_dir/gate-entry-step.sh" > /dev/null
+MOCK_CASE=stale RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo \
+  PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head" \
+  GITHUB_OUTPUT="$test_dir/gate-during-verdict.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/gate-during-verdict.summary" \
+  bash "$test_dir/gate-verdict-step.sh" > /dev/null
+grep -Fqx 'continue=true' "$test_dir/gate-during-entry.outputs"
+grep -Fqx 'continue=false' "$test_dir/gate-during-verdict.outputs"
+grep -Fqx "        if: steps.verdict-entry.outputs.continue == 'true'" <(sed -n '/      - name: Submit reviewer verdict/,/      - name: Record verdict/p' "$workflow")
+grep -Fq "        if: steps.submit-verdict.outcome == 'success'" "$workflow"
+grep -Fq -- '"--squash", "--match-head-commit", self.head' "$repo_root/.github/scripts/merge-approved-pr.py"
+
+extract_step_run 'Resolve review identities' "$test_dir/resolve-review-identities.sh"
+(
+  git() {
+    case "$*" in
+      "show $expected_head:.github/workflows/claude-review.yml")
+        if [ "${MOCK_OLD_BASE:-false}" = true ]; then
+          echo 'name: Claude Review'
+        else
+          cat "$workflow"
+        fi ;;
+      "show $expected_head:.github/scripts/evaluate-claude-review-entry-gate.sh")
+        cat "$repo_root/.github/scripts/evaluate-claude-review-entry-gate.sh" ;;
+      *) return 2 ;;
+    esac
+  }
+  export -f git
+  export repo_root RUNNER_TEMP="$gate_runner_temp" GITHUB_REPOSITORY=owner/repo
+  export GITHUB_OUTPUT="$test_dir/review-identity.outputs" GITHUB_STEP_SUMMARY="$test_dir/review-identity.summary"
+  export BASE_SHA="$expected_head" PR_NUMBER=37 REVIEWED_HEAD_SHA="$expected_head"
+  export EVENT_ACTION=ready_for_review EVENT_MACHINE_STATE=false REVIEW_APP_SLUG=reviewer GITHUB_ACTOR=owner
+  export HUMAN_CANDIDATE=true GITHUB_EVENT_PATH="$test_dir/review-event.json"
+  printf '%s\n' '{"sender":{"type":"Bot","id":82,"login":"reviewer[bot]"}}' > "$GITHUB_EVENT_PATH"
+  run_identity() {
+    : > "$GITHUB_OUTPUT"
+    bash "$test_dir/resolve-review-identities.sh"
+  }
+  run_identity
+  grep -Fqx 'mode=human' "$GITHUB_OUTPUT"
+  grep -Fqx 'developer_slug=nssscdl-chatgpt-dev' "$GITHUB_OUTPUT"
+  grep -Fqx 'bot_ids=323046280,99' "$GITHUB_OUTPUT"
+  MOCK_API_FAIL=true HUMAN_CANDIDATE=false run_identity
+  grep -Fqx 'mode=legacy' "$GITHUB_OUTPUT"
+  MOCK_API_FAIL=true MOCK_OLD_BASE=true run_identity
+  grep -Fqx 'mode=legacy' "$GITHUB_OUTPUT"
+  MOCK_ISSUE_PAUSED=true run_identity
+  grep -Fqx 'mode=blocked' "$GITHUB_OUTPUT"
+  for assignment in 'MOCK_DEVELOPER_BOT={}' 'MOCK_REVIEWER_BOT={}' 'GITHUB_ACTOR=reviewer[bot]'; do
+    if (export "$assignment"; run_identity) > /dev/null 2>&1; then
+      echo "Invalid identity reached review for $assignment." >&2
+      exit 1
+    fi
+    [ ! -s "$GITHUB_OUTPUT" ]
+  done
+)
+grep -Fq "if: steps.review-identity.outputs.mode == 'legacy'" "$workflow"
+grep -Fq 'developer_app_slug: ${{ steps.dev-token.outputs.app-slug }}' "$workflow"
+grep -Fq 'allowed_bots: ${{ steps.review-identity.outputs.developer_slug || steps.dev-token.outputs.app-slug }}[bot],${{ steps.review-token.outputs.app-slug }}[bot]' "$workflow"
+grep -Fq 'VERIFIED_REVIEW_BOT_IDS: ${{ steps.review-identity.outputs.bot_ids }}' "$workflow"
+grep -Fq "startsWith(needs.review.outputs.head_ref, 'ai/issue-')" "$workflow"
+[ "$(bash "$repo_root/.github/scripts/check-claude-followup-target.sh" owner/repo 37 99 "$expected_head" reviewer human/issue-36-local)" = skip ]
+
+# #919 fixtures live in this existing formal suite; no new runner or paid call.
+python3 -B "$repo_root/.github/scripts/fixtures/merge-approved-pr.py"
 
 MOCK_CHANGED_PATH=src/CLAUDE.md
 export MOCK_CHANGED_PATH
@@ -168,6 +555,137 @@ unset MOCK_DIFF_FAIL
 
 validator="$repo_root/.github/scripts/validate-claude-review-output.sh"
 valid_structured_review='{"verdict":"approve","summary":"Reviewed.","blocking_findings":[],"non_blocking_findings":[],"linked_issues_checked":["#59"]}'
+
+human_escalation_step="$test_dir/classify-human-escalation.sh"
+extract_step_run 'Classify human escalation' "$human_escalation_step"
+human_escalation_runner_temp="$test_dir/human-escalation-runner"
+mkdir "$human_escalation_runner_temp"
+trusted_base_sha="$(git rev-parse HEAD)"
+
+assert_human_escalation() {
+  local expected="${1:?expected classification is required}"
+  local fixture_name="${2:?fixture name is required}"
+  local summary="${3-}"
+  local output_path="$test_dir/human-escalation-$fixture_name.outputs"
+
+  jq -cn --arg summary "$summary" '
+    {verdict:"approve",summary:$summary,blocking_findings:[],non_blocking_findings:[],linked_issues_checked:["#59"]}
+  ' > "$human_escalation_runner_temp/claude-review.json"
+  : > "$output_path"
+  GITHUB_OUTPUT="$output_path" RUNNER_TEMP="$human_escalation_runner_temp" \
+    BASE_SHA="$trusted_base_sha" bash "$human_escalation_step"
+  grep -Fqx "result=${expected%%:*}" "$output_path"
+  grep -Fqx "reason=${expected#*:}" "$output_path"
+}
+
+assert_human_escalation none: no-marker 'Reviewed.'
+assert_human_escalation none: descriptive-requirements 'Reviewed. exact [REQUIREMENTS_CHANGE_REQUIRED] marker is preserved.'
+assert_human_escalation none: descriptive-human 'Reviewed. exact [HUMAN_ESCALATION_RECOMMENDED] marker is preserved.'
+assert_human_escalation pause:requirements_change requirements-standalone $'Reviewed.\n[REQUIREMENTS_CHANGE_REQUIRED]\nHuman decision required.'
+assert_human_escalation pause:explicit_human_escalation human-standalone $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED]\nHuman decision recommended.'
+assert_human_escalation state_inconsistent: both-markers $'[REQUIREMENTS_CHANGE_REQUIRED]\n[HUMAN_ESCALATION_RECOMMENDED]'
+assert_human_escalation pause:requirements_change requirements-crlf $'Reviewed.\r\n[REQUIREMENTS_CHANGE_REQUIRED]\r\nHuman decision required.'
+assert_human_escalation none: indented-marker $'Reviewed.\n [REQUIREMENTS_CHANGE_REQUIRED]\nNot an exact signal.'
+assert_human_escalation none: suffixed-marker $'Reviewed.\n[HUMAN_ESCALATION_RECOMMENDED] because this text continues.'
+mkdir -p "$test_dir/untrusted-head/.github/scripts"
+printf '%s\n' 'exit 99' > "$test_dir/untrusted-head/.github/scripts/classify-claude-human-escalation.sh"
+jq -cn --arg summary '[HUMAN_ESCALATION_RECOMMENDED]' \
+  '{verdict:"approve",summary:$summary,blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
+  > "$human_escalation_runner_temp/claude-review.json"
+(cd "$test_dir/untrusted-head"; GIT_DIR="$repo_root/.git" \
+  GITHUB_OUTPUT="$test_dir/human-escalation-untrusted-head.outputs" \
+  RUNNER_TEMP="$human_escalation_runner_temp" BASE_SHA="$trusted_base_sha" \
+  bash "$human_escalation_step")
+grep -Fqx 'result=pause' "$test_dir/human-escalation-untrusted-head.outputs"
+grep -Fqx 'reason=explicit_human_escalation' "$test_dir/human-escalation-untrusted-head.outputs"
+jq -cn '{verdict:"approve",summary:"[HUMAN_ESCALATION_RECOMMENDED]\u0000",blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
+  > "$human_escalation_runner_temp/claude-review.json"
+GITHUB_OUTPUT="$test_dir/human-escalation-nul.outputs" RUNNER_TEMP="$human_escalation_runner_temp" \
+  BASE_SHA="$trusted_base_sha" bash "$human_escalation_step"
+grep -Fqx 'result=none' "$test_dir/human-escalation-nul.outputs"
+
+printf '%s\n' '{"summary":[]}' > "$human_escalation_runner_temp/claude-review.json"
+if GITHUB_OUTPUT="$test_dir/human-escalation-invalid.outputs" RUNNER_TEMP="$human_escalation_runner_temp" \
+    BASE_SHA="$trusted_base_sha" bash "$human_escalation_step" > /dev/null 2>&1; then
+  echo 'Human escalation classification must fail closed for an invalid structured review.' >&2
+  exit 1
+fi
+
+git() {
+  if [ "$1" = show ] && [[ "$2" == *:'.github/scripts/classify-claude-human-escalation.sh' ]]; then
+    case "$MOCK_CLASSIFIER" in
+      fail) printf '%s\n' 'exit 1' ;;
+      malformed) printf '%s\n' 'echo "{\"result\":\"pause\",\"reason\":\"unknown\"}"' ;;
+      bootstrap-fail) return 1 ;;
+      *) command git "$@" ;;
+    esac
+  else
+    command git "$@"
+  fi
+}
+export -f git
+for bad_classifier in fail malformed bootstrap-fail; do
+  if GITHUB_OUTPUT="$test_dir/classifier-$bad_classifier.outputs" \
+      RUNNER_TEMP="$human_escalation_runner_temp" BASE_SHA="$trusted_base_sha" \
+      MOCK_CLASSIFIER="$bad_classifier" bash "$human_escalation_step" > /dev/null 2>&1; then
+    echo "Classifier $bad_classifier must fail closed." >&2
+    exit 1
+  fi
+  [ ! -s "$test_dir/classifier-$bad_classifier.outputs" ]
+done
+unset -f git
+
+legacy_pause_step="$test_dir/mark-human-escalation.sh"
+legacy_notify_step="$test_dir/notify-human-escalation.sh"
+extract_step_run 'Mark human escalation' "$legacy_pause_step"
+extract_step_run 'Notify human of escalation' "$legacy_notify_step"
+sed -i 's/${{ steps.review-source.outputs.pr_number }}/37/' "$legacy_notify_step"
+git() {
+  if [ "$1" = show ]; then
+    printf '%s\n' "$2" >> "$MOCK_PAUSE_BOOTSTRAP_LOG"
+    case "$2" in
+      *:'.github/scripts/apply-human-pause.sh')
+        printf '%s\n' '#!/usr/bin/env bash' 'printf "legacy-label %s\n" "$*" >> "$MOCK_PAUSE_LOG"'
+        ;;
+      *:'.github/scripts/notify-human.sh')
+        printf '%s\n' '#!/usr/bin/env bash' 'printf "legacy-notification\n" >> "$MOCK_PAUSE_LOG"'
+        ;;
+      *) command git "$@" ;;
+    esac
+  else
+    command git "$@"
+  fi
+}
+export -f git
+pause_runner="$test_dir/pause-runner"
+mkdir "$pause_runner"
+export MOCK_PAUSE_LOG="$test_dir/pause-events.log"
+export MOCK_PAUSE_BOOTSTRAP_LOG="$test_dir/pause-bootstrap.log"
+for fixture_name in no-marker requirements-standalone human-standalone both-markers; do
+  result="$(sed -n 's/^result=//p' "$test_dir/human-escalation-$fixture_name.outputs")"
+  case "$result" in
+    none) continue ;;
+    pause|state_inconsistent) ;;
+    *) echo "Unexpected classification for $fixture_name: $result" >&2; exit 1 ;;
+  esac
+  : > "$MOCK_PAUSE_LOG"
+  RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+    PR_NUMBER=37 HEAD_REF=ai/issue-36 bash "$legacy_pause_step"
+  RUNNER_TEMP="$pause_runner" BASE_SHA="$trusted_base_sha" GITHUB_REPOSITORY=owner/repo \
+    GITHUB_SERVER_URL=https://github.com bash "$legacy_notify_step"
+  grep -Fqx 'legacy-label owner/repo 36 37' "$MOCK_PAUSE_LOG"
+  grep -Fqx legacy-notification "$MOCK_PAUSE_LOG"
+  [ "$(wc -l < "$MOCK_PAUSE_LOG")" -eq 2 ]
+done
+if grep -Fq 'create-human-pause.sh' "$MOCK_PAUSE_BOOTSTRAP_LOG"; then
+  echo 'Claude human escalation must not bootstrap the common pause helper.' >&2
+  exit 1
+fi
+if grep -v "^${trusted_base_sha}:" "$MOCK_PAUSE_BOOTSTRAP_LOG" > /dev/null; then
+  echo 'Pause bootstrap read a non-current base commit.' >&2
+  exit 1
+fi
+unset -f git
 
 # The event payload can retain a stale base SHA after main advances. The
 # workflow must resolve the current base ref and use that tip for every
@@ -199,6 +717,9 @@ git() {
       esac
       ;;
     cat-file) return 0 ;;
+    rev-parse)
+      if [ "$*" = 'rev-parse HEAD' ]; then printf '%s\n' "$expected_head"; else command git "$@"; fi
+      ;;
     *) command git "$@" ;;
   esac
 }
@@ -211,15 +732,29 @@ export repo_root
   MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
   MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
   GITHUB_OUTPUT="$test_dir/build-context.outputs" \
+  GITHUB_STEP_SUMMARY="$test_dir/context-size-summary.md" \
   GITHUB_REPOSITORY=owner/repo \
   RUNNER_TEMP="$workflow_bootstrap_dir" \
   BASE_REF=main \
+  SOURCE_BASE_SHA="$current_base_tip_sha" \
+  REVIEWED_HEAD_SHA="$expected_head" \
   EVENT_BASE_SHA="$stale_event_base_sha" \
   PR_NUMBER=37 \
-  TRUSTED_LOGINS=dev \
+  TRUSTED_LOGINS='dev,dev[bot],app/dev,reviewer,reviewer[bot],app/reviewer' \
+  REVIEWER_LOGINS='reviewer,reviewer[bot],app/reviewer' \
+  VERIFIED_REVIEW_BOT_IDS='323046280,99' \
   bash "$build_context_step_script"
 )
 grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
+grep -Fq '### Claudeレビューcontextサイズ（UTF-8 bytes）' "$test_dir/context-size-summary.md"
+grep -Fq "| 最終review.md総bytes | $(wc -c < "$workflow_step_cwd/.ai-context/review.md" | tr -d ' ') |" "$test_dir/context-size-summary.md"
+! grep -Eq 'DATA[|]|Closes #36|requirements' "$test_dir/context-size-summary.md"
+grep -Fq '## Same-head CI snapshot' "$workflow_step_cwd/.ai-context/review.md"
+[ "$(grep -c '^DATA| 対象結果なし$' "$workflow_step_cwd/.ai-context/review.md")" -eq 3 ]
+grep -Fq '| 同一head CI証拠 |' "$test_dir/context-size-summary.md"
+# Ordinary review alone opts in; other callers keep their existing contracts.
+grep -Fq '"${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA"' "$workflow"
+grep -Fq 'REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}' "$workflow"
 grep -Fqx main "$workflow_base_ref_log"
 grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
 if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
@@ -238,6 +773,7 @@ if (
     GITHUB_REPOSITORY=owner/repo \
     RUNNER_TEMP="$workflow_bootstrap_dir" \
     BASE_REF=main \
+    SOURCE_BASE_SHA="$current_base_tip_sha" \
     PR_NUMBER=37 \
     TRUSTED_LOGINS=dev \
     bash "$build_context_step_script" > /dev/null 2> "$test_dir/build-context-invalid.err"
@@ -245,7 +781,7 @@ if (
   echo 'Workflow bootstrap accepted an invalid current base tip.' >&2
   exit 1
 fi
-grep -Fq 'Could not resolve the current base branch tip' "$test_dir/build-context-invalid.err"
+grep -Fq '現在のbase branch先端のcommit SHAを確認できない' "$test_dir/build-context-invalid.err"
 unset -f git
 
 # The env hand-off is masked first using the pinned Action's serialization.
@@ -536,7 +1072,7 @@ assert_workflow_failure_classification() {
     bash "$validate_step_script"
   grep -Fqx "reason=$expected_reason" "$output_path"
   grep -Fqx 'valid=false' "$output_path"
-  grep -Fq "Reason code: $expected_reason" "$summary_path"
+  grep -Fq "理由コード: $expected_reason" "$summary_path"
   if CLASSIFICATION_REASON="$expected_reason" GITHUB_OUTPUT="$test_dir/workflow-$fixture_name-save.outputs" \
     RUNNER_TEMP="$workflow_runner_temp" bash "$save_step_script" > /dev/null 2> "$stderr_path"; then
     echo "Expected workflow fixture $fixture_name to fail closed." >&2
@@ -550,7 +1086,7 @@ GITHUB_OUTPUT="$test_dir/validate-valid.outputs" GITHUB_STEP_SUMMARY="$test_dir/
   ACTION_OUTCOME=success STRUCTURED_OUTPUT="$valid_structured_review" bash "$validate_step_script"
 grep -Fqx 'reason=REVIEW_VALID' "$test_dir/validate-valid.outputs"
 grep -Fqx 'valid=true' "$test_dir/validate-valid.outputs"
-grep -Fq 'Reason code: REVIEW_VALID' "$test_dir/validate-valid.summary"
+grep -Fq '理由コード: REVIEW_VALID' "$test_dir/validate-valid.summary"
 CLASSIFICATION_REASON=REVIEW_VALID GITHUB_OUTPUT="$test_dir/save-valid.outputs" \
   RUNNER_TEMP="$workflow_runner_temp" bash "$save_step_script"
 jq -e '.verdict == "approve"' "$workflow_runner_temp/claude-review.json" > /dev/null
@@ -620,8 +1156,8 @@ grep -Fq 'CLASSIFIER_INTERNAL_ERROR' "$test_dir/workflow-unclassified-save.stder
 rm -f "$workflow_runner_temp/validate-claude-review-output.sh"
 assert_workflow_failure_classification CLASSIFIER_INTERNAL_ERROR classifier-internal "$test_dir/valid-execution-with-review.json"
 grep -Fq "if: steps.review-entry.outputs.continue == 'true' && steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$workflow"
-grep -Fq 'Claude review result was classified as ${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}; refusing to submit a verdict.' "$workflow"
-grep -Fq 'Verify the trusted classifier and validator bootstrap' "$workflow"
+grep -Fq 'Claudeレビュー結果の分類は${CLASSIFICATION_REASON:-CLASSIFIER_INTERNAL_ERROR}です。判定の投稿を停止します。' "$workflow"
+grep -Fq '信頼済みclassifierとvalidatorの準備を確認' "$workflow"
 grep -Fq "steps.validate-attempt-1.outputs.reason == 'REVIEW_VALID'" "$workflow"
 grep -Fq -- "--json-schema '\${{ steps.review-schema.outputs.schema }}'" "$workflow"
 grep -Fq "STRUCTURED_OUTPUT: \${{ steps.mask-native.outputs.ready == 'true' && steps.claude-attempt-1.outputs.structured_output || '' }}" "$workflow"
@@ -795,6 +1331,7 @@ assert_model_selection() {
   local risk="${1:?risk is required}"
   local expected_model="${2:?expected model is required}"
   local expected_budget="${3:?expected budget is required}"
+  local expected_effort="${4-}"
   local output_path="$test_dir/model-$risk.outputs"
 
   TEST_RISK="$risk" \
@@ -808,10 +1345,11 @@ assert_model_selection() {
   grep -Fqx "model=$expected_model" "$output_path"
   grep -Fqx "risk=$risk" "$output_path"
   grep -Fqx "budget_arg=$expected_budget" "$output_path"
+  grep -Fqx "effort_arg=$expected_effort" "$output_path"
 }
 
-assert_model_selection high high-risk-model '--max-budget-usd 2.10'
-assert_model_selection standard standard-model '--max-budget-usd 1.70'
+assert_model_selection high high-risk-model '--max-budget-usd 2.10' '--effort high'
+assert_model_selection standard standard-model '--max-budget-usd 1.70' ''
 
 if TEST_RISK=unsupported \
   RUNNER_TEMP="$runner_temp" \
@@ -824,7 +1362,7 @@ if TEST_RISK=unsupported \
   echo 'Expected an unsupported risk classification to fail closed.' >&2
   exit 1
 fi
-grep -Fq 'Unsupported Claude review risk classification: unsupported' "$test_dir/model-unsupported.stderr"
+grep -Fq '未対応のClaudeレビューリスク区分: unsupported' "$test_dir/model-unsupported.stderr"
 
 if TEST_RISK=standard \
   RUNNER_TEMP="$runner_temp" \
@@ -837,7 +1375,7 @@ if TEST_RISK=standard \
   echo 'Expected a whitespace-only standard model variable to fail preflight.' >&2
   exit 1
 fi
-grep -Fq 'CLAUDE_MODEL_STANDARD repository variable must contain a non-whitespace value.' "$test_dir/model-whitespace.stderr"
+grep -Fq 'repository variable CLAUDE_MODEL_STANDARDには空白以外の値が必要です。' "$test_dir/model-whitespace.stderr"
 
 if TEST_RISK=high \
   RUNNER_TEMP="$runner_temp" \
@@ -850,7 +1388,7 @@ if TEST_RISK=high \
   echo 'Expected a whitespace-only high-risk model variable to fail preflight.' >&2
   exit 1
 fi
-grep -Fq 'CLAUDE_MODEL repository variable must contain a non-whitespace value.' "$test_dir/model-high-whitespace.stderr"
+grep -Fq 'repository variable CLAUDE_MODELには空白以外の値が必要です。' "$test_dir/model-high-whitespace.stderr"
 
 jq -cn '[
   {
@@ -1018,8 +1556,8 @@ if grep -Fq "$usage_summary" "$test_dir/usage-summary.md"; then
   echo 'Usage JSON was written to the Job Summary instead of only stdout.' >&2
   exit 1
 fi
-grep -Fq '### Claude review usage' "$test_dir/usage-summary.md"
-grep -Fq '| Input tokens | 30 |' "$test_dir/usage-summary.md"
+grep -Fq '### Claudeレビュー利用量' "$test_dir/usage-summary.md"
+grep -Fq '| 入力token数 | 30 |' "$test_dir/usage-summary.md"
 
 jq -cn '[]' > "$test_dir/no-success-usage-execution.json"
 
@@ -1057,12 +1595,12 @@ assert_usage_step_unavailable() {
     echo "Unexpected usage diagnostic for $fixture." >&2
     exit 1
   fi
-  grep -Fqx 'Execution usage was unavailable.' "$summary_path"
+  grep -Fqx '実行時の利用量を取得できませんでした。' "$summary_path"
 }
 
 assert_usage_step_unavailable unset-execution-file ''
 assert_usage_step_unavailable missing-execution-file '' "$test_dir/does-not-exist.json"
-assert_usage_step_unavailable summarizer-failure 'Claude usage summarization failed.' "$test_dir/no-success-usage-execution.json"
+assert_usage_step_unavailable summarizer-failure 'Claudeの利用量集計に失敗しました。' "$test_dir/no-success-usage-execution.json"
 
 no_success_stderr="$test_dir/no-success-execution.stderr"
 if bash "$repo_root/.github/scripts/summarize-claude-usage.sh" "$test_dir/no-success-usage-execution.json" \
@@ -1083,8 +1621,13 @@ awk '
 ' "$workflow" > "$run_step"
 grep -Fq 'model "${{ steps.review-model.outputs.model }}"' "$run_step"
 grep -Fq '${{ steps.review-model.outputs.budget_arg }}' "$run_step"
+grep -Fq '${{ steps.review-model.outputs.effort_arg }}' "$run_step"
 if grep -Eq -- '--max-budget-usd (1\.70|2\.10)' "$run_step"; then
   echo 'Run Claude review must receive its budget through the selected output.' >&2
+  exit 1
+fi
+if grep -Fq -- '--effort high' "$run_step"; then
+  echo 'Run Claude review must receive its effort through the selected output.' >&2
   exit 1
 fi
 
@@ -1092,19 +1635,105 @@ if [ "$(grep -Fc 'uses: anthropics/claude-code-action@' "$workflow")" -ne 1 ]; t
   echo 'Expected exactly one Claude review invocation.' >&2
   exit 1
 fi
+grep -Fqx '        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # Upstream pin: Claude Code 2.1.284 / Agent SDK 0.3.284' "$run_step"
+if grep -Eq 'claude-(sonnet|opus)-[0-9]' "$workflow"; then
+  echo 'Claude review model IDs must be selected through repository variables.' >&2
+  exit 1
+fi
 if [ "$(grep -Fc 'continue-on-error: true' "$workflow")" -ne 2 ]; then
   echo 'Expected one fail-closed Claude execution and one non-fatal usage step.' >&2
   exit 1
 fi
-grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, unlabeled]' "$workflow"
+grep -Fq 'types: [opened, reopened, ready_for_review, unlabeled]' "$workflow"
+review_job="$test_dir/review-job.yml"
+awk '
+  /^  review:$/ { job = 1 }
+  job && /^  [[:alnum:]_-]+:$/ && $0 != "  review:" { exit }
+  job { print }
+' "$workflow" > "$review_job"
+if [ "$(grep -Fxc '    timeout-minutes: 15' "$review_job")" -ne 1 ]; then
+  echo 'Claude Review job must have exactly a 15-minute timeout.' >&2
+  exit 1
+fi
+merge_job="$test_dir/merge-job.yml"
+sed -n '/^  merge:$/,$p' "$workflow" > "$merge_job"
+grep -Fqx '    timeout-minutes: 15' "$merge_job"
+grep -Fq 'ref: ${{ needs.review.outputs.trusted_base_sha }}' "$merge_job"
+grep -Fq 'python3 -B .github/scripts/merge-approved-pr.py "$GITHUB_REPOSITORY"' "$merge_job"
+grep -Fq '"$PR_NUMBER" "$REVIEWED_HEAD_SHA" "$DEV_APP_SLUG" "$REVIEW_APP_SLUG"' "$merge_job"
+grep -Fq 'REVIEW_APP_SLUG: ${{ steps.review-token.outputs.app-slug }}' "$merge_job"
+if grep -Eq -- '--(admin|auto)([[:space:]]|$)' "$merge_job"; then
+  echo 'The bounded merge must not bypass Rulesets or enable native auto-merge.' >&2
+  exit 1
+fi
+grep -Fqx '    needs: review' "$merge_job"
+grep -Fqx '      needs.review.result == '\''success'\'' &&' "$merge_job"
+grep -Fqx '      needs.review.outputs.verdict == '\''approve'\'' &&' "$merge_job"
+review_job_if="$test_dir/review-job-if.txt"
+extract_job_if review "$review_job_if"
+grep -Fq "github.event.action != 'unlabeled'" "$review_job_if"
+grep -Fq "github.event.pull_request.head.repo.full_name == github.repository" "$review_job_if"
+grep -Fq "github.event.pull_request.state == 'open'" "$review_job_if"
+grep -Fq '!github.event.pull_request.draft' "$review_job_if"
+grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$review_job_if"
+grep -Fq "EVENT_MACHINE_STATE: \${{ contains(github.event.pull_request.labels.*.name, 'ai-followup-in-progress') }}" "$review_job"
+grep -Fq 'EVENT_MACHINE_STATE: ${{ steps.review-source.outputs.event_machine_state }}' "$review_job"
+if grep -Fq 'synchronize' "$workflow"; then
+  echo 'Claude Review must not start a paid review from a head synchronization.' >&2
+  exit 1
+fi
 grep -Fq "github.event.label.name == 'human-review-required'" "$workflow"
-grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$workflow"
+grep -Fq 'human_paused:([.labels[].name] | index("human-review-required") != null)' "$workflow"
+grep -Fq 'if: steps.review-source.outputs.continue == '\''true'\''' "$workflow"
+if grep -Fq "contains(fromJSON(steps.structured-review.outputs.json).summary" "$workflow"; then
+  echo 'Claude human escalation must not use substring matching on the review summary.' >&2
+  exit 1
+fi
+if [ "$(grep -Fxc "        if: steps.human-escalation.outputs.result == 'pause' || steps.human-escalation.outputs.result == 'state_inconsistent'" "$workflow")" -ne 2 ]; then
+  echo 'Every Claude human escalation must use the legacy label and notification path.' >&2
+  exit 1
+fi
+if grep -Fq 'create-human-pause.sh' "$review_job"; then
+  echo 'Claude Review human escalation must not create a common pause record.' >&2
+  exit 1
+fi
+grep -Fq 'git show "${BASE_SHA}:.github/scripts/classify-claude-human-escalation.sh"' "$workflow"
+grep -Fq 'NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}' "$workflow"
 grep -Fq 'CLAUDE_MODEL_STANDARD' "$workflow"
 grep -Fq 'Record Claude review usage' "$workflow"
-grep -Fq 'if $risk == "" then "unavailable" else $risk end' "$workflow"
-grep -Fq 'Claude review not run' "$workflow"
+grep -Fq 'if $risk == "" then "取得不可" else $risk end' "$workflow"
+grep -Fq 'Claudeレビュー未実施' "$workflow"
 grep -Fq 'Gate Claude review entry' "$workflow"
 grep -Fq 'cacheCreationInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
 grep -Fq 'cacheReadInputTokens' "$repo_root/.github/scripts/summarize-claude-usage.sh"
+
+export -n -f gh
+unset -f gh
+mkdir -p "$test_dir/mock-bin"
+cat > "$test_dir/mock-bin/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = 'api --method POST repos/owner/repo/pulls/37/reviews --input -' ]
+cat > "$MOCK_REVIEW_REQUEST"
+MOCK_GH
+chmod +x "$test_dir/mock-bin/gh"
+for verdict in approve request_changes; do
+  jq -cn --arg verdict "$verdict" \
+    '{verdict:$verdict,summary:"総評\n[REQUIREMENTS_CHANGE_REQUIRED]",blocking_findings:[],non_blocking_findings:[],linked_issues_checked:[]}' \
+    > "$test_dir/review-$verdict.json"
+  PATH="$test_dir/mock-bin:$PATH" MOCK_REVIEW_REQUEST="$test_dir/request-$verdict.json" \
+    bash "$repo_root/.github/scripts/submit-claude-review.sh" owner/repo 37 \
+      "$test_dir/review-$verdict.json" "$expected_head" > /dev/null
+  expected_event=APPROVE
+  [ "$verdict" != request_changes ] || expected_event=REQUEST_CHANGES
+  jq -e --arg event "$expected_event" --arg sha "$expected_head" '
+    .event == $event and .commit_id == $sha and
+    (.body | contains("## Claudeレビュー\n") and contains("**判定:**") and
+      contains("### 修正必須の指摘\n\n- なし。") and
+      contains("### 修正任意の指摘\n\n- なし。") and
+      contains("### 確認した関連Issue\n\n- なし。") and
+      contains("SUMMARY| [REQUIREMENTS_CHANGE_REQUIRED]"))
+  ' "$test_dir/request-$verdict.json" > /dev/null
+done
 
 echo 'Claude Review workflow fixture tests passed.'

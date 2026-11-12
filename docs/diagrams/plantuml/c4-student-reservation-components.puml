@@ -1,0 +1,59 @@
+@startuml
+!include <C4/C4_Component>
+
+LAYOUT_WITH_LEGEND()
+title Student Single Reservation - C4 Level 3; isolated evaluation design (#892)
+
+Person(student, "Student", "Checks schedule, previews and confirms one reservation, views history.")
+ContainerDb(db, "Isolated Evaluation Database", "Local D1 / approved remote D1", "Test-owned state; production migrations 0001-0012; single reservation physical adapter in 02_StudentReservationD1.md.")
+
+Container_Boundary(worker, "Evaluation Application Worker - dedicated entrypoint/config; default Worker remains 503") {
+  Component(ui, "Web/UI Presentation", "HTML / CSS / Browser JS", "/student: day-select calendar, automatic Preview, explicit Confirm, displayed-month future bookings + latest success marker, full history. Memory-only tokens.")
+  Component(router, "HTTP Router / API Adapter", "HTTP / JSON", "Validates wire, Origin / Session CSRF and maps application results. Auth HTTP contract: Application section 10.")
+  Component(csrf, "Student CSRF HTTP Adapter (design)", "HTTP / JSON", "Session-first isolated GET; shared pure digest with POST validation. Full session/preauth production contract retained.")
+  Component(guard, "Student Session / Authorization Guard", "Application", "Validates each request and resolves the student.")
+  Component(authrepo, "Production Student Session D1 Adapter", "Infrastructure", "Hash lookup / internal request context; physical contract in 02 section 8. Default/public wiring remains disabled.")
+  Component(schedule, "Schedule Query Application Service", "Application", "Builds one student slot view.")
+  Component(preview, "Reservation Preview Application Service", "Application", "Computes confirmation view and state token.")
+  Component(confirm, "Reservation Confirm Application Service", "Application", "Revalidates and commits one booking.")
+  Component(history, "Reservation History Query Application Service", "Application", "Pages student reservation history.")
+  Component(domain, "Reservation / Classification Domain Service", "Domain", "Availability, monthly classification and effects.")
+  Component(repo, "Repository / Transaction Port", "Port", "Reads committed state and commits atomic command.")
+  Component(audit, "Audit Port", "Port", "Supplies audit obligation to transaction.")
+  Component(intent, "Notification Intent Port", "Port", "Supplies notification obligations to transaction.")
+}
+
+Rel(student, ui, "Uses", "HTTPS")
+Rel(ui, router, "Same-origin fetch: four /api/me endpoints and CSRF GET", "HTTPS / JSON")
+Rel(router, csrf, "Routes /api/auth/student/csrf; exact origin / Fetch Metadata")
+Rel(csrf, guard, "Resolves valid session; missing session fails closed")
+Rel(router, guard, "Checks every request")
+Rel(guard, authrepo, "Resolves current Student session")
+Rel(authrepo, db, "Reads student_session_access_v1", "D1 binding")
+Rel(router, schedule, "Routes schedule query after guard")
+Rel(router, preview, "Routes preview after guard")
+Rel(router, confirm, "Routes confirm after guard")
+Rel(router, history, "Routes history after guard")
+Rel(schedule, domain, "Derives slot view")
+Rel(preview, domain, "Computes classification and snapshot")
+Rel(confirm, domain, "Recomputes and checks")
+Rel(schedule, repo, "Reads")
+Rel(preview, repo, "Reads")
+Rel(confirm, repo, "Atomic command")
+Rel(history, repo, "Reads")
+Rel(confirm, audit, "Adds audit obligation")
+Rel(confirm, intent, "Adds notification intent obligation")
+Rel(repo, db, "Reads state; asserts section 8 Student Write predicate in atomic batch", "D1 binding")
+Rel(audit, repo, "Participates in same transaction")
+Rel(intent, repo, "Participates in same transaction")
+
+note bottom of worker
+  Test setup: operator-only isolated seed + test-owned BrowserContext cookie.
+  No HTTP login / identity bypass / fake Guard. Cursor key is server-only.
+  Static import/config proof + runtime default 503 / isolation assertions required.
+  No production Provider / Scheduled side effects; fake delivery is separate from commit.
+  Local Browser evidence is not remote D1 / Release / Production readiness proof.
+end note
+
+SHOW_LEGEND()
+@enduml

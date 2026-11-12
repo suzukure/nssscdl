@@ -1,5 +1,3 @@
 # Rendered diagrams
 
-このディレクトリには `docs/diagrams/plantuml/` の `.puml` から生成した閲覧用SVGを置く。
-
-SVGは生成物であり、原則として直接編集しない。図の変更は対応する `.puml` に対して行う。
+PUML正本と[Artifact閲覧手順](../README.md#レンダリング)を参照する。生成SVGはGit追跡しない。ここに生成物をcommitしない。

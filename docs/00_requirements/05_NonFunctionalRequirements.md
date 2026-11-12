@@ -1,7 +1,7 @@
 # 非機能要求
 
 ## REQ-901 対応Browser
-Chrome、Edge、Safari、Firefoxの現行Majorおよび1つ前のMajorを対象とする。厳密な最低Versionは基本設計で定義する。
+Chrome、Edge、Safari、Firefoxの現行および直前の通常Stable / Release major familyを対象とする。基本設計で基準日と最低対応familyを定義し、Release時に検証するexact Browser version × 代表OSはTest Matrixへ固定する。同一family内の古いpatchすべての対応は保証しない。
 - AC-901-001 対象BrowserでMust業務操作を完了できる。
 
 ## REQ-902 Responsive
@@ -65,6 +65,7 @@ WCAG 2.2 AAを参照目標とし、初期リリースでは正式Certification�
 - AC-912-003 認証・権限・入力不正・Bad Recipient等Permanent Errorは自動Retryしない。
 - AC-912-004 Google Login自体は自動Retryせず利用者再操作とする。
 - AC-912-005 Provider受理後のメール配信RetryはREQ-105の通知固有ルールを優先し、アプリから盲目的に重複再送しない。
+- AC-912-006 最大3回は各Delivery Attempt内で安全かつ冪等な一時障害に対してApplicationが自動で行う再試行の上限とし、管理者が後から明示的に開始する別Attempt数の上限にしない。手動Attempt内でも同じ自動再試行条件と上限を守る。
 
 ## REQ-913 無料枠運用
 通常規模で無料枠を優先する。

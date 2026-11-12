@@ -1,3 +1,165 @@
 # Source code
 
 Application source code will live here. Planned areas include web/UI, API, application/domain logic, infrastructure adapters, and shared code.
+
+`index.ts` はApplication Workerの最小ES modules entrypointで、現在はすべてのRequestにHTTP 503を返す。
+公開業務Endpointは未接続。開発基盤の技術契約と残りのbootstrapは [config/README.md](../config/README.md) を参照する。
+
+#899の評価用3 GET合成は `tests/fixtures/read-only-student-service.ts` に限定する。
+同一隔離D1を実Guard / Schedule / Historyへ明示注入し、Session CSRF GETとserver-only HMAC codecを再利用する。
+canonical HTTPS origin・non-exportable署名鍵・binding不備と未対応Path / Methodは503へfail-closedする。
+`src/` / default Worker / 通常configからのimport・公開接続はなく、HTTPS listener / Browser assets / unsafe POSTは未実装。
+設計正本はApplication §9.2〜3 / D1 §4・§8、local D1 / 構造試験の部分証拠と未検証範囲は
+[`tests/README.md`](../tests/README.md) を参照する。
+
+`application/schedule-query.ts` は#828のpure Schedule Query coreで、Guard解決済みの本人IDと
+Repositoryの確定read stateから4種Slot Viewを導出する。Repository Port / Clockを注入し、
+未来Slotの不整合は `INTEGRITY_STATE_UNAVAILABLE`、未公開・存在しない月は
+`SCHEDULE_MONTH_NOT_AVAILABLE` とする。設計正本は
+[`01_StudentReservationApplication.md`](../docs/20_detailed_design/01_StudentReservationApplication.md) §2〜4 / §8と
+[`02_StudentReservationD1.md`](../docs/20_detailed_design/02_StudentReservationD1.md) §4。
+entrypointからcoreへの接続はない。HTTP / Guard Portの統合は下記#831を参照する。
+
+`infrastructure/d1-schedule-query.ts` は#830のread-only D1 Adapterで、同じRepository Portを実装する。
+月・Slot・占有・参照予約と全confirmed予約を単一SELECTで取得し、日時・管理詳細・分類／算入の
+既存Invariantを検査してcoreへ渡す。D1実行失敗は内部診断を含まない
+`ScheduleQueryDatabaseError`（`SERVICE_UNAVAILABLE`）、未来Slotの永続化不整合は
+既存coreの `INTEGRITY_STATE_UNAVAILABLE` で区別する。structural D1 interfaceだけを使い、
+HTTP / Guard / binding / dispatch / Production migrationは追加しない。
+
+`http/schedule-month.ts` は#831のEndpoint専用HTTP Adapterで、
+`GET /api/me/schedule-months/{month}` の暦月形式・Method・未定義Queryを検証する。
+`application/student-access-guard.ts` のStudentAccessGuard Port成功結果だけを本人IDとして
+Serviceへ渡し、成功Viewと既存Application Errorを上記詳細設計 §4 / §8のJSONへ変換する。
+GuardのProduction物理契約は#636で詳細設計 `02_StudentReservationD1.md` §8へ確定した。
+Production Guard実装は下記#842を参照し、test-only fakeは `tests/integration/` に限定する。
+`index.ts` / default Workerからの接続、Production binding / migration、認可迂回switchは追加しない。
+
+`infrastructure/d1-student-access-guard.ts` は#842のProduction Guard Adapter。
+Student専用Cookieの重複・canonical token形式を検査し、Server側SHA-256 hashをbindして
+毎Requestの `withSession('first-primary')` 単一SELECTから共有ViewとD1時刻を読む。
+期限・失効→関連行Invariant→lifecycle / SecurityAccess→Student roleの順に判定する。
+既存read-only Portの3結果は維持し、`StudentAccessError` のDB / Integrity異常は
+HTTPの既存503へ安全に変換する。401では設計 §10.2のSession Cookie除去、503では維持する。
+`resolve(request)` は同一RequestのWrite用内部Contextだけを返す共有解決処理であり、
+HTTP Viewへ渡さない。unsafe consumerは §10.3のCSRF / Origin検証と
+D1 §8.3のTransaction内初期・最終再照合を別途必須とする。
+Guard / HTTP / Serviceは明示注入でcomposition可能だが、default Workerは引き続き503。
+Production設定・Provider callback・Session発行・Admin authは未接続。Confirmのisolated HTTP合成は下記#880を参照する。
+
+`application/reservation-preview.ts` は#860の単一予約Preview pure core。
+Guard解決済み本人・確定Preview read state・Server UTC秒から新規分類と本人の未開始予約の
+実効分類差分を導出する。開始済み自動分類、算入除外、明示Overrideは既存設計に従う。
+`createPreviewPlan` は内部canonical Snapshot、`expectedStateToken` はWeb標準SHA-256による
+`v1.` tokenを生成し、後続Preview / Confirmから同じ計算を再利用できる。
+`previewReservation` のViewは詳細設計Application §5の4 fieldだけとし、Snapshot・N・本人IDを公開しない。
+canonical v1のfield順・値型・Tokyo日時・予約順は明示projectionとunit assertionで固定し、
+実時刻は含めず対象／各予約の開始境界を含める。D1正本 §4の当月全Reservationを含み、
+設定行欠損はnull（N=3）、明示設定はobjectとして区別する。Repositoryは完全なread setと
+投影外Invariantを検証し、未検証ならintegrityをinconsistentとして渡す責務を持つ。
+`tests/unit/reservation-preview.test.ts` は `TC-F-003-01 / TC-F-003-02` のApplication/Preview
+**partial evidence**であり、HTTP / Browser / Confirm CommitやTC全体のPassを意味しない。
+HTTP・Session CSRF / Originの統合は下記#865、内部Confirm writeは下記#873を参照し、default Workerは引き続き503。
+tokenは認可ticketでもSlot確保でもなく、Confirmは本人再解決・最新再計算・Transaction Guardを必須とする。
+
+`infrastructure/d1-reservation-preview.ts` は#863の未接続・read-only D1 Repository Adapter。
+Guard解決済み本人とSlotからPrimary起点の単一SELECTでD1時刻T0、共有認証Viewの最新操作可否、
+対象月・Slot・占有、N、本人同月の全Reservationと例外状態を取得する。
+`readPreview` は `{ state: PreviewReadState, evaluatedAt }` を返す。#869の`readConfirm`は同じ内部captureから
+これらとSQL生成の`canonicalRawReadSet`を返し、Preview Port / wireにはrawを追加しない。
+日時・型・分類／取消・未開始占有・両管理詳細のInvariantを検査し、異常は既存
+`ReservationPreviewError` の `INTEGRITY_STATE_UNAVAILABLE`、D1実行失敗は `SERVICE_UNAVAILABLE`。
+他生徒占有はSQL内で検証して安全な既存拒否へ抽象化し、他生徒ID・予約IDをApplication stateへ投影しない。
+分類plan・canonical Snapshot・tokenは既存pure coreだけを再利用する。
+Production migration・binding・HTTP・Confirm writeへの接続はなく、isolated検証範囲は
+[`tests/README.md`](../tests/README.md) を参照する。
+
+`http/reservation-preview.ts` は#865のEndpoint専用HTTP Adapter。
+`application/reservation-preview.ts` の最小Repository Port / Serviceに、既存
+`D1ReservationPreviewRepository`を注入し、`D1StudentAccessGuard.resolve()`と明示compositionする。
+HTTPS / exact Method・Path / Queryなし / JSONのexact object / UTF-8最大8192 byteを検査し、
+Session→Session-bound CSRF / Origin→業務認可→read / pure coreの順を維持する。
+Cookie parserは`infrastructure/student-session-cookie.ts`をGuardとCSRFで共用し、
+raw tokenをApplication Contextへ追加しない。`http/student-session-csrf.ts`はServer設定のcanonical
+HTTPS origin完全一致とFetch metadata、domain付きSHA-256 tokenのcanonical形式・固定長比較を検証する。
+設定／digest利用不能は503、不成立は`CSRF_INVALID`。error envelopeと401 Cookie除去は
+既存Schedule HTTPと`http/application-error.ts`を共用する。
+`GET /api/auth/student/csrf`、Provider flow、Production migration / binding / routeは未接続。Confirm合成は下記#880を参照する。
+default Workerは全Requestで503を維持し、対象環境D1・Browser・public activationの証明とはしない。
+
+`http/student-session-csrf-get.ts` は#896の未公開・Session branch専用HTTP Adapter。
+既存 `StudentSessionResolver` に `D1StudentAccessGuard` を明示注入し、HTTPS / canonical設定originと
+Request URL一致、exact GET / Path・Query / bodyなし、Origin / Fetch Metadataを検証する。
+毎Requestの実Session解決後だけ、`http/student-session-csrf.ts` の共有pure生成関数
+`createStudentSessionCsrfToken` から200の `csrfToken / scope: "session"` を返す。
+既存Preview / Confirmのdomain separation・SHA-256・canonical形式・固定長比較は維持する。
+Cookieなし / preauth-only / invalid Sessionは401でSession Cookie除去、有効な別roleは403、
+D1 / crypto / 設定異常・integrity不明は既存503でCookie維持。
+全Responseにno-store / no-referrerを付け、200でもCookie発行・延長やpreauth生成 / 再利用はしない。
+設計正本はApplication §9.2 / §10.2〜4 / §10.8。default Worker / web / Provider入口へのimportはなく、
+評価HTTPS入口・trusted seed / config・実Browser合成、Production preauth全契約・公開は後続責務とする。
+
+`application/reservation-confirm.ts` は#869のwrite前preparation Service。
+Guard解決済み`PreviewIdentity`、`slotId`、Previewから保持したtokenだけを入力とし、
+exact v1 SHA-256 base64url（paddingなし・未使用bitが0）をread前に検証する。
+共有captureのD1 T0を既存`createPreviewPlan` / `expectedStateToken`へ渡し、現在の業務拒否を優先し、
+fingerprint不一致は`RESERVATION_STATE_CHANGED`、形式不正は`INVALID_REQUEST`とする。
+成功時だけ本人・Slot日時・T0・canonical raw read set・新規automatic / effective分類・
+未開始算入対象の全`classificationPlan`・実効差分をコピーしてfreezeしたserver-only prepared stateを返す。
+内部分類planは既存計算結果を保持し、Overrideで実効値が不変でもautomatic before / afterを含む。
+Preview wire / v1 Snapshotの意味は変更しない。共有`reservationCaptureSql(timeSql)`の時刻式はServer内部SQLだけとし、
+後続Guardも同じtemplate / 本人・Slotのbind順でraw JSONを再計算できる。
+preparation成功はCommitや認可ticketではなく、後続Transaction Guardの再照合は必須。
+内部batch / writeは下記#873を参照する。Confirm HTTPは下記#880を参照し、route activationは未実装で、default Workerは503を維持する。
+
+`application/reservation-confirm-plan.ts` は#872のserver-only pure Transaction write plan。
+既存prepared・Guard解決済み本人・Server生成ID集合から、Reservation / Occupancy、全分類Guard対象、
+実更新対象、Audit / Intent exact JSON、対応Outbox、Commit後だけ利用する成功View projectionを生成する。
+ID generator Portの既定はWeb標準UUID。同一Command内の重複・本人不一致はfail-closedする。
+物理encodingと全Guard対象保持の正本は詳細設計D1 §2 / §5を参照する。
+DB・Session・HTTP capabilityを持たず、時刻は後続batchのCommand Tへ委ねる。
+
+`infrastructure/d1-reservation-confirm.ts` は#873のserver-only atomic executor。
+prepared・同一immutable `ReservationConfirmWritePlan`・same-request `StudentSessionContext`から、
+詳細設計D1 §5 / §8.3の初期・最終Guardと全Writeを1回のPrimary batchへ渡す。
+成功時は同一`plan.committedResult`を返す。Primary Session生成・全Statementのprepare / bindの失敗は
+batchを呼ばず既存`SERVICE_UNAVAILABLE`とする。batch呼出し後の応答不明は同一planだけを保持するimmutable attempt付きの
+`ReservationCommitOutcomeUnknownError`（`RESERVATION_COMMIT_OUTCOME_UNKNOWN`）とし、
+raw DB causeを保持せず、attemptはJSON列挙から除外する。自動write retry・ID再生成は行わない。
+Primary verification / outcome分類は下記#874、HTTPは下記#880、public activationは後続責務とする。
+isolated検証の範囲は[`tests/README.md`](../tests/README.md)を参照し、Schema・default Workerの503は維持する。
+
+#874の`application/reservation-commit-verification.ts`はclosed read model・pure classifier・最終Transaction Port型を定義する。
+`infrastructure/d1-reservation-commit-verification.ts`はsame immutable planのgenerated IDを使う単一Primary read、
+`infrastructure/d1-reservation-confirm-transaction.ts`は#872 / #873の1回ずつの合成を実装する。
+正常応答はverificationを省略し、exact outcome-unknownだけread-only verificationを行う。
+成功回収、未適用の`REVALIDATION_REQUIRED`、read済み不整合の`INTEGRITY_STATE_UNAVAILABLE`、
+read / decode失敗の`SERVICE_UNAVAILABLE`を区別する。規則の正本は詳細設計D1 §5.1。
+ID / plan再生成・write retry・Session情報のverification渡し・raw cause保持を行わず、HTTP合成は下記#880を参照し、public routeは未接続。
+
+`http/reservation-confirm.ts` は#880のisolated Confirm HTTP Adapter。
+詳細設計Application §6のstrict二項目Request→Session→CSRF / Origin→forbidden→preparation→
+最終Transaction Portを合成し、同一Requestの完全なContextを1回のcommitへそのまま渡す。
+`http/reservation-json.ts`のbounded UTF-8 reader / string grammarだけをPreviewと共有する。
+成功はexact committed resultの201。internal `REVALIDATION_REQUIRED`だけfresh Session / read-only preparationで
+401 / 403 / 409 / 503へ分類し、still-validなら503へfail-closedする。ID / plan再生成・write retryは行わない。
+`http/application-error.ts`に正本§8の`RESERVATION_STATE_CHANGED`（409 / repreview）を追加し、内部codeを公開しない。
+Production binding / schema / public route / default Workerへの接続はなく、503とD1 §8.6のactivation Gateを維持する。
+
+#888の`application/reservation-history.ts`、`infrastructure/d1-reservation-history.ts`、
+`infrastructure/reservation-history-cursor.ts`、`http/reservation-history.ts`は本人履歴のread-only縦切り。
+Guardのread-only本人解決、Primary SELECT、状態分離、Tokyo日時、limit+1と本人にbindしたHMAC cursorを合成する。
+鍵はserver-only CryptoKey注入のみ。規則の正本は詳細設計Application §7 / §8、D1 §4。
+default Workerは503、Production鍵・binding・公開routeは未接続。
+
+
+`web/` は#894のread-only表示と#926の単一予約Preview / Confirm Web/UI Presentation。`model.ts` がBrowser側の既存wireの安全な投影と
+UTC暦演算 / +09:00表示、`controller.ts` がsame-origin取得・明示Preview / Confirm・要求世代・401停止、`view.ts` が
+native DOM / focus / Calendar・List / 本人履歴、`student.ts` がHTTPS用起動を担当する。
+`student.html` / `student.css` とES modulesは既存buildで `dist/student/` へ生成する。
+Worker / server moduleをimportせず、default entrypointから到達不能。配信は既存#922の評価専用read-only構成だけである。
+選択はmemoryだけで通信せず、明示Preview時だけSession CSRF取得GET→Preview POST、確認後の明示Confirmだけで確定POSTを1回送る。
+CSRF / Expected State Tokenはprivate memoryに保持し、DOM / storage / URL / Logへ出さない。
+結果不明・403は書込み停止、401は個人表示と全要求を無効化する。評価Workerのunsafe POSTは503のままであり、
+検証はsynthetic fetch / structural DOMに限定する。actual isolated HTTP / D1 Commitは#537の独立した後続責務。
+設計・比較・証拠限界の正本は詳細設計Application §9.1、試験は `tests/README.md` を参照する。

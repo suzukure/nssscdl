@@ -11,6 +11,13 @@
 以下を基本概念として扱う。
 
 - `Student` — 生徒本人を表す。
+- `StudentAccount` / `AdminAccount` — Student / AdminとしてLoginする別々のSecurity Principal。
+- `AuthMethod` — Role別AccountへbindingするGoogle OIDC / Email Magic Link identity。
+- `Session` — 認証済みAccountとRole scopeをD1で保持するLogin状態。
+- `AuthChallenge` — Magic Link、Invitation、メール所有確認等の短期・単回Token。
+- `Invitation` — Invitation Onlyでの新Student登録許可。
+- `PendingContactEmailChange` — 新メール所有確認待ちの変更。
+- `StudentSecurityAccess` — Student lifecycleと分離したSecurity Suspension状態。
 - `LessonSlot` — 公開・管理対象となる固定レッスン時間枠を表す。
 - `SlotOccupancy` — LessonSlotの現在の占有を表す共通レコード。
 - `StudentReservation` — 生徒による個人レッスン予約の業務レコード。キャンセル等の履歴、自動分類値、現在の実効分類を保持する。
@@ -28,6 +35,34 @@
 `StudentReservation`、`AdminHold`、`GroupLesson` は「枠を占有する」という点では共通するが、業務上は異なる意味を持つため同一状態として扱わない。
 
 また、Reservation周辺でも、予約ライフサイクル、取消種別、欠席、月間回数算入、自動分類、実効classification、明示Overrideを同一状態へ統合しない。
+
+### 2.1 認証・Accountの論理関係
+
+`Student` は予約・プロフィール・連絡先の業務Entityで、内部Student IDを正本識別子とする。`StudentAccount` は1つのActive Studentへ紐付き、`AdminAccount` は独立したAdmin RoleのPrincipalとする。同一人物が両方を持ってもAccount / Sessionは別で、Student側のAuth Method自動linkからAdmin bindingを生成しない。
+
+```text
+Student 1 ───── 0..1 StudentAccount ───── 0..* AuthMethod
+    │                    └───── 0..* Session (Student scope)
+    ├───── 1 StudentSecurityAccess
+    └───── 0..1 active PendingContactEmailChange ── AuthChallenge
+AdminAccount 1 ───── 0..* AuthMethod
+             └───── 0..* Session (Admin scope)
+Invitation ───── AuthChallenge (new Student registration)
+```
+
+`AuthMethod` はGoogleのstable subject / verified emailまたはMagic Link login addressをAccountへ明示的にbindingする。Student連絡先メールとGoogle identityのemailは別概念とする。`Session` はAccount / Role scope、期限、失効状態を保持し、Browserのopaque tokenからServer側で解決する。`AuthChallenge` はpurpose / Account scopeを持つ単回TokenでありSessionではない。Invitationは72時間の登録許可で、再発行時は旧Tokenを無効化する。Tokenの期限・使用済み・supersededをCleanup遅延によって有効扱いに戻さない。
+
+Open Registrationでは所有確認済みemailから新Student / StudentAccountを作成できる。Invitation Onlyでの新Student作成には有効なInvitationを要し、Invitation emailとGoogle emailの一致は必須としない。既存Active Studentの一意なverified emailは`REQ-205`のlinkへ進め、異なるemailの既存Accountを自動mergeしない。削除済みStudentのIDや履歴へ再接続しない。Registration modeは既存StudentのLogin可否に影響しない。
+
+`PendingContactEmailChange` はStudentあたりactive最大1件で、新規開始は旧Pendingをsupersedeする。確認完了までは旧連絡先を維持し、成功時はStudentの連絡先とMagic Link login addressを新verified emailへ同期する。Google Auth Methodのbindingは変更しない。確認時Guardと通知境界は `06_APIOverview.md` §18、Transaction競合は `05_BookingAndConcurrency.md` を正とする。
+
+削除確定時、StudentAccountとStudent用AuthMethodは通常Login対象外とし、直接管理する認証識別子等は `REQ-934` に従い24時間以内に削除・匿名化する。独立したAdminAccount / Admin Sessionおよび独立した保持目的を持つAdmin用AuthMethodはStudent削除だけで失効・削除しない。物理Table分割、column、hash、index、constraint名は詳細設計で定める。
+
+### 2.2 Recovery metadataの論理境界
+
+Backup Artifactとmanifestは通常業務Entityではなく、Backup専用境界のRecovery Artifact / metadataとする。長期Artifactの構成・Retentionは `01_SystemArchitecture.md` §3.4を正とし、Student / Reservation等の通常業務関係図には混在させない。
+
+`Recovery Purge Registry`（または同等のRecovery metadata）は、復旧対象の業務D1 snapshotから独立して、削除前の状態を含む旧Artifactの復旧時に削除済みStudentを識別する。通常業務Query・Student検索には使用せず、Backup / Recovery専用権限からのみ参照する。氏名、email、Google subject等は持たず、必要最小限のRecovery keyと削除時刻等に限る。削除前状態を含み得るArtifactが存在する期間を超えて不要に保持しない。選択したcapture pointより後に成立した削除を通常Service再開前または同時に再適用し、Registryの連続性・integrityを確認できなければ再開しない。削除確定とRegistryのdurable記録順序・障害窓を閉じる物理方式は詳細設計で確定する。
 
 ## 3. Student・LessonSlot・StudentReservation の関係
 
@@ -337,6 +372,7 @@ Student
 - 実効区分の根拠となる明示Overrideは別Entityとして保持する。
 - 同じ関係をStudentやLessonSlotへ予約ID配列として重複保存しない。
 - `IntegrityIncident` は利用者向け予約状態の代替正本ではなく、保守・監視用の状態として通常表示モデルから分離する。
+- Backup Artifact / manifest / Recovery Purge Registryは通常業務の保存・表示モデルから分離する。
 
 ## 7. 整合性上の原則
 
@@ -369,6 +405,7 @@ Student
 
 - POL-001 必要最小限・低運用負荷
 - POL-004 個人情報最小化
+- POL-006 ロール分離と最小権限
 - POL-008 競合時の確定状態優先
 - POL-009 業務上異なる意味を別の状態として扱う
 - POL-010 既定ルールと例外を分離する
@@ -387,12 +424,18 @@ Student
 - BR-066 予約状態と月間算入の分離
 - BR-067 未来枠の現在予約状態の一貫性
 - BR-100 生徒削除
+- BR-090〜BR-099 認証・Account・Security Suspension
+- BR-120 / BR-121 / BR-123 / BR-124 / BR-127 プロフィール・認証情報・削除
 - BR-110 重大障害通知
 - BR-116 スクール都合キャンセル通知
 - BR-125 将来予約処理
+- BR-128 Backup内個人情報
 - BR-132 監査
 - BR-133 利用者向けエラー表現
 - REQ-003 予約
+- REQ-201〜REQ-207 / REQ-210 / REQ-211 生徒登録・認証・Session
+- REQ-320 管理者認証方法管理
+- REQ-934 個人情報削除
 - REQ-004 生徒キャンセル
 - REQ-005 予約履歴
 - REQ-104 標準／追加区分変更通知
@@ -410,22 +453,27 @@ Student
 - REQ-914 障害・エラー時利用者表示
 - REQ-940 監査Logging
 - REQ-942 監視・重大Incident
+- REQ-910 長期Backup保持
+- REQ-952 Backup Privacy
+- CON-009 Backup方式非依存
 
 ## 9. 設計判断記録
 
-- `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録する。
-- 予約履歴と現在占有の分離は `OI-BD-001` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
-- Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
-- Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で検討し、本書および `04_ReservationModel.md` に確定結果を反映する。
-- 過去Reservationのclassification自動再計算を行わない境界は `OI-BD-004` で検討し、Lesson開始時刻を確定境界として本書および `04_ReservationModel.md` に確定結果を反映する。
+- `SlotOccupancy` を実テーブルとして採用する判断理由は `docs/adr/ADR-002-persist-slot-occupancy.md` に記録済みである。
+- 予約履歴と現在占有の分離は `OI-BD-001` で確定し、本書および `04_ReservationModel.md` に反映済みである。
+- Reservationの状態・月間算入・区分Overrideの分離は `OI-BD-002` で確定し、本書および `04_ReservationModel.md` に反映済みである。
+- Reservation非算入時のclassificationとライフサイクル意味は `OI-BD-003` で確定し、本書および `04_ReservationModel.md` に反映済みである。
+- 過去Reservationのclassificationを自動再計算しない境界は `OI-BD-004` でLesson開始時刻として確定し、本書および `04_ReservationModel.md` に反映済みである。
 - 生徒削除等のシステム処理由来の自動取消は、直接確定した設計判断として `StudentReservation.status = system_cancelled` と `SystemCancellationDetail` に分離して表現する。初期 `reason_code` は `student_deleted` とする。
-- Reservation取消日時・取消主体の保持方法は `OI-BD-005` で検討し、取消日時を `StudentReservation.cancelled_at` に共通化、取消種別を `status` から導出、具体ActorをAuditLog等へ分離する方針として確定・反映する。
-- `OI-BD-006` で、永続化済みInvariant違反を追跡する運用Entityとして `IntegrityIncident` を導入する。これは予約・占有の正本ではなく、Command Guard / 定期Scanによる検知、重複集約、保守通知、Repair後の解決判定を支える運用状態である。
+- Reservation取消日時・取消主体の保持方法は `OI-BD-005` で確定済みである。取消日時の `StudentReservation.cancelled_at` への共通化、取消種別の `status` からの導出、具体ActorのAuditLog等への分離を本書および `04_ReservationModel.md` に反映済みである。
+- `OI-BD-006` では、永続化済みInvariant違反を追跡する運用Entity `IntegrityIncident` の導入を確定済みである。これは予約・占有の正本ではなく、Command Guard / 定期Scanによる検知、重複集約、保守通知、Repair後の解決判定を支える運用状態であり、詳細は `05_BookingAndConcurrency.md` §14を正とする。
 
 ## 10. 図
 
 PlantUML source: `docs/diagrams/plantuml/data-model-overview.puml`
 
-Rendered SVG: `docs/diagrams/rendered/data-model-overview.svg`（自動生成）
+図正本: [data-model-overview.puml](../diagrams/plantuml/data-model-overview.puml)。SVGは[Artifact閲覧手順](../diagrams/README.md#レンダリング)を参照。
 
-`IntegrityIncident` は予約・占有の中核業務関係図には含めず、運用・監視データモデルとして詳細設計で物理関係を具体化する。
+`data-model-overview` は通常業務の主要論理概念を俯瞰する概要図であり、全Entity一覧ではない。§2.1の認証・Account系と予約・占有系の関係を含み、認証・Account系の詳細な意味は§2.1を正とする。通知の `NotificationIntent` / `NotificationDelivery` とDelivery Attempt等の関係・状態境界は `05_BookingAndConcurrency.md` §13を正とし、概要図には含めない。
+
+`IntegrityIncident` は運用・整合性監視Entityのため概要図に含めず、詳細設計で物理関係を具体化する。Backup Artifact / manifest / Recovery Purge Registry等もBackup / Recovery専用metadataのため概要図に含めない（§2.2）。

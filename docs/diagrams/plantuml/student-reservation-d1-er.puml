@@ -1,0 +1,130 @@
+@startuml
+title Student single reservation - D1 physical relationships
+hide circle
+skinparam linetype ortho
+
+entity students {
+  * id : TEXT PK
+  * lifecycle : TEXT (active / deleted)
+  deleted_at : INTEGER
+}
+entity student_security_access {
+  * student_id : TEXT PK, FK
+  * access_state : TEXT (active / suspended)
+  * updated_at : INTEGER
+}
+entity student_accounts {
+  * id : TEXT PK
+  * student_id : TEXT UNIQUE, FK
+  * role_scope : TEXT (student)
+}
+entity student_sessions {
+  * id : TEXT PK
+  * account_id : TEXT FK
+  * role_scope : TEXT (student)
+  * token_hash : TEXT UNIQUE
+  * created_at : INTEGER
+  * expires_at : INTEGER
+  revoked_at : INTEGER
+}
+entity schedule_months {
+  * id : TEXT PK
+  * month_key : TEXT UNIQUE
+  published_at : INTEGER
+}
+entity lesson_slots {
+  * id : TEXT PK
+  * schedule_month_id : TEXT FK
+  * starts_at : INTEGER
+  * ends_at : INTEGER
+  * availability_status : TEXT
+}
+entity student_monthly_lesson_configs {
+  * student_id : TEXT PK, FK
+  * schedule_month_id : TEXT PK, FK
+  * standard_count : INTEGER
+  * updated_at : INTEGER
+  * updated_by : TEXT (Admin Actor ID)
+}
+entity student_reservations {
+  * id : TEXT PK
+  * student_id : TEXT FK
+  * lesson_slot_id : TEXT FK
+  * status : TEXT
+  * automatic_classification : TEXT
+  classification : TEXT
+}
+entity slot_occupancies {
+  * id : TEXT PK
+  * slot_id : TEXT UNIQUE, FK
+  reservation_id : TEXT UNIQUE, FK
+  * occupancy_type : TEXT
+}
+entity admin_holds {
+  * occupancy_id : TEXT PK, FK
+}
+entity group_lessons {
+  * occupancy_id : TEXT PK, FK
+}
+entity reservation_absences {
+  * reservation_id : TEXT PK, FK
+}
+entity reservation_monthly_count_overrides {
+  * reservation_id : TEXT PK, FK
+}
+entity reservation_classification_overrides {
+  * reservation_id : TEXT PK, FK
+}
+entity notification_intents {
+  * id : TEXT PK
+  * recipient_student_id : TEXT FK
+  * reservation_id : TEXT FK
+  * kind : TEXT
+}
+entity notification_outbox {
+  * intent_id : TEXT PK, FK
+  * due_at : INTEGER
+}
+entity business_audit_logs {
+  * id : TEXT PK
+  * actor_id : TEXT
+  * target_id : TEXT
+}
+
+students ||--|| student_security_access
+students ||--o| student_accounts
+student_accounts ||--o{ student_sessions : "(account_id, role_scope) FK"
+students ||--o{ student_reservations
+students ||--o{ student_monthly_lesson_configs
+students ||--o{ notification_intents
+schedule_months ||--o{ lesson_slots
+schedule_months ||--o{ student_monthly_lesson_configs
+lesson_slots ||--o{ student_reservations
+lesson_slots ||--o| slot_occupancies : "slot_id UNIQUE"
+slot_occupancies ||--o| admin_holds : "occupancy_id PK, FK"
+slot_occupancies ||--o| group_lessons : "occupancy_id PK, FK"
+student_reservations |o--o| slot_occupancies : "(reservation_id, slot_id) FK"
+student_reservations ||--o| reservation_absences
+student_reservations ||--o| reservation_monthly_count_overrides
+student_reservations ||--o| reservation_classification_overrides
+student_reservations ||--o{ notification_intents
+notification_intents ||--o| notification_outbox
+
+note bottom of student_sessions
+  student_session_access_v1 is the shared guard view (02 section 8).
+  Provider flows / contacts / binding are defined separately in 02 section 9.
+  They compose consume and issuance; this diagram shows the reservation FK slice.
+  Request and atomic Write recheck current session / access / lifecycle.
+  Suspension / deletion revoke all Student sessions in the same batch.
+  Clearing suspension never clears revoked_at. No raw token stored.
+end note
+note bottom of business_audit_logs
+  Actor / target IDs reference a polymorphic audit subject.
+  Confirm inserts one success row in the same batch.
+  after_json includes the new reservation and all derived_changes.
+  Each change records reservation_id and before / after classifications.
+end note
+note bottom of student_monthly_lesson_configs
+  updated_by is the resolved Admin Actor ID, without a speculative FK.
+end note
+@enduml

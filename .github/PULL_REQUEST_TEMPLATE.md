@@ -1,54 +1,54 @@
-## Related Issues
+## 関連Issue
 
 Closes #
 
-## Phase
+## 工程
 
-<!-- requirements / basic-design / detailed-design / implementation / test / operations -->
+<!-- 要求 / 基本設計 / 詳細設計 / 実装 / テスト / 運用 -->
 
-## Changes
-
-- 
-
-## Decisions and alternatives
-
-<!-- Link the decision Issue(s). Do not leave material decisions only in the PR. -->
+## 変更内容
 
 - 
 
-## Upstream and downstream impact
+## 決定と代替案
 
-- Upstream dependency: none / #
-- Downstream impact assessment: none / #
-- Blocked area: none / describe
+<!-- 決定を記録したIssueをリンクしてください。重要な決定をPRだけに残さないでください。 -->
 
-## Scope-out impact and follow-up
+- 
 
-<!-- Enter `none` when there is no scope-out impact. Otherwise summarize the closing Issue decision below, link the closing and follow-up Issues, and use one exact line per same-repository follow-up Issue. The closing Issue body is the authoritative record. -->
+## 上流と下流への影響
+
+- 上流への依存: なし / #
+- 下流への影響評価: なし / #
+- 停止する範囲: なし / 内容を記載
+
+## スコープ外影響と後継Issue
+
+<!-- スコープ外影響がなければ `none` と記入してください。ある場合は、正本であるclosing Issueの決定を以下に要約し、closing Issueと後継Issueをリンクしてください。同一リポジトリの後継Issueごとに、定型の1行を記入してください。 -->
 <!--
-- Remaining scope-out impact:
-- Why this PR can merge first:
-- Follow-up Issue: #<number>
-- Follow-up scope and completion condition:
-- Timing or order:
+- 残るスコープ外影響:
+- このPRを先にマージできる理由:
+- 後継Issue: #<number>
+- 後継対応の範囲と完了条件:
+- 時期または順序:
 -->
 none
 
-## Validation
+## 検証
 
-- [ ] Relevant checks/tests were run
-- [ ] Requirements and traceability were checked
-- [ ] Affected diagrams/generated files were updated
-- [ ] No credential or sensitive value is included
+- [ ] 関連するチェックとテストを実行した
+- [ ] 要求とトレーサビリティを確認した
+- [ ] 影響する図と生成ファイルを更新した
+- [ ] 認証情報や機密値を含めていない
 
-## Review readiness
+## レビュー準備
 
-<!-- Keep work in Draft until the related corrections and validation are complete. A human marks it Ready for review. See docs/30_operations/ai-development-workflow.md for the canonical checklist and pause/restart procedure. -->
+<!-- 関連する修正と検証が完了するまでDraftを維持してください。人間がReady for reviewに変更します。正本の確認項目と停止・再開手順は docs/30_operations/ai-development-workflow.md を参照してください。 -->
 
-- [ ] Related references, terminology, traceability, and diagrams for this decision are updated together within the Issue scope
-- [ ] Validation results cover the current head; remaining impacts and follow-up decisions are recorded in the closing Issue
-- [ ] A human has checked the complete change and confirmed it is ready for Claude review
+- [ ] この決定に関係する参照、用語、トレーサビリティ、図をIssueの範囲内でまとめて更新した
+- [ ] 検証結果は現在のheadを対象とし、残る影響と後継対応の決定はclosing Issueに記録した
+- [ ] 人間が変更全体を確認し、Claude reviewを受ける準備ができたと判断した
 
-## Reviewer notes
+## レビュアーへの補足
 
-<!-- Point Claude to the highest-risk or highest-judgment parts. -->
+<!-- 特にリスクが高い箇所や判断を要する箇所をClaudeに示してください。 -->

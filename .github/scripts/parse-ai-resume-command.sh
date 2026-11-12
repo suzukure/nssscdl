@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Parses only the trusted-comment command boundary.  Active pause resolution,
+# GitHub targets, and dispatch policy deliberately belong to later stages.
+
+fail_closed() {
+  echo "parse-ai-resume-command: $1" >&2
+  exit 1
+}
+
+input="$(cat)" || fail_closed '入力を読み取れませんでした'
+
+jq -cse '
+  def handoff:
+    [capture("\\A/ai resume handoff pause:(?<pause>[1-9][0-9]*) pr:(?<pr>[1-9][0-9]*) head:(?<head>[0-9a-f]{40})\\z")]
+    | first // null;
+  def follow_up:
+    [capture("\\A/ai resume follow-up #(?<issue>[1-9][0-9]*)\\z")]
+    | first // null;
+  if length != 1 then
+    error("JSONオブジェクトは1個である必要があります")
+  elif (.[0] | type) != "object" then
+    error("入力はJSONオブジェクトである必要があります")
+  else
+    .[0] as $input
+    | if (($input.body | type) != "string")
+         or (($input.actor | type) != "string")
+         or (($input.author_association | type) != "string") then
+        error("入力の外枠が不正です")
+      elif (["OWNER", "MEMBER", "COLLABORATOR"]
+            | index($input.author_association)) == null then
+        {result: "ignore"}
+      elif ($input.body | test("(?i)/ai[[:space:]]+resume")) | not then
+        {result: "ignore"}
+      elif $input.body == "/ai resume develop" then
+        {result: "accepted", actor: $input.actor, action: "develop"}
+      elif $input.body == "/ai resume validate" then
+        {result: "accepted", actor: $input.actor, action: "validate"}
+      elif $input.body == "/ai resume review" then
+        {result: "accepted", actor: $input.actor, action: "review"}
+      elif $input.body == "/ai resume fix" then
+        {result: "accepted", actor: $input.actor, action: "fix"}
+      elif $input.body == "/ai resume no-action" then
+        {result: "accepted", actor: $input.actor, action: "no-action"}
+      else
+        ($input.body | handoff) as $handoff
+        | if $handoff != null then
+            {result:"accepted", actor:$input.actor, action:"handoff",
+             pause_id:$handoff.pause, pr_number:($handoff.pr | tonumber),
+             head_sha:$handoff.head}
+          else
+        ($input.body | follow_up) as $follow_up
+        | if $follow_up == null then
+            {result: "reject", code: "invalid_command"}
+          else
+            ($follow_up.issue | tonumber) as $follow_up_issue
+            | {result: "accepted", actor: $input.actor, action: "follow-up",
+               follow_up_issue: $follow_up_issue}
+          end
+          end
+      end
+  end
+' <<< "$input" || fail_closed '入力を安全に解析できませんでした'

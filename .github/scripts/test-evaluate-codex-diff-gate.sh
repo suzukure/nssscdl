@@ -10,6 +10,36 @@ readonly max_changed_files=25
 readonly max_changed_lines=2000
 readonly max_new_files=10
 
+contract_output="$(bash "$helper" --contract)"
+jq -e '
+  . == {
+    max_changed_files: 25,
+    max_changed_lines: 2000,
+    max_new_files: 10
+  }
+' <<< "$contract_output" > /dev/null
+
+assert_contract_usage_error() {
+  local output_file="$1"
+  local error_file="$2"
+  local status
+  shift 2
+  set +e
+  bash "$helper" "$@" > "$output_file" 2> "$error_file"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    echo "Expected --contract misuse to fail: $*" >&2
+    exit 1
+  fi
+  [ "$status" -eq 2 ]
+  [ ! -s "$output_file" ]
+  grep -Fxq 'Usage: evaluate-codex-diff-gate.sh [--contract]' "$error_file"
+}
+
+assert_contract_usage_error "$test_dir/unknown-contract.out" "$test_dir/unknown-contract.err" --unknown
+assert_contract_usage_error "$test_dir/repeated-contract.out" "$test_dir/repeated-contract.err" --contract --contract
+
 new_repo() {
   local name="${1:?repository name is required}"
   local directory
@@ -49,13 +79,14 @@ assert_output() {
 assert_error() {
   local directory="${1:?directory is required}"
   local expected_error="${2:?expected error is required}"
+  local assertion="${3:-true}"
   local output
   if output="$(cd "$directory" && bash "$helper")"; then
     echo "Expected the helper to fail closed in $directory." >&2
     exit 1
   fi
   jq -e --arg error "$expected_error" \
-    '.result == "error" and .error == $error' <<< "$output" > /dev/null
+    ".result == \"error\" and .error == \$error and ($assertion)" <<< "$output" > /dev/null
 }
 
 # A small mixed diff verifies every line-count aggregate, not just the gate.
@@ -67,6 +98,44 @@ printf 'new one\nnew two\n' > "$small_repo/new.txt"
 git -C "$small_repo" add .
 assert_output "$small_repo" pass \
   '.changed_files == 2 and .additions == 3 and .deletions == 1 and .total_changed_lines == 4 and .new_files == 1'
+
+# Python imports can create bytecode during either AI Developer path. The
+# repository ignore rules must keep it out of git add -A and the staged gate.
+cache_repo="$(new_repo bytecode-cache)"
+git -C "$cache_repo" config core.excludesFile /dev/null
+cp "$repo_root/.gitignore" "$cache_repo/.gitignore"
+printf 'value = 1\n' > "$cache_repo/module.py"
+printf 'before\n' > "$cache_repo/intended.txt"
+commit_baseline "$cache_repo"
+env -u PYTHONDONTWRITEBYTECODE python3 - "$cache_repo/module.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('fixture_module', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.value == 1
+PY
+cache_file="$(find "$cache_repo/__pycache__" -name '*.pyc' -print -quit)"
+[ -n "$cache_file" ]
+cp "$cache_file" "$cache_repo/standalone.pyc"
+cp "$cache_file" "$cache_repo/legacy.pyo"
+printf 'after\n' > "$cache_repo/intended.txt"
+git -C "$cache_repo" add -A
+[ "$(git -C "$cache_repo" diff --cached --name-only)" = intended.txt ]
+assert_output "$cache_repo" pass \
+  '.changed_files == 1 and .additions == 1 and .deletions == 1 and .total_changed_lines == 2 and .new_files == 0'
+printf '\000\001\002\003' > "$cache_repo/unrelated.bin"
+git -C "$cache_repo" add -A
+assert_error "$cache_repo" git_numstat_unavailable \
+  '.offending_paths == ["unrelated.bin"] and .offending_paths_truncated == false'
+
+# NUL numstat uses separate old/new path fields for a detected rename.
+rename_repo="$(new_repo rename)"
+printf 'renamed text\n' > "$rename_repo/old.txt"
+commit_baseline "$rename_repo"
+git -C "$rename_repo" mv old.txt new.txt
+assert_output "$rename_repo" pass '.changed_files == 1 and .total_changed_lines == 0'
 
 # Exactly each threshold must pass. The boundary is max_new_files new files
 # plus the remaining changed files as modifications. Each new file adds 100
@@ -146,7 +215,8 @@ commit_baseline "$attributes_repo"
 printf '* -diff\n' > "$attributes_repo/.gitattributes"
 write_lines "$attributes_repo/large.txt" "$((max_changed_lines + 1))" line
 git -C "$attributes_repo" add .
-assert_error "$attributes_repo" git_numstat_unavailable
+assert_error "$attributes_repo" git_numstat_unavailable \
+  '.offending_paths == [".gitattributes", "large.txt"] and .offending_paths_truncated == false and .offending_paths_unknown == false'
 
 # True binary data likewise has no trustworthy line count and must fail closed.
 binary_repo="$(new_repo binary)"
@@ -154,7 +224,61 @@ printf 'baseline\n' > "$binary_repo/baseline.txt"
 commit_baseline "$binary_repo"
 printf '\000\001\002\003' > "$binary_repo/binary.dat"
 git -C "$binary_repo" add .
-assert_error "$binary_repo" git_numstat_unavailable
+assert_error "$binary_repo" git_numstat_unavailable \
+  '.offending_paths == ["binary.dat"] and .offending_paths_truncated == false and .offending_paths_unknown == false'
+
+# Control bytes, a newline and non-ASCII must remain one escaped JSON record.
+special_repo="$(new_repo special-path)"
+printf 'baseline\n' > "$special_repo/baseline.txt"
+commit_baseline "$special_repo"
+special_name=$'bad\n\t\001-\303\251.bin'
+printf '\000\001\002\003' > "$special_repo/$special_name"
+git -C "$special_repo" add -A
+assert_error "$special_repo" git_numstat_unavailable \
+  '.offending_paths == ["bad\n\t\u0001-\u00e9.bin"] and .offending_paths_truncated == false'
+
+# More offending paths than the diagnostic cap must still return error.
+many_repo="$(new_repo many-binary)"
+printf 'baseline\n' > "$many_repo/baseline.txt"
+commit_baseline "$many_repo"
+for ((file = 1; file <= 12; file++)); do
+  printf '\000\001\002\003' > "$many_repo/binary-$file.dat"
+done
+git -C "$many_repo" add -A
+assert_error "$many_repo" git_numstat_unavailable \
+  '(.offending_paths | length) == 10 and .offending_paths_truncated == true and .offending_paths_unknown == false'
+
+long_repo="$(new_repo long-path)"
+printf 'baseline\n' > "$long_repo/baseline.txt"
+commit_baseline "$long_repo"
+mkdir "$long_repo/$(printf 'd%.0s' {1..250})"
+printf '\000\001\002\003' > "$long_repo/$(printf 'd%.0s' {1..250})/binary.dat"
+git -C "$long_repo" add -A
+assert_error "$long_repo" git_numstat_unavailable \
+  '.offending_paths == [] and .offending_paths_truncated == true'
+
+# An invalid numeric field still identifies its staged path when present.
+malformed_repo="$(new_repo malformed)"
+printf 'baseline\n' > "$malformed_repo/baseline.txt"
+commit_baseline "$malformed_repo"
+printf 'change\n' > "$malformed_repo/baseline.txt"
+git -C "$malformed_repo" add -A
+mkdir "$test_dir/fake-bin"
+cat > "$test_dir/fake-bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ " $* " == *' --numstat -z '* ]]; then
+  printf 'bad\t1\tbaseline.txt\0'
+else
+  exec "$REAL_GIT" "$@"
+fi
+EOF
+chmod +x "$test_dir/fake-bin/git"
+if malformed_output="$(cd "$malformed_repo" && PATH="$test_dir/fake-bin:$PATH" REAL_GIT="$(command -v git)" bash "$helper")"; then
+  echo 'Expected malformed numstat to fail closed.' >&2
+  exit 1
+fi
+jq -e '.result == "error" and .error == "git_numstat_malformed" and .offending_paths == ["baseline.txt"]' \
+  <<< "$malformed_output" > /dev/null
 
 non_repository="$test_dir/not-a-repository"
 mkdir "$non_repository"

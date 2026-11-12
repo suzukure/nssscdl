@@ -1,400 +1,8 @@
-# 06. API概要設計
+# 06. API概要設計 — 個別APIの実行・復旧計画
 
-## 1. 目的
+本書は§11〜22の個別API基本設計、詳細設計への引継ぎ、関連要求・設計判断記録の正本とする。API共通原則（§1〜10）は [06a_APICommonPrinciples.md](06a_APICommonPrinciples.md) を正とし、個別APIを実装するときは関連個別節と、その節が依存する共通原則・関連正本を読む。毎回両文書の全文を読むことは求めない。
 
-本書は、Application WorkerがWeb UIへ提供するHTTP APIの基本原則を定義する。
-
-予約・キャンセル・再分類等のTransaction境界は `05_BookingAndConcurrency.md` を正とし、本書ではそれらの業務Use CaseをAPI境界へどのように公開するかを定義する。
-
-本段階は基本設計であり、個別Request / Response Schema、全Endpoint一覧、Correlation ID、Idempotency Key、Cookie属性、CSRF対策の具体方式等は詳細設計で確定する。
-
-API基本原則は `OI-BD-007`、生徒向けAPI基本形は `OI-BD-008` で確定した。管理者向けAPI基本形は `OI-BD-009` で段階的に確定する。
-
-## 2. APIの位置づけ
-
-初期リリースのAPIは、同一Application Workerから配信されるWeb UIが利用する **Application API** とする。
-
-第三者向け汎用API、外部公開SDK、複数VersionのClient互換性維持を初期リリースの目的としない。
-
-初期リリースでは共通名前空間を `/api/...` とし、`/api/v1/...` のようなVersion Namespaceは設けない。将来、独立Frontend、外部Client、第三者連携等によりAPI互換性維持が正式要件となった時点でVersioning導入を再検討する。
-
-この方針は、初期規模と必要機能に対して過剰な複雑化を避ける `POL-001` に従う。
-
-## 3. Query / Command 分離
-
-### 3.1 基本原則
-
-APIは、参照系をQuery、業務状態を変更する操作をCommandとして明確に分離する。
-
-- Queryは業務状態を変更しない。
-- Commandは明示された1つの業務Use Caseを実行する。
-- DB Entityの汎用CRUDをそのまま公開APIへ露出しない。
-- API上のCommand境界は、原則として `05_BookingAndConcurrency.md` で定義した業務Transaction境界と対応させる。
-
-### 3.2 Query
-
-QueryはResource / View Model指向とする。
-
-保存モデルの複数EntityをJoin・導出して、画面に必要な状態へ整形して返してよい。
-
-例:
-
-- 公開Scheduleと予約可否
-- 自分の予約履歴
-- 現在の標準／追加区分
-- 管理者向けSchedule状態
-- 通知失敗状態
-
-単純参照では原則 `GET` を使用する。
-
-### 3.3 Command
-
-重要な更新系は、Resourceへの汎用PATCHではなく業務Commandとして表現する。
-
-例:
-
-- 予約確定
-- 生徒キャンセル
-- スクール都合キャンセル
-- Schedule変更確定
-- 月間標準回数変更
-- 月間回数除外
-- Classification Override
-- 欠席設定／解除
-- Security Suspension設定／解除
-- 生徒削除
-- プロフィール代理変更
-
-たとえば予約確定は `StudentReservation` の単純INSERTではなく、`StudentReservation`、`SlotOccupancy`、必要な再分類、`AuditLog`、必要な `NotificationIntent` を1つの業務Commandとして扱う。
-
-したがって、`StudentReservation` と `SlotOccupancy` をClientが個別に作成・更新するAPIは提供しない。
-
-## 4. Identity / Role境界
-
-### 4.1 生徒本人APIのSelf Scope原則
-
-生徒自身を対象とするAPIは `/api/me/...` を基本名前空間とする。
-
-`/api/me/...` 配下のCommand / Queryでは、**対象となる生徒本人をClient入力で指定させず、認証済みSessionからServer側で一意に解決する**ことを共通原則とする。
-
-この原則は予約確定だけでなく、生徒本人のSchedule表示、予約Preview、予約履歴、キャンセル、プロフィール等のSelf Scope操作へ共通に適用する。
-
-具体的には次を守る。
-
-- Self ScopeのRequest Contractに、対象本人を選択するための `student_id` を持たせない。
-- 氏名、連絡先メール、Google IDその他の生徒識別情報を、対象本人を決定する正として受け取らない。
-- Clientから送られたRole文字列等を、認証済みIdentity / Roleの代替として信用しない。
-- Reservation作成時の `StudentReservation.student_id` は、認証済みSessionから解決した内部生徒IDをServer側で設定する。
-- Reservation ID等の業務Resource IDをClientが指定するAPIでは、そのResourceが認証済み生徒本人の対象であることをServer側で必ず検証する。
-- Clientが他生徒のID等を推測・改変しても、他生徒を対象とする参照・更新へ切り替わらないAPI形状と認可Ruleにする。
-
-これにより `BR-068` および `REQ-003 / AC-003-019, AC-003-020` をAPI境界で実現する。
-
-例:
-
-```text
-GET  /api/me/reservations
-GET  /api/me/schedule-months/{month}
-POST /api/me/reservations/preview
-POST /api/me/reservations
-POST /api/me/reservations/bulk/preview
-POST /api/me/reservations/bulk
-POST /api/me/reservations/{reservationId}/cancel
-```
-
-上記はAPI形状の基本例であり、Request / Responseの厳密なSchemaは詳細設計で確定する。個別Endpoint設計では、特別な理由がない限り本節のSelf Scope原則を参照し、`student_id` 非入力方針を重複定義しない。
-
-### 4.2 管理者向けAPIのActor / Target Scope原則
-
-スクール管理者向け操作は `/api/admin/...` を基本名前空間とする。
-
-管理者APIでは、**操作主体（Actor）と業務上の操作対象（Target）を明確に分離する**。
-
-- Actorとなる管理者IdentityおよびRoleは、Client入力の管理者IDやRole文字列から決定せず、認証済みSessionからServer側で解決する。
-- Clientは、認可された管理操作に必要なStudent、Reservation、ScheduleMonth、LessonSlot等のTarget Resource IDを明示してよい。
-- Targetが生徒である場合は内部生徒IDを主たる識別子とし、氏名・メール・Google ID等を更新対象決定の正本識別子として扱わない。
-- ServerはTarget Resourceの存在、現在状態、および当該Admin操作でTargetに対して許可された操作かを必ず検証する。
-- 重要な管理CommandのAuditLogでは、ActorはSessionから解決した管理者、TargetはRequestで指定された業務Resourceとして区別して追跡できる形とする。
-- 同一人物が複数Roleを持つ場合でも、`/api/admin/...` の操作はAdmin権限として認可・監査し、生徒権限と混在させない。
-- 管理者がStudent IDをTargetとして指定できることは、管理者代理予約を許可することを意味しない。`OOS-002` に従い、生徒本人の新規予約を管理者が代理実行するAPIは初期リリースでは提供しない。
-
-例:
-
-```text
-GET  /api/admin/schedule-months/{month}
-POST /api/admin/schedule-months/{month}/generate
-POST /api/admin/schedule-months/{month}/changes/preview
-POST /api/admin/schedule-months/{month}/changes
-POST /api/admin/schedule-months/{month}/publish
-POST /api/admin/reservations/{reservationId}/school-cancel/preview
-POST /api/admin/reservations/{reservationId}/school-cancel
-POST /api/admin/reservations/{reservationId}/absence/preview
-POST /api/admin/reservations/{reservationId}/absence
-POST /api/admin/reservations/{reservationId}/absence/clear/preview
-POST /api/admin/reservations/{reservationId}/absence/clear
-POST /api/admin/students/{studentId}/security-suspension
-POST /api/admin/students/{studentId}/security-suspension/clear
-POST /api/admin/students/{studentId}/deletion/preview
-POST /api/admin/students/{studentId}/deletion
-GET  /api/admin/students/{studentId}/profile
-POST /api/admin/students/{studentId}/name-change
-POST /api/admin/students/{studentId}/contact-email-change
-GET  /api/admin/notification-failures/summary
-GET  /api/admin/notification-failures
-GET  /api/admin/notification-failures/{notificationId}
-POST /api/admin/notification-failures/{notificationId}/retry
-```
-
-Role判定はURLだけに依存せず、認証済みIdentityとAuthorization Ruleで必ず検証する。
-
-## 5. Preview / Confirm Pattern
-
-### 5.1 適用範囲
-
-すべてのWriteへ機械的にPreviewを要求しない。
-
-要求上、実行前に利用者が影響を理解・確認する必要があるCommandにPreview / Confirm Patternを適用する。
-
-主な対象:
-
-- 予約確定前の日時・新規予約classification・既存未開始Reservationへの区分変更影響確認
-- Schedule変更時の既存予約への影響確認
-- 月間標準回数変更時の再分類影響確認
-- 月間回数除外の設定・解除時の再分類影響確認
-- スクール都合キャンセル時の取消内容・取消後Slot・再分類影響・事後登録確認
-- 欠席設定・解除時の月間算入状態・再分類影響確認
-- 生徒削除時の将来予約取消等の影響確認
-- その他 `POL-013` により重要な影響説明が必要な管理操作
-
-Security Suspensionの設定・解除は、実行前説明を必須とする重要管理操作だが、動的な予約集合・再分類影響を計算する操作ではないため、初期基本設計では専用Preview APIを設けず、管理画面上の確定前確認で説明要件を満たす。
-
-プロフィール代理変更も、動的な予約集合・再分類影響を計算する操作ではないため、初期基本設計では専用Preview APIを設けない。氏名変更は変更前後を、連絡先メール変更開始は旧メールが確認完了まで有効であること、新メール所有確認が必要であること、確認完了後に旧メールへSecurity Noticeを送ることを管理画面上で確認できる形とする。
-
-### 5.2 Previewは確定保証ではない
-
-Preview結果は、その時点の状態に基づく確認用情報であり、Lockまたは将来のCommit保証ではない。
-
-Confirm Commandでは、Clientが確認したExpected Stateまたは同等の確認情報を送信できる形とする。
-
-ただしServerはClientのExpected Stateを正本として更新せず、Transaction内で最新確定状態を再読込・再検証する。
-
-PreviewからCommitまでに以下のような重要状態が変化した場合は、原則としてConflictとしてCommandを成立させず再確認へ戻す。
-
-- 対象Slotの予約可否
-- 対象Reservationの状態
-- standard / additional のclassification
-- 新規予約に伴って区分変更される既存未開始Reservationの対象集合または変更前後のclassification
-- 月間標準回数または算入状態
-- Schedule変更対象集合
-- スクール都合キャンセル対象Reservationの取消状態・欠席状態・再分類影響
-- 欠席設定・解除対象Reservationの欠席状態・算入状態・再分類影響
-- 生徒削除対象となる将来Reservation集合
-- その他Previewで明示した主要影響
-
-Expected Stateの具体表現をRevision、Fingerprint、Token等のどの方式にするかは詳細設計で確定する。
-
-### 5.3 PreviewのHTTP Method
-
-Previewは業務状態を変更しないQueryとして扱う。
-
-ただし、複雑な入力Bodyを必要とする場合はHTTP Methodとして `POST` を使用してよい。
-
-したがって、本設計では「POST = Command」とは定義しない。業務状態を変更するかどうかでQuery / Commandを区別する。
-
-### 5.4 予約Previewの区分影響差分
-
-`REQ-003 / AC-003-021` に従い、予約Previewでは新規予約自身のclassificationだけでなく、その予約を追加した場合に区分が変化する既存の未開始Reservationがある場合、その影響差分も返す。
-
-利用者が最終確定前に直接影響を理解できるよう、少なくとも次を画面表示可能なApplication View Modelとして表現する。
-
-- 影響する既存ReservationのLesson日時
-- 変更前classification
-- 変更後classification
-
-影響がない場合は、区分変更対象がないことを表現できればよく、空集合等の具体Schemaは詳細設計で確定する。
-
-生徒向けPreviewに含める影響Reservationは認証済み生徒本人のReservationに限定し、他生徒のStudent ID、Reservation ID、氏名、メール等を返さない。
-
-Confirm時には、新規予約自身のclassificationだけでなく、Previewで提示した既存Reservationの区分変更対象集合と変更前後も最新確定状態から再計算する。Previewから重要な影響差分が変化している場合は予約を成立させず、Conflictとして最新Previewの再確認へ戻す。
-
-## 6. Commit時再検証とConflict
-
-重要Write Commandは、認証・認可・入力検証だけでなく、Commit時の最新業務状態を再検証する。
-
-競合時は先に正常Commitされた状態を優先し、後続Commandが確定状態を暗黙に上書きしない。
-
-通常の業務競合では原則HTTP `409 Conflict` を使用する。
-
-Conflict Responseは、Clientが次に何をすべきか判断できる安定したApplication Error Codeを持つ。
-
-必要な場合は、再確認に必要な最新状態または最新状態を取得するための情報を安全な範囲で返す。
-
-複数変更の一部だけが競合した場合は、要求・Transaction設計に従い原則として部分適用せず、全体を未適用として再確認へ戻す。
-
-### 6.1 Schedule複数変更のConflict説明
-
-`REQ-301 / AC-301-009` に従い、複数のSchedule変更が競合によって全体未適用となる場合、管理者が再確認・再操作できるよう、**検出できた競合**について業務上理解可能な情報を返せる形とする。
-
-少なくとも次を画面表示可能なApplication View Modelとして表現できるようにする。
-
-- 検出できた競合対象のSlotまたは変更項目を識別するための情報
-- 予約済みになった、Slot状態が変わった、対象状態がPreview時と異なる等の業務上の競合理由
-- 再確認に必要な最新状態、または最新状態を再取得するための情報
-
-競合理由はDatabase Constraint名、SQL Error、内部Table / Column名等ではなく、`POL-014` / `BR-133` に従う安定した業務表現とする。
-
-本設計は、1回のConflict Responseで発生済み・発生し得る**全競合を完全列挙することを保証しない**。Transaction内Guardが最初の不成立で失敗する実装や、競合検出・最新状態再読込の後にさらに別操作がCommitされる場合もあり得るためである。
-
-したがって「検出できた競合」は、そのCommand失敗時に安全かつ合理的に特定できた対象と理由を意味する。再実行時には再び最新確定状態を検証し、その時点で新たな競合があれば同じ原則で全体未適用として扱う。
-
-具体的なConflict Response Schema、競合理由Code、競合対象一覧の上限・Pagination要否等は管理者向け個別API詳細設計で確定する。
-
-## 7. Command成功Response
-
-Command成功時は、DB更新件数や内部テーブルの変更結果をAPI契約の中心としない。
-
-Clientが直ちに確定状態を表示できるよう、Commit後の業務上の確定結果を返す。
-
-例:
-
-### 予約確定
-
-- 確定Reservation識別子
-- Lesson日時
-- 確定時点の実効classification
-- 同一月でclassificationが変更された既存未開始Reservationの一覧または表示に必要な差分
-- 画面更新に必要な現在状態
-
-### 生徒キャンセル
-
-- 対象Reservationの確定キャンセル状態
-- 枠の現在状態
-- 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
-
-### Schedule変更
-
-- 適用済み変更結果
-- 影響した予約・Slotの確定状態
-
-### スクール都合キャンセル
-
-- 対象Reservationの確定した `school_cancelled` 状態
-- 通常取消／事後登録の別
-- 取消確定時刻
-- キャンセル後のSlot状態
-- 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
-
-### 欠席設定・解除
-
-- 対象Reservationの確定した欠席状態
-- 対象Reservationの確定した実効算入状態・classification
-- 同一月でclassificationが変更された未開始Reservationの一覧または表示に必要な差分
-
-### Security Suspension設定・解除
-
-- 対象Studentの確定したSecurity Access State
-- 停止時は既存Sessionが失効済みであることを画面更新に必要な範囲で表現できる情報
-- 解除時は新規Loginが必要であり、旧Sessionを復活させないことを確認できる結果
-
-### 生徒削除
-
-- 対象Studentの削除確定状態
-- 削除により `system_cancelled` となった将来Reservationの結果
-- 対象となる開始前Slotの確定状態
-- 個人情報の削除・匿名化が24時間以内の後続処理対象として確実に登録されたこと
-
-### プロフィール代理変更
-
-- 氏名変更では、Commit後の確定プロフィール状態
-- 連絡先メール変更開始では、現在有効な旧連絡先メールは変更せず、新メール所有確認待ちであることを示す状態
-
-Responseは内部DB Schemaの変更へ不必要に依存しないApplication View Modelとする。
-
-## 8. HTTP StatusとApplication Error
-
-### 8.1 分離原則
-
-HTTP StatusはAPI通信上の大分類、Application Error Codeは画面・Clientが安定して判断する業務上の理由を表す。
-
-初期の基本対応は以下とする。
-
-| HTTP Status | 基本用途 |
-|---|---|
-| 400 | Request形式・値が不正で処理できない入力 |
-| 401 | 認証されていない |
-| 403 | 認証済みだが操作権限がない |
-| 404 | 利用者へ存在を示してよい対象Resourceが存在しない |
-| 409 | 最新状態との通常の業務競合、先行Commit優先 |
-| 503 | 整合性異常等により安全に業務処理できない状態 |
-
-入力Validationの詳細な400/422使い分け、認証Endpoint固有Status等は個別API設計で確定する。
-
-### 8.2 内部エラー非露出
-
-公開API Responseへ次を直接露出しない。
-
-- Database / D1内部エラー
-- SQL文字列・SQL Error
-- Stack Trace
-- 内部Exception Message
-- Resend / Google等Providerの生Error
-- 内部実装上のTable名・Column名等、利用者対応に不要な技術詳細
-
-利用者向けには安定したApplication Error Codeと安全な説明を返し、技術診断情報はLog / Monitoringへ分離する。
-
-### 8.3 整合性異常
-
-永続化済みInvariant違反等により安全に処理できない場合は、通常Conflictと区別する。
-
-初期基本表現は以下とする。
-
-```text
-HTTP 503
-Application Error Code: INTEGRITY_STATE_UNAVAILABLE
-```
-
-具体Response Schemaは詳細設計で確定する。
-
-## 9. 保存モデルとAPI Modelの分離
-
-APIはD1の保存Entityをそのまま外部契約にしない。
-
-特に次を原則とする。
-
-- `StudentReservation`、`SlotOccupancy`、各Override Entity等を機械的にそのままJSON化しない。
-- 生徒向けScheduleは、保存上の占有構造ではなく、生徒が理解すべき予約可否・自分の予約状態・グループレッスン等へ整形する。
-- 他生徒のStudent ID、Reservation ID、氏名、メール等、本人の操作に不要な情報を生徒APIへ返さない。
-- `classification = NULL` を生徒画面へ機械的に表示せず、キャンセル・欠席・月間回数除外等の業務意味へ変換する。
-- `IntegrityIncident` 等の運用監視Entityを通常利用者向け業務状態として公開しない。
-- 保存Schema変更が不要にAPI破壊変更へ直結しないようApplication View Modelを介する。
-
-Security Suspensionの論理状態も、将来の物理SchemaをそのままAPI Contractへ露出せず、「現在利用停止中か」「管理者が解除可能か」等の業務Viewへ整形する。
-
-## 10. 認証・Session設計との境界
-
-本書では、APIが認証済みIdentityとRoleをServer側で解決し、その情報を用いて認可するところまでを原則として定義する。
-
-生徒本人を対象とするAPIのIdentity決定Ruleは **4.1 生徒本人APIのSelf Scope原則** を正とし、管理者APIのActor / Target決定Ruleは **4.2 管理者向けAPIのActor / Target Scope原則** を正とする。本節では重複定義しない。
-
-Security Suspensionについては、停止後に既存Sessionが即時利用不能となり、停止中は認証成功後も新しいSessionを発行せず、解除後も停止前Sessionを復活させないことを基本設計上の保証とする。Session保存・revocationの具体方式は後続の認証・Session基本設計で確定する。
-
-生徒削除については、削除Commandの正常完了時点で既存Sessionが利用不能であることを基本設計上の保証とする。個人情報の実削除・匿名化は24時間以内の後続処理とするが、後続処理が必要であるという義務自体は削除CommandのTransaction内で失われない形で永続化する。
-
-連絡先メール変更については、生徒本人・管理者のどちらが開始しても新メール所有確認を省略せず、確認完了までは旧メールを有効な連絡先として維持する。Pending変更の物理Entity、Token、期限、再送、確認Endpoint等の具体方式は後続の認証・アカウント設計／詳細設計で確定する。
-
-以下は後続の認証・Session基本設計で確定する。
-
-- Session保存方式
-- Session Cookie / Token方式
-- Cookie属性
-- CSRF対策
-- Login / Logout Endpoint詳細
-- Google OAuth Flow詳細
-- Magic Link Flow詳細
-- Session失効・更新方式
-- Security Suspensionの即時Session失効・非復活を実現するrevocation方式
-- 生徒削除時のSession即時失効と個人情報削除・匿名化後続処理の具体方式
-- 連絡先メール所有確認のPending状態、Token、期限、再送、無効化方式
+「実行・復旧計画」は個別APIの実行・Transaction・競合・復旧／再送の基本設計を指す。Deploy / Backup / Restoreの新しい運用計画や、確定済み詳細設計への昇格を意味しない。元の節番号・見出しを維持する。
 
 ## 11. 生徒向けAPI基本形
 
@@ -461,7 +69,7 @@ POST /api/me/reservations
 
 Requestは論理的に、対象 `LessonSlot` とPreviewで利用者が確認したExpected State相当情報を持つ。対象本人を指定する `student_id` は持たない。
 
-Reservation所有者は4.1のSelf Scope原則に従い、認証済みSessionから解決した内部生徒IDをServer側で設定する。
+Reservation所有者は`06a_APICommonPrinciples.md` §4.1のSelf Scope原則に従い、認証済みSessionから解決した内部生徒IDをServer側で設定する。
 
 Confirm時はPreview結果を正本として信用せず、`05_BookingAndConcurrency.md` に従いTransaction内で最新確定状態を再検証・再計算する。
 
@@ -529,7 +137,7 @@ Confirm時、Serverは選択全体について最新のN、同一暦月、各Slo
 
 全対象が最新状態で条件を満たす場合のみ、選択全体を確定する。対象の一部だけを確定することはなく、単一予約のConfirmと同様に確定Reservationの予約者は認証済みSessionから解決した内部生徒IDとする。D1 Transaction、Lock、Guard SQL等の実現方式は本基本API契約では定めず、後続の詳細設計で確定する。
 
-Expected StateはPreview後の重要状態の変化を検出してConfirm成立可否を判定するためのものであり、操作識別子によるIdempotencyの代替ではない。逆に操作識別子は再送時の二重確定を防ぐためのものであり、最新状態再検証を省略させない。同一操作識別子・同一内容のBulk Confirm再送では、新しいReservationを重複作成せず、先に確定した同一操作の結果を返せる形とする。同一操作識別子を選択Slot集合またはExpected Stateを含む異なる内容で再利用した場合は、別操作として実行せずRejectする。操作識別子の具体Field、同一内容の比較、保存、保持、一意性Guard、再送・RejectのHTTP表現は詳細設計で確定する。
+Expected StateはPreview後の重要状態の変化を検出して初回Confirmの成立可否を判定するためのものであり、操作識別子によるIdempotencyの代替ではない。初回Confirmでは操作識別子があっても上記の最新業務状態を再検証する。成功済みの同一操作識別子・同一内容のBulk Confirm再送では、認証・認可を確認したうえで、最新業務状態から新規確定を行わず、先に確定した同一操作の結果を返せる形とする。新しいReservation、Occupancy、再分類、AuditLogまたはNotificationIntentを重複作成しない。同一操作識別子を選択Slot集合またはExpected Stateを含む異なる内容で再利用した場合は、別操作として実行せずRejectする。操作識別子の具体Field、同一内容の比較、保存、保持、一意性Guard、再送・RejectのHTTP表現は詳細設計で確定する（`05_BookingAndConcurrency.md` §5.5.3）。
 
 成功時は複数の新規Reservationを確定した結果としてHTTP `201 Created` を基本とする。成功Responseは、少なくとも確定した各Reservationの識別子、Lesson日時、確定classification、現在のSlot状態、および同一Commandで変更された既存未開始Reservationの画面表示に必要な区分差分を返せる形とする。
 
@@ -559,7 +167,7 @@ POST /api/me/reservations/{reservationId}/cancel
 
 生徒キャンセルは、初期基本設計では専用Preview APIを設けない。UI上で確認表示を行うことは妨げないが、予約確定のようなPreview / Confirmの2 API構成は必須としない。
 
-対象Reservationは4.1のSelf Scope原則に従い、認証済み生徒本人が操作可能なReservationであることをServer側で検証する。
+対象Reservationは`06a_APICommonPrinciples.md` §4.1のSelf Scope原則に従い、認証済み生徒本人が操作可能なReservationであることをServer側で検証する。
 
 他生徒のReservation IDを指定した場合、他生徒Resourceの存在有無を不要に漏洩しないため、生徒APIでは本人の対象として存在しない場合と同様に扱うことを基本とする。具体的なApplication Error表現は詳細設計で確定する。
 
@@ -643,13 +251,13 @@ POST Bulk Reservation Confirm
 409 全体未適用・再Preview要求
 ```
 
-Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生徒Identityは4.1のSelf Scope原則を共通適用する。
+Schedule表示、Preview、Confirm、履歴、Cancelの全段階で、対象生徒Identityは`06a_APICommonPrinciples.md` §4.1のSelf Scope原則を共通適用する。
 
 ## 12. 管理者向けSchedule API基本形
 
 本節は `OI-BD-009` で確定した、管理者向けAPIのうち月間Scheduleに関する基本設計を示す。
 
-管理者向け分類管理、生徒管理等の残りのAPIは `OI-BD-009` で継続検討する。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
+管理者向け分類管理、生徒管理等のAPI基本形は§13〜19で確定済みとする。Request / Responseの厳密なSchema、Expected Stateの具体表現等は詳細設計で確定する。
 
 ### 12.1 主要Endpoint
 
@@ -1110,9 +718,9 @@ Security Access State
   active / suspended
 ```
 
-物理的にStudent属性として保持するか、別Entityやrevocation状態と組み合わせるかは後続の認証・Session基本設計で確定できる。ただし、業務上 `suspended` と削除・退会・Reservation取消を同一状態として扱わない。
+論理Entityは `02_DataModel.md` の `StudentSecurityAccess` とする。物理Table分割やrevocation状態との組合せは詳細設計で定める。業務上 `suspended` と削除・退会・Reservation取消を同一状態として扱わない。
 
-停止・解除CommandではTarget Studentを内部Student IDで特定し、Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
+停止・解除CommandではTarget Studentを内部Student IDで特定し、Actorは`06a_APICommonPrinciples.md` §4.2の原則どおり認証済み管理者Sessionから解決する。
 
 ### 16.3 停止時のSession失効と利用禁止
 
@@ -1123,9 +731,9 @@ Security Access State
 - 停止後の認証成功だけでは新しいStudent Sessionを発行しない
 - `AuditLog` から管理者Actor、対象Student、停止操作、時刻を追跡できる
 
-Session物理レコードの一括削除、revocation epoch / version等、即時失効を実現する具体方式は認証・Session基本設計で確定する。ただし方式にかかわらず、停止確定後に旧Sessionが一時的に有効なままとなることを正常状態として許容しない。
+Session物理レコードの一括更新、revocation epoch / version等の具体方式は詳細設計で定める。方式にかかわらず停止確定後に旧Sessionが一時的に有効なままとなることを正常状態として許容しない。
 
-認証済みStudent Requestでも、Sessionの形式的有効性だけでなく現在のSecurity Access Stateを認可条件へ含める。停止中は少なくとも `REQ-211` が禁止する新規予約、生徒キャンセル、プロフィール変更を成立させない。他の生徒本人APIをどこまで参照可能とするかの詳細は認証・Session設計で要求との整合を確認するが、停止中にLogin済み状態として通常利用を継続できる実装にはしない。
+認証済みStudent Requestでも、Sessionの形式的有効性だけでなく現在のSecurity Access Stateを認可条件へ含める。停止中はStudent Sessionを利用不能とし、`REQ-211` が禁止する新規予約、生徒キャンセル、プロフィール変更も成立させない。
 
 ### 16.4 解除と旧Session非復活
 
@@ -1178,7 +786,7 @@ POST /api/admin/students/{studentId}/deletion/preview
 POST /api/admin/students/{studentId}/deletion
 ```
 
-`AC-311-001` および `BR-131` に従い、Preview / Confirm Patternを適用する。対象Studentは内部Student IDで特定し、Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
+`AC-311-001` および `BR-131` に従い、Preview / Confirm Patternを適用する。対象Studentは内部Student IDで特定し、Actorは`06a_APICommonPrinciples.md` §4.2の原則どおり認証済み管理者Sessionから解決する。
 
 Previewでは少なくとも次を管理者が確認できる形とする。
 
@@ -1200,12 +808,14 @@ Preview表示に個人情報を過剰に含めず、対象確認と影響理解�
 
 - 対象Studentを通常利用不能な削除確定状態へ遷移
 - 既存Session失効
+- Student Account / Student用Auth Methodの通常Login対象外化（独立Admin Account / Sessionは維持）
 - Server Commit基準時刻 `T` で将来と判定される全 `confirmed` Reservationを `system_cancelled` 化
 - 各 `cancelled_at = T`
 - 各 `SystemCancellationDetail(reason_code = student_deleted)`
 - 各対象Reservationの `classification = NULL`、`automatic_classification` は保持
 - 対応する `SlotOccupancy` 終了
 - 開始前Slotを最新状態から予約可否判定可能な状態へ戻す
+- 対象Studentを論理宛先とする通常予約系の未配信 `NotificationIntent` のうち、客観的に失効するものを失効終端として確定
 - 個人情報削除・匿名化の後続処理が必要であることを失われない形で永続化
 - `AuditLog`
 
@@ -1245,11 +855,13 @@ Security Suspension中のStudentも削除対象とできる。Security Suspensio
 
 氏名、連絡先メール、Google等の認証紐付けなど直接管理する個人情報の実削除・匿名化は、要求どおり24時間以内に完了させる。Worker停止等があっても削除義務を失わないよう、削除CommandのTransaction内で後続処理必要状態を永続化する。
 
-後続処理のJob / Entity / Retry / Monitoring、Backup復旧時の再適用等の具体方式は認証・アカウント設計、運用設計、詳細設計で確定する。
+後続処理のJob / Entity / Retry / Monitoringは詳細・運用設計、Backup復旧時の再適用は `02_DataModel.md` §2.2と `05_BookingAndConcurrency.md` §13.14に従う。
 
 ### 17.5 通知・履歴・成功Response
 
 `BR-116` に従い、生徒削除に伴う `system_cancelled(reason_code = student_deleted)` について専用キャンセルメールNotificationIntentは生成しない。
+
+削除確定時は、対象Studentを論理宛先とする通常予約系の未配信Intentのうち客観的に失効するものを、削除Transaction内で配信成功とは区別した失効終端として整合させる。失効済みIntentは新たに再送せず、未配信であった事実、失効理由・時刻等の必要最小限の監査・障害解析情報だけを既存Retention方針の範囲で扱う。通知履歴・Deliveryを理由に氏名・連絡先メール等の削除対象個人情報を保持・復元しない。
 
 開始済み・過去Reservationは削除を理由に取消さず、必要な業務履歴として扱う。ただし、個人情報の削除・匿名化後に不要な直接個人情報を履歴へ残さず、`BR-126〜BR-128` の保持・再登録・Backup方針と整合させる。
 
@@ -1285,7 +897,7 @@ POST /api/admin/students/{studentId}/contact-email-change
 - 現在有効な連絡先メール
 - 連絡先メール変更が確認待ちの場合、その状態を管理者が判断するために必要な最小限の情報
 
-Google ID、認証Token、Session内部情報等をプロフィール支援のために不要に公開しない。Actorは4.2の原則どおり認証済み管理者Sessionから解決する。
+Google ID、認証Token、Session内部情報等をプロフィール支援のために不要に公開しない。Actorは`06a_APICommonPrinciples.md` §4.2の原則どおり認証済み管理者Sessionから解決する。
 
 ### 18.3 氏名代理変更
 
@@ -1297,7 +909,7 @@ Google ID、認証Token、Session内部情報等をプロフィール支援の�
 
 ### 18.4 連絡先メール変更開始と新メール所有確認
 
-`REQ-206 / AC-206-001〜004` および `AC-317-002` に従い、管理者による連絡先メール変更でも新メール所有確認を省略しない。
+`REQ-206 / AC-206-001〜005` および `AC-317-002` に従い、管理者による連絡先メール変更でも新メール所有確認を省略しない。
 
 基本Flowは次とする。
 
@@ -1331,6 +943,8 @@ Google ID、認証Token、Session内部情報等をプロフィール支援の�
 
 変更完了後の旧メールへのSecurity Noticeが配信不能であっても、`AC-206-004` に従い確定済みの連絡先メール変更をRollbackしない。
 
+Security Noticeは変更直前の旧メールSnapshotへ送る通知義務を、連絡先変更を確定する業務Transactionで失わない形で生成し、Commit後に送信する。通常予約系の現在有効な連絡先への再評価を適用しない。一時的障害のRetryおよびProvider受理後の配送Retry後に最終失敗となっても、通常の通知失敗Dashboard・手動retryの対象にせず、現在の新メールへ再送しない。旧メール平文Snapshotは送信・許容Retryに必要な期間だけ保持し、手動再送のためだけに保持延長しない。物理保存・最小化方式は詳細設計で定める。
+
 旧メールを利用できない変更依頼について、スクール管理者が依頼者本人をどのように確認するかは初期リリースのシステム機能・認証要件として固定せず、スクールの運用判断とする。システムはこの復旧経路のために旧メール確認や独自の本人確認質問等を追加の必須条件にしない。
 
 ### 18.6 Pending変更の排他・競合
@@ -1341,7 +955,9 @@ Google ID、認証Token、Session内部情報等をプロフィール支援の�
 
 新メール所有確認完了時に、そのメールがActiveな別Studentの連絡先として既に使用されている場合は変更を成立させない。連絡先メール一意性は変更開始時だけに依存せず、変更確定時の最新状態で保証する。
 
-Pending Entity、Token、確認期限、再送、具体的な無効化方法、確認Endpoint、Application Error Code等は認証・アカウント設計／詳細設計で確定する。
+Pending / Tokenの物理Schema、確認期限、再送、具体的な無効化方法、確認Endpoint、Application Error Code等は詳細設計で確定する。
+
+確認メールの配送失敗、期限切れまたは使用済みからの回復は、現在有効なPending変更の新メール宛に確認Flowとして再要求／再発行する。通常の通知失敗Dashboardまたは`notification-failures/{notificationId}/retry`で再送しない。置換・無効化・終了したPendingに対して新たな確認メールを送信せず、旧Tokenを再活性化しない。
 
 ### 18.7 Security Suspension・削除との関係
 
@@ -1355,13 +971,13 @@ Pending Entity、Token、確認期限、再送、具体的な無効化方法、�
 
 `AC-317-003 / BR-132 / REQ-940` に従い、氏名代理変更および連絡先メール変更開始を監査する。
 
-AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、必要最小限のBefore / Afterを基本とし、氏名・メールそのものを必要なく重複保存しない。メール所有確認完了による実変更についても、変更開始との因果関係を追跡できる形を認証・アカウント設計で具体化する。
+AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、必要最小限のBefore / Afterを基本とし、氏名・メールそのものを必要なく重複保存しない。メール所有確認完了による実変更についても、変更開始との因果関係を追跡できる形を詳細設計で具体化する。
 
 氏名変更成功ResponseはCommit後の確定プロフィール状態を返す。連絡先メール変更開始成功Responseは、旧メールが現在有効なままであること、新メール所有確認待ちであること、および管理画面が次の行動を判断するために必要な情報を返せる形とする。
 
-## 19. 管理者向け通知失敗Dashboard・個別再送API基本形
+## 19. 管理者向け通知失敗Dashboard・個別再送・対応終了／再開API基本形
 
-本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜004` および `REQ-314 / AC-314-001〜002` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。
+本節は `OI-BD-009` で確定した `REQ-105 / AC-105-001〜011` および `REQ-314 / AC-314-001〜005` の基本形を示す。対象は通常予約系の通知義務であり、未解決件数は配送試行数ではなく、現在も通知義務が有効で管理者対応を要する `NotificationIntent` を単位とする。一括予約Confirmの予約確認は既存どおり1 Intent・1通であり、詳細ではその通知に含まれる複数の予約日時を確認できる。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeはこのDashboardおよび個別retry APIの対象外とし、各Flow固有の回復操作またはSecurity Noticeの再送なしを適用する。
 
 ### 19.1 主要Endpointと認可
 
@@ -1371,26 +987,27 @@ AuditLogでは管理者Actor、対象Student、操作種別、時刻、結果、
 | 失敗一覧 | `GET /api/admin/notification-failures` | Query |
 | 失敗詳細 | `GET /api/admin/notification-failures/{notificationId}` | Query |
 | 個別再送 | `POST /api/admin/notification-failures/{notificationId}/retry` | Command |
+| 管理者対応終了・再開 | 詳細設計でPathを確定 | Command |
 
-`notificationId` は通知管理の論理IDであり、Provider Message IDをAPI Targetの正本にしない。Actorは4.2の原則どおり認証済みAdmin Sessionから解決し、すべてのQueryとCommandで管理者認可を行う。
+`notificationId` は通知管理の論理IDであり、Provider Message IDをAPI Targetの正本にしない。Actorは`06a_APICommonPrinciples.md` §4.2の原則どおり認証済みAdmin Sessionから解決し、すべてのQueryとCommandで管理者認可を行う。
 
 ### 19.2 Dashboard・Query View
 
-未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通常予約系の未解決NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。
+現在管理者対応を要する未解決が1件以上の場合、Dashboardは目立つ警告と未解決件数を表示し、1操作で失敗一覧へ遷移できる。件数は通知義務が有効で現在の管理者対応状態が対応要の通常予約系NotificationIntentを数え、同じIntentの複数Delivery Attemptを別件数として重複計上しない。業務上の客観的な有効条件を失って失効したIntent、および管理者対応終了済みIntentは未配信でも警告件数から除外する。終了済み案件は同じ失敗一覧の明示フィルタから初期リリースでは1年間参照可能とする。技術確認待ちは通常の判断可能な警告として管理者へ渡さず、安全な非操作表示またはMonitoring / Incidentで可視性を担保する。配送成功、客観的失効、管理者対応終了を同じ解決表示へ統合しない。
 
-失敗一覧では、少なくとも種別、予約日時、生徒名、失敗時の実送信先、失敗理由、失敗日時、再送状態を画面表示可能なApplication View Modelとして返せる形とする。詳細Queryでは、通知内容の要約、Delivery Attempt履歴、今回の再送先、再送可否および必要な対応を確認できる形とする。再送前の確認はこの詳細Queryを基に管理画面で行い、専用Preview APIは設けない。
+失敗一覧では、少なくとも種別、予約日時、生徒名、失敗時の実送信先、失敗理由、失敗日時、再送状態を画面表示可能なApplication View Modelとして返せる形とする。詳細Queryでは、通知内容の要約、Delivery Attempt履歴、今回の再送先、再送可否および必要な対応を確認できる形とする。詳細確認後に通知義務が失効した場合は、古い表示を根拠に再送可能とせず、最新の再送不可状態または再確認要求を返せるようにする。再送前の確認はこの詳細Queryを基に管理画面で行い、専用Preview APIは設けない。
 
 Provider等の生Error、Message ID、内部技術情報を画面または公開APIへ露出せず、失敗理由は安全なApplication Errorまたは業務上の理由へ抽象化する。氏名・送信先その他の個人情報は、管理者の対応に必要な最小限に限定し、削除・保持要求を優先する。
 
 ### 19.3 個別再送の状態と成功Response
 
-個別再送は最終失敗後に管理者が明示的に開始する。再送受付済み、送信中、Provider受理済みで配信結果待ちのいずれも未解決を維持し、その間の並行する追加再送を許可しない。最終失敗では未解決を維持して最新理由を表示し、Provider受理後の結果が不明な場合は結果確認中として盲目的な追加送信を行わない。
+個別再送は最終失敗後に管理者が明示的に開始する。再送受付済み、送信中、Provider受理済みで配信結果待ちのいずれも未解決を維持し、その間の並行する追加再送を許可しない。最終失敗では通知義務が有効な限り未解決を維持して最新理由を表示し、Provider受理後の結果が不明な場合は結果確認中として盲目的な追加送信を行わない。
 
-再送要求の永続化に成功したResponseは `202 Accepted` とする。これは「再送を受け付けた」ことを表し、Provider受理または配信成功を表さない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとする。開封確認は要求しない。
+再送要求の永続化に成功したResponseは `202 Accepted` とする。これは「再送を受け付けた」ことを表し、Provider受理または配信成功を表さない。Providerから配信成功を確認した時点を `AC-105-003` の再送成功として解決扱いとする。開封確認は要求しない。通知義務の失効は配信成功とは別の終端であり、Provider配信成功として表示・集計しない。
 
 ### 19.4 Confirm時再検証・Transaction境界
 
-再送Commandは、最新の未解決状態、対象通知の再送可否、実送信時に有効な宛先、および先行する再送・解決状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。
+再送Commandは、最新の未解決状態、通知種別固有の客観的な有効条件、対象通知の再送可否、技術安全性、実送信時に有効な宛先、並行Attempt、および先行する再送・解決・失効・管理者対応状態を最新確定状態から再検証する。詳細確認後に宛先、再送可否または重要な状態が変化していた場合、確定状態を無言で送信・上書きせず、原則 `409 Conflict` として最新状態の再確認へ戻す。物理的な失効更新が未反映でも、現在の業務状態から通知義務が失効している場合は送信しない。
 
 正常受付では `05_BookingAndConcurrency.md` §13.8を正とし、再送要求の永続化、同時再送防止、Admin Actorと対象通知を追跡できるAuditLogを同一の業務Transactionで確定する。外部Providerへの送信はCommit後に行う。再送は元のReservation、確定時classification、アプリ内通知の確認状態を変更せず、送信失敗で確定済み業務状態をRollbackしない。
 
@@ -1398,15 +1015,33 @@ Provider等の生Error、Message ID、内部技術情報を画面または公開
 
 通常予約系通知の再送先は `05_BookingAndConcurrency.md` §13.4に従う実送信時の有効な連絡先とし、任意宛先入力は提供しない。失敗時の実送信先と今回の再送先を区別し、元のIntentが表す業務事実、予約確認の確定時classification、元の発生時点を保持する。再送であることを明示し、現在の業務状態はシステム画面で確認できるようにする。
 
-### 19.5 Retry境界と未決事項
+### 19.5 通知義務の失効とRetry境界
 
-Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。
+`05_BookingAndConcurrency.md` §13.9を正とし、配信結果と通知義務の有効性を別の意味として扱う。通知種別ごとの客観的な有効条件を失ったIntentは、配信成功とは区別した失効終端として以後再送しない。本節の失効は管理者の任意判断による「対応済み」を意味しない。
 
-削除済み生徒、期限切れReminder等の再送抑止・終了状態、認証・所有確認メールおよび旧メールSecurity Noticeへの適用は、本節で決定しない。Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と詳細で確認した内容の整合は、後続の通知設計・詳細設計で具体化する。
+生徒削除確定後は、その生徒を論理宛先とする通常予約系の未配信Intentを新たに再送しない。未解決通知を理由に氏名・連絡先メール等の個人情報を保持・復元せず、個人情報削除要求を優先する。ReminderはLesson開始前かつ対象ReservationがReminder対象として有効な間だけ再送可能とし、Lesson開始時刻の到来、またはCancellation等でLessonが実施されないことが確定した場合は失効させる。
+
+生徒削除・Reservation取消等の明示的Commandで失効が確定する場合は、可能な限り原因となる業務Transactionで失効を整合させる。Lesson開始時刻到来だけのために専用失効Jobを正しさの前提とせず、Dashboard Queryと再送Commandでも現在時刻・最新業務状態から有効性を再評価する。失効前にProvider受理済みのDelivery Attemptが後から配信成功・失敗へ確定しても、配送結果と通知義務の失効を同一意味へ統合せず、失効後に新たなDelivery Attemptを開始しない。失効済みIntent専用の恒常的な閲覧UIは初期リリースへ追加しない。
+
+Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的障害に限る既存自動Retry方針を維持する。Provider受理後の配信RetryはProviderへ委ね、未検証のProvider能力を保証として扱わない。Magic Link、Invitation、新メール所有確認および旧メールSecurity NoticeのFlow固有Endpoint・Token・状態表示は詳細設計で定める。自動Retry上限到達後は`05_BookingAndConcurrency.md` §13.7に従い、同じIntentを安全な管理者対応へ渡す。Provider Callback・結果不明・重複／順序逆転Eventの基本方針は同書§13.11・13.13に従い、具体的な照合・event mapping・送信直前の宛先再評価と詳細で確認した内容の整合は詳細設計で定める。
+
+### 19.6 管理者対応終了・再開Command
+
+認証済み管理者だけが通常通知の管理者対応を終了・再開できる。終了では3理由区分「別経路で必要な連絡を完了」「追加の連絡手段がなく、未達を認識した上で対応終了」「その他」を選び、「その他」は補足必須とし不要な個人情報を記さない注意を表示する。確定前には配信成功にならず未配信・未確認の履歴が残ること、警告から外れること、理由が監査されることを明示する。結果確認中ではProvider側配送を取消せず後から到達し得ることも示す。
+
+終了Commandは認可、対象種別、通知義務、配送成功・失効の有無、安全な説明と代替行動、技術安全性を最新状態で再検証し、新規送信・retry確定と競合させない。Integrity / Security異常等で通知対象・内容・宛先・状態を信用できず安全な次の行動を提示できない場合は拒否する。配送結果とAttemptは変更せず、管理者対応状態のみ終了にし、Actor、時刻、理由、最小限のBefore / Afterを同一Transactionで監査する。技術原因は終了理由でなくMonitoring / Incident側で分類する。
+
+終了済み案件は明示的再開後にだけretryできる。再開Commandは通知義務、配信成功、客観的失効、個人情報削除、技術安全性を再検証し、可能なら対応状態だけを対応要へ戻して監査する。過去のAttempt・配送結果・対応履歴を上書きせず、Provider Callback等だけでは自動再開しない。終了済み案件と管理者対応履歴、必要最小限のIncident summaryは1年間参照可能とし、Technical Logは`REQ-940 / AC-940-004`に従う。具体Path、Request / Response、Expected Stateのwire表現、Filter / Pagination / Sortと物理Cleanupは詳細設計で確定する。
+
+### 19.7 Provider Callbackの外部HTTP境界
+
+Provider Callbackは19.1の管理者向け公開業務APIとは別のexternal callback入口とし、Providerの真正性を確認してから既知Delivery Attemptの配送状態へ反映する。Callbackの重複・順序逆転・矛盾、および失効・管理者対応終了後の扱いは `05_BookingAndConcurrency.md` §13.13を正とする。Provider Message IDを管理者APIのtargetにせず、Callbackだけで管理者対応を自動再開しない。具体Path、認証方式、event mapping、Response wireは詳細設計で定める。
+
+Callbackは受信環境のProvider credential / callback設定と既知Attemptに対応する場合だけ処理し、ProductionとNon-Productionを跨いで受け渡し・処理しない。環境境界は `01_SystemArchitecture.md` §6.1 / §6.2を正とする。
 
 ## 20. 詳細設計へ送る事項
 
-以下は基本原則ではなく詳細設計で確定する。
+以下は基本原則ではなく詳細設計で確定する。Student認証に関する項目は`06a_APICommonPrinciples.md` §10で参照した#840正本に確定済みであり、Admin・method-management・プロフィール変更等の未確定範囲だけを後続へ送る。
 
 - 全Endpoint一覧
 - Request / Response JSON Schema
@@ -1418,10 +1053,18 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - Application Error Code全一覧
 - Validation ErrorのField表現
 - HTTP Header方針
-- CSRFの具体方式
+- CSRF token生成・header・具体方式、Origin allowlist
+- Cookie名・SameSite・Path・prefix、Session token生成・hash・storage、Admin last-activity更新粒度、具体revocation query / version方式
+- Google state / nonce / PKCE wire・SDK、Magic Link / Invitation / 所有確認Token生成・hash・URL・consume transaction
+- Account / AuthMethod / Session / ChallengeのDDL・index・unique constraint
+- Login / Logout / callback / method-management endpoint path・Request / Response、Registration / Invitation UI順序、Provider API呼出し詳細
+- Admin bootstrap / recovery command・runbook（`01_SystemArchitecture.md` §6.6の運用権限に従う）
+- Backup / Restoreを公開APIから分離するoperator runbook、Maintenance / write freeze / Recovery D1 cutover / rollbackのwire境界（`01_SystemArchitecture.md` §5.3 / §6.5に従う）
+- #537で定める環境identity / bindingの検証方式、未完成機能のserver-side gate、disabled endpoint / Callbackの具体Status・Error表現
 - Cache-Control等のHTTP Cache Policy
 - OpenAPI等の契約記述方法
 - Schedule Change Setの具体的なRequest / Response Wire Format
+- `disabled` 理由の保持・表示粒度と具体表現
 - 一括予約Preview / Confirmの具体的なRequest / Response Wire Format
 - 一括予約の選択Slot集合、同一暦月、操作上限N、classification影響を確認するExpected State / Guardの具体形
 - 一括予約Confirmの操作識別子の具体Field、同一内容の比較、保存Entity、保持期間、一意性Guard、再送・Reject Responseの具体形
@@ -1447,14 +1090,15 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - 旧メールSecurity Noticeの通知義務・Delivery・失敗時表示の具体形
 - プロフィール代理支援固有のConflict / Business Rejection Application Error Code
 - 通知失敗DashboardのPagination / Filter / Sort、Response Schema、表示用状態・業務理由の具体形
+- NotificationIntentの配信結果と通知義務有効性を分離する物理状態、失効理由、永続化／導出方式、DB Schema
 - 再送要求の具体的な識別子、保存、Delivery Attempt状態遷移、試行単位の冪等性Guard
-- Provider Callback整合、結果不明時の照合、重複・順序逆転Event対策、送信直前の宛先再評価と確認内容の整合
+- Delivery Attempt内retry count、next attempt時刻、具体Backoff、post-commit kick方式
+- claim / lease / fencingのSchema・SQL・Index、batch size・pagination、Reminder義務のlogical key・一意性Guard
+- Provider idempotency key / Message ID mapping、安全な照合API、Callback endpoint / 真正性・event identity / mapping / precedence・矛盾処理、送信直前の宛先再評価と確認内容の整合
+- 管理者対応終了／再開のEndpoint path、Request / Response、Expected State wire、終了済み一覧のFilter / Pagination / Sort、1年経過後の物理Cleanup
+- Dispatcher routing / logical due state、Cron式・環境別binding、Cleanup具体周期、Handler heartbeat・metric・Alert閾値、Holiday Masterの取得時刻・対象年・staging / update transaction方式
 
-認証・Session基本設計では、Security Suspensionの即時Session失効、停止中のSession非発行、解除後の旧Session非復活を実現するSession保存・revocation方式を確定する。
-
-生徒削除については、認証・アカウント設計でSession即時失効、個人情報削除・匿名化対象、後続処理の永続状態と再実行可能性を具体化する。運用設計では24時間以内完了の監視・失敗時対応、Backup復旧時の再適用を具体化する。
-
-プロフィール代理支援については、認証・アカウント設計で生徒本人と管理者開始を共通化できる連絡先メール所有確認Flow、Pending変更の排他、旧メールSecurity Noticeを具体化する。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
+生徒削除後の個人情報削除・匿名化の再実行可能な物理状態と24時間以内完了の監視・失敗時対応、Backup復旧時のPurge再適用の具体queryは詳細・運用設計で定める。旧メール利用不能時の依頼者本人確認方法はシステム要件化せず運用判断とする。
 
 ## 21. 関連要求・方針
 
@@ -1496,11 +1140,14 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - BR-068 生徒本人予約の所有者同一性
 - BR-090 内部生徒ID
 - BR-091 連絡先メール一意
+- BR-092〜BR-098 代替認証・Magic Link・Invitation・Account・管理者認証
 - BR-099 セキュリティ利用停止
 - BR-100 生徒削除
-- BR-116 スクール都合キャンセル通知
+- BR-113 リマインド
 - BR-114 通知失敗
+- BR-116 スクール都合キャンセル通知
 - BR-120 最小プロフィール
+- BR-121 Googleデータ最小化
 - BR-122 削除権限
 - BR-123 削除時即時無効化
 - BR-124 直接管理個人情報削除
@@ -1518,9 +1165,11 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - REQ-005 予約履歴
 - REQ-007 プロフィール変更
 - REQ-008 生徒一括予約
+- REQ-102 24時間Reminder
 - REQ-103 スクール都合キャンセル通知
 - REQ-104 標準／追加区分変更通知
 - REQ-105 通知失敗管理
+- REQ-201〜REQ-205 / REQ-209 / REQ-210 生徒登録・認証・Invitation・悪用防止
 - REQ-206 連絡先メール変更
 - REQ-207 Session管理
 - REQ-211 セキュリティ利用停止
@@ -1536,28 +1185,36 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - REQ-311 生徒削除
 - REQ-312 削除時予約処理
 - REQ-313 スクール都合キャンセル
+- REQ-314 通知失敗Dashboard
 - REQ-315 欠席記録
 - REQ-316 セキュリティ利用停止管理
 - REQ-317 プロフィール代理支援
+- REQ-319 / REQ-320 登録モード・管理者認証方法管理
 - REQ-907 業務Timezone
 - REQ-911 競合整合性
 - REQ-912 外部API Retry
 - REQ-914 障害・エラー時利用者表示
 - REQ-934 個人情報削除
+- REQ-935 認証可用性
 - REQ-940 監査Logging
 - REQ-951 Provider分離
 - CON-001 Cloudflare基盤
 - CON-006 初期規模
+- CON-003 認証
+- CON-007 初期管理者
 - OOS-002 管理者代理予約
+- OOS-006 複数管理者管理UI
 
 ## 22. 設計判断記録
 
-- API基本原則とCommand / Query境界は `OI-BD-007` で検討し、本書へ確定結果を反映した。
+- `OI-BD-010` / #539でRole別Account、D1正本opaque Session、Google / Magic Link、登録・Invitation、CSRF、Admin bootstrap / recoveryの基本境界を確定した。Session方式の比較と採用理由は `01_SystemArchitecture.md` §2.1を正とする。
+- API基本原則とCommand / Query境界は `OI-BD-007` で検討し、`06a_APICommonPrinciples.md` §1〜10へ確定結果を反映した。
 - 生徒向け主要API Flow、Slot View、予約Preview / Confirm、生徒キャンセル、予約履歴は `OI-BD-008` で確定した。
 - 生徒一括予約の専用Preview / Confirm API契約はIssue #66で確定した。既存の単一予約APIを維持し、`REQ-008 / AC-008-001〜009` に対して、同一暦月・最新N・選択Slot・classification影響をServerが再検証する全体Confirmと、409での全体未適用・再Preview要求を定義した。
 - 一括予約ConfirmのExpected Stateは、選択Slot集合、対象月、最新N、Slot予約可能状態、新規classification、既存未開始Reservationへのclassification影響を再確認する業務的Snapshotとする。Serverは最新確定状態から再計算し、ClientのExpected Stateを更新値・正本として扱わない。Expected Stateとは別に操作識別子によるIdempotencyを適用し、同一内容の再送で新規Reservationを重複作成せず、異なる内容での同一識別子再利用を別操作として実行せずRejectする方針をIssue #72で確定した。
 - 管理者向けAPIのActor / Target Scope原則、および月間Schedule取得・初回生成・変更Preview / Confirm・公開の基本形は `OI-BD-009` で確定した。
 - 通知失敗Dashboardは通常予約系の未解決NotificationIntentを件数単位とし、詳細Queryによる確認後に個別手動再送を受け付ける。再送受付は202であり、Provider配信成功確認まで解決としない。再送は同じIntentのDelivery Attemptとして扱い、同時再送を防ぎ、元の業務状態を変更しない方針を2026-09-06に確定した。
+- 要求仕様v1.20に従い、配信結果と通知義務の有効性を分離し、客観的な有効条件を失ったIntentは配信成功とは別の失効終端として以後再送しない。生徒削除では個人情報削除を優先し、ReminderはLesson開始前かつ対象Reservationが有効な間だけ再送可能とする。Dashboardは現在管理者対応を要する未解決だけを警告・通常一覧対象とし、Query / 再送Commandでも最新状態から有効性を再評価する方針を2026-09-19に確定した。
 - 管理者Schedule生成は未生成月の初回生成に限定し、既生成月をgenerateで上書きしない。要求仕様v1.8の `AC-301-010` と整合する。
 - 予約影響を伴うSchedule変更は、必要なschool cancellation、Occupancy終了、再分類、AuditLog、NotificationIntentを原因となるSchedule変更と同一の原子的業務Transaction境界で扱う。
 - 公開済み月の将来枠変更は再公開を要求せず、正常Commit後ただちに最新確定状態として扱う。
@@ -1572,9 +1229,9 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - 欠席設定は終了済みの未取消confirmed Reservationだけに行い、Reservationライフサイクル、Slot、Occupancyを変更せず、対象Reservationを分類対象外とした上で必要な未開始Reservation再分類を行う。
 - 欠席解除は無条件な再算入ではなく、`ReservationAbsence` 解除後に月間回数除外等の最新条件から実効算入可否を再評価する。欠席設定・解除そのものの専用メールは生成せず、波及したstandard / additional区分変更だけ `REQ-104` に従い通知する。
 - Security Suspensionは休会・退会・削除・Reservation取消とは別のSecurity Access Stateとして扱い、設定・解除には専用Preview APIを設けず管理画面上の確定前説明で `AC-316-001〜003` を満たす。
-- Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は認証・Session基本設計で確定する。
+- Security Suspension停止時は既存Student Sessionを即時失効させ、停止中は新しいSessionを発行せず、解除しても停止前Sessionを復活させない。具体revocation方式は詳細設計で確定する。
 - Security SuspensionとStudent Write Commandの並行時は先行正常Commitを優先し、停止が先行Commitされた場合は後続Student WriteをCommit時Guardで成立させない。停止・解除自体ではReservation、SlotOccupancy、月間算入、classificationを変更しない。
-- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
+- 生徒削除はPreview / Confirmとし、削除確定時に利用不能化、Session失効、将来confirmed Reservation全件の `system_cancelled(reason_code = student_deleted)`、Occupancy終了、開始前Slotの再開放、客観的に失効する通常予約系未配信NotificationIntentの失効終端、個人情報削除・匿名化義務の永続化、AuditLogを同一TransactionでAll-or-Nothingに確定する。
 - 生徒削除Preview後に将来Reservation対象集合が変化した場合は部分適用せずConflictとして再Previewへ戻す。Lesson開始済み・過去Reservationは削除を理由に遡及キャンセルしない。
 - 生徒削除Commandの成功と個人情報の実削除・匿名化完了は分離し、後者は24時間以内の後続処理とする。生徒削除起因system cancellationには専用キャンセルメールを生成しない。
 - プロフィール代理支援は氏名変更と連絡先メール変更開始を別Commandとし、汎用プロフィールPATCHへ統合しない。氏名は正常Commitで即時反映し、連絡先メールは新メール所有確認完了まで旧メールを有効な連絡先として維持する。
@@ -1584,6 +1241,6 @@ Permanent Errorへの盲目的自動Retryは行わず、`REQ-912` の一時的�
 - 基本設計では読みやすさを優先し、`PII` の略語を原則使わず「個人情報」、必要に応じて「氏名・連絡先メール・認証識別子等の直接管理する個人情報」と記載する。
 - Transaction境界とD1実行方式は `05_BookingAndConcurrency.md` を正とする。
 - 保存モデルと表示モデルの分離は `02_DataModel.md` の原則をAPI境界にも適用する。
-- 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを4.1へ共通原則として集約した。
+- 要求仕様v1.5で追加された `BR-068` および `AC-003-019, AC-003-020` を受け、生徒本人APIの対象Student決定Ruleを`06a_APICommonPrinciples.md` §4.1へ共通原則として集約した。
 - `REQ-003 / AC-003-021` に従い、予約Previewでは新規予約による既存未開始Reservationのclassification影響差分を最終確定前に表示可能な形で返す。
 - `REQ-301 / AC-301-009` に従い、Schedule複数変更のConflictでは検出できた競合対象・業務理由・再確認用の最新状態を提示可能とし、全競合の完全列挙は保証しない。

@@ -7,6 +7,7 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
 pause_record='{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":"0123456789abcdef0123456789abcdef01234567","payload":{"detail":"human decision required"}}'
+replacement_pause_record='{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":"12345","payload":{"detail":"replacement pause"}}'
 resume_record='{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":"12345","payload":{"accepted_by":"trusted boundary"}}'
 normalization_record='{"version":1,"kind":"pause-normalization","reason":"state_inconsistent","target":"issue:220","source_pause_id":"12345","payload":{"normalization":"superseded"}}'
 pr_target_record='{"version":1,"kind":"pause","reason":"requirements_change","target":"pr:233"}'
@@ -48,19 +49,19 @@ assert_rejected_block() {
 # Each lifecycle record is generated and reparsed independently.  In
 # particular, a trusted resume acceptance is not a normalization record.
 assert_round_trip pause "$pause_record"
+assert_round_trip replacement-pause "$replacement_pause_record"
 assert_round_trip resume "$resume_record"
 assert_round_trip normalization "$normalization_record"
 assert_round_trip pr-target "$pr_target_record"
 
-# The complete first-stage pause-reason vocabulary remains accepted.
-for reason in \
-  requirements_change scope_decision diff_guard_exceeded diff_guard_error \
-  non_blocking_decision round_limit validation_failed validation_timeout \
-  claude_execution_failed developer_execution_failed explicit_human_escalation \
-  review_disagreement_decision resume_transition_failed state_inconsistent; do
+# Read the vocabulary from the schema contract, rather than maintaining a test list.
+reasons="$(bash "$helper" reasons)"
+jq -e 'type == "array" and length > 0 and (unique | length) == length' \
+  <<< "$reasons" > /dev/null
+while IFS= read -r reason; do
   bash "$helper" validate \
     "{\"version\":1,\"kind\":\"pause\",\"reason\":\"$reason\",\"target\":\"issue:220\"}"
-done
+done < <(jq -r '.[]' <<< "$reasons")
 
 # Required fields, optional fields, enums, and types all fail closed.
 assert_rejected_record malformed-json '{'
@@ -82,7 +83,12 @@ assert_rejected_record head-too-short '{"version":1,"kind":"pause","reason":"req
 assert_rejected_record head-too-long '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":"0123456789abcdef0123456789abcdef012345678"}'
 assert_rejected_record head-uppercase '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","paused_head":"0123456789ABCDEF0123456789abcdef01234567"}'
 assert_rejected_record payload-wrong-type '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","payload":[]}'
-assert_rejected_record pause-with-source-id '{"version":1,"kind":"pause","reason":"requirements_change","target":"issue:220","source_pause_id":"12345"}'
+assert_rejected_record replacement-source-id-empty '{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":""}'
+assert_rejected_record replacement-source-id-zero '{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":"0"}'
+assert_rejected_record replacement-source-id-leading-zero '{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":"012345"}'
+assert_rejected_record replacement-source-id-negative '{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":"-12345"}'
+assert_rejected_record replacement-source-id-free-text '{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":"previous pause"}'
+assert_rejected_record replacement-source-id-trailing-newline '{"version":1,"kind":"pause","reason":"resume_transition_failed","target":"issue:220","source_pause_id":"12345\n"}'
 assert_rejected_record resume-missing-source-id '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220"}'
 assert_rejected_record normalization-missing-source-id '{"version":1,"kind":"pause-normalization","reason":"state_inconsistent","target":"issue:220"}'
 assert_rejected_record source-id-empty '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"issue:220","source_pause_id":""}'

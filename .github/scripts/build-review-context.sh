@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# verified-review-bot-ids: v1
 set -euo pipefail
 
 repo="${1:?repository is required}"
@@ -6,6 +7,9 @@ pr_number="${2:?pull request number is required}"
 output="${3:?output path is required}"
 trusted_logins_csv="${4:-}"
 reviewer_logins_csv="${5:-}"
+summary_path="${6:-}" # Explicit opt-in; other callers retain their policy.
+ci_head="${7:-}" # Opt-in snapshot, bound to the caller's reviewed head SHA.
+verified_bot_ids="${8:-}" # Developer, Reviewer. Set only for the owner-managed route.
 follow_up_issue_limit=5
 
 mkdir -p "$(dirname "$output")"
@@ -16,17 +20,152 @@ trap 'rm -f "$metadata" "$diff_file"; rm -rf "$issue_dir"' EXIT
 
 gh pr view "$pr_number" \
   --repo "$repo" \
-  --json number,title,body,url,author,baseRefName,headRefName,isDraft,files,commits,reviews,comments,closingIssuesReferences \
+  --json number,title,body,url,author,baseRefName,headRefName,baseRefOid,headRefOid,changedFiles,isDraft,files,commits,reviews,comments,closingIssuesReferences \
   > "$metadata"
 
+if [ -n "$verified_bot_ids" ]; then
+  # Verify the author of each matching post from this exact context snapshot.
+  # GraphQL login representations vary, so a matching login only selects a candidate.
+  if ! [[ "$verified_bot_ids" =~ ^[1-9][0-9]*,[1-9][0-9]*$ ]] ||
+    ! candidates="$(jq -ce --arg ids "$verified_bot_ids" --arg trusted "$trusted_logins_csv" --arg reviewer "$reviewer_logins_csv" '
+      ($ids | split(",") | map(tonumber)) as [$developer_id, $reviewer_id]
+      | ($trusted | split(",")) as $trusted_logins
+      | ($reviewer | split(",")) as $reviewer_logins
+      | if $developer_id == $reviewer_id or ($trusted_logins | length) != 6 or ($trusted_logins | unique | length) != 6
+        or ($reviewer_logins | length) != 3 or ($reviewer_logins | unique | length) != 3 or ($trusted_logins | index("")) != null
+        or ($reviewer_logins - $trusted_logins | length) != 0
+        or (.comments | type) != "array" or (.reviews | type) != "array"
+        then error("review identity inputs") else . end
+      | [(.comments[] | ["IssueComment", .]), (.reviews[] | ["PullRequestReview", .])]
+      | map(. as [$kind, $post] | (try $post.author.login catch null) as $login
+        | select($trusted_logins | index($login) != null)
+        | {kind:$kind, id:$post.id, login:$login,
+           bot_id:(if $reviewer_logins | index($login) != null then $reviewer_id else $developer_id end)})
+      | if all(.[]; (.id | type == "string" and length > 0)) and
+        ((map(.id) | unique | length) == length) then . else error("review post identity") end
+    ' "$metadata")"; then
+    echo 'Bot会話の照合に必要なmetadataが不正です。' >&2
+    exit 1
+  fi
+  candidate_count="$(jq 'length' <<< "$candidates")"
+  query='query($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      id __typename
+      ... on IssueComment { author { login __typename ... on Bot { databaseId } } }
+      ... on PullRequestReview { author { login __typename ... on Bot { databaseId } } }
+    }
+  }'
+  for ((offset=0; offset<candidate_count; offset+=50)); do
+    batch="$(jq -c --argjson offset "$offset" '.[$offset:$offset+50]' <<< "$candidates")"
+    if ! jq -c --arg query "$query" '{query:$query, variables:{ids:map(.id)}}' <<< "$batch" \
+      | gh api graphql --input - \
+      | jq -es --argjson batch "$batch" '
+        length == 1 and (.[0] | (has("errors") | not) and
+          (.data.nodes | type == "array" and length == ($batch | length) and
+            INDEX(.[]; .id) as $nodes | all($batch[]; . as $post |
+              $nodes[$post.id] as $node | $node.__typename == $post.kind and
+              $node.author.__typename == "Bot" and $node.author.login == $post.login and
+              $node.author.databaseId == $post.bot_id)))
+      ' > /dev/null; then
+      echo '会話のDeveloper / Reviewer Bot投稿者を照合できないため、レビューを停止します。' >&2
+      exit 1
+    fi
+  done
+fi
+
 gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
+# The API file inventory and hunk counts must cover the entire raw response.
+# Keep the implementation embedded: callers materialize only this trusted base
+# script, so no code is loaded from the PR worktree.
+python3 -I -B - "$metadata" "$diff_file" <<'PYTHON'
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+def numstat(patch):
+    fields = subprocess.run(
+        ["git", "apply", "--numstat", "-z"], input=patch, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, check=True,
+    ).stdout.split(b"\0")
+    result = []
+    while fields and fields[0]:
+        added, deleted, path = fields.pop(0).split(b"\t", 2)
+        if not path:  # A rename has NUL-framed old and new paths.
+            fields.pop(0)
+            path = fields.pop(0)
+        result.append((path.decode("utf-8"), added, deleted))
+    if fields != [b""]:
+        raise ValueError("invalid_numstat")
+    return result
+
+
+def verify_raw_diff(metadata, raw):
+    files = metadata["files"]
+    count = metadata["changedFiles"]
+    if type(count) is not int or count < 0 or not isinstance(files, list) or len(files) != count:
+        raise ValueError("incomplete_inventory")
+    inventory = {}
+    for item in files:
+        path, added, deleted = item["path"], item["additions"], item["deletions"]
+        if not isinstance(path, str) or path in inventory or any(type(n) is not int or n < 0 for n in (added, deleted)):
+            raise ValueError("invalid_inventory")
+        inventory[path] = (added, deleted)
+    if not raw:
+        if count:
+            raise ValueError("empty_diff")
+        return
+    if not raw.startswith(b"diff --git ") or not raw.endswith(b"\n"):
+        raise ValueError("invalid_boundary")
+    blocks = re.split(rb"(?m)(?=^diff --git )", raw)[1:]
+    seen = set()
+    for block in blocks:
+        stats = numstat(block)
+        if len(stats) != 1:
+            raise ValueError("invalid_block")
+        path, added, deleted = stats[0]
+        if path in seen or path not in inventory:
+            raise ValueError("unexpected_path")
+        seen.add(path)
+        if (added, deleted) == (b"-", b"-"):
+            if inventory[path] != (0, 0):
+                raise ValueError("invalid_binary_counts")
+        elif (int(added), int(deleted)) != inventory[path]:
+            raise ValueError("incomplete_hunks")
+    if seen != set(inventory):
+        raise ValueError("missing_blocks")
+
+
+metadata_path, diff_path = map(Path, sys.argv[1:])
+try:
+    metadata = json.loads(metadata_path.read_bytes())
+    raw = diff_path.read_bytes()
+    verify_raw_diff(metadata, raw)
+except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+    sys.exit("raw PR diffの完全性を確認できないため、レビュー文脈を生成しません。")
+PYTHON
+
 diff_bytes="$(wc -c < "$diff_file")"
 if [ "$diff_bytes" -gt 400000 ]; then
-  echo "Pull request diff is ${diff_bytes} bytes; automatic AI review is limited to 400000 bytes." >&2
+  echo "PR差分は${diff_bytes} bytesです。自動AIレビューの上限は400000 bytesです。" >&2
   exit 1
 fi
 
 issue_prefix="https://github.com/${repo}/issues/"
+if ! jq -e --arg prefix "$issue_prefix" '
+    (.closingIssuesReferences | type == "array") and
+    all(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string")) and
+    any(.closingIssuesReferences[]; type == "object" and
+      (.number | type == "number" and . > 0 and floor == .) and
+      (.url | type == "string" and startswith($prefix)))
+  ' "$metadata" > /dev/null; then
+  echo '同じリポジトリの有効なclosing Issueがないため、レビュー文脈を生成しません。' >&2
+  exit 1
+fi
 mapfile -t closing_issues < <(
   jq -r --arg prefix "$issue_prefix" \
     '.closingIssuesReferences[]? | select(.url | startswith($prefix)) | .number' "$metadata" \
@@ -39,7 +178,7 @@ mapfile -t closing_issues < <(
 for issue_number in "${closing_issues[@]}"; do
   [ -n "$issue_number" ] || continue
   if ! gh api "repos/${repo}/issues/${issue_number}" > "$issue_dir/closing-${issue_number}.json"; then
-    echo "Could not fetch closing Issue #${issue_number}; refusing to build review context." >&2
+    echo "closing Issue #${issue_number}を取得できないため、レビュー文脈を生成しません。" >&2
     exit 1
   fi
 done
@@ -49,13 +188,17 @@ extract_follow_up_issues() {
     def follow_up_numbers:
       split("\n")
       | reduce .[] as $line (
-          { in_scope_out_section: false, numbers: [] };
+          { scope_out_language: null, numbers: [] };
           if ($line | test("^## Scope-out impact and follow-up[[:space:]]*$")) then
-            .in_scope_out_section = true
+            .scope_out_language = "en"
+          elif ($line | test("^## スコープ外影響と後継Issue[[:space:]]*$")) then
+            .scope_out_language = "ja"
           elif ($line | test("^#{1,2}[[:space:]]")) then
-            .in_scope_out_section = false
-          elif .in_scope_out_section and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
+            .scope_out_language = null
+          elif .scope_out_language == "en" and ($line | test("^- Follow-up Issue: #[0-9]+[[:space:]]*$")) then
             .numbers += [($line | capture("^- Follow-up Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
+          elif .scope_out_language == "ja" and ($line | test("^- 後継Issue: #[0-9]+[[:space:]]*$")) then
+            .numbers += [($line | capture("^- 後継Issue: #(?<number>[0-9]+)[[:space:]]*$").number | tonumber)]
           else . end
         )
       | .numbers[];
@@ -80,17 +223,119 @@ follow_up_candidates="$issue_dir/follow-up-candidates.json"
 
 follow_up_count="$(jq 'length' "$follow_up_candidates")"
 if [ "$follow_up_count" -gt "$follow_up_issue_limit" ]; then
-  echo "More than ${follow_up_issue_limit} explicit follow-up Issues were found; refusing to build incomplete review context." >&2
+  echo "明示された後継Issueが${follow_up_issue_limit}件の上限を超えたため、不完全なレビュー文脈は生成しません。" >&2
   exit 1
 fi
 
 mapfile -t follow_up_issues < <(jq -r '.[]' "$follow_up_candidates")
 for issue_number in "${follow_up_issues[@]}"; do
   if ! gh api "repos/${repo}/issues/${issue_number}" > "$issue_dir/follow-up-${issue_number}.json"; then
-    echo "Could not fetch follow-up Issue #${issue_number}; refusing to build review context." >&2
+    echo "後継Issue #${issue_number}を取得できないため、レビュー文脈を生成しません。" >&2
     exit 1
   fi
 done
+
+if [ -n "$ci_head" ]; then
+  [[ "$ci_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'CI対象head SHAが不正です。' >&2; exit 1; }
+  [ "$(jq -r .headRefOid "$metadata")" = "$ci_head" ] &&
+    [ "$(git rev-parse HEAD)" = "$ci_head" ] || {
+      echo 'CI対象headとPR metadata / checkoutが一致しません。' >&2; exit 1;
+    }
+  # No polling, retries, logs or artifacts. API failure stays on the existing
+  # context-generation error path, before any paid review is reachable.
+  gh api "repos/${repo}/pulls/${pr_number}" > "$issue_dir/ci-before.json"
+  jq -e --arg repo "$repo" --arg head "$ci_head" --argjson number "$pr_number" '
+    .number == $number and .head.sha == $head and
+    .head.repo.full_name == $repo and .base.repo.full_name == $repo
+  ' "$issue_dir/ci-before.json" > /dev/null || {
+    echo 'CI取得前のPR head / repositoryが一致しません。' >&2; exit 1;
+  }
+  ci_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  gh api --paginate --slurp "repos/${repo}/actions/runs?head_sha=${ci_head}&per_page=100" > "$issue_dir/ci-pages.json"
+  gh api "repos/${repo}/pulls/${pr_number}" > "$issue_dir/ci-after.json"
+  ci_fetched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  python3 -I -B - "$repo" "$pr_number" "$ci_head" "$ci_started_at" "$ci_fetched_at" "$issue_dir" <<'PYTHON' > "$issue_dir/ci.md"
+from collections import Counter
+import json
+from pathlib import Path
+import sys
+
+repo, number, head, started, fetched, directory = sys.argv[1:]
+directory = Path(directory)
+workflows = {
+    ".github/workflows/product-ci.yml": "Product CI",
+    ".github/workflows/traceability-check.yml": "PR Traceability",
+    ".github/workflows/ai-workflow-regression.yml": "AI Workflow Regression",
+}
+
+def require(condition):
+    if not condition:
+        raise ValueError("invalid_ci_snapshot")
+
+def positive(value):
+    return type(value) is int and value > 0
+
+try:
+    for name in ("ci-before.json", "ci-after.json"):
+        pr = json.loads((directory / name).read_bytes())
+        require(pr["number"] == int(number) and pr["head"]["sha"] == head
+                and pr["head"]["repo"]["full_name"] == repo
+                and pr["base"]["repo"]["full_name"] == repo)
+    pages = json.loads((directory / "ci-pages.json").read_bytes())
+    require(type(pages) is list and len(pages) > 0)
+    total = pages[0]["total_count"]
+    require(type(total) is int and total >= 0)
+    runs = []
+    for page in pages:
+        require(page["total_count"] == total and type(page["workflow_runs"]) is list
+                and len(page["workflow_runs"]) <= 100)
+        runs.extend(page["workflow_runs"])
+    require(len(runs) == total)
+    seen = set()
+    for run in runs:
+        require(positive(run["id"]) and run["id"] not in seen)
+        seen.add(run["id"])
+        require(run["head_sha"] == head and run["repository"]["full_name"] == repo
+                and run["head_repository"]["full_name"] == repo)
+        require(type(run["path"]) is str)
+        if run["path"] not in workflows:
+            continue
+        require(positive(run["run_attempt"]) and positive(run["run_number"]))
+        require(type(run["name"]) is str and len(run["name"]) > 0)
+        require(run["html_url"] == f"https://github.com/{repo}/actions/runs/{run['id']}")
+        require(run["status"] in ("queued", "in_progress", "completed", "waiting", "requested", "pending"))
+        require((run["status"] == "completed" and run["conclusion"] in
+                 ("success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"))
+                or (run["status"] != "completed" and run["conclusion"] is None))
+except (KeyError, TypeError, ValueError, OSError):
+    sys.exit("CI証拠のhead / repository / 状態 / 全ページの完全性を確認できないため、レビュー文脈を生成しません。")
+
+lines = ["## Same-head CI snapshot", "", "--- BEGIN CI SNAPSHOT DATA ---",
+         f"取得開始: {started}; 取得完了: {fetched}; head SHA: {head}",
+         "取得時点の証拠でありmerge gateを代替しません。各runの現在attemptのみを取得（過去attemptの結果は未取得）。",
+         "各workflowの最新runと直近の先行成功を表示し、全取得runの状態別件数を併記します。"]
+for path, workflow in workflows.items():
+    matching = sorted((run for run in runs if run["path"] == path),
+                      key=lambda run: (run["run_number"], run["id"]), reverse=True)
+    lines.append(f"{workflow} ({path}): {len(matching)} run(s)")
+    if not matching:
+        lines.append("対象結果なし")
+        continue
+    counts = Counter(f"{run['status']}/{run['conclusion'] or 'null'}" for run in matching)
+    lines.append("状態別件数: " + ", ".join(f"{state}={count}" for state, count in sorted(counts.items())))
+    selected = [("最新run", matching[0])]
+    prior = next((run for run in matching[1:] if run["status"] == "completed" and run["conclusion"] == "success"), None)
+    if prior:
+        selected.append(("先行成功（最新runの成功を意味しません）", prior))
+    for label, run in selected:
+        # JSON quoting keeps API-controlled names inside a single DATA line.
+        lines.append(f"{label}: name={json.dumps(run['name'], ensure_ascii=False)}; "
+                     f"run ID={run['id']}; URL={run['html_url']}; attempt={run['run_attempt']}; "
+                     f"status={run['status']}; conclusion={run['conclusion'] or 'null'}")
+print("\n".join(lines[:3] + ["DATA| " + line for line in lines[3:]]
+                + ["--- END CI SNAPSHOT DATA ---", ""]))
+PYTHON
+fi
 
 {
   echo '# Pull request review context'
@@ -120,10 +365,14 @@ done
       "### Trusted comment metadata: \(.author.login)\n\n--- BEGIN COMMENT DATA ---\n" + (body_text | data_lines) + "\n--- END COMMENT DATA ---\n";
     def full_review:
       "### Trusted review metadata: \(.author.login) — \(.state)\n\n--- BEGIN REVIEW DATA ---\n" + (body_text | data_lines) + "\n--- END REVIEW DATA ---\n";
+    def exact_serialized_summary_marker($marker):
+      body_text
+      | split("\n")
+      | any(.[]; (sub("\r$"; "") == ("SUMMARY| " + $marker)));
     def abbreviated_review:
       "### Prior reviewer App review: \(.author.login) — \(.state) — \(.submittedAt)\n\n"
-      + "- [REQUIREMENTS_CHANGE_REQUIRED]: " + (if (.body | contains("[REQUIREMENTS_CHANGE_REQUIRED]")) then "present" else "absent" end) + "\n"
-      + "- [HUMAN_ESCALATION_RECOMMENDED]: " + (if (.body | contains("[HUMAN_ESCALATION_RECOMMENDED]")) then "present" else "absent" end) + "\n";
+      + "- [REQUIREMENTS_CHANGE_REQUIRED]: " + (if exact_serialized_summary_marker("[REQUIREMENTS_CHANGE_REQUIRED]") then "present" else "absent" end) + "\n"
+      + "- [HUMAN_ESCALATION_RECOMMENDED]: " + (if exact_serialized_summary_marker("[HUMAN_ESCALATION_RECOMMENDED]") then "present" else "absent" end) + "\n";
     def conversation:
       . as $metadata
       | if (($metadata.comments | type) != "array") or (($metadata.reviews | type) != "array")
@@ -226,9 +475,67 @@ done
   fi
 
   echo
+  if [ -n "$ci_head" ]; then
+    cat "$issue_dir/ci.md"
+    echo
+  fi
   echo '## Pull request diff'
   echo
   echo '--- BEGIN DIFF DATA ---'
   sed 's/^/DATA| /' "$diff_file"
   echo '--- END DIFF DATA ---'
 } > "$output"
+
+# Observe only successfully emitted context. Recording is non-fatal and never
+# feeds gates, verdicts, budgets, truncation or retry decisions. Keep this local
+# to the trusted single-file builder, including when staged outside the repo.
+if [ -n "$summary_path" ]; then
+  if ! python3 -I -B - "$output" "$summary_path" 2> /dev/null <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+
+context_path, summary_path = map(Path, sys.argv[1:])
+raw = context_path.read_bytes()
+raw.decode("utf-8", errors="strict")
+sections = [
+    (b"Pull request metadata", "その他の書式・PR metadata・変更ファイル一覧"),
+    (b"Pull request body", "PR本文"),
+    (b"Changed files", "その他の書式・PR metadata・変更ファイル一覧"),
+    (b"Existing conversation", "採用した既存会話"),
+    (b"Linked Issue snapshots", "closing Issue snapshots"),
+    (b"Follow-up Issue snapshots", "follow-up Issue snapshots"),
+    (b"Same-head CI snapshot", "同一head CI証拠"),
+    (b"Pull request diff", "レビューへ渡すraw diff"),
+]
+boundaries = list(re.finditer(rb"(?m)^## ([^\n]+)\n", raw))
+names = [match[1] for match in boundaries]
+expected = [name for name, _ in sections]
+if names != [name for name in expected if name in names] or any(
+    name not in names for name in expected if name not in (b"Follow-up Issue snapshots", b"Same-head CI snapshot")
+):
+    raise ValueError("unexpected context sections")
+labels = dict(sections)
+overhead = sections[0][1]
+sizes = {label: 0 for _, label in sections}
+sizes[overhead] = boundaries[0].start()
+for index, match in enumerate(boundaries):
+    end = boundaries[index + 1].start() if index + 1 < len(boundaries) else len(raw)
+    sizes[labels[match[1]]] += end - match.start()
+if sum(sizes.values()) != len(raw) or context_path.stat().st_size != len(raw):
+    raise ValueError("context byte totals differ")
+rows = ["\n### Claudeレビューcontextサイズ（UTF-8 bytes）\n",
+        "各sectionは見出し・DATA prefix・境界marker・末尾の空行を含みます。",
+        "冒頭書式・PR metadata・変更ファイル一覧はその他へ計上します。未出力の後継・CI sectionは0です。",
+        "bytesはtoken数・費用の推定値ではありません。\n",
+        "| 項目 | UTF-8 bytes |", "|---|---:|"]
+rows.extend(f"| {label} | {sizes[label]} |" for label in dict.fromkeys(
+    [label for _, label in sections if label != overhead] + [overhead]))
+rows.append(f"| 最終review.md総bytes | {len(raw)} |")
+with summary_path.open("a", encoding="utf-8") as summary:
+    summary.write("\n".join(rows) + "\n")
+PYTHON
+  then
+    echo 'Claudeレビューcontextサイズの記録に失敗しました。生成済みcontextでレビューを継続できます。' >&2
+  fi
+fi

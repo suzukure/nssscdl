@@ -1,53 +1,53 @@
-name: Engineering decision
-description: Record an important decision, alternatives, and affected phases.
-title: "[Decision] "
+name: 技術上の決定
+description: 重要な決定、代替案、影響する工程を記録します。
+title: "[決定] "
 labels: []
 body:
   - type: dropdown
     id: phase
     attributes:
-      label: Phase
+      label: 工程
       options:
-        - Requirements
-        - Basic design
-        - Detailed design
-        - Implementation
-        - Test
-        - Operations
+        - 要求
+        - 基本設計
+        - 詳細設計
+        - 実装
+        - テスト
+        - 運用
     validations:
       required: true
   - type: textarea
     id: background
     attributes:
-      label: Background and question
-      description: Describe why a decision is needed and the exact question to settle.
+      label: 背景と決めるべきこと
+      description: 決定が必要な理由と、決めるべき問いを具体的に記載してください。
     validations:
       required: true
   - type: textarea
     id: options
     attributes:
-      label: Options and trade-offs
-      description: List realistic alternatives, constraints, risks, and rejected options.
+      label: 選択肢とトレードオフ
+      description: 現実的な代替案、制約、リスク、採用しなかった選択肢を記載してください。
     validations:
       required: true
   - type: textarea
     id: decision
     attributes:
-      label: Decision and rationale
-      description: Enter `Pending` until the decision is confirmed; then replace it with the decision and rationale.
+      label: 決定と理由
+      description: 決定が確定するまでは `Pending` と記入し、確定後に決定内容と理由へ置き換えてください。
     validations:
       required: true
   - type: textarea
     id: traceability
     attributes:
-      label: Related specifications and artifacts
-      description: List POL/BR/REQ/AC/TC/CON/OOS IDs, files, sections, and related Issues. Inventory references, terminology, traceability tables, and diagrams affected by this same decision so their corrections can be reviewed together; do not combine unrelated decisions.
+      label: 関連する仕様と成果物
+      description: POL/BR/REQ/AC/TC/CON/OOSのID、ファイル、節、関連Issueを記載してください。この決定に関係する参照、用語、トレーサビリティ表、図も洗い出し、修正をまとめてレビューできるようにしてください。無関係な決定は混ぜないでください。
     validations:
       required: true
   - type: textarea
     id: impact
     attributes:
-      label: Upstream and downstream impact
-      description: Identify earlier-phase dependencies, blocked work, downstream items to reassess, and the validation needed before the Draft PR is marked Ready for review. Record scope exclusions and any safe follow-up explicitly.
+      label: 上流と下流への影響
+      description: 上流工程への依存、停止する作業、再評価が必要な下流項目、Draft PRをReady for reviewにする前の検証を記載してください。対象外の範囲と安全に分離できる後継対応も明示してください。
     validations:
       required: true

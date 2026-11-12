@@ -4,17 +4,19 @@
 本書は非機能要求 `REQ-901`〜`REQ-952` に対するTest Case / Test Procedure Specificationである。
 性能、復旧、監視、Privacy等は単一画面の合否ではなく、測定値・復旧結果・設定・Log等の証跡で判定する。
 
+#894のread-only UIに対応する `TC-NF-903-01 / TC-NF-907-01 / TC-NF-914-03〜04` のpartial evidenceと証明範囲は `../../tests/README.md` を参照する。実320px・実keyboard / screen reader・Browser timezone別評価とSystem / Acceptance全体Passを代替しない。
+
 ## 2. テストケース
 
 ### REQ-901 対応Browser
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |
 |---|---|:---:|---|---|---|---|---|
-| `TC-NF-901-01` | AC-901-001 | P1 | Browser matrix / Pairwise | 実行時点のChrome/Edge/Safari/Firefox 現行Major＋1つ前を確定。S1/A1標準データ。 各BrowserでLogin、Schedule閲覧、予約、キャンセル、管理者主要操作の代表Happy pathを実行する。 | 各対象BrowserでMust業務を完了でき、Browser固有のBlockerがない。 | Browser/Version別実行結果、Screenshot | 自動化候補 |
+| `TC-NF-901-01` | AC-901-001 | P1 | Browser matrix / Pairwise | Architecture §2.2の現行・直前通常Stable / Release familyとTestPlan §7のRelease Test Matrixに従い、各familyのexact Browser version × 代表OSを固定する。Cloud / Virtual / remote環境の実ブラウザでS1/A1標準データを用い、各対象でLogin、Schedule閲覧、予約、キャンセル、管理者主要操作の代表Happy pathを実行する。 | 各対象Browser / version × OSでMust業務を完了でき、Browser固有のBlockerがない。 | Release Test Matrix、Browser名、exact version、OS、実行日時、build / commit、対象別結果、Screenshot | 自動化候補 |
 
 ### REQ-902 Responsive
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |
 |---|---|:---:|---|---|---|---|---|
-| `TC-NF-902-01` | AC-902-001 | P1 | Responsive / Use-case | Viewport幅320px以上のSmartphone縦。 S1がLogin→Schedule確認→予約→キャンセルを完了する。 | 主要生徒業務がSmartphoneだけで完結する。 | E2E結果、主要画面Screenshot | 自動化候補 |
+| `TC-NF-902-01` | AC-902-001 | P1 | Responsive / Use-case | Viewport幅320px以上のSmartphone縦。S1がLogin→Schedule確認→予約→キャンセルを完了する。Release前にはTestPlan §7に従いCloud上の実iPhone Safari / Android Chrome等で主要Must業務を確認する。 | 主要生徒業務がSmartphoneだけで完結する。 | 対象端末・OS・Browser version、E2E結果、主要画面Screenshot | 自動化候補 |
 | `TC-NF-902-02` | AC-902-002, AC-902-003 | P1 | Responsive inspection | 320px、Tablet、PC代表幅。 主要Pageで横Overflowを検査し、Table/Calendar内部も確認する。 | 通常Page全体にはHorizontal Scrollが発生しない。Table/Calendar内部の局所Scrollは許容。 | Layout計測、Screenshot | 自動＋手動 |
 
 ### REQ-903 Accessibility
@@ -77,6 +79,7 @@
 | `TC-NF-912-02` | AC-912-003 | P1 | Fault injection | 401/403/入力不正/Bad Recipient等を返すStub。 対象処理を実行する。 | Permanent Errorは自動Retryしない。 | Provider call count、Application result | 自動化候補 |
 | `TC-NF-912-03` | AC-912-004 | P1 | Fault injection | Google Loginで一時失敗を返す。 Loginフローを実行する。 | Login自体をアプリが自動反復せず、利用者再操作へ案内する。 | Google call count、UI/response | 自動化候補 |
 | `TC-NF-912-04` | AC-912-005 | P0 | Idempotency / Fault injection | Provider accepted後に配信失敗Eventを発生。 Application retry機構を動作させる。 | Provider固有配信Retryルールを優先し、アプリから盲目的な重複再送をしない。 | Message IDs、Provider call count | 自動化候補 |
+| `TC-NF-912-05` | AC-912-006 | P0 | Fault injection / Retry | 同じIntentへ管理者が複数Attemptを明示開始し、各Attemptで安全・冪等な一時障害を発生させる。 | 手動Attempt数に固定上限はなく、各Attempt内のApplication自動再試行は最大3回かつREQ-912の条件に従う。 | Attempt IDs、Provider call count、Retry timestamps | 自動化候補 |
 
 ### REQ-913 無料枠運用
 | TC ID | 対応AC | P | 技法 | Setup / Procedure | 期待結果 | 必須証跡 | 自動化 |

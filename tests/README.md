@@ -1,6 +1,1282 @@
 # Tests
 
+## #1104 WSLg人間用の単一予約Operator（明示opt-in、実機は別Go）
+
+`evaluation/booking-operator.mjs` はimportや引数不足では起動しない。
+既存Linux native checkout、Node24、locked dependencies、build済みUI、WSLg、
+非root systemd user manager／cgroup v2、Chrome、certutil、openssl、ssを前提とし、
+導入／権限追加／fallbackは行わない。**以下は後日の人間Go後の手順であり、本実装中には実行しない。**
+
+```sh
+node tests/evaluation/booking-operator.mjs --run --head <確認済みの40桁HEAD>
+```
+
+tracked/untracked差分、HEAD、依存、固定config、12 migration、distの再compileとのbyte一致、
+8788/8789空、両評価persist不在、秘密／proxy／debug環境の不在を検査する。
+既存profile／persistをadopt・上書き・自動削除しない。失敗後の同条件再実行は禁止。
+GUI変数は実測したWSLgの`:0`、`wayland-0`、`/run/user/<uid>`からの正規socket、
+必要時の固定Pulse socketだけをChromeへ渡す。seed／Workerのenv allowlistへGUIを追加しない。
+
+#1106では再compileの子processだけに `NODE_DISABLE_COMPILE_CACHE=1` を渡す。
+TypeScriptのcompile cacheで同じHOME/TMPDIRを汚して後続seedのempty-only検査を壊さないためで、
+親環境・seed／Workerのallowlistは変えず、既存cacheを許容・削除する処理も追加しない。
+失敗時はowner／outer bridgeの入力待機を解放し、非zero終了をouter CLIの固定
+`BOOKING_OPERATOR_UNKNOWN; owned resources retained; do not retry` 一回で通知する。
+childのraw stderr／例外本文は公開せず、既存の単発停止・未知時保持・成功条件を維持する。
+
+controllerも別Browser/Workerも非root User transient unitに収容し、controllerには
+総30分hard capを設定する。準備はseed/TLS/起動を通して5分、画面引渡しから人間操作20分、
+明示終了後cleanup3分、余白2分。
+Browser/Worker unitのhard capもcontroller残予算から停止余白2秒を控除して固定し、別の30分を追加しない。
+`systemd-run --pipe`の既存FD継承を使い、
+Session Cookieは認証済みのtrusted childへの私有pipeだけで搬送し、argv/env/URL/fileへ保存しない。
+HTTP debug loginやSession URL、恒久daemon、Secrets／sudoers／Ruleset変更はない。
+controllerは一回限りの元のseed/readback capabilityを外側のmemoryに保持する。
+
+seedは既存 `trusted-booking-seed.mjs` のempty-onlyローカルD1と架空Session、
+予約入口は既存 `reservation-worker.ts` / `wrangler.reservation.jsonc` の8789と
+`EVALUATION_BOOKING_DB`を使う。TLS SAN／NSS P,,・strict HTTPSの正負probeは既存機能を再利用し、
+headless probeを閉じた後、Cookie jarを検証してから人間用headed pageを作る。
+Browser sandboxとTLSを有効に保ち、通常Chrome profileやremote／Providerへ接続しない。
+正式 `trusted-booking-worker.mjs` のsystem.slice判定・生成argvは不変更。
+新 `booking-operator-worker.mjs` は共有preflight／listener parserだけを再利用し、
+User unitのname＋InvocationID＋kernel cgroup＋UID＋PID starttime＋PGID／listenerを別に照合する。
+
+引渡し後、人間が案内された公開月15日10:00の枠を選び、Preview→全内容を確認→
+明示Confirm一回→本人履歴を操作する。コードはclick/fill/Confirm再送を行わない。
+固定origin／route／CSRF／body、native trusted Confirm click一回、201とHistoryの同一IDを観測する。
+終わったら端末へ **操作終了** と入力する。新規Browser通信の受付を閉じてWorkerを止め、
+画面を検査し、Browserを閉じる。User unitの同一Invocation正常終了・kernel cgroup空・
+両port閉鎖を2回確認した後だけ元の一回限りの独立readbackで5表を照合し、秘密scan、
+所有Unit解放、全directory identity／tree再検証、owned persist/HOME/NSS/profile/key/logの削除へ進む。
+Unit名／UID／PIDだけではsignalや削除を許さず、owned group／managerへ各一回だけ停止要求する。
+Ctrl-C／pipe EOF（端末／parent喪失）／20分期限／不明HTTP／identity drift／停止不明では、
+成功・無書込み・cleanupへ昇格せず資産を保持する。hard capによる終了も正常cleanup証拠にしない。
+
+finite testsは通常Unit stepの `booking-operator.test.mjs` と、既存Worker／seed／TLS／process／outerの回帰を使う。
+#1106の回帰は実compilerのbuild／byte一致後に同じtemporaryをseedの実empty検査へ渡し、
+DB作成前で止める。compiler失敗／不一致の保持と、開いた入力pipeのままのowner準備拒否、
+outer CLIのfailure／spawn error／signal／EOFの固定通知・正常出力を有限Node fixtureで検証する。
+これらは合成effects／compiler・pipeの有限検査で、実WSLg socket互換性、GUI操作、実Chrome予約、D1実書込み、
+実User unit終端／cleanupの成功を証明しない。TC-F-003/005・TC-NF-902/914の関連するprepared partialに限定し、
+既存POL→BR→REQ→AC→TC、formal auto proofの120/180秒とsystem.slice、Gate A〜D／#930 401／#608受入・Releaseは不変。
+実操作Goと結果checkpointは別の人間判断に残す。
+
+`--pipe`のFD継承・同期動作の根拠：
+[systemd-run(258)公式](https://www.freedesktop.org/software/systemd/man/258/systemd-run.html#--pipe)。
+`RemainAfterExit=yes`のBrowser unitは完了message後にmanager／kernelを照合し、readback後のstopで解放する。
+bridge process終了だけをunit終端の証拠にはしない。実環境のこの組合せは未実証。
+
 自動Unit / Integration / End-to-End Testを格納する。
 
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。
 自動テストを要求テストへ対応付ける場合は、test name / tag / metadataに `TC-F-...` または `TC-NF-...` のTC IDを保持する。
+
+#898の `fixtures/d1/trusted-student-seed.ts` はoperator / trusted test process専用のseed helper。
+Callerが専用の空local D1へProduction `0001`〜`0012`を一度適用し、既存validation SQLを渡す。
+Table / Index / View / Triggerの定義fingerprint、未知schema、全業務Tableの空条件と既存Integrity scansを確認する。
+seed時も同一batch内で空条件を再照合し、非空・不正schema・batch失敗では固定errorで停止し、修復・reset・retryしない。
+失敗・応答不明時はtrusted setupで専用DBを調査・破棄し、同DBへの自動再実行はしない。
+架空生徒2人・active Access・student Account・独立した1日期限Session、次の東京暦月15日の公開未来5枠、
+本人/他人のconfirmed standard予約と占有、Group/Admin詳細だけを準備する（既定N=3、Provider送信なし）。
+CSPRNG 32byteのcanonical tokenはDBにはSHA-256 lowercase hashだけ保存する。
+返却 `sessions.self/other.cookie()` だけが生tokenとSecure / HttpOnly / SameSite=Lax / Path=/ / Domainなしの属性を渡す。
+Session返却objectのJSON化は生tokenを含まないが、`cookie()`の結果は秘密値としてmemory内だけで扱い、Log / Artifactへ出さない。
+実BrowserContext・HTTPS origin設定は後続責務。seedの専用persistent D1接続は以下の#906 opt-inで検証する。
+`d1/trusted-student-seed.test.ts` / `d1/trusted-student-seed-failures.test.ts` は既存file-isolated `AUTH_DB`で
+全12migration、FK / auth / reservation scans各0行、実Production Guard + Read Repositoryの4 View・本人履歴・
+他生徒情報非公開、Session role/owner/expiry/hash、失効後401、GET非更新、非空・未知/不正schema・競合・Rollbackを検証する。
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-NF-914-04`のlocal D1 **partial evidence**であり、
+Auth flow・Browser・Confirm atomicity全体、Gate A〜D、System / Acceptance TC全体のPassには算入しない。
+通常 `src/` / Worker / Browser bundle / `wrangler.jsonc`にはseedをimport・接続しない。
+
+#899の `fixtures/read-only-student-service.ts` は非公開のRequest serviceであり、listener / runnable mainを持たない。
+trusted runtimeが単一の隔離D1 binding、canonical HTTPS origin、non-exportable HMAC-SHA-256署名専用`CryptoKey`を渡し、
+実Production Guardと既存Schedule / History / Session CSRF GET Adapterを一箇所で合成する。
+設定不備、異なるRequest URL origin / protocol、未対応Path / Methodは既存safe errorの503。
+3 GET内の400 / 401（Cookie除去）/ 403 / 月不存在・未公開404 / 503、no-store、CSRFのno-referrerは既存契約を維持する。
+`d1/read-only-student-service.test.ts` は#898 seedと既存file-isolated `AUTH_DB` / Production migrationsを用い、
+本人履歴・cursor継続 / 別本人 / 別鍵 / 改ざん拒否、Origin拒否、任意identity非採用、read-only / Primary readとsafe errorを検査する。
+有効な別roleの403は既存D1 Portのtest-only row projectionで実Guardを通す（Student専用SchemaへAdmin行を保存しない）。
+`integration/read-only-student-isolation.test.ts` は全Product sourceの参照先が`src/`内に閉じ、評価fixtureをimportしないことを検査し、
+既存 `integration/worker.test.ts` がdefault Workerの3 GET / POST / UI資産の全503を回帰する。
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04` の
+HTTP / local D1 **partial evidence**のための試験であり、Product要求・AC→TCの意味を変更しない。
+標準Product CIによるcurrent-head証跡はworkflow側で別に確認し、ローカル自己申告をformal CI successと扱わない。
+#902の入口・local config・key生成の準備と#904のopt-in runtime proofは以下を参照する。
+Browser assets配信・Cookie接続、unsafe APIの有効化、Provider / remote D1、Gate A〜D、
+System / Acceptance TC全体のPassは後続#537 / #608へ残す。
+
+## #902 localhost HTTPS read-only入口の準備
+
+`evaluation/worker.ts` / `evaluation/wrangler.jsonc` は評価専用のES-module入口とconfig。
+canonical originはserver側の `https://127.0.0.1:8788` 固定で、Host / Header / Queryから導出しない。
+公開route / account / remote識別子 / scheduled / varsを持たず、静的assetsは下記#922の評価専用配線だけに限定し、`workers_dev` / `preview_urls`はfalse。
+専用binding `EVALUATION_READ_DB` のUUIDはlocal-only placeholderであり、通常`TEST_DB` / `AUTH_DB`と共有しない。
+APIは既存#899 serviceだけを使い、3 GETと下記#922の静的配信以外のPath / Methodは503。Sessionなしは既存401、CSRFのOrigin拒否は既存403。
+HMAC-SHA-256 non-exportable sign-only鍵をWeb Cryptoで一度生成し、並行Requestは同じPromiseを共有する。
+生成失敗は再起動まで503とし、鍵・binding不備はCookieなしでも503。再起動 / hot reload後は旧cursorを使わず、
+cursorなしで履歴を再取得する。鍵のexport / fallback / Production鍵の流用はしない。
+
+`integration/evaluation-worker.test.ts` は専用handlerの実`fetch`から既存service / 実Guard / Adapterへ接続し、
+既存D1 Portのtest-only sourceで401、本人履歴・cursor継続、並行key生成、再起動後の別鍵拒否、
+設定不備・誤URL origin・未対応routeの503、default Workerの全503と専用configの閉じた構造を確認する。
+これは既存Workers test runtime内のHTTP / Harness部分証拠であり、実localhost HTTPS接続や専用D1実Listenerの証拠ではない。
+通常config不変・Product sourceの評価module非importは `integration/read-only-student-isolation.test.ts` が担当する。
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01 / TC-F-207-02〜03 / TC-F-211-02 / TC-NF-914-04`の
+要求・AC→TCは変更せず、既存#898 / #899のD1部分証拠を再実装しない。
+
+#902のlocked Wrangler 4.146.0 CLI flagsと専用configの非deploy dry-runは、
+PR #903の正式Product CI #37876452937で確認済み（供給Issue contextの証拠）。
+単一`EVALUATION_READ_DB`のみのbundleと`--dry-run: exiting now.`を確認した証拠であり、
+実Listener / TLS / 専用D1疎通を証明しない。専用entrypoint / configは#904で変更しないため、
+この証拠を再利用する。変更した場合はcurrent-headのhelp / 専用dry-runを再実施する。
+Wrangler 4.146.0の`dev --help`にない`--no-infer-origin-from-routes`を使用しない。
+
+## #904 opt-in localhost HTTPS / isolated D1 runtime proof
+
+`evaluation/local-https-smoke.mjs`はoperator / trusted test process専用で、通常build / 全PRのCIからは起動しない。
+Linux、Node 24、locked Wrangler 4.146.0とlocal workerdの準備、OpenSSL、`ss` / `ps`、
+loopback listenとprocess group signalを許す外部通信禁止環境が必要。外部依存の取得・login / deploy / tunnel / remoteは行わない。
+継承credential / proxy / TLS無検証設定をchildへ渡さず、HOME / config / log / certを専用一時directoryへ隔離する。
+root / `tests/` / `tests/evaluation/`の`.env*` / `.dev.vars*`（`.env.example`を除く）、
+既存専用persist、port衝突、専用config不一致では開始しない。既存dataをreset / 再利用しない。
+
+リポジトリrootで開始する（明示`--run`が必須）。停止は同じterminalのCtrl-C。
+
+```sh
+node tests/evaluation/local-https-smoke.mjs --run
+```
+
+runnerは固定版の`dev --help`で`--https-key-path` / `--https-cert-path`だけを追加照合する。
+一時directoryへ1日期限の自己署名RSA証明書を`openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1`
+と`-subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1`で作成し、
+`openssl verify -CAfile <temporary>/server.pem -verify_ip 127.0.0.1 <temporary>/server.pem`で確認する。
+HTTPS clientはそのcertだけを明示信頼し、hostname検証を有効にする。OS trust storeは変更せず、
+`curl -k`、`NODE_TLS_REJECT_UNAUTHORIZED=0`、Browser security disableは使わない。
+key / cert / raw child logはGit / Artifact / stdoutへ出さない。
+
+実行するWrangler commandは以下の固定argv（temporaryはrunnerが作るdirectory）。
+
+```sh
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler d1 migrations apply nssscdl-local-read-only-evaluation --config tests/evaluation/wrangler.jsonc --local --persist-to .wrangler/student-read-only-evaluation
+WRANGLER_SEND_METRICS=false node_modules/.bin/wrangler dev --config tests/evaluation/wrangler.jsonc --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to .wrangler/student-read-only-evaluation --https-key-path <temporary>/server.key --https-cert-path <temporary>/server.pem
+```
+
+専用DBだけに正本`migrations/0001`〜`0012`を一度適用する。seed / Cookie入力はない。
+local SQLiteをread-onlyで観察し、migration履歴12件、正本DDLから独立作成したexpected schemaとの一致、
+全業務Tableの空条件、FK / `validation/student_auth.sql` / `validation/reservation.sql`の独立12 scan各0行を確認する。
+Listenerの待機だけは30秒上限、各requestは5秒、CLIは30秒上限とし、操作の自動再実行はしない。
+`ss`で8788のListenerが`127.0.0.1`の1本だけで、listener PIDが起動したprocess groupに属することを確認する。
+同じgroupのinspector / internal TCP Listenerも`127.0.0.1`だけであることを確認する。
+これはlocal smokeの停止用上限であり、Wranglerの起動時間保証ではない。
+
+実HTTPS requestの固定入力・期待値は既存service / Application Error / CSRF GET契約に従う。
+
+| 入力（Cookieなし） | 期待する証拠 |
+| --- | --- |
+| GET `/api/me/schedule-months/2026-11`、`/api/me/reservations`、`/api/auth/student/csrf`、`Sec-Fetch-Site: same-origin` | 401 / 固定safe error / Session Cookie除去のみ |
+| CSRF GET、`Origin: https://127.0.0.1:8788` | 401 |
+| CSRF GET、OriginとMetadataなし / 異Origin / 正Originと`Sec-Fetch-Site: cross-site` | 403 `CSRF_INVALID`、Cookie発行なし |
+| unknown GET / 3 GET pathへのPOST | 503、Cookie発行なし |
+| 履歴GETの`Host: localhost:8788` | TLS IP SANの厳密検証による拒否、またはWorker側の503。いずれもCookie発行なし（Hostからcanonical originを推測しない） |
+| TLS portへのHTTP | transport拒否または非redirectの4xx/5xx。HTTPSへの成功と扱わない |
+
+JSON全体が固定safe errorと一致し、全応答no-store / CORS公開なし、CSRFはno-referrerを確認する。
+GET/POST検査後もschema / migration履歴と全業務Tableの空条件が不変であることを確認する。
+Cookieなし401は有効SessionのD1 read、200、CSRF issuanceを証明しない。
+default Workerの全503とProductから評価moduleへ非到達の独立proofには既存試験を併用する。
+
+```sh
+node_modules/.bin/vitest run tests/integration/evaluation-worker.test.ts tests/integration/read-only-student-isolation.test.ts tests/integration/worker.test.ts
+node --test tests/evaluation/local-https-smoke.test.mjs
+```
+
+後者は正本migration / 不正schema・非空・履歴欠落 / safe wire / process停止 / 明示trust・誤IP SAN拒否の
+有限fixtureによる補助検査であり、Wrangler実Listenerの代用ではない。
+`try/finally`でprocess groupへSIGINTを送り、10秒内に停止しない場合はSIGKILLして失敗とする。
+CLIのtimeout / 中断でも同じ停止確認を行い、migration用childを残してcleanupへ進まない。
+さらに5秒内のprocess終了と8788閉鎖を確認した後だけ、そのrun所有の専用persistと一時cert / logを破棄する。
+process / portが不明なら専用filesを残して停止し、operatorが確認する。自動retry / 修復はしない。
+専用bundleは作成しないため、既存`dist/`、通常test DB、他runのpersistは削除しない。
+
+stdoutはcommit / UTC日時 / Node・Wrangler・OpenSSL / OS / config・binding identity、
+IP SAN、route/statusと固定safe response検査、D1整合性・無副作用、停止 / cleanupの非機密checkpointのみ。
+source SHAだけでは未commit変更の同一性やformal CIを証明しない。人間は検証対象差分とcurrent-head CIを別途確認し、
+このcheckpointを#904 / #537へ記録する。部分検証失敗 / runtime不足は未検証としてIssueをOpenに保つ。
+`TC-F-001/002/005/207/211`、`TC-NF-914`のlocal runtime **partial proof**のみで、
+業務POL→BR→REQ→AC→TC / CON / OOSの意味、Browser Gate A〜Dの判定は変更しない。
+
+## #906 opt-in trusted seed / actual persistent local D1
+
+`evaluation/trusted-evaluation-seed.mjs`の`withTrustedEvaluationSeed(callback)`は既存#898の
+`seedTrustedStudents` / `TrustedSeedSession.cookie()`を直接使う。Node 24 / locked Wrangler 4.146.0、
+既存専用configの完全一致、credentialを継承しない専用Node環境、env filesなし、
+正本12migration適用済みの専用空persistと停止済みWorkerが前提。通常`TEST_DB` / `AUTH_DB`へ接続しない。
+`getPlatformProxy`は`configPath: tests/evaluation/wrangler.jsonc`の絶対path、`remoteBindings:false`、
+`persist.path: .wrangler/student-read-only-evaluation/v3`の絶対pathに固定する。
+CLIの`--persist-to .wrangler/student-read-only-evaluation`との対応はschema / migration履歴と
+seed後の別proxy読取りで実測する。未知schema・非空・再seed・設定不一致・remote指定は固定errorで停止する。
+
+```sh
+node --test tests/evaluation/trusted-evaluation-seed.test.mjs
+node tests/evaluation/trusted-seed-smoke.mjs --run
+```
+
+後者はLinux / Node 24 / locked依存 / local workerd / `ss`とprocess group停止を許す環境で明示opt-inする。
+所有runnerが新規専用persistを作り、#904と同じ固定CLIで12migrationを一度適用する。
+既存persist / env files / port 8788使用中では開始しない。Listener・証明書・Browserは起動しない。
+seed proxyの`dispose()`を待った後だけ同一Node processの限定async callbackへ専用Session objectを渡す。
+callback中はpersistを保持し、戻り値は破棄する。callback失敗も原因なしの`TRUSTED_EVALUATION_SEED_FAILED`。
+raw Cookieはargv / env / URL / Log / Assertion diff / snapshot / Artifact / temp fileへ渡さず、DBにはhashだけ保存する。
+callbackはtrusted caller専用であり、自由にLog・保存するuntrusted callbackを受け付ける公開入口ではない。
+
+実試験`evaluation/trusted-seed-process.mjs`は別actual proxyでschema / 全12migration履歴、FK / Auth / 12予約scan、
+Tokyo次月15日・公開未来5枠・本人/他人の予約とSession owner / hash / 1日期限を確認する。
+二度目のseed拒否後の全Table digest不変、専用persist / 一時Log内のraw値非存在をmemory内で検査する。
+seed・batch失敗／結果不明にretry・修復・upgrade・DELETEは行わない。停止はCtrl-C。
+各child command上限60秒、停止確認は#904のSIGINT 10秒＋必要時SIGKILL 5秒を再利用する（強制停止は失敗）。
+成功・失敗ともproxy破棄、全所有process groupと8788閉鎖を確認してから所有persist / 一時Logのみ削除する。
+停止不明なら保持してoperator確認へ戻す。通常`.wrangler/d1-bootstrap-test`等は触らない。
+有限Port fixtureは正常／異常dispose・callback秘匿・batch rollback／応答不明・schema／非空拒否の補助検査で、actual proxyの代用ではない。
+
+Product CIではPR bodyの`[evaluation-seed-proof-906]`指定による一時stepで両commandを実行した。この一時stepは除去済み。
+正式成功はworkflow側の対象head / UTC実行日時 / 結果と非機密checkpointで確認し、#906 / 親#537へ記録する。
+一時stepを最終PRから除去する場合は対応workflow fixtureも同期し、実証headとfinal headの実行対象blob完全一致とfinal-head標準Product CI成功を別に確認する。
+依存欠落・offline・部分検証成功をformal successと扱わず、検証未達なら#906はOpenに保つ。
+`REQ-001/002/005/207/211`の既存AC→`TC-F-001-01〜02/002-01〜02/005-01/207-02〜03/211-02`、
+`TC-NF-914-04`の**local setup partial evidence**のみ。POL→BR→REQ→AC→TC、CON / OOSの意味は変更しない。
+秘密Cookieから実HTTPS 3 GETへの接続・200／改ざん／失効／non-public確認、BrowserContext、
+実Auth flow・Preview / Confirm、Gate A〜Dは今回の成功に含めず、供給Issueの後続責務として保持する。
+
+## #908 opt-in trusted Session / same-D1 HTTPS 3 GET
+
+`evaluation/trusted-https-smoke.mjs`は#906の所有runnerを再利用する明示opt-in入口。
+通常CI / buildからは起動せず、#904 / #906と同じLinux、Node 24、locked Wrangler 4.146.0、
+`ss` / `ps` / OpenSSL、local workerd・loopback socket・process group停止が利用可能な環境で実行する。
+
+```sh
+node --test tests/evaluation/trusted-https-smoke.test.mjs
+node tests/evaluation/trusted-https-smoke.mjs --run
+```
+
+所有runnerはcredentialを継承しない環境でfresh専用persistへ12migrationを適用し、
+`evaluation/trusted-https-process.mjs`を起動する。childが#904の一時IP SAN証明書を準備し、
+`withTrustedEvaluationSeed(callback)`のseedとproxy dispose後、同一persistの専用Workerを起動する。
+Sessionはこのchildのmemoryにだけ保持し、`TrustedSeedSession.cookie()`から固定
+`https://127.0.0.1:8788`の正規Cookie headerへ渡す。明示CA / hostname検証を維持し、
+Worker・関連Listenerのloopback限定と所有process groupを#904のhelperで確認する。
+Owner argv / env / IPC / URLへtokenを渡さず、BrowserContext / assets / unsafe業務操作は接続しない。
+
+| 実HTTPS検査 | 既存正本から導いた期待値 |
+| --- | --- |
+| self / otherそれぞれSchedule・History・CSRF | 各200。公開未来月5枠の4 View、本人のreservationIdだけ、本人confirmed履歴1件とstandard区分。JSON全体一致で他人ID / 内部個人情報 / Session hash混入を拒否 |
+| CSRFのOrigin / same-origin metadata | session scope、Application §10.3の生成式との同一Session相関、異なるSessionのCSRF不一致。値はmemory内だけで比較 |
+| Cookie欠損・偽・canonical形式の改ざん | 3 GET各401とcanonical clear Cookie。identity headerは認証の代替にならない |
+| 有効Cookie＋別Student identity header / Query | headerを無視して本人200。未定義Queryは既存HTTP Adapterどおり400で拒否し、別Studentへ切り替えない |
+| 有効Cookie＋CSRF Origin / metadata不正 | 403。Cookie新規発行なし |
+| 有効Cookie＋未知GET / 3 GETへのPOST | 503。read-only境界が開かない |
+| 停止→本人Session失効→再起動 | 閉鎖8788を確認した後だけfresh local-only proxyでselfの`revoked_at`を一度更新・dispose。同じD1で旧selfの3 GETは401、otherの3 GETは200 |
+
+全Responseはno-store / No CORS、認証CSRFは成功・失敗ともno-referrer、401以外はCookie発行なし。
+`evaluation/trusted-https-assertions.mjs`の期待値は#898 seed / #899 service / Production HTTP wireに基づき、
+実出力から生成しない。例外やsecret-bearing assertion diffはownerへ返さない。
+`evaluation/trusted-seed-process.mjs`の既存schema / migration履歴 / integrity検査を再利用し、
+Worker停止後の全Table snapshot比較はselfの検証済み`revoked_at`だけを正規化する。
+他Session / 予約・占有 / Audit / Provider等の変更は許容しない。Session expiry境界は再実装しない。
+raw Session / CSRFの所有persist・一時file内非存在、hashの一時log内非存在とargv / env非露出をmemory内で検査する。
+
+childは90秒で中断、ownerは120秒（停止10秒＋必要時5秒とmarginを含む）で打ち切る。
+HTTPは#904同様5秒 / response 4096文字上限。失敗・timeout・停止不明では固定非機密errorで終了し、
+専用persist / cert / logを保全してoperator確認へ戻す。停止の自動retry・DB resetを行わない。
+成功時はproxy dispose、Workerと所有child groupの停止・port閉鎖後に、そのrun所有filesだけをcleanupする。
+通常config / 通常test DB / 他runのfilesを変更・削除しない。
+
+補助fixtureの成功はWrangler実Listener証明ではない。正式証拠は既存Product CIのopt-in一時step等で
+上記2commandを実行し、対象HEAD / UTC日時 / versions / config / status・schema・scope / cleanupの
+固定非秘密checkpointを確認する。現在の恒常CIに本opt-in stepはない。
+一時CI変更を除去する場合はproof-headとfinal-headの実行対象Git blob完全一致、およびfinal-head標準Product CI成功を
+別々に確認する。同一HEADで実疎通した証拠と混同せず、実証未達なら#908はOpen / Draftを維持する。
+`REQ-001/002/005/207/211`の既存AC→`TC-F-001-01〜02/002-01〜02/005-01/207-02〜03/211-02`、
+`TC-NF-914-04`の**local HTTPS partial evidence**だけを追加する。POL→BR→REQ→AC→TC、CON / OOSの意味は変更しない。
+30日期限・Logout / Suspension操作全体、実Auth / Browser / Preview / Confirm / Provider / remote D1、Gate A〜Dは未検証。
+
+## #915 opt-in isolated Chromium TLS trust proof
+
+`evaluation/browser-tls-trust.mjs` はLinux / Node 24のtransport専用harness。
+通常build / test / 恒常CIからは起動しない。Cookie / Student / D1 / CSRF / UIを接続しない。
+`playwright-core@1.64.0`をdev-onlyで固定し、runner上の実在browserを明示指定する。
+browser download / global install / 外部通信 / OS trust変更は行わない。
+`playwright-core@1.64.0`のlock entry（SHA-512 integrity、license、bin、engines）は、
+[正式Actions #37912192152](https://github.com/suzukure/nssscdl/actions/runs/37912192152) で
+npm公式registryから取得した情報を基に生成・照合し、同runで`npm ci --ignore-scripts`が成功した。
+lockとrootのdev-only固定版は一致。恒常CIでは通常の`npm ci`を用いる。
+一時診断stepは最終差分から撤去するため、最終HEADの標準Product CIは別途確認する。
+
+前提はinstalled Chromium / Google Chrome、`/usr/bin/certutil`（Debian/Ubuntuの`libnss3-tools`）、
+OpenSSL、`ss`、読み取り可能な同一userの`/proc`、Chromium sandboxを有効にしたlocal実行環境。
+runnerにツールがない、version / HOME / NSS path / process終了が曖昧なら固定診断で停止する。
+不足ツールの導入やfallbackは行わない。browser sandbox / TLS検証を無効化しない。
+raw driver logを出さないため`DEBUG` / `PWDEBUG`設定時は開始しない。
+
+```sh
+NSSSCDL_CHROMIUM_PATH=/usr/bin/chromium node tests/evaluation/browser-tls-trust.mjs --run
+NSSSCDL_CHROMIUM_PATH=/usr/bin/chromium node tests/evaluation/browser-tls-trust.mjs --run --fail-after-positive
+node --test tests/evaluation/browser-tls-trust.test.mjs
+```
+
+第2commandは意図的失敗（exit 1）で、positive直後の停止・cleanupを正式実環境でも確認する。
+Ctrl-C / SIGTERMも停止対象で、自動retryしない。各navigationは5秒、CLIとbrowser launchは30秒、
+browser closeは10秒、process消滅確認とserver closeは各5秒の停止用上限（外部の性能保証ではない）。
+失敗時もbrowser終了を先に確証し、HTTPS listener / port閉鎖後だけowned filesを削除する。
+確認不能ならserver停止を試み、HOME / NSS / profile / cert / keyを保全して人間調査へ戻す。
+
+run専用mkdtemp HOME（0700）と独立profileを作り、child envは許可したpath設定だけを渡す。
+Chromium公式[Linux Cert Management](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/cert_management.md)
+に従いM146以降は`HOME/.local/share/pki/nssdb`、以前は`HOME/.pki/nssdb`を明示する。
+両候補が空の新HOMEだけを使用し、選ばなかった候補が出現したら停止するため、legacy優先の曖昧さを持ち込まない。
+`certutil -N --empty-password`後、#904の`createCertificate`を再利用した1日限定自己署名server cert
+（IP SAN `127.0.0.1`）1枚だけを`-A -t "P,,"`で登録する。
+listing / nickname / fingerprint / SANを確認し、ブラウザprocessの実HOMEを`/proc`で照合する。
+専用profileだけをNSS隔離の証拠にはしない。
+
+test-only Node HTTPSは`127.0.0.1:8788`だけで固定非機密textを返す。port衝突は停止する。
+同一persistent BrowserContextの実navigationで次を検査する（Node TLS client / APIRequestContext / mockを使わない）。
+
+| 入力 | 必須結果 |
+| --- | --- |
+| 登録済みcert、`https://127.0.0.1:8788/trusted` | HTTPS 200 / 固定text |
+| 同じ登録済みcert、`https://localhost:8788/san-mismatch`（resolverで127.0.0.1へ固定） | `net::ERR_CERT_COMMON_NAME_INVALID`、HTTP handler未到達 |
+| 未登録の異なる自己署名certへserver contextを切替、同じIP origin | `net::ERR_CERT_AUTHORITY_INVALID`、HTTP handler未到達 |
+
+不特定hostnameはresolverで拒否し、proxyを使わない。TLS session ticketを無効化し、応答はconnection closeとする。
+`ignoreHTTPSErrors`はfalse、無検証flag / policy / global trust変更なし。
+`withIsolatedBrowserTls(callback)` は正負probe後のowned context / 固定originだけをcallbackへ渡し、
+callback終了後も同じ停止・保全契約を適用する最小test helper。#914の明示`workerHandoff`だけは
+正負probe後にNode listener / socketを停止し、port閉鎖を確認して同じcontext / origin / cert pathsを渡す。
+この経路だけは公開`chromium.launch()` / `Browser.newContext()`を使い、callbackへ`browser`を明示渡す。
+default proof / CLIはWorker・Cookie・D1を接続しない。
+非秘密checkpointはHEAD / UTC / Node・browser exact version・binary / NSS tool・OpenSSL版、
+HOME相対NSS path、証明書fingerprint、固定正負結果、cleanup、未実施事項だけ。
+key / cert本文 / raw browser error / child envはstdout / Artifactへ出さない。
+
+小fixtureはpath規則・env / TLS設定・証明書1枚限定・error分類・正常と意図的失敗のcleanup順序・
+状態不明時の非削除・CLI非秘密診断の**supplementary partial evidence**のみ。
+正式Actions proofは既存Product CIへ一時opt-in stepを接続して上記実browser2commandを実行し、
+成功runと意図的失敗runの終了・cleanupを記録する（後者の期待exit 1を成功probeへすり替えない）。
+一時stepは最終差分から撤去し、proof HEAD / final HEADの実行対象blob一致、final HEAD標準Product CI /
+PR Traceabilityを別途確認する。Codexのローカル報告・fixtureだけは正式実Browser証拠に算入しない。
+このTLS-only proofをBrowser Cookie本人GETの正式証拠へ読み替えない。#914統合の証明範囲は次節とする。
+これは既存`TC-F-001/002/005/207/211`・`TC-NF-914`のBrowser TLS環境前提の部分証拠のみ。
+POL→BR→REQ→AC→TC、CON / OOSの意味・identifierは変更せず、Session本人GET / 失効401、
+Gate A〜D、REQ-901/902、#608全体、System / Acceptance TC全体のPassは証明しない。
+
+## #914 opt-in trusted BrowserContext / same-cert Worker 3 GET
+
+Issue本文で確定した単一listener handoffを`evaluation/trusted-browser-smoke.mjs`から明示実行する。
+#906 ownerのfresh persist / migrations 0001..0012とsanitized `trusted-https-process.mjs`を再利用し、
+Session / CSRFの生成・比較はtrusted child内で行う。Sessionの搬出は公式Cookie設定の内部IPC→run所有Cookie jar→固定HTTPS Cookie headerだけに限定し、汎用IPCへ広げない。
+標準#906 / #908経路と#915 TLS-only CLIは維持する。
+Linux / Node 24 / locked Wrangler / Playwrightに加え、固定installed `/usr/bin/google-chrome`、
+certutil / OpenSSL / ss / ps / readable `/proc` / browser sandboxに加え、非root UID/Group、cgroup v2、systemd ExitType=cgroup、非対話unit操作が必須。不足時は取得・fallbackせず停止する。
+`NSSSCDL_CHROMIUM_PATH`やDEBUGをchild env allowlistへ追加しない。
+
+```sh
+node --test tests/evaluation/browser-tls-trust.test.mjs tests/evaluation/trusted-browser-smoke.test.mjs
+node tests/evaluation/trusted-browser-smoke.mjs --run
+node tests/evaluation/trusted-browser-smoke.mjs --run --fail-after-positive
+```
+
+seed→proxy dispose→read-only inspect→run-owned NSS / profile / TLS正負probe→Node listenerとsocket停止 / port閉鎖→
+同じkey/cert pathsのWranglerを同じ`https://127.0.0.1:8788`へ起動する。
+証明済みbrowser process / trustは維持し、fileとlive Worker peerのfingerprint / IP SAN、loopback / process groupを照合する。
+#914だけは公開`chromium.launch()`で同一Browserを所有し、TLS probe用とSession用self / other / missing / foreignを
+別々の非永続`Browser.newContext()`として作る。TLS probe用ContextへCookieを入れない。
+#915単独CLIの`launchPersistentContext`は維持する。そのpersistent Contextの`browser()`はnullであり、consumerのBrowser取得に使わない。
+Playwright 1.64.0の`launch()`が呼出Nodeの`os.tmpdir()`へ生成する`playwright_chromiumdev_profile-*` / `playwright-artifacts-*`を、
+#906 sanitized child専用TMPDIR内の実path・所有・0700・非symlinkで確認する。Chromiumの実HOMEはrun専用TLS HOMEのまま。
+唯一のmainのNUL区切りexact profile引数・uid・読取り前後のPID/starttime・単一exact HOMEを検証する。
+mainのNoNewPrivs=1と、trusted childと同じ専用unitのcgroup所属を起動後・TLS/consumer前に検証する。
+#914は全子のPGRP/SID一致・mutableな全子environ HOME一致・全PIDの/proc消失の方式を置換する。
+cgroupは所属と生存process不在（no-live）の手段であり、TLS・sandbox・HOME内容検査を代替しない。
+外部管理者の無断kill/移動や同UIDの悪意ある攻撃に耐える新しい機構、各子のexit=0やzombie PID消失の証明は含まない。
+既存生成物があれば起動せず、他runのprofileを推測・glob削除しない。
+公式`addCookies`のroot `url` alternative（Domain / pathを併記しない）でhost-only / Path=/を導出し、
+実Cookie jarのSecure / HttpOnly / SameSite=Lax / root / host / session期限と`document.cookie`非露出を確認する。
+
+既存`/unknown`の503 JSON documentでsame-origin pageを確立し、page内の本物の`fetch`だけで3 GETを実行する。
+requestの`Sec-Fetch-Site: same-origin`はbrowser engineの生成値を観察する。強制header / route mock / APIRequestContextは使わない。
+`trusted-https-assertions.mjs`のexact本人5枠 / 履歴1件 / Session CSRF、200 / missing・foreign 401、
+no-store / no CORS / csrf no-referrerを再利用する。Fetchが隠す401 Set-CookieはdriverのResponse APIでmemory内だけで検査し、jar消去も確認する。
+request終了→Worker停止 / port閉鎖→selfのみ失効 / inspect / proxy dispose→同cert再起動→同Context self 401 / other 200とする。
+終了は公開`Browser.close()`→Worker停止 / port閉鎖→Playwright生成profile / artifacts消滅確認→最終inspect / secret scan→child報告・終了→outerのunit no-live確認・解放→owned files削除の順。
+profile / artifacts残存も停止不明と同じ保全条件とし、手動削除や再起動で成功へ置き換えない。
+停止不明・proxy失敗では関連owned DB / HOME / NSS / profile / cert / logを保全し、自動retry / resetしない。
+Session / CSRF / hash / HMAC / PII / raw driver causeをstdout / env / argv / artifactへ出さず、trace / screenshot / storageState / network loggerを使わない。
+
+一次失敗は`tls-browser-launch`（公開launch未完了）、`tls-browser-ownership`（launch resolve後の所有判定）、
+`tls-browser-context`（証明用Context生成）、`tls-browser-nss`（別NSS候補検査）を区別する。
+所有判定失敗はprimary / cleanupに独立した固定reasonとして内部で記録する。公開reportは固定stage / cleanupだけに制限する。
+既存`parseBrowserDiagnostic`は固定allowlist・全入力一致を維持し、未知値・余剰行・秘密値を拒否する。
+mainのexact NUL profile argv / 単一exact HOME / UID / 安定PID,starttime / NoNewPrivs / 専用unit所属、
+所有0700非symlink profile/artifacts、NSS候補・単一cert、strict TLS・固定binary・非永続Contextを別々に確認する。
+全子のmutable title/envを再追跡せず、既存#915のexact profile方式は独立経路として保持する。
+
+`trusted-browser-unit.mjs`は#914由来の薄いshared adapterで、外側`trusted-seed-smoke.mjs`と予約outerがunit外から使用する。
+persist/migration書込み前にcgroup v2 / systemd / 非root / 非対話操作を、同設定の短い`true`専用unitで確認する。
+不足時は固定`TRUSTED_BROWSER_UNIT_UNAVAILABLE`で停止し、host設定変更・root Chrome・sandbox無効化・直接exec方式へのfallbackをしない。
+ownerが0700 temporary / browser HOME / 専用persistを所有し、既存sanitized envを`env -i`でtrusted browser childへ供給する。
+#906 / #908のchildやmigrationはunitへ移行しない。unit stdout/stderrはnull、秘密はunit argv/env/journalへ渡さない。
+有効設定・終端条件はadapterの固定設定と判定を正本とする（Type=exec / ExitType=cgroup / RemainAfterExit=yes / Restart=no / NRestarts=0、
+OOMPolicy=stop / Delegate=no / NoNewPrivileges=yes / ProtectControlGroups=yes / KillMode=control-group、非root User/Group）。
+
+処理順は公開Browser.close一回→proof listener/socket停止・Worker停止/port閉鎖→停止中だけproxy inspect/dispose→
+generated profile/artifacts不在・最終inspect・secret scan→child固定report・終了→outerのunit no-live確認→所有物削除とする。
+helper内では#914のHOMEを削除せず、close resolveをunit no-liveやWorker停止前の全browser process消失と読み替えない。
+close前のroot/生成物再確認が不明でも公開closeは一回試し、失敗を保持して保全する。close拒否/未決着、API停止・scan不明はretryしない。
+`PRE_CLOSE` / `CLOSE` / `POST_CLOSE`の内部観測は実施結果だけを表し、managed #914のPOST_CLOSEはnot-run（終端確認担当はouter）である。
+
+reportはrun-private temporaryの専用pathに0600・非symlink・8KiB以下でatomicに一回確定する。
+既存`browserEvidence`で、許可済みfingerprint行と「child処理・停止/検査完了、unit終端・削除未確認」の固定checkpointを厳密parseする。
+通常/意図的失敗を指定modeと照合し、生reportをconsoleへ転送せずownerが固定文言を再構成する。
+Session / CSRF / hash / HMAC / PII / raw PID,path,env,argv,InvocationID,error / D1 payloadはreport・journal・consoleに入れない。
+通常childはreport＋exit0。positive 3 GET直後の指定意図的失敗も、期待位置/種類と停止/検査完了が確認された場合だけreport＋exit0とし、outer CLIは期待exit1を返す。
+未確認・予期しない失敗やcancel/deadlineは正常完了reportにせず、expected failureより優先する。
+
+ownerはstop前に同一InvocationIDのactive/exited / Result=success / ExecMainCode=CLD_EXITED / ExecMainStatus=0 / NRestarts=0と有効設定を二度照合する。
+reportだけ、main exit0、Result=success単独、cgroupファイル消失、強制stop後の空状態は成功根拠にしない。
+timeout/cancel/stop/unknown・設定/identity不一致・不正/欠落reportは最初の失敗を不可逆保持する。
+ownerも8788閉鎖と生成profile/artifacts不在を最終確認し、残存はglob削除で隠さず保全する。
+受理後に空unitを解放し、作成時の実path / owner / device,inode identityを全rootで再確認してからrun-owned HOME/NSS/cert/key/temporary/persistだけ削除する。
+解放・削除不明は失敗とし、異常時のunit停止とファイル保全を分け、自動retry/resetしない。最終cleanup完了はouterだけが出力する。
+
+browser child120秒とowner180秒を維持する。ownerの開始時から能力確認・migration・開始/照合/待機/終端/解放に共通残予算を使う。
+unit RuntimeMaxSecは120秒とowner残予算（停止margin10秒控除）の小さい方、各manager操作は最大5秒、TimeoutStopSec=2秒。
+通常CLI準備commandはowner残予算から30秒を予約し、既存process-group停止最大15秒＋ss最大5秒とmargin10秒を確保する。
+Browser.close10秒 / proof server close5秒 / Worker stop最大15秒等は既存API上限を維持し、child期限後のmanager停止を成功にしない。
+GET / navigationは5秒、response body4096文字上限を維持する。累積時間超過・残予算不足はtimeout保全であり、成功待機を延長しない。
+
+#963はshared BrowserUnitの既存dispose / call / showだけから、instanceのown data property `stopObservation`（string、初期`unknown`）を保持するprepared producer。固定分類は次のとおり。
+
+| stopObservation | 条件 |
+| --- | --- |
+| unknown | 初期、未startのdispose早期return、分類不能 |
+| stop-budget | 既存stopのremaining(true)が期限不足で拒否、command未発行 |
+| stop-unconfirmed | stop command発行開始後、正常復帰未確認 |
+| show-budget | stop正常復帰後、既存showのremaining(true)が期限不足で拒否、show未発行 |
+| show-unavailable | stop正常復帰後show command発行、正常復帰未確認 |
+| show-invalid | show正常復帰後、既存parserが拒否 |
+| accepted | 有効showが既存dispose停止predicateを満たす |
+| identity-mismatch | predicate不成立、捕捉済みInvocationと不一致 |
+| failed-state | predicate不成立、同Invocationのloaded / failed / failed |
+| state-unaccepted | その他の有効showでpredicate不成立 |
+
+停止predicateは`(LoadState=not-found && ActiveState=inactive) OR (InvocationID===this.invocation && ActiveState=inactive && SubState=dead)`のまま。acceptedをidentity-mismatchより優先し、not-found収集positiveも受理する。acceptedは状態predicate成立だけであり、正常終了・booking成功・削除許可を表さず、release=trueが既存first failureで後からthrowする場合とも両立する。
+budgetは既存remaining(true)拒否点でのみ分類し、command開始後の期限切れthrowはstop-unconfirmed / show-unavailableとする。追加command / remaining / now、raw応答・例外・PID / InvocationID / pathの新診断record、message / stack / causeによる分類を加えない。stopped=trueの再dispose早期returnは最初の観測を保持し、再stop / showやresetを行わない。first-latched failure、stopped設定時点、return / throw、command順序・引数・回数・最大5秒、既存deadline / 予備、start / terminal通常showを維持する。
+既存smokeのcommand / now有限注入で10値・2 positive・identity drift・active等拒否・malformed / 欠落 / 重複show・予算拒否とcommand後throw・未start / 再dispose・first failure / releaseを照合する。予約outer fixtureはTIMEOUT→stop正常→同Invocation loaded / failed / failedでも既存throw、unit_stop=unknown、diagnostic 0read、remove 0を維持する。観測propertyを実行 / throw / read / cleanup条件に使わない。#963単独時点では未接続だったbooking outer / CLI / sanitizer / wrapperへの外部診断接続は、下記#965のprepared有限検証に限定する。
+WACはR0 / C1 / P1 / B1、Yellow prepared。Product識別子・POL→BR→REQ→AC→TC・CON / OOS、旧#914 / #922の成功report / 削除条件と過去Run結果は不変。finite成功は実Chrome / systemd / Worker / D1や停止後の実機挙動を証明せず、C0 / Gate A〜D / #608 Doneへ昇格しない。正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠とし、追加live proofの人間判断は#930に残す。
+
+標準Product CIの既存Unit stepで#915 fixtureと直接関連#914 fixtureを実行する。追加workflowは作らない。
+合成fixtureはroot本人・strict report・正常/意図的失敗の削除順、parent exit0 / setsid子残存の非終端、
+同一InvocationID/設定不一致、unknown/timeout/cancel/stopの失敗固定、不正/欠落report、close不明、port/生成物残存、非所有物非削除を検査する。
+今回の限定scopeはsystemd責任置換の静的実装・合成fixture・文書同期だけで、実Chrome / Worker / D1やowned cleanup成功の証明ではない。
+#914のnormal / intentional正式実証記録はsupplied Issue #922 contextを参照し、今回DOM成功へ読み替えない。今回の別途許可された正式実証では既存Product CIのPR一時opt-in stepで上記normal / intentional failureを実行し、
+HEAD / UTC / versions / origin / migrations / cert fingerprint / status / cleanupを非秘密で記録する。
+一時step撤去後の実行対象Git blob完全一致、final-head標準Product CI / Traceability、独立reviewを別途確認するまでIssue Open / PR Draftを維持する。
+`REQ-001/002/005/207/211`→既存AC→`TC-F-001/002/005/207/211`・`TC-NF-914-04`のlocal browser read-only partial evidenceのみ。
+POL / BR / REQ / AC / CON / OOSの意味は変更しない。static assets / DOMの段階1準備は下記#922を参照する。Preview / Confirm、REQ-901/902全体、Gate A〜DとTC全体Passは後続責務。
+
+## #968 Chromeなしsystemd timeout・cgroup回収観測（dormant / prepared）
+
+`evaluation/systemd-timeout-probe.mjs` は#930 C方式再評価の専用観測probe。
+import時は起動せず、CLIはexactな`--run`一つだけをopt-in候補とし、指定なし・余剰引数は固定一行で拒否する。
+**本Issueでは実行しない。** 実機候補はLinux / systemd / 非rootの単一ランダムunitで、
+`BrowserUnit`の固定settingsと非interactive sudoを再利用して`/usr/bin/sleep 60`を一回だけ起動する。
+owner開始時の30秒にcleanup10秒を含め、runtimeは既存式`min(120,floor((残owner予算-10秒)/1秒))`（開始直後なら最大20秒）。
+既存start / terminal / disposeとfirst failureを保持し、別manager、追加kill / reset-failed / restart / retryは使わない。
+短いruntimeの観測であり、bookingの110 / 120 / 180 / 190秒や通常Chrome timeoutの再現証明ではない。
+
+start後の追加の既存show / checkでInvocation / ControlGroupを検証・保持し、exact生成unit pathを観測する。
+固定cgroup2 root / system.slice / unit directoryとeventsの非symlink・実path・device / inodeを照合し、
+NOFOLLOW / NONBLOCKで最大4097 bytesを読み、4096 bytes超、duplicate / malformed、read error、FS不成立はunknownへ閉じる。
+初回のpath / identity前提不成立はunknown、捕捉済みdirectory identityの変化はidentity-mismatchに分類する。
+`populated`一つの0 / 1だけを区別し、他の有効な整数keyは無視する。FDは各sample内で閉じ、
+保持FD / nlink / 通知 / cgroup.procs空から削除後の読取保証や再帰no-liveを導出しない。
+terminal終了 / 失敗後に既存disposeを一回だけ試行し、stopObservationを保持する。
+追加のcgroup sample→標準Manager `GetUnitProcesses`の単発query→同Invocation / ControlGroupの後確認は残cleanup予算内のみ。
+各command最大5秒・stdout既存16KiB、期限不足 / timeout / overflow / errorは未観測unknownとし、予算増量・再stopしない。
+Managerはexactな`a(sus) 0`＋LF一つだけempty-observed、その他の正常応答はnonempty-or-unaccepted。
+同Invocationの後確認ではprune後の空ControlGroupを許容するが、別のnonempty pathはmismatch。
+missing / API empty / failed-state / identity sameを停止確認やsnapshot read許可へ昇格しない。
+
+固定一行の正本は同moduleの`formatProbe` / enumと`systemd-timeout-probe.test.mjs`。
+terminal、stop_observation、cgroup_before / after、manager、identityだけをallowlistから再構成し、
+PID / commandline / path / Invocation / device / inode / stdout / stderr / exceptionを出力・保存しない。
+booking外部文法、共有BrowserUnit、outer / child / codec / wrapper、成功・削除・diagnostic read gateとworkflowは変更しない。
+
+既存Unit stepへfinite testだけを追加する。command / FS / now / sleep注入とfinite CLI entryで、
+failed同Invocationのempty / missing / populated、Manager empty / nonempty / error / timeout / overflow、
+不正events、identity drift / symlink / FS不成立、予算不足、start不明、cancel、first failure、dispose一回、
+canary / 追加LFの非反射とopt-in拒否・通常caller不在を検査する。実systemd / Chrome / HTTP / Worker / D1は起動しない。
+
+後の一回観測は別の人間checkpointで、source / 通常CI / review、実kernel / systemd版、対象runner・単発一回・30秒・資源、
+未確認時保持 / 撤去を判断してから行う。結果別判断は次のとおりで、probe自身には接続しない。
+
+- 同Invocation failed＋present-empty：populated0方式の実現性あり。trust / identity / raceとdiagnostic-only consumer契約をfresh判断する。
+- 同Invocation failed＋missing＋Manager empty：削除経路が必要。API版 / 権限・manager trust・再起動 / 移動防止・前後identityを検討し、readは許可しない。
+- populated1 / identity drift / API unavailable / stop-show未確認：fail-closed維持。原因範囲を再評価し、Chrome反復・時間増量はしない。
+
+WACはR1 / C1 / P1 / B1、Yellow prepared。供給された版固定のLinux / systemd静的証拠を有限期待値の根拠とするが、
+runnerの実版・prune・API互換性 / 権限は未観測。新trust / consumer契約は本Issueで確定しない。
+既存TC-F-003/005・TC-NF-902/914関連評価の準備で、Product POL→BR→REQ→AC→TC / CON / OOS、識別子とtraceabilityは不変。
+finite検証・準備mergeは実機停止、C0、#537 Gate A〜D、#608 Doneを証明しない。
+standard validationの可否とsupplementary local検証、正式current-head Product CI / PR Traceability / 独立reviewは区別する。
+
+## #970 systemd単発probeのprepared caller guard / 固定一時step
+
+`evaluation/systemd-timeout-probe.test.mjs` の `probeStep` が固定一時テンプレートの正本であり、実workflowは変更しない。
+#948の既存Git / event照合方式をprobe専用に使い、通常Product CIにruntime参照がなければ不活性として受理する。
+参照がある場合はsame-repository `pull_request`、Product CI、base `main`、`proof/930-systemd-timeout-<lowercase slug>`候補だけを検査する。
+eventのPR番号 / open / repo / ref / SHA、env ref / base / head、Git HEAD / origin/main / merge-base、clean sourceを照合し、
+base≠head、base=origin/main=merge-base、base→HEADがProduct CI一ファイルのM、strict UTF8のbase末尾LFとprobe参照なしを必須とする。
+candidateはbase bytes＋exact `probeStep`だけ。通常の#998標準8コマンド / permissions / trigger / actions / checkout / 順序を保持し、
+他src / workflow / package runtime / sealed / Productionの参照、dirty / stale / 不明、余分step / env / timeout等の差異は拒否する。
+Git / event / source収集はread-only・boundedで、fetch・外部アクセスしない。fixture入力だけexact suffixを除去し、guardの実source判定は保持する。
+
+固定stepはapplicability=true時だけの末尾一step、上限1分。同CLIをspawnSync一回、stdin ignore / stdout・stderr pipe、
+utf8・40000ms・4096bytesで観測する。probe owner30秒（cleanup10秒込み）は不変で、40秒は後処理margin、1分はwrapper backstopで停止保証ではない。
+error / signalなし、status===0、stderr空、runtime `formatProbe` と同じenum・順序の一行＋LF一つだけを再構成して表示する。
+不正文法 / 型 / field / 改行 / 未知値、非zero / timeout / overflow / exec errorは固定 `SYSTEMD_TIMEOUT_PROBE_FAILED; observation=unknown` とexit1。
+同step内のread-only `uname -r` / `systemctl --version`は各一回・5秒・4096bytes。bounded ASCII kernel releaseと先頭numeric systemd版だけを
+固定 `SYSTEMD_TIMEOUT_PROBE_ENV` 行へ出し、版取得失敗はunknownにする。raw出力 / error / env / PID / path / commandlineを表示せず、retryしない。
+有効なunknown / timeout観測のexit0も停止 / cleanup / no-live / 予約成功の証明ではない。
+
+現行のUnit stepで同じfinite testを実行できる候補fixture（ローカルのnpm test入口も維持）、ordinary / fork / missing / stale / dirty / 差分path / strict source / template拒否、
+spawnしないVMでprobe一回＋版query二回、上限 / status / 全enum / 順序 / LF一つ / canary非反射を検査する。
+#968のCLI / FS / identity / timeoutと#914 / #922 / booking outer回帰を維持し、runtime / shared BrowserUnit / booking / packageは変更しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared。既存TC-F-003/005・TC-NF-902/914関連評価の準備に限り、
+Product POL→BR→REQ→AC→TC / CON / OOS、識別子・traceability、bookingの停止 / read / 成功 / 削除条件と110 / 120 / 180 / 190秒は不変。
+機械条件は人間の一回実行承認ではない。fresh main / exact template、source base / head、一時PR / Run / attempt、費用・未確認時保持・復旧は#930の別checkpointへ残す。
+実systemd / Chrome / Worker / D1・一時workflow作成 / 実行は行わず、実runner版 / API / prune・C0・Gate A〜D / #608 Doneは未証明。
+local補助検証と正式current-head Product CI / PR Traceability / 独立Claude Reviewは別証拠とする。
+
+## #922 same-origin read-only DOM（段階1 prepared＋normal/intentional実走部分証拠）
+
+`npm run build` は最初に `dist/student/` のHTML / CSS / ES modulesを生成・存在検査し、
+通常Workerと評価Workerのdry-runを行う。評価configだけに `ASSETS` と `run_worker_first: true`、
+`html_handling: "none"` / `not_found_handling: "none"` を設定する。installed locked Wrangler schemaの
+対応項目は `evaluation/verify-wrangler-cli.mjs` で検査する。schema検査だけをruntime proofとしない。
+`/student` はWorker内で `/student.html` に写像し、rootの `/student.css` / `/student.js` /
+`view.js` / `controller.js` / `model.js` だけを配信する。HTMLの相対URLはこのrootと一致する。
+固定 `https://127.0.0.1:8788`、GET、queryなしの入口のみで、任意Hostはoriginを置き換えない。
+静的Responseはno-store / nosniff / no-referrerと明示MIME、missing assetは安全な404、
+binding失敗 / その他URL・methodは既存503。通常configとdefault Workerの全503を維持する。
+配信URL / MIME / allowlistの合成Port検証は `integration/evaluation-worker.test.ts` に置く。
+asset build不在・余剰ファイルはtrusted setup開始前に拒否する。#922でconfigに追加した`ASSETS`により、`getPlatformProxy`の環境は`EVALUATION_READ_DB`と`ASSETS`の**正確な2 bindingのみ**を持つ契約となる。`evaluationD1()`は両bindingの存在と型、余分なbindingの不在を共通検証し、seed / inspect / revokeには**D1 Portだけ**を渡す。`ASSETS`を読み書きに使わず、従来のD1-only消費・local persist・proxy逐次disposeの信頼境界を維持する。補助fixtureは欠損・型違い・追加bindingを拒否する。最初の[#922 normal proof #38024971080](https://github.com/suzukure/nssscdl/actions/runs/38024971080) は`seed`段階で失敗した。共通binding検査修正後の**正式normal実走成功**は下記の別Runを参照し、失敗runを成功扱いしない。
+
+既存 `node tests/evaluation/trusted-browser-smoke.mjs --run`（および `--fail-after-positive`）を再利用する。
+`trusted-browser-dom.mjs` はselfの同一Contextで実 `/student`、全module / CSS、seed公開月の
+5枠・4 View、Calendar/List、keyboard選択、本人履歴更新を検査する。
+self ContextはAmerica/Los_Angelesとし、日本時間の投影を確認する。停止・本人失効・再起動後は
+実UIの401案内・表示破棄を検査する。3 GET / CSRF証拠は既存のbrowser fetchに保持し、UIが
+CSRFを取得・表示したとは主張しない。secret / PIIはDOM・URLへ出さず、trace等も追加しない。
+
+その後だけ、同じbuilt `mountStudent` へページ内のsecretless fetch fixtureを注入する。
+HTTP認証迂回は作らず、403 FORBIDDEN / 404 / 503 / 通信断 / 401、古い月の応答、年跨ぎ、
+履歴次ページ、focus、320 CSS pxのpage溢れとcalendar局所scrollを合成DOMとして検査する。
+real API / D1成功と合成結果は固定checkpointでも区別する。fixtureの401は実失効の証拠を代替しない。
+実seedは履歴1件なので実cursor paging、多状態履歴、実403 / 通信断はこのproofの成功範囲に含めない。
+
+#914のTLS / sandbox / unit / secret / owned cleanupとchild120秒・owner180秒を維持し、
+runner・workflow・停止責任・retryを追加しない。正常 / intentionalのreportはDOM検査後だけ完成する。
+2026-10-10の人間承認に基づき、既存Product CIへnormal限定の一時opt-inを配線して
+[正式Run #38025821104](https://github.com/suzukure/nssscdl/actions/runs/38025821104) / job #114136326193で**success**を確認した。
+実証HEAD `bffb96633c09ffc5fae7b7058104ea8a17bf758d`、Node v24.21.0、Wrangler 4.146.0、
+Google Chrome 154.0.8037.97、local 127.0.0.1:8788、migrations0001..0012。
+実Wrangler Worker-firstで`/student`と5静的assetのHTTP 200 / MIME / no-store、
+本人Sessionの3 GET / 実DOM5枠・4 View・Calendar/List・本人履歴、Cookie失効後401表示と破棄を確認した。
+keyboard/focus・320px実layout・端末timezone差の読取、別の**合成DOM**での403 / 404 / 503・通信断・
+古い応答・年跨ぎ・cursor例は別証拠として識別する。実404 asset-missing、実cursor複数ページ、
+実403 / 通信断やPreview / Confirmを実証したとはしない。
+同Runのstrict checkpointは#914のTLS/Browser Session/D1 read/失効・同一InvocationID正常終端、
+port停止とowned HOME/NSS/cert/key/persist削除まで確認。child120秒・owner180秒内の**normal1回**だけ成功した。
+2026-10-10に別の人間承認を得た**intentional単発**[Product CI #38029294402](https://github.com/suzukure/nssscdl/actions/runs/38029294402) / job #114146666302も**success**。
+実証HEAD `845c397abebd9a2faa3e5ae5021896bb170a14d4`、Chrome 154.0.8037.97 / Node v24.21.0 / Wrangler 4.146.0。
+本人/別本人のread-only Browser GET成功と#922の本人DOM成功**直後**に意図的に例外を送出し、
+public Browser.close / Worker・port停止、proxy inspectとsecret scanの完了、child固定report、
+outer同一systemd unit正常終端・owned HOME/NSS/cert/key/persist/temporary削除をstrict検証した。
+CLIが期待どおりexit1を返し、wrapperが`INTEGRATED_INTENTIONAL=expected_cli_exit_1`と
+`INTEGRATED_INTENTIONAL=pass`を報告。normalとintentionalは**別Run・別HEAD**で各1回成功。
+intentional Runはpositive後の中断位置を検証するもので、normal後半の失効/restart検証は行わない。
+**未知の障害・timeout時の実cleanup、Release browser matrix / mobile / Gate A〜Dは未検証**。
+proof sourceから一時workflowを撤去したHEAD `9ed27f27c2c25d30fa08db6f043a05673a829882`では、
+追加前source HEAD `b7c812a0d2b38d3cc8cbb0119a80ec86d17a5110`とのGitHub比較で変更ファイル0、
+workflow blobは従来/mainと一致。normal復元後[Product CI #38026043227](https://github.com/suzukure/nssscdl/actions/runs/38026043227)はsuccess。
+intentional後も一時workflowを撤去したHEAD `0e664274bb557a2cc194440ae6c1a6be711b01a8`で、
+前の文書同期済みsource `9f266a15ee950b2e87febdfe26c9f00fdb9d96cf`との比較は**変更ファイル0**、
+workflow blob `92ee87e3e6368987c2d613a8385ba0af51e27012`はmainと一致。
+intentional撤去後の通常Product CIと文書同期後のfinal HEAD CIは別証拠として確認する。
+段階1の通常CI / 合成fixture、段階2のopt-in正式Run / executable blob / workflow復元 / final-head CIを混同しない。
+`REQ-001/002/005/207/211/902/903/907/914` →既存AC→既存TCへのread-only partial evidenceのみで、
+識別子・意味・要求traceabilityは変更しない。Preview / Confirm / Gate A〜D / 全TC Passは未検証。
+
+## 既存の部分証拠と標準テスト
+
+`unit/schedule-query.test.ts` は#828のfake Repository / deterministic Clockによるpure core検証。
+`TC-F-001-01` / `TC-F-001-02` / `TC-F-002-01` / `TC-F-002-02` は
+API/read-model **partial evidence** としてtest nameに記し、System/Acceptance TC全体のPassへ算入しない。
+4種View、本人情報だけの投影、開始境界、未公開月、未来Slot不整合のfail-closedを検証する。
+HTTP認可・D1整合性検査の実統合およびUIはこのunit testの証明範囲に含まない。
+
+`d1/slot-view-schema.test.ts` / `d1/slot-view-isolation.test.ts` は#829のisolated read fixture検証。
+`fixtures/d1/migrations/0002`〜`0006`は[確定D1物理設計](../docs/20_detailed_design/02_StudentReservationD1.md) §1〜4の
+read sliceだけを保持し、`students(id)`はtest-only FK parentとする。
+月・Slot・Reservation・OccupancyのFK / CHECK / UNIQUE、read index、`PRAGMA foreign_key_check`と
+同じIDを使う別test file間の隔離を確認する。Test nameの `[#829 D1 fixture]` はSchema制約の証拠であり、
+業務TC全体のPassへ算入しない。Production auth / migrationは含まない。Adapter検証は下記#830のtestを参照する。
+既存bootstrap smokeも引き続き同じ標準D1コマンドで実行する。
+
+`d1/management-occupancy.test.ts` / `d1/management-occupancy-isolation.test.ts` は#834のisolated詳細参照検証。
+`fixtures/d1/migrations/0007_management_details.sql`は上記物理設計 §2.1の
+`admin_holds(occupancy_id PK/FK)` / `group_lessons(occupancy_id PK/FK)`だけを追加する。
+`d1/management-occupancy-fixture.ts`のIntegrity Queryは同節のSQLと一致し、3種占有ごとの全4詳細組合せ、
+有効な詳細、orphan FK拒否、同種重複拒否、confirmed参照条件、FK確認と別file間の隔離を検証する。
+`[#834 D1 fixture]`はSchema / Integrity Queryの証拠であり、System / Acceptance TC全体のPassへ算入しない。
+未来Slotのerror / 開始済みSlotのViewへのAdapter統合は下記#830で検証し、Production有効化・管理Commandは含まない。
+
+`d1/schedule-query.test.ts` は#830の実Adapterと#828 Serviceのcomposition検証。
+既存#829 / #834 fixtureに、#611 §2の既定DDLと一致するtest-only
+`fixtures/d1/migrations/0008_reservation_read_integrity.sql`（欠席・回数除外・分類Override）を追加する。
+公開月、安定順序、4種View、本人情報だけの投影、未来不整合のfail-closedと開始済みViewを確認する。
+FKで保存できない参照欠落／Slot不一致は、test-only source adapterでReservation read sourceを変更し、
+実Queryをlocal D1で実行する破損read fixtureとして検証する（FK無効化なし）。
+`unit/d1-schedule-query.test.ts` はDB実行失敗の安全な抽象化と単一statement／bindを確認する。
+TC ID付きtestは引き続きAPI/read-model **partial evidence** とし、HTTP認可・UI・Production D1、
+System / Acceptance TC全体のPassを証明しない。
+
+`integration/schedule-month.test.ts` は#831のHTTP Adapter → test-only fake Guard → Serviceを
+Workers runtime内で直接構成し、月・Method・Query検証、毎RequestのGuard、本人ID、
+400 / 401 / 403 / 404 / 503の安全なenvelope / message / retryを検証する。
+`d1/schedule-month-http.test.ts` は同じHTTP Adapter / fake Guardと実D1 Adapterを既存isolated
+fixtureで構成し、成功wire、本人情報限定、4種View、安定順序、未公開／不存在、整合性異常と
+D1実行失敗のpartial evidenceを得る。既存TC IDを保持し、System / Acceptance TC全体のPassには算入しない。
+Production Session / Account / Role / access / lifecycle、UI、Production D1は証明範囲外。
+`integration/worker.test.ts` は実default WorkerへのHTTPで新Endpointにも既存503を返すことを確認する。
+Product moduleの統合とpublic activationの到達不能確認を同じ既存標準コマンドで実行する。
+
+#638の基盤smokeには `[bootstrap #638]` をtest nameに付け、業務TCのPass件数へ算入しない。
+`d1/student-auth-migration.test.ts`は#841のProduction `migrations/0001`〜`0006`を別のisolated local D1 `AUTH_DB`へそのまま適用する。
+FK / 一意性 / hash / 30日期限境界 / 本人接続、固定binding・Session属性、失効不可逆、停止解除後の旧Session非復活、削除後非復活、
+共有View / Index / CHECK・Trigger失敗時のPrimary batch全Rollback、read-only Integrity Queryによる欠落・未失効検出を確認する。
+`TC-F-003-06` / `TC-F-207-02〜03` / `TC-F-211-02〜03` / `TC-F-311-02`付きtestはDB物理契約の **partial evidence** である。
+HTTP / Provider / Admin・削除Command全体 / 実環境D1 / System・Acceptance TC全体のPassを証明しない。
+既存予約fixtureの`TEST_DB`と適用履歴を共有せず、Production entrypointへ接続しない。
+
+#867の `d1/reservation-migration.test.ts` は、共通setupの認証 `0001`〜`0006`の後に
+Production予約 `0007`〜`0012`のbytesを同じfile-isolated `AUTH_DB`へ順次適用する。
+認証Table / View / Trigger / 共有Guard定義・既存Guard行の保持、各段階のTable / Index依存順、
+生徒FK・予約制約・JSON・partial UNIQUE、FK / authの各0行とreservationの独立read-only scans全ての合計0行を検証する。
+DDLでは防げない永続化異常の検出と非修復も確認する。DB/migration **partial evidence**のみであり、
+Confirm / Transaction Write Adapter / HTTP / 実D1 / System・Acceptance TC全体のPassを証明しない。
+既存Preview suiteは認証migrationと独立した予約fixture履歴を維持し、新bindingやpublic activationはない。
+
+#842の `unit/d1-student-access-guard.test.ts` はProduction GuardのCookie形式・重複・purpose、
+hash bind / Primary / 単一SELECT、D1時刻の期限等値、結果評価順と安全なDB / Integrity異常を検証する。
+`integration/production-student-access.test.ts` は同Guardを既存HTTP / Serviceへ注入し、
+毎Request再照合・401 Cookie除去・403 / 503でCookie維持・内部情報非露出を検証する。
+`integration/student-session-fixture.ts` の合成read sourceはtestからだけimportする。
+`d1/student-access-guard.test.ts` は既存`AUTH_DB`とProduction migrationをそのまま使い、
+実Guardの本人解決・内部Contextと既存Write predicateの接続、失効・停止・削除の次Request反映、
+停止解除後旧Session非復活、新Session、期限非延長、SecurityAccess欠落のfail-closedを確認する。
+read-only HTTP consumerは既存Repository Portのfixtureへ接続し、予約Production schemaを追加しない。
+`TC-F-003-06` / `TC-F-207-02〜03` / `TC-F-211-02〜03` / `TC-F-311-02` / `TC-NF-914-04`は
+Guard / HTTP / local D1の **partial evidence**。重要Write batch / race、Provider・Browser、
+実環境D1、System / Acceptance TC全体のPassは証明しない。公開有効化Gateは詳細設計 §8.6を維持する。
+
+業務を実装したテストでは、上記prefixに代えて対応する既存TC IDをtest nameへ保持する（例: `[TC-F-003-01] ...`）。
+未実装業務のTCを基盤smokeへ割り当てない。
+Phase Bでは `unit/worker.test.ts` でWorker moduleのhandlerを直接呼び、
+`integration/worker.test.ts` でWorkers runtimeの `cloudflare:workers` / `exports.default.fetch()` を使う。
+両方とも既存503応答のstatus / body / headersを確認する。
+Phase Cの `d1/migration.test.ts` と `d1/isolation.test.ts` はtest-only migrationを適用し、
+両ファイルが空のtableへ同じ主キーをinsert / selectできることを確認する。
+Storage共有時には失敗する構成とし、手動DELETEで隔離の不具合を隠さない。
+これらも業務TCのPass件数へ算入しない。実装・隔離条件と標準コマンドは
+[config/README.md](../config/README.md) を正本とする。
+
+#863の `d1/reservation-preview.test.ts` / `d1/reservation-preview-isolation.test.ts` は、
+`reservation-preview-fixture.ts` から既存isolated `AUTH_DB` の認証migration／共有Viewへ、
+既存予約fixture migration `0003`〜`0008` と新規test-only `0009_monthly_lesson_configs.sql` を適用する。
+FK用Student fixture `0002` は適用せず、認証Schema・共有Viewの契約をそのまま再利用する。
+Production migrationの追加・変更、Production相当共有環境への昇格、新bindingはない。
+単一Primary SELECTとD1時刻T0、最新操作可否、設定行欠損と明示N、本人当月全予約の安定順、
+欠席／取消／算入除外／分類Override、開始済み／未開始、管理詳細・占有異常のfail-closed、
+他生徒情報非投影、同一状態の決定性、既存coreへのcompositionを確認する。
+時刻境界／FKで保存できない破損状態はtest-only source adapterから実SQLへ注入し、
+FKを無効化せず、実D1 Server時刻の検証とは分ける。同一IDの別file seedでstorage isolationを確認する。
+`unit/d1-reservation-preview.test.ts` は単一SELECT／bind／Primary／T0と型・値異常、安全なDB errorを検証する。
+`TC-F-003-01 / TC-F-003-02` はD1/Preview readの **partial evidence** のみ。
+HTTP／CSRF／Origin／Browser／Confirm Commit／Session認可・race／実環境D1／TC全体のPassは証明しない。
+公開有効化Gateは詳細設計D1 §8.6を維持し、default Workerは503のままとする。
+
+#865の `unit/student-session-csrf.test.ts` は独立SHA-256 vector、canonical token、
+固定43文字全体の比較と設定欠損fail-closedを検証する。
+`integration/reservation-preview.test.ts` は実Production Guardとtest-only read sourceを構成し、
+exact入力・重複key・UTF-8 byte上限、Session→CSRF→業務認可順、本人ID、固定View / Error、
+401のみCookie除去、Guard / digest / read障害・整合性異常の503と内部情報非反射を確認する。
+`d1/reservation-preview-http.test.ts` は#863のisolated `AUTH_DB` / migration / read fixtureをそのまま再利用し、
+実Guard→HTTP→実Repository→coreでstandard / additional・本人分類差分・token、
+失効／停止・CSRF不成立時read未実行、409 / 503・Cookie維持、予約非更新を確認する。
+時刻境界は既存Portのtest-only source adapterで注入し、実D1 T0の経路は別testとする。
+`integration/worker.test.ts` はPreview / CSRF取得にもdefault Workerが503を維持することを確認する。
+`TC-F-003-01 / TC-F-003-02 / TC-F-207-03 / TC-NF-914-04`はHTTP / isolated D1の
+**partial evidence**のみで、新TC・Product要求の意味変更はない。
+Browser、CSRF token取得、Confirm Commit / race、実環境D1、Production activation、TC全体のPassは証明しない。
+
+#896の `unit/student-session-csrf.test.ts` は取得 / 検証の共有生成関数について、既存独立digest vector、
+生成tokenの受入れ・旧Session / 誤token / noncanonical形式拒否と固定長比較を回帰する。
+`integration/student-session-csrf-get.test.ts` はProduction `D1StudentAccessGuard` と既存test-only read sourceを使い、
+exact 200 JSON、Origin有無 / Metadata、HTTPS / origin設定 / Method / Path / Query / bodyのfail-closed、
+Cookie欠損 / 重複 / malformed / 失効 / 停止 / 削除 / role、DB / integrity / crypto障害を検証する。
+`d1/student-session-csrf-get.test.ts` は既存file-isolated `AUTH_DB` / Production auth migrationで実Guardを解決し、
+独立vector・期限等値 / 失効 / 停止 / 削除の次Request反映、Cookie非更新、DB行の非更新、
+関連行欠落・実SQL失敗の安全な503を検証する。fixtureはtests側だけで、Production認証全体のproofとしない。
+全Responseのno-store / no-referrer、401 Cookie除去・503維持・200 Cookie未発行、CORSなし、
+preauth-only / Cookieなしの401とpreauth生成 / 再利用なしを確認する。
+`integration/worker.test.ts` の既存CSRF GETを含む全routeの503試験と既存POST Preview / Confirmを回帰対象とする。
+`TC-F-207-02〜03 / TC-F-211-02〜03 / TC-NF-914-03〜04`に関するSession / 認証安全性の
+**partial evidence**であり、既存POL→BR→REQ→AC→TC、CON / OOSの意味やidentifierは変更しない。
+実環境D1・HTTPS実Browser・trusted seed / dedicated evaluation Worker、full auth / preauth flow・
+Production activation・Gate A〜D・System / Acceptance TC全体Passを証明しない。
+
+#869の`unit/reservation-confirm.test.ts` / `d1/reservation-confirm.test.ts`はwrite前preparationの検証。
+既存#863のisolated fixture / Guard解決済み本人 / Primary read-only Portを再利用し、
+canonical token形式とread前拒否、Preview token再照合、最新業務拒否を優先するmismatch、
+重要状態変更、D1 T0、raw JSONの決定性・欠損／NULL・安定順、共有SQLの時刻引数／bind順を確認する。
+Overrideでautomaticだけ変化する全内部分類planと実効値だけのwire差分、prepared stateのfreeze、
+成功・malformed・mismatch・業務拒否・DB error時の予約／Guard等の非更新を検証する。
+`unit/d1-reservation-preview.test.ts`は共通query / mappingとPreview Port非露出も固定する。
+`TC-F-003-01 / TC-F-003-02`はApplication / isolated D1の**partial evidence**のみ。
+Transaction Guard / Commit / race、Confirm HTTP / Browser、実環境D1、TC全体のPassは証明しない。
+新TC・Production migration / bindingは追加せず、既存Workerの503回帰を維持する。
+
+#872の`unit/reservation-confirm-plan.test.ts`はpure Transaction write planの検証。
+Audit / Intent JSONのbyte一致・field順、automatic-only監査、両方向の実効変更Intent、
+変更なしを含む全Guard対象と実更新対象の安定順、本人不一致・全ID組合せの重複拒否、
+最小UUID Port、PII / Session / 保存時刻の非投影、immutable copyと#869 preparation再利用を確認する。
+`TC-F-003-01 / TC-F-003-02 / TC-F-101-01 / TC-F-104-01 / TC-NF-940-01 / TC-NF-940-02`の
+Application plan **partial evidence**のみであり、DB Commit / final Guard / 配送 / HTTP / Browser / 実D1は証明しない。
+既存標準unit suiteとWorkerの503回帰を使用し、新しいproof infrastructureやpublic activationは追加しない。
+
+#873の`d1/reservation-confirm-executor.test.ts`は内部single-batch executorの検証。
+既存file-isolated `AUTH_DB`へProduction予約migrationをそのまま適用し、実preparation / pure planを入力とする。
+初期raw read-set / Student Write predicate、先行Commit保持・占有UNIQUE、再分類before値・更新件数、
+Audit / Intent / Outbox INSERT失敗、exact projection / 件数異常、最終Session / 開始境界と全Rollbackを確認する。
+変更あり・automatic-only・変更なしの全`classificationGuardTargets`の開始境界を検査し、
+既存予約の開始境界試験では新規Slotをより後に置いてtarget guardによる隠蔽を防ぐ。
+時刻・race・応答欠落はtest-only D1 interface adapterから注入し、実SQLを同じPrimary batchで実行する。
+成功時の共通Command T・Guard cleanup・同一result、Commit後の応答欠落とRollbackの双方で
+同一immutable attempt.plan・ID非再生成・batch 1回・raw error / Session情報非露出を検査する。
+Session生成・prepare / bindの失敗は既存`SERVICE_UNAVAILABLE`でbatch 0回、永続化不変、
+attempt / raw cause非保持・ID非再生成となることを同じfixtureで検査する。
+`TC-F-003-01 / TC-F-003-04 / TC-F-003-05〜06`、`TC-NF-911-01`の内部Command / local D1 **partial evidence**とし、
+Audit / Intentの観点は既存`TC-F-101-01 / TC-F-104-01 / TC-NF-940-01〜02`へ対応する。
+Session / lifecycleの観点は既存`TC-F-207-02〜03 / TC-F-211-02 / TC-F-311-02`へ対応する。
+HTTP / CSRF / Browser、#874のPrimary verification、実環境D1、配送、TC全体のPassは証明しない。
+schema変更・public activation・新しいproof infrastructureは追加せず、既存標準D1 suiteで実行する。
+
+#874の`unit/reservation-confirm-transaction.test.ts` / `d1/reservation-commit-verification.test.ts`は
+最終server-only Transaction Portとambiguous outcome verificationの検証。
+正常応答のread省略、exact handoff限定、same immutable plan / ID、generator / executor各1回、write retryなし、
+local D1でのCommit後応答喪失と成功回収、未適用、部分生成・Audit / Intent / Outbox欠落、payload / 内容 / 時刻不一致、
+部分再分類、残存guard、単一read-only Primary statement・stable collection ordering・closed projectionを確認する。
+read / decode不能と内容不整合のcode分離、最終errorの内部情報非露出も検査する。
+#873のGuard / race / rollback suiteは変更・複製せず、既存標準D1 suiteで回帰する。
+`TC-F-003-01 / TC-NF-911-01 / TC-NF-914-04`のApplication / local D1 **partial evidence**とし、
+HTTP / fresh revalidation / CSRF / Browser / 実D1 / 配送 / TC全体のPassは証明しない。
+default Workerの503回帰・既存Product CI / PR Traceability経路を維持し、新しいproof infrastructureは追加しない。
+
+#880の`integration/reservation-confirm.test.ts`は実Guard / CSRF / preparationとtest-only Transaction Portを合成し、
+二項目strict wire・順序・same-request Context・exact 201 / error・401 Cookie除去・内部情報非反射を検証する。
+exact `REVALIDATION_REQUIRED`だけfresh解決し、fresh本人・現在業務拒否優先・still-validの503、commit最大1回を確認する。
+`d1/reservation-confirm-http.test.ts`は既存file-isolated `AUTH_DB` / Production migration / D1 interfaceを再利用し、
+実Guard→HTTP→実preparation→最終Transaction Port→executor / verifierでCommit・応答喪失回収、
+未適用後のfresh Primary分類・Rollback・Audit / Intent同一Commit、ID生成1回・write非再試行を検証する。
+時刻・race・応答喪失は既存interfaceのtest-only adapterから注入し、新しいproof infrastructureは追加しない。
+`TC-F-003-01 / TC-F-003-05〜06 / TC-F-207-03 / TC-NF-911-01 / TC-NF-914-04`の
+Application / HTTP / isolated D1 **partial evidence**のみであり、新TC IDやProduct要求の意味変更はない。
+既存#865 Preview、#873 Guard / race / rollback、#874 verifier / Portとdefault Workerの503は同じ標準suiteで回帰する。
+Browser / 実環境D1 / Provider配送 / public activation / TC全体のPassは証明しない。
+
+#888の`unit/reservation-history.test.ts`、`integration/reservation-history.test.ts`、
+`d1/reservation-history.test.ts`は`TC-F-005-01`のApplication / D1 / isolated HTTP **partial evidence**。
+状態・欠席・実効分類の分離、本人限定、DESC順とcursor継続、不正入力 / MAC / 別本人拒否、
+D1 / integrity失敗、no-store / 401 Cookie除去、read-onlyと既存indexのquery planを検証する。
+D1試験はProduction migration・Guardをlocalで合成し、cancelled / absence行は保存Schema fixtureで用意する。
+取消 / 欠席Command、Production鍵provisioning、public route、Browser、実D1、System / Acceptance全体Passは証明しない。
+
+
+#894の `unit/student-read.test.ts` はCalendar / List / 4 Slot View・選択・本人履歴の
+`TC-F-001-01〜02 / TC-F-002-01〜02 / TC-F-005-01` と
+`TC-NF-903-01 / TC-NF-907-01 / TC-NF-914-03〜04` の **partial evidence**。
+Gregorian曜日・閏年・月年境界、+09:00表示、4状態、本人状態軸、cursor継続/最新、GET限定、
+401 / 403 / 404 / 503・通信失敗・不正応答非反射、並行readの古い応答排除・401双方無効化を検証する。
+test-only structural DOM adapterでlabel・button / 非活性説明・切替focus維持・status focus・
+複数/大量枠の非省略を確認する。実DOM、layout計測、実keyboard / screen reader / Browser互換性の証明ではない。
+`integration/worker.test.ts` は `/student` / UI資産 / 本人履歴へのdefault HTTPが503 / no-storeのままなことを回帰する。
+320px overflow、端末timezone別実Browser、HTTPS / asset serving、Gate A〜DとTC全体Passは#537へ保持する。
+
+#926は同じ `unit/student-read.test.ts` に単一予約操作のsynthetic fetch / structural DOM検査を追加する。
+`TC-F-003-01〜02 / 05 / 08〜09 / TC-F-005-01 / TC-NF-902-02 / TC-NF-914-03〜04` のUI **partial evidence**である。
+詳細設計Application §5〜9.2 / §10.3を入力として、明示Preview前の通信なし、session CSRF取得GET、
+exact Preview / Confirm body、same-origin / no-store / redirect:error、+09:00日時、標準 / 追加説明、全before / after差分、
+token / CSRF非表示、201だけの確定表示とメール配送の分離、二重送信抑止、read-only Schedule更新・本人履歴を検査する。
+409 / retryの照合とfresh Schedule→明示再Preview、CSRF_INVALIDの再取得・再確認、403操作停止、
+401の全読取・操作無効化、古いCSRF / Preview / Confirm応答、再Preview / 月 / 枠変更、
+503 / network / malformed / unexpected statusの結果不明・書込み停止・非再送、focus / aria-liveを回帰する。
+複数差分のDOM fixtureはwireで許される両方向の投影検査であり、Domainの分類計算を証明しない。
+REQ-003 / AC-003-001〜008・016〜021、REQ-005 / AC-005-001〜002、REQ-101 / AC-101-001〜002への既存traceを維持し、
+Serverの本人解決・再検証・Transaction / NotificationIntentは既存HTTP / D1試験の責務である。
+実Chrome / actual isolated unsafe HTTP、D1書込み・履歴反映、320px layout / 実keyboard / screen reader、
+System / Acceptance全体Pass・Gate A〜D・#608全体Done・Production readyは証明しない。
+評価Workerは既存read-only GET / assetsのみでunsafe POSTは503、default Production Workerも全503を維持する。
+実接続・actual Commitの評価は#537の独立した後続Issueで行い、本Issueではrunner / config / routeを変更しない。
+
+## #928 非公開予約factory（synthetic compositionのみ）
+
+`fixtures/reservation-student-service.ts` はlistener / runnable mainのないtest-only Request-service factory。
+既存D1 Guard・Preview Repository / Service・Confirm preparation / executor / verifier / Transactionと両HTTP Adapterを合成し、
+3 GETは`createReadOnlyStudentService`へそのまま委譲する。固定canonical HTTPS origin、単一D1 Port、
+non-extractable HMAC-SHA-256 sign-only cursor keyを確認し、Primary sessionのprepare / batch形状もSQL発行前に検査する。
+設定不備は全ルート503。exact pathname / methodの5ルート以外と不正URL / originは503とし、
+許可ルート内の認証・CSRF・strict JSON・業務error・Cookie / no-storeは既存Adapterに従う。
+`integration/reservation-student-service.test.ts` はsynthetic D1 row / acknowledgementを使い、実部品接続・本人Context・
+GET Response同一性、正常Preview / Confirm、結果不明時の実verifierとNOT_APPLIED / 不整合 / read不能、
+Commit / batch最大1回・ID非再生成、設定拒否・negative routing・no-secret / no-write-on-failureを確認する。
+`integration/read-only-student-isolation.test.ts` はsrcからの参照禁止と評価Worker / configへの未接続を回帰する。
+Production root全503、既存GET-only factory、#914 / #922 read-only封印条件は維持する。
+既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/911/914/940 → AC-003/005/101 → TC-F-003-*/005-*・TC-NF-914-*` のsynthetic composition **partial evidence**だけであり、ID / 要求 / AC / TCの意味は変更しない。CON-001/002/009・OOS-001/002も維持する。
+実local D1 migration・CommitとReservation / Occupancy / Audit / Intent / Outbox読取照合・失敗後cleanupは#931、
+localhost Worker activationは#929、実Chrome / 通信は#930へ残す（#928 → #931 → #929 → #930）。
+synthetic acknowledgementの201は実DB atomic成功の証拠ではなく、TC全体Pass・Gate A〜D・親#537/#608 Doneを主張しない。
+標準Product CI / PR Traceability / 独立Claude Reviewはworkflow側のcurrent-head証拠を別途確認する。
+
+## #931 非公開予約factoryのisolated local D1試験
+
+`d1/reservation-student-service.test.ts` は既存Cloudflare Vitest / Miniflareのfile-isolated `AUTH_DB`を所有し、
+Production migrations `0001`〜`0012`、変更していない#898のschema fingerprint / empty-only seedを使う。
+read-only評価persist・他test fileのDB・Production / remote resourceへ接続しない。
+現行#998のProduct CIでは標準 `npm run test:d1` でfixtureを実行し、ローカルの `npm test` 入口も維持する。listener / Worker activationはない。
+real Session Cookie → CSRF GET → Preview 200 → 正規tokenのConfirm 201一回 → 本人History 200を直列に検査する。
+成功判定はHTTP acknowledgementだけでなく、実DBのReservation / Occupancy / Audit / required Intent / Outboxの
+内容・Actor・同一D1時刻T・未claim状態・他人History非公開・既存Integrity Scanで照合する。
+未来枠はseedのD1時刻から次のTokyo月へ生成し、SQL時刻の置換はしない。
+401、CSRF / Origin 403、別本人token・変更token・占有409の未書込みと、batch直前の公開状態変更による
+実Guard rollback / read-only verification / 409をDB全体のdigestで確認する。書込みbatchは各Confirm最大1回。
+有効な別roleは既存Portのtest-only row projection、History read失敗は既存error seamを使う。
+失敗Response / snapshot比較にSession・CSRF・hash・SQL / raw DB errorを出さない。
+正常終了・assertion失敗ともDB寿命と破棄は既存Cloudflare test runtimeに委譲し、persistent DBのreset / cleanup runnerや自動write retryを追加しない。
+既存#873 / #874のGuard・途中失敗rollback・same-plan outcome verification試験を回帰し、再実装しない。
+対応は#928節と同じ既存識別子へのlocal D1 **partial evidence**で、識別子・AC→TCの意味は変更しない。
+この試験の追加自体は実行成功の証拠ではない。current-head標準Product CI / PR Traceability / 独立Claude Reviewはworkflow側で確認する。
+実Browser / HTTPS通信、通信断・未知結果の実障害・高並行race・remote D1・Provider配送・Gate A〜Dは未証明。
+local DB試験をProduction readinessや#537 / #608全体Doneへ読み替えず、後続順序#931 → #929 → #930を維持する。
+
+
+## #1081 Controller→実service→隔離local D1の409再確認・明示Confirm（部分証拠）
+
+`d1/reservation-student-controller.test.ts` は既存 `vitest.d1.config.ts` とfile-isolated `AUTH_DB`を用いる。
+Production migrations `0001`〜`0012`、#898 trusted empty-only seed、#931のreal reservation serviceと
+Production Guard / CSRF / Transactionを再利用し、`StudentReadController`の既存fetch injectionを接続する。
+test-owned Cookie、same-origin Fetch Metadata、POST Originだけを追加し、Controllerのpath/method/body/CSRFは補正しない。
+月GET→明示Preview200→fixtureの公開version変更→旧Confirm409 `RESERVATION_STATE_CHANGED/repreview`
+（拒否前後の全業務DB digest不変・暗黙再送0）→fresh月GET・再選択→新Preview200→
+明示Confirm201一度だけ→本人History/同一reservationIdの実D1 Reservation・Occupancy・Audit・Intent・Outbox照合を行う。
+秘密を含む失敗原因・SQL・DB rowはCIに反射させず、固定phaseのみを通知する。既存#931 atomic/rollback試験は残す。
+通常`npm run test:d1` / current-head Product CIで実行するが、追加したテスト自体は合格証拠ではない。
+`TC-F-003-01` / `TC-F-003-05` / `TC-F-005-01` / `TC-NF-914-04`の**部分証拠**に限り、
+実競合者の先行Commit barrier・実Browser/HTTPS wire・#930正式401・#537 Gate A〜D・#608 Done/Releaseを証明しない。
+REQ/AC/TCの意味およびProduction Worker/Schema/Providerの挙動は変更しない。
+
+## #929 独立localhost予約Worker（isolated HTTP fixture）
+
+`evaluation/reservation-worker.ts` と `evaluation/wrangler.reservation.jsonc` は#928 factoryだけを合成する独立入口。
+固定 `https://127.0.0.1:8789`、`workers_dev:false` / `preview_urls:false`、Worker-firstの6資産と
+既存3 GET、`POST /api/me/reservations/preview` / `POST /api/me/reservations`だけを許可する。
+Host / Forwarded / Refererをorigin設定に使わず、未知method / path / URL originは503。
+許可API内のstrict JSON・Session / Origin / CSRF・Transaction判断とResponseは既存Adapterへ委譲する。
+Envは正確な `ASSETS` + `EVALUATION_BOOKING_DB`、DBはPrimary prepare / batch Portを要求する。
+HMAC-SHA-256 non-extractable sign-only鍵はWorker lifetimeで一度生成し、同時要求で共有、失敗はrestartまでsticky。
+raw Session / CSRF / key / hash・SQLをenv / URL / consoleへ出さず、Provider pickup / 外部送信を持たない。
+
+専用DB identityは `nssscdl-local-booking-evaluation`、後続のowned persistは `.wrangler/student-booking-evaluation` とする。
+Production migrations `0001`〜`0012`とtest-owned strict seedだけを使い、read-only専用persist / seed / snapshotを再利用・変更しない。
+#929ではpersistent DB provisioning / seed runner / cleanupを実装・起動しない。準備・独立読取照合は下記#937、実通信と終端cleanupは#930で検証する。
+`evaluation/verify-reservation-config.mjs` を既存 `npm run build` の最初に実行し、closed configの全項目を照合する。
+公開Domain・remote / 追加binding・port / entry・override不一致を拒否し、通常Production configは変更しない。
+`integration/reservation-evaluation-worker.test.ts` は既存Product CIに入り、synthetic D1 row / acknowledgementで
+実factory / Guard / Preview / Confirm接続、route table、CSRF GET、JSON / header / Origin / CSRF正負、
+401 / 403 / 409 / 503・Cookie / no-store・secret非反射・拒否時無write、6資産・redirect拒否、lifetime鍵を検査する。
+従来 `integration/evaluation-worker.test.ts` / `read-only-student-isolation.test.ts` と#914 / #922 smoke fixtureは不変で回帰する。
+Production全503は新fixtureでも検査する。synthetic成功は#931の実D1 atomic成功と区別する。
+
+対応は#928節と同じ既存POL / BR / REQ / AC / TCへのisolated HTTP **partial evidence**。
+REQ-901 / 902を含む既存識別子・traceabilityとCON-001/002/009・OOS-001/002の意味は変更しない。
+既存live runnerはread-onlyの8788 / exact binding / snapshotに封印されており、新入口へ転用しない。
+実HTTPS予約POST・Chrome Preview / Confirm・actual HTTP経由のD1 readback / owned cleanupは未検証で#930の責務。
+新TLS / systemd / Browser proof基盤・暗黙run / retry・workflow一時編集は追加しない。
+current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
+#537 Gate A〜D / #608 Value Unit Done / Production readiness / Provider配送成功は主張しない。
+
+## #937 予約専用D1準備と独立readback（prepared helper）
+
+`evaluation/trusted-booking-seed.mjs` の `prepareTrustedBooking(consume)` は、#929のclosed configを正本に、
+固定8789 / `ASSETS + EVALUATION_BOOKING_DB` / `remoteBindings:false` / locked Wranglerを検査する。
+credential-free環境（#906と同じallowlist、新規・空・privateな同一の専用HOME / XDG_CONFIG_HOME / TMPDIR、metrics無効）と6資産buildを要求し、
+env file、旧read-only persist、8788 / 8789の非所有listenerがあればfail-closedする。設定overrideやoriginの動的導出はしない。
+`.wrangler/student-booking-evaluation`を排他的に新規作成し、同一runのdirectory identityと非symlink / 非hardlinkの所有物を検査する。
+既存persistは空でも採用せず、正式0001〜0012を固定local CLIで一度適用し、実proxyの有効2 bindingとmigration ledgerを照合する。
+#898のschema fingerprint / empty-only / validationを変更せず再利用し、seedと事前状態をtrusted memoryに保持する。
+seed proxyのdispose成功後にだけ `consume(seed, opaqueHandle)` を呼ぶ。戻り値は破棄し、失敗時は固定
+`TRUSTED_BOOKING_SEED_FAILED`で停止する。再seed / reset / remote切替 / 自動write retry / ファイル削除を持たず、未知結果では所有物を保持する。
+本helperの追加はpersistent provisioning実走や実Worker起動の成功証拠ではない。
+
+`evaluation/booking-readback.ts` は独立したread-only `BookingReadPort`。
+`captureBookingBaseline`はadmission済みstrict seedの事前状態を非列挙のtrusted memoryへ保持し、
+`verifyBookingReadback`はseed-selfがseed-slot-bookableへ予約した新IDについて一度だけ照合する。
+既存self / other Reservation・Sessionを含む全不変行、schema、追加Reservation / Occupancy / Audit / Intent / Outboxのexact内容、
+Actor、同一D1時刻T、未claim状態、Command Guard消滅、既存Integrity Scanを検証する。初期N=3で再分類なしのseedシナリオ専用とし、他シナリオは拒否する。
+比較値・Hash・Sessionは公開snapshot / error / logへ出さず、baselineは`{}`にしかserializeしない。
+不明・部分生成・他人ID・内容不一致では固定`BOOKING_EVALUATION_READBACK_FAILED`で停止し、同じbaselineの再検査も拒否する。
+`inspectTrustedBooking(handle, reservationId)`は同一run所有物だけに別proxyで接続し、inspect / dispose完了を確認する。
+下流ownerはwriterを停止してから呼ぶ必要があり、portが開いていれば拒否する。公開認証・write API・repairを持たない。
+
+`evaluation/trusted-booking-seed.test.mjs`を既存Unit stepへ追加し、有限のNode SQLite / factory fixtureでconfig改ざん、
+missing / extra binding、非所有profile / port、directory / hardlink、migration / schema / 重複seed拒否、
+rollback / unknown outcome・disposeの呼出し回数、positive / negative / cross-owner / partial-write readbackと機密非反射を検査する。
+`d1/booking-readback.test.ts`は既存file-isolated Cloudflare D1 topologyで、empty-only seedを1回投入し、
+実factoryの1回のCommit後に独立Portの正常readbackを照合する。Outbox欠落・Actor改ざん・読取失敗の拒否は
+上記Node/SQLiteの独立fixtureで検査し、同一D1 file内での再seedや状態resetをしない。
+Node fixtureの異常系、Cloudflare実D1の正常系、実Browser成功は別々の証拠とする。
+対応は既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-914`
+への準備 / readback **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002は維持する。
+旧#914 / #922のworker / config / seed / runner / cleanup・証拠は変更しない。
+Worker8789 lifecycleの準備Portは下記#939、実HTTPS通信 / TLS / Chrome UI / run-owned終端cleanup・human-gated正式runは#930に残し、Gate A〜D・#608 Doneを主張しない。
+current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
+
+## #939 8789予約Worker lifecycle（prepared Port / finite fixture）
+
+`evaluation/trusted-booking-worker.mjs` の `createBookingWorkerPort` は明示 `start()` / `stop()` で操作する独立予約helper。
+#937の `persistence` / `proxyOptions` をそのまま消費し、locked local Wrangler / closed config / credential-free envを確認する。
+上位ownerは#937のseed proxy dispose後の `consume` 内で準備済みD1に対して呼び出す。
+上位ownerが渡す `certificate`、`certificateParent`、`certificateParentIdentity` は既存 `createCertificate` の
+同一run `server.key` / `server.pem` と、事前に採取した親directory identityとする。親はprivateな専用TMPDIR自身または
+既存TLS ownerの `TMPDIR/browser-home` に限り、owner / inode / realpath・非symlink / 非hardlinkを検査する。
+TLS生成 / trust変更 / seed / persist作成・削除は行わず、prepared D1の同一directory identityと所有treeを維持する。
+固定 `dev --config tests/evaluation/wrangler.reservation.jsonc --ip 127.0.0.1 --port 8789 --local-protocol https`
+と固定persist・run-owned証明書だけで単一foreground process groupを起動する。env / argv / Header / Cookieによるoverrideはない。
+#979は予約8789のstrict PID / PGID検査を維持し、全host listenerのPID必須走査を同unit cgroupのTCP IPv4 / IPv6検査へ置換する。
+既存effectsのread-only `read("/proc/self/cgroup", "utf8")` で#914と同じrun-unit全体一致を要求し、start / stop前後の所属・path不変を確認する。外部input / cert / CLIから所属を取得しない。
+8789事前空き確認と起動後の一意な `127.0.0.1:8789` / 可視PID全件のspawned PGID一致を維持する。未readyの8789空状態だけは既存30秒内で待機し、ready / stop signalの許可にはpositive controlを必須とする。
+固定argv `ss -H -ltnp -O --cgroup cgroup = <trusted full path>` は検証済みunit pathを固定 `/sys/fs/cgroup` mount下へ解決し、shellを使わない。機械正本は `ownedListeners` とworker testのexact argv / call countとする。
+filtered全行は標準5 TCP列、optional users tuples、明示 `cgroup:<mount-relative unit path>` の厳密文法と所属一致が必要。余分field / 改行不正 / 欠落 / 別所属 / command failureはfail-closedで、raw path / PID / stderrを出力しない。
+filtered内の8789は一意・同address、unfilteredとのPID集合（重複 / 順序非依存）・PGID一致が必須で、filtered空 / control欠落 / owner mismatchは拒否する。
+同unit内の全listenerはPGIDやPID可視性を問わず固定 `127.0.0.1` / `[::1]` だけを許可する。PID不可視のloopbackは所属表示確認後に限り許可し、nonloopbackは拒否する。unit外のPID不可視listenerは全host queryを行わないため判定対象にならない。
+根拠はIssue #979の採用済み契約と標準[ss(8)](https://man7.org/linux/man-pages/man8/ss.8.html)（`-O` single-line、`--cgroup` mount-relative表示、`cgroup [=|!=] PATH`）とする。socket cgroup IDの完全一致であり、子cgroup再帰やPID不可視行の無条件ignoreではない。
+対象は既存 `Delegate=no, ProtectControlGroups=yes` の管理下評価unitでChrome / isolated child / Workerを起動し、外部FD譲受け・namespace / cgroup移動・子cgroup生成・外部管理者による強制moveがないtrusted lifecycleだけ。疑わしい所属 / topology / filter対応は拒否し、独立停止証明を追加しない。
+実runnerのiproute2 / kernel `CONFIG_SOCK_CGROUP_DATA` 対応・実socket所属 / race / netns整合は未実証で、finite fixture成功を実統合成功へ昇格しない。隠れた8789 PID・不明PGID・早期exit・未知結果はreadyへ昇格しない。`isReady()` はprepared transport状態だけを表す。
+`stop()` は所有状態を再確認してSIGINTを一度だけ送り、group消滅・child終了と8789閉鎖を確認してから
+`{ stopped: true, portClosed: true }` を返す。観測済みearly exitでもgroup消滅・port閉鎖が必要で、非所有processは操作しない。
+既存startup 30秒 / graceful stop 10秒の予算内で観測し、force-kill / stop retry / restartを持たない。
+失敗は固定非秘密 `TRUSTED_BOOKING_WORKER_FAILED` とし、同じPortのstart / stopは単発、未知停止ではchild / 所有物を保持する。
+旧8788 `stopWorker` の成功を8789閉鎖証拠として流用しない。
+
+`evaluation/trusted-booking-worker.test.mjs` を既存 `npm run test:unit` / Product CIのUnit stepへ追加する。
+有限effects fixtureでexact CLI / cgroup filter argv・call count、runtime unit identity / drift、8789 positive control / PID集合一致、同unitのPID不可視loopback正例 / IPv4・IPv6非loopback負例、未対応 / 空 / 不正文法 / 別所属拒否、early exit、stop失敗 / 閉鎖不明、
+再start / stop拒否、並行呼出し、未所有8088非操作、証明書の親 / link / identity拒否、旧8788の封印を検査する。
+Worker / Chrome / TLS / systemd / persistent D1を起動しない。synthetic listener観測は実Wrangler / ss互換性・実HTTPS成功の証拠ではない。
+既存#937節と同じ `POL→BR→REQ→AC→TC-F-003/005・TC-NF-914` へのprepared transport **partial evidence**のみで、
+識別子・CON-001/002/009・OOS-001/002、Production全503、旧read-only helper / proofは不変。
+実Chrome同一runの8788 TLS proof→8788閉鎖→同じcertで8789起動→Preview / Confirm→D1 readback・終端cleanupは#930に残る。#979はR1 / C1 / P1 / B1のYellow preparedで、承認済みworker / process / outer finite fixtureと既存文書だけを同期し、新proof基盤・live実行・時間延長を追加しない。
+正式runの人間判断、current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認し、Gate A〜D / #608 Doneを主張しない。
+
+## #941 予約正常1回のDOM操作（dormant/prepared helper / finite fixture）
+
+`evaluation/trusted-booking-dom.mjs` の `proveTrustedBookingDom({browser, context, session, seed, signal, observe})` は明示呼出し専用。
+上位ownerは `Browser.newContext({ignoreHTTPSErrors:false, serviceWorkers:"block"})` で新しい専用contextを作り、
+#937の `seed.sessions.self` の `__Host-student_session` をCookie jarへ注入してから渡す。
+helperはBrowserとの対応・空のPage集合・本人Session capability・Cookie属性を検査する。strict TLS / service worker設定の供給・実証はownerの責務であり、fixtureから設定や実Browser trustの成功を推定しない。
+contextは成功・失敗とも再利用不可。helperはCookie発行、Worker / D1 / TLS / NSS / systemd / portの起動・準備・削除を持たず、ownerがcontext / Browserと全資源の終端処理を行う。
+`src/**` やdefault workflowから到達しないことをfinite source fixtureで固定する。
+
+固定 `https://127.0.0.1:8789/student` を実navigationし、同originの6資産・既存表示を確認する。
+予約API証拠はPageのネットワークResponseだけを使い、driver fetch、mock Response、URLによる生徒ID指定を持たない。
+context routeは送信前にorigin / method / path / queryなし / redirectなし・Page対応を検査し、別originや予期しないPOSTを拒否する。
+#992はPreview / Confirm POSTのtest-only pre-route観測を訂正する。`request.allHeaders()` の `sec-fetch-site` key不在は未観測として扱い、その存在を `route.continue()` 前の必要条件にしない。keyが存在すれば正確な `same-origin` だけを許可し、cross-site / same-site / none / unknown / 空文字 / undefined / 型不正は転送前に拒否する。Origin完全一致・JSON Content-Type / exact body・Session-bound CSRF exact・method / path / redirect / frame・各POST一回性・abort / timeout / deny guardは維持する。headerを追加 / 上書きせず、`route.fetch/fulfill`・二重送信・HTTP retryを行わない。Serverの実HTTP判定は `src/http/student-session-csrf.ts` と詳細設計§10.3を正とし、CSRF取得GETを含む製品契約を変更しない。
+供給Issueが示す [Playwright公式Network文書](https://playwright.dev/docs/network#headers-owned-by-the-network-stack) は、network stackが送信直前に付与する `Sec-Fetch-*` がroute内の `allHeaders()` では保証されない境界を説明する。[upstream reproduction #42620](https://github.com/microsoft/playwright/issues/42620) も供給根拠とする。route時の欠落から実wireの欠落 / same-originを推定しない。外部再取得・実Chrome確認は行わず、対象Playwright版 / 実Runへの適用と真因は未検証とする。
+同originの補助favicon GETは予約証拠へ採用しない。後続ownerの既存routeやPageを引き継がない専用contextが前提となる。
+次の東京月15日10:00の `seed-slot-bookable` を日時のaccessible labelで選び、選択だけではPOST / CSRF取得・確定がないことを検査する。
+明示「選択枠の予約内容をPreview」でPOST 200とSession-bound CSRFを照合し、日時・分類・既存予約の全差分をDOMで確認してからだけ、
+明示「内容を確認して予約を確定」を1回操作する。strict seedの初期N=3・既存本人1件では新規standard / 差分なしが正本期待形。
+ConfirmのPOST 201、日時・分類・予約済み表示とSchedule更新、明示「履歴を最新から再取得」による本人履歴の1→2件を照合する。
+戻り値はこの実201のpayloadにあるopaque `reservationId` だけ。201観測はWorker停止後の `inspectTrustedBooking(handle, reservationId)` による5表独立readbackとは別の証拠で、配送成功も主張しない。
+
+Session / hash / CSRF / Expected State Tokenはtrusted memoryでのみ比較し、DOM非露出を検査する。
+HTML / payload / header / query / PIIを戻り値・log・console・error causeへ出さない。
+null navigation、不正 / 欠損ID、応答不整合・403 / 409 / 503、重複POST、結果不明は固定 `TRUSTED_BOOKING_DOM_*` reasonで停止する。
+各driver操作は既存read-only helperと同じ5秒上限。abort / timeoutは停止をlatchし、自動retry / reload / 再Confirmを行わない。
+停止後や成功返却後もcontext routeのdeny guardを保持し、遅延通信・2回目writeを拒否する。ownerは必ずcontextを閉じ、別用途へ再利用しない。
+これは実Chrome取消・cleanupの証明ではなく、後続ownerの共有deadline・終端処理へ接続するprepared制御である。
+
+`evaluation/trusted-booking-dom.test.mjs` を既存 `npm run test:unit` に追加する。
+finite Page / route / Response doubleは正常順序・各POST最大1回・全差分の欠落 / 順序 / before-after・秘密非出力・origin / navigation / ID不整合・未知結果・abort / timeout後の停止を検査する。
+#992のfinite fixtureはPreview / Confirm片方または両方のheader key不在で従来のpresent same-origin成功と単発POST / observer pairを比較し、両方不在の実helper→process→V2 codec / stop観測も同一と照合する。present undefinedとkey不在を区別し、明示不正site・key不在時のOrigin / CSRF / Content-Type / body欠落・汚染 / method / redirect / frame不正で `fault=request`・対象POSTのcontinue未到達・Confirm再送なし・秘密非出力を検査する。既存negative / late / abort / timeout / observer throw / duplicate guardsも回帰する。WACはR0 / C1 / P1 / B1、Yellow prepared限定で、新proof infrastructureやruntime接続を追加しない。
+実Chrome / HTTPS / Worker / D1を起動せず、fixture成功はassertion / control flowだけの証拠とする。
+#941導入時のWACはproduction接続なしの独立prepared ContractとしてR0 / C0相当 / P1 / B1、Green（強制分割なし）。#992の評価は上記Yellow preparedとし、後続target-modeへの昇格は#930でfresh admissionする。
+既存 `POL-003/006/014 → BR-015/017/050〜059/066〜068/090/111/112 → REQ-001/002/003/005/101/901/902/911/914/940 → AC-003/005/101 → TC-F-003/005・TC-NF-902/914`
+へのprepared操作 **partial evidence**のみ。識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002を変更しない。
+旧8788 read-only helper / Production / migration / workflowは不変。実Worker / Chrome / D1統合、stop / cleanup、正式Actions・human opt-in Gate、Gate A〜D・#608全体Doneは#930へ残す。
+current-head Product CI / PR Traceability / 独立Claude Reviewの正式結果はworkflow側で別途確認する。
+
+
+## #943 予約inner接続（prepared composition / finite fixture）
+
+`evaluation/trusted-booking-process.mjs` の `runTrustedBookingProcess({signal})` は後続operatorのisolated child専用で、
+importだけでは副作用を持たない。既存sanitized Node24/Linux env、fresh `TMPDIR===HOME===XDG_CONFIG_HOME` とownerのdeadline signalを前提とする。
+`prepareTrustedBooking` のseed / baseline / 初期proxy disposal後のconsume内でだけ `TMPDIR/browser-home` を0700で新規作成し、directory identityを確認する。
+変更しない `withIsolatedBrowserTls({workerHandoff:true})` のstrict 8788 positive / negative proofとlistener閉鎖・port空き確認後のcallbackだけで、
+同じcert / 親identityを `createBookingWorkerPort` へ渡す。固定8789のprepared readyは実TLS / Chrome成功を意味しない。
+親Browserに新しい非永続strict contextを作り、固定originへ本人Cookieをownerとして注入して、`proveTrustedBookingDom` を一度だけ呼ぶ。
+実Confirm201由来のopaque IDはmemoryだけに保持し、sealed helperのBrowser public close → 単発Worker stop / 8789閉鎖 → inspectOwnedの順で、
+`inspectTrustedBooking(handle, reservationId)` の独立5表readbackと所有tree / 秘密scanへ渡す。Session hashはD1だけで許容する。
+公開戻り値は固定 `{phase:"complete",status:"prepared"}`、失敗は固定phaseを持つ `TRUSTED_BOOKING_PROCESS_FAILED` のみでcauseを持たない。
+旧TLS reportは捨て、ID・Session / CSRF / Expected State Token・HTML / SQL / PII・CLI stderrを出力しない。
+未知 / 中断 / 重複はfail-closed、再start / stop / DOM / readback、ID推測、所有ファイルの削除を行わない。
+
+`evaluation/trusted-booking-process.test.mjs` は `useTrustedBookingProcess` のfinite Port seamと既存sealed handoff / cleanup関数で、
+seed前TMP空の前提、8788閉鎖前の8789拒否、strict context / 本人Cookie、単発DOM、Browser close / 単発stop / closed前readback拒否、
+negative / unknown / duplicate / abort / timeoutの再操作禁止・固定非秘密出力・import時非起動・Production / workflow / read-onlyから到達不可を検査する。
+既存 `npm run test:unit` に登録し、実Wrangler / Chrome / systemd / HTTPS / persistent D1は起動しない。
+WACはR0 / C1 / P1 / B1、Yellowのprepared限定。C1の実ss / Playwright / asset MIME / Cookie互換性をfixture成功でC0へ昇格させない。
+上記#941節と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared integration **partial evidence**のみで、
+識別子・AC→TCの意味、CON-001/002/009・OOS-001/002は変更しない。旧#914 / #922 helper・証拠、Production / SQL / config / workflowは不変。
+outerのrun-owned TMP / HOME / persist・systemd unit・同一Invocation terminal / process no-live・NSS / cert / key完全cleanup・booking専用reportの準備は下記#945、
+実step期限 / 費用 / 復旧判断、実環境互換性の確認、human-gated official normalとnegative / 探索評価は#930の後続責務。
+今回CLI / Actions entrypoint / outer ownerは追加せず、#537 Gate A、Gate B〜D、#608 Done / Production-readyを主張しない。
+current-head Product CI / PR Traceability / 独立Claude Reviewの正式結果はworkflow側で別途確認する。
+
+## #945 予約outer・private report・完全cleanup（prepared / finite only）
+
+`evaluation/trusted-booking-outer.mjs` は予約専用test-only operator。import / 引数なしは資源を起動しない。
+exact `--run` は将来の構成入口であり、本Issueでの実行許可ではない。CLI / envによるorigin / port / DB / remote / 認証指定はない。
+fresh 0700 `TMPDIR===HOME===XDG_CONFIG_HOME`、credential-free allowlisted env、metrics=falseと固定log pathを用いる。
+既存closed予約config・資産 / migrations・依存版・Chrome / NSS tools・旧persist不在・8788/8789空きを検査し、
+既存 `browserUnitPreflight` のnon-root / NoNewPrivileges / fixed cgroup unit probeをD1 / cert / browser生成前に行う。
+outerは親`.wrangler`とfresh TMPのidentityを保持し、booking persist / browser-home / cert / NSS / seedを先行生成しない。
+既存#937のexclusive seed / empty TMP preflightをinner childだけが一回所有する。
+
+`evaluation/trusted-booking-child.mjs` はisolated unit専用入口。`runTrustedBookingProcess({signal})` を一度だけ呼び、
+exact `{phase:"complete",status:"prepared"}` と非abortを確認してからだけbooking専用reportを確定する。
+`evaluation/trusted-booking-report.mjs` の固定 `booking-report` はexclusive partial→atomic rename、0600、NOFOLLOW read、
+owner / mode / nlink=1 / 最大256 bytes / fdとpathのidentity・size・mtime / ctime安定性を照合する。
+文法はisolated complete prepared、fixture complete prepared、unknown failedの3固定文字列だけ。旧browser-report / browserEvidenceは使わない。
+fixture結果や旧read-only結果はisolated child成功として受理しない。ID / token / hash / CSRF / Expected State Token / PII / payload / raw error / SQL / paths / envは出力しない。
+
+成功順序はinner seed→8788 TLS正負 / 閉鎖→8789 Preview200 / Confirm201 / History→Browser close / Worker stop / 閉鎖→独立5表readback / secret scan→child report / exit0、
+outerの `BrowserUnit.terminal()` によるstop前二度の同一Invocation / ExecMainCode=1 / Status=0 / cgroup no-live照合→booking report、
+独立両port / generated files不在 / 親・TMP・child作成persist・browser-homeのidentityとowned tree照合→`dispose(true)` のstop / inactive確認、
+全identity / tree再照合→test-owned persistとTMP（HOME / NSS / cert / key / report / logを含む）の削除→固定checkpointである。
+outerはwrite / seed / Confirm / readbackを再実行せず、snapshotをproxyなしで推測しない。
+unknown / abort / timeout / manager不整合 / report不備 / 残存 / identity driftは失敗を保持し、一度だけstop依頼、削除せず人間介入とする。
+preflight失敗もfresh TMPを保持する。無条件finally削除 / rm -rf / force / automatic retryはない。
+
+既存owner総180秒 / unit最大120秒を維持し、childは110秒soft abort（120秒unitなら10秒margin）を持つ。
+preflightで残予算が減った場合は既存unitの短いhard期限が優先し、soft abortやcleanup完了を保証しない。
+予定構成はouter preflight→child（migration最大60秒、TLS / launch各既存上限、Worker startup最大30秒、DOM各5秒、停止 / readback）→outer確認 / releaseである。
+各step上限の総和は120秒を超え得るため、通常1回が予算内で完了するとの保証はなく、期限不足はfail-closedで保持する。
+秒数増量 / retryはしない。#930で実測前に時間・cost・Runner / D1 / TLS資源、fail-closed保持・復旧者、manifest / CI temporary安全差分を別途人間が判断する。
+
+`evaluation/trusted-booking-outer.test.mjs` は実inner controllerのfinite Portsと既存BrowserUnit injection seamで上記順序・一回性・report拒否・非終端 / unknown / abort / timeout時の非削除・秘密非反射を検査する。
+既存 `npm run test:unit` へ追加し、Wrangler / Chrome / systemd / real D1 / HTTPSは起動しない。
+#951で導入したouter固定stageの最外catch / CLIへのsanitized引き渡しを、#955はterminalだけ既存`BrowserUnit.failure`のfirst-latched原因で補う。固定対応は`TIMEOUT→timeout / MANAGER→manager / MISMATCH→mismatch / CANCEL→cancel`、UNKNOWN・その他・無し・不正値・getter throwは`unknown`。例外message / stack / cause / 環境 / PIDは分類元にせず、UNKNOWN latch / dispose前に分類する。terminal CLIは#959の停止・snapshot診断に#965のstop_observationを加えた固定一行 / 末尾LF一つ / exit1とする。非terminalの既存固定文法、成功checkpoint / stderr空 / exit0、無許可CLI拒否は不変。allowlistの正本はouterの`sanitizedFailure`と同testの`proofStep`であり、再sanitizeも完全一致だけを保持し、任意情報は反射しない。stage / reasonは失敗の大分類だけで、内部D1 write / Confirmやcleanup成否を示さず、`timeout`からsystemd RuntimeMaxSecを断定しない。
+#948の同ファイル内caller guardはProduction / 旧sealed / 他workflowの予約outer・child・report参照を引き続き拒否する。
+通常main / 通常PRのProduct CI参照も拒否し、GitHub Actionsのsame-repository `pull_request` / base `main` / `proof/930-booking-normal-...`だけを例外候補とする。
+eventのPR HEADとGit HEAD、event baseとcheckout時に取得した`origin/main`、merge-base、clean sourceを照合し、base→HEAD差分がProduct CI一ファイルの変更だけであることを必須とする。baseが進んだ・取得不能・dirty sourceならfail-closedとし、fresh checkout / eventの再照合が必要。
+正本base workflowとのbyte単位比較で現行の#998標準8コマンド・permissions・trigger・actions・step順序を保持し、同testの`proofStep`に一致する末尾一stepだけを許容する。単発`--run`、runner step上限4分、outer subprocess上限190秒 / 出力4096 bytes、成功stdoutの既存固定checkpoint完全一致・stderr空・exit0を検査する。#951 / #955ではerror / signalなし、status===1、stdout空、stderrがallowlisted固定診断と末尾LF一つに完全一致する失敗だけ固定表示する。#965のterminalは`BOOKING_PROOF_FAILED; stage=terminal; reason=<固定値>; unit_stop=<confirmed|unknown>; diagnostic=<observed|unknown>; stop_observation=<固定値>`（observed時だけ現行#983 V2の固定9 fieldを続ける）、非terminalは既存`BOOKING_PROOF_FAILED; stage=<固定値>`を返し、reason / unit_stop / diagnostic / stop_observationが不足した旧terminal・fake reason・余分なLF / CRLF・非1 exit・exec error / signal / overflowを含むその他は`BOOKING_PROOF_FAILED; stage=unknown`とする。raw出力は反射しない。outerの180秒 / child最大120秒を増量せず、retryしない。190秒はouter後の10秒margin、4分はwrapperのbackstopであり、cleanup成功を保証しない。
+positive / negativeは有限fixtureと実行しないspawn adapterで検査する。#951 / #955は実outer catch / CLIをVMのfinite adapterで、Proof wrapperをspawnしないVM seamで検査し、stage / terminal reason保持・未知 / 細工message・不正改行・追加出力・PII canary・signal / timeout / exec error / output overflowの反射拒否を確認する。guardの許容は人間承認・正式proofではなく、実証用一時PR作成・実行前後に#930の承認checkpoint / scope / 対象HEAD・PR / Runを別途人間が照合する。#947の実走0回の後、#950の承認済みnormal1回は実行済み・失敗（下記supplied evidence）であり、追加normal・期限・Secrets / Production禁止・中止条件・原状復元のfresh gateは#930の新たな人間判断に残す。#951 / #955ではworkflow追加や実証を行わない。#955は既存BrowserUnitのcommand / now / sleep注入だけでmanager Result=timeout / exit-code、ExecMainStatus非0、固定property / InvocationID drift、owner期限、Abort、show失敗 / 欠落と悪意あるfailureを照合する。共通#914 adapterとstop / cleanup契約は変更しない。
+#957は同じ`trusted-booking-report.mjs`内に、成功reportと別の固定`booking-diagnostic` codecをprepared / diagnostic-onlyで追加する。
+文法・finite enumの機械正本は同moduleの`encodeBookingDiagnostic` / `parseBookingDiagnostic`。現行#983 V2の固定順9 fieldだけを受理し、最大256 bytes、末尾LF一つ、余分field・型違い・任意文字列を拒否する。
+`writeBookingDiagnostic(owner, data)` / `readBookingDiagnostic(owner)`のownerは既存`ownedIdentity`で捕捉したrun-exclusive directory identityとする。0700 directoryの同一性を毎回照合し、writerは同じidentity objectを更新に再利用する。初回は既存finalを採用せず、更新は前回確定したfinalのmetadataとstrict schemaを再検査してから、固定`.partial`のwx / 0600作成→同directoryのatomic renameを行う。失敗したwriterは閉じ、partial・非所有・置換・不正schema・rename失敗を修復 / 削除 / retryしない。固定`TRUSTED_BOOKING_DIAGNOSTIC_FAILED`だけを返す。
+readはpartial不在、NOFOLLOW / NONBLOCK、regular0600・同UID・単一link・小容量、前後fd / pathのdev / ino / uid / gid / mode / nlink / size / mtime / ctime一致と完全なbytesを検査する。同writer identityで既知のfinalがある場合はそのmetadataも照合する。独立readerは捕捉済みdirectory identityとread中の安定性を検査し、現行V2の診断9 fieldだけを返す。実snapshotの新鮮さやruntime状態は証明しない。
+`trusted-booking-outer.test.mjs`のfinite file / VM fs fixtureで初回・複数更新・独立read、全enum、partial（stopを含む）、mode / owner / link / final置換、増減・型 / 改行・Canary、write / rename / close失敗と再試行なしを検査する。掃除はfixture-local directoryだけとする。
+`phase=dom`はConfirm / write成功の証拠ではなく、`boundary=entered`は最後に観測した開始位置の下界、`primary=none`は一次失敗不在の証明ではない。`worker_stop=confirmed`もouter unit / cgroup停止を保証しない。snapshotでbooking成功report / read / cleanup gateを緩めない。
+#957のWACはR0 / C1 / P1 / B1、Yellow prepared限定。Product POL→BR→REQ→AC→TC・CON / OOS・既存識別子 / traceability、旧8788、予約Confirm、成功 / cleanup semanticsは不変。#957単独時点では未接続だった観測Port・停止後read・厳密wrapperは、下記#959のprepared統合へ接続する。実Chrome / Worker / systemd / D1 write、Linux実runner temp filesystem・子孫生存・実snapshot新鮮さは未証明であり、追加Chromeは#930の新たな人間gateまで禁止する。正式same HEAD Product CI / PR Traceability / 独立Claude Reviewはworkflow側の別証拠とする。
+
+#959は既存codecをprepared child / outer / 固定Proof wrapperへ接続する。`prepareTrustedBooking(consume, observeEntered)`は既存preflight→persist absent→TMPDIR empty成功直後・migration前に、optional同期hookを一回だけ実行する。hook例外 / 非同期戻り値は既存seed failureへ閉じる。初回`seed/entered/none/not-attempted`から、processの同じ`ownedIdentity(TMPDIR)` objectで有限snapshotを更新し、各phase entered/completedとfirst observed primaryを保持する。helper finallyがstop / inspectへ移ってもprimaryを上書きしない。Worker stopは要求前not-attempted→一回要求開始attempted→既存stopped＋portClosedの成功時だけconfirmed。writer failure後は再書込せず、complete snapshot書込失敗も成功reportを抑止する。hook未到達はunknown、hard kill前の最後のsnapshotは古い可能性があり、真のroot causeは証明しない。TLS raw reportのnoop・child single call / 110秒soft abort・成功reportは維持する。
+
+outerはterminal failだけに`reason; unit_stop; diagnostic; stop_observation`を固定順で追加する（stop_observationは下記#965）。started=true、確認済み非zero Invocation、呼出し前stopped=falseから既存`dispose(false)`が一回のstop / show検査を例外なく返し、同一instance / Invocationを保持した場合だけunit_stop=confirmedとし、`ports.diagnostic()`を一回読む。#973では下記の診断専用Manager確認も追加する。成功・nonterminal・事前停止 / start未完 / 停止確認不成立は0read、terminalならunit_stop=unknown; diagnostic=unknown。confirmedでもcodecのpartial / owner / stability / enum拒否はdiagnostic=unknownとする。observed時だけ`phase; boundary; primary; worker_stop; worker_failure; worker_stop_detail; dom; fault; write`をcodecから復元し、getter / toString / raw errorを表示しない。再sanitize / Proof wrapperは固定enumから復元したbytesと完全一致する文法だけ採用し、旧reason-only・偽field・追加LF / CRLF・canaryはunknownへ閉じる。正常terminal二重確認→正式report→finalCheck→release→removeと両port / cache / owner条件、時間上限・再試行禁止は不変。diagnosticはConfirm / D1 write / cleanup / 再送 / human Gateの権限を持たない。
+
+`trusted-booking-seed.test.mjs`の実prepare関数＋有限依存fixture、`trusted-booking-process.test.mjs`のphase / primary / stop / abort / writer failure fixture、`trusted-booking-outer.test.mjs`の実BrowserUnit command注入＋実codec / child接続と厳密wrapperで検証する。processのcodec参照はexactなdiagnostic writer importだけcaller guardへ許可し、成功report / child / workflowへの未知callerは拒否する。R2–3 / C1 / P1 / B1、Yellow prepared限定で、新proof infrastructure / temporary workflow / 実Chrome / Worker / systemd / migration D1 / Confirmを追加しない。既存TC-F-003/005・TC-NF-902/914へのpartial evidenceであり、識別子・AC→TC・CON-001/002/009・OOS-001/002とProduct意味を変えない。実runner systemd版・子孫state・filesystem・snapshot新鮮さ、`ss -ltnp` unrelated listener PID非表示の影響は#979で所有queryを置換し、実filter互換性の検証は#930へ残す。正式same HEAD CI / Traceability / 独立Claude Reviewは別途必要で、#537 Gate A〜D / #608 Done / Production readinessを証明しない。
+
+
+#965は#963の既存producerをterminal失敗のouter→再sanitize→固定Proof wrapperへ接続する。外部文法は`TRUSTED_BOOKING_OUTER_FAILED; stage=terminal; reason=<既存reason>; unit_stop=<既存値>; diagnostic=<既存値>; stop_observation=<固定値>[; phase=...; boundary=...; primary=...; worker_stop=...; worker_failure=...; worker_stop_detail=...; dom=...; fault=...; write=...]; retain owned files; do not retry`。wrapperは同じterminal fieldsを`BOOKING_PROOF_FAILED` prefixで表示する。機械正本はouterの`stopObservations` / `sanitizedFailure`と同testの未実行`proofStep`、snapshotの正本は既存codecとする。
+既存first failureのreasonをlatch / dispose前に確定し、terminal eligible（started、未停止、検証済み非zero Invocation）の正常なfalseはouter専用ineligible、評価例外はunknownとする。いずれも既存`dispose(false)`一回を維持する。完了 / 例外後、eligible=trueだけown data propertyのdescriptor.valueをstrict stringで上記shared10値に照合する。欠損 / inherited / accessor / 非string / 未知値 / descriptor取得throwはunknown、getter / toString / message / stack / causeは分類に使わない。成功 / nonterminal / ineligibleでは観測を読まない。
+観測と既存unit_stop / diagnostic read gateは独立する。#965の既存経路ではeligible＋dispose正常復帰＋同一Invocation / started / stoppedのpostcondition成立だけがconfirmedとなり、観測の欠損 / 不正でも既存diagnosticを最大一回読む。confirmedではproducer acceptedだけaccepted、他はunknown。unit_stop=unknownではproducer acceptedをunknownへ畳み、正常復帰後のpostcondition不成立もproducer値によらずunknownとする。dispose例外時はallowlisted非accepted値を保持し、正常評価でineligibleならineligible、eligible評価例外ならunknownを出す。
+許可組合せはconfirmed→stop_observation=accepted|unknown|manager-empty（manager-emptyは下記#973）、diagnostic=observed|unknown、unknown→diagnostic=unknown、stop_observationはaccepted以外のshared値＋ineligible。現行V2のsnapshot9 fieldはobserved時だけcodecから復元する。再sanitize / wrapperは許可組合せ・固定順・完全bytes一致を検査し、矛盾 / 未知値 / 新項目なしの旧terminal / 余分field / LF・CRLF / canaryは既存stage=unknownへ閉じる。acceptedにも成功 / 削除 / 再試行の権限はない。
+同outer testの既存finite fixture / 実BrowserUnit command・now seam / CLI VM / spawnしないwrapperで、TIMEOUT→failed-state、stop / show budget・command throw・parse不正、Invocation drift、state-unaccepted、既存2 positive、hostile property・eligible例外・postcondition不成立、全許可組合せ / 文法拒否を検査する。stop最大一回、confirmedのみdiagnostic最大一回、unknownは0read、terminal失敗のreport / removeなし、既存guard拒否と成功 / nonterminal不変を照合する。#965時点では追加command / query / remaining / now、retry、deadline変更、shared producer / child / codec / workflow / 予約実装の変更はない。追加queryは下記#973の診断専用経路だけとする。
+WACはR0 / C1 / P1 / B1、Yellow preparedを維持する。既存TC-F-003/005・TC-NF-902/914へのpartial evidenceのみで、POL→BR→REQ→AC→TC / CON / OOS、Gate A〜D、#608 Done、Confirm / D1 write / cleanup意味は不変。分類は原因確定やno-live追加証拠ではなく、実Chrome / systemd / Worker / D1、実停止後状態とsnapshot新鮮さを証明しない。正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠とし、追加live proof・結果別の次判断は#962 / #930の人間判断へ残す。過去#961のunknown出力は改変しない。
+
+
+#973は信頼されたsystemd/root管理系による診断専用停止確認を同じ予約outerへ接続する。信頼対象はレビュー済みrepoの評価コード・子コードとrunnerのsystemd/root管理系で、同一lifecycleへの外部管理者 / 並列処理によるrestart / reattach、cgroup移動 / 再作成、Manager再実行等の追跡喪失がない運用を前提とする。非root / NoNewPrivileges / Delegate=no / ProtectControlGroupsは維持するが、悪意ある同UIDコードの完全隔離や全migration拒否、atomic kernel no-liveを証明しない。
+既存terminal eligibleとdispose(false)一回を維持し、そのstop正常終了とstrict cleanup showで同一Invocationのloaded/failed/failedを実際に観測した事実だけをBrowserUnitのprivate状態に保存する。disposeの通常成功predicate / release=true / 旧#914 callerは変更しない。dispose例外後にeligibleなouterだけがconfirmDiagnosticStopを一回試み、public stopObservationをgateにしない。stop失敗 / cleanup show不正 / identity drift / 早期returnでは追加commandなし。
+確認はstrict systemctl show→固定busctl GetUnitProcesses最大一回→strict showの順で、両showの同一Invocation / loaded/failed/failed、全固定settings（NRestarts=0を含む）、User / Group、RuntimeMax / TimeoutStop、MainPID=0 / ControlPID=0を検査する。ControlGroupは元の厳密unit pathまたは空だけ、前後同値を要求する。Manager応答は厳密な `a(sus) 0\n` だけを採用し、非空 / 不正 / 例外 / overflow、欠損 / 重複 / 不正property、cancel / owner期限不足はunknownへ閉じる。各commandは残予算内かつ最大5秒 / 16KiB、既存180秒owner / 最大120秒unitとstop/show留保10秒、wrapper190秒 / step4分を維持し、再stop / retry / reset-failed / kill / FS observer / 時間延長を追加しない。busctlのread-only存在確認は予約outer限定で、shared preflightは不変。
+成立時の固定外部値はunit_stop=confirmed; stop_observation=manager-emptyとし、diagnostic=observed|unknownを許可する。field順は維持し、producerのstopObservation=failed-stateはacceptedへ変更しない。unknown停止とのmanager-empty組合せは拒否する。既存accepted|unknownのconfirmed経路、成功 / nonterminal / unknownの文法は維持する。API empty / ControlGroup空は上記信頼モデルで診断を最大一回読む確認であり、独立kernel証明、通常release / owned remove、予約成功 / Confirm再送 / D1 commit判断ではない。first failureを保持し、failure report / removeなし、owned files保持とする。
+同outer testの既存BrowserUnit command / now injection、CLI / spawnしないproofStepでpath / 空のpositive、既存accepted、全設定 / identity / state / PID / runtime / cgroupの前後変化・欠損、stop / show / API失敗、不正bytes / overflow / cancel / 予算切れ、one stop / API最大一回 / diagnostic最大一回、固定許可組合せ / 矛盾 / 旧文法 / hostile getter / canary拒否を検査する。R1相当 / C1 / P1 / B最大2、Yellow preparedで、TC-F-003/005・TC-NF-902/914への診断partial evidenceのみ。Product識別子 / POL→BR→REQ→AC→TC / CON / OOSは不変。supplied #972のsleep単発観測は実Chromeへ一般化せず、実Chrome / systemd / Worker / real D1、配布systemdソース一致、snapshot新鮮さ / 真因は未証明。#537 Gate A〜D / #608 Done / Production readiness未達、正式same HEAD Product CI / Traceability / 独立Claude Reviewと、merge/review後のfresh HEADに対する別承認の実Chrome単発は未実施として#930へ残す。workflow / Regression shape fixtureは変更しない。
+
+
+#976時点では既存V1診断の末尾へ`worker_failure; worker_stop_detail`を固定順で追加し、codec / producer / outer / CLI / 固定proofStepを6 fieldへ同期した。現行schemaは下記#983のV2へ移行する。旧4 field・途中欠落・未知enumは受理しない。schema / enum / bytesの機械正本は`trusted-booking-report.mjs`、固定コード位置の分類は`trusted-booking-worker.mjs`、first failureとsnapshot接続は`trusted-booking-process.mjs`とし、過去runの出力を遡及変更しない。
+Workerの既存effects seamへ第三引数のoptional同期hook `(kind, value)` を渡し、failure / stopの固定enumだけを観測する。create/input検査はpreflight、start中のgroupAlive / ps / PGID失敗はgroup、PIDなし8789はbooking-listener、#979以後はfilteredの帰属 / 文法不明をlistener-unattributed（8789表示の所属不明はbooking-listener）、同unit非loopbackをowned-listenerとして、最も直接のコード位置でfirst observed startup failureを一度だけ保存する。例外message / stack / cause / command出力を分類元として渡さず、stop / finallyで上書きしない。noneは健全性を証明しない。stopは所有確認→signal直前 / 正常復帰→wait→port→confirmedを保存し、first stop failureまたはconfirmed後の重複呼出しで更新 / retryしない。signalは送信済みを証明せず、signal-failedは成否不明、signal-sentも終了完了を証明しない。stop進行は最後の保存位置だけで、生存 / 鮮度の保証ではない。worker_stopはconfirmed / not-attemptedをdetailと整合させ、既知進行 / failureはattempted、不明停止はunknownとする。
+processは同じownedIdentityのwriterへ現行V2の9 fieldを一括保存し、hook throw / 非同期戻り値はfail-closed、writer failure後はwrite閉鎖・成功抑止・非修復を維持する。#979の所有query置換に伴うcommand / read順序・call countはworker testを正とし、signal単発 / readiness polling、起動30秒 / stop10秒、child110秒 / unit最大120秒 / owner180秒、codec256 bytes / wrapper4096 bytesを維持し、旧V1最大186 bytesは拒否fixture、現行V2最大244 bytesは受理fixtureで照合する。outerは既存codec経由で9 fieldだけ復元し、confirmed時diagnostic最大一回・unknown停止0readとaccepted / manager-emptyの許可組合せ、nonterminal / 通常成功の文法を保持する。
+既存worker / process / outerの有限effects / file / VM fixtureで全分類の正負、既知別PGID・owned loopbackと未帰属 / 非loopbackの区別、起動失敗と停止failureの独立、DOM failureのnone、重複抑止、signal正常 / throw・wait期限 / 子終端不明・port失敗、同期snapshot / writer failure、private FS security・型 / getter / LF / CRLF / 欠落 / 順序 / canary拒否を検査する。#979同期後の有限機序は、予約positive controlに正しいcgroup表示を付け、追加行のcgroup表示欠落によって実Worker Port→process→private file→outer / CLI / proofStepでlistener-unattributed / ownership-failed / signal0 / primary=worker、owned保持・成功report / removeなしを確認する。supplied #978 Run #38124297043では旧全host検査のPID不可視行による起動 / stop拒否が観測済みだが、実processの所有者は未確定で、SIGINT / DOM / Confirm / D1 write / cleanup成功は未証明。過去出力は変更しない。
+WACはR1相当 / C1 / P1 / B最大2のYellow preparedで、700秒内elapsedの比較可能実績は不明。TC-F-003/005・TC-NF-902/914へのprepared診断partial evidenceのみ、Product POL→BR→REQ→AC→TC / ID / CON / OOS、予約 / Confirm / D1 / cleanup・旧8788 / Production意味は不変。実Chrome / Worker / systemd / real D1、snapshot新鮮さ、正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは未証明。Gate A〜D / #608 Done / Production readinessへ昇格せず、review / main後の追加live単発と結果別判断は#930のfreshな別承認に残す。新runner / proof基盤・workflow / 外部実行は追加しない。
+
+
+#983は親#982の第1実装として、既存private codec / 同期producer / 停止後reader / sanitized CLI / 未実行`proofStep`をV2の9固定fieldへ一括同期する。fixed ASCII prefixは`TRUSTED_BOOKING_DIAGNOSTIC_V2;`、順序は`phase; boundary; primary; worker_stop; worker_failure; worker_stop_detail; dom; fault; write`。closed enum / strict bytesの機械正本は`trusted-booking-report.mjs`とし、V1・未知version・旧6 field・欠落 / 追加 / 重複 / 順序違い・任意文字列は拒否する。末尾LFを含む最長の実値組合せは244 bytes、恒常上限256 bytesと257 bytes拒否を維持する。
+`trusted-booking-process.mjs`の既存`ports.observe`は全phase / stopで同じ9 keysを同期発行する。新3項目は#983時点では`dom=none; fault=none; write=unobserved`の準備値だった。現行の実イベント接続は下記#984を正とする。「DOM未起動」「Confirm未送信」や診断能力向上のLive証拠にはしない。既存primary / Worker first failure / stop observationは保持し、DOM一次失敗を後続phase=stopで上書きしない。#983ではDOM helper / hookを変更しなかった。
+既存process / outer finite fixtureで全enumのcodec→private file→停止確認済みouter→CLI→exact wrapper、最長244 bytesの実値組合せ、256 / 257 bytes不正入力、V1と全fieldの欠落 / 追加 / 重複 / 順序・型 / getter / LF・CRLF / canary拒否を照合する。owned private 0600 atomic snapshot / stat / partial / symlink・hardlink・race拒否、停止未確認0read・confirmed最大1read、first failure / one-stop / observer errorと成功report文法を回帰する。wrapperは文字列escapeと単発spawnを維持し、恒常workflowへstepを追加しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared限定。TC-F-003/005・TC-NF-902/914へのprepared partial evidenceのみで、POL→BR→REQ→AC→TC / CON-001/002/009 / OOS-001/002と予約・成功 / cleanup意味は不変。実Chrome / Worker / systemd / D1・live DOMイベント・snapshot新鮮さは未実証。第2実装のprepared DOM hook接続は下記#984とし、追加Chrome / 実Confirm・D1 writeは#930の別事前承認へ残す。V2準備だけで正常予約・Proof追加・Gate A〜D / #608 Doneを主張しない。
+
+
+### #984 DOM・Confirm観測3軸の同期接続（prepared / finite only）
+
+`trusted-booking-dom.mjs` の任意 `observe(kind, value)` は、秘密データを含まない固定enum pairだけを同期通知する。
+`trusted-booking-process.mjs` は同じ単一seamで許可pairを検証し、既存 `ports.observe` の9field snapshotへ接続する。
+`dom` はlast enteredであり、processのcontext / cookie-check / cookie-injectからhelperのcookie-jar / route / navigation / assets / initial-ui / selection / preview / review / confirm / confirm-ui / history / handoff / completeへ進む。Page作成はroute、初期heading待機はnavigation、月取得と初期Historyはinitial-ui、201 payloadと返却IDの検査はconfirm、History照合後のID返却はhandoffに対応する。開始は成功を表さない。
+`fault` は固定制御位置のfirst observedだけを保持する。route / response / navigation / network、既存abort / Timeout guard、自前assertion、操作位置が確実なdriverだけを分類し、任意例外はunknownとする。helper hookがない場合もcontext / Cookieの観測は残すが、helper例外の内容からdriver / timeoutを推定しない。
+`write` はhighest safely observedを保持する。Confirmクリック直前のaction-startは送信証拠ではなく、route callbackのrequest-seenはforward証拠ではなく、guard通過直後・continue直前のroute-allowedは配送 / Commit証拠ではない。同じrequest identity・Page response eventのHTTP201だけでresponse-201へ進み、D1 5表readbackを代替しない。未観測は未送信の証明ではなく、応答不能ではそれ以前の観測値だけを保持する。
+first fault / abort / observer throw・非同期戻り値 / helper返却後は通知を閉鎖する。遅延route / response、重複POST、Worker stop / readback / scan / cleanupは3軸を昇格・上書きしない。observer失敗は成功を抑止し、既存first primary・単発停止・deny guard・Confirm再送禁止を保持する。URL / request / headers / Cookie / Session / token / error / HTML / SQL / IDをobserverへ渡さない。
+`trusted-booking-dom.test.mjs` と `trusted-booking-process.test.mjs` のfinite正負fixtureで各checkpoint・fault・Confirm段階、実helper→process→V2 codec、abort / bounded timeout / pending driver解決後・late response / identity不一致・observer failure・重複POST・stop後の不変を照合する。`trusted-booking-outer.test.mjs` のhook未通知real process fixtureはcookie-inject / unknown / unobservedを既存private snapshot→停止済みouter→CLIへ通す。codec全enum・拒否条件は保持する。
+#992のroute時Fetch Metadata観測境界とfinite受入条件は上記#941節を参照する。supplied #991の初回V2 booking Proofは通常9工程success後に実Chrome Proof failureとなり、固定診断は `primary=dom; dom=preview; fault=request; write=unobserved`、Worker / Unit stop confirmedだった。一時PRは未merge Closed・workflow元blobへbyte復元済みで再実行 / Confirm再送なし。これは静的矛盾の原因候補であり、拒否guard / 真因の確定や未送信の証明ではない。#992のfinite成功でも実Chrome予約成功・D1 5表readback・owned cleanupは未証明で、追加Chrome一回にはreview / main後の#930で別の新human Gateが必要となる。
+WACはR0 / C1 / P1 / B1、Yellow prepared。TC-F-003/005・TC-NF-902/914へのpartial evidenceのみで、POL→BR→REQ→AC→TC・CON-001/002/009・OOS-001/002、予約操作 / HTTP / 成功 / readback / cleanup・時間上限は不変。実Chrome / Playwright互換性 / Worker / systemd / D1・snapshot新鮮さと正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠であり、追加実Chrome / Confirm一回・一時Proofは#930の別人間承認待ち。#537 Gate A〜D / #608 Done / Production Readyへ昇格しない。
+
+限定guardのWACはR0 / C0相当 / P1 / B1、Green。Issueが明示した静的判定Contractの定義・finite proofだけであり、下記prepared runtimeのC1を昇格しない。
+#951 / #955の固定診断引き渡しもR0 / C0相当 / P1 / B1、Greenの明示scopeであり、runtime target-modeへの昇格や新しいproof infrastructureを追加しない。
+WACはR0 / C1 / P1 / B1、Yellow prepared限定。#941と同じPOL→BR→REQ→AC→TC-F-003/005・TC-NF-902/914へのprepared outer partial evidenceのみ。
+識別子・要求・AC→TCの意味、CON-001/002/009・OOS-001/002、Production / SQL / config / workflow / 旧read-only sealed semanticsは変更しない。
+実機non-root `ss -ltnp` PID可視性、Node24 native .ts、Playwright / MIME / Cookie、120秒 / 180秒実runtime、クラッシュ後report / owned cleanupは未実証。
+#951のsupplied evidenceでは#950（temporary step復元後Close / 未merge）のProduct CI #38061592313は通常工程success後、予約stepが約120.43秒で固定`BOOKING_PROOF_FAILED` / exit1となった。D1 write・Chrome到達・Worker停止・cleanupの成否とtimeout真因は不明であり、時間だけから分類しない。追加actual normal / negative・探索 / 全gateは#930の新たな人間判断へ残し、fixtureをC0 / 正式proof、#537 Gate A〜D / #608 Done / Production readinessへ昇格しない。
+#951でofficial proof / temporary workflow編集 / dispatchは未承認・未実施。current-head Product CI / PR Traceability / 独立Claude Reviewはworkflow側で別途確認する。
+
+#955のsupplied evidenceではPR #954（temporary workflow撤去後Close / 未merge）の正式Product CI #38065895460は標準9工程success後、予約step約120.48秒で`BOOKING_PROOF_FAILED; stage=terminal` / exit1。`unit.start`完了後のterminal失敗であり、旧reason無し結果は遡及変更しない。preflight経過を`P`秒とするとunit runtime上界は`min(120,floor(170-P))`秒（owner180秒からstop / show用10秒を留保）。P=50秒までは最大120秒、P>50秒では短縮され、残予算1秒未満なら起動不能。child110秒soft abort、wrapper190秒、step4分を維持し、約120.48秒だけではmanager Result=timeout / owner予算 / command timeoutや内側phaseを区別できない。D1 Confirm済み / 未実施・cleanup成否は未証明。追加live proofは新たな人間承認を要し、期限延長・例外緩和はscope外。#955は静的 / 有限adapter証拠のみであり、正式same HEAD Product CI / Traceability / 独立Claude Reviewはworkflow側の別確認に残す。
+
+## #1002 Cookieなし8789 DOM / GET-only（prepared / finiteのみ）
+
+静的6資産の200応答は既存 `evaluation/reservation-worker.ts` の契約に合わせ、明示MIME / no-store / `x-content-type-options: nosniff` / no-referrerを必須検査する。finite成功fixtureも同じヘッダーを持ち、不正値・欠落・未知の追加ヘッダーを拒否する。`nosniff`の受入は新helperのasset応答だけに限定し、API応答・既存positive helperのguardは変更しない。
+
+`evaluation/trusted-booking-dom.mjs` の分離export `proveUnauthenticatedBookingDom({context, fixture:{month}, signal})` は、ownerが作った新しい空Cookie・空Pageの専用contextを一回だけ消費する。strict TLS（`ignoreHTTPSErrors:false`）と`serviceWorkers:"block"`の設定・実証、Browser / Worker / TLS / D1 / seed / stop / cleanupはownerの責務。fixtureは秘密・本人情報を持たない有効な架空monthだけ。既存の正常`proveTrustedBookingDom`・V2観測・write latch・Confirm201と5表deltaの成功契約は変更しない。
+
+固定8789 `/student`と既存6資産、UI初期の東京月Schedule / History GETだけを許可し、初期APIの実Request / Responseに対応する401のDOM停止を先に確認する。本人History / Slot / 選択 / 操作表示が空、401案内、月取得・履歴取得・Preview / Confirm無効を照合する。fixture月Schedule・History・CSRFの未送信対象だけをBrowser-native GETで個別確認し、初期自動GETが必ず3件という仮定や、送信済みGETの再試行は置かない。全APIは既存詳細設計§8 / §10.2〜3の固定401 `UNAUTHENTICATED` / no-store、CSRF no-referrer、正確なSession削除Cookieだけを要求する。routeはCookie・POSTその他method・不正origin / query / hash / credentials / redirect / frame・余剰航路を転送前に拒否し、CORS / 秘密を含む余剰response header / body・ServiceWorker / popup等も停止する。Fetch Metadata欠落は#992と同じ未観測で、headerの偽装・HTTP synthetic置換はしない。各操作は既存5秒上限、abort / timeout後は固定非秘密エラーだけを返し、遅延trafficのdeny guardをownerのcontext閉鎖まで保持する。
+
+`evaluation/trusted-booking-dom.test.mjs` のfinite fake Driver / 合成401 fixtureは、DOM検査・実行順序・3対象GET / POST0・不正Requestの転送前拒否・不正Response / UI / Cookie・abort / timeout / late / 重複実行を検証する。**prepared onlyであり、8789 Worker listenerへの実Chrome接続・E2Eは未実証**。#922の8788実Chrome、#1000の8789 service / local D1 finite、#930正常Runの各証拠と区別する。後続は信頼済みownerによる実8789 HTTPS接続、POST0 / 実D1全表不変、停止 / owned cleanup、正常Confirm checkpointとは別の専用固定reportを設計し、fresh main / Work Admission Controlと人間の新規明示単発承認を必要とする。本Issueはowner / reportへの接続・実Browser起動を行わない。
+
+R0 / C1 / P1 / B1、Yellow prepared。`REQ-005/207/914`、`AC-005-001/002`・`AC-914-004`、`TC-F-005-01`・`TC-NF-914-04`の関連部分へのfinite partial evidenceだけで、識別子・POL→BR→REQ→AC→TC / CON / OOSは不変。CookieなしをSession失効実証や`AC-207-003` / `TC-F-207-03`全体Passへ昇格しない。正式same-HEAD Product CI / PR Traceability / 独立Claude Reviewは別証拠であり、#537 Gate A/D・#608 Done / Production Readyは未達。
+
+## #1004 run-owned seed→non-write D1 inspection（prepared / finiteのみ）
+
+`evaluation/trusted-booking-seed.mjs` の `inspectTrustedBookingUnchanged(handle)` は、既存private baselineと `verifyBookingUnchanged` の全19表・schema比較を直接再利用する。正常inspectionと同じopaque handleを最初の非同期処理前に排他・不可逆に一回消費する。ownerがWorker停止・port閉鎖後に呼ぶ前提であり、helper自身は停止完了を保証しない。前後の所有権確認・独立proxyのdispose一回・固定 `TRUSTED_BOOKING_SEED_FAILED` を維持し、失敗時はファイル保持・再読取なしとする。
+
+同testの既存VM seam＋in-memory Production schemaで成功、SQL writer増分0、first-primary、順序、cross-use / 並行読取、owner drift、行 / schema変更、未知 / 消費済みbaseline、read / proxy / dispose失敗を有限検証する。R0 / C1 / P1 / B1 Yellow prepared、既存TC / AC・POL→BR→REQ→AC→TC・CON / OOSは不変。専用inner / stop-gateへの有限接続は下記#1006を参照する。実Browser / 実8789 Listener / 専用outer/report / actual 401 Proofは未実証で、#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。正式same-HEAD Product CI・PR Traceability・独立Claude Reviewは別途必要となる。
+
+## #1006 Cookieなし401専用inner・owned停止→D1 unchanged（prepared / finiteのみ）
+
+`evaluation/trusted-unauthenticated-booking-process.mjs` の `useUnauthenticatedBookingProcess(ports, signal, observe, observeTls)` は有限Port seam、`runUnauthenticatedBookingProcess({signal,observe,observeTls})` は既存seed / TLS / Worker / DOM / unchanged inspectionにsealedに結ぶ将来operator用関数である。import時の起動・CLIはない。専用child / reportへのprepared接続は下記#1008、outerのprepared接続は下記#1010を参照する。正常`useTrustedBookingProcess` / `runTrustedBookingProcess`、Confirm201→5表delta、V2診断 / success checkpointは不変。
+
+既存`prepareTrustedBooking`のprivate baseline / opaque handle生成一回→fresh `browser-home`→strict TLSの`workerHandoff:true`→同じowned 8789 Workerのstart / isReady一回→strict `newContext({ignoreHTTPSErrors:false,serviceWorkers:"block"})`→`proveUnauthenticatedBookingDom({context,fixture:{month:seed.month},signal:tlsSignal})`一回の順を固定する。Cookie注入 / `addCookies`呼出はゼロで、実Cookie空・Browser-native GET / 401 / UI停止・POST0は#1002 DOMの責務。DOM戻り値はvoidのみを受け入れ、予約ID / Session / CSRFを取得しない。
+
+Context / Browser閉鎖・TLS handoff cleanupは既存#914 ownerに任せ、`stopConsumer`だけでWorkerを一回停止し、`stopped===true && portClosed===true`とstop前後のhome identityを検査する。DOM成功・両signal健全・同じhome / identity・単発性を確認してから、`inspectOwned`で同じhandleを`inspectTrustedBookingUnchanged`へ一回だけ渡す。成功後だけ既存owned tree / file / env / argv secret scanを行う。公開戻り値は固定 `{phase:"complete",status:"prepared"}`、失敗はcauseを持たない固定 `TRUSTED_UNAUTHENTICATED_BOOKING_PROCESS_FAILED` のみ。abort / close不明でも既存ownerのemergency stopは単発で可能だが、readback成功や削除へ昇格しない。二重 / 遅延callback・未awaitのowner戻り・不明結果では再起動 / readback再試行 / release / delete / 正常successへのfallbackを行わず、ファイルを保持する。
+
+`evaluation/trusted-unauthenticated-booking-process.test.mjs` はNode Port doublesと既存`handoffListener` / `cleanupOwned`で順序、strict options、Cookie0 / 注入0、month / DOM void、close→stop→unchanged→scan、owner drift、start / stop / port unknown、DOM failure / timeout / abort、TLS handoff / cleanup、二重 / late / pending callback、固定非秘密出力を有限検証する。VMでsealed依存再利用と秘密scanを確認し、通常`npm run test:unit`へ追加する。実Chrome / 8789 Listener / systemd / 永続D1を起動せず、既存所有者の110 / 120 / 180 / 190秒等・TLS検証・SIGINT制約は変更しない。
+
+R0 / C1 / P1 / B1、Yellow prepared（Stage 2）。sourceの証拠境界は`POST count=0`と`readback=unchanged`であり、正常V2の`write=unobserved`をno-write証明にしない。`REQ-005/207/914`、`AC-005-001/002`・`AC-914-004`、`TC-F-005-01`・`TC-NF-914-04`に関係するfinite partial evidenceだけで、POL→BR→REQ→AC→TC / CON / OOSの意味は不変。CookieなしをSession失効実証・`TC-F-207-03`全体Passとしない。実8789 Chrome / Listener / 全19表unchangedの統合Proof、同一HEAD正式Product CI・PR Traceability・独立Claude Reviewは別証拠。専用child / reportは下記#1008でprepared実装する。専用outer（Stage 3B）のprepared接続は下記#1010。正式Proof手順は別Issue・fresh WAC / 人間判断待ちで、自動開始しない。#537 Gate A〜D・#608 Done・Production Readyへ昇格しない。
+
+## #1008 Cookieなし401専用Child＋固定Report（Stage 3A / prepared / finiteのみ）
+
+`evaluation/trusted-unauthenticated-booking-child.mjs` の `useUnauthenticatedBookingChild({runInner,write,signal,isolated})` はsingle-use inner Portを一回だけ呼び、exact `{phase:"complete",status:"prepared"}` のdata fieldsを専用prepared報告へ変換する。isolatedは厳密な`true`だけで、test-only fixtureは別execution値となる。abort / 不正戻値 / raw例外は最後に観測したentered / confirmedの専用failed報告を一回attemptし、未観測・不正観測は従来unknownとする。成功報告を含めwriterは最大一回で、書込失敗・abort / 結果不明後のunknown再呼出しも行わず、innerを再試行しない。並行・二重entryとabort後のlate結果はsuccess報告へ進めない。ファイルが既存・部分書込・結果不明の場合は保持し、unknownで上書き・再生成しない。
+
+CLIはexact `--isolated-child`だけを明示opt-inとし、`runUnauthenticatedBookingProcess({signal,observe,observeTls})`へsealedに接続する。単なるimport・不正argvは起動しない。110秒soft abort・SIGINT / SIGTERMを設け、finallyでtimer / signal handlerを解除し、stdout / stderrへrawエラーを反射しない。isolated Linux / Node24・sanitized `TMPDIR===HOME===XDG_CONFIG_HOME`とChild所有起動は下記#1010 Outerの責務であり、本IssueのCIはreal CLI / Chrome / Worker / systemd / persistent D1を実行しない。
+
+`evaluation/trusted-unauthenticated-booking-report.mjs` がfixed grammar / 256 ASCII byte上限の機械正本で、別ファイル`unauthenticated-booking-report`を一度だけwrite / readする。normal `booking-report` / V2診断 / checkpointは使用しない。completeは`execution=isolated`または`fixture`・`phase=complete; status=prepared; readback=unchanged`で、unknownの旧固定文法も維持し、#1018のfailedは固定順序`phase=failed; entered=<enum>; confirmed=<enum>; status=failed`だけを追加する。owned directory identity・O_NOFOLLOW・regular / nlink1 / 0o600・bounded read・inode / stat / exact bytesを照合し、`.partial`を排他生成→内容読戻し→rename確認する。directory drift / 既存finalやpartial / link / I/O不明 / 改竄をfail-closedにし、失敗writerを再利用しない。秘密・row / Session / CSRF / SQL / IDやcauseを報告へ追加しない。
+
+#1018の進行観測はChild private memoryだけに保持する同期sealed Portで、機械正本は専用report codecの`unauthenticatedBookingPhases`とprocessの固定発行位置である。`entered`は最後に入った境界、`confirmed`は最後に正常応答と既存検査を確認した境界であり、失敗原因や全体成功ではない。`import`はChild inner module / inner依存のimport、`preflight`はseed helper既存同期hookまで、`seed`はそのhookからopaque seed handoffまで、`home`は専用home作成、`tls-setup`はTLS helper開始から検査済みconsumer handoffまでの集約（TLS内部preflight成功を個別証明しない）。`worker-start`はhome検査 / Worker生成からstartのorigin / ready確認まで、`dom-401`はcontext生成からvoid DOM成功とsignal確認まで、`tls-cleanup`はDOM成功後のTLS ownerへの返却開始だけ（内部Browser close等の個別成功は未観測）、`worker-stop`は既存owned emergency stopを含むstop前後identityとstopped / portClosed確認、`d1-unchanged`は既存inspection、`secret-scan`は既存scanとsignal確認である。cleanupの進行は先行DOM等の失敗位置を上書きし得るため、last phaseを最初の原因と断定しない。`report-write`はChildの単一writer呼出し境界で、書込失敗後にこのphaseを再報告することはできずunknown / absentまたは不確かな既存ファイルを保持する。observer例外は制御へ影響せず、不正field / getter / enum観測はunknownへ閉じ、abort・report開始後のlate通知は捨てる。正常Complete bytesとexit0条件、異常exit1、110 / 120 / 180秒、失敗後の保全と削除禁止は不変である。
+
+#1023は401専用のprivate `observeTls` Portだけを追加する。processは既存TLS Helperの`report(line)`を512 ASCII文字以内のanchored固定syntax / enumで照合し、生lineを保存・引渡しせず、`failure`の最初の妥当なstageとcategoryを`tls_primary` / `tls_err`、`cleanup failure`の最初の妥当なstageを`tls_cleanup`へ還元する。optional ownership / process observationは固定enumだけを検査して破棄し、`cleanup observation`のPRE_CLOSE等は証拠へ昇格しない。同期callbackはno-throw / no-I/Oで、Helper終了・abort後のlate通知を閉じ、observer失敗で実行・owned stop・cleanupを変更しない。Childは別名Portの非Proxy / own-data / fixed enumだけを収集し、最初の一次失敗とそれに紐づく分類、独立した最初のcleanupをlatchする。重複・不正通知・後続cleanup・abortで確定済み軸を上書きせず、try前例外・報告欠落・不一致・cleanupのみで一次失敗が無観測なら`unknown`を維持する。cleanup後の遅いprimaryを原因の復元に使わず、`none`も成功証明とはしない。
+
+新Producerは失敗時に常に固定順序`phase=failed; entered=<enum>; confirmed=<enum>; tls_primary=<enum>; tls_cleanup=<enum>; tls_err=<enum>; status=failed`の7-fieldだけを一回発行する。enum正本は専用report codecの`unauthenticatedBookingTlsPrimary` / `unauthenticatedBookingTlsCleanup` / `unauthenticatedBookingTlsErrors`で、LF込み最長組合せ220 ASCII bytes、上限256 bytes。旧4-field failed・unknown・complete / fixtureの読込と既存fixture向け2-field formatterは互換を維持する。NOFOLLOW / 0600 / nlink1 / owner・stat照合 / atomic partial→rename / writer単発latchは不変。TLS診断は進捗と別の私有観測であり、成功・HTTP401 / POST0 / D1不変・no-live / cleanupの証明ではない。no-live確認前に公開せず、#1024が下記#1010 Outerと#1012 test-only Proofへ同じ固定3軸を接続する。恒常workflowは変更しない。#1023の有限testsは実Chrome・systemd・Worker・永続D1を起動せず、正式CI / 独立レビューおよびlive証拠を代替しない。
+
+同名の専用child / report `.test.mjs` を既存`test:unit`へ登録し、finite Port・VM operator・file-isolated owned TMPでgrammar、fixture区別、110秒設定 / 解除、abort / timeout / late / 二重・並行entry、inner→unchanged / scan→report順序、書込 / 読取 / rename不明、ownership / inode / mode drift、旧normal文字列と秘密canary拒否を検証する。下記#1010専用Outerはsame BrowserUnit Invocationの正常terminal後にcomplete reportを読み、port / owner確認・release後にのみowned cleanupへ進む。#1020はterminal失敗時に停止とsame-Invocation no-liveを確認した場合だけfailed reportをread-onlyで取り込み、進捗を公開する（安全条件は下記#1010節）。ChildはUnit terminal / no-live・cleanup Doneを宣言しない。
+
+R0 / C1 / P1 / B1、Yellow preparedを維持する。`REQ-005/207/914`・`AC-005-001/002`・`AC-914-004`・`TC-F-005-01`・`TC-NF-914-04`へのfinite partial evidenceだけで、POL→BR→REQ→AC→TC / CON / OOSは不変。実401 / Chrome成功、Session失効 / `TC-F-207-03`全体Pass、#537 Gate A〜D、#608 Done、Production Readyへ昇格しない。Stage 3Bのprepared接続は下記#1010。実Chrome / 実Worker / 全19表unchanged＋owned cleanup同一Invocationの正式Proofは未実施・別人間判断待ち。同一HEAD正式Product CI / PR Traceability / 独立Claude Reviewは別途確認する。
+
+## #1010 Cookieなし401専用Outer・BrowserUnit停止・owned cleanup（Stage 3B / prepared / finiteのみ）
+
+`evaluation/trusted-unauthenticated-booking-outer.mjs` の `useUnauthenticatedBookingOuter(unit, ports)` はsingle-useの専用finite seam。remaining / preflight→専用Child `trusted-unauthenticated-booking-child.mjs --isolated-child` のstart一回→既存BrowserUnitの二度のsame-Invocation exited / cgroup terminal→専用Reportのexact `{execution:"isolated",phase:"complete",status:"prepared",readback:"unchanged"}` own data fieldsだけの確認→finalCheck / 残予算→`dispose(true)`の停止・不在確認→残予算 / abort / latch確認→owned remove→再度残予算 / latch確認の順である。fixture / unknown / #1018のfailed / normal report・extra field / symbol・accessorは拒否し、並行・二重entryで元のownerを停止しない。
+
+`runUnauthenticatedBookingOuter()` / CLI exact `--run` は将来の単発operator。import / 非opt-in・通常CIでChrome / Worker / systemd / D1 / 一時資源を起動しない。最初のpreflight前から総180秒、既存Unit最大120秒 / stop用10秒reserve、Child110秒soft abortを維持する。Linux / Node24・nonroot / systemd / cgroup capability、strict browser / TLS、資産・migration・Wrangler固定版・toolsの既存preflightを再利用する。各内側上限の合計が予算を超え得る点と、短縮Unit期限がsoft abortより先に来る場合のfail-closedは#945と同じで、時間内成功 / cleanup完了を保証しない。
+
+run-owned 0700 TMPを`HOME===TMPDIR===XDG_CONFIG_HOME`とし、allowlisted非秘密env / metrics=falseだけをChildへ渡す。persistは既存`.wrangler/student-booking-evaluation`を使用するため、**正常用operatorを含む同時実行は禁止**。既存persist / 旧read-only persist・8788 / 8789 listener不在、空TMPを厳密に要求し、Childだけがexclusive persist / browser-home / NSS / cert / keyを生成する。外部lifecycle変更なし・信頼済みsystemd / root managerの既存運用前提を維持する。port probeは既存owner-independent `ss -H -ltn`固定filterであり、全namespace / kernelの独立no-live証明へ拡張しない。
+
+Childのunchanged読戻し後のexact-token / hash / CSRF secret scanは#1006のsealed責務として再利用し、秘密値をOuterへ渡さない。Outerはcomplete報告とsame-Invocation terminalを照合し、両port closed・generatedBrowserFilesなし・旧persistなし、親`.wrangler` / TMP / persist / browser-homeのdev / ino / uid / gid / permission / symlinkなしと既存owned tree scanを確認する。解放前と削除直前に確認し、削除直前には両port / generated files / 旧persistも再照合する。Reportは専用readerのbounded / NOFOLLOW / stat安定性に加え、最初の読取前後と削除直前のdev / ino / uid / gid / mode / nlink / size / mtime / ctimeを照合する。全identity / tree / report検証後だけpersist→TMPを各一回removeし、不在を確認する。親`.wrangler`を削除せず、失敗時のfinally削除・force・retryはない。
+
+timeout / abort・terminal / exit / Invocation不明・report不正 / 書込不明 / TOCTOU・port残存・owner drift / mode / symlink・TLS残存 / tree scan失敗・release / delete不明では専用固定failureを返す。terminal以外は従来の `TRUSTED_UNAUTHENTICATED_BOOKING_OUTER_FAILED; stage=<finite enum>; retain owned files; do not retry`を維持する。既存Unitの一回stop / manager showによる有限収束だけを許し、release後の追加stop・未知所有物削除・normal V2 diagnosticへのfallbackをしない。削除途中失敗では残る資源を保持し、成功checkpointを出さない。
+
+#1015の共通BrowserUnitによるpassiveな`terminalObservation`と制御判断・strict manager parsing・first failure latch・成功順序は不変。#1020は専用Outerのterminal失敗catchだけで、own dataのstarted=true / stopped=false・有効な非全零32hex Invocation・既存BrowserUnit prototypeを開始時に検査し、一回の`dispose(false)`成功＋accepted＋同一Invocation / started / stopped再確認を読取候補とする。strict stopがfailed-stateでrejectした場合だけ、既存private `confirmDiagnosticStop()`を最大一回使用する。同関数の検証済み停止identity→strict show（owner / settings / Invocation / runtime / MainPID=ControlPID=0）→busctl GetUnitProcesses=0→同一showの前後一致・残予算 / abort確認を再利用する。trueかつ同一Invocationの再確認後のみ、trusted manager / 外部lifecycle変更なしの前提で診断読取を許す。stop=failed-state・empty cgroup・Unit failed単独、未開始 / 事前停止済 / 不正identity / getter / proxy / prototype、IO / parse / PID / settings / cgroup drift / budget / abort不明は読取0とする。追加stop・他のmanager / 外部PID一覧・port / D1 / TLS読取・再試行・失敗時削除はない。
+
+停止確認後のcleanup残予算 / abort / identity照合を通過した場合だけ、成功向け`ports.report()`とは独立した`ports.failureReport()`を一回呼ぶ。sealed operatorはrun-owned TMP/HOME identity / 0700を前後照合し、既存専用readerのNOFOLLOW / regular / 0600 / nlink1 / 専用codecの256-byte上限 / stat安定 / partial不在に加え、読取前後のreport stat一致を要求する。#1024は旧4-fieldのexact own data `{phase:"failed",entered:<enum>,confirmed:<enum>,status:"failed"}`と、#1023の`tls_primary` / `tls_cleanup` / `tls_err`を持つ新7-fieldだけを受理する。旧4-fieldではTLS3軸はすべてunknownとし、enum正本は#1018 / #1023専用report codecを再利用する。absent / 旧unknown / complete / partial / 不正 / getter / proxy / IO不明はreport=unknown・entered / confirmed / TLS3軸=unknownへ縮約し、書込・再生成・上書きしない。読取gate不成立はreport=unread・両phase / TLS3軸=unknownを維持する。
+
+401専用terminal出力の機械正本は`unauthenticatedBookingTerminalGrammar`。reason→boundary→state→result→exit→invocation→cgroup→second→budget→stop→unit_stop→report→entered→confirmed→tls_primary→tls_cleanup→tls_errの固定順と`evidence=unproved; retain owned files; do not retry`からなるASCII一行、LF込み最大512 bytesで、全enum最長組合せは従来14軸405 bytes、tls_primary追加440 bytes、tls_cleanup追加471 bytes、#1024の17軸509 bytes（すべてLF込み）。TLS enumは#1023の集合と一致させ、3 bytesの余裕を維持する。tls_errをtls_categoryへ改名すると514 bytesとなるため認めない。`parseUnauthenticatedBookingTerminal` / `formatUnauthenticatedBookingTerminal`はexact grammar / own data fieldsだけを許し、未知enum・accessor・extra field・部分一致を拒否する。report=observedにはunit_stop=confirmedを要求し、unknown / unreadの両phaseとTLS3軸はunknownのみとする。TLS値の公開もunit_stop=confirmedかつreport=observedの場合だけで、最初のHelper一次失敗 / 独立した最初のcleanup失敗 / 一次失敗時の許可分類を反射し、Outerのfirst failure reasonを上書きしない。TLS未観測 / cleanup-only / try前失敗の未観測軸はunknown、noneも成功証明ではない。stop=confirmedはstrict disposal受理観測、stop=failed-stateは正常停止の肯定ではない。unit_stop=confirmedも診断読取用manager no-live gateだけで、独立kernel / Worker / Chrome no-live証明ではない。#930 の実Chrome Cookieなし401 [Run #38387864012](https://github.com/suzukure/nssscdl/actions/runs/38387864012) は`entered=dom-401; confirmed=worker-start` までを確認した。原因未特定時の**調査Draft限定**では、初回故障の境界を `dom-context`（ブラウザcontext生成）、`dom-setup`（route／page準備）、`dom-net`（navigation途中）、`dom-request`（非同期request guard）、`dom-response`（非同期HTTP response guard）、`dom-ui`（画面／後段確認）としてprivate同期fault callbackで細分化する有限仮説を検証する。最初のfail eventだけを一度保存し、後続request/response/cleanup進捗で上書きしない。非同期故障の分類は最初に観測した監視境界であり、特定HTTP headerやUI状態が根因であることを直接証明しない。unknown／timeout／Abort／late callでは安全側に停止し、raw URL/Headers/Body/PII/例外文言は公開しない。公開17軸のgrammarと最大509/512Bを変えず、正本採用には別途レビューが必要。新しい実Chrome Proof起動・一時workflow追加は行わない。
+
+`entered` / `confirmed` は元来Childの最後に入った境界／正常確認した境界を示す。#930のfirst-failure有限診断では、失敗の最初の同期観測をChildが同じactive phaseとして妥当と判定した場合のみ、その直前の `entered` / `confirmed` をprivateに凍結し、後続のWorker stop進捗で上書きしない。DOM未完了でstopConsumerが先行した場合もその中断段階を先に凍結する。Worker stopの成功確認後に初めてTLS後処理が失敗した場合は `entered=tls-cleanup` へ保守的に分類し、停止失敗と誤認しない。観測未成立・Abort・不正入力は従来の進捗またはunknownを維持し、これらは厳密なfirst failure根因・Child exit1・HTTP GET401 / POST0・D1全19表schema unchanged・cleanup完了の証明ではない。raw例外 / manager結果 / PID / InvocationID / パス / URL / Cookie / CSRF / SQL / browser出力は公開しない。成功checkpoint・normal V2は不変で、実Chrome再Proofを開始しない。
+
+#1044の有限診断は、既存の粗い`dom-response` phaseを保持し、response guardの初回失敗通知だけを閉じた6分類へ分ける。正本はreport codecの`unauthenticatedBookingResponseFaults`で、`dom-rsp-id`（request↔response同一性・URL・duplicate・ServiceWorker）、`dom-rsp-code`（API401 / asset200）、`dom-rsp-hdr`（全header許可集合・必須値）、`dom-rsp-body`（固定401本文）、`dom-rsp-jar`（空Cookie jarの値不一致）、`dom-rsp-drv`（分類不能例外のfallback）とする。分類名は最大12 ASCII bytesに短縮し、17軸のfield名・順序、Child最大220 / 上限256B、Outer最大509 / 上限512B（LF込み）を維持する。DOMは各guard失敗直前に一度だけ通知し、process→Childのfirst-failure latchが`entered`に保持する。`confirmed`は直前の正常境界のままであり、下位分類の正常完了を発行しない。既存phase列挙からReport / Outer grammar / `unauthenticatedBookingProofStep`へ自動反映し、旧Proof suffixは再利用しない。observer例外・late eventは実行権限を持たず、停止・後続traffic deny・再試行禁止・secret非反射を維持する。
+
+`trusted-booking-dom.test.mjs`は6分類の負例と正常形、Cookie値不一致とdriver拒否、response timeoutとlate completion、duplicate / POST / 追加要求denyを検証する。`trusted-unauthenticated-booking-process.test.mjs`はDOM failで`domDone=false`のままowned stop成功→`inspectOwned`の`alive()` / `domDone && stopped && handed`前提拒否→readback / scan未実施を有限Portで確認する。`tls_cleanup=owned-inspect`だけでは独立したfs/proc異常や漏洩の証拠にならず、gateを解除せずcleanup成功へ昇格しない。Child / Report / Outerの有限テストは初回latch、全enum / 最大長、no-live前の非公開、現行mainから生成する候補のexact一致と旧grammar / 任意field / attempt緩和拒否を確認する。これはCookieなし401診断の有限証拠のみであり、実Chrome / `--run` / Confirm / D1実処理 / systemdや新しいWorkflowを起動・追加しない。POL→BR→REQ→AC→TC / CON / OOSの意味、#537 Gate A〜D / #608 Done / Production Readyの未証明状態は不変である。
+
+専用 `unauthenticatedBookingOuterCheckpoint` はisolated Child prepared / unchanged・same-Invocation no-live・両port closed・owned cleanupの部分証拠のみ。`evaluation/trusted-unauthenticated-booking-outer.test.mjs` を`test:unit`へ登録し、実BrowserUnit command seam＋専用Child / Report・owned file fixture＋sealed operator VMで成功順序、停止確認→failed report読取の厳密順序・不許可時read=0・private確認一回、有限fault matrix、一回性、secret非反射、release前の非削除、全tree確認→削除→checkpoint、遅いsignalを検証する。#1024は新旧Report互換、TLS一次＋cleanup同時失敗 / cleanup-only / 未観測、own-data / getter / proxy / 大量field / 非ASCII / secret canary拒否、17軸の全enum / 509-byte最大値とtest-only Proofの同文法一致を追加検証する。normal Outerの試験とproduction / workflowを変更しない。401専用のtest-only workflow caller guard準備は下記#1012を参照する。
+
+R0 / C1 / P1 / B1 Yellow preparedを維持する。`REQ-005/207/914`・`AC-005-001/002`・`AC-914-004`・`TC-F-005-01`・`TC-NF-914-04`の関連部分へのfinite partial evidenceで、POL→BR→REQ→AC→TC / CON / OOSの意味・IDは不変。CookieなしをSession失効 / `TC-F-207-02/03`全体Passへ昇格しない。実Chrome8789 / GET-only401 / POST0 / 全19表schema unchanged / 同一Invocation＋owned cleanupの正式one-shot Proof、新一時workflow、#537 Gate A〜D・#608 Done / Production Readyは未承認・未実証。同一HEAD正式Product CI / PR Traceability / 独立Claude Reviewは別途必要で、#930へのexact source / Proof HEAD・一回性 / 停止保全 / 原workflow復元条件の記録とfresh人間承認まで実Proofを発火しない。
+
+## #1012 Cookieなし401 one-shot caller guard・非秘密出力検査（prepared / finiteのみ）
+
+#1047は同じ初回失敗latchの下位候補を追加し、分類正本を引き続き`unauthenticatedBookingResponseFaults`とする。`rsp-meta-err`は同期response metadataアクセス例外、`rsp-hdr-err` / `rsp-hdr-to`はheader取得拒否 / pending timeout、`rsp-body-err`はbody取得拒否、旧`rsp-body-to`はbody待機中のtimeout（内外期限は未区別、互換読込用）、`rsp-jar-err` / `rsp-jar-to`はCookie jar取得拒否 / pending timeout、`rsp-guard-ex`は`safeHeaders`等のguard内予期外例外、`rsp-outer-to`は取得待ち以外のresponse observer timeoutを表す。例外の属性は読まず、位置と結果種類だけを記録する。通常のguard不一致は既存`dom-rsp-id/code/hdr/body/jar`、外側の分類不能例外は`dom-rsp-drv`を維持する。header / jar待機中は外側timerが先に発火しても既存の取得timeout分類を使い、body待機中は下記#1050で内外を分離する。初回通知は一度だけとする。abort先行・late completion・複数response競合で確定済み分類を上書きしない。分類のためのBrowser API / HTTP呼出し・await・listener・retryは追加しない。5秒operation timeout、110 / 120 / 180 / 190秒と4分上限、GET-only / POST0、route / ownership gate、DOM失敗後のowned-inspect前提拒否を維持する。有限clock / mock / VM fixtureで拒否・永続pending・timer競合順序・guard例外・外側fallback・raw canary非反射・後続要求denyを照合し、現行enumをProcess / Child / Report / Outer / Proof生成へ通す。固定17-field順とChild最大220 / 256B・Outer最大509 / 512B、strict callerの完全byte一致、旧分類追加前のsuffix / grammar・追加step・attempt緩和の拒否を維持する。実Chrome / CLI `--run`は実施せず、#1046の実失敗原因は未確定であり、正式one-shotには別途新しい明示人間承認を要する。
+
+#1050はbody待機中だけ、request guard完了後の保持pathからschedule-months / history / csrfを閉じたclassへ分類し、外側response observerの累積5秒期限を`rb-month-ot` / `rb-hist-ot` / `rb-csrf-ot`、内側body取得5秒期限を`rb-month-it` / `rb-hist-it` / `rb-csrf-it`として識別する。enum正本は同じ`unauthenticatedBookingResponseFaults`で、未知pathや分類集合不足はfail-closedする。旧`rsp-body-to`はgrammar互換を維持するが、新しい内外期限の証拠にしない。外側timerは先に登録されるため通常は先に期限を迎える。有限clockはheader処理17ms経過・外側先着と、外側callback配送を遅らせた内側先着を検証し、従来のreverse timer raceは後者に相当する。deferred-body mockはheader取得後のbody pending / late completionを再現するだけで、実`response` / `requestfinished`イベントを観測した証拠ではない。body拒否・不正body guard・header/jar timeout・abort・複数response・late event・raw canary非反射、旧新grammar、17軸順、Child220/256B・Outer509/512B、生成suffixのbyte一致と旧suffix拒否を有限testsで照合する。Browser / HTTP API、await、listener、route、timer値・上位budget、first latch、abort/stop、ownership/cleanup、GET-only/POST0、no retryは変更しない。#1049の`entered=rsp-body-to; confirmed=dom-context; evidence=unproved`は待機位置だけを示し、独立したbody期限やPlaywright / HTTP未終端の根因を証明しない。実Chrome / CLI `--run` / 一時Proofは実行せず、次の正式one-shotには新しい明示人間承認を要する。Product識別子・traceabilityの意味と#930 / #537 Gate A–D / #608 Done / Production Readyの未達は不変。
+
+#930の原因未特定調査Draftでは、Playwright 1.64.0の同期 `request.timing().responseEnd` をbody timeoutの瞬間だけ参照する有限候補を検討する。既存API3分類×内外期限2分類に、clientで終了timingが**未観測** `bn-*`、終了timing値が**観測済み** `bf-*`、getter欠落・不正・例外などの**unknown** は従来 `rb-*` fallbackを重ねる。`responseEnd`数値は公開せず固定enumのみをfirst latchに送る。`requestfailed`でもtiming更新はあり得るため `bf-*` を通信成功扱いせず、`bn-*` をサーバー未終端の証拠にしない。同期getter1回以外のAPI/await/listener/route/timer/上位budget/再送/ownership変更なし。これは正式実Chrome未観測の**診断候補**であり、Product CIの有限fixture成功だけでは#930の一体証明・実Chrome実行許可を代替しない。#1027により原因未確定段階の有限試行は同一Draftへ集約し、正式Proofでこの診断を使うと判断した場合に限って独立レビュー・main反映で信頼済み検証器として確定する。実Chromeの起動にはその後も別の明示人間承認と既存one-shot/cleanup gateを要する。
+
+401専用一時候補の固定文法正本は `tests/evaluation/trusted-unauthenticated-booking-outer.mjs` の import-safe な `unauthenticatedBookingProofStep`。同モジュールの `unauthenticatedBookingTerminalGrammar` と `unauthenticatedBookingOuterCheckpoint` から固定末尾一工程を一元導出し、`evaluation/trusted-unauthenticated-booking-outer.test.mjs` の `proofStep` / `allowsUnauthenticatedCaller` / `proofFixture` はそのexportを共用する。**単にこのmoduleをimport/文字列生成しても `--run`・Chrome・Worker・D1・systemdは起動せず、WorkflowやPRを書き換えない。** 過去の一時Workflow blobを再利用してはならない。
+
+#1035の誤発火防止手順：①PR作成より前にGitHub **最新main HEADと現行workflow blobを固定**し、信頼済みmainのcheckoutから次のコマンドでexact suffixを出力する。②その同一SHAの元workflow bytesに出力結果を一度だけ連結し、作成予定候補の全文と **byteで一致**することをmainのsource/grammarと突合せる。③main drift・候補不一致・既存workflow外の差分・guard条件不成立なら **Proof PRを作成しない**。差分ゼロ／通常CIの非Proof Draftで事前fixtureを確認しても、この手順の代替にはならない。④新たな明示人間承認に加え、作成直前のfresh main・branch親SHA・only one workflow M diff・同repo・`opened && run_attempt=1`・所有権／時間上限を再照合してから、初めて一時Proof PRを作成できる。誤差を見つけたら **新Proof PRを作らず** Issueにcheckpointし、原因をfiniteで解決する。
+
+```sh
+node --input-type=module -e "import { unauthenticatedBookingProofStep } from './tests/evaluation/trusted-unauthenticated-booking-outer.mjs'; process.stdout.write(unauthenticatedBookingProofStep)"
+```
+
+`#1036` finite testはこのimport-safeコマンドの出力を現行 `proofStep` と一致検証し、#1033追加のDOM phaseを省略した旧suffix、追加step、緩和された `run_attempt` をそれぞれdenyする。ここでの候補照合は**発火前の静的ゲート**であり、実Chromeの成功証明でも人間承認でもない。`allowsUnauthenticatedCaller` / `proofContext` は通常main / PRの無接続を維持し、production・他workflow・normal operatorの専用caller参照を拒否する。例外は同一repository / 既定main・`pull_request` opened / attempt1・限定`proof/930-booking-unauthenticated-...`・正しいmerge ref / checkout HEAD・fresh origin/mainとbase / merge-base一致・clean tree・Product CI workflow一件だけのexact M差分・base bytes＋exact末尾一工程の候補だけである。Git / event不明、fork / drift / source差分・追加工程・文法改変はfail-closed。PR文字列や過去の承認は許可根拠にならず、#948正常guardは変更しない。
+
+固定stepはapplicable / opened / attempt1条件・4分上限を持ち、専用Outer exact `--run`をstdin-ignore / utf8 / pipe・190秒 / 4096-byteの`spawnSync`で一回だけ呼ぶ文法とする。Outer180秒 / Unit120秒 / Child110秒を変更しない。VM `proofFixture` は実起動せずこの同じwrapperを検証する。exit0 / signal=null / errorなし / stderr空 / 専用checkpoint＋LF完全一致だけを成功とし、exit1 / signal=null / errorなし / stdout空 / 専用固定failed文法＋LFだけを固定stageへ変換する。#1015 / #1020 / #1024のterminalは上記401専用grammar / 512-byte上限をexactに検査し、unit_stop / report / entered / confirmed / tls_primary / tls_cleanup / tls_errを含む固定列挙値と未証明の証拠境界だけを`UNAUTHENTICATED_BOOKING_PROOF_FAILED; stage=terminal`へ受け渡す。unknown / unreadでのphase値 / TLS値・no-live gateなしのobservedも拒否する。#1024の最大509 ASCII bytes＋既存512B上限（ともにLF込み）をOuter CLIと同文法で検査する。旧terminal stage-only・未知診断・CRLF・重複キー・余分な行・raw PII・normal V2・部分一致・上限超過はstage=unknownに閉じる。terminal以外の従来stageは維持する。finite matrixはChild nonzero / abnormal code、show1・show2 parse / IO、Invocation / cgroup drift、Result timeout / manager failure、polling deadline / cancel / budget、stop / cleanup観測失敗、各enumとprocess / stream envelope、secret canary非反射、一回性・非削除を検証する。raw stdout / stderr / errorを公開せず、retryしない。
+
+R0 / C1 / P1 / B1 Yellow prepared、上記#1010の識別子・traceabilityとpartial evidence境界を維持する。標準`test:unit`内のfinite fixtureだけが今回の証拠で、正式same-HEAD Product CI / PR Traceability / Claude Reviewと実Chrome one-shotは別証拠。正式起動には別の明示人間承認後、fresh main / workflow blob照合とexact suffixだけの一時Draft PR一件が必要であり、opened attempt1のPR作成自体が実行承認対象となる。結果を問わず証拠保全・workflow byte復元・compare files=[]・Draftのまま未merge Close、失敗時のowned保全 / 復旧判断を#930へ記録し、自動再発火しない。本IssueはそのPR作成・workflow変更・外部実行を行わず、#537 Gate A〜D / #608 Done / Production Ready / `TC-F-207-03`全体Passへ昇格しない。
+
+## #930 実Chrome単一予約normalの公式positive実証（2026-10-12）
+
+#1000は `tests/d1/booking-readback.test.ts` の既存file-isolated単一local D1試験に、8789 originの予約service / 実HTTP AdapterへCookieなしでSchedule・History・CSRFの3 GETだけを渡すnegative finite検証を追加する。Production migrations 0001–0012とstrict seedを一回適用し、401 / `UNAUTHENTICATED` / no-store・固定非秘密Responseを確認する。negative phaseはPOST・Cookie注入・別本人context・Session revoke UPDATEを行わず、`booking-readback.ts` のprivate baselineを `verifyBookingUnchanged` で一回消費して全19表（migration history含む）・schema / Integrityを独立照合する。D1採取clockだけは前進可能（逆行拒否）で、行内時刻を含む全値は不変を要求する。実DB採取値のprivate複製を使うread-only Port finite fixtureで各表の変化・schema不一致 / 不正JSON・read / Integrity失敗・baseline成功 / 失敗後の両verifier再利用を固定 `BOOKING_EVALUATION_READBACK_FAILED` に閉じることを確認し、fresh baseline後の既存正常Preview200 → Confirm201 / 5表deltaを一回維持する。
+
+これは通常Product CIのlocal D1 / Request–Response検証であり、Listenerや実Chrome 8789のCookie欠損401 / UI / Worker wiringは未実証である。#922の8788実Chrome証拠とは別で、新Chrome / live HTTP / 一時Proofは追加しない。no-cookieをSession失効 / Logout・`TC-F-207-02/03`全体のPassへ昇格せず、既存正常 `TC-F-003-01` と非露出 `TC-NF-914-04` の部分証拠だけを補強する。R0 / C1 / P1 / B1 Yellow prepared、POL→BR→REQ→AC→TC・CON / OOSとTC定義は不変。正式same-HEAD Product CI / PR Traceability / 独立Claude Review、fresh main追従と親#930の実Browser負例判断は別途必要となる。
+
+#992 / PR #993のroute時Fetch Metadata観測境界の訂正を含むsource main `99c46510a7befcc931bb352b4046d62c50c20f7c`を固定し、新規human承認の下、[一時Draft PR #994](https://github.com/suzukure/nssscdl/pull/994)のProof HEAD `cd57798f9fff2a5b3a66236bec37b88248ef40ec`で[公式Product CI Run #38150811721](https://github.com/suzukure/nssscdl/actions/runs/38150811721) **attempt 1 / completed・success**を確認した。通常9工程すべてと、承認済みの末尾一時`#930 booking normal proof (temporary)`工程がsuccess。これは上記#941/#945/#984の有限fixtureによるprepared証拠と区別する、**隔離された実Chrome正常系1回のpositive evidence**である。以前の「実Chrome未実証」や#991の`dom=preview; fault=request`失敗は各時点の履歴であり、今回の成功を遡及して旧runの根本原因が一つだったと断定しない。
+
+成功したProofの信頼済みsuccess pathは、本人test Session/strict HTTPS Chrome→CSRF GET→同一originのPreview HTTP200と内容表示→明示Confirm POST一回/HTTP201→本人History確認→予約ID handoff→Browser/Worker停止・8789閉鎖→**実隔離ローカルD1の独立5表readback**（`student_reservations` / `slot_occupancies` / `business_audit_logs` / `notification_intents` / `notification_outbox` に各一件の期待delta、他表不変）→owned secret scan→同一Invocation Unit no-live/両port閉鎖→test-owned persistence/TMP/HOME/NSS/cert/key/report/logの安全な削除→固定非秘密成功checkpointを要求する。stdoutは既存`bookingOuterCheckpoint`との完全一致・stderr空・exit0/無signalの場合だけ成功扱いとし、raw Chrome trace/Session/CSRF/IDs/SQL/headersは証拠として公開しない。契約根拠は既存`trusted-booking-dom.mjs`、`trusted-booking-process.mjs`、`booking-readback.ts`、`trusted-booking-child.mjs`、`trusted-booking-outer.mjs`・同test、正式の観測結果は[#930 checkpoint](https://github.com/suzukure/nssscdl/issues/930#issuecomment-6110587519)を参照する。
+
+一時Proofは同一ブランチで撤去し復元HEAD `023b439a991398f62ff1a1b0a899386aa892fb18`で元workflow blob `92ee87e3e6368987c2d613a8385ba0af51e27012`にbyte復元・source比較`files=[]`、[PR #994](https://github.com/suzukure/nssscdl/pull/994)は**未merge Close**。復元後[Product CI #38151096346](https://github.com/suzukure/nssscdl/actions/runs/38151096346)成功は予約Proofなしの通常CIであり2回目の実証ではない。同時の[AI Workflow Regression #38150811734](https://github.com/suzukure/nssscdl/actions/runs/38150811734)は別系統でshard2がfailure（原因未確定）でありBooking Product CI成功と混同しない。
+
+この実証は既存`TC-F-003/005`・`TC-NF-902/914`等の**対応する正常経路の部分証拠**であり、標準予約の1fixtureのみ。実Browser negative（401/403/409/503、他人アクセス、異常write/timeout/abort/再送禁止）、Additional区分・競合、keyboard/320px/mobile、Browser/OS matrix、外部Provider配送、remote/Production・Gate B/C/D、#537 Gate A全体・#608 Value Unit Done/Production Readyは未達。実Chromeの負例/再Proofは[#930](https://github.com/suzukure/nssscdl/issues/930)にてfreshな人間承認と一回性/停止/復元条件を独立判断する。POL→BR→REQ→AC→TC、CON/OOSと成功・cleanup契約を変更しない。
