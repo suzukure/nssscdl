@@ -1,0 +1,172 @@
+name: Issue 1147 Runner Diagnostic
+on:
+  push:
+    branches: [human/issue-1147-runner-diagnostic]
+    paths: ['.github/workflows/issue-1147-runner-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Compare restricted execution by runtime placement
+        shell: bash
+        run: |
+          sudo -n /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
+            PROBE_UID="$(id -u)" PROBE_GID="$(getent group nogroup | cut -d: -f3)" \
+            /usr/bin/python3 -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import stat
+          import subprocess
+          import tempfile
+
+          SUDO = ["/usr/bin/sudo", "-n"]
+          ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+          TARGETS = ("/run/acpid.socket", "/run/dhcpcd/enp39s0-4.unpriv.sock")
+          MASKS = ("/run/dbus/system_bus_socket", "/run/dhcpcd/eth0-4.unpriv.sock",
+                   "/run/docker.sock", "/run/snapd-snap.socket", "/run/snapd.socket",
+                   "/run/systemd/io.systemd.ManagedOOM", "/run/systemd/journal/dev-log",
+                   "/run/systemd/journal/socket", "/run/systemd/journal/stdout",
+                   "/run/systemd/journal/syslog", "/run/systemd/notify",
+                   "/run/systemd/userdb/io.systemd.DynamicUser", "/run/uuidd/request")
+          HARDENING = (
+              "Type=exec", "RuntimeMaxSec=25s", "TimeoutStopSec=2s", "KillMode=control-group",
+              "SendSIGKILL=yes", "User=nobody", "Group=nogroup", "NoNewPrivileges=yes",
+              "CapabilityBoundingSet=", "AmbientCapabilities=", "SupplementaryGroups=",
+              "SystemCallArchitectures=native",
+              "SystemCallFilter=~io_uring_setup:EPERM io_uring_enter:EPERM io_uring_register:EPERM",
+              "ProtectSystem=strict", "ProtectHome=yes", "IPAddressDeny=any", "IPAddressAllow=localhost",
+          )
+
+          def run(args, *, check=True, timeout=12):
+              return subprocess.run(args, text=True, capture_output=True, check=check,
+                                    timeout=timeout, env=ENV, stdin=subprocess.DEVNULL)
+
+          def emit(kind, **fields):
+              print(json.dumps({"kind": kind, **fields}, sort_keys=True), flush=True)
+
+          def elf_closure(executables):
+              output = run(["/usr/bin/ldd", *map(str, executables)]).stdout
+              if "not found" in output:
+                  raise RuntimeError("unresolved ELF dependency on host")
+              paths = set(re.findall(r"(?:=>\s+|^\s*)(/[^\s]+)\s+\(", output, re.MULTILINE))
+              if not paths or not all(Path(path).is_file() for path in paths):
+                  raise RuntimeError("unresolved ELF closure")
+              return sorted(paths)
+
+          def report_unit(unit, result, expected):
+              shown = run(SUDO + ["/usr/bin/systemctl", "show", "--no-pager",
+                                  "-p", "Result", "-p", "ExecMainCode", "-p", "ExecMainStatus",
+                                  unit], check=False)
+              state = {}
+              for line in shown.stdout.splitlines():
+                  key, sep, value = line.partition("=")
+                  if sep and key in ("Result", "ExecMainCode", "ExecMainStatus") and re.fullmatch(r"[\w-]*", value):
+                      state[key] = value
+              journal = run(SUDO + ["/usr/bin/journalctl", "--boot", "--unit", unit,
+                                    "--no-pager", "-n", "25", "-o", "cat"], check=False)
+              details = ("EACCES", "ENOENT", "ENOEXEC", "EPERM", "child-timeout",
+                         "Permission denied", "No such file or directory", "Exec format error",
+                         "Operation not permitted", "Failed at step EXEC", "Failed to locate executable",
+                         "Failed to execute", "status=203/EXEC", "status=126", "status=127")
+              emit("unit", unit=unit, returncode=result.returncode, state=state,
+                   expected_output=result.stdout.strip() == expected,
+                   diagnostics=[value for value in details if value in journal.stdout or value in result.stderr],
+                   child_status=re.search(r"(?m)^child-rc=(\d+)$", result.stderr).group(1)
+                   if re.search(r"(?m)^child-rc=(\d+)$", result.stderr) else None)
+
+          def unit(label, properties, argv, expected):
+              name = f"issue1147-{label}.service"
+              try:
+                  result = run(SUDO + ["/usr/bin/systemd-run", "--quiet", "--wait", "--pipe",
+                                       "--unit=" + name, *["--property=" + p for p in properties],
+                                       *map(str, argv)], check=False, timeout=40)
+                  report_unit(name, result, expected)
+              finally:
+                  run(SUDO + ["/usr/bin/systemctl", "stop", name], check=False)
+                  run(SUDO + ["/usr/bin/systemctl", "reset-failed", name], check=False)
+
+          def copy_into(root, source, destination):
+              target = root / destination.lstrip("/")
+              target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+              shutil.copy2(source, target)
+
+          def probe(root, label, node, closure):
+              root.mkdir(mode=0o755)
+              for directory in ("project", "tmp", "dev", "run", "proc", "sys", "home", "root"):
+                  (root / directory).mkdir(mode=0o755)
+              for source, destination in (("/usr/bin/env", "/runtime/env"), (node, "/runtime/node")):
+                  copy_into(root, source, destination)
+              for library in closure:
+                  copy_into(root, library, library)
+              run(["/usr/bin/chown", "65534:65534", str(root / "project"), str(root / "tmp")])
+              for name in ("env", "node"):
+                  path = root / "runtime" / name
+                  mount = run(["/usr/bin/findmnt", "-n", "-T", str(path), "-o", "FSTYPE,VFS-OPTIONS"])
+                  headers = run(["/usr/bin/readelf", "-l", str(path)]).stdout
+                  interpreter = re.search(r"Requesting program interpreter:\s*([^\]]+)", headers)
+                  loader = interpreter.group(1) if interpreter else None
+                  emit("placement", label=label, target=name, mount=mount.stdout.strip(),
+                       uid=path.stat().st_uid, mode=oct(stat.S_IMODE(path.stat().st_mode)),
+                       interpreter=loader, interpreter_staged=bool(loader and (root / loader.lstrip("/")).is_file()))
+              version = run([str(node), "--version"]).stdout.strip()
+              unit(label + "-root", (*HARDENING,
+                                    "InaccessiblePaths=" + " ".join("-" + path for path in MASKS),
+                                    "RootDirectory=" + str(root), "MountAPIVFS=no", "PrivateDevices=yes",
+                                    "InaccessiblePaths=/proc /sys /run /home /root",
+                                    "WorkingDirectory=/project", "ReadWritePaths=+/project +/tmp"),
+                   ["/runtime/env", "-i", "PATH=/runtime", "HOME=/project", "LC_ALL=C",
+                    "/runtime/node", "--version"], version)
+              # Match the separate locked-preparation path: host Python starts first.
+              child = ("import errno,subprocess,sys;"
+                       "\ntry:\n p=subprocess.run([sys.argv[1],'--version'],capture_output=True,text=True,timeout=8);"
+                       "\n print(p.stdout.strip()) if p.returncode==0 else print('child-rc='+str(p.returncode),file=sys.stderr);"
+                       "\n sys.exit(p.returncode if p.returncode>=0 else 1)"
+                       "\nexcept OSError as e:\n print(errno.errorcode.get(e.errno,'UNKNOWN'),file=sys.stderr);sys.exit(1)"
+                       "\nexcept subprocess.TimeoutExpired:\n print('child-timeout',file=sys.stderr);sys.exit(1)")
+              unit(label + "-python", (*HARDENING, "PrivateTmp=yes",
+                                      "InaccessiblePaths=" + " ".join("-" + path for path in MASKS)),
+                   ["/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "LC_ALL=C",
+                    "/usr/bin/python3", "-I", "-c", child, root / "runtime/node"], version)
+
+          def main():
+              os.umask(0o022)
+              if Path("/proc/1/comm").read_text().strip() != "systemd":
+                  raise RuntimeError("systemd is not PID 1")
+              lsm = Path("/sys/kernel/security/lsm")
+              emit("platform", systemd=run(["/usr/bin/systemctl", "--version"]).stdout.splitlines()[0],
+                   kernel=os.uname().release, lsm=lsm.read_text().strip() if lsm.is_file() else None)
+              for target in TARGETS:
+                  path = Path(target)
+                  try:
+                      info = path.lstat()
+                  except FileNotFoundError:
+                      emit("socket", path=target, present=False)
+                      continue
+                  uid, gid = int(os.environ["PROBE_UID"]), int(os.environ["PROBE_GID"])
+                  check = run(["/usr/bin/setpriv", f"--reuid={uid}", f"--regid={gid}",
+                               "--clear-groups", "--no-new-privs", "--bounding-set=-all",
+                               "--inh-caps=-all", "--ambient-caps=-all", "/usr/bin/test",
+                               "-w", target], check=False)
+                  emit("socket", path=target, present=True, socket=stat.S_ISSOCK(info.st_mode),
+                       uid=info.st_uid, gid=info.st_gid, mode=oct(stat.S_IMODE(info.st_mode)),
+                       writable_by_fixture_identity=check.returncode == 0)
+              candidates = sorted(Path("/opt/hostedtoolcache/node").glob("24.*/x64/bin/node"), reverse=True)
+              if not candidates:
+                  raise RuntimeError("Node 24 toolcache unavailable")
+              node = candidates[0]
+              emit("node", version=run([str(node), "--version"]).stdout.strip())
+              closure = elf_closure([Path("/usr/bin/env"), node])
+              for label, parent in (("run", "/run"), ("control", "/opt")):
+                  with tempfile.TemporaryDirectory(prefix="issue1147-", dir=parent) as directory:
+                      Path(directory).chmod(0o755)
+                      probe(Path(directory) / "root", label, node, closure)
+
+          if __name__ == "__main__":
+              main()
+          PY
