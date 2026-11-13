@@ -16,6 +16,10 @@ button[aria-pressed="true"] { border-color: #17212b; background: #d8eaff; box-sh
 .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 56rem; gap: .25rem; }
 .calendar-day { min-width: 0; border: 1px solid #7a8794; padding: .25rem; }
 .selected-day { background: #d8eaff; }
+.calendar-symbols { display: flex; flex-wrap: wrap; gap: .125rem .25rem; list-style: none; margin: .375rem 0; padding: 0; }
+.calendar-symbols li { position: relative; }
+.calendar-group-lesson { font-size: .875rem; margin: .25rem 0; overflow-wrap: anywhere; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 h2 { scroll-margin-block: 1rem; }
 h2:focus { outline: 3px solid #6633cc; outline-offset: 3px; }
 .slot { display: block; width: 100%; margin-block: .5rem; padding: .5rem; overflow-wrap: anywhere; text-align: left; }

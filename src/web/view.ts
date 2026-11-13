@@ -1,6 +1,13 @@
 import { StudentReadController, type Area } from "./controller.js";
 import { monthDays, moveMonth, slotLabels, classificationLabels, reservationLabels, intervalLabel, dateTimeLabel, type Slot } from "./model.js";
 
+const calendarSymbols = {
+  bookable: "○",
+  unavailable: "×",
+  reserved_by_me: "済",
+  group_lesson: "グ",
+} as const satisfies Record<Slot["view"], string>;
+
 export function mountStudent(root: HTMLElement, month: string, fetcher: typeof fetch): StudentReadController {
   const doc = root.ownerDocument;
   function element<K extends keyof HTMLElementTagNameMap>(tag: K, text = ""): HTMLElementTagNameMap[K] {
@@ -30,8 +37,10 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   const next = button("次の月", () => { void controller.loadMonth(moveMonth(controller.state.month, 1)); });
   const nav = element("div"); nav.className = "controls"; nav.append(prev, next);
   const scheduleStatus = status("schedule-status"), selectionStatus = status("selection-status");
+  const legend = element("p", "左から開始時刻が早い順。○ 予約可能、× その他の予約不可、済 本人予約済み、グ グループレッスン（予約不可）");
+  legend.id = "calendar-legend";
   const content = element("div"); content.id = "schedule-content";
-  schedule.append(scheduleHeading, form, nav, scheduleStatus, content);
+  schedule.append(scheduleHeading, form, nav, scheduleStatus, legend, content);
   const daily = element("section"), dailyHeading = element("h2", "選択日の時間枠一覧");
   dailyHeading.id = "daily-heading"; dailyHeading.tabIndex = -1;
   daily.setAttribute("aria-labelledby", dailyHeading.id);
@@ -70,9 +79,11 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   }
   function renderSchedule(): void {
     const state = controller.state;
+    const slotsByTime = [...state.slots].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
     dateButtons.clear(); content.replaceChildren();
     const scroll = element("div"); scroll.className = "calendar-scroll";
     scroll.tabIndex = 0; scroll.setAttribute("role", "region"); scroll.setAttribute("aria-label", `${state.month}のカレンダー（横にスクロールできます）`);
+    scroll.setAttribute("aria-describedby", legend.id);
     const grid = element("div"); grid.className = "calendar-grid";
     for (const weekday of ["日", "月", "火", "水", "木", "金", "土"]) grid.append(element("div", weekday));
     for (const day of monthDays(state.month)) {
@@ -84,18 +95,31 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
         choose.setAttribute("aria-label", `${state.month.slice(0, 4)}年${state.month.slice(5)}月${day}日${selected ? " 選択中" : ""}`);
         choose.setAttribute("aria-pressed", String(selected)); choose.setAttribute("aria-controls", dailyHeading.id);
         dateButtons.set(date, choose); cell.append(choose);
-        // Calendar summaries are read-only; only the selected day's list can select a Slot.
-        for (const slot of state.slots.filter(item => item.startsAt.slice(0, 10) === date)) {
-          const summary = element("p", `${intervalLabel(slot)}：${slotLabels[slot.view]}${slot.classification ? `／${classificationLabels[slot.classification]}` : ""}`);
-          summary.className = `slot ${slot.view}`; cell.append(summary);
+        const slots = slotsByTime.filter(slot => slot.startsAt.startsWith(date));
+        if (slots.length) {
+          const summary = element("ul"); summary.className = "calendar-symbols";
+          summary.setAttribute("role", "list");
+          for (const slot of slots) {
+            const item = element("li");
+            const symbol = element("span", calendarSymbols[slot.view]);
+            symbol.setAttribute("aria-hidden", "true");
+            const label = element("span", slotLabels[slot.view]); label.className = "visually-hidden";
+            item.append(symbol, label); summary.append(item);
+          }
+          cell.append(summary);
+          for (const slot of slots.filter(slot => slot.view === "group_lesson")) {
+            const time = slot.endsAt.startsWith(date)
+              ? `${slot.startsAt.slice(11, 16)}～${slot.endsAt.slice(11, 16)}` : intervalLabel(slot);
+            const detail = element("p", `${time} グループレッスン`); detail.className = "calendar-group-lesson";
+            cell.append(detail);
+          }
         }
       } else cell.setAttribute("aria-hidden", "true");
       grid.append(cell);
     }
     scroll.append(grid); content.append(scroll);
     slotButtons.clear(); dailyContent.replaceChildren();
-    const slots = state.slots.filter(slot => slot.startsAt.slice(0, 10) === state.selectedDate)
-      .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    const slots = slotsByTime.filter(slot => slot.startsAt.slice(0, 10) === state.selectedDate);
     dailyHeading.textContent = state.selectedDate
       ? `${state.selectedDate.slice(0, 4)}年${state.selectedDate.slice(5, 7)}月${state.selectedDate.slice(8)}日の時間枠一覧（日本時間）`
       : "選択日の時間枠一覧";
