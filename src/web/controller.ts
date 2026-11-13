@@ -1,4 +1,4 @@
-import { parseHistory, parseSchedule, parsePreview, parseConfirm, parseCsrf, validMonth, monthDays, intervalLabel,
+import { parseHistory, parseSchedule, parsePreview, parseConfirm, parseCsrf, validMonth, monthDays, moveMonth, intervalLabel,
   type Slot, type HistoryPage, type PreviewView, type ConfirmView } from "./model.js";
 export type Area = "schedule" | "history" | "selection" | "day" | "operation";
 export interface ReadState {
@@ -10,14 +10,18 @@ export interface ReadState {
   preview: PreviewView | null; confirmed: ConfirmView | null;
 }
 const unknownMessage = "現在の状態を確認できません。時間をおいて再取得してください。";
+const unavailableMonthMessage = "指定された月の予定は利用できません。別の月を選択してください。";
 class ReadError extends Error {
   constructor(readonly status: number, readonly code: string = "", readonly retry: string = "") { super("Request unavailable"); }
+}
+function isUnavailableMonth(error: unknown): boolean {
+  return error instanceof ReadError && error.status === 404 && error.code === "SCHEDULE_MONTH_NOT_AVAILABLE";
 }
 function message(error: unknown): string {
   if (error instanceof ReadError) {
     if (error.status === 401) return "認証が必要です。認証後に画面を開き直してください。";
     if (error.status === 403 && error.code === "FORBIDDEN") return "この操作は利用できません。";
-    if (error.status === 404 && error.code === "SCHEDULE_MONTH_NOT_AVAILABLE") return "指定された月の予定は利用できません。別の月を選択してください。";
+    if (isUnavailableMonth(error)) return unavailableMonthMessage;
     if (error.status === 400 && error.code === "INVALID_REQUEST") return "入力内容を確認し、月を選択するか履歴を最新から再取得してください。";
   }
   return unknownMessage;
@@ -75,7 +79,14 @@ export class StudentReadController {
     else this.state.historyMessage = message(error);
     this.changed(area, focus);
   }
+  async loadInitialSchedule(): Promise<void> {
+    if (this.scheduleRevision !== 0) return;
+    await this.loadSchedule(this.state.month, false, false, true);
+  }
   async loadMonth(month: string, focus = true, preserveResult = false): Promise<void> {
+    await this.loadSchedule(month, focus, preserveResult, false);
+  }
+  private async loadSchedule(month: string, focus: boolean, preserveResult: boolean, initialSearch: boolean): Promise<void> {
     if (this.state.stopped || this.state.operation === "confirming") return;
     const retainedDate = preserveResult && month === this.state.month ? this.state.selectedDate : null;
     if (!preserveResult) this.clearConfirmation();
@@ -87,21 +98,32 @@ export class StudentReadController {
       this.state.scheduleMessage = "月をYYYY-MM形式で選択してください。";
       this.changed("schedule", focus); return;
     }
-    Object.assign(this.state, { month, scheduleLoading: true, scheduleMessage: "予定を読み込んでいます。" });
-    this.changed("schedule", false);
-    try {
-      const slots = parseSchedule(await this.get(`/api/me/schedule-months/${month}`), month);
+    const nextMonth = initialSearch ? moveMonth(month, 1) : month;
+    const months = nextMonth === month ? [month] : [month, nextMonth];
+    for (const [index, candidate] of months.entries()) {
+      Object.assign(this.state, { month: candidate, scheduleLoading: true, scheduleMessage: "予定を読み込んでいます。" });
+      this.changed("schedule", false);
       if (revision !== this.scheduleRevision || this.state.stopped) return;
-      const firstDate = slots.filter(slot => slot.view === "bookable").map(slot => slot.startsAt.slice(0, 10)).sort()[0] ?? null;
-      Object.assign(this.state, { slots, selectedDate: retainedDate ?? firstDate, scheduleReady: true, scheduleLoading: false,
-        scheduleMessage: !slots.length ? "この月の枠はありません。" : firstDate ? "予定を取得しました。"
-          : "この月に予約可能な枠はありません。日付を選んで予定を確認できます。" });
-      this.changed("schedule", focus);
-    } catch (error) {
-      if (error instanceof ReadError && error.status === 401) { this.fail(error, "schedule", focus); return; }
-      if (revision !== this.scheduleRevision || this.state.stopped) return;
-      this.state.scheduleLoading = false;
-      this.fail(error, "schedule", focus);
+      const canContinue = index + 1 < months.length;
+      try {
+        const slots = parseSchedule(await this.get(`/api/me/schedule-months/${candidate}`), candidate);
+        if (revision !== this.scheduleRevision || this.state.stopped) return;
+        const firstDate = slots.filter(slot => slot.view === "bookable").map(slot => slot.startsAt.slice(0, 10)).sort()[0] ?? null;
+        if (!firstDate && canContinue) continue;
+        const scheduleMessage = !slots.length ? "この月の枠はありません。" : firstDate ? "予定を取得しました。"
+          : "この月に予約可能な枠はありません。日付を選んで予定を確認できます。";
+        Object.assign(this.state, { slots, selectedDate: retainedDate ?? firstDate, scheduleReady: true, scheduleLoading: false,
+          scheduleMessage: initialSearch && !firstDate ? `${scheduleMessage} 別の月を選択して予定を確認できます。` : scheduleMessage });
+        this.changed("schedule", focus);
+        return;
+      } catch (error) {
+        if (error instanceof ReadError && error.status === 401) { this.fail(error, "schedule", focus); return; }
+        if (revision !== this.scheduleRevision || this.state.stopped) return;
+        if (canContinue && isUnavailableMonth(error)) continue;
+        this.state.scheduleLoading = false;
+        this.fail(error, "schedule", focus);
+        return;
+      }
     }
   }
   async loadHistory(next = false, focus = true): Promise<void> {

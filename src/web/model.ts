@@ -58,7 +58,7 @@ export function moveMonth(month: string, offset: -1 | 1): string {
   return validMonth(next) ? next : month;
 }
 export function tokyoNowMonth(): string {
-  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit" }).formatToParts();
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit" }).formatToParts(new Date());
   return `${parts.find(p => p.type === "year")!.value}-${parts.find(p => p.type === "month")!.value}`;
 }
 export function validDateTime(value: unknown): value is string {

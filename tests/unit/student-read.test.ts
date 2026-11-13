@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { StudentReadController } from "../../src/web/controller";
-import { monthDays, moveMonth, validDateTime, parseSchedule, parseHistory, intervalLabel, parsePreview, parseConfirm, parseCsrf } from "../../src/web/model";
+import { monthDays, moveMonth, tokyoNowMonth, validDateTime, parseSchedule, parseHistory, intervalLabel, parsePreview, parseConfirm, parseCsrf } from "../../src/web/model";
 import { mountStudent } from "../../src/web/view";
 
 const slot = (view = "bookable", slotId = "slot") => ({ slotId, view,
@@ -70,9 +70,116 @@ async function reviewedHarness() {
   h.calls[2].request.resolve(response(previewBody())); await read; return h;
 }
 
+describe("TC-F-001-03 [#1148 initial Schedule search]", () => {
+  const december = "2026-12", january = "2027-01";
+  const januarySlot = { ...slot(), startsAt: "2027-01-05T16:00:00+09:00", endsAt: "2027-01-05T17:30:00+09:00" };
+  const monthPath = (month: string) => `/api/me/schedule-months/${month}`;
+  const empty = (month: string) => response({ month, slots: [] });
+  const unpublished = () => response({ error: { code: "SCHEDULE_MONTH_NOT_AVAILABLE", message: "private-canary" } }, 404);
+
+  it("starts from the JST month even before UTC midnight", () => {
+    try {
+      vi.setSystemTime(new Date("2026-12-31T14:59:59Z"));
+      expect(tokyoNowMonth()).toBe(december);
+      vi.setSystemTime(new Date("2026-12-31T15:00:00Z"));
+      expect(tokyoNowMonth()).toBe(january);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["empty", () => empty(december)],
+    ["unavailable", () => response({ month: december, slots: [slot("unavailable")] })],
+    ["reserved by me", () => response({ month: december, slots: [{ ...slot("reserved_by_me"), classification: "standard" }] })],
+    ["unpublished", unpublished],
+  ] as const)("checks January once after a December result with no bookable day (%s)", async (_label, firstResponse) => {
+    const { controller, calls, events } = harness(), initial = controller.loadInitialSchedule();
+    expect(calls.map(call => call.path)).toEqual([monthPath(december)]);
+    calls[0].request.resolve(firstResponse());
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(controller.state).toMatchObject({ month: january, scheduleLoading: true, selectedDate: null });
+    const later = { ...januarySlot, slotId: "later", startsAt: "2027-01-06T16:00:00+09:00", endsAt: "2027-01-06T17:30:00+09:00" };
+    calls[1].request.resolve(response({ month: january, slots: [later, januarySlot] })); await initial;
+    await controller.loadInitialSchedule();
+    expect(controller.state).toMatchObject({ month: january, scheduleReady: true, scheduleLoading: false,
+      selectedDate: "2027-01-05", selectedId: null, preview: null, operation: "idle" });
+    expect(calls.map(call => [call.init?.method, call.path])).toEqual([["GET", monthPath(december)], ["GET", monthPath(january)]]);
+    expect(events.every(event => event.area === "schedule" && !event.focus)).toBe(true);
+  });
+
+  it.each([
+    [false, false], [true, false], [false, true], [true, true],
+  ])("shows month navigation guidance after two months (unpublished: %s / %s)", async (firstUnpublished, secondUnpublished) => {
+    const { controller, calls } = harness(), initial = controller.loadInitialSchedule();
+    calls[0].request.resolve(firstUnpublished ? unpublished() : empty(december));
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].request.resolve(secondUnpublished ? unpublished() : empty(january)); await initial;
+    expect(controller.state).toMatchObject({ month: january, selectedDate: null, scheduleReady: !secondUnpublished, scheduleLoading: false });
+    expect(controller.state.scheduleMessage).toContain("別の月を選択");
+    expect(controller.state.scheduleMessage).toContain(secondUnpublished ? "予定は利用できません" : "この月の枠はありません");
+    expect(controller.state.scheduleMessage).not.toContain("private-canary");
+    expect(calls).toHaveLength(2);
+  });
+
+  const errors = [
+    { status: 401, code: "UNAUTHORIZED", message: "認証が必要です" },
+    { status: 403, code: "FORBIDDEN", message: "この操作は利用できません" },
+    { status: 503, code: "SERVICE_UNAVAILABLE", message: "現在の状態を確認できません" },
+    { status: 404, code: "UNEXPECTED", message: "現在の状態を確認できません" },
+    { status: 200, code: "INVALID_BODY", message: "現在の状態を確認できません" },
+    { status: 0, code: "NETWORK_ERROR", message: "現在の状態を確認できません" },
+  ];
+  it.each([december, january].flatMap(month => errors.map(error => ({ month, ...error }))))
+    ("stops at $month on $code", async ({ month, status, code, message }) => {
+      const { controller, calls } = harness(), initial = controller.loadInitialSchedule();
+      const index = month === december ? 0 : 1;
+      if (index === 1) {
+        calls[0].request.resolve(empty(december));
+        await vi.waitFor(() => expect(calls).toHaveLength(2));
+      }
+      if (status === 0) calls[index].request.reject(new Error("private-canary"));
+      else calls[index].request.resolve(response({ error: { code, message: "private-canary" } }, status));
+      await initial;
+      expect(calls).toHaveLength(index + 1);
+      expect(controller.state).toMatchObject({ month, scheduleReady: false, scheduleLoading: false, selectedDate: null, stopped: status === 401 });
+      expect(controller.state.scheduleMessage).toContain(message);
+      expect(controller.state.scheduleMessage).not.toContain("private-canary");
+    });
+
+  it.each([
+    [december, "before", 200], [december, "after", 404], [december, "after", 401],
+    [january, "before", 404], [january, "after", 200], [january, "after", 401],
+  ] as const)("honors a manual month during %s with the old response %s manual completion (%i)", async (month, order, status) => {
+    const { controller, calls } = harness(), initial = controller.loadInitialSchedule();
+    if (month === january) {
+      calls[0].request.resolve(empty(december));
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+    }
+    const old = calls.at(-1)!.request;
+    const march = "2027-03", manual = controller.loadMonth(march);
+    expect(calls.map(call => call.path)).toEqual([monthPath(december), ...(month === january ? [monthPath(january)] : []), monthPath(march)]);
+    const oldResponse = status === 200
+      ? month === december ? empty(month) : response({ month, slots: [januarySlot] })
+      : status === 404 ? unpublished() : response({}, 401);
+    const current = calls.at(-1)!.request;
+    const slots = order === "after" ? [{ ...januarySlot, startsAt: "2027-03-05T16:00:00+09:00", endsAt: "2027-03-05T17:30:00+09:00" }] : [];
+    if (order === "before") {
+      old.resolve(oldResponse); await initial;
+      expect(controller.state).toMatchObject({ month: march, scheduleLoading: true, selectedDate: null });
+    }
+    current.resolve(response({ month: march, slots })); await manual;
+    if (order === "after") { old.resolve(oldResponse); await initial; }
+    expect(controller.state).toMatchObject({ month: march, scheduleLoading: false, stopped: status === 401,
+      selectedDate: status !== 401 && slots.length ? "2027-03-05" : null, scheduleReady: status !== 401 });
+    expect(controller.state.scheduleMessage).toContain(status === 401 ? "認証が必要です" : slots.length ? "予定を取得しました" : "この月の枠はありません");
+    expect(calls).toHaveLength(month === january ? 3 : 2);
+  });
+});
+
 describe("TC-F-001-03 / TC-F-002-03〜04 / AC-003-022 [#1138 staged controller evidence]", () => {
   it("selects the earliest bookable day, never a Slot, with one GET and no automatic navigation", async () => {
-    const { controller, calls, events } = harness(), read = controller.loadMonth("2026-12", false);
+    const { controller, calls, events } = harness(), read = controller.loadInitialSchedule();
     calls[0].request.resolve(response({ month: "2026-12", slots: [slot("bookable", "later"), ...fourSlots()] })); await read;
     expect(controller.state.selectedDate).toBe("2026-12-26"); expect(controller.state.selectedId).toBeNull();
     expect(events.every(event => !event.focus)).toBe(true);
@@ -517,6 +624,33 @@ async function waitForInitialReads(controller: StudentReadController) {
     expect(controller.state.historyLoading).toBe(false);
   }, { timeout: 3000 });
 }
+
+it("TC-F-001-03 [#1148] mounts the next available day without moving focus or delaying history", async () => {
+  const { fetcher, calls } = harness(), doc = new TestDocument(), root = doc.createElement("main");
+  const controller = mountStudent(root as unknown as HTMLElement, "2026-12", fetcher);
+  calls[1].request.resolve(response({ items: [item()], nextCursor: null }));
+  await vi.waitFor(() => expect(controller.state.historyLoading).toBe(false));
+  expect(controller.state.scheduleLoading).toBe(true);
+  expect(root.textContent).toContain("予約状態：予約済み");
+  calls[0].request.resolve(response({ error: { code: "SCHEDULE_MONTH_NOT_AVAILABLE" } }, 404));
+  await vi.waitFor(() => expect(calls).toHaveLength(3));
+  const find = (id: string) => root.all().find(node => node.id === id)!;
+  expect(find("schedule-month").value).toBe("2027-01");
+  expect(find("schedule-content").attributes.get("aria-busy")).toBe("true");
+  expect(find("daily-content").attributes.get("aria-busy")).toBe("true");
+  calls[2].request.resolve(response({ month: "2027-01", slots: [{
+    ...slot(), startsAt: "2027-01-05T16:00:00+09:00", endsAt: "2027-01-05T17:30:00+09:00",
+  }] }));
+  await waitForInitialReads(controller);
+  expect(find("daily-heading").textContent).toContain("2027年01月05日");
+  expect(find("daily-heading").scrolls).toEqual([]);
+  expect(doc.activeElement).toBeNull();
+  expect(find("daily-content").attributes.get("aria-busy")).toBe("false");
+  expect(controller.state.selectedId).toBeNull();
+  expect(calls.map(call => [call.init?.method, call.path])).toEqual([
+    ["GET", "/api/me/schedule-months/2026-12"], ["GET", "/api/me/reservations"], ["GET", "/api/me/schedule-months/2027-01"],
+  ]);
+});
 
 describe("TC-F-002-03〜04 / TC-NF-903-01 [#1138 structural DOM, not browser layout evidence]", () => {
   it("keeps one daily list, all same-day Views in stable time order, explicit instant navigation and empty/unbookable guidance", async () => {
