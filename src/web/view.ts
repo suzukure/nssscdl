@@ -157,6 +157,6 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   }
   const controller = new StudentReadController(month, fetcher, render);
   render("schedule", false); render("history", false);
-  void controller.loadMonth(month, false); void controller.loadHistory(false, false);
+  void controller.loadInitialSchedule(); void controller.loadHistory(false, false);
   return controller;
 }
