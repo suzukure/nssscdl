@@ -444,7 +444,7 @@ jobs:
     name: Fixture shard 1
     needs: [fixtures]
     if: needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out pull request head
@@ -496,7 +496,7 @@ jobs:
     name: Fixture shard 2
     needs: [fixtures]
     if: needs.fixtures.result == 'success' && needs.fixtures.outputs.routing_mode == 'full'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out pull request head
