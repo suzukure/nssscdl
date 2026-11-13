@@ -56,11 +56,10 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   const operation = element("section"), operationHeading = element("h2", "予約内容の確認・確定");
   operationHeading.id = "operation-heading"; operation.setAttribute("aria-labelledby", operationHeading.id);
   const operationStatus = status("operation-status"), operationContent = element("div");
-  const preview = button("選択枠の予約内容をPreview", () => { void controller.preview(); });
-  const confirm = button("内容を確認して予約を確定", () => { void controller.confirm(); });
-  preview.setAttribute("aria-describedby", operationStatus.id); confirm.setAttribute("aria-describedby", operationStatus.id);
+  const confirm = button("予約する", () => { void controller.confirm(); });
+  confirm.setAttribute("aria-describedby", operationStatus.id);
   operationContent.id = "operation-content"; confirm.setAttribute("aria-controls", operationContent.id);
-  operation.append(operationHeading, preview, operationStatus, operationContent, confirm);
+  operation.append(operationHeading, operationStatus, operationContent, confirm);
   const history = element("section"), historyHeading = element("h2", "本人の予約履歴");
   historyHeading.id = "history-heading"; history.setAttribute("aria-labelledby", historyHeading.id);
   const refresh = button("履歴を最新から再取得", () => { void controller.loadHistory(); });
@@ -73,7 +72,7 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   function slotNode(slot: Slot): HTMLElement {
     const label = `${intervalLabel(slot)}：${slotLabels[slot.view]}${slot.classification ? `／${classificationLabels[slot.classification]}` : ""}`;
     if (slot.view !== "bookable") { const node = element("p", label); node.className = `slot ${slot.view}`; return node; }
-    const node = button(label, () => controller.select(slot.slotId));
+    const node = button(label, () => { void controller.select(slot.slotId); });
     node.className = "slot bookable"; node.setAttribute("aria-pressed", String(controller.state.selectedId === slot.slotId));
     node.setAttribute("aria-describedby", selectionStatus.id); slotButtons.set(slot.slotId, node); return node;
   }
@@ -140,7 +139,7 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
     for (const control of [monthInput, submit, prev, next]) control.disabled = state.stopped || state.operation === "confirming";
     prev.disabled ||= state.month === "0001-01"; next.disabled ||= state.month === "9999-12";
     for (const node of dateButtons.values()) node.disabled = state.stopped || state.operation === "confirming" || state.scheduleLoading || !state.scheduleReady;
-    for (const node of slotButtons.values()) node.disabled = state.stopped || state.operation === "confirming" || state.scheduleLoading;
+    for (const node of slotButtons.values()) node.disabled = state.stopped || state.operationHalted || state.operation === "confirming" || state.scheduleLoading;
     if (area === "schedule" || area === "day" || area === "selection") {
       selectionStatus.textContent = state.selectionMessage;
       for (const [id, node] of slotButtons) node.setAttribute("aria-pressed", String(id === state.selectedId));
@@ -148,8 +147,6 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
     if (area === "operation" || area === "schedule" || area === "day" || area === "selection") {
       operationStatus.textContent = state.operationMessage;
       operationContent.setAttribute("aria-busy", String(state.operationBusy));
-      preview.disabled = state.stopped || state.operationHalted || state.operationBusy || state.scheduleLoading || !state.selectedId;
-      confirm.disabled = state.stopped || state.operationHalted || state.operationBusy || state.operation !== "review";
       operationContent.replaceChildren();
       const view = state.preview ?? state.confirmed;
       if (view) {
@@ -162,6 +159,8 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
         if (view.classificationChanges.length) operationContent.append(changes);
         else operationContent.append(element("p", "区分変更はありません。"));
       }
+      confirm.disabled = state.stopped || state.operationHalted || state.operationBusy || state.scheduleLoading ||
+        state.operation !== "review" || !state.preview;
     }
     if (area === "history") {
       historyStatus.textContent = state.historyMessage;

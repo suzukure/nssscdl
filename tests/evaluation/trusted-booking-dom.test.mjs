@@ -12,7 +12,7 @@ import { encodeBookingDiagnostic, parseBookingDiagnostic } from "./trusted-booki
 import { proveTrustedBookingDom, proveUnauthenticatedBookingDom, proveUnauthenticatedBookingUi, assertBookingReviewDom, bookingOrigin } from "./trusted-booking-dom.mjs";
 import { tokyoNowMonth } from "../../src/web/model.ts";
 
-const previewName = "選択枠の予約内容をPreview", confirmName = "内容を確認して予約を確定";
+const confirmName = "予約する";
 const previewPath = "/api/me/reservations/preview", confirmPath = "/api/me/reservations";
 const csrfPath = "/api/auth/student/csrf";
 const canary = "private-canary";
@@ -30,6 +30,7 @@ function fixture(fault = "", changePost = () => {}) {
   const slot = { slotId: "seed-slot-bookable", startsAt: `${date}T10:00:00+09:00`, endsAt: `${date}T11:00:00+09:00` };
   const label = hour => `${date.slice(0, 4)}年${date.slice(5, 7)}月15日 ${hour}:00`;
   const interval = hour => `${label(hour)} ～ ${label(String(Number(hour) + 1))}（日本時間）`;
+  const slotName = `${interval("10")}：予約可能`;
   const historyItem = (reservationId, hour) => ({ reservationId, startsAt: `${date}T${hour}:00:00+09:00`, endsAt: `${date}T${Number(hour) + 1}:00:00+09:00`,
     reservationState: "confirmed", attendanceState: "none", classification: "standard" });
   const initial = historyItem("seed-reservation-self", "11"), added = historyItem(id, "10");
@@ -99,9 +100,10 @@ function fixture(fault = "", changePost = () => {}) {
   };
   const click = async name => {
     events.push(name);
-    if (fault === "abort-selection" && name.endsWith("：予約可能")) controller.abort(canary);
     if (fault === "click-confirm" && name === confirmName) throw new Error(canary);
-    if (name === previewName) {
+    if (name === slotName) {
+      if (fault === "abort-selection") { controller.abort(canary); return; }
+      if (fault === "selection-write") await emitResponse(confirmPath, "POST", confirm, 201);
       if (fault === "timeout-preview") { const e = new Error(canary); e.name = "TimeoutError"; throw e; }
       await emitResponse(csrfPath, "GET", { csrfToken: fault === "csrf-mismatch" ? canary : csrf, scope: "session" });
       if (fault === "abort-preview") controller.abort(canary);
@@ -135,8 +137,6 @@ function fixture(fault = "", changePost = () => {}) {
     } else if (name === "履歴を最新から再取得") {
       await emitResponse(confirmPath, "GET", { items: fault === "other-history" ? [historyItem("seed-reservation-other", "12"), added] : [initial, added], nextCursor: null });
       mode = "history";
-    } else if (name.endsWith("：予約可能")) {
-      if (fault === "selection-write") await emitResponse(confirmPath, "POST", confirm, 201);
     }
   };
   Object.assign(page, {
@@ -171,7 +171,7 @@ function fixture(fault = "", changePost = () => {}) {
     cookies: async () => { if (fault === "cookie-jar") throw new Error(canary); return [{ ...self, domain: "127.0.0.1", expires: -1 }]; },
     route: async (pattern, handler) => { if (fault === "route") throw new Error(canary); assert.equal(pattern, "**/*"); routeHandler = handler; },
     newPage: async () => { if (fault === "page") throw new Error(canary); pages = [page]; return page; } };
-  return { input: { browser, context, session: seed.sessions.self, seed, signal: controller.signal }, events, forwarded, denied, controller, id,
+  return { input: { browser, context, session: seed.sessions.self, seed, signal: controller.signal }, events, forwarded, denied, controller, id, slotName,
     responsePending, resumeResponse: () => resumeResponse(),
     lateResponse: () => page.emit("response", lastResponse),
     late: () => emitResponse(confirmPath, "POST", confirm, 201),
@@ -185,12 +185,12 @@ function checkFixtureFunction(fn, selector) {
   }), true);
 }
 
-test("#941 finite success: navigation, explicit Preview200 then Confirm201 once, owner history +1, opaque handoff", async () => {
+test("#941 finite success: navigation, Slot selection auto-Preview200 then explicit Confirm201 once, owner history +1, opaque handoff", async () => {
   const f = fixture();
   assert.equal(await proveTrustedBookingDom(f.input), f.id);
-  assert.equal(f.events.filter(v => v === previewName).length, 1);
+  assert.equal(f.events.filter(v => v === f.slotName).length, 1);
   assert.equal(f.events.filter(v => v === confirmName).length, 1);
-  assert.ok(f.events.indexOf(previewName) < f.events.indexOf(confirmName));
+  assert.ok(f.events.indexOf(f.slotName) < f.events.indexOf(confirmName));
   assert.deepEqual(f.forwarded.filter(v => v.startsWith("POST")), [`POST ${previewPath}`, `POST ${confirmPath}`]);
   await f.late(); assert.deepEqual(f.denied, [confirmPath]);
   await assert.rejects(proveTrustedBookingDom(f.input), { message: "TRUSTED_BOOKING_DOM_ASSERTION" });
@@ -210,7 +210,7 @@ test("#941 finite negative observations stop without retry/reload/reConfirm or s
       return true;
     });
     assert.ok(f.events.filter(v => v === confirmName).length <= 1, fault);
-    assert.ok(f.events.filter(v => v === previewName).length <= 1, fault);
+    assert.ok(f.events.filter(v => v === f.slotName).length <= 1, fault);
     assert.ok(f.forwarded.filter(v => v === `POST ${confirmPath}`).length <= 1, fault);
     if (fault.startsWith("preview-") || ["wrong-dom-classification", "extra-dom-change", "secret-dom", "csrf-mismatch"].includes(fault)) assert.ok(!f.events.includes(confirmName), fault);
     assert.equal(observations.filter(([kind]) => kind === "fault").length, 1, fault);
@@ -287,7 +287,7 @@ function unauthenticatedFixture(options = {}) {
   const node = { getAttribute: () => "false" };
   const document = { cookie: "", documentElement: { outerHTML: "<main>認証が必要です。</main>" },
     querySelector: selector => selector.includes("aria-pressed") ? null : node };
-  const controls = new Map(["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", previewName, confirmName]
+  const controls = new Map(["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", confirmName]
     .map(name => [name, true]));
   const texts = new Map(["#schedule-status", "#history-status", "#operation-status"].map(selector => [selector, guidance]));
   texts.set("#selection-status", "");
@@ -901,7 +901,7 @@ test("#1002 stale DOM, unexpected assets/resources, duplicate response/request a
     { duplicateResponse: true }, { throwFetch: true }, { abortHeaders: true }, { networkFailure: true },
     ...["section ol li", ".slot", "#operation-content > *"].map(selector => ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
     ...["#selection-status", "#schedule-status", "#history-status", "#operation-status"].map(selector => ({ dom: ({ texts }) => texts.set(selector, canary) })),
-    ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", previewName, confirmName]
+    ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", confirmName]
       .map(name => ({ dom: ({ controls }) => controls.set(name, false) })),
     ...["expectedStateToken", "csrfToken", "studentId", "reservationId", "token_hash", "seed-other", "private@example.test"]
       .map(value => ({ dom: ({ document }) => { document.documentElement.outerHTML = value; } })),
@@ -1015,7 +1015,7 @@ test("#992 absent Fetch Metadata at Preview, Confirm or both preserves one-shot 
     assert.equal(await proveTrustedBookingDom(f.input), f.id);
     assert.deepEqual(observations, expected);
     assert.deepEqual(f.forwarded, baseline.forwarded);
-    assert.equal(f.events.filter(v => v === previewName).length, 1);
+    assert.equal(f.events.filter(v => v === f.slotName).length, 1);
     assert.equal(f.events.filter(v => v === confirmName).length, 1);
     const saved = structuredClone(observations); f.lateResponse(); await f.late();
     assert.deepEqual(observations, saved);
@@ -1076,7 +1076,7 @@ test("#984 finite checkpoint/fault/write negatives retain only directly observed
     ["goto", "navigation", "driver", "unobserved"], ["heading", "navigation", "driver", "unobserved"],
     ["null-navigation", "navigation", "assertion", "unobserved"], ["missing-asset", "assets", "assertion", "unobserved"],
     ["month", "initial-ui", "driver", "unobserved"], ["initial-history", "initial-ui", "assertion", "unobserved"],
-    ["abort-selection", "selection", "abort", "unobserved"], ["timeout-preview", "preview", "timeout", "unobserved"],
+    ["abort-selection", "preview", "abort", "unobserved"], ["timeout-preview", "preview", "timeout", "unobserved"],
     ["wrong-dom-classification", "review", "assertion", "unobserved"],
     ["navigation", "preview", "navigation", "unobserved"], ["preview-403", "preview", "response", "unobserved"],
     ["preview-token", "preview", "unknown", "unobserved"],
@@ -1318,7 +1318,7 @@ test("#1073 UI-only rejects Cookie/DOM data residue, enabled controls and observ
       ({ dom: ({ texts }) => texts.set(selector, canary) })),
     ...["section ol li", ".slot", "#operation-content > *"].map(selector =>
       ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
-    ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", previewName, confirmName].map(name =>
+    ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", confirmName].map(name =>
       ({ dom: ({ controls }) => controls.set(name, false) })),
     { dom: ({ document }) => { document.cookie = canary; } },
     ...["csrfToken", "expectedStateToken", "studentId", "reservationId", "seed-other", "seed-reservation-self",

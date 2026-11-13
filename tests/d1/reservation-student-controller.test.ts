@@ -106,8 +106,7 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
     stage = "initial-month-counts";
     expect(await counts()).toEqual([2, 4, 0, 0, 0]);
     stage = "first-preview";
-    controller.select(slotId);
-    await controller.preview();
+    await controller.select(slotId);
     expect(controller.state.operation).toBe("review");
     expect(controller.state.preview).toEqual({
       slot: { slotId, startsAt: seed.date + "T10:00:00+09:00", endsAt: seed.date + "T11:00:00+09:00" },
@@ -129,7 +128,7 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
     expect(controller.state.preview).toBeNull();
     expect(controller.state.confirmed).toBeNull();
     expect(controller.state.operation).toBe("idle");
-    expect(controller.state.operationMessage.includes("再Preview")).toBe(true);
+    expect(controller.state.operationMessage).toContain("状態が変わりました");
     expect(await digest()).toBe(afterFixtureChange);
     expect(await counts()).toEqual(beforeRejectedCounts);
     await checkTrustedSeedIntegrity(db, validation);
@@ -146,8 +145,7 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
     expect(confirms()).toEqual([409]);
 
     stage = "second-preview";
-    controller.select(slotId);
-    await controller.preview();
+    await controller.select(slotId);
     expect(controller.state.operation).toBe("review");
     expect(controller.state.preview?.previewClassification).toBe("standard");
     expect(previews()).toEqual([200, 200]);
