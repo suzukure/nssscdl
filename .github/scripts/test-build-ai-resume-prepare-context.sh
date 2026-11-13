@@ -32,7 +32,7 @@ comment() {
   local id="$1" record="$2" body
   body="$(bash "$record_helper" create "$record")"
   jq -cn --argjson id "$id" --arg body "$body" \
-    '{id:$id,body:$body,performed_via_github_app:{id:99}}'
+    '{id:$id,body:$body,performed_via_github_app:{id:99},created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"}'
 }
 
 root_record='{"version":1,"kind":"pause","reason":"non_blocking_decision","target":"pr:37","paused_head":"0123456789abcdef0123456789abcdef01234567","payload":{"detail":"source text"}}'
