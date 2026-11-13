@@ -256,7 +256,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
       require(await step(() => page.locator("#selection-status").textContent()) === "");
       require(await step(() => page.locator("#schedule-month").isDisabled()));
       for (const name of ["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ",
-        "選択枠の予約内容をPreview", "内容を確認して予約を確定"])
+        "予約する"])
         require(await step(() => page.getByRole("button", { name, exact: true }).isDisabled()));
       require(await step(() => page.evaluate(() => {
         const html = document.documentElement.outerHTML;
@@ -466,16 +466,14 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     const initialHistory = expectedHistory(seed, "self");
     check(await step(() => page.locator("section ol li").allTextContents()).then(v => isDeepStrictEqual(v, initialHistory.items.map(historyText))));
     check(await step(() => page.getByRole("button", { name: "履歴の次ページ", exact: true }).isDisabled()));
-    check(await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
+    check(await step(() => page.getByRole("button", { name: "予約する", exact: true }).isDisabled()));
     await safeDom();
     entered("selection");
-    await click(`${intervalLabel(slot)}：予約可能`);
-    check(await step(() => page.locator("#selection-status").textContent()).then(v => v.includes("予約は確定していません")));
     check(previewCount === 0 && confirmCount === 0 && csrfCount === 0);
-    check(await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
     entered("preview");
     phase = "preview";
-    const previewBody = await observeClick("選択枠の予約内容をPreview", previewPath, "POST", 200);
+    const previewBody = await observeClick(`${intervalLabel(slot)}：予約可能`, previewPath, "POST", 200);
+    check(await step(() => page.locator("#selection-status").textContent()).then(v => v.includes("予約は確定していません")));
     const parsed = parsePreview(previewBody, slot);
     check(/^v1\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(parsed.token)); // Existing Confirm preparation format.
     check(isDeepStrictEqual(parsed.view, { slot: { slotId: slot.slotId, startsAt: slot.startsAt, endsAt: slot.endsAt }, previewClassification: "standard", classificationChanges: [] }));
@@ -488,11 +486,11 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     entered("review");
     await step(() => assertBookingReviewDom(page, parsed.view, parsed.view.previewClassification, step), "unknown"); await safeDom();
     check(previewCount === 1 && confirmCount === 0);
-    check(!await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
+    check(!await step(() => page.getByRole("button", { name: "予約する", exact: true }).isDisabled()));
     expectedToken = parsed.token; // Enable the only write after all review assertions.
     entered("confirm");
     phase = "confirm";
-    const confirmBody = await observeClick("内容を確認して予約を確定", confirmPath, "POST", 201);
+    const confirmBody = await observeClick("予約する", confirmPath, "POST", 201);
     const confirmed = parseConfirm(confirmBody, slot), reservationId = confirmed.reservation.reservationId;
     check(reservationId !== "seed-reservation-self" && reservationId !== "seed-reservation-other" && secrets.every(s => !reservationId.includes(s)));
     check(isDeepStrictEqual(confirmBody, { reservation: { reservationId, startsAt: slot.startsAt, endsAt: slot.endsAt,
@@ -501,7 +499,7 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     await settled("#operation-content"); await settled("#schedule-content");
     await step(() => assertBookingReviewDom(page, confirmed, confirmed.reservation.classification, step), "unknown");
     check(await step(() => page.locator("#operation-status").textContent()).then(v => v === "予約済みです。メールの配送完了を表すものではありません。"));
-    check(await step(() => page.getByRole("button", { name: "内容を確認して予約を確定", exact: true }).isDisabled()));
+    check(await step(() => page.getByRole("button", { name: "予約する", exact: true }).isDisabled()));
     check(await step(() => page.locator(".slot.reserved_by_me").allTextContents()).then(v => v.includes(`${intervalLabel(slot)}：本人予約済み／標準`)));
     entered("history");
     phase = "history";
@@ -677,7 +675,7 @@ export async function proveUnauthenticatedBookingUi({ context, fixture, signal }
       demand(await step(() => page.locator("#selection-status").textContent()) === "");
       demand(await step(() => page.locator("#schedule-month").isDisabled()));
       for (const name of ["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ",
-        "選択枠の予約内容をPreview", "内容を確認して予約を確定"])
+        "予約する"])
         demand(await step(() => page.getByRole("button", { name, exact: true }).isDisabled()));
       demand(await step(() => page.evaluate(() => document.cookie === "" &&
         !document.querySelector('[aria-pressed="true"].slot') &&

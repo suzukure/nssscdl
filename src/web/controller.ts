@@ -154,14 +154,15 @@ export class StudentReadController {
     }
     this.changed("day", true);
   }
-  select(slotId: string): void {
+  async select(slotId: string): Promise<void> {
     const slot = this.state.slots.find(item => item.slotId === slotId);
-    if (this.state.stopped || this.state.operation === "confirming" || this.state.scheduleLoading ||
+    if (this.state.stopped || this.state.operationHalted || this.state.operation === "confirming" || this.state.scheduleLoading ||
         slot?.view !== "bookable" || slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
     this.clearConfirmation();
     this.state.selectedId = slotId;
     this.state.selectionMessage = `${intervalLabel(slot)}を選択しました。予約は確定していません。`;
     this.changed("selection", false);
+    await this.preview(slot);
   }
   private clearConfirmation(): void {
     this.needsFreshSchedule ||= this.state.preview !== null || this.state.operation === "previewing" || this.state.operation === "confirming";
@@ -170,22 +171,44 @@ export class StudentReadController {
     if (!this.state.operationHalted) { this.state.operation = "idle"; this.state.operationMessage = ""; }
   }
   private current(revision: number): boolean { return revision === this.operationRevision && !this.state.stopped; }
-  async preview(): Promise<void> {
-    const slot = this.state.slots.find(item => item.slotId === this.state.selectedId);
-    if (this.state.stopped || this.state.operationHalted || this.state.operationBusy || this.state.scheduleLoading ||
-        slot?.view !== "bookable" || slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
-    if (this.needsFreshSchedule || this.state.preview !== null) {
-      this.clearConfirmation();
-      this.state.operationMessage = "最新の予定を再取得します。予約可能枠を選び直し、再Previewして内容を確認してください。";
-      void this.loadMonth(this.state.month, false, true);
-      this.changed("operation", true); return;
+  private async revalidateSelection(slot: Slot, month: string, revision: number): Promise<boolean> {
+    let slots: Slot[];
+    try {
+      slots = parseSchedule(await this.get(`/api/me/schedule-months/${month}`), month);
+    } catch (error) {
+      if (error instanceof ReadError && error.status === 401) throw error;
+      if (this.current(revision)) {
+        Object.assign(this.state, { slots: [], scheduleReady: false, selectedId: null,
+          selectionMessage: "予定を再取得し、予約可能な枠を選び直してください。" });
+        this.state.operation = "idle";
+        this.state.operationMessage = this.state.selectionMessage;
+        this.fail(error, "schedule", false);
+        this.changed("operation", true);
+      }
+      return false;
     }
-    this.clearConfirmation();
-    const revision = this.operationRevision;
-    Object.assign(this.state, { operation: "previewing", operationBusy: true, operationMessage: "予約内容を確認しています。" });
+    if (!this.current(revision)) return false;
+    const latest = slots.find(item => item.slotId === slot.slotId);
+    const matches = latest?.view === "bookable" && latest.startsAt === slot.startsAt && latest.endsAt === slot.endsAt;
+    this.needsFreshSchedule = false;
+    Object.assign(this.state, { slots, scheduleMessage: "最新の予定を取得しました。" });
+    if (!matches) {
+      Object.assign(this.state, { selectedId: null, operation: "idle",
+        selectionMessage: "選択した枠の状態が変わりました。最新の予定から予約可能な枠を選び直してください。" });
+    }
+    this.state.operationMessage = matches ? "予約内容を確認しています。" : this.state.selectionMessage;
+    this.changed("schedule", false);
+    if (!matches) this.changed("operation", true);
+    return matches;
+  }
+  private async preview(slot: Slot): Promise<void> {
+    const revision = this.operationRevision, month = this.state.month;
+    Object.assign(this.state, { operation: "previewing", operationBusy: true,
+      operationMessage: this.needsFreshSchedule ? "最新の予定を確認しています。" : "予約内容を確認しています。" });
     this.changed("operation", false);
     try {
-      // Acquisition occurs only on explicit Preview; neither mount nor selection fetches CSRF.
+      if (this.needsFreshSchedule && !await this.revalidateSelection(slot, month, revision)) return;
+      if (!this.current(revision)) return;
       if (!this.#csrf) {
         const csrf = parseCsrf(await this.get("/api/auth/student/csrf"));
         if (!this.current(revision)) return;
@@ -233,10 +256,10 @@ export class StudentReadController {
       Object.assign(this.state, { operation: "halted", operationHalted: true, operationMessage: "この操作は利用できません。" });
     } else if (known) {
       this.state.operationMessage = error instanceof ReadError && error.code === "CSRF_INVALID"
-        ? "操作を確認できませんでした。予定を再取得し、CSRFを再取得するPreviewから内容を再確認してください。"
+        ? "操作を確認できませんでした。最新の予定から予約可能枠を選び直し、予約内容を確認してください。"
         : error instanceof ReadError && error.retry === "repreview"
-          ? "状態が変わりました。最新の予定を取得して再Previewし、変更内容を再確認してください。"
-          : "この枠は現在予約できません。最新の予定から予約可能枠を選択し、再Previewしてください。";
+          ? "状態が変わりました。最新の予定から予約可能枠を選び直し、変更内容を確認してください。"
+          : "この枠は現在予約できません。最新の予定から予約可能枠を選び直してください。";
       void this.loadMonth(this.state.month, false, true);
     } else {
       Object.assign(this.state, { operation: "halted", operationHalted: true,

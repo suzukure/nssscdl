@@ -85,7 +85,7 @@ export async function observeHumanBrowser(context, session, month, onFailure) {
     Object.defineProperty(window, "__nssscdlOperatorHumanConfirms", { get: () => confirms, configurable: false });
     document.addEventListener("click", event => {
       if (event.isTrusted && event.target instanceof Element &&
-        event.target.closest("button")?.textContent === "内容を確認して予約を確定") confirms++;
+        event.target.closest("button")?.textContent === "予約する") confirms++;
     }, true);
   });
   page.on("popup", bad); page.on("download", bad); page.on("websocket", bad);

@@ -826,16 +826,16 @@ test-only structural DOM adapterでlabel・button / 非活性説明・切替focu
 `integration/worker.test.ts` は `/student` / UI資産 / 本人履歴へのdefault HTTPが503 / no-storeのままなことを回帰する。
 320px overflow、端末timezone別実Browser、HTTPS / asset serving、Gate A〜DとTC全体Passは#537へ保持する。
 
-#926は同じ `unit/student-read.test.ts` に単一予約操作のsynthetic fetch / structural DOM検査を追加する。
-`TC-F-003-01〜02 / 05 / 08〜09 / TC-F-005-01 / TC-NF-902-02 / TC-NF-914-03〜04` のUI **partial evidence**である。
-詳細設計Application §5〜9.2 / §10.3を入力として、明示Preview前の通信なし、session CSRF取得GET、
+#926で追加した `unit/student-read.test.ts` の単一予約操作のsynthetic fetch / structural DOM検査を、#1152で枠選択による自動Previewに対応させる。
+`TC-F-003-01〜02 / 05 / 08〜10 / TC-F-005-01 / TC-NF-902-02 / TC-NF-914-03〜04` のUI **partial evidence**である。
+詳細設計Application §5〜9.2 / §10.3を入力として、明示的な枠選択前のPreview・Confirm・session CSRF取得なし、必要時のsession CSRF取得GET、
 exact Preview / Confirm body、same-origin / no-store / redirect:error、+09:00日時、標準 / 追加説明、全before / after差分、
 token / CSRF非表示、201だけの確定表示とメール配送の分離、二重送信抑止、read-only Schedule更新・本人履歴を検査する。
-409 / retryの照合とfresh Schedule→明示再Preview、CSRF_INVALIDの再取得・再確認、403操作停止、
-401の全読取・操作無効化、古いCSRF / Preview / Confirm応答、再Preview / 月 / 枠変更、
+409 / retryの照合とfresh Schedule→明示再選択による新Preview、CSRF_INVALIDの再取得・再確認、403操作停止、
+401の全読取・操作無効化、古いCSRF / Preview / Confirm応答、再選択時のfresh Schedule照合と月日変更、
 503 / network / malformed / unexpected statusの結果不明・書込み停止・非再送、focus / aria-liveを回帰する。
 複数差分のDOM fixtureはwireで許される両方向の投影検査であり、Domainの分類計算を証明しない。
-REQ-003 / AC-003-001〜008・016〜021、REQ-005 / AC-005-001〜002、REQ-101 / AC-101-001〜002への既存traceを維持し、
+REQ-003 / AC-003-001〜008・016〜022、REQ-005 / AC-005-001〜002、REQ-101 / AC-101-001〜002に対応し、
 Serverの本人解決・再検証・Transaction / NotificationIntentは既存HTTP / D1試験の責務である。
 実Chrome / actual isolated unsafe HTTP、D1書込み・履歴反映、320px layout / 実keyboard / screen reader、
 System / Acceptance全体Pass・Gate A〜D・#608全体Done・Production readyは証明しない。
@@ -889,7 +889,7 @@ local DB試験をProduction readinessや#537 / #608全体Doneへ読み替えず�
 Production migrations `0001`〜`0012`、#898 trusted empty-only seed、#931のreal reservation serviceと
 Production Guard / CSRF / Transactionを再利用し、`StudentReadController`の既存fetch injectionを接続する。
 test-owned Cookie、same-origin Fetch Metadata、POST Originだけを追加し、Controllerのpath/method/body/CSRFは補正しない。
-月GET→明示Preview200→fixtureの公開version変更→旧Confirm409 `RESERVATION_STATE_CHANGED/repreview`
+月GET→明示枠選択による自動Preview200→fixtureの公開version変更→旧Confirm409 `RESERVATION_STATE_CHANGED/repreview`
 （拒否前後の全業務DB digest不変・暗黙再送0）→fresh月GET・再選択→新Preview200→
 明示Confirm201一度だけ→本人History/同一reservationIdの実D1 Reservation・Occupancy・Audit・Intent・Outbox照合を行う。
 秘密を含む失敗原因・SQL・DB rowはCIに反射させず、固定phaseのみを通知する。既存#931 atomic/rollback試験は残す。
@@ -1015,9 +1015,9 @@ context routeは送信前にorigin / method / path / queryなし / redirectな�
 #992はPreview / Confirm POSTのtest-only pre-route観測を訂正する。`request.allHeaders()` の `sec-fetch-site` key不在は未観測として扱い、その存在を `route.continue()` 前の必要条件にしない。keyが存在すれば正確な `same-origin` だけを許可し、cross-site / same-site / none / unknown / 空文字 / undefined / 型不正は転送前に拒否する。Origin完全一致・JSON Content-Type / exact body・Session-bound CSRF exact・method / path / redirect / frame・各POST一回性・abort / timeout / deny guardは維持する。headerを追加 / 上書きせず、`route.fetch/fulfill`・二重送信・HTTP retryを行わない。Serverの実HTTP判定は `src/http/student-session-csrf.ts` と詳細設計§10.3を正とし、CSRF取得GETを含む製品契約を変更しない。
 供給Issueが示す [Playwright公式Network文書](https://playwright.dev/docs/network#headers-owned-by-the-network-stack) は、network stackが送信直前に付与する `Sec-Fetch-*` がroute内の `allHeaders()` では保証されない境界を説明する。[upstream reproduction #42620](https://github.com/microsoft/playwright/issues/42620) も供給根拠とする。route時の欠落から実wireの欠落 / same-originを推定しない。外部再取得・実Chrome確認は行わず、対象Playwright版 / 実Runへの適用と真因は未検証とする。
 同originの補助favicon GETは予約証拠へ採用しない。後続ownerの既存routeやPageを引き継がない専用contextが前提となる。
-次の東京月15日10:00の `seed-slot-bookable` を日時のaccessible labelで選び、選択だけではPOST / CSRF取得・確定がないことを検査する。
-明示「選択枠の予約内容をPreview」でPOST 200とSession-bound CSRFを照合し、日時・分類・既存予約の全差分をDOMで確認してからだけ、
-明示「内容を確認して予約を確定」を1回操作する。strict seedの初期N=3・既存本人1件では新規standard / 差分なしが正本期待形。
+選択前のPreview・Confirm・CSRF取得が0件であることを検査し、次の東京月15日10:00の `seed-slot-bookable` を日時のaccessible labelで選ぶ。
+明示選択で発生する自動PreviewのPOST 200とSession-bound CSRFを照合し、日時・分類・既存予約の全差分をDOMで確認してからだけ、
+明示「予約する」を1回操作する。strict seedの初期N=3・既存本人1件では新規standard / 差分なしが正本期待形。
 ConfirmのPOST 201、日時・分類・予約済み表示とSchedule更新、明示「履歴を最新から再取得」による本人履歴の1→2件を照合する。
 戻り値はこの実201のpayloadにあるopaque `reservationId` だけ。201観測はWorker停止後の `inspectTrustedBooking(handle, reservationId)` による5表独立readbackとは別の証拠で、配送成功も主張しない。
 
