@@ -652,34 +652,47 @@ it("TC-F-001-03 [#1148] mounts the next available day without moving focus or de
   ]);
 });
 
-describe("TC-F-002-03〜04 / TC-NF-903-01 [#1138 structural DOM, not browser layout evidence]", () => {
+describe("TC-F-002-03〜04 / TC-F-006-01 / TC-NF-903-01 [calendar structural DOM]", () => {
   it("keeps one daily list, all same-day Views in stable time order, explicit instant navigation and empty/unbookable guidance", async () => {
     const { fetcher, calls } = harness(), doc = new TestDocument(), root = doc.createElement("main");
     const controller = mountStudent(root as unknown as HTMLElement, "2026-12", fetcher);
     const values = fourSlots().map(value => value.view === "reserved_by_me" ? { ...value, classification: "standard" } : value);
     const tied = { ...values[1], slotId: "tie", classification: "additional" };
-    calls[0].request.resolve(response({ month: "2026-12", slots: [slot("unavailable", "other-day"), values[3], values[1], tied, values[0], values[2]] }));
+    const earlyGroup = { ...values[1], view: "group_lesson", slotId: "early-group", name: "private-group-canary" };
+    const otherDay = { ...slot("unavailable", "other-day"), reason: "private-reason-canary" };
+    calls[0].request.resolve(response({ month: "2026-12", slots: [otherDay, values[3], values[1], earlyGroup, tied, values[0], values[2]] }));
     calls[1].request.resolve(response({ items: [], nextCursor: null })); await waitForInitialReads(controller);
     const find = (id: string) => root.all().find(node => node.id === id)!;
     expect(root.all().filter(node => node.id === "daily-content")).toHaveLength(1);
     expect(find("daily-heading").scrolls).toEqual([]); expect(doc.activeElement).toBeNull();
     expect(find("daily-heading").textContent).toContain("2026年12月26日");
     expect(find("daily-content").children.map(li => li.children[0].className)).toEqual([
-      "slot bookable", "slot reserved_by_me", "slot reserved_by_me", "slot group_lesson", "slot unavailable",
+      "slot bookable", "slot reserved_by_me", "slot group_lesson", "slot reserved_by_me", "slot group_lesson", "slot unavailable",
     ]);
     expect(find("daily-content").textContent).not.toContain("31日");
     expect(find("daily-content").children[1].textContent).toContain("／標準");
-    expect(find("daily-content").children[2].textContent).toContain("／追加");
-    expect(find("schedule-content").all().filter(node => node.tag === "button" && node.className.includes("slot"))).toHaveLength(0);
+    expect(find("daily-content").children[3].textContent).toContain("／追加");
+    expect(find("daily-content").all().filter(node => node.tag === "button")).toHaveLength(1);
+    expect(find("calendar-legend").textContent).toBe("左から開始時刻が早い順。○ 予約可能、× その他の予約不可、済 本人予約済み、グ グループレッスン（予約不可）");
+    expect(find("schedule-content").all().filter(node => node.tag === "button")).toHaveLength(31);
     const selected = root.all().find(node => node.className === "calendar-day selected-day")!;
     expect(selected.children[0].textContent).toBe("26日 選択中");
     expect(selected.children[0].attributes.get("aria-pressed")).toBe("true");
     expect(selected.children[0].attributes.get("aria-label")).toBe("2026年12月26日 選択中");
+    const [, summary, ...details] = selected.children;
+    expect(summary.className).toBe("calendar-symbols");
+    expect(summary.children.map(li => li.children[0].textContent).join("")).toBe("○済グ済グ×");
+    expect(summary.children.map(li => li.children[1].textContent)).toEqual([
+      "予約可能", "本人予約済み", "グループレッスン（予約不可）", "本人予約済み", "グループレッスン（予約不可）", "予約不可",
+    ]);
+    expect(details.map(node => node.textContent)).toEqual(["13:30～15:00 グループレッスン", "15:30～17:00 グループレッスン"]);
+    expect(root.textContent).not.toContain("private-");
     const oldSlot = find("daily-content").all().find(node => node.tag === "button")!;
     oldSlot.activate(); expect(controller.state.selectedId).toBe("slot");
     root.all().find(node => node.tag === "button" && node.attributes.get("aria-label") === "2026年12月27日")!.activate();
     expect(controller.state.selectedId).toBeNull(); expect(find("daily-content").children).toHaveLength(0);
     expect(find("daily-status").textContent).toBe("この日の公開枠はありません。");
+    expect(root.all().find(node => node.className === "calendar-day selected-day")!.children).toHaveLength(1);
     expect(doc.activeElement).toBe(find("daily-heading")); expect(find("daily-heading").tabIndex).toBe(-1);
     expect(find("daily-heading").focusOptions).toEqual({ preventScroll: true });
     expect(find("daily-heading").scrolls).toEqual([{ behavior: "instant", block: "start" }]);
@@ -688,14 +701,20 @@ describe("TC-F-002-03〜04 / TC-NF-903-01 [#1138 structural DOM, not browser lay
     expect(find("daily-status").textContent).toBe("この日に予約可能な枠はありません。");
     expect(find("daily-content").children).toHaveLength(1);
     expect(find("daily-content").all().filter(node => node.tag === "button")).toHaveLength(0);
+    expect(root.all().find(node => node.className === "calendar-day selected-day")!.children[1].children[0].children[0].textContent).toBe("×");
     root.all().find(node => node.textContent === "別の日を選ぶ（カレンダーへ）")!.activate();
     expect(doc.activeElement).toBe(find("schedule-heading")); expect(controller.state.selectedDate).toBe("2026-12-31");
     expect(find("schedule-heading").scrolls).toEqual([{ behavior: "instant", block: "start" }]);
     expect(calls).toHaveLength(2);
     const month = controller.loadMonth("2027-01", false);
-    calls[2].request.resolve(response({ month: "2027-01", slots: [] })); await month;
+    calls[2].request.resolve(response({ month: "2027-01", slots: [{
+      ...slot("reserved_by_me"), startsAt: "2027-01-05T16:00:00+09:00", endsAt: "2027-01-05T17:30:00+09:00",
+    }] })); await month;
     expect(find("daily-heading").scrolls).toHaveLength(2); // Only the two explicit dates scrolled.
     expect(controller.state.selectedDate).toBeNull(); expect(find("daily-status").textContent).toContain("日付を選択");
+    const summaries = find("schedule-content").all().filter(node => node.className === "calendar-symbols");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].children[0].children[0].textContent).toBe("済");
   });
   it("returning and re-entering the selected day preserve valid review; Confirm disables every month/day/Slot control", async () => {
     const { fetcher, calls } = harness(), doc = new TestDocument(), root = doc.createElement("main");
@@ -755,14 +774,18 @@ describe("TC-F-001-01 / TC-F-001-02 / TC-F-005-01 / TC-NF-903-01 [#894 structura
     calls[1].request.resolve(response({ items: [], nextCursor: null }));
     await waitForInitialReads(controller);
     const calendarContent = root.all().find(node => node.id === "schedule-content")!;
-    expect(calendarContent.all().filter(node => node.className === "slot bookable")).toHaveLength(97);
+    const symbols = calendarContent.all().filter(node => node.attributes.get("aria-hidden") === "true" && node.tag === "span");
+    expect(symbols).toHaveLength(97);
+    expect(symbols.every(node => node.textContent === "○")).toBe(true);
     expect(calendarContent.all().filter(node => node.tag === "button" && node.className.includes("slot"))).toHaveLength(0);
     expect(root.all().filter(node => node.tag === "button" && node.className === "slot bookable")).toHaveLength(3);
     const scroll = root.all().find(node => node.className === "calendar-scroll")!;
     expect(scroll.tabIndex).toBe(0); expect(scroll.attributes.get("aria-label")).toContain("2026-12");
+    expect(scroll.attributes.get("aria-describedby")).toBe("calendar-legend");
     const read = controller.loadMonth("2027-01"); expect(root.all().filter(node => node.className === "slot bookable")).toHaveLength(0);
     calls[2].request.resolve(response({ error: { code: "SCHEDULE_MONTH_NOT_AVAILABLE", message: "private-canary" } }, 404)); await read;
     expect(doc.activeElement?.id).toBe("schedule-status"); expect(root.textContent).toContain("別の月を選択");
+    expect(calendarContent.all().some(node => node.className === "calendar-symbols")).toBe(false);
     expect(root.textContent).not.toContain("private-canary");
   });
 });
