@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudentReadController } from "../../src/web/controller";
 import { monthDays, moveMonth, tokyoNowMonth, validDateTime, parseSchedule, parseHistory, intervalLabel, parsePreview, parseConfirm, parseCsrf } from "../../src/web/model";
 import { mountStudent } from "../../src/web/view";
@@ -717,6 +717,91 @@ describe("TC-F-003-10 / TC-F-005-01 [#1154 History synchronization]", () => {
   });
 });
 
+describe("TC-F-005-02 [#1155 immediate confirmed projection]", () => {
+  beforeEach(() => vi.setSystemTime(new Date("2026-12-01T00:00:00+09:00")));
+  afterEach(() => vi.useRealTimers());
+  it.each([404, 403, 503, "network", "malformed"])("retains the validated Slot during readback and after %s", async failure => {
+    const { controller, calls } = await reviewedHarness(), command = controller.confirm();
+    calls[3].request.resolve(response(confirmBody("additional"), 201)); await command;
+    expect(controller.displaySlots.find(value => value.slotId === "slot")).toMatchObject({ view: "reserved_by_me", classification: "additional" });
+    expect(controller.isLatestBooking(controller.displaySlots.find(value => value.slotId === "slot")!)).toBe(true);
+    expect(controller.state.selectedDate).toBe("2026-12-31");
+    if (failure === "network") calls[4].request.reject(new Error("private-canary"));
+    else calls[4].request.resolve(response(failure === "malformed" ? {} : { error: { code: failure === 404 ? "SCHEDULE_MONTH_NOT_AVAILABLE" : "FORBIDDEN" } }, typeof failure === "number" ? failure : 200));
+    calls[5].request.resolve(response({ items: [], nextCursor: null }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false));
+    expect(controller.state.scheduleReady).toBe(false);
+    expect(controller.displaySlots.find(value => value.slotId === "slot")?.view).toBe("reserved_by_me");
+    expect(controller.state.operation).toBe("confirmed");
+    expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(2);
+  });
+  it("applies the validated classification delta only to the matching self reservation", async () => {
+    const { controller, calls } = harness(), read = controller.loadMonth("2026-12");
+    const mine = { ...otherSlot(), view: "reserved_by_me", reservationId: "existing", classification: "standard" };
+    calls[0].request.resolve(response({ month: "2026-12", slots: [slot(), mine,
+      { ...mine, slotId: "tie", reservationId: "different" }] })); await read;
+    const review = controller.select("slot"); calls[1].request.resolve(response({ scope: "session", csrfToken: csrf }));
+    await vi.waitFor(() => expect(calls).toHaveLength(3)); calls[2].request.resolve(response(previewBody())); await review;
+    const command = controller.confirm();
+    calls[3].request.resolve(response(confirmBody("standard", [{ reservationId: "existing", startsAt: mine.startsAt, before: "standard", after: "additional" }]), 201)); await command;
+    expect(controller.displaySlots.map(value => value.classification)).toEqual(["standard", "additional", "standard"]);
+    expect(controller.displaySlots.map(value => controller.isLatestBooking(value))).toEqual([true, false, false]);
+  });
+  it("prefers a current normal Schedule, including empty, over the local projection", async () => {
+    const { controller, calls } = await reviewedHarness(), command = controller.confirm();
+    calls[3].request.resolve(response(confirmBody(), 201)); await command;
+    calls[4].request.resolve(response({ month: "2026-12", slots: [] }));
+    await vi.waitFor(() => expect(controller.state.scheduleReady).toBe(true));
+    expect(controller.displaySlots).toEqual([]);
+    expect(controller.state.operation).toBe("confirmed");
+    const read = controller.loadMonth("2026-12");
+    calls[6].request.resolve(response({ month: "2026-12", slots: [{ ...slot("reserved_by_me"), classification: "additional" }] })); await read;
+    expect(controller.displaySlots[0].classification).toBe("additional");
+    expect(controller.isLatestBooking(controller.displaySlots[0])).toBe(true);
+  });
+  it.each([false, true])("protects the latest projection from stale readback (401: %s)", async unauthorized => {
+    const { controller, calls } = await reviewedHarness(), command = controller.confirm();
+    calls[3].request.resolve(response(confirmBody(), 201)); await command;
+    const january = controller.loadMonth("2027-01");
+    calls[6].request.resolve(response({ month: "2027-01", slots: [] })); await january;
+    expect(controller.displaySlots).toEqual([]);
+    const back = controller.loadMonth("2026-12");
+    expect(controller.displaySlots).toHaveLength(1);
+    expect(controller.isLatestBooking(controller.displaySlots[0])).toBe(true);
+    calls[7].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] })); await back;
+    calls[4].request.resolve(unauthorized ? response({}, 401) : response({ month: "2026-12", slots: [] }));
+    await vi.waitFor(() => expect(controller.state.stopped || !controller.state.scheduleLoading).toBe(true));
+    // Flush the old response; its normal empty result cannot remove the current Slot.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(controller.displaySlots).toHaveLength(unauthorized ? 0 : 1);
+    expect(controller.isLatestBooking(parseSchedule({ month: "2026-12", slots: [slot("reserved_by_me")] }, "2026-12")[0])).toBe(!unauthorized);
+    expect(controller.state.stopped).toBe(unauthorized);
+  });
+  it("replaces only the highlight on the next 201, retains both reservations, and expires at start", async () => {
+    const { controller, calls } = await reviewedHarness(), command = controller.confirm();
+    calls[3].request.resolve(response(confirmBody(), 201)); await command;
+    calls[4].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me"), otherSlot()] }));
+    calls[5].request.resolve(response({ items: [item()], nextCursor: null }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading || controller.state.historyLoading).toBe(false));
+    controller.selectDate("2026-12-30"); controller.selectDate("2026-12-31");
+    expect(controller.isLatestBooking(controller.displaySlots[0])).toBe(true);
+    const review = controller.select("other-slot");
+    calls[6].request.resolve(response(previewBody("standard", [], otherSlot()))); await review;
+    expect(controller.isLatestBooking(controller.displaySlots[0])).toBe(true);
+    const second = controller.confirm(), dates = otherSlot();
+    calls[7].request.resolve(response({ slot: { ...dates, view: "reserved_by_me" },
+      reservation: { ...item(), reservationId: "second-reservation", startsAt: dates.startsAt, endsAt: dates.endsAt }, classificationChanges: [] }, 201)); await second;
+    expect(controller.displaySlots.map(value => value.view)).toEqual(["reserved_by_me", "reserved_by_me"]);
+    expect(controller.displaySlots.map(value => controller.isLatestBooking(value))).toEqual([false, true]);
+    vi.setSystemTime(new Date(dates.startsAt));
+    expect(controller.displaySlots.some(value => controller.isLatestBooking(value))).toBe(false);
+    expect(controller.displaySlots.filter(value => value.view === "reserved_by_me" && Date.parse(value.startsAt) > Date.now())).toEqual([]);
+    expect(calls.filter(call => call.path === "/api/me/reservations" && call.init?.method === "POST")).toHaveLength(2);
+    const fresh = harness().controller;
+    expect(fresh.isLatestBooking(controller.displaySlots[1])).toBe(false);
+  });
+});
+
 // Test-only structural DOM adapter: element/event/focus evidence, not a browser/layout engine.
 class TestDocument {
   activeElement: TestElement | null = null;
@@ -970,5 +1055,90 @@ describe("TC-F-003-01〜02 / TC-F-003-08 / TC-NF-902-02 / TC-NF-914-03〜04 [#92
     expect(root.all().find(node => node.className === "slot bookable")?.disabled).toBe(true);
     const month = controller.loadMonth("2026-12"); calls[5].request.resolve(response({ month: "2026-12", slots: [slot()] })); await month; controller.select("slot");
     expect(root.textContent).toContain("結果は不明"); expect(calls).toHaveLength(6);
+  });
+});
+
+
+describe("TC-F-005-02 [#1155 structural DOM; synthetic wire only]", () => {
+  beforeEach(() => vi.setSystemTime(new Date("2026-12-26T13:30:00+09:00")));
+  afterEach(() => vi.useRealTimers());
+  function mounted() {
+    const h = harness(), doc = new TestDocument(), root = doc.createElement("main");
+    const controller = mountStudent(root as unknown as HTMLElement, "2026-12", h.fetcher);
+    const find = (id: string) => root.all().find(node => node.id === id)!;
+    return { ...h, doc, root, controller, find };
+  }
+  it("shows every future self Slot in stable time order, separately from history and four calendar states", async () => {
+    const { controller, calls, root, find } = mounted();
+    expect(find("upcoming-status").textContent).toContain("未確認");
+    expect(find("upcoming-month").textContent).toBe("表示月：2026年12月");
+    const tied = { ...slot("reserved_by_me", "tie"), classification: "additional" };
+    calls[0].request.resolve(response({ month: "2026-12", slots: [tied, ...fourSlots().map(value => ({ ...value, slotId: `early-${value.slotId}` })),
+      { ...otherSlot(), view: "reserved_by_me" }, { ...slot("reserved_by_me"), classification: "standard" }] }));
+    calls[1].request.resolve(response({ items: [item("student_cancelled"), { ...item("confirmed", "absent"), reservationId: "past-absent" }], nextCursor: null }));
+    await waitForInitialReads(controller);
+    const items = find("upcoming-content").children;
+    expect(items).toHaveLength(3);
+    expect(items.map(value => value.textContent)).toEqual([
+      `${intervalLabel(tied)}：本人予約済み／追加`, `${intervalLabel(slot())}：本人予約済み／標準`,
+      `${intervalLabel(otherSlot())}：本人予約済み`,
+    ]);
+    expect(find("upcoming-content").textContent).not.toContain("2026年12月26日");
+    expect(find("history-content").textContent).toContain("生徒キャンセル");
+    expect(find("history-content").textContent).toContain("欠席");
+    expect(root.all().filter(value => value.className === "latest-booking")).toHaveLength(0);
+    expect(root.textContent).toContain("今後の予約一覧");
+    const sections = root.children.filter(value => value.tag === "section");
+    expect(sections.findIndex(value => value.textContent.includes("予約内容の確認・確定"))).toBeLessThan(
+      sections.findIndex(value => value.textContent.includes("今後の予約一覧")));
+    controller.selectDate("2026-12-26");
+    expect(find("daily-content").children).toHaveLength(4);
+    expect(root.all().filter(value => value.className === "calendar-symbols")[0].children.map(value => value.children[0].textContent)).toEqual(["○", "済", "グ", "×"]);
+  });
+  it.each([200, 404, 403, 503, "network", "malformed"])("distinguishes normal empty from unavailable or failed Schedule (%s)", async failure => {
+    const { controller, calls, find } = mounted();
+    // Finish initial search on a usable month, then explicitly request a known month once.
+    calls[0].request.resolve(response({ month: "2026-12", slots: [slot()] }));
+    calls[1].request.resolve(response({ items: [], nextCursor: null })); await waitForInitialReads(controller);
+    const read = controller.loadMonth("2026-12");
+    if (failure === "network") calls[2].request.reject(new Error("private-canary"));
+    else calls[2].request.resolve(response(failure === 200 ? { month: "2026-12", slots: [] }
+      : failure === "malformed" ? {} : { error: { code: failure === 404 ? "SCHEDULE_MONTH_NOT_AVAILABLE" : "FORBIDDEN", message: "private-canary" } },
+      typeof failure === "number" ? failure : 200));
+    await read;
+    expect(find("upcoming-status").textContent.includes("表示月に今後の予約はありません")).toBe(failure === 200);
+    expect(find("upcoming-status").textContent.includes("未確認")).toBe(failure !== 200);
+    expect(find("upcoming-status").textContent).not.toContain("private-canary");
+  });
+  it("renders 201 immediately in calendar/day/upcoming, keeps focus and success through failure, expires on redraw and clears on 401", async () => {
+    const { controller, calls, root, doc, find } = mounted();
+    calls[0].request.resolve(response({ month: "2026-12", slots: [slot(), { ...otherSlot(), view: "reserved_by_me" }] }));
+    calls[1].request.resolve(response({ items: [], nextCursor: null })); await waitForInitialReads(controller);
+    const review = controller.select("slot"); calls[2].request.resolve(response({ scope: "session", csrfToken: csrf }));
+    await vi.waitFor(() => expect(calls).toHaveLength(4)); calls[3].request.resolve(response(previewBody())); await review;
+    const command = controller.confirm(); calls[4].request.resolve(response(confirmBody(), 201)); await command;
+    expect(find("upcoming-content").children).toHaveLength(2);
+    expect(find("upcoming-content").textContent).toContain("今回予約");
+    expect(find("upcoming-status").textContent).toContain("未確認");
+    expect(find("daily-content").textContent).toContain("今回予約");
+    expect(find("daily-content").textContent).not.toContain("予約可能");
+    expect(root.all().filter(value => value.className === "latest-booking").map(value => value.textContent)).toEqual(["済 本人予約済み  今回予約"]);
+    expect(doc.activeElement?.id).toBe("operation-status");
+    calls[5].request.resolve(response({ error: { code: "SCHEDULE_MONTH_NOT_AVAILABLE" } }, 404));
+    calls[6].request.reject(new Error("private-canary")); await waitForInitialReads(controller);
+    expect(find("upcoming-content").textContent).toContain("今回予約");
+    expect(find("operation-status").textContent).toContain("予約済みです");
+    expect(find("history-status").textContent).toContain("本人履歴を取得できませんでした");
+    expect(doc.activeElement?.id).toBe("operation-status");
+    vi.setSystemTime(new Date(slot().startsAt));
+    const history = controller.loadHistory(false, false);
+    expect(find("upcoming-content").children).toHaveLength(1);
+    expect(find("upcoming-content").textContent).not.toContain("今回予約");
+    expect(root.all().filter(value => value.className === "latest-booking")).toHaveLength(0);
+    calls[7].request.resolve(response({}, 401)); await history;
+    expect(find("upcoming-content").children).toHaveLength(0);
+    expect(find("daily-content").children).toHaveLength(0);
+    expect(find("upcoming-status").textContent).toContain("認証が必要");
+    expect(root.textContent).not.toContain("今回予約");
   });
 });

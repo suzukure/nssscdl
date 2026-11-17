@@ -60,27 +60,38 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
   confirm.setAttribute("aria-describedby", operationStatus.id);
   operationContent.id = "operation-content"; confirm.setAttribute("aria-controls", operationContent.id);
   operation.append(operationHeading, operationStatus, operationContent, confirm);
+  const upcoming = element("section"), upcomingHeading = element("h2", "今後の予約一覧");
+  upcomingHeading.id = "upcoming-heading"; upcoming.setAttribute("aria-labelledby", upcomingHeading.id);
+  const upcomingMonth = element("p"), upcomingStatus = status("upcoming-status"), upcomingContent = element("ol");
+  upcomingMonth.id = "upcoming-month"; upcomingContent.id = "upcoming-content";
+  upcoming.append(upcomingHeading, upcomingMonth, upcomingStatus, upcomingContent);
   const history = element("section"), historyHeading = element("h2", "本人の予約履歴");
   historyHeading.id = "history-heading"; history.setAttribute("aria-labelledby", historyHeading.id);
   const refresh = button("履歴を最新から再取得", () => { void controller.loadHistory(); });
   const more = button("履歴の次ページ", () => { void controller.loadHistory(true); });
   const historyStatus = status("history-status"), historyContent = element("ol");
+  historyContent.id = "history-content";
   history.append(historyHeading, refresh, more, historyStatus, historyContent);
-  root.replaceChildren(heading, explanation, schedule, daily, operation, history);
+  root.replaceChildren(heading, explanation, schedule, daily, operation, upcoming, history);
   const slotButtons = new Map<string, HTMLButtonElement>();
   const dateButtons = new Map<string, HTMLButtonElement>();
   function slotNode(slot: Slot): HTMLElement {
-    const label = `${intervalLabel(slot)}：${slotLabels[slot.view]}${slot.classification ? `／${classificationLabels[slot.classification]}` : ""}`;
-    if (slot.view !== "bookable") { const node = element("p", label); node.className = `slot ${slot.view}`; return node; }
+    const label = `${controller.isLatestBooking(slot) ? "今回予約：" : ""}${intervalLabel(slot)}：${slotLabels[slot.view]}${slot.classification ? `／${classificationLabels[slot.classification]}` : ""}`;
+    if (slot.view !== "bookable") { const node = element("p", label); node.className = `slot ${slot.view}${controller.isLatestBooking(slot) ? " latest-booking" : ""}`; return node; }
     const node = button(label, () => { void controller.select(slot.slotId); });
     node.className = "slot bookable"; node.setAttribute("aria-pressed", String(controller.state.selectedId === slot.slotId));
     node.setAttribute("aria-describedby", selectionStatus.id); slotButtons.set(slot.slotId, node); return node;
   }
+  let highlightedSlot: Slot | null = null;
   function renderSchedule(): void {
     const state = controller.state;
-    const slotsByTime = [...state.slots].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    const activeDate = [...dateButtons].find(([, node]) => node === doc.activeElement)?.[0];
+    const activeSlot = [...slotButtons].find(([, node]) => node === doc.activeElement)?.[0];
+    const activeScroll = doc.activeElement?.id === "calendar-scroll";
+    const slotsByTime = [...controller.displaySlots].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    highlightedSlot = slotsByTime.find(slot => controller.isLatestBooking(slot)) ?? null;
     dateButtons.clear(); content.replaceChildren();
-    const scroll = element("div"); scroll.className = "calendar-scroll";
+    const scroll = element("div"); scroll.className = "calendar-scroll"; scroll.id = "calendar-scroll";
     scroll.tabIndex = 0; scroll.setAttribute("role", "region"); scroll.setAttribute("aria-label", `${state.month}のカレンダー（横にスクロールできます）`);
     scroll.setAttribute("aria-describedby", legend.id);
     const grid = element("div"); grid.className = "calendar-grid";
@@ -103,7 +114,11 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
             const symbol = element("span", calendarSymbols[slot.view]);
             symbol.setAttribute("aria-hidden", "true");
             const label = element("span", slotLabels[slot.view]); label.className = "visually-hidden";
-            item.append(symbol, label); summary.append(item);
+            item.append(symbol, label);
+            if (controller.isLatestBooking(slot)) {
+              item.className = "latest-booking"; item.append(element("span", " 今回予約"));
+            }
+            summary.append(item);
           }
           cell.append(summary);
           for (const slot of slots.filter(slot => slot.view === "group_lesson")) {
@@ -126,6 +141,23 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
       : !slots.length ? "この日の公開枠はありません。" : !slots.some(slot => slot.view === "bookable")
         ? "この日に予約可能な枠はありません。" : "予約可能枠を選択できます。";
     for (const slot of slots) { const item = element("li"); item.append(slotNode(slot)); dailyContent.append(item); }
+    if (activeDate) dateButtons.get(activeDate)?.focus({ preventScroll: true });
+    else if (activeSlot) slotButtons.get(activeSlot)?.focus({ preventScroll: true });
+    else if (activeScroll) scroll.focus({ preventScroll: true });
+  }
+  function renderUpcoming(): void {
+    const state = controller.state;
+    const slotsByTime = [...controller.displaySlots].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    upcomingMonth.textContent = `表示月：${state.month.slice(0, 4)}年${state.month.slice(5)}月`;
+    upcomingContent.setAttribute("aria-busy", String(state.scheduleLoading));
+    upcomingContent.replaceChildren();
+    const future = slotsByTime.filter(slot => slot.view === "reserved_by_me" && Date.parse(slot.startsAt) > Date.now());
+    upcomingStatus.textContent = state.scheduleReady
+      ? future.length ? "表示月の未開始の本人予約です。開始済み・取消・欠席は本人の予約履歴で確認できます。" : "表示月に今後の予約はありません。開始済み・取消・欠席は本人の予約履歴で確認できます。"
+      : `${state.scheduleMessage || "予定は未取得です。"} 今後の予約一覧は未確認です。表示がある場合は確認済みの予約情報です。`;
+    for (const slot of future) {
+      const item = element("li"); item.append(slotNode(slot)); upcomingContent.append(item);
+    }
   }
   function render(area: Area, focus: boolean): void {
     const state = controller.state;
@@ -134,12 +166,13 @@ export function mountStudent(root: HTMLElement, month: string, fetcher: typeof f
       scheduleStatus.textContent = state.scheduleMessage;
       content.setAttribute("aria-busy", String(state.scheduleLoading));
       dailyContent.setAttribute("aria-busy", String(state.scheduleLoading));
-      renderSchedule();
     }
+    if (area === "schedule" || area === "day" || highlightedSlot && !controller.isLatestBooking(highlightedSlot)) renderSchedule();
+    renderUpcoming();
     for (const control of [monthInput, submit, prev, next]) control.disabled = state.stopped || state.operation === "confirming";
     prev.disabled ||= state.month === "0001-01"; next.disabled ||= state.month === "9999-12";
     for (const node of dateButtons.values()) node.disabled = state.stopped || state.operation === "confirming" || state.scheduleLoading || !state.scheduleReady;
-    for (const node of slotButtons.values()) node.disabled = state.stopped || state.operationHalted || state.operation === "confirming" || state.scheduleLoading;
+    for (const node of slotButtons.values()) node.disabled = state.stopped || state.operationHalted || state.operation === "confirming" || state.scheduleLoading || !state.scheduleReady;
     if (area === "schedule" || area === "day" || area === "selection") {
       selectionStatus.textContent = state.selectionMessage;
       for (const [id, node] of slotButtons) node.setAttribute("aria-pressed", String(id === state.selectedId));

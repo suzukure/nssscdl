@@ -11,6 +11,7 @@ export const reservationLabels = {
 export interface Slot {
   slotId: string; startsAt: string; endsAt: string; view: keyof typeof slotLabels;
   classification?: keyof typeof classificationLabels;
+  reservationId?: string;
 }
 export interface HistoryItem {
   reservationId: string; startsAt: string; endsAt: string;
@@ -140,6 +141,7 @@ export function parseSchedule(value: unknown, month: string): Slot[] {
     const view = enumValue(item.view, slotLabels);
     const slot: Slot = { slotId, ...dates, view };
     if (view === "reserved_by_me" && item.classification !== undefined) slot.classification = enumValue(item.classification, classificationLabels);
+    if (view === "reserved_by_me" && item.reservationId !== undefined) slot.reservationId = id(item.reservationId);
     // Explicit projection: no unknown response properties are retained/rendered.
     return slot;
   });

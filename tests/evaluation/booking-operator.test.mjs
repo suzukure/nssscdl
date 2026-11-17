@@ -200,7 +200,7 @@ function browserFixture() {
   page.evaluate = async (_fn, values) => { assert.ok(values.includes(value)); return true; }; // DOM effects only, not a real trusted-click proof.
   page.locator = selector => ({
     textContent: async () => { assert.equal(selector, "#operation-status"); return "予約済みです。メールの配送完了を表すものではありません。"; },
-    allTextContents: async () => { assert.equal(selector, "section ol li"); return [`${intervalLabel(observation.slot)}予約状態：予約済み欠席状態：なし現在の区分：標準`]; },
+    allTextContents: async () => { assert.equal(selector, "#history-content li"); return [`${intervalLabel(observation.slot)}予約状態：予約済み欠席状態：なし現在の区分：標準`]; },
   });
   context.cookies = async () => jar;
   context.addCookies = async cookies => { assert.equal(navigations, 0); jar = cookies.map(c => ({ ...c, domain: "127.0.0.1", path: "/", expires: -1 })); };
