@@ -43,7 +43,7 @@ Browser sandboxとTLSを有効に保ち、通常Chrome profileやremote／Provid
 User unitのname＋InvocationID＋kernel cgroup＋UID＋PID starttime＋PGID／listenerを別に照合する。
 
 引渡し後、人間が案内された公開月15日10:00の枠を選び、Preview→全内容を確認→
-明示Confirm一回→本人履歴を操作する。コードはclick/fill/Confirm再送を行わない。
+明示Confirmを一回操作し、確定後に自動更新された本人履歴を確認する。コードはclick/fill/Confirm再送を行わない。
 固定origin／route／CSRF／body、native trusted Confirm click一回、201とHistoryの同一IDを観測する。
 終わったら端末へ **操作終了** と入力する。新規Browser通信の受付を閉じてWorkerを止め、
 画面を検査し、Browserを閉じる。User unitの同一Invocation正常終了・kernel cgroup空・
@@ -1018,7 +1018,7 @@ context routeは送信前にorigin / method / path / queryなし / redirectな�
 選択前のPreview・Confirm・CSRF取得が0件であることを検査し、次の東京月15日10:00の `seed-slot-bookable` を日時のaccessible labelで選ぶ。
 明示選択で発生する自動PreviewのPOST 200とSession-bound CSRFを照合し、日時・分類・既存予約の全差分をDOMで確認してからだけ、
 明示「予約する」を1回操作する。strict seedの初期N=3・既存本人1件では新規standard / 差分なしが正本期待形。
-ConfirmのPOST 201、日時・分類・予約済み表示とSchedule更新、明示「履歴を最新から再取得」による本人履歴の1→2件を照合する。
+ConfirmのPOST 201、日時・分類・予約済み表示とSchedule更新、確定後の自動GETによる本人履歴の1→2件を照合する。
 戻り値はこの実201のpayloadにあるopaque `reservationId` だけ。201観測はWorker停止後の `inspectTrustedBooking(handle, reservationId)` による5表独立readbackとは別の証拠で、配送成功も主張しない。
 
 Session / hash / CSRF / Expected State Tokenはtrusted memoryでのみ比較し、DOM非露出を検査する。

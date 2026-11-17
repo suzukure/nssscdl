@@ -10,6 +10,7 @@ import {
   type ReservationConfirmD1,
 } from "../../src/infrastructure/d1-reservation-confirm";
 import { D1ReservationPreviewRepository } from "../../src/infrastructure/d1-reservation-preview";
+import { seedFutureClockSlot } from "./reservation-preview-fixture";
 
 const db = env.AUTH_DB;
 const sql = (query: string) => db.prepare(query);
@@ -355,11 +356,11 @@ describe("[TC-F-003-01 / TC-F-003-04 / TC-F-003-05 / TC-NF-911-01 partial D1] #8
 
   it("uses actual D1 Command now and ignores Worker clock", async () => {
     const realNow = await sql(`SELECT ${nowSql} AS t`).first<number>("t");
+    const slotId = await seedFutureClockSlot(realNow!);
     await sql("DELETE FROM student_sessions").run();
     await sql("INSERT INTO student_sessions VALUES ('session', 'account', 'student', ?, ?, ?, NULL)")
       .bind(context.tokenHash, realNow! - 1, realNow! + 2591999).run();
-    // Future fixture Slots remain future at the repository's current run date.
-    const input = await prepare("target", realNow!);
+    const input = await prepare(slotId, realNow!);
     const run = executor({ realTime: true });
     const spy = vi.spyOn(Date, "now").mockReturnValue(0);
     try { await run.service.execute(input.prepared, input.plan, context); } finally { spy.mockRestore(); }

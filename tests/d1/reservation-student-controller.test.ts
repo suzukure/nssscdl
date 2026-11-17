@@ -89,6 +89,7 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
     ].map(async (table) => await db.prepare("SELECT count(*) AS n FROM " + table).first<number>("n")));
     const confirms = () => trace.filter((call) => call.method === "POST" && call.path === confirmPath).map((call) => call.status);
     const previews = () => trace.filter((call) => call.method === "POST" && call.path === previewPath).map((call) => call.status);
+    const historyReads = () => trace.filter((call) => call.method === "GET" && call.path === confirmPath).map((call) => call.status);
 
     stage = "initial-month";
     await controller.loadMonth(seed.month);
@@ -151,6 +152,7 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
     expect(previews()).toEqual([200, 200]);
     expect(trace.filter((call) => call.method === "GET" && call.path === csrfPath).length).toBe(2);
     expect(confirms()).toEqual([409]);
+    expect(historyReads()).toEqual([]);
 
     stage = "explicit-confirm";
     await controller.confirm();
@@ -161,7 +163,10 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
     expect(controller.state.confirmed?.reservation.classification).toBe("standard");
 
     stage = "owner-history";
-    await controller.loadHistory();
+    await vi.waitFor(() => {
+      expect(historyReads()).toEqual([200]);
+      expect(controller.state.historyLoading).toBe(false);
+    }, { timeout: 5_000, interval: 20 });
     expect(controller.state.history.items.filter((item) => item.reservationId === id)).toHaveLength(1);
     expect(controller.state.history.items.some((item) => item.reservationId === "seed-reservation-other")).toBe(false);
 

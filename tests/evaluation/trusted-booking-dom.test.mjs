@@ -130,13 +130,14 @@ function fixture(fault = "", changePost = () => {}) {
       if (fault === "confirm-classification") data.reservation.classification = "additional";
       if (fault === "confirm-extra") data.private = canary;
       const status = fault === "confirm-409" ? 409 : fault === "confirm-503" ? 503 : fault === "confirm-200" ? 200 : 201;
-      await emitResponse(confirmPath, "POST", data, status);
+      const accepted = await emitResponse(confirmPath, "POST", data, status);
       if (fault === "duplicate-confirm") await emitResponse(confirmPath, "POST", data, 201);
       if (fault === "abort-confirm") controller.abort(canary);
       mode = "confirmed"; op = data;
-    } else if (name === "履歴を最新から再取得") {
-      await emitResponse(confirmPath, "GET", { items: fault === "other-history" ? [historyItem("seed-reservation-other", "12"), added] : [initial, added], nextCursor: null });
-      mode = "history";
+      if (accepted && status === 201 && !controller.signal.aborted && !["json-unknown", "network-unknown", "missing-history"].includes(fault)) {
+        await emitResponse(confirmPath, "GET", { items: fault === "other-history" ? [historyItem("seed-reservation-other", "12"), added] : [initial, added], nextCursor: null });
+        mode = "history";
+      }
     }
   };
   Object.assign(page, {
@@ -191,6 +192,7 @@ test("#941 finite success: navigation, Slot selection auto-Preview200 then expli
   assert.equal(f.events.filter(v => v === f.slotName).length, 1);
   assert.equal(f.events.filter(v => v === confirmName).length, 1);
   assert.ok(f.events.indexOf(f.slotName) < f.events.indexOf(confirmName));
+  assert.ok(!f.events.includes("履歴を最新から再取得"));
   assert.deepEqual(f.forwarded.filter(v => v.startsWith("POST")), [`POST ${previewPath}`, `POST ${confirmPath}`]);
   await f.late(); assert.deepEqual(f.denied, [confirmPath]);
   await assert.rejects(proveTrustedBookingDom(f.input), { message: "TRUSTED_BOOKING_DOM_ASSERTION" });
@@ -200,7 +202,7 @@ test("#941 finite negative observations stop without retry/reload/reConfirm or s
   for (const fault of ["null-navigation", "null-post-response", "missing-asset", "selection-write", "early-confirm", "preview-403", "preview-slot", "preview-changes", "preview-token", "preview-token-format",
     "wrong-dom-classification", "extra-dom-change", "csrf-mismatch", "duplicate-preview", "duplicate-response", "other-origin", "response-origin", "redirect", "query",
     "navigation", "extra-navigation", "service-worker", "header-secret", "set-cookie", "secret-dom", "other-dom", "identity-body", "wrong-confirm-token", "wrong-request-origin", "wrong-request-csrf", "abort-headers", "id-empty", "id-null", "id-number", "id-other", "id-secret", "id-token", "id-missing",
-    "confirm-slot", "confirm-state", "confirm-classification", "confirm-extra", "confirm-409", "confirm-503", "confirm-200", "duplicate-confirm", "json-unknown", "network-unknown", "false-success", "stale-history", "other-history",
+    "confirm-slot", "confirm-state", "confirm-classification", "confirm-extra", "confirm-409", "confirm-503", "confirm-200", "duplicate-confirm", "json-unknown", "network-unknown", "false-success", "missing-history", "stale-history", "other-history",
     "abort-selection", "abort-preview", "abort-confirm", "abort-wait", "timeout-preview"]) {
     const f = fixture(fault), observations = [];
     f.input.observe = (kind, value) => { observations.push([kind, value]); };
