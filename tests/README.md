@@ -62,6 +62,13 @@ outer CLIのfailure／spawn error／signal／EOFの固定通知・正常出力�
 既存POL→BR→REQ→AC→TC、formal auto proofの120/180秒とsystem.slice、Gate A〜D／#930 401／#608受入・Releaseは不変。
 実操作Goと結果checkpointは別の人間判断に残す。
 
+#1158の人間操作用observerは、翌月だけを公開する隔離fixtureに合わせ、初回のJST当月の
+Schedule GETに限って `404 SCHEDULE_MONTH_NOT_AVAILABLE`（`retry=none`）を一度受理する。
+後続または別月の404や他の失敗応答は従来どおり拒否する。
+同finite testで、年越しの当月404→翌月200→Preview→単発Confirm→同じIDの本人履歴、
+および後続・異常応答の拒否を確認する。TC-F-001-03 / TC-F-003-10 / TC-F-005-01の
+部分証拠であり、実ブラウザや実Worker・D1の操作評価は #537 / #1108 で記録する。
+
 `--pipe`のFD継承・同期動作の根拠：
 [systemd-run(258)公式](https://www.freedesktop.org/software/systemd/man/258/systemd-run.html#--pipe)。
 `RemainAfterExit=yes`のBrowser unitは完了message後にmanager／kernelを照合し、readback後のstopで解放する。
