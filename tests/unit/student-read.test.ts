@@ -293,15 +293,16 @@ describe("TC-F-001-03 / TC-F-002-03〜04 / AC-003-022 [#1138 staged controller e
     expect(controller.state.selectedDate).toBe("2026-12-31"); expect(controller.state.selectedId).toBe("slot");
     expect(controller.state.month).toBe("2026-12"); expect(calls).toHaveLength(4);
     calls[3].request.resolve(response(confirmBody(), 201)); await command;
-    expect(controller.state.selectedDate).toBe("2026-12-31"); expect(calls).toHaveLength(5);
+    expect(controller.state.selectedDate).toBe("2026-12-31"); expect(calls).toHaveLength(6);
     if (mode === "network") calls[4].request.reject(new Error("private-canary"));
     else if (mode === "404") calls[4].request.resolve(response({ error: { code: "SCHEDULE_MONTH_NOT_AVAILABLE" } }, 404));
     else calls[4].request.resolve(response({ month: "2026-12", slots: [...fourSlots().map(value => ({ ...value, slotId: `earlier-${value.slotId}` })), slot("reserved_by_me")] }));
-    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false));
+    calls[5].request.resolve(response({ items: [], nextCursor: null }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading || controller.state.historyLoading).toBe(false));
     expect(controller.state.selectedDate).toBe("2026-12-31"); expect(controller.state.operation).toBe("confirmed");
     expect(controller.state.confirmed?.reservation.reservationId).toBe("new-reservation");
     expect(controller.state.operationMessage).toContain("予約済みです");
-    await controller.confirm(); expect(calls).toHaveLength(5);
+    await controller.confirm(); expect(calls).toHaveLength(6);
   });
   it("a pre-existing Schedule GET cannot replace a 201 or its same-date readback", async () => {
     const { controller, calls } = harness(), old = controller.loadMonth("2027-01"), latest = controller.loadMonth("2026-12");
@@ -311,11 +312,12 @@ describe("TC-F-001-03 / TC-F-002-03〜04 / AC-003-022 [#1138 staged controller e
     await vi.waitFor(() => expect(calls).toHaveLength(4)); calls[3].request.resolve(response(previewBody())); await preview;
     const command = controller.confirm(); calls[4].request.resolve(response(confirmBody(), 201)); await command;
     calls[5].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] }));
-    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false));
+    calls[6].request.resolve(response({ items: [], nextCursor: null }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading || controller.state.historyLoading).toBe(false));
     calls[0].request.resolve(response({ month: "2027-01", slots: [] })); await old;
     expect(controller.state.month).toBe("2026-12"); expect(controller.state.selectedDate).toBe("2026-12-31");
     expect(controller.state.slots[0].view).toBe("reserved_by_me"); expect(controller.state.operation).toBe("confirmed");
-    expect(controller.state.confirmed).not.toBeNull(); expect(calls).toHaveLength(6);
+    expect(controller.state.confirmed).not.toBeNull(); expect(calls).toHaveLength(7);
   });
 });
 
@@ -343,11 +345,15 @@ describe("TC-F-003-01 / TC-F-003-02 / TC-F-003-05 / TC-F-003-08〜10 / TC-F-005-
     expect(controller.state.operation).toBe("confirmed");
     expect(controller.state.operationMessage).toContain("メールの配送完了を表すものではありません");
     expect(controller.state.confirmed?.reservation).toMatchObject({ reservationState: "confirmed", classification: "additional" });
-    await controller.confirm(); expect(calls).toHaveLength(5); expect(calls[4].init?.method).toBe("GET");
+    await controller.confirm(); expect(calls).toHaveLength(6); expect(calls[4].init?.method).toBe("GET");
+    expect(calls[5]).toMatchObject({ path: "/api/me/reservations", init: calls[0].init });
     calls[4].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] }));
-    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false));
-    const history = controller.loadHistory(); calls[5].request.resolve(response({ items: [item()], nextCursor: null })); await history;
-    expect(controller.state.operation).toBe("confirmed"); expect(controller.state.history.items).toHaveLength(1);
+    const added = { ...item("confirmed", "none", "additional"), reservationId: "new-reservation" };
+    const reclassified = { ...item(), startsAt: otherSlot().startsAt, endsAt: otherSlot().endsAt };
+    calls[5].request.resolve(response({ items: [reclassified, added], nextCursor: null }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading || controller.state.historyLoading).toBe(false));
+    expect(controller.state.operation).toBe("confirmed");
+    expect(controller.state.history.items).toEqual([reclassified, added]);
   });
   it.each([
     [409, "RESERVATION_STATE_CHANGED", "repreview", "状態が変わりました"],
@@ -642,9 +648,72 @@ describe("TC-F-001-01 / TC-F-002-01 / TC-F-002-02 / TC-F-005-01 / TC-NF-914-03 /
     const { controller, calls } = harness(); await controller.loadMonth("2026-13"); expect(calls).toHaveLength(0);
     const read = controller.loadHistory(); calls[0].request.reject(new Error("private-canary")); await read;
     expect(controller.state.history).toEqual({ items: [], nextCursor: null });
-    expect(controller.state.historyMessage).toContain("現在の状態を確認できません");
+    expect(controller.state.historyMessage).toContain("本人履歴を取得できませんでした");
     const retry = controller.loadHistory(); calls[1].request.resolve(response({ items: [], nextCursor: null })); await retry;
     expect(calls[1].path).toBe("/api/me/reservations");
+  });
+});
+
+describe("TC-F-003-10 / TC-F-005-01 [#1154 History synchronization]", () => {
+  it.each([404, 403, 503, "network", "malformed"])("keeps 201 and offers explicit History retry after %s", async failure => {
+    const { controller, calls, events } = await reviewedHarness(), command = controller.confirm();
+    calls[3].request.resolve(response(confirmBody(), 201)); await command;
+    const schedule = calls[4].request, history = calls[5].request;
+    if (failure === "network") history.reject(new Error("private-canary"));
+    else if (failure === "malformed") history.resolve(new Response("private-canary"));
+    else history.resolve(response({ error: { message: "private-canary" } }, failure));
+    await vi.waitFor(() => expect(controller.state.historyLoading).toBe(false));
+    expect(controller.state.historyMessage).toBe("本人履歴を取得できませんでした。「履歴を最新から再取得」でやり直せます。");
+    expect(controller.state).toMatchObject({ operation: "confirmed", month: "2026-12", selectedDate: "2026-12-31", scheduleLoading: true });
+    expect(controller.state.operationMessage).toContain("予約済みです");
+    expect(JSON.stringify(controller.state)).not.toContain("private-canary");
+    expect(events.filter(event => event.area === "history").every(event => !event.focus)).toBe(true);
+    expect(calls).toHaveLength(6);
+    const retry = controller.loadHistory();
+    expect(calls[6]).toMatchObject({ path: "/api/me/reservations", init: { method: "GET" } });
+    calls[6].request.resolve(response({ items: [], nextCursor: null })); await retry;
+    expect(controller.state.historyMessage).toBe("履歴はありません。");
+    schedule.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading).toBe(false));
+    expect(controller.state.operation).toBe("confirmed");
+  });
+
+  it.each(["before", "after", "old 401"])("invalidates an older cursor response (%s)", async order => {
+    const { controller, calls } = await reviewedHarness();
+    const first = controller.loadHistory();
+    calls[3].request.resolve(response({ items: [item()], nextCursor: "old-cursor" })); await first;
+    const next = controller.loadHistory(true);
+    expect(calls[4].path).toBe("/api/me/reservations?cursor=old-cursor");
+    const command = controller.confirm();
+    calls[5].request.resolve(response(confirmBody(), 201)); await command;
+    expect(calls[7]).toMatchObject({ path: "/api/me/reservations", init: { method: "GET" } });
+    await controller.loadHistory(true);
+    expect(calls).toHaveLength(8);
+    expect(controller.state.history.nextCursor).toBeNull();
+    const added = { ...item(), reservationId: "new-reservation" };
+    if (order === "before") {
+      calls[4].request.reject(new Error("private-canary")); await next;
+      expect(controller.state.historyLoading).toBe(true);
+      expect(controller.state.historyMessage).toBe("履歴を読み込んでいます。");
+    }
+    calls[6].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] }));
+    calls[7].request.resolve(response({ items: [added], nextCursor: null }));
+    await vi.waitFor(() => expect(controller.state.scheduleLoading || controller.state.historyLoading).toBe(false));
+    expect(controller.state.history).toEqual({ items: [added], nextCursor: null });
+    if (order === "old 401") {
+      calls[4].request.resolve(new Response(null, { status: 401 })); await next;
+      expect(controller.state).toMatchObject({ stopped: true, operation: "halted", confirmed: null, slots: [],
+        history: { items: [], nextCursor: null }, historyLoading: false, selectedDate: null });
+      await controller.confirm(); await controller.loadHistory();
+      expect(calls).toHaveLength(8);
+    } else {
+      if (order === "after") {
+        calls[4].request.resolve(response({ items: [item()], nextCursor: "stale-next" })); await next;
+      }
+      expect(controller.state.history).toEqual({ items: [added], nextCursor: null });
+      expect(controller.state.historyMessage).toBe("本人履歴を取得しました。");
+      expect(controller.state).toMatchObject({ operation: "confirmed", selectedDate: "2026-12-31", historyLoading: false });
+    }
   });
 });
 
@@ -784,6 +853,7 @@ describe("TC-F-002-03〜04 / TC-F-006-01 / TC-NF-903-01 [calendar structural DOM
     for (const node of root.all().filter(node => node.tag === "input" || node.type === "submit" || node.attributes.has("aria-pressed") || ["前の月", "次の月"].includes(node.textContent))) expect(node.disabled).toBe(true);
     calls[4].request.resolve(response(confirmBody(), 201)); await command;
     expect(controller.state.selectedDate).toBe("2026-12-31");
+    calls[6].request.resolve(response({ items: [], nextCursor: null }));
     calls[5].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] })); await waitForInitialReads(controller);
     expect(root.all().find(node => node.id === "daily-heading")!.textContent).toContain("31日");
     expect(calls.filter(call => call.path === "/api/me/reservations" && call.init?.method === "POST")).toHaveLength(1);
@@ -878,7 +948,14 @@ describe("TC-F-003-01〜02 / TC-F-003-08 / TC-NF-902-02 / TC-NF-914-03〜04 [#92
     expect(root.textContent).toContain("予約済みです"); expect(doc.activeElement?.id).toBe("operation-status");
     expect(root.textContent).toContain("メールの配送完了を表すものではありません");
     expect(confirm.disabled).toBe(true); expect(calls[5].init?.method).toBe("GET");
+    calls[6].request.resolve(response({ error: { message: "private-canary" } }, 503));
     calls[5].request.resolve(response({ month: "2026-12", slots: [slot("reserved_by_me")] })); await waitForInitialReads(controller);
+    expect(root.textContent).toContain("本人履歴を取得できませんでした");
+    expect(root.textContent).toContain("予約済みです");
+    expect(root.textContent).not.toContain("履歴はありません");
+    expect(root.textContent).not.toContain("private-canary");
+    expect(doc.activeElement?.id).toBe("operation-status");
+    expect(root.all().find(node => node.textContent === "履歴を最新から再取得")?.disabled).toBe(false);
   });
   it("focuses unknown outcome, removes review and disables both actions across month refresh", async () => {
     const { fetcher, calls } = harness(), doc = new TestDocument(), root = doc.createElement("main");

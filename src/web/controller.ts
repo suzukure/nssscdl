@@ -76,7 +76,7 @@ export class StudentReadController {
       return;
     }
     if (area === "schedule") this.state.scheduleMessage = message(error);
-    else this.state.historyMessage = message(error);
+    else this.state.historyMessage = "本人履歴を取得できませんでした。「履歴を最新から再取得」でやり直せます。";
     this.changed(area, focus);
   }
   async loadInitialSchedule(): Promise<void> {
@@ -240,6 +240,7 @@ export class StudentReadController {
       Object.assign(this.state, { preview: null, confirmed: result, operation: "confirmed", operationMessage: "予約済みです。メールの配送完了を表すものではありません。" });
       this.changed("operation", true);
       void this.loadMonth(this.state.month, false, true);
+      void this.loadHistory(false, false);
     } catch (error) { this.operationFailure(error, revision, true); }
     finally { if (this.current(revision)) { this.state.operationBusy = false; this.changed("operation", false); } }
   }

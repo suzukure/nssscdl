@@ -214,8 +214,11 @@ function browserFixture() {
 test("#1104 actual passive Browser adapter: Cookie before page, one navigation, unchanged route continue, human-only responses and final ID", async () => {
   const f = browserFixture(), observer = await observeHumanBrowser(f.context, f.session, month, f.bad);
   await f.network(previewPath, "POST", { slotId: f.observation.slot.slotId }, 200, previewBody(f.observation));
-  await f.network(confirmPath, "POST", { slotId: f.observation.slot.slotId, expectedStateToken: token }, 201, confirmBody(f.observation));
+  let releaseConfirmBody;
+  const confirmBodyPending = new Promise(resolve => { releaseConfirmBody = resolve; });
+  await f.network(confirmPath, "POST", { slotId: f.observation.slot.slotId, expectedStateToken: token }, 201, confirmBodyPending);
   await f.network(confirmPath, "GET", null, 200, { items: [{ ...confirmBody(f.observation).reservation, attendanceState: "none" }], nextCursor: null });
+  releaseConfirmBody(confirmBody(f.observation));
   observer.closeAdmission(); assert.equal(await observer.finish(), id);
   assert.deepEqual(f.counts(), { forwarded: 4, denied: 0, failed: 0, navigations: 1 });
   await f.network(confirmPath); assert.equal(f.counts().denied, 1); await assert.rejects(observer.finish());

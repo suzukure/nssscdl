@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReservationConfirmPreparationService } from "../../src/application/reservation-confirm";
 import { ReservationPreviewService } from "../../src/application/reservation-preview";
 import { D1ReservationPreviewRepository, reservationCaptureSql } from "../../src/infrastructure/d1-reservation-preview";
-import { db, identity, now, repository, seedPreviewFixture, sql } from "./reservation-preview-fixture";
+import { db, identity, now, repository, seedFutureClockSlot, seedPreviewFixture, sql } from "./reservation-preview-fixture";
 
 beforeAll(async () => { await seedPreviewFixture("confirm-file"); });
 beforeEach(async () => {
@@ -126,11 +126,14 @@ describe("[TC-F-003-01 / TC-F-003-02] isolated D1/Confirm preparation partial ev
   });
   it("captures real Primary D1 T0 for preparation independently of Worker clock", async () => {
     const real = new D1ReservationPreviewRepository(db);
-    const token = (await preview(real)).expectedStateToken;
+    const clock = await sql("SELECT CAST(strftime('%s','now') AS INTEGER) AS t").first<number>("t");
+    const slotId = await seedFutureClockSlot(clock!);
+    const token = (await new ReservationPreviewService(real).execute(slotId, identity)).expectedStateToken;
     const before = await sql("SELECT CAST(strftime('%s','now') AS INTEGER) AS t").first<number>("t");
     const spy = vi.spyOn(Date, "now").mockReturnValue(0);
     let prepared;
-    try { prepared = await prepare(token, real); } finally { spy.mockRestore(); }
+    try { prepared = await new ReservationConfirmPreparationService(real).prepare(slotId, token, identity); }
+    finally { spy.mockRestore(); }
     const after = await sql("SELECT CAST(strftime('%s','now') AS INTEGER) AS t").first<number>("t");
     expect(prepared.evaluatedAt).toBeGreaterThanOrEqual(before!);
     expect(prepared.evaluatedAt).toBeLessThanOrEqual(after!);

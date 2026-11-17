@@ -294,6 +294,7 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
 export async function proveTrustedBookingDom({ browser, context, session, seed, signal, observe }) {
   let reason, terminal = false, observerClosed = false, page, phase = "initial", navigationCount = 0;
   const requests = new Map(), responses = new Map(), seenAssets = new Map();
+  let confirmResponseSeen = false, synchronizedHistoryRequest;
   let previewCount = 0, confirmCount = 0, csrfCount = 0, expectedToken, writeLevel = 0;
   let rejectStopped;
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
@@ -399,6 +400,10 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
           check(method === "GET" && (assets.has(url.pathname) || url.pathname === "/favicon.ico" || url.pathname === confirmPath || url.pathname === csrfPath ||
             /^\/api\/me\/schedule-months\/\d{4}-(0[1-9]|1[0-2])$/.test(url.pathname)));
           if (url.pathname === csrfPath) check(phase === "preview" && ++csrfCount === 1);
+          if (url.pathname === confirmPath && confirmCount === 1) {
+            check(confirmResponseSeen && (phase === "confirm" || phase === "history") && !synchronizedHistoryRequest);
+            synchronizedHistoryRequest = request;
+          }
           if (request.isNavigationRequest()) check(url.pathname === "/student" && phase === "initial");
         }
         alive(); // In particular, abort during request-header observation cannot forward a write.
@@ -420,7 +425,10 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
         responses.set(request, response);
         if (assets.has(identity.path)) seenAssets.set(identity.path, response);
         if (identity.method === "POST") check(response.status() === (identity.path === previewPath ? 200 : 201));
-        if (identity.path === confirmPath && identity.method === "POST") write("response-201");
+        if (identity.path === confirmPath && identity.method === "POST") {
+          confirmResponseSeen = true;
+          write("response-201");
+        }
       } catch { stop("RESPONSE"); }
     });
     const settled = selector => step(() => page.waitForFunction(selector =>
@@ -503,10 +511,12 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     check(await step(() => page.locator(".slot.reserved_by_me").allTextContents()).then(v => v.includes(`${intervalLabel(slot)}：本人予約済み／標準`)));
     entered("history");
     phase = "history";
-    const history = await observeClick("履歴を最新から再取得", confirmPath, "GET", 200);
+    await settled("section ol");
+    const historyResponse = responses.get(synchronizedHistoryRequest);
+    check(historyResponse);
+    const history = await api(historyResponse, confirmPath, "GET", 200);
     const expectedItems = [...initialHistory.items, { ...confirmed.reservation, attendanceState: "none" }];
     check(isDeepStrictEqual(history, { items: expectedItems, nextCursor: null })); // startsAt DESC: 11:00 then 10:00.
-    await settled("section ol");
     check(await step(() => page.locator("section ol li").allTextContents()).then(v => isDeepStrictEqual(v, expectedItems.map(historyText))));
     await safeDom(); alive(); check(previewCount === 1 && confirmCount === 1);
     entered("handoff");

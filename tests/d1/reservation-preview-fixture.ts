@@ -44,6 +44,25 @@ export async function seedPreviewFixture(actor: string): Promise<void> {
   expect((await sql("PRAGMA foreign_key_check").all()).results).toEqual([]);
 }
 
+export async function seedFutureClockSlot(d1Now: number): Promise<string> {
+  // Leave the fixed-date fixtures intact. Use the next JST month and a day
+  // unused by those fixtures, even when the month itself already exists.
+  const tokyo = new Date((d1Now + 9 * 3600) * 1000);
+  const date = new Date(Date.UTC(tokyo.getUTCFullYear(), tokyo.getUTCMonth() + 1, 16)).toISOString().slice(0, 10);
+  const month = date.slice(0, 7);
+  const start = Date.parse(`${date}T10:00:00+09:00`) / 1000;
+  const slotId = "actual-d1-clock-slot";
+  expect(start).toBeGreaterThan(d1Now);
+  const [, inserted] = await db.batch([
+    sql("INSERT INTO schedule_months VALUES ('actual-d1-clock-month', ?, 0, 0, 0) ON CONFLICT(month_key) DO NOTHING").bind(month),
+    sql(`INSERT INTO lesson_slots
+      SELECT ?, id, ?, '10:00', '11:00', ?, ?, 'enabled'
+      FROM schedule_months WHERE month_key = ? AND published_at IS NOT NULL`).bind(slotId, date, start, start + 3600, month),
+  ]);
+  expect(inserted.meta.changes).toBe(1);
+  return slotId;
+}
+
 // Synthetic time/anomaly injection at the existing D1 interface, test-only.
 // Actual SQL still executes as one coherent read; real T0 has a separate test.
 export function repository(time = now, transform = (query: string) => query) {
