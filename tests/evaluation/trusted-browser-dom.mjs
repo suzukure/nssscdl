@@ -5,7 +5,7 @@ import { origin } from "./browser-tls-trust.mjs";
 export const domProofCheckpoint = "#922 partial: real /student same-origin assets and owner-only read-only DOM; separate synthetic errors/paging/stale-month/Tokyo-year-boundary; keyboard/focus/320px checks passed; Preview/Confirm/Gate A-D unverified";
 const timeout = 5000;
 async function settled(page, area = "schedule") {
-  await page.waitForFunction((area) => document.querySelector(area === "schedule" ? "#schedule-content" : "section ol")?.getAttribute("aria-busy") === "false", area, { timeout });
+  await page.waitForFunction((area) => document.querySelector(area === "schedule" ? "#schedule-content" : "#history-content")?.getAttribute("aria-busy") === "false", area, { timeout });
 }
 async function choose(page, month) {
   await page.locator("#schedule-month").fill(month, { timeout });
@@ -38,11 +38,11 @@ export async function proveStudentDom(page, signal, seed, secrets, revoked = fal
     if (revoked) {
       check((await page.locator("#schedule-status").textContent()).includes("認証が必要です"));
       check(await page.locator("#schedule-month").isDisabled());
-      check(await page.locator(".slot").count() === 0 && await page.locator("section ol li").count() === 0);
+      check(await page.locator(".slot").count() === 0 && await page.locator("#history-content li").count() === 0);
       await safeDom(page, secrets); return;
     }
     await choose(page, seed.month);
-    check(await page.locator("#schedule-content .slot").count() === 5);
+    check(await page.locator("#daily-content .slot").count() === 5);
     const slots = expectedSchedule(seed, "self").slots;
     const labels = { bookable: "予約可能", reserved_by_me: "本人予約済み", group_lesson: "グループレッスン（予約不可）", unavailable: "予約不可" };
     for (const [i, slot] of slots.entries()) {
@@ -53,8 +53,8 @@ export async function proveStudentDom(page, signal, seed, secrets, revoked = fal
     await page.setViewportSize({ width: 320, height: 640 });
     check(await page.evaluate(() => document.documentElement.scrollWidth <= 320 &&
       document.querySelector(".calendar-scroll").scrollWidth > document.querySelector(".calendar-scroll").clientWidth));
-    check(await page.locator("section ol li").count() === 1);
-    check((await page.locator("section ol").textContent()).includes("11:00") && !(await page.locator("section ol").textContent()).includes("12:00 ～"));
+    check(await page.locator("#history-content li").count() === 1);
+    check((await page.locator("#history-content").textContent()).includes("11:00") && !(await page.locator("#history-content").textContent()).includes("12:00 ～"));
     const day = page.getByRole("button", { name: `${seed.date.slice(0, 4)}年${seed.date.slice(5, 7)}月${Number(seed.date.slice(8))}日 選択中`, exact: true });
     await day.focus();
     await page.keyboard.press("Enter");
@@ -95,7 +95,7 @@ export async function proveSyntheticDom(page, signal) {
     globalThis.__studentFixture = { controller, pending, respond, history };
   });
   await settled(page); await settled(page, "history");
-  check((await page.locator("section ol").textContent()).includes("2027年01月01日 01:00（日本時間）"));
+  check((await page.locator("#history-content").textContent()).includes("2027年01月01日 01:00（日本時間）"));
   await page.getByRole("button", { name: "履歴の次ページ", exact: true }).click({ timeout });
   await page.evaluate(() => {
     const f = globalThis.__studentFixture;
@@ -103,8 +103,8 @@ export async function proveSyntheticDom(page, signal) {
     f.respond(2, { items: [{ ...f.history, reservationState: "school_cancelled", attendanceState: "absent", classification: "additional" }], nextCursor: null });
   });
   await settled(page, "history");
-  check(await page.locator("section ol li").count() === 1);
-  const historyText = await page.locator("section ol").textContent();
+  check(await page.locator("#history-content li").count() === 1);
+  const historyText = await page.locator("#history-content").textContent();
   check(["スクール都合キャンセル", "欠席", "追加"].every(value => historyText.includes(value)));
   // A newer month wins even when the old response arrives last; year crossing.
   await page.evaluate(async () => {

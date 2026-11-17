@@ -247,11 +247,11 @@ export async function proveUnauthenticatedBookingDom({ context, fixture, signal,
     await step(() => page.getByRole("heading", { name: "生徒の予定・本人履歴", exact: true }).waitFor({ timeout }));
     faultStage = "dom-ui";
     const inspectDom = async () => {
-      await step(() => page.waitForFunction(() => ["#schedule-content", "section ol", "#operation-content"]
+      await step(() => page.waitForFunction(() => ["#schedule-content", "#history-content", "#operation-content"]
         .every(selector => document.querySelector(selector)?.getAttribute("aria-busy") === "false"), undefined, { timeout }));
       for (const selector of ["#schedule-status", "#history-status", "#operation-status"])
         require(await step(() => page.locator(selector).textContent()) === guidance);
-      for (const selector of ["section ol li", ".slot", "#operation-content > *"])
+      for (const selector of ["#history-content li", ".slot", "#operation-content > *"])
         require(await step(() => page.locator(selector).count()) === 0);
       require(await step(() => page.locator("#selection-status").textContent()) === "");
       require(await step(() => page.locator("#schedule-month").isDisabled()));
@@ -467,12 +467,12 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
       check(asset?.status() === 200 && headers["content-type"].startsWith(mime) && headers["cache-control"] === "no-store" && !headers["set-cookie"]);
     }
     entered("initial-ui");
-    await settled("#schedule-content"); await settled("section ol");
+    await settled("#schedule-content"); await settled("#history-content");
     await step(() => page.locator("#schedule-month").fill(seed.month, { timeout }));
     await click("この月を取得"); await settled("#schedule-content");
     const historyText = item => [intervalLabel(item), "予約状態：予約済み", "欠席状態：なし", "現在の区分：標準"].join("");
     const initialHistory = expectedHistory(seed, "self");
-    check(await step(() => page.locator("section ol li").allTextContents()).then(v => isDeepStrictEqual(v, initialHistory.items.map(historyText))));
+    check(await step(() => page.locator("#history-content li").allTextContents()).then(v => isDeepStrictEqual(v, initialHistory.items.map(historyText))));
     check(await step(() => page.getByRole("button", { name: "履歴の次ページ", exact: true }).isDisabled()));
     check(await step(() => page.getByRole("button", { name: "予約する", exact: true }).isDisabled()));
     await safeDom();
@@ -508,16 +508,16 @@ export async function proveTrustedBookingDom({ browser, context, session, seed, 
     await step(() => assertBookingReviewDom(page, confirmed, confirmed.reservation.classification, step), "unknown");
     check(await step(() => page.locator("#operation-status").textContent()).then(v => v === "予約済みです。メールの配送完了を表すものではありません。"));
     check(await step(() => page.getByRole("button", { name: "予約する", exact: true }).isDisabled()));
-    check(await step(() => page.locator(".slot.reserved_by_me").allTextContents()).then(v => v.includes(`${intervalLabel(slot)}：本人予約済み／標準`)));
+    check(await step(() => page.locator(".slot.reserved_by_me").allTextContents()).then(v => v.includes(`今回予約：${intervalLabel(slot)}：本人予約済み／標準`)));
     entered("history");
     phase = "history";
-    await settled("section ol");
+    await settled("#history-content");
     const historyResponse = responses.get(synchronizedHistoryRequest);
     check(historyResponse);
     const history = await api(historyResponse, confirmPath, "GET", 200);
     const expectedItems = [...initialHistory.items, { ...confirmed.reservation, attendanceState: "none" }];
     check(isDeepStrictEqual(history, { items: expectedItems, nextCursor: null })); // startsAt DESC: 11:00 then 10:00.
-    check(await step(() => page.locator("section ol li").allTextContents()).then(v => isDeepStrictEqual(v, expectedItems.map(historyText))));
+    check(await step(() => page.locator("#history-content li").allTextContents()).then(v => isDeepStrictEqual(v, expectedItems.map(historyText))));
     await safeDom(); alive(); check(previewCount === 1 && confirmCount === 1);
     entered("handoff");
     entered("complete");
@@ -676,11 +676,11 @@ export async function proveUnauthenticatedBookingUi({ context, fixture, signal }
       requests.get(request) === "/student" && response === navigation));
     await step(() => page.getByRole("heading", { name: "生徒の予定・本人履歴", exact: true }).waitFor({ timeout }));
     const inspectDom = async () => {
-      await step(() => page.waitForFunction(() => ["#schedule-content", "section ol", "#operation-content"]
+      await step(() => page.waitForFunction(() => ["#schedule-content", "#history-content", "#operation-content"]
         .every(selector => document.querySelector(selector)?.getAttribute("aria-busy") === "false"), undefined, { timeout }));
       for (const selector of ["#schedule-status", "#history-status", "#operation-status"])
         demand(await step(() => page.locator(selector).textContent()) === "認証が必要です。認証後に画面を開き直してください。");
-      for (const selector of ["section ol li", ".slot", "#operation-content > *"])
+      for (const selector of ["#history-content li", ".slot", "#operation-content > *"])
         demand(await step(() => page.locator(selector).count()) === 0);
       demand(await step(() => page.locator("#selection-status").textContent()) === "");
       demand(await step(() => page.locator("#schedule-month").isDisabled()));

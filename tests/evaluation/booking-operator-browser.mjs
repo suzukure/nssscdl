@@ -125,7 +125,7 @@ export async function observeHumanBrowser(context, session, month, onFailure) {
         values.every(secret => !document.documentElement.outerHTML.includes(secret)), secrets));
       demand((await page.locator("#operation-status").textContent()) === "予約済みです。メールの配送完了を表すものではありません。");
       const label = `${intervalLabel(observation.slot)}予約状態：予約済み欠席状態：なし現在の区分：標準`;
-      demand((await page.locator("section ol li").allTextContents()).includes(label));
+      demand((await page.locator("#history-content li").allTextContents()).includes(label));
       return id;
     },
   });

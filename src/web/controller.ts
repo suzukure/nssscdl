@@ -34,6 +34,29 @@ export class StudentReadController {
   #csrf: string | null = null;
   #token: string | null = null;
   private needsFreshSchedule = false;
+  // Separate from Preview/token/result lifetime; never persisted outside this page.
+  private latestBooking: Slot | null = null;
+  private bookingAwaitingSchedule = false;
+  get displaySlots(): Slot[] {
+    const slots = [...this.state.slots];
+    const latest = this.latestBooking;
+    if (this.bookingAwaitingSchedule && latest && latest.startsAt.startsWith(`${this.state.month}-`) &&
+        Date.parse(latest.startsAt) > Date.now()) {
+      const index = slots.findIndex(slot => slot.slotId === latest.slotId);
+      if (index === -1) slots.push(latest);
+      else slots[index] = latest;
+    }
+    return slots;
+  }
+  isLatestBooking(slot: Slot): boolean {
+    const latest = this.latestBooking;
+    return slot.view === "reserved_by_me" && Date.parse(slot.startsAt) > Date.now() && latest !== null &&
+      slot.slotId === latest.slotId && slot.startsAt === latest.startsAt && slot.endsAt === latest.endsAt;
+  }
+  private acceptSchedule(slots: Slot[], month: string): void {
+    if (this.latestBooking?.startsAt.startsWith(`${month}-`)) this.bookingAwaitingSchedule = false;
+    this.state.slots = slots;
+  }
   constructor(month: string, private readonly fetcher: typeof fetch,
     private readonly changed: (area: Area, focus: boolean) => void) {
     if (!validMonth(month)) throw new Error("Invalid month");
@@ -67,6 +90,7 @@ export class StudentReadController {
     if (error instanceof ReadError && error.status === 401) {
       // Invalidate both outstanding reads and discard all prior personal state.
       this.scheduleRevision++; this.historyRevision++; this.clearConfirmation(); this.#csrf = null;
+      this.latestBooking = null; this.bookingAwaitingSchedule = false;
       Object.assign(this.state, { stopped: true, slots: [], history: { items: [], nextCursor: null },
         selectedId: null, selectedDate: null, scheduleReady: false, selectionMessage: "", scheduleLoading: false, historyLoading: false,
         scheduleMessage: message(error), historyMessage: message(error), operationMessage: message(error), operationHalted: true, operation: "halted" });
@@ -92,7 +116,7 @@ export class StudentReadController {
     if (!preserveResult) this.clearConfirmation();
     this.needsFreshSchedule = false;
     const revision = ++this.scheduleRevision;
-    Object.assign(this.state, { slots: [], selectedDate: retainedDate, scheduleReady: false, selectedId: null,
+    Object.assign(this.state, { slots: month === this.state.month ? this.state.slots : [], selectedDate: retainedDate, scheduleReady: false, selectedId: null,
       selectionMessage: "枠の選択だけでは予約は確定しません。", scheduleLoading: false });
     if (!validMonth(month)) {
       this.state.scheduleMessage = "月をYYYY-MM形式で選択してください。";
@@ -112,7 +136,8 @@ export class StudentReadController {
         if (!firstDate && canContinue) continue;
         const scheduleMessage = !slots.length ? "この月の枠はありません。" : firstDate ? "予定を取得しました。"
           : "この月に予約可能な枠はありません。日付を選んで予定を確認できます。";
-        Object.assign(this.state, { slots, selectedDate: retainedDate ?? firstDate, scheduleReady: true, scheduleLoading: false,
+        this.acceptSchedule(slots, candidate);
+        Object.assign(this.state, { selectedDate: retainedDate ?? firstDate, scheduleReady: true, scheduleLoading: false,
           scheduleMessage: initialSearch && !firstDate ? `${scheduleMessage} 別の月を選択して予定を確認できます。` : scheduleMessage });
         this.changed("schedule", focus);
         return;
@@ -157,7 +182,7 @@ export class StudentReadController {
   async select(slotId: string): Promise<void> {
     const slot = this.state.slots.find(item => item.slotId === slotId);
     if (this.state.stopped || this.state.operationHalted || this.state.operation === "confirming" || this.state.scheduleLoading ||
-        slot?.view !== "bookable" || slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
+        !this.state.scheduleReady || slot?.view !== "bookable" || slot.startsAt.slice(0, 10) !== this.state.selectedDate) return;
     this.clearConfirmation();
     this.state.selectedId = slotId;
     this.state.selectionMessage = `${intervalLabel(slot)}を選択しました。予約は確定していません。`;
@@ -178,7 +203,7 @@ export class StudentReadController {
     } catch (error) {
       if (error instanceof ReadError && error.status === 401) throw error;
       if (this.current(revision)) {
-        Object.assign(this.state, { slots: [], scheduleReady: false, selectedId: null,
+        Object.assign(this.state, { slots: this.latestBooking ? this.state.slots : [], scheduleReady: false, selectedId: null,
           selectionMessage: "予定を再取得し、予約可能な枠を選び直してください。" });
         this.state.operation = "idle";
         this.state.operationMessage = this.state.selectionMessage;
@@ -191,7 +216,8 @@ export class StudentReadController {
     const latest = slots.find(item => item.slotId === slot.slotId);
     const matches = latest?.view === "bookable" && latest.startsAt === slot.startsAt && latest.endsAt === slot.endsAt;
     this.needsFreshSchedule = false;
-    Object.assign(this.state, { slots, scheduleMessage: "最新の予定を取得しました。" });
+    this.acceptSchedule(slots, month);
+    Object.assign(this.state, { scheduleReady: true, scheduleMessage: "最新の予定を取得しました。" });
     if (!matches) {
       Object.assign(this.state, { selectedId: null, operation: "idle",
         selectionMessage: "選択した枠の状態が変わりました。最新の予定から予約可能な枠を選び直してください。" });
@@ -238,6 +264,15 @@ export class StudentReadController {
       const result = parseConfirm(await this.request("/api/me/reservations", "POST", 201, { slotId: slot.slotId, expectedStateToken: token }), slot);
       if (!this.current(revision)) return;
       Object.assign(this.state, { preview: null, confirmed: result, operation: "confirmed", operationMessage: "予約済みです。メールの配送完了を表すものではありません。" });
+      this.latestBooking = { ...result.slot, reservationId: result.reservation.reservationId, classification: result.reservation.classification };
+      this.state.slots = this.state.slots.map(previous => {
+        const change = result.classificationChanges.find(change => previous.view === "reserved_by_me" &&
+          previous.reservationId === change.reservationId && previous.startsAt === change.startsAt);
+        return change ? { ...previous, classification: change.after } : previous;
+      });
+      this.bookingAwaitingSchedule = true;
+      this.state.slots = this.displaySlots;
+      this.changed("schedule", false);
       this.changed("operation", true);
       void this.loadMonth(this.state.month, false, true);
       void this.loadHistory(false, false);

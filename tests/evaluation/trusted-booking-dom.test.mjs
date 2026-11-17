@@ -90,8 +90,8 @@ function fixture(fault = "", changePost = () => {}) {
   const texts = selector => {
     if (selector === "#operation-content > p") return [interval("10"), fault === "wrong-dom-classification" ? "区分：追加" : "区分：標準", "区分変更はありません。"];
     if (selector === "#operation-content li") return fault === "extra-dom-change" ? [canary] : [];
-    if (selector === ".slot.reserved_by_me") return mode === "confirmed" || mode === "history" ? [`${interval("10")}：本人予約済み／標準`] : [];
-    if (selector === "section ol li") {
+    if (selector === ".slot.reserved_by_me") return mode === "confirmed" || mode === "history" ? [`今回予約：${interval("10")}：本人予約済み／標準`] : [];
+    if (selector === "#history-content li") {
       if (fault === "initial-history" && mode === "initial") return [];
       const hours = mode === "history" && fault !== "stale-history" ? ["11", "10"] : ["11"];
       return hours.map(hour => `${interval(hour)}予約状態：予約済み欠席状態：なし現在の区分：標準`);
@@ -293,7 +293,7 @@ function unauthenticatedFixture(options = {}) {
     .map(name => [name, true]));
   const texts = new Map(["#schedule-status", "#history-status", "#operation-status"].map(selector => [selector, guidance]));
   texts.set("#selection-status", "");
-  const lengths = new Map(["section ol li", ".slot", "#operation-content > *"].map(selector => [selector, 0]));
+  const lengths = new Map(["#history-content li", ".slot", "#operation-content > *"].map(selector => [selector, 0]));
   const emit = async (path, method = "GET", navigation = false) => {
     const url = path.startsWith("https:") ? path : bookingOrigin + path, api = path.startsWith("/api/");
     const requestHeaders = api ? { accept: "application/json", "sec-fetch-site": "same-origin" } : {};
@@ -901,7 +901,7 @@ test("#1002 stale DOM, unexpected assets/resources, duplicate response/request a
     { extra: [confirmPath, "POST"] }, { extra: [previewPath, "POST"] }, { extra: ["/favicon.ico"] },
     { extra: ["https://invalid.test/student"] }, { extra: [confirmPath] },
     { duplicateResponse: true }, { throwFetch: true }, { abortHeaders: true }, { networkFailure: true },
-    ...["section ol li", ".slot", "#operation-content > *"].map(selector => ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
+    ...["#history-content li", ".slot", "#operation-content > *"].map(selector => ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
     ...["#selection-status", "#schedule-status", "#history-status", "#operation-status"].map(selector => ({ dom: ({ texts }) => texts.set(selector, canary) })),
     ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", confirmName]
       .map(name => ({ dom: ({ controls }) => controls.set(name, false) })),
@@ -1318,7 +1318,7 @@ test("#1073 UI-only rejects Cookie/DOM data residue, enabled controls and observ
     { cookie: true }, { enabledMonth: true },
     ...["#schedule-status", "#history-status", "#operation-status", "#selection-status"].map(selector =>
       ({ dom: ({ texts }) => texts.set(selector, canary) })),
-    ...["section ol li", ".slot", "#operation-content > *"].map(selector =>
+    ...["#history-content li", ".slot", "#operation-content > *"].map(selector =>
       ({ dom: ({ lengths }) => lengths.set(selector, 1) })),
     ...["この月を取得", "前の月", "次の月", "履歴を最新から再取得", "履歴の次ページ", confirmName].map(name =>
       ({ dom: ({ controls }) => controls.set(name, false) })),

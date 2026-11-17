@@ -842,6 +842,14 @@ System / Acceptance全体Pass・Gate A〜D・#608全体Done・Production ready�
 評価Workerは既存read-only GET / assetsのみでunsafe POSTは503、default Production Workerも全503を維持する。
 実接続・actual Commitの評価は#537の独立した後続Issueで行い、本Issueではrunner / config / routeを変更しない。
 
+#1155の `unit/student-read.test.ts` は `AC-005-003 / TC-F-005-02` と既存 `TC-F-002-03/04・TC-F-003-10` の部分証拠を追加する。
+検証済み201直後のCalendar「済」・日別枠・今後の予約一覧、最後の1件の文字＋色の目印、同時刻の安定順、
+正常200空と未取得/404/403/503・通信断・不正応答、旧月応答/旧401、次201・月日移動・開始時刻・reloadの寿命を検査する。
+本人reservationId＋開始日時に一致する分類差分の投影と、#1154のHistory自動GET・失敗分離・再取得も回帰する。
+追加の月内一覧と本人履歴を混同しないよう、既存evaluation DOMの履歴selectorを `#history-content` に限定する。
+synthetic fetch / structural DOMは実Worker＋D1予約readback・実Browser受入を証明せず、正式同一HEAD CI・独立Claude Review、
+#1108の統合操作評価・#608/#537/#930の受入判断は別証拠のままとする。上流POL→BR→REQ→AC→TC・CON/OOSと図の契約は不変。
+
 ## #928 非公開予約factory（synthetic compositionのみ）
 
 `fixtures/reservation-student-service.ts` はlistener / runnable mainのないtest-only Request-service factory。

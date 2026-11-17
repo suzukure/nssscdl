@@ -155,7 +155,7 @@ default Workerは503、Production鍵・binding・公開routeは未接続。
 
 `web/` は#894のread-only表示と#926・#1152の単一予約Preview / Confirm Web/UI Presentation。`model.ts` がBrowser側の既存wireの安全な投影と
 UTC暦演算 / +09:00表示、`controller.ts` がsame-origin取得・枠選択時の自動Preview・明示Confirm・要求世代・401停止、`view.ts` が
-native DOM / focus / Calendar・List / 本人履歴、`student.ts` がHTTPS用起動を担当する。
+native DOM / focus / Calendar・日別一覧・今後の予約一覧 / 本人履歴、`student.ts` がHTTPS用起動を担当する。
 `student.html` / `student.css` とES modulesは既存buildで `dist/student/` へ生成する。
 Worker / server moduleをimportせず、default entrypointから到達不能。配信は既存#922の評価専用read-only構成だけである。
 予約可能枠の明示選択・再選択で、必要な最新Schedule照合とSession CSRF取得GETを経て自動Previewを送る。
@@ -163,4 +163,9 @@ Worker / server moduleをimportせず、default entrypointから到達不能。�
 CSRF / Expected State Tokenはprivate memoryに保持し、DOM / storage / URL / Logへ出さない。
 結果不明・403は書込み停止、401は個人表示と全要求を無効化する。評価Workerのunsafe POSTは503のままであり、
 検証はsynthetic fetch / structural DOMに限定する。actual isolated HTTP / D1 Commitは#537の独立した後続責務。
+#1155では検証済み201のSlotを直ちにCalendar「済」・日別枠・表示月内の今後の予約一覧へ投影する。
+未開始の直近1件の目印はPreview/tokenとは独立したJS memoryのみで保持し、次201で置換、401/reloadで消去する。
+同月の既知情報はSchedule更新中・失敗時も未確認の案内とともに保持し、正常Schedule応答を優先する。
+Scheduleの任意本人reservationIdは201の分類差分との照合だけに使い、DOMへ出さない。
+開始境界は既存再描画で一覧・強調から除外する。#1154の独立した本人履歴自動取得・明示再取得は維持する。
 設計・比較・証拠限界の正本は詳細設計Application §9.1、試験は `tests/README.md` を参照する。
