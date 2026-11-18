@@ -67,11 +67,13 @@ async function ownedFixture(baselineFault) {
   let proxies = 0, reads = 0, disposals = 0, handle, seed;
   const source = readFileSync("tests/evaluation/trusted-booking-seed.mjs", "utf8");
   const importLine = 'const { getPlatformProxy } = await import("wrangler");';
-  assert.equal(source.split(importLine).length - 1, 2);
+  const prepareImport = 'const { getPlatformProxy } = await stage("wrangler-import", () => import("wrangler"));';
+  assert.equal(source.split(importLine).length - 1, 1);
+  assert.equal(source.split(prepareImport).length - 1, 1);
   assert.match(source, /await getPlatformProxy\(proxyOptions\)/);
   const identities = source.slice(source.indexOf("export function directoryIdentity"), source.indexOf("// Finite static preflight"));
   const boundaries = source.slice(source.indexOf("\nfunction checkOwned(handle)"));
-  const code = (identities + boundaries).replaceAll("export ", "").replaceAll(importLine, "");
+  const code = (identities + boundaries).replaceAll("export ", "").replace(importLine, "").replace(prepareImport, 'await stage("wrangler-import", () => {});');
   const api = runInNewContext(`${code}\n({prepareTrustedBooking, inspectTrustedBooking, inspectTrustedBookingUnchanged})`, {
     process: { env: { TMPDIR: home }, getuid: () => control.uid }, root: temp, persistence: persist, proxyOptions: options,
     owned: new WeakMap(), resolve, readdirSync, realpathSync, mkdirSync, bookingD1, failure,

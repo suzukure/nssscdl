@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { runInNewContext } from "node:vm";
 import { useOperator, cleanEnvironment, verifyOperatorBuild } from "./booking-operator.mjs";
+import { diagnosePreparation, preparationReport } from "./booking-operator-diagnostic.mjs";
 import { humanBookingObservation, observeHumanBrowser } from "./booking-operator-browser.mjs";
 import { createOperatorWorker } from "./booking-operator-worker.mjs";
 import { budget, userGroup, parseUnit, unitProperties, procIdentity, sameProcess, guiEnvironment, emptyGroup, unitDuration } from "./booking-operator-unit.mjs";
@@ -270,7 +271,7 @@ test("#1104 actual Browser adapter blocks remote/Production before connection; u
 test("#1104 all imports/non-opt-in CLI are inert, internal owner cannot run outside its attested unit", () => {
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", "await import('./tests/evaluation/booking-operator.mjs'); await import('./tests/evaluation/booking-operator-child.mjs')"], { encoding: "utf8", timeout: 5000 });
   assert.equal(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
-  for (const args of [[], ["--run"], ["--run", "--head", "bad"], ["--private-owner", "a".repeat(40), "{}", name]]) {
+  for (const args of [[], ["--run"], ["--run", "--head", "bad"], ["--diagnose-d1", "--head", "bad"], ["--private-diagnostic-owner", "a".repeat(40), "null", name], ["--private-owner", "a".repeat(40), "{}", name]]) {
     const denied = spawnSync(process.execPath, ["tests/evaluation/booking-operator.mjs", ...args], { encoding: "utf8", timeout: 5000 });
     assert.equal(denied.status, 1); assert.equal(denied.stdout, ""); assert.match(denied.stderr, /BOOKING_OPERATOR_UNKNOWN/);
   }
@@ -351,27 +352,60 @@ async function finiteNode(code, input) {
 }
 const operatorUrl = pathToFileURL(resolve("tests/evaluation/booking-operator.mjs")).href;
 
-test("#1106 actual owner preparation rejection releases stdin without waiting for parent EOF", async () => {
-  const result = await finiteNode(`
-    import { readFileSync } from 'node:fs'; import { randomBytes } from 'node:crypto'; import { join } from 'node:path';
+async function finiteOwner(diagnostic) {
+  return finiteNode(`
+    import { readFileSync } from 'node:fs'; import { randomBytes } from 'node:crypto'; import { dirname, join } from 'node:path';
+    const { diagnosePreparation } = await import(new URL('./booking-operator-diagnostic.mjs', ${JSON.stringify(operatorUrl)}));
     import { runInNewContext } from 'node:vm'; import { useOperator, listenOperatorInput } from ${JSON.stringify(operatorUrl)};
     const all = readFileSync('tests/evaluation/booking-operator.mjs', 'utf8');
     const source = all.slice(all.indexOf('async function owner('), all.indexOf('\\nif (process.argv[1]'));
-    const env = { TMPDIR: '/finite/home' }; let seedCalls = 0, commands = 0;
+    const diagnostic = ${diagnostic};
+    const env = { TMPDIR: '/finite/home' }; let seedCalls = 0, commands = 0, captures = 0;
+    let observations = '';
+    const phases = ["storage-owner", "migration-cli", "repreflight-owner", "wrangler-import", "proxy-start",
+      "binding", "history", "seed", "baseline", "dispose"];
+    const versions = { wrangler: '4.146.0', 'playwright-core': '1.64.0', typescript: '6.0.3' };
     const fixtureProcess = new Proxy(process, { get: (p, key) => key === 'platform' ? 'linux' : key === 'getuid' ? () => 1000 : key === 'env' ? env : Reflect.get(p, key) });
     const owner = runInNewContext('(' + source + ')', { process: fixtureProcess, performance, console, randomBytes, join, useOperator, listenOperatorInput,
-      root: '/finite', budget: { total: 1800000, prepare: 300000 }, demand: ok => { if (!ok) throw Error('finite-private-failure'); },
+      root: '/finite', dirname, diagnosePreparation, appendFileSync: (_file, line) => { observations += line; },
+      mkdirSync: path => { if (path !== '/finite/home/browser-home') throw Error('unexpected-mkdir'); captures++; },
+      verifyStudentAssets() {}, migrations() {}, verifyOperatorBuild: async () => ({}), budget: { total: 1800000, prepare: 300000 }, demand: ok => { if (!ok) throw Error('finite-private-failure'); },
       fail: () => Error('finite-private-failure'), userGroup: () => '/finite/group', guiEnvironment: g => g,
-      readFileSync: p => p === '/proc/self/cgroup' ? '0::/finite/group\\n' : p === '/proc/1/comm' ? 'systemd\\n' : p === '/sys/fs/cgroup/cgroup.controllers' ? 'cpu\\n' : '{}',
-      lstatSync: () => ({ mode: 0o40700 }), present: () => false, readdirSync: p => p === env.TMPDIR ? ['node-compile-cache'] : [],
+      readFileSync: p => p === '/proc/self/cgroup' ? '0::/finite/group\\n' : p === '/proc/1/comm' ? 'systemd\\n' : p === '/sys/fs/cgroup/cgroup.controllers' ? 'cpu\\n' :
+        p.includes('package') ? JSON.stringify({ version: versions[p.split('/').at(-2)],
+          devDependencies: versions, packages: Object.fromEntries(Object.entries(versions).map(([k, version]) => ['node_modules/' + k, { version }])) }) : '{}',
+      lstatSync: p => p === '/finite/observations' ? { mode: 0o600, isFile: () => true, uid: 1000, nlink: 1, size: 0 } :
+        { mode: 0o40700, isFile: () => true }, realpathSync: p => p, present: () => false,
+      readdirSync: p => !diagnostic && p === env.TMPDIR ? ['node-compile-cache'] : [],
       supply: { checkBookingEnvironment() {}, directoryIdentity: () => ({}), proxyOptions: { configPath: '/finite/config' }, persistence: '/finite/persist',
-        prepareTrustedBooking() { seedCalls++; throw Error('unexpected-seed'); } },
-      exec: async (file, args) => { if (file !== 'git') throw Error('unexpected-command'); commands++; return { stdout: args[0] === 'rev-parse' ? 'a'.repeat(40) : '' }; } });
-    try { await owner('a'.repeat(40), {}); } catch { process.exitCode = 1; }
+        checkDirectoryIdentity() {}, checkOwnedTree() {},
+        async prepareTrustedBooking(consume, _entered, stage) {
+          seedCalls++;
+          for (const name of phases) await stage(name, () => {});
+          await stage('handoff-capture', () => consume('FINITE_SECRET_SEED', {}));
+        } },
+      exec: async (file, args) => { if (!['git', 'ss'].includes(file)) throw Error('unexpected-command'); commands++; return { stdout: args[0] === 'rev-parse' ? 'a'.repeat(40) : '' }; } });
+    try { await owner('a'.repeat(40), {}, diagnostic); } catch { process.exitCode = 1; }
+    if (diagnostic) console.log(JSON.stringify({ observations, captures }));
     console.log(JSON.stringify({ seedCalls, commands, paused: process.stdin.isPaused(), sigint: process.listenerCount('SIGINT'), sigterm: process.listenerCount('SIGTERM') }));
   `);
+}
+
+test("#1106 actual owner preparation rejection releases stdin without waiting for parent EOF", async () => {
+  const result = await finiteOwner(false);
   assert.equal(result.signal, null); assert.equal(result.status, 1); assert.equal(result.stderr, "");
   assert.deepEqual(JSON.parse(result.stdout), { seedCalls: 0, commands: 2, paused: true, sigint: 0, sigterm: 0 });
+});
+
+test("#1160 actual owner ends at capture without entering any Browser or Worker command", async () => {
+  const result = await finiteOwner(true);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /FINITE_SECRET_SEED/);
+  const [trace, counts] = result.stdout.trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(trace.captures, 1);
+  assert.equal(preparationReport(trace.observations, true).result, "NOT_REPRODUCED");
+  assert.deepEqual(counts, { seedCalls: 1, commands: 4, paused: true, sigint: 0, sigterm: 0 });
 });
 
 function bridgeCliFixture(mode) {
@@ -381,15 +415,23 @@ function bridgeCliFixture(mode) {
     import { spawn } from 'node:child_process'; import { runInNewContext } from 'node:vm';
     import { cleanEnvironment, bridgeOperator } from ${JSON.stringify(operatorUrl)};
     const script = resolve('tests/evaluation/booking-operator.mjs'), all = readFileSync(script, 'utf8'); let starts = 0;
-    const mode = ${JSON.stringify(mode)};
+    const mode = ${JSON.stringify(mode)}, diagnostic = mode === 'diagnostic';
+    const { preparationReport } = await import(new URL('./booking-operator-diagnostic.mjs', ${JSON.stringify(operatorUrl)}));
+    const report = 'completed operator-preflight\\ncompleted storage-owner\\nfailed migration-cli\\n';
     const fixtureProcess = new Proxy(process, { get: (p, key) => key === 'platform' ? 'linux' : key === 'getuid' ? () => 1000 :
-      key === 'stdin' ? { isTTY: true } : key === 'env' ? {} : key === 'argv' ? ['node', script, '--run', '--head', 'a'.repeat(40)] : Reflect.get(p, key) });
+      key === 'stdin' ? { isTTY: true } : key === 'env' ? {} : key === 'argv' ? ['node', script, diagnostic ? '--diagnose-d1' : '--run', '--head', 'a'.repeat(40)] : Reflect.get(p, key) });
     const cli = runInNewContext('(async () => {' + all.slice(all.indexOf('if (process.argv[1]')) + '})', {
       process: fixtureProcess, console, script, resolve, join, randomBytes, root: process.cwd(), cleanEnvironment, bridgeOperator,
-      demand: ok => { if (!ok) throw Error('finite-private-failure'); }, guiEnvironment: () => ({}), tmpdir: () => '/finite', mkdtempSync: () => '/finite/home',
+      demand: ok => { if (!ok) throw Error('finite-private-failure'); },
+      guiEnvironment: () => { if (diagnostic) throw Error('unexpected-gui'); return {}; },
+      mkdirSync() {}, writeFileSync() {}, preparationReport,
+      readFileSync: () => report, lstatSync: () => ({ size: report.length, isFile: () => true, uid: 1000, nlink: 1 }),
+      tmpdir: () => '/finite', mkdtempSync: () => '/finite/home',
       spawn: (file, args, options) => {
-        if (++starts !== 1 || file !== 'systemd-run' || options.stdio.join(',') !== 'pipe,pipe,ignore' || !args.includes('--private-owner')) throw Error('unexpected-start');
-        const code = mode === 'success' ? ${JSON.stringify(success)} :
+        if (++starts !== 1 || file !== 'systemd-run' || options.stdio.join(',') !== (diagnostic ? 'pipe,ignore,ignore' : 'pipe,pipe,ignore') ||
+            !args.includes(diagnostic ? '--private-diagnostic-owner' : '--private-owner')) throw Error('unexpected-start');
+        const code = diagnostic ? 'process.stdout.write("FINITE_SECRET_STDOUT"); process.stderr.write("FINITE_SECRET_STDERR"); process.kill(process.pid,"SIGTERM")' :
+          mode === 'success' ? ${JSON.stringify(success)} :
           mode === 'signal' ? 'process.stdin.resume()' : mode === 'eof' ? 'process.stdin.resume(); process.stdin.on("end",()=>{process.exitCode=1})' :
           mode === 'signal-exit' ? 'process.kill(process.pid,"SIGTERM")' :
           'process.stderr.write("FINITE_SECRET_STDERR_CANARY"); process.exitCode=1';
@@ -415,4 +457,74 @@ test("#1106 actual outer CLI preserves success output and finite signal/EOF list
   const result = await finiteNode(bridgeCliFixture("success"), "操作終了\n");
   assert.equal(result.signal, null); assert.equal(result.status, 0); assert.equal(result.stderr, "");
   assert.equal(result.stdout, '{"finite":"unchanged-success"}\n');
+});
+
+test("#1160 outer CLI suppresses raw child output and reports an abnormal unit exit as UNKNOWN", async () => {
+  const result = await finiteNode(bridgeCliFixture("diagnostic"));
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /FINITE_SECRET/);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    result: "UNKNOWN", firstFailure: "migration-cli", lastCompleted: "storage-owner", dispose: "UNKNOWN",
+  });
+});
+
+test("#1160 shared preparation identifies each failing stage and disposes an acquired proxy once", async () => {
+  const source = readFileSync("tests/evaluation/trusted-booking-seed.mjs", "utf8");
+  const body = source.slice(source.indexOf("export async function useBookingSeedProxy"), source.indexOf("// Separate read-only proxy;"))
+    .replaceAll("export ", "").replace('() => import("wrangler")', "loadWrangler");
+  const phases = ["operator-preflight", "storage-owner", "migration-cli", "repreflight-owner", "wrangler-import",
+    "proxy-start", "binding", "history", "seed", "baseline", "dispose", "handoff-capture"];
+  for (const fault of [...phases, "none", "history+dispose", "interrupted", "missing"]) {
+    const attempts = [];
+    let observations = "", interrupted = false, captures = 0;
+    const check = ok => { if (!ok) throw Error("FINITE_SECRET_CANARY"); };
+    const owned = new WeakMap();
+    const prepare = runInNewContext(`${body}\nprepareTrustedBooking`, {
+      check, failure: () => Error("FINITE_SECRET_CANARY"), preflight: async () => {},
+      process: { env: { TMPDIR: "/finite/home" } }, resolve, root: "/finite", persistence: "/finite/persist",
+      present: () => false, readdirSync: () => [], mkdirSync() {}, directoryIdentity: () => ({}),
+      owned, checkOwned: handle => owned.get(handle), proxyOptions: { configPath: "/finite/config" }, exec: async () => {},
+      loadWrangler: async () => ({ getPlatformProxy: async () => ({ env: {}, dispose: async () => {} }) }),
+      bookingD1: () => ({ prepare: () => ({ all: async () => ({ success: true, results: [{ name: "migration" }] }) }), withSession() {} }),
+      migrations: () => ["migration"], validation() {}, seedTrustedStudents: async () => "FINITE_SECRET_CANARY",
+      captureBookingBaseline: async () => "FINITE_SECRET_CANARY",
+    });
+    const first = fault === "history+dispose" ? "history" : fault;
+    await diagnosePreparation({
+      preflight() { if (first === "operator-preflight") check(false); }, interrupted: () => interrupted,
+      capture(seed) { assert.equal(seed, "FINITE_SECRET_CANARY"); captures++; },
+      prepare: (consume, stage) => prepare(consume, undefined, (name, action) => {
+        attempts.push(name);
+        return stage(name, () => {
+          if (name === first || (name === "dispose" && fault === "history+dispose")) check(false);
+          return action();
+        });
+      }),
+    }, (event, name) => {
+      if (name === "migration-cli" && fault === "missing") throw Error("FINITE_SECRET_CANARY");
+      observations += name ? `${event} ${name}\n` : `${event}\n`;
+      if (name === "proxy-start" && fault === "interrupted") interrupted = true;
+    });
+    const result = preparationReport(observations, true);
+    assert.doesNotMatch(JSON.stringify(result) + observations, /FINITE_SECRET_CANARY/);
+    if (["interrupted", "missing"].includes(fault)) {
+      assert.equal(result.result, "UNKNOWN", fault);
+      assert.equal(captures, 0, fault);
+      if (fault === "interrupted") assert.equal(result.dispose, "completed");
+    } else if (fault === "none") {
+      assert.deepEqual(result, { result: "NOT_REPRODUCED", firstFailure: "none", lastCompleted: "handoff-capture", dispose: "completed" });
+      assert.equal(captures, 1);
+    } else {
+      const index = phases.indexOf(first);
+      const cleanup = index >= phases.indexOf("binding") && index <= phases.indexOf("baseline");
+      assert.deepEqual(result, { result: "FAILED", firstFailure: first,
+        lastCompleted: cleanup && fault !== "history+dispose" ? "dispose" : phases[index - 1] ?? "none",
+        dispose: fault === "history+dispose" || first === "dispose" ? "failed" :
+          cleanup || first === "handoff-capture" ? "completed" : "not-started" }, fault);
+      assert.equal(captures, 0, fault);
+    }
+    assert.equal(new Set(attempts).size, attempts.length, fault);
+    assert.equal(preparationReport(observations, false).result, "UNKNOWN", fault);
+  }
 });

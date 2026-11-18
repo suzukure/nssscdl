@@ -98,57 +98,65 @@ function checkOwned(handle) {
 }
 
 // Test-only D1 factory seam. Actual composition below supplies locked Wrangler.
-export async function useBookingSeedProxy(createProxy, consume, confirmOwnership = () => {}) {
+export async function useBookingSeedProxy(createProxy, consume, confirmOwnership = () => {}, stage = (_name, action) => action()) {
   let proxy;
   try {
     check(typeof consume === "function");
-    proxy = await createProxy(proxyOptions);
-    const db = bookingD1(proxy.env);
-    const history = await db.prepare("SELECT name FROM d1_migrations ORDER BY name").all();
-    check(history.success && JSON.stringify(history.results.map((r) => r.name)) === JSON.stringify(migrations()));
-    confirmOwnership(); // Immediately before the sole seed write boundary.
-    const seed = await seedTrustedStudents(db, validation());
-    confirmOwnership();
-    const baseline = await captureBookingBaseline(db.withSession("first-primary"), validation());
+    proxy = await stage("proxy-start", () => createProxy(proxyOptions));
+    const db = stage("binding", () => bookingD1(proxy.env));
+    await stage("history", async () => {
+      const history = await db.prepare("SELECT name FROM d1_migrations ORDER BY name").all();
+      check(history.success && JSON.stringify(history.results.map((r) => r.name)) === JSON.stringify(migrations()));
+    });
+    const seed = await stage("seed", () => {
+      confirmOwnership(); // Immediately before the sole seed write boundary.
+      return seedTrustedStudents(db, validation());
+    });
+    const baseline = await stage("baseline", () => {
+      confirmOwnership();
+      return captureBookingBaseline(db.withSession("first-primary"), validation());
+    });
     const closing = proxy; proxy = undefined;
-    await closing.dispose(); // At most once; failed/unknown disposal suppresses handoff.
-    await consume(seed, baseline); // Deliberately discard even a secret-bearing result.
+    await stage("dispose", () => closing.dispose()); // Failed/unknown disposal suppresses handoff.
+    await stage("handoff-capture", () => consume(seed, baseline)); // Discard even a secret-bearing result.
   } catch { throw failure(); }
-  finally { if (proxy) { try { await proxy.dispose(); } catch { throw failure(); } } }
+  finally { if (proxy) { try { await stage("dispose", () => proxy.dispose()); } catch { throw failure(); } } }
 }
 
 // Caller enters with the same credential-free env shape as the sealed read-only
 // helper. Fresh exclusive directory + in-memory capability; no persisted token.
 // Failures retain all files and a spent capability, never reset or retry.
-export async function prepareTrustedBooking(consume, observeEntered) {
+export async function prepareTrustedBooking(consume, observeEntered, stage = (_name, action) => action()) {
   let handle;
   try {
     check(typeof consume === "function");
-    await preflight();
-    check(!present(persistence));
-    check(readdirSync(process.env.TMPDIR).length === 0); // Fresh profile/home; never adopt read-only state.
-    if (observeEntered !== undefined) {
-      check(typeof observeEntered === "function");
-      check(observeEntered() === undefined); // Fixed synchronous hook; no async handoff.
-    }
-    if (!present(resolve(root, ".wrangler"))) mkdirSync(resolve(root, ".wrangler"), { mode: 0o700 });
-    const parent = directoryIdentity(resolve(root, ".wrangler"));
-    mkdirSync(persistence, { mode: 0o700 });
-    handle = Object.freeze({});
-    owned.set(handle, { parent, identity: directoryIdentity(persistence), temporary: process.env.TMPDIR,
-      home: directoryIdentity(process.env.TMPDIR), ready: false, reading: false });
-    await exec(resolve(root, "node_modules/.bin/wrangler"), ["d1", "migrations", "apply", "nssscdl-local-booking-evaluation",
+    await stage("storage-owner", async () => {
+      await preflight();
+      check(!present(persistence));
+      check(readdirSync(process.env.TMPDIR).length === 0); // Fresh profile/home; never adopt read-only state.
+      if (observeEntered !== undefined) {
+        check(typeof observeEntered === "function");
+        check(observeEntered() === undefined); // Fixed synchronous hook; no async handoff.
+      }
+      if (!present(resolve(root, ".wrangler"))) mkdirSync(resolve(root, ".wrangler"), { mode: 0o700 });
+      const parent = directoryIdentity(resolve(root, ".wrangler"));
+      mkdirSync(persistence, { mode: 0o700 });
+      handle = Object.freeze({});
+      owned.set(handle, { parent, identity: directoryIdentity(persistence), temporary: process.env.TMPDIR,
+        home: directoryIdentity(process.env.TMPDIR), ready: false, reading: false });
+    });
+    await stage("migration-cli", () => exec(resolve(root, "node_modules/.bin/wrangler"), ["d1", "migrations", "apply", "nssscdl-local-booking-evaluation",
       "--config", proxyOptions.configPath, "--local", "--persist-to", persistence],
-    { cwd: root, env: process.env, timeout: 60000, maxBuffer: 1024 * 1024 });
-    await preflight(); checkOwned(handle);
-    const { getPlatformProxy } = await import("wrangler");
+    { cwd: root, env: process.env, timeout: 60000, maxBuffer: 1024 * 1024 }));
+    await stage("repreflight-owner", async () => { await preflight(); checkOwned(handle); });
+    const { getPlatformProxy } = await stage("wrangler-import", () => import("wrangler"));
     await useBookingSeedProxy(getPlatformProxy, async (seed, baseline) => {
       const record = checkOwned(handle);
       record.baseline = baseline; record.ready = true;
       await consume(seed, handle);
-    }, () => checkOwned(handle));
+    }, () => checkOwned(handle), stage);
   } catch {
-    if (handle) owned.get(handle).ready = false;
+    if (handle && owned.has(handle)) owned.get(handle).ready = false;
     throw failure();
   }
 }
