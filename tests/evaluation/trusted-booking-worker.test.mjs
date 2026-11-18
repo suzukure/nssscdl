@@ -87,7 +87,7 @@ test("#939: import/creation are dormant; exact independent local CLI and single 
   const f = fixture();
   assert.equal(f.counts().spawned, 0); assert.equal(f.counts().commands, 0); assert.equal(f.port.isReady(), false);
   assert.equal(await f.port.start(), origin); assert.equal(f.port.isReady(), true);
-  assert.deepEqual(f.calls, [{ file: resolve(root, "node_modules/.bin/wrangler"), args: [
+  assert.deepEqual(f.calls, [{ file: process.execPath, args: [resolve(root, "node_modules/wrangler/bin/wrangler.js"),
     "dev", "--config", "tests/evaluation/wrangler.reservation.jsonc", "--ip", "127.0.0.1", "--port", "8789",
     "--local-protocol", "https", "--persist-to", ".wrangler/student-booking-evaluation",
     "--https-key-path", input.certificate.key, "--https-cert-path", input.certificate.cert,

@@ -10,6 +10,7 @@ import { verifyReservationConfig } from "./reservation-config.ts";
 import { verifyStudentAssets } from "./verify-student-assets.mjs";
 import { migrations } from "./local-https-smoke.mjs";
 
+export const bookingWranglerEntry = resolve(root, "node_modules/wrangler/bin/wrangler.js");
 export const persistence = resolve(root, ".wrangler/student-booking-evaluation");
 export const origin = "https://127.0.0.1:8789";
 export const proxyOptions = Object.freeze({ configPath: resolve(root, "tests/evaluation/wrangler.reservation.jsonc"),
@@ -67,6 +68,11 @@ export function checkBookingEnvironment(environment, config, entries) {
     check(!entries.some((n) => /^(\.env|\.dev\.vars)(\.|$)/.test(n) && n !== ".env.example"));
   } catch { throw failure(); }
 }
+export function isBookingWranglerEntry() {
+  return realpathSync(resolve(root, "node_modules/.bin/wrangler")) === bookingWranglerEntry &&
+    lstatSync(bookingWranglerEntry).isFile();
+}
+
 async function preflight() {
   check(process.platform === "linux" && /^v24\./.test(process.version));
   checkBookingEnvironment(process.env, JSON.parse(readFileSync(proxyOptions.configPath, "utf8")),
@@ -145,9 +151,12 @@ export async function prepareTrustedBooking(consume, observeEntered, stage = (_n
       owned.set(handle, { parent, identity: directoryIdentity(persistence), temporary: process.env.TMPDIR,
         home: directoryIdentity(process.env.TMPDIR), ready: false, reading: false });
     });
-    await stage("migration-cli", () => exec(resolve(root, "node_modules/.bin/wrangler"), ["d1", "migrations", "apply", "nssscdl-local-booking-evaluation",
-      "--config", proxyOptions.configPath, "--local", "--persist-to", persistence],
-    { cwd: root, env: process.env, timeout: 60000, maxBuffer: 1024 * 1024 }));
+    await stage("migration-cli", () => {
+      check(isBookingWranglerEntry());
+      return exec(process.execPath, [bookingWranglerEntry, "d1", "migrations", "apply", "nssscdl-local-booking-evaluation",
+        "--config", proxyOptions.configPath, "--local", "--persist-to", persistence],
+      { cwd: root, env: process.env, timeout: 60000, maxBuffer: 1024 * 1024 });
+    });
     await stage("repreflight-owner", async () => { await preflight(); checkOwned(handle); });
     const { getPlatformProxy } = await stage("wrangler-import", () => import("wrangler"));
     await useBookingSeedProxy(getPlatformProxy, async (seed, baseline) => {

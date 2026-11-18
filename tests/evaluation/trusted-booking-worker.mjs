@@ -5,11 +5,10 @@ import { relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { root } from "./trusted-evaluation-seed.mjs";
 import { checkBookingEnvironment, checkDirectoryIdentity, checkOwnedTree, directoryIdentity,
-  origin, persistence, proxyOptions } from "./trusted-booking-seed.mjs";
+  bookingWranglerEntry, isBookingWranglerEntry, origin, persistence, proxyOptions } from "./trusted-booking-seed.mjs";
 import { verifyStudentAssets } from "./verify-student-assets.mjs";
 
 const exec = promisify(execFile);
-const binary = resolve(root, "node_modules/.bin/wrangler");
 const failure = () => new Error("TRUSTED_BOOKING_WORKER_FAILED");
 const check = (ok) => { if (!ok) throw failure(); };
 const same = (a, b) => ["dev", "ino", "uid"].every((key) => a[key] === b[key]);
@@ -43,7 +42,7 @@ export function bookingWorkerPreflight(input) {
     check((path === "package.json" ? pkg.devDependencies.wrangler : path === "package-lock.json"
       ? pkg.packages["node_modules/wrangler"].version : pkg.version) === "4.146.0");
   }
-  check(realpathSync(binary) === resolve(root, "node_modules/wrangler/bin/wrangler.js"));
+  check(isBookingWranglerEntry());
   verifyStudentAssets(root);
   const temporary = env.TMPDIR, home = directoryIdentity(temporary);
   const parent = directoryIdentity(resolve(root, ".wrangler")), db = directoryIdentity(persistence);
@@ -207,7 +206,7 @@ export function createBookingWorkerPort(input, effects = runtime, observe) {
         setup.confirm();
         membership(); check(effects.now() < deadline);
         position = "spawn";
-        child = effects.spawn(binary, ["dev", "--config", relative(root, proxyOptions.configPath),
+        child = effects.spawn(process.execPath, [bookingWranglerEntry, "dev", "--config", relative(root, proxyOptions.configPath),
           "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https",
           "--persist-to", relative(root, persistence),
           "--https-key-path", input.certificate.key, "--https-cert-path", input.certificate.cert],
