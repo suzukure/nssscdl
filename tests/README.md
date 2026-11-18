@@ -74,6 +74,29 @@ Schedule GETに限って `404 SCHEDULE_MONTH_NOT_AVAILABLE`（`retry=none`）を
 `RemainAfterExit=yes`のBrowser unitは完了message後にmanager／kernelを照合し、readback後のstopで解放する。
 bridge process終了だけをunit終端の証拠にはしない。実環境のこの組合せは未実証。
 
+### #1160 隔離D1準備の単発診断
+
+対象HEADの正式CI・Traceability・独立レビューを経てmainに反映した後、個別の明示Goで
+新規の隔離checkoutを用意する。上記の固定依存・build・controller前提を満たし、
+両評価persistが未作成の状態で次のコマンドを一回だけ実行する。
+
+```sh
+node tests/evaluation/booking-operator.mjs --diagnose-d1 --head <確認済みの40桁HEAD>
+```
+
+既存の非root controller unit、sanitized env、seed/config、captureを共用する。
+D1準備の前に所有と空の保存先を確認し、migration CLI、再preflight／所有照合、
+Wrangler import、proxy起動、binding、migration履歴、seed、baseline、dispose、
+引渡し／captureの順に観測する。capture直後にcontrollerを終了するため、
+Chrome、予約Worker、予約POSTの経路には入らない。
+
+結果は固定値の `result`、`firstFailure`、`lastCompleted`、`dispose` のみ。
+後処理のdisposeが失敗しても先行失敗を保持する。
+正常な観測終端と全工程完了が揃えば `NOT_REPRODUCED`、工程失敗を確定できれば
+`FAILED`、観測欠落や異常中断は `UNKNOWN` とする。生ログ、例外、DB内容、資格情報は出力しない。
+診断資産は自動削除せず、再試行しない。結果は #1160 の診断記録として扱い、
+#1108 の統合評価完了とは別に管理する。通常Operator・正式証明・製品の受入条件は従来どおり。
+
 自動Unit / Integration / End-to-End Testを格納する。
 
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。

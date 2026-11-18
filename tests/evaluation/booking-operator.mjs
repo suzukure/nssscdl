@@ -1,8 +1,8 @@
 // #1104 opt-in human operator. No default workflow or production caller.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, realpathSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { appendFileSync, writeFileSync, lstatSync, readFileSync, readdirSync, realpathSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -13,6 +13,7 @@ import { verifyStudentAssets } from "./verify-student-assets.mjs";
 import { migrations } from "./local-https-smoke.mjs";
 import { checkFiles } from "./trusted-seed-process.mjs";
 import { budget, bounded, demand, fail, userGroup, parseUnit, unitProperties, emptyGroup, procIdentity, sameProcess, guiEnvironment } from "./booking-operator-unit.mjs";
+import { diagnosePreparation, preparationReport } from "./booking-operator-diagnostic.mjs";
 const exec = promisify(execFile), script = fileURLToPath(import.meta.url);
 const present = path => { try { lstatSync(path); return true; } catch (e) { if (e.code === "ENOENT") return false; throw fail(); } };
 const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -51,7 +52,7 @@ export async function bridgeOperator(child, input = process.stdin, output = proc
   signals.on("SIGINT", abort); signals.on("SIGTERM", abort);
   try {
     const completion = new Promise(done => { child.on("error", () => done(1)); child.on("exit", code => done(code)); });
-    input.pipe(child.stdin); child.stdout.pipe(output);
+    input.pipe(child.stdin); child.stdout?.pipe(output);
     const code = await completion;
     demand(!interrupted && code === 0);
   } finally {
@@ -86,7 +87,7 @@ export async function useOperator(ports) {
   }
 }
 
-async function owner(head, gui) {
+async function owner(head, gui, diagnostic = false) {
   process.umask(0o077);
   const deadline = performance.now() + budget.total, preparationEnd = performance.now() + budget.prepare;
   const env = process.env, temporary = env.TMPDIR;
@@ -95,7 +96,7 @@ async function owner(head, gui) {
     [root, join(root, "tests"), join(root, "tests/evaluation")].flatMap(dir => readdirSync(dir)));
   const temporaryIdentity = supply.directoryIdentity(temporary);
   demand((lstatSync(temporary).mode & 0o777) === 0o700);
-  gui = guiEnvironment(gui);
+  if (!diagnostic) gui = guiEnvironment(gui);
   const name = `nssscdl-operator-${randomBytes(16).toString("hex")}.service`, group = userGroup(process.getuid(), name);
   const managerEnv = { PATH: env.PATH, HOME: temporary, XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
     DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
@@ -138,7 +139,7 @@ async function owner(head, gui) {
     }
   };
   try {
-    await useOperator({
+    const ports = {
       async preflight() {
         demand(process.platform === "linux" && /^v24\./.test(process.version) && process.getuid() > 0 && /^[a-f0-9]{40}$/.test(head));
         demand(readFileSync("/proc/1/comm", "utf8").trim() === "systemd" && readFileSync("/sys/fs/cgroup/cgroup.controllers", "utf8").trim().length > 0);
@@ -157,9 +158,9 @@ async function owner(head, gui) {
         evidence = await verifyOperatorBuild(env);
         demand(performance.now() < preparationEnd); remaining();
       },
-      async prepare(consume) {
+      async prepare(consume, stage) {
         // #937 deliberately discards callback results, so keep only the safe ID.
-        await supply.prepareTrustedBooking(async (seed, handle) => { outputId = await consume(seed, handle); });
+        await supply.prepareTrustedBooking(async (seed, handle) => { outputId = await consume(seed, handle); }, undefined, stage);
       },
       capture() {
         parentIdentity = supply.directoryIdentity(join(root, ".wrangler")); persistIdentity = supply.directoryIdentity(supply.persistence);
@@ -249,7 +250,22 @@ async function owner(head, gui) {
       release: stop,
       async remove() { await checkSource(); checkOwned(); remaining(); demand(performance.now() < cleanupEnd && stopAttempted); rmSync(supply.persistence, { recursive: true }); rmSync(temporary, { recursive: true }); },
       async stopUnknown() { cleanupEnd = Math.min(deadline, performance.now() + budget.cleanup); if (!stopAttempted) await stop(); },
-    });
+    };
+    if (diagnostic) {
+      const directory = dirname(temporary);
+      demand(temporary === join(directory, "home"));
+      supply.directoryIdentity(directory);
+      const report = join(directory, "observations");
+      const stat = lstatSync(report);
+      demand(stat.isFile() && stat.uid === process.getuid() && stat.nlink === 1 && stat.size === 0 && (stat.mode & 0o777) === 0o600);
+      await diagnosePreparation({
+        preflight: ports.preflight, prepare: ports.prepare,
+        capture: () => { remaining(); demand(performance.now() < preparationEnd); ports.capture(); },
+        interrupted: () => aborted || performance.now() >= preparationEnd,
+      }, (event, name) => appendFileSync(report, name ? `${event} ${name}\n` : `${event}\n`));
+      return;
+    }
+    await useOperator(ports);
     demand(outputId === reservationId);
     console.log(JSON.stringify({ issue: 1104, head, ...evidence, completedAt: finishedAt, actor: "fictional-self", reservationId,
       browser: "human-one-confirm-history", readback: "five-tables", cleanup: "owned-removed", evidence: "local-human-partial; Gate-A-D/930-401/608-release-unproved" }));
@@ -260,14 +276,21 @@ async function owner(head, gui) {
 
 if (process.argv[1] && resolve(process.argv[1]) === script) {
   try {
-    if (process.argv.length === 6 && process.argv[2] === "--private-owner") {
-      demand(process.platform === "linux"); await owner(process.argv[3], JSON.parse(process.argv[4]));
+    if (process.argv.length === 6 && ["--private-owner", "--private-diagnostic-owner"].includes(process.argv[2])) {
+      demand(process.platform === "linux"); await owner(process.argv[3], JSON.parse(process.argv[4]), process.argv[2] === "--private-diagnostic-owner");
     } else {
-      demand(process.argv.length === 5 && process.argv[2] === "--run" && process.argv[3] === "--head" && /^[a-f0-9]{40}$/.test(process.argv[4]));
+      const diagnostic = process.argv[2] === "--diagnose-d1";
+      demand(process.argv.length === 5 && (diagnostic || process.argv[2] === "--run") && process.argv[3] === "--head" && /^[a-f0-9]{40}$/.test(process.argv[4]));
       demand(process.platform === "linux" && /^v24\./.test(process.version) && process.getuid() > 0 && process.stdin.isTTY);
       demand(!Object.keys(process.env).some(k => /TOKEN|SECRET|PASSWORD|API_KEY|PROXY|NODE_OPTIONS|PWDEBUG|^DEBUG$|SSLKEYLOG|NODE_TLS/i.test(k)));
-      const gui = guiEnvironment(Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "PULSE_SERVER"].filter(k => process.env[k]).map(k => [k, process.env[k]])));
-      const temporary = mkdtempSync(join(tmpdir(), "nssscdl-operator-"));
+      const gui = diagnostic ? null : guiEnvironment(Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "PULSE_SERVER"].filter(k => process.env[k]).map(k => [k, process.env[k]])));
+      const directory = mkdtempSync(join(tmpdir(), "nssscdl-operator-"));
+      const temporary = diagnostic ? join(directory, "home") : directory;
+      const report = diagnostic ? join(directory, "observations") : undefined;
+      if (diagnostic) {
+        mkdirSync(temporary, { mode: 0o700 });
+        writeFileSync(report, "", { flag: "wx", mode: 0o600 });
+      }
       const env = cleanEnvironment(temporary), name = `nssscdl-operator-${randomBytes(16).toString("hex")}.service`;
       const manager = { PATH: env.PATH, HOME: temporary, XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
         DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
@@ -277,10 +300,21 @@ if (process.argv[1] && resolve(process.argv[1]) === script) {
         `--working-directory=${root}`, "--property=Type=exec", "--property=Restart=no", "--property=RuntimeMaxSec=1800s",
         "--property=TimeoutStopSec=2s", "--property=KillMode=control-group", "--property=NoNewPrivileges=yes",
         "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
-        process.execPath, script, "--private-owner", process.argv[4], JSON.stringify(gui), name],
-      { cwd: root, env: manager, stdio: ["pipe", "pipe", "ignore"] });
+        process.execPath, script, diagnostic ? "--private-diagnostic-owner" : "--private-owner", process.argv[4], JSON.stringify(gui), name],
+      { cwd: root, env: manager, stdio: ["pipe", diagnostic ? "ignore" : "pipe", "ignore"] });
       // Private pipe EOF is observable even when a parent dies without a signal.
-      await bridgeOperator(child);
+      if (diagnostic) {
+        let exited = false, observations = "";
+        try { await bridgeOperator(child); exited = true; } catch { /* UNKNOWN */ }
+        try {
+          const stat = lstatSync(report);
+          if (stat.isFile() && stat.nlink === 1 && stat.uid === process.getuid() && stat.size <= 1024)
+            observations = readFileSync(report, "utf8");
+        } catch { /* UNKNOWN */ }
+        const result = preparationReport(observations, exited);
+        console.log(JSON.stringify(result));
+        if (result.result !== "NOT_REPRODUCED") process.exitCode = 1;
+      } else await bridgeOperator(child);
     }
   } catch { console.error("BOOKING_OPERATOR_UNKNOWN; owned resources retained; do not retry"); process.exitCode = 1; }
 }
