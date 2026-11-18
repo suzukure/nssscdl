@@ -97,6 +97,18 @@ Chrome、予約Worker、予約POSTの経路には入らない。
 診断資産は自動削除せず、再試行しない。結果は #1160 の診断記録として扱い、
 #1108 の統合評価完了とは別に管理する。通常Operator・正式証明・製品の受入条件は従来どおり。
 
+### #1162 固定PATHでの予約評価CLI起動
+
+共有D1 migrationと、通常Operator・正式証明の予約Workerは、検証済みNode.jsの
+`process.execPath` に固定の `node_modules/wrangler/bin/wrangler.js` を渡して起動する。
+固定依存のバージョンと `node_modules/.bin/wrangler` の解決先および入口が通常ファイルであることを
+起動前に検査する。固定PATHと環境allowlist、CLI引数、Workerの子PID/PGID照合および単発停止条件を維持する。
+
+有限の子プロセス試験で、Node.jsを含まないPATHでのJS入口起動、migrationの引数・環境・
+非0終了で後続工程へ進まないことを確認する。通常Operatorと正式証明のWorkerおよび両outerは
+既存の有限fixtureで回帰確認する。実機の単発診断はmain反映後に新しい隔離checkoutで
+別途明示Goを得て実施し、結果と #1108 の統合評価との関係を記録する。
+
 自動Unit / Integration / End-to-End Testを格納する。
 
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。

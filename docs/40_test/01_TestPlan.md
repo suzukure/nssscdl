@@ -140,6 +140,10 @@ Release前の `TC-NF-901-01` はCloud Browser Labまたは同等のVirtual / rem
 観測欠落／中断、秘密非反射とcapture後のBrowser／Worker非到達を確認する。
 単発診断の起動条件と結果の扱いは上記READMEの#1160節を正とする。
 
+#1162は、固定PATHにNode.jsがない条件で共有D1 migrationの固定JS入口を起動する有限子プロセス試験と、
+通常Operator・正式証明の予約Workerの起動引数／環境／PID・PGID／失敗時停止の有限回帰を対象とする。
+起動契約と実機診断の条件は上記READMEの#1162節を正とする。製品AC・TCおよびGateの判定条件は維持する。
+
 構成・Browser state・隔離proofの正本は `../20_detailed_design/01_StudentReservationApplication.md` §9.1〜3とする。評価専用HTTPS入口、isolated D1、trusted seed、実Production Guardを使い、default Workerの503を維持する。#894でread-only Calendar / List / 本人履歴の非公開表示部品とbuildを実装する。#896はCSRF取得GETのSession branchだけを未公開Adapterとして実装し、既存Guard・共有生成式・preauth fail-closed・安全なResponseのUnit / HTTP / isolated local D1試験を追加する（証明範囲は `../../tests/README.md`）。静的WebのHTTPS配信 / read-only DOM compositionは#922で準備し、正式normal単発Run #38025821104で部分実証した。#926は単一予約Preview / Confirm UIをsynthetic fetch / structural DOMで検証し、unsafe POSTを既存read-only評価Workerへ接続しない。actual isolated HTTP / D1 Commitを伴うPreview / Confirm、Production preauth / Auth flowと以下Gate全体は後続検証の責務である。
 
 #928の非公開factoryは既存D1 / HTTP部品のsynthetic compositionだけを検証する。対象fixture・既存TCへの部分証拠対応は `../../tests/README.md` の#928節を参照する。実local D1 migration / atomic Commit / 読取照合 / 失敗後cleanupは#931、Worker activationは#929、実Chrome / 通信は#930の責務とし、#928の完了をこれらのPassへ読み替えない。

@@ -139,28 +139,39 @@ test("#1104 GUI allowlist matches supplied WSLg sockets; never joins credential-
 });
 function workerFixture(options = {}) {
   let time = 0, started = false, live = false, stops = 0, owner = group;
+  const launches = [], pgidQueries = [];
+  const certificate = { key: "/owned/browser-home/server.key", cert: "/owned/browser-home/server.pem" };
   const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null });
   const listener = 'LISTEN 0 128 127.0.0.1:8789 0.0.0.0:* users:(("node",pid=42,fd=3))';
   const effects = {
     uid: 1000, setup: () => ({ env: cleanEnvironment("/owned"), confirm() {} }),
-    spawn: () => { started = true; live = true; return child; },
+    spawn: (...args) => { launches.push(args); started = true; live = true; return child; },
     now: () => time, sleep: async () => { time += 100; },
     stat: () => ({ uid: 1000 }), read: path => path.endsWith("/stat") ? statLine(options.reused ? "8" : "7") : `0::${owner}\n`,
-    alive: () => live, stop: () => { stops++; if (!options.unknownStop) { live = false; child.exitCode = 0; child.emit("exit"); } },
+    alive: pid => { assert.equal(pid, child.pid); return live; }, stop: pid => { assert.equal(pid, child.pid); stops++; if (!options.unknownStop) { live = false; child.exitCode = 0; child.emit("exit"); } },
     async command(file, args) {
-      if (file === "ps") return "42\n";
+      if (file === "ps") { pgidQueries.push(args); return options.wrongPgid ? "43\n" : "42\n"; }
       if (!started) return options.occupied ? listener : "";
       if (!live) return "";
       if (args.includes("--cgroup")) return options.foreignListener ? listener + " cgroup:/foreign" : listener + ` cgroup:${group}`;
       return listener;
     },
   };
-  return { port: createOperatorWorker({ certificate: {} }, name, effects), drift: () => { owner = group + "/other"; }, stops: () => stops };
+  return { port: createOperatorWorker({ certificate }, name, effects), launches, pgidQueries, drift: () => { owner = group + "/other"; }, stops: () => stops };
 }
 test("#1104 new Worker Port: normal owned start/stop once; occupied/drift/filter/unknown retain and never retry", async () => {
   const good = workerFixture(); assert.equal(await good.port.start(), origin); assert.equal(good.port.isReady(), true);
+  assert.deepEqual(good.launches, [[process.execPath, [
+    resolve("node_modules/wrangler/bin/wrangler.js"), "dev", "--config", "tests/evaluation/wrangler.reservation.jsonc",
+    "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https", "--persist-to", ".wrangler/student-booking-evaluation",
+    "--https-key-path", "/owned/browser-home/server.key", "--https-cert-path", "/owned/browser-home/server.pem",
+  ], { cwd: resolve("."), env: cleanEnvironment("/owned"), detached: true, stdio: "ignore" }]]);
   assert.deepEqual(await good.port.stop(), { stopped: true, portClosed: true }); assert.equal(good.stops(), 1);
   await assert.rejects(good.port.stop()); assert.equal(good.stops(), 1);
+  assert.deepEqual(good.pgidQueries, Array.from({ length: 4 }, () => ["-o", "pgid=", "-p", "42"]));
+  const wrongPgid = workerFixture({ wrongPgid: true }); await assert.rejects(wrongPgid.port.start());
+  await assert.rejects(wrongPgid.port.stop()); await assert.rejects(wrongPgid.port.start());
+  assert.equal(wrongPgid.launches.length, 1); assert.equal(wrongPgid.stops(), 0);
   const occupied = workerFixture({ occupied: true }); await assert.rejects(occupied.port.start()); assert.equal(occupied.stops(), 0);
   const drift = workerFixture(); await drift.port.start(); drift.drift(); await assert.rejects(drift.port.stop()); assert.equal(drift.stops(), 0);
   const foreign = workerFixture({ foreignListener: true }); await assert.rejects(foreign.port.start()); assert.equal(foreign.stops(), 0);
@@ -482,7 +493,8 @@ test("#1160 shared preparation identifies each failing stage and disposes an acq
     const owned = new WeakMap();
     const prepare = runInNewContext(`${body}\nprepareTrustedBooking`, {
       check, failure: () => Error("FINITE_SECRET_CANARY"), preflight: async () => {},
-      process: { env: { TMPDIR: "/finite/home" } }, resolve, root: "/finite", persistence: "/finite/persist",
+      isBookingWranglerEntry: () => true, bookingWranglerEntry: "/finite/node_modules/wrangler/bin/wrangler.js",
+      process: { execPath: process.execPath, env: { TMPDIR: "/finite/home" } }, resolve, root: "/finite", persistence: "/finite/persist",
       present: () => false, readdirSync: () => [], mkdirSync() {}, directoryIdentity: () => ({}),
       owned, checkOwned: handle => owned.get(handle), proxyOptions: { configPath: "/finite/config" }, exec: async () => {},
       loadWrangler: async () => ({ getPlatformProxy: async () => ({ env: {}, dispose: async () => {} }) }),

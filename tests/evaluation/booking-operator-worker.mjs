@@ -4,7 +4,7 @@ import { readFileSync, lstatSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { promisify } from "node:util";
 import { root } from "./trusted-evaluation-seed.mjs";
-import { origin, persistence, proxyOptions } from "./trusted-booking-seed.mjs";
+import { bookingWranglerEntry, origin, persistence, proxyOptions } from "./trusted-booking-seed.mjs";
 import { bookingWorkerPreflight, bookingListenerRows } from "./trusted-booking-worker.mjs";
 import { demand, fail, procIdentity, sameProcess, userGroup } from "./booking-operator-unit.mjs";
 const exec = promisify(execFile);
@@ -45,7 +45,7 @@ export function createOperatorWorker(input, unitName, effects = runtime) {
       try {
         setup = effects.setup(input); self(); const end = effects.now() + 30000;
         await closed(end); setup.confirm();
-        child = effects.spawn(resolve(root, "node_modules/.bin/wrangler"), ["dev", "--config", relative(root, proxyOptions.configPath),
+        child = effects.spawn(process.execPath, [bookingWranglerEntry, "dev", "--config", relative(root, proxyOptions.configPath),
           "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https", "--persist-to", relative(root, persistence),
           "--https-key-path", input.certificate.key, "--https-cert-path", input.certificate.cert],
         { cwd: root, env: setup.env, detached: true, stdio: "ignore" });

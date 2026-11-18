@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile, spawnSync } from "node:child_process";
 import { readFileSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, linkSync, writeFileSync,
   lstatSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
@@ -6,6 +7,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import { migrations } from "./local-https-smoke.mjs";
 import { validation } from "./trusted-evaluation-seed.mjs";
 import { seedTrustedStudents } from "../fixtures/d1/trusted-student-seed.ts";
@@ -75,7 +77,8 @@ async function ownedFixture(baselineFault) {
   const boundaries = source.slice(source.indexOf("\nfunction checkOwned(handle)"));
   const code = (identities + boundaries).replaceAll("export ", "").replace(importLine, "").replace(prepareImport, 'await stage("wrangler-import", () => {});');
   const api = runInNewContext(`${code}\n({prepareTrustedBooking, inspectTrustedBooking, inspectTrustedBookingUnchanged})`, {
-    process: { env: { TMPDIR: home }, getuid: () => control.uid }, root: temp, persistence: persist, proxyOptions: options,
+    isBookingWranglerEntry: () => true, bookingWranglerEntry: resolve(temp, "node_modules/wrangler/bin/wrangler.js"),
+    process: { execPath: process.execPath, env: { TMPDIR: home }, getuid: () => control.uid }, root: temp, persistence: persist, proxyOptions: options,
     owned: new WeakMap(), resolve, readdirSync, realpathSync, mkdirSync, bookingD1, failure,
     lstatSync: path => { if (path === resolve(temp, ".wrangler")) events.push("owner"); return lstatSync(path); },
     check: ok => { if (!ok) throw failure(); },
@@ -388,7 +391,8 @@ test("#959 seed hook runs synchronously once after empty/absent gates and before
   for (const fault of ["", "preflight", "persist", "nonempty", "hook", "async-hook", "no-hook"]) {
     const events = [], owned = new WeakMap();
     const call = runInNewContext(`${prepare}\nprepareTrustedBooking`, {
-      process: { env: { TMPDIR: "fixture-tmp" } }, root: "fixture-root", persistence: "fixture-persist", owned,
+      isBookingWranglerEntry: () => true, bookingWranglerEntry: "/fixture/node_modules/wrangler/bin/wrangler.js",
+      process: { execPath: process.execPath, env: { TMPDIR: "fixture-tmp" } }, root: "fixture-root", persistence: "fixture-persist", owned,
       failure: () => new Error("TRUSTED_BOOKING_SEED_FAILED"),
       check: ok => { if (!ok) throw new Error("private-canary"); },
       preflight: async () => { events.push("preflight"); if (fault === "preflight") throw new Error("private-canary"); },
@@ -407,5 +411,70 @@ test("#959 seed hook runs synchronously once after empty/absent gates and before
     await assert.rejects(call(() => {}, hook), error => error.message === "TRUSTED_BOOKING_SEED_FAILED");
     assert.equal(events.filter(e => e === "hook").length, ["preflight", "persist", "nonempty", "no-hook"].includes(fault) ? 0 : 1);
     assert.equal(events.includes("migration"), ["", "no-hook"].includes(fault));
+  }
+});
+
+test("#1162 migration enters the fixed JS script without node on PATH and stops on a nonzero exit", async t => {
+  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "booking-cli-fixture-")));
+  t.after(() => rmSync(root, { recursive: true }));
+  const home = resolve(root, "home"), path = resolve(root, "empty-path");
+  const entryDir = resolve(root, "node_modules/wrangler/bin");
+  mkdirSync(home); mkdirSync(path); mkdirSync(entryDir, { recursive: true });
+  const entry = resolve(entryDir, "wrangler.js");
+  const env = { PATH: path, HOME: home, TMPDIR: home, XDG_CONFIG_HOME: home,
+    WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: resolve(home, "wrangler.log"), CI: "true" };
+  const configPath = resolve(root, "tests/evaluation/wrangler.reservation.jsonc");
+  const persistence = resolve(root, ".wrangler/student-booking-evaluation");
+  const source = readFileSync("tests/evaluation/trusted-booking-seed.mjs", "utf8");
+  const prepare = source.slice(source.indexOf("export async function prepareTrustedBooking"), source.indexOf("// Separate read-only proxy"))
+    .replace("export async function", "async function");
+  const checkEntry = source.slice(source.indexOf("export function isBookingWranglerEntry"), source.indexOf("async function preflight()"))
+    .replace("export function", "function");
+  const bin = resolve(root, "node_modules/.bin");
+  mkdirSync(bin);
+  const launcher = resolve(bin, "wrangler");
+  symlinkSync(entry, launcher);
+  const run = promisify(execFile);
+  for (const status of [0, 7, null]) {
+    let observation, cliOptions, cliError, calls = 0;
+    const stages = [];
+    writeFileSync(entry, `#!/usr/bin/env node
+console.log(JSON.stringify({ node: process.execPath, args: process.argv.slice(1), env: process.env, cwd: process.cwd() }));
+process.exitCode = ${status ?? 0};
+`, { mode: 0o700 });
+    assert.equal(spawnSync(entry, [], { env, timeout: 5000 }).status, 127);
+    if (status === null) {
+      renameSync(launcher, resolve(bin, "original"));
+      symlinkSync(home, launcher);
+    }
+    const call = runInNewContext(`${checkEntry}
+${prepare}\nprepareTrustedBooking`, {
+      process: { execPath: process.execPath, env }, root, persistence, bookingWranglerEntry: entry, resolve, realpathSync, lstatSync,
+      owned: new WeakMap(), failure, check: ok => { if (!ok) throw failure(); },
+      preflight: async () => {}, present: () => false, readdirSync, mkdirSync() {}, directoryIdentity: () => ({}),
+      proxyOptions: { configPath },
+      async exec(file, args, options) {
+        calls++; cliOptions = { ...options };
+        try { observation = JSON.parse((await run(file, args, { ...options, timeout: 5000 })).stdout); }
+        catch (error) { cliError = error; throw error; }
+      },
+    });
+    await assert.rejects(call(() => assert.fail("unexpected handoff"), undefined, (stage, action) => {
+      stages.push(stage);
+      if (stage === "repreflight-owner") throw failure(); // End the successful CLI case before the real proxy.
+      return action();
+    }), fixed);
+    if (status === null) {
+      assert.equal(calls, 0);
+      assert.deepEqual(stages, ["storage-owner", "migration-cli"]);
+      continue;
+    }
+    assert.equal(calls, 1);
+    assert.deepEqual(cliOptions, { cwd: root, env, timeout: 60000, maxBuffer: 1024 * 1024 });
+    assert.equal(cliError?.code, status || undefined, cliError?.stderr || cliError?.message);
+    if (cliError) observation = JSON.parse(cliError.stdout);
+    assert.deepEqual(observation, { node: process.execPath, env, cwd: root, args: [entry,
+      "d1", "migrations", "apply", "nssscdl-local-booking-evaluation", "--config", configPath, "--local", "--persist-to", persistence] });
+    assert.deepEqual(stages, status ? ["storage-owner", "migration-cli"] : ["storage-owner", "migration-cli", "repreflight-owner"]);
   }
 });
