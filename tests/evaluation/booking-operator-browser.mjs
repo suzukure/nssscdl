@@ -1,20 +1,27 @@
 // Passive human-operation observer: never clicks, fills, fetches, or replays.
 import { createHash } from "node:crypto";
-import { parsePreview, parseConfirm, parseHistory, parseCsrf, intervalLabel } from "../../src/web/model.ts";
+import { parsePreview, parseConfirm, parseHistory, parseCsrf, intervalLabel, moveMonth } from "../../src/web/model.ts";
 import { origin } from "./trusted-booking-seed.mjs";
 import { demand, bounded, fail } from "./booking-operator-unit.mjs";
 const preview = "/api/me/reservations/preview", confirm = "/api/me/reservations", csrf = "/api/auth/student/csrf";
 const assets = new Set(["/student", "/student.css", "/student.js", "/view.js", "/controller.js", "/model.js", "/favicon.ico"]);
+const schedulePath = /^\/api\/me\/schedule-months\/\d{4}-(0[1-9]|1[0-2])$/;
 export function humanBookingObservation(month, expectedCsrf) {
   let open = true, unknown = false, previews = 0, confirms = 0, token, reservation, history = false;
+  let scheduleRequested = false, initialUnavailableObserved = false;
+  const initialMonthPath = `/api/me/schedule-months/${moveMonth(month, -1)}`;
   const slot = { slotId: "seed-slot-bookable", startsAt: `${month}-15T10:00:00+09:00`, endsAt: `${month}-15T11:00:00+09:00` };
   return Object.freeze({
     request(path, method, body, headers) {
       try {
         demand(open && !unknown);
         if (method === "GET") {
-          demand(body === null && (assets.has(path) || path === confirm || path === csrf || /^\/api\/me\/schedule-months\/\d{4}-(0[1-9]|1[0-2])$/.test(path)));
-          return;
+          const schedule = schedulePath.test(path);
+          demand(body === null && (assets.has(path) || path === confirm || path === csrf || schedule));
+          if (!schedule) return false;
+          const initial = !scheduleRequested && previews === 0 && path === initialMonthPath;
+          scheduleRequested = true;
+          return initial;
         }
         demand(method === "POST" && headers.origin === origin && headers["content-type"] === "application/json" &&
           headers["x-csrf-token"] === expectedCsrf && (!Object.hasOwn(headers, "sec-fetch-site") || headers["sec-fetch-site"] === "same-origin"));
@@ -26,7 +33,7 @@ export function humanBookingObservation(month, expectedCsrf) {
         }
       } catch { unknown = true; open = false; throw fail(); }
     },
-    response(path, method, status, body, afterConfirm = reservation !== undefined) {
+    response(path, method, status, body, afterConfirm = reservation !== undefined, initialSchedule = false) {
       try {
         demand(!unknown);
         if (method === "POST" && path === preview) {
@@ -46,6 +53,12 @@ export function humanBookingObservation(month, expectedCsrf) {
             history = parsed.items.filter(r => r.reservationId === reservation.reservationId &&
               r.startsAt === slot.startsAt && r.endsAt === slot.endsAt && r.reservationState === "confirmed" && r.classification === "standard").length === 1;
           }
+        } else if (status === 404) {
+          const error = body?.error;
+          demand(initialSchedule && !initialUnavailableObserved && method === "GET" && path === initialMonthPath &&
+            error?.code === "SCHEDULE_MONTH_NOT_AVAILABLE" && error.retry === "none" &&
+            typeof error.message === "string" && error.message.length > 0);
+          initialUnavailableObserved = true;
         } else demand(status === 200 || path === "/favicon.ico" && status === 503);
       } catch { unknown = true; open = false; throw fail(); }
     },
@@ -76,9 +89,9 @@ export async function observeHumanBrowser(context, session, month, onFailure) {
       demand(!request.isNavigationRequest() || url.pathname === "/student" && navigation === 0);
       const method = request.method(), headers = await request.allHeaders();
       demand(!closed && !headers.authorization);
-      observation.request(url.pathname, method, method === "POST" ? request.postDataJSON() : request.postData(), headers);
+      const initialSchedule = observation.request(url.pathname, method, method === "POST" ? request.postDataJSON() : request.postData(), headers);
       const priorConfirm = method === "GET" && url.pathname === confirm ? confirmObservation : undefined;
-      requests.set(request, { path: url.pathname, method, priorConfirm }); await route.continue();
+      requests.set(request, { path: url.pathname, method, priorConfirm, initialSchedule }); await route.continue();
     } catch { bad(); try { await route.abort(); } catch { /* one teardown owns closure */ } }
   });
   await context.routeWebSocket("**/*", socket => { socket.close(); bad(); });
@@ -107,7 +120,7 @@ export async function observeHumanBrowser(context, session, month, onFailure) {
       if (api) demand(/^application\/json(?:;|$)/.test(headers["content-type"]));
       // The page can finish parsing 201 and load History before the observer parses 201.
       if (identity.priorConfirm) await identity.priorConfirm;
-      observation.response(identity.path, identity.method, response.status(), body, identity.priorConfirm !== undefined);
+      observation.response(identity.path, identity.method, response.status(), body, identity.priorConfirm !== undefined, identity.initialSchedule);
       completed.add(response.request());
     }, 5000).catch(bad);
     if (identity?.path === confirm && identity.method === "POST") confirmObservation = task;

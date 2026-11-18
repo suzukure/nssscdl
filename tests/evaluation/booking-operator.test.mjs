@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { intervalLabel } from "../../src/web/model.ts";
+import { errorResponse } from "../../src/http/application-error.ts";
 import { readFileSync, mkdtempSync, readdirSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync, spawn, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -174,10 +175,10 @@ test("#1104 cgroup empty requires kernel events plus all descendants, not absenc
   assert.throws(() => emptyGroup(group, { ...io, read: () => "populated 1\n" }));
   assert.ok(path.startsWith("/sys/fs/cgroup/user.slice/"));
 });
-function browserFixture() {
+function browserFixture(fixtureMonth = month) {
   const context = new EventEmitter(), page = new EventEmitter(), frame = {};
   let routeHandler, jar = [], forwarded = 0, denied = 0, failed = 0, navigations = 0;
-  const value = "a".repeat(42) + "A", observation = freshObservation();
+  const value = "a".repeat(42) + "A", observation = humanBookingObservation(fixtureMonth, csrf);
   const expectedCsrf = createHash("sha256").update("student-csrf-v1:" + value).digest("base64url");
   const tick = () => new Promise(done => setTimeout(done, 0));
   const network = async (path, method = "GET", data = null, status = 200, responseBody, foreign = false) => {
@@ -211,8 +212,18 @@ function browserFixture() {
   return { context, network, session: { cookie: () => ({ name: "__Host-student_session", value, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }) },
     observation, bad: () => { failed++; }, counts: () => ({ forwarded, denied, failed, navigations }) };
 }
-test("#1104 actual passive Browser adapter: Cookie before page, one navigation, unchanged route continue, human-only responses and final ID", async () => {
-  const f = browserFixture(), observer = await observeHumanBrowser(f.context, f.session, month, f.bad);
+const scheduleMonth = value => `/api/me/schedule-months/${value}`;
+const unavailableMonth = () => errorResponse("SCHEDULE_MONTH_NOT_AVAILABLE").json();
+test("#1158 TC-F-001-03: passive Browser adapter accepts initial December 404, January 200 and one booking with same-ID History", async () => {
+  const fixtureMonth = "2027-01";
+  const f = browserFixture(fixtureMonth), observer = await observeHumanBrowser(f.context, f.session, fixtureMonth, f.bad);
+  let releaseInitialBody;
+  const initialBodyPending = new Promise(resolve => { releaseInitialBody = resolve; });
+  await f.network(scheduleMonth("2026-12"), "GET", null, 404, initialBodyPending);
+  await f.network(scheduleMonth(fixtureMonth), "GET", null, 200, {
+    month: fixtureMonth, slots: [{ ...f.observation.slot, view: "bookable" }],
+  });
+  releaseInitialBody(await unavailableMonth());
   await f.network(previewPath, "POST", { slotId: f.observation.slot.slotId }, 200, previewBody(f.observation));
   let releaseConfirmBody;
   const confirmBodyPending = new Promise(resolve => { releaseConfirmBody = resolve; });
@@ -220,8 +231,35 @@ test("#1104 actual passive Browser adapter: Cookie before page, one navigation, 
   await f.network(confirmPath, "GET", null, 200, { items: [{ ...confirmBody(f.observation).reservation, attendanceState: "none" }], nextCursor: null });
   releaseConfirmBody(confirmBody(f.observation));
   observer.closeAdmission(); assert.equal(await observer.finish(), id);
-  assert.deepEqual(f.counts(), { forwarded: 4, denied: 0, failed: 0, navigations: 1 });
+  assert.deepEqual(f.counts(), { forwarded: 6, denied: 0, failed: 0, navigations: 1 });
   await f.network(confirmPath); assert.equal(f.counts().denied, 1); await assert.rejects(observer.finish());
+});
+test("#1158 passive Browser adapter rejects other failures, malformed responses and subsequent 404s", async () => {
+  const initialPath = scheduleMonth("2026-10");
+  const initialError = await unavailableMonth();
+  for (const [label, path, method, status, body, prior] of [
+    ["wrong month", scheduleMonth(month), "GET", 404, initialError],
+    ["wrong path", confirmPath, "GET", 404, initialError],
+    ["wrong method", initialPath, "HEAD", 404, initialError],
+    ["wrong code", initialPath, "GET", 404, await errorResponse("INVALID_REQUEST").json()],
+    ["invalid body", initialPath, "GET", 404, null],
+    ["missing message", initialPath, "GET", 404, { error: { code: initialError.error.code, retry: "none" } }],
+    ["wrong retry", initialPath, "GET", 404, { error: { ...initialError.error, retry: "reload" } }],
+    ["repeat 404", initialPath, "GET", 404, initialError, [initialPath, 404, initialError]],
+    ["navigation after 200", initialPath, "GET", 404, initialError, [scheduleMonth(month), 200, { month, slots: [] }]],
+    ...[401, 403, 503].map(status => [String(status), initialPath, "GET", status, initialError]),
+  ]) {
+    const f = browserFixture(), observer = await observeHumanBrowser(f.context, f.session, month, f.bad);
+    if (prior) {
+      const [priorPath, priorStatus, priorBody] = prior;
+      await f.network(priorPath, "GET", null, priorStatus, priorBody);
+      assert.equal(f.counts().failed, 0, label);
+    }
+    await f.network(path, method, null, status, body);
+    assert.equal(f.counts().failed, 1, label);
+    observer.closeAdmission();
+    await assert.rejects(observer.finish(), undefined, label);
+  }
 });
 test("#1104 actual Browser adapter blocks remote/Production before connection; unknown never becomes a normal result", async () => {
   const f = browserFixture(), observer = await observeHumanBrowser(f.context, f.session, month, f.bad);
