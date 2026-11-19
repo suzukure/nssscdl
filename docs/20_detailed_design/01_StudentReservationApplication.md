@@ -256,7 +256,7 @@ Session Cookieと取得GET / unsafe POSTのProduction正本は§10.2〜4、D1 Gu
 | 評価専用entrypoint / configで既存Adapterを明示合成する | 採用する。HTTPS local Worker / 隔離local D1へ既存4 API、Production StudentAccessGuardとProduction Repository / Transaction Adapterを接続する。exact file / command、cert / origin整合は後続で実証する。 |
 | 固定fake Guard / HTTP debug loginでBrowser操作する | 採用しない。D1本人解決・失効・Write predicateの証明にならず、認可迂回になる。既存単体mapping fixtureの用途をBrowser評価へ昇格しない。 |
 
-operator / trusted test setupだけが隔離DBへ架空Student / Account / Session / 公開Slotをseedする。Production migrations `0001〜0012`と既存Self Scope / single-batch Guardを再利用し、test-only番号をProduction番号として流用しない。Session tokenの生成・hash保存はD1 §8.2を満たし、test-owned BrowserContextへ§10.2属性のCookieを設定する。通常HTTPにseed / login入口を設けず、identity header / query / env、token allowlist、allow-all Guardで本人を注入しない。実利用者data・Production resource / credentialは使わない。
+operator / trusted test setupだけが隔離DBへ架空Student / Account / Session / 公開Slotをseedする。全Production migrations（[適用順の正本](../../migrations/README.md)）と既存Self Scope / single-batch Guardを再利用し、test-only番号をProduction番号として流用しない。Session tokenの生成・hash保存はD1 §8.2を満たし、test-owned BrowserContextへ§10.2属性のCookieを設定する。通常HTTPにseed / login入口を設けず、identity header / query / env、token allowlist、allow-all Guardで本人を注入しない。実利用者data・Production resource / credentialは使わない。
 
 cursor用鍵はoperator / trusted server setupでWeb CryptoのHMAC-SHA-256署名鍵を生成し、評価環境専用のserver-only `CryptoKey`を既存Codec constructorへ注入する。localではtest lifecycle内で保持し、Browserへ渡さず終了時に破棄する。remote provisioningは#537の承認済みsecret store手順の責務で、通常vars / Request / Query由来の鍵、source hardcode、Production鍵共有、client bundleへの混入を禁止する。setup権限を通常Student / Admin Roleに渡さない。Session / CSRF / HMAC key、メール・PIIをURL、Log、Screenshot / trace等のArtifact、証跡に残さない。
 

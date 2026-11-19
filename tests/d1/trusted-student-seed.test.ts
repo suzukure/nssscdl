@@ -36,9 +36,9 @@ const unchanged = async (before: Uint8Array) => {
   expect(before.every((byte, index) => byte === after[index]) && before.length === after.length).toBe(true);
 };
 beforeAll(async () => {
-  expect([...env.AUTH_MIGRATIONS, ...env.RESERVATION_MIGRATIONS].map((m: { name: string }) => m.name.slice(0, 4)))
-    .toEqual(Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(4, "0")));
-  await applyD1Migrations(db, env.RESERVATION_MIGRATIONS);
+  expect([...env.AUTH_MIGRATIONS, ...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS].map((m: { name: string }) => m.name.slice(0, 4)))
+    .toEqual(Array.from({ length: 13 }, (_, i) => String(i + 1).padStart(4, "0")));
+  await applyD1Migrations(db, [...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS]);
   await checkTrustedSeedIntegrity(db, validation);
   seed = await seedTrustedStudents(db, validation);
   const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

@@ -11,7 +11,7 @@ import { captureBookingBaseline, verifyBookingReadback, verifyBookingUnchanged,
 it("[#1000 / #937 / TC-F-003-01 / TC-NF-914-04 partial] real D1 no-cookie unchanged and positive readback", async () => {
   try {
     const db = env.AUTH_DB;
-    await applyD1Migrations(db, env.RESERVATION_MIGRATIONS);
+    await applyD1Migrations(db, [...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS]);
     const validation = { authSql: env.AUTH_INTEGRITY_SQL, reservationScans: env.RESERVATION_INTEGRITY_SCANS };
     const seed = await seedTrustedStudents(db, validation);
     const read = db.withSession("first-primary");
@@ -88,7 +88,7 @@ it("[#1000 / #937 / TC-F-003-01 / TC-NF-914-04 partial] real D1 no-cookie unchan
     await consumed(negativeBaseline);
     const tableNames = (await read.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != '_cf_METADATA' ORDER BY name")
       .all<{ name: string }>()).results.map((row) => row.name);
-    expect(tableNames.length).toBe(19); // Production 0001–0012 plus migration history.
+    expect(tableNames.length).toBe(22); // Production 0001–0013 plus migration history.
     const faults: BookingReadPort[] = tableNames.map((table) => seam((row) => {
       const rows = JSON.parse(String(row[table])) as Record<string, unknown>[];
       // Even a stored timestamp-only change must fail; empty tables cannot grow.

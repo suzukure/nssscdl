@@ -13,10 +13,10 @@ it("[#1081 / TC-F-003-01,05 / TC-F-005-01 / TC-NF-914-04 partial] joins Controll
   try {
     const db = env.AUTH_DB;
     const validation = { authSql: env.AUTH_INTEGRITY_SQL, reservationScans: env.RESERVATION_INTEGRITY_SCANS };
-    expect([...env.AUTH_MIGRATIONS, ...env.RESERVATION_MIGRATIONS].map((m: { name: string }) => m.name.slice(0, 4)))
-      .toEqual(Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(4, "0")));
+    expect([...env.AUTH_MIGRATIONS, ...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS].map((m: { name: string }) => m.name.slice(0, 4)))
+      .toEqual(Array.from({ length: 13 }, (_, index) => String(index + 1).padStart(4, "0")));
     stage = "apply-reservation-migrations";
-    await applyD1Migrations(db, env.RESERVATION_MIGRATIONS);
+    await applyD1Migrations(db, [...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS]);
     stage = "trusted-seed";
     const seed = await seedTrustedStudents(db, validation);
     const origin = "https://nssscdl.test";

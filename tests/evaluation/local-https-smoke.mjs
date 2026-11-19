@@ -28,7 +28,7 @@ const schemaQuery = `SELECT type, name, tbl_name, sql FROM sqlite_master
 
 export function migrations() {
   const names = readdirSync(join(root, "migrations")).filter((name) => name.endsWith(".sql")).sort();
-  assert.deepEqual(names.map((name) => name.slice(0, 4)), Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(4, "0")));
+  assert.deepEqual(names.map((name) => name.slice(0, 4)), Array.from({ length: 13 }, (_, i) => String(i + 1).padStart(4, "0")));
   return names;
 }
 
@@ -220,7 +220,7 @@ export async function run() {
     console.log(`checkpoint: ${await command("git", ["rev-parse", "HEAD"])}date=${new Date().toISOString()} Node=${process.version} Wrangler=4.146.0 OS=linux`);
     const openssl = (await command("openssl", ["version"])).trim();
     assert.match(openssl, /^OpenSSL [\d.]+/);
-    console.log(`TLS tool=${openssl.split(" ").slice(0, 2).join(" ")}; config=${config}; binding=EVALUATION_READ_DB; local-only placeholder; migrations=0001..0012`);
+    console.log(`TLS tool=${openssl.split(" ").slice(0, 2).join(" ")}; config=${config}; binding=EVALUATION_READ_DB; local-only placeholder; migrations=0001..0013`);
     stage = "certificate";
     const { key, cert, ca } = await createCertificate(temporary, command);
     console.log("certificate: IP SAN 127.0.0.1 / explicit trust / hostname verification passed");
@@ -247,7 +247,7 @@ export async function run() {
     };
     stage = "migration-schema";
     const before = inspect();
-    console.log("D1: 12 applied migrations / exact schema / empty business tables / FK+auth+12 reservation scans passed");
+    console.log("D1: 13 applied migrations / exact schema / empty business tables / FK+auth+12 reservation scans passed");
     stage = "listener";
     console.log(`command: wrangler dev --config ${config} --ip 127.0.0.1 --port 8788 --local-protocol https --persist-to ${persist} --https-key-path <temporary>/server.key --https-cert-path <temporary>/server.pem`);
     controller.signal.throwIfAborted();

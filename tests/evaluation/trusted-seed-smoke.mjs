@@ -83,7 +83,7 @@ export async function run(httpsProof = false, browserProof = false, failAfterPos
     await command(join(root, "node_modules/.bin/wrangler"), ["d1", "migrations", "apply", "nssscdl-local-read-only-evaluation",
       "--config", "tests/evaluation/wrangler.jsonc", "--local", "--persist-to", ".wrangler/student-read-only-evaluation"]);
     if (httpsProof) {
-      console.log(`checkpoint: head=${(await exec("git", ["rev-parse", "HEAD"], { env, timeout: browserProof ? Math.min(5000, remaining()) : 5000 })).stdout.trim()}; UTC=${new Date().toISOString()}; Node=${process.version}; Wrangler=4.146.0; config=tests/evaluation/wrangler.jsonc; EVALUATION_READ_DB; local-only; migrations=0001..0012`);
+      console.log(`checkpoint: head=${(await exec("git", ["rev-parse", "HEAD"], { env, timeout: browserProof ? Math.min(5000, remaining()) : 5000 })).stdout.trim()}; UTC=${new Date().toISOString()}; Node=${process.version}; Wrangler=4.146.0; config=tests/evaluation/wrangler.jsonc; EVALUATION_READ_DB; local-only; migrations=0001..0013`);
     }
     if (browserProof) {
       unit = new BrowserUnit(unitOptions);
@@ -134,7 +134,7 @@ export async function run(httpsProof = false, browserProof = false, failAfterPos
     }
     if (!safe && !managedRemoved) throw new Error("TRUSTED_EVALUATION_SEED_CLEANUP_FAILED; owned persistence retained; do not retry");
   }
-  console.log(browserProof ? "#914: same invocation unit no-live verified before release / port closed / run-owned HOME,NSS,cert,key,persist,temporary removed; formal Actions / full TC / Gate A-D remain separate" : httpsProof ? "#908: owned process groups stopped / port closed / owned persist and temporary cert/log removed; local HTTPS partial evidence only; Browser/Gate A-D unverified" : "#906: Node 24 / Wrangler 4.146.0 / EVALUATION_READ_DB / CLI persist-to vs proxy v3 / 12 migrations / actual persistent seed and separate-proxy reads / hash only / repeat refusal / disposal and owned cleanup passed; local setup partial evidence only");
+  console.log(browserProof ? "#914: same invocation unit no-live verified before release / port closed / run-owned HOME,NSS,cert,key,persist,temporary removed; formal Actions / full TC / Gate A-D remain separate" : httpsProof ? "#908: owned process groups stopped / port closed / owned persist and temporary cert/log removed; local HTTPS partial evidence only; Browser/Gate A-D unverified" : "#906: Node 24 / Wrangler 4.146.0 / EVALUATION_READ_DB / CLI persist-to vs proxy v3 / 13 migrations / actual persistent seed and separate-proxy reads / hash only / repeat refusal / disposal and owned cleanup passed; local setup partial evidence only");
   if (failAfterPositive && !intentionalConfirmed) throw failure();
   return !intentionalConfirmed;
 }

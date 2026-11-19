@@ -18,6 +18,7 @@ Production D1 schemaの正本は番号順に一度だけ適用するversioned mi
 | `0010_management_details.sql` | AdminHold / GroupLessonの1対1詳細参照 |
 | `0011_audit_notifications.sql` | 成功Audit・Intent・初回配送Outbox |
 | `0012_reservation_indexes.sql` | 予約系Index・予約確認Intentのpartial UNIQUE |
+| `0013_student_provider_identity.sql` | 生徒連絡先・Google stable binding・登録mode singleton |
 
 #867は詳細設計 §2〜3のProduction予約DDLを追加し、`command_guards`を再作成・再定義せず再利用する。
 `tests/fixtures/d1/migrations/`の番号・test-only schemaは独立であり、Productionの適用履歴へ流用しない。
@@ -38,7 +39,11 @@ Studentと初期SecurityAccessの同一batch作成、発行前後のGuard、停�
 
 `npm run d1:local`はtest-only設定の2つの隔離local DBへ適用する。
 `npm run test:d1`の共通setupはProduction認証 `0001`〜`0006`を`AUTH_DB`へ適用し、
-予約migration testだけが同じfile-isolated DBへProduction予約 `0007`〜`0012`を追加適用する。
+予約migration testは同じfile-isolated DBへProduction予約 `0007`〜`0012`を追加適用する。
+#1173は詳細設計 §9.1の連絡先・binding・登録modeのみを追加する。初期mode行の投入・backfillはせず、欠損をopenと解釈しない。
+`tests/d1/student-provider-identity-migration.test.ts`は既存の有効な認証・予約行を保持して`0013`を追加適用し、DDL・制約・Index・既存Integrityを検証する。
+全Production schemaを要求する隔離評価の履歴・fingerprint・空table・readback検査も`0013`まで同期し、従来の認証のみ・予約のみのmigration試験は独立のままとする。
+これはlocal D1の部分証拠であり、Provider接続、登録判定、Account紐付けや削除Command、実環境への適用を証明しない。
 既存Preview testの予約fixture適用履歴は維持する。
 本変更はProduction binding / route / deploy / Provider flow / auth Adapterを接続しない。
 対象環境での検証・activation Gateは詳細設計 §8.6を正とする。

@@ -12,9 +12,9 @@ const count = async () => {
     .all<{ name: string }>()).results;
   return Promise.all(tables.map(async ({ name }) => sql(`SELECT COUNT(*) AS n FROM ${name}`).first<number>("n")));
 };
-beforeAll(async () => { await applyD1Migrations(db, env.RESERVATION_MIGRATIONS); });
+beforeAll(async () => { await applyD1Migrations(db, [...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS]); });
 
-it.each(["student_session_identity_is_immutable", "ix_slots_month_start"])(
+it.each(["student_session_identity_is_immutable", "ix_slots_month_start", "ix_google_bindings_account"])(
   "[#898 seed fail-closed] missing/changed schema object %s is rejected before writing", async (name) => {
     const object = await sql("SELECT type, sql FROM sqlite_master WHERE name=?").bind(name).first<{ type: string; sql: string }>();
     await sql(`DROP ${object!.type} ${name}`).run();
@@ -40,6 +40,15 @@ it("[#898 seed fail-closed] unknown table is rejected, not reset or silently ign
     expect(await sql("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='unknown_seed_state'").first("n")).toBe(1);
     expect((await count()).every((n) => n === 0)).toBe(true);
   } finally { await sql("DROP TABLE unknown_seed_state").run(); }
+});
+
+it("[#1173 seed fail-closed] a pre-existing registration mode is not an empty DB", async () => {
+  await sql("INSERT INTO student_registration_settings VALUES (1,'invitation_only')").run();
+  try {
+    await expect(seedTrustedStudents(db, validation)).rejects.toThrow("TRUSTED_LOCAL_SEED_FAILED");
+    expect(await sql("SELECT mode FROM student_registration_settings").first("mode")).toBe("invitation_only");
+    expect(await sql("SELECT COUNT(*) AS n FROM students").first("n")).toBe(0);
+  } finally { await sql("DELETE FROM student_registration_settings").run(); }
 });
 
 it("[#898 seed fail-closed] absent reservation migrations cannot be mistaken for the full Production schema", async () => {
