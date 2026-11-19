@@ -809,10 +809,17 @@ async function finiteProgressOwner(outcome) {
   const source = readFileSync("tests/evaluation/booking-operator.mjs", "utf8");
   const body = source.slice(source.indexOf("async function owner("), source.indexOf("\nif (process.argv[1]"));
   const processPort = new EventEmitter(), bridge = new EventEmitter(), calls = [];
-  let trace = "", captures = 0, sent = 0, terminal = false, stopped = false;
+  let trace = "", captures = 0, sent = 0, terminal = false, stopped = false, terminalSamples = 0, clientSignals = 0, now = 0;
+  const clientRetained = outcome === "failed-unit" || outcome === "client-timeout";
   Object.assign(processPort, { umask() {}, env: { TMPDIR: "/finite/home" }, getuid: () => 1000, platform: "linux",
     version: "v24.0.0", argv: [null, null, null, null, null, name], stdin: new PassThrough() });
-  bridge.stdout = new EventEmitter(); bridge.exitCode = null;
+  bridge.stdout = Object.assign(new EventEmitter(), { destroy() {} });
+  bridge.exitCode = null; bridge.signalCode = null;
+  bridge.pid = 43; bridge.unref = () => {};
+  bridge.kill = signal => {
+    assert.equal(signal, "SIGTERM"); clientSignals++;
+    if (outcome !== "client-timeout") { bridge.signalCode = signal; bridge.emit("exit", null, signal); }
+  };
   bridge.stdin = Object.assign(new EventEmitter(), {
     write(line, done) {
       assert.deepEqual(JSON.parse(line), { cookie: "FINITE_SECRET_SESSION", month });
@@ -826,15 +833,23 @@ async function finiteProgressOwner(outcome) {
         }
       });
     },
-    end() {},
+    end() { if (!clientRetained && bridge.exitCode === null) { bridge.exitCode = 0; bridge.emit("exit", 0); } },
+    destroy() {},
   });
   const operatorPath = "/finite/tests/evaluation/booking-operator-child.mjs";
   const versions = { wrangler: "4.146.0", "playwright-core": "1.64.0", typescript: "6.0.3" };
   const owner = runInNewContext(`(${body})`, {
-    process: processPort, join, performance: { now: () => 0 }, budget, setTimeout, clearTimeout,
+    process: processPort, join, performance: { now: () => now }, budget, clearTimeout,
+    setTimeout(action, ms) {
+      if (ms <= 100) { now += ms; queueMicrotask(action); return; }
+      return setTimeout(action, ms);
+    },
     randomBytes: () => Buffer.from("a".repeat(32), "hex"), root: "/finite", console,
     demand: assert.ok, fail: () => Error("FINITE_SECRET_ERROR"), listenOperatorInput, userGroup, parseUnit, unitProperties,
-    guiEnvironment: value => value, procIdentity: pid => ({ pid, start: "7", group }), sameProcess: assert.deepEqual,
+    guiEnvironment: value => value, procIdentity: pid => {
+      if (terminal && outcome === "pid-gone") throw Object.assign(Error("finite"), { code: "ENOENT" });
+      return { pid, start: "7", group };
+    }, sameProcess: assert.deepEqual,
     openProgress: () => ({ ...progressRecorder("owner", line => { trace += line; }), close() {} }),
     present: () => false, readdirSync: () => [], realpathSync: value => value === "/proc/42/exe" ? processPort.execPath : value,
     lstatSync: () => ({ mode: 0o700, isFile: () => true }),
@@ -842,7 +857,9 @@ async function finiteProgressOwner(outcome) {
       path.endsWith("cgroup.controllers") ? "cpu" : path.endsWith("/cmdline") ? [operatorPath, name].join("\0") :
       path.includes("package") ? JSON.stringify({ version: versions[path.split("/").at(-2)], devDependencies: versions,
         packages: Object.fromEntries(Object.entries(versions).map(([key, version]) => ["node_modules/" + key, { version }])) }) : "{}",
-    verifyStudentAssets() {}, migrations() {}, verifyOperatorBuild: async () => undefined, bounded: action => Promise.resolve().then(action),
+    verifyStudentAssets() {}, migrations() {}, verifyOperatorBuild: async () => undefined,
+    bounded: (action, ms) => ms === 1000 && clientRetained && (!clientSignals || outcome === "client-timeout")
+      ? Promise.reject(Error("finite client wait deadline")) : Promise.resolve().then(action),
     mkdirSync() { captures++; }, rmSync: () => assert.fail("retention is mandatory"),
     supply: { checkBookingEnvironment() {}, checkDirectoryIdentity() {}, checkOwnedTree() {}, directoryIdentity: () => ({}),
       proxyOptions: { configPath: "/finite/config" }, persistence: "/finite/persist",
@@ -879,13 +896,20 @@ async function finiteProgressOwner(outcome) {
         calls.push("attest");
         return { stdout: unitText({ ...duration, MainPID: outcome === "identity" ? "43" : "42" }) };
       }
-      return { stdout: unitText({ ...duration, SubState: outcome === "failed-unit" ? "failed" : "exited",
-        ActiveState: outcome === "failed-unit" ? "failed" : "active", MainPID: "0", ExecMainCode: "1", ExecMainStatus: "0" }) };
+      if (++terminalSamples === 1 && outcome === "pid-gone") return { stdout: unitText(duration) };
+      if (outcome === "deadline" || (terminalSamples === 1 && outcome === "transition")) return { stdout: unitText({ ...duration,
+        ActiveState: "deactivating", SubState: "stop-post", MainPID: "0", ExecMainCode: "1", ControlGroup: "" }) };
+      if (terminalSamples === 1 && outcome === "replaced") return { stdout: unitText({ ...duration,
+        ActiveState: "deactivating", SubState: "stop-post", MainPID: "0", ExecMainCode: "1", ControlGroup: "", InvocationID: "c".repeat(32) }) };
+      return { stdout: unitText({ ...duration, SubState: clientRetained ? "failed" : "exited",
+        ActiveState: clientRetained ? "failed" : "active", MainPID: "0", ExecMainCode: "1", ExecMainStatus: "0" }) };
     },
   });
   processPort.execPath = "/node";
-  await owner("a".repeat(40), {}, false, "/finite");
-  return { trace, captures, sent, calls };
+  const result = owner("a".repeat(40), {}, false, "/finite");
+  if (outcome === "client-timeout") await assert.rejects(result, /finite client wait deadline/);
+  else await result;
+  return { trace, captures, sent, calls, terminalSamples, clientSignals };
 }
 
 test("#1164 owner uses the attested pipe once, never stops a failed or unknown unit and retains assets", async () => {
@@ -902,6 +926,25 @@ test("#1164 owner uses the attested pipe once, never stops a failed or unknown u
   assert.equal(failed.sent, 1);
   assert.deepEqual(failed.calls, ["spawn", "attest"]);
   assert.equal(parseProgress("owner", failed.trace).firstCleanupFailure, "unit-terminal");
+  assert.equal(failed.clientSignals, 1);
+  for (const outcome of ["pid-gone", "transition"]) {
+    const result = await finiteProgressOwner(outcome);
+    assert.equal(result.trace, good.trace);
+    assert.equal(result.terminalSamples, 4);
+    assert.equal(result.clientSignals, 0);
+  }
+  const deadline = await finiteProgressOwner("deadline");
+  assert.equal(deadline.terminalSamples, 100);
+  assert.equal(parseProgress("owner", deadline.trace).firstCleanupFailure, "unit-terminal");
+  assert.ok(!deadline.calls.includes("stop"));
+  const timedOutClient = await finiteProgressOwner("client-timeout");
+  assert.equal(timedOutClient.clientSignals, 1);
+  assert.equal(parseProgress("owner", timedOutClient.trace).firstCleanupFailure, "unit-terminal");
+  assert.ok(!timedOutClient.calls.includes("stop"));
+  const replaced = await finiteProgressOwner("replaced");
+  assert.equal(parseProgress("owner", replaced.trace).firstCleanupFailure, "unit-terminal");
+  assert.equal(replaced.terminalSamples, 1);
+  assert.ok(!replaced.calls.includes("stop"));
   const identity = await finiteProgressOwner("identity");
   assert.equal(identity.sent, 0);
   assert.deepEqual(identity.calls, ["spawn", "attest"]);
