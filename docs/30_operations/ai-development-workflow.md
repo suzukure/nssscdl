@@ -2,7 +2,7 @@
 
 ## 目的
 
-Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上で協調させる。Issueを検討と作業の正本、Pull Requestを成果物とレビュー対話の正本にする。
+Codex/OpenAIを開発者、Claudeを独立レビューアーとしてGitHub上で協調させる。Issueを検討・作業・調査経緯の正本、Pull Requestを正式採用する成果物とレビュー対話の正本にする。一時的な原因調査では[原因未特定デバッグの同一Draft PR反復](#原因未特定デバッグの同一draft-pr反復1027)に従い、ローカルや共有branchも利用できる。
 
 GitHub上に新規投稿・表示する人間向けのIssue / PR本文・コメント・review・ラベル説明・Actions診断・Job Summaryは原則日本語とする。過去のIssue / PR / comment / review / commitは遡って書き換えない。command、label、branch名、reason code、state、schema / JSON key、exact marker、pause record、resume action valueなどの機械可読契約は翻訳しない。外部システムの原文エラーを証拠として残す場合は原文を保持し、日本語で意味と確認先を説明する。Discord通知本文と停止・再開の状態契約は各既存契約に従う。
 
@@ -88,6 +88,8 @@ Q2 / Q3の影響を、後継Issueの存在やIdeaという名称で回避して�
 ### current implementation contractとDoDの維持
 
 `/codex develop` 投入時点の[current implementation contract](#issue本文におけるcurrent-implementation-contract)を作業scopeの基準とする。AIは実装中に発見した改善候補を理由として、新しいAcceptance Criteria / Done条件 / 検証義務を自律的に追加しない。既存契約を満たすために必要な修正・検証と、新しい完了条件の追加を区別する。
+
+原因調査だけをadmissionした場合は判断材料と調査証拠の記録をDoneとし、恒久的な実装・正式受入のDoneと区別する。調査コードのmain反映を一律に要求しない。経路の選択と切替えは[原因未特定デバッグの同一Draft PR反復](#原因未特定デバッグの同一draft-pr反復1027)に従う。既に実装や正式実証をDoneに含む現在契約は無断で変更しない。
 
 現在契約そのものを変更する必要が判明した場合は、要求変更・scope変更・人間判断等の既存契約に従って停止し、人間の必要な判断をIssue本文へ反映してから再開する。本節は #219 の人間判断待ち・pause/resume状態モデルを再設計せず、新しい停止reasonや自動再開経路を追加しない。
 
@@ -953,15 +955,15 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 
 #### 原因未特定デバッグの同一Draft PR反復（#1027）
 
-原因がまだ特定されておらず、同じ失敗領域の観測・切り分けを繰り返す間は、**診断を1回追加するごとに独立PRをreviewしてmainへmergeすることを標準としない**。先に[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)で既存証拠を使い、診断が必要なら関連Issueを判断・経緯の正本として、同一のレビュー前Draft PRブランチで仮説→最小の固定非機密観測→有限検証→結果の解釈を反復する。ローカルの新開発環境は前提にせず、既存のGitHub Actionsを利用する。通常の製品実装・独立したmain-safeな契約変更・原因確定済み修正は[Issueの分割単位](#issueの分割単位)および[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)に従う。
+原因がまだ特定されておらず、同じ失敗領域の観測・切り分けを繰り返す間は、**診断を1回追加するごとに独立PRをreviewしてmainへmergeすることを標準としない**。#1027の判断をWork＋Codex Localにも適用し、コード共有、実行前の安全性確認、正式採用を別々に判断する。先に[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)で既存証拠を使い、必要な診断は関連Issueを判断・経緯の正本として、仮説→最小の固定非機密観測→有限検証→結果の解釈を反復する。通常の製品実装・独立したmain-safeな契約変更・原因確定済み修正は[Issueの分割単位](#issueの分割単位)および[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)に従う。
 
-1. **入口と書込者を固定**：最新main、対象Issue、既存PR/branch、失敗runのHEAD/attempt、稼働中のCodex writer・review follow-up・human pause/停止ラベルを照合する。既存のレビュー前Draftで書込権限とownerが明確ならそのbranchに変更を集約し、競合するwriterがある場合は操作しない。通常の `ai/issue-<番号>` はdeveloper Appの所有境界を維持する。別の人間所有調査branchが必要ならIssueに紐づくDraft PRを作り、既存Appのbranch名・resume契約を偽装しない。GitHub Issueを未決の仮説と決定の正本にして、観測のたびに子IssueやPRを量産しない。
-2. **Draftのまま切り分ける**：既存の非機密log/artifactと差分不要な静的調査を先に使う。追加観測が必要な場合は次回判別したい複数の関連状態を一括設計し、同一Draftで変更・有限fixture・現在PR HEADの通常Product CI/checksを反復する。Product CIは `pull_request` のPR HEADをcheckoutするため、CIを走らせるだけならmainへのmergeは不要である。run ID/attempt/HEADと「何が判明したか／未証明か」を既存Issueへ残す。Draftの `synchronize` はClaude Review開始条件ではなく、Ready化するまでは有料独立reviewを要求しない。ただし他のActions/AI Develop/CIの費用はゼロとはみなさず、根拠のないpush・追加paid call・同条件replayは避ける。
-3. **通常CIと正式な実環境Proofを分離**：通常の有限CI通過は、実Chrome/Worker/D1/cleanupや安全な実環境結果の証明ではない。信頼境界・cleanup・所有権・権限・timeout・test oracleを変更した未レビューのPR-head scriptを「信頼済み証明器」として採用しない。正式Proofに必要なコードは既存trusted mainの検証器を優先し、変更が不可避なら既存のレビュー/人間Gateを先に成立させる。特に一時workflow付き実Chromeなどのone-shotは、調査Draftの更新や通常CIの成功から実行許可を導かず、対象・予算・HEAD・run/attempt・停止/復旧条件を個別承認する。既存 `opened && run_attempt=1`、fail-closed、no-retry、Confirm再送禁止、owned cleanup、secret非反射を維持し、許可のない `synchronize`/rerun/再PRで正式Proofを再発火させない。一時Proof PRは元workflowをbyte完全復元して差分0を確認し、**未mergeでClose**する。
-4. **結果が確定してから一度レビュー**：原因を特定し変更が必要なら、試行ログ、temporary workflow、不要な診断分岐・テスト用緩和を最終差分から取り除き、必要な回帰fixtureと実装・文書を整合させる。複数branchに分かれた一時Proof成果をそのままmainへmergeせず、通常の実装PRにクリーンな差分を集約する。最新mainとの差分・scope/contract/stop状態・現在HEADの正式CI/Traceabilityを照合してからReady for reviewとし、Claudeの独立reviewと既存merge gateを最終HEADに適用する。証拠に未確認が残るなら成功扱いせず、差分不要と判明したらIssueへcheckpointして一時Draftを未merge Closeする。
-5. **逸脱時の停止条件**：途中で新たな責務、製品要求判断、保護されたproof topology、安全な所有権確認、権限/Secrets、repository-write、認証/外部副作用の変更が必要になった場合はDraft反復を理由に実行・審査を省略しない。[Work Admission Control](#work-admission-control)と既存scope/human pauseへ戻り、独立したmain-safe契約を先行確定すべき場合だけIssue/PRを分割する。試行回数を増やしても判断材料が増えなければ前節の方式再評価を行う。
+1. **入口・経路・書込者を固定**：最新main、対象Issue、既存PR/branch、失敗runのHEAD/attempt、稼働中のCodex writer・review follow-up・human pause/停止ラベルを必要な範囲で照合する。既存の非機密log/artifactと差分不要な静的調査を先に使う。単一環境で完結する調査はローカル、WorkとCodex Local等でコード共有が必要なら同一の許可された調査branchを利用し、通常ActionsによるCIやPR上のレビューが必要な場合にIssueに紐づくDraft PRを利用する。既存の適格なレビュー前Draftがあればそのbranchへ集約する。共有だけのためにPR作成・Ready化・独立review・main mergeを要求しない。通常の `ai/issue-<番号>` はdeveloper Appの所有境界を維持し、他の調査branchでその名前・resume契約を偽装しない。書込権限・owner・実行許可・停止状態が明確でwriter競合がない場合だけ操作する。Codex自身のcommit/push/GitHub操作禁止を維持し、許可された開発補助の代理操作または必要な人間操作を用いる。branch/PRの作成・更新前にはtriggerと実行許可を確認し、副作用のあるworkflowを無断で発火させない。
+2. **同一調査で切り分ける**：追加観測が必要な場合は次回判別したい複数の関連状態を一括設計し、同一のローカル作業・共有branchまたはレビュー前Draftで必要な有限fixture・検証を反復する。GitHubの通常Product CIが必要なら `pull_request` のPR HEADをcheckoutする既存CIを利用でき、CIのためだけにmainへmergeしない。Draftの `synchronize` はClaude Review開始条件ではなく、調査の反復ごとにReady化・有料独立reviewを要求しない。通常のCIとレビューを実行する場合はそれぞれ既存手順に従う。他のActions/AI Develop/CIの費用はゼロとはみなさず、根拠のないpush・追加paid call・同条件replayを避ける。対象SHA（未commitの場合は差分と基準SHA）、実行条件、必要なrun ID/attempt、「何が判明したか／未証明か」を既存Issueへ非機密のcheckpointとして残し、観測ごとに子IssueやPRを量産しない。
+3. **一時診断と正式な実環境Proofを分離**：通常の有限CI通過は、実Chrome/Worker/D1/cleanupや安全な実環境結果の証明ではない。仮説の識別だけを目的とする実機診断は、対象差分・実行するHEAD/条件を照合し、必要な安全性が実行前に確認でき、既存の実行許可が成立する場合に限り未mergeの調査コードを利用できる。その確認では影響に応じ、秘密非反射・権限/認証・本番データ隔離・所有照合・停止/cleanup・timeout・副作用を確認し、必要な有限検証、独立review、人間承認を先に行う。branch共有、通常CI成功、レビュー承認はそれ自体では実機実行許可を意味しない。診断を一時と称して個別契約の既存review/main反映・承認条件や技術的な実行拒否を省略/迂回しない。それらの変更が必要なら現行手順に従って別途判断する。診断結果は調査条件での証拠とし、正式Proofの成功・製品受入の証拠へ昇格させない。信頼境界・cleanup・所有権・権限・timeout・test oracleを変更した未レビューのPR-head scriptを「信頼済み証明器」として採用しない。正式Proofには既存trusted mainの検証器を優先し、変更が不可避なら既存のレビュー/人間Gateを先に成立させる。特に一時workflow付き実Chromeなどのone-shotでは、対象・予算・HEAD・run/attempt・停止/復旧条件を個別承認し、既存 `opened && run_attempt=1`、fail-closed、no-retry、Confirm再送禁止、owned cleanup、secret非反射を維持する。許可のない `synchronize`/rerun/再PRで正式Proofを再発火させない。一時Proof PRは元workflowをbyte完全復元して差分0を確認し、**未mergeでClose**する。
+4. **結果の確定と正式採用を分離**：調査のDoneは仮説の識別・次の判断に必要な観測事実と未確認事項の記録とし、main反映を完了条件としない。恒久差分が不要なら既存Issueにcheckpointし、必要な診断差分は証拠として保持し、不要なDraftは未merge Closeする。恒久的な変更が必要なら試行ログ、temporary workflow、不要な診断分岐・テスト用緩和を最終差分から取り除き、必要な回帰fixtureと実装・文書を整合させる。複数branchに分かれた一時Proof成果をそのままmainへmergeせず、通常の実装PRにクリーンな差分を集約する。最新mainとの差分・scope/contract/stop状態・現在HEADの適用される正式CIを照合してからReady for reviewとし、正式CI/Traceability、Claudeの独立reviewと既存merge gateを最終HEADに適用する。未確認の証拠は成功扱いせず、調査に使ったHEADのreview/CIを変更後HEADへ流用しない。
+5. **逸脱時の停止条件**：途中で新たな責務、製品要求判断、保護されたproof topology、安全な所有権確認、権限/Secrets、repository-write、認証/外部副作用の変更が必要になった場合は調査反復を理由に実行・審査を省略しない。[Work Admission Control](#work-admission-control)と既存scope/human pauseへ戻り、独立したmain-safe契約を先行確定すべき場合だけIssue/PRを分割する。試行回数を増やしても判断材料が増えなければ前節の方式再評価を行う。
 
-効果は後続の自然なデバッグ案件の既存Issueで、レビュー/merge・AI Develop・実証runの回数と残った未確認事項を必要な範囲で振り返る。人工paid A/B、新台帳、新Workflow/runner、Secrets/Ruleset変更を本運用の前提にしない。#930の過去の証拠・実Chromeの個別承認は遡及変更せず、製品POL / BR / REQ / AC / TC / CON / OOSの意味は変えない。
+効果は後続の自然なデバッグ案件の既存Issueで、レビュー/merge・AI Develop・実証runの回数、人間操作負担と残った未確認事項を必要な範囲で振り返る。人工paid A/B、新台帳、新Workflow/runner、Secrets/Ruleset変更を本運用の前提にしない。#930の過去の証拠・実Chromeの個別承認および既存の個別診断契約は遡及変更せず、製品POL / BR / REQ / AC / TC / CON / OOSの意味は変えない。
 
 #### Issue起点developerのCodex実行境界
 
