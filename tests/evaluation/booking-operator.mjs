@@ -13,6 +13,7 @@ import { verifyStudentAssets } from "./verify-student-assets.mjs";
 import { migrations } from "./local-https-smoke.mjs";
 import { checkFiles } from "./trusted-seed-process.mjs";
 import { budget, bounded, demand, fail, userGroup, parseUnit, unitProperties, emptyGroup, procIdentity, sameProcess, guiEnvironment } from "./booking-operator-unit.mjs";
+import { directStage, openProgress, operatorProgressReport, progressPath, readProgress } from "./booking-operator-progress.mjs";
 import { diagnosePreparation, preparationReport } from "./booking-operator-diagnostic.mjs";
 const exec = promisify(execFile), script = fileURLToPath(import.meta.url);
 const present = path => { try { lstatSync(path); return true; } catch (e) { if (e.code === "ENOENT") return false; throw fail(); } };
@@ -87,21 +88,37 @@ export async function useOperator(ports) {
   }
 }
 
-async function owner(head, gui, diagnostic = false) {
+async function owner(head, gui, diagnostic = false, progressDirectory) {
   process.umask(0o077);
   const deadline = performance.now() + budget.total, preparationEnd = performance.now() + budget.prepare;
   const env = process.env, temporary = env.TMPDIR;
-  demand(readFileSync("/proc/self/cgroup", "utf8") === `0::${userGroup(process.getuid(), process.argv[5])}\n`);
-  supply.checkBookingEnvironment(env, JSON.parse(readFileSync(supply.proxyOptions.configPath, "utf8")),
-    [root, join(root, "tests"), join(root, "tests/evaluation")].flatMap(dir => readdirSync(dir)));
-  const temporaryIdentity = supply.directoryIdentity(temporary);
-  demand((lstatSync(temporary).mode & 0o777) === 0o700);
-  if (!diagnostic) gui = guiEnvironment(gui);
+  let aborted = false;
+  if (progressDirectory) {
+    demand(temporary === join(progressDirectory, "home"));
+    supply.directoryIdentity(progressDirectory);
+  }
+  const progress = progressDirectory && openProgress(progressDirectory, "owner", () => aborted);
+  const stage = progress?.stage ?? directStage;
+  let temporaryIdentity;
+  try {
+    stage("controller-entry", () => {
+      demand(readFileSync("/proc/self/cgroup", "utf8") === `0::${userGroup(process.getuid(), process.argv[5])}\n`);
+      supply.checkBookingEnvironment(env, JSON.parse(readFileSync(supply.proxyOptions.configPath, "utf8")),
+        [root, join(root, "tests"), join(root, "tests/evaluation")].flatMap(dir => readdirSync(dir)));
+      temporaryIdentity = supply.directoryIdentity(temporary);
+      demand((lstatSync(temporary).mode & 0o777) === 0o700);
+      if (!diagnostic) gui = guiEnvironment(gui);
+    });
+  } catch (error) {
+    if (!progress) throw error;
+    progress.end(); progress.close();
+    return;
+  }
   const name = `nssscdl-operator-${randomBytes(16).toString("hex")}.service`, group = userGroup(process.getuid(), name);
   const managerEnv = { PATH: env.PATH, HOME: temporary, XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
     DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
   let invocation, main, unitStarted = false, stopAttempted = false, bridge, browserHome, persistIdentity, parentIdentity, runtimeSeconds;
-  let aborted = false, endInteraction, reservationId, finishedAt, cleanupEnd = deadline;
+  let endInteraction, reservationId, finishedAt, cleanupEnd = deadline;
   const interrupt = () => { aborted = true; bridge?.stdin.end(); endInteraction?.(); };
   const releaseInput = listenOperatorInput(interrupt);
   const remaining = () => { demand(!aborted && performance.now() < deadline); return deadline - performance.now(); };
@@ -119,9 +136,12 @@ async function owner(head, gui, diagnostic = false) {
   };
   const stop = async () => {
     demand(unitStarted && invocation && !stopAttempted); stopAttempted = true;
-    const state = parseUnit(await show(), expected(), "stop");
+    const textBeforeStop = await show();
+    if (progress) parseUnit(textBeforeStop, expected(), true);
+    const state = parseUnit(textBeforeStop, expected(), "stop");
     if (state.pid) sameProcess(main, procIdentity(state.pid, group));
     // Identity is freshly revalidated. Exactly one manager stop, even on unknown.
+    if (progress) demand(!aborted && performance.now() < cleanupEnd);
     await command("systemctl", ["--user", "stop", name], true);
     const text = await command("systemctl", ["--user", "show", name, "--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=InvocationID"], true);
     const data = Object.fromEntries(text.trim().split("\n").map(line => { const p = line.indexOf("="); return [line.slice(0, p), line.slice(p + 1)]; }));
@@ -167,25 +187,33 @@ async function owner(head, gui, diagnostic = false) {
         mkdirSync(join(temporary, "browser-home"), { mode: 0o700 }); browserHome = supply.directoryIdentity(join(temporary, "browser-home")); checkOwned();
       },
       async run(seed) {
-        remaining(); demand(performance.now() < preparationEnd);
-        await checkSource();
-        demand(/^LoadState=not-found$/m.test(await show()));
-        runtimeSeconds = Math.floor((remaining() - 2000) / 1000);
-        demand(runtimeSeconds > 0 && runtimeSeconds <= 1800);
+        await stage("child-admission", async () => {
+          remaining(); demand(performance.now() < preparationEnd);
+          await checkSource();
+          demand(/^LoadState=not-found$/m.test(await show()));
+          runtimeSeconds = Math.floor((remaining() - 2000) / 1000);
+          demand(runtimeSeconds > 0 && runtimeSeconds <= 1800);
+        });
         const args = ["--user", "--pipe", "--quiet", "--no-ask-password", `--unit=${name}`, `--working-directory=${root}`,
           "--property=Type=exec", "--property=RemainAfterExit=yes", "--property=Restart=no", `--property=RuntimeMaxSec=${runtimeSeconds}s`,
           "--property=TimeoutStopSec=2s", "--property=KillMode=control-group", "--property=NoNewPrivileges=yes",
           "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
-          process.execPath, join(root, "tests/evaluation/booking-operator-child.mjs"), "--unit-child", name, JSON.stringify([name, gui])];
-        unitStarted = true; bridge = spawn("systemd-run", args, { cwd: root, env: managerEnv, stdio: ["pipe", "pipe", "ignore"] });
+          process.execPath, join(root, "tests/evaluation/booking-operator-child.mjs"),
+          progress ? "--unit-diagnostic-child" : "--unit-child", name, JSON.stringify([name, gui])];
+        const launched = stage("child-start", () => {
+          unitStarted = true; bridge = spawn("systemd-run", args, { cwd: root, env: managerEnv, stdio: ["pipe", "pipe", "ignore"] });
+          if (progress) return new Promise((done, bad) => { bridge.once("spawn", done); bridge.once("error", bad); });
+        });
+        launched?.catch(() => {});
         bridge.stdin.on("error", interrupt);
+        let displaySeen = false, preparationTimer;
         let ready = false, readySeen = false, received = false, settle, reject, buffer = "", handshake, receiveHandshake;
         const started = new Promise(done => { receiveHandshake = done; });
         const completion = new Promise((done, bad) => { settle = done; reject = bad; }); completion.catch(() => {});
         endInteraction = () => reject(fail());
         const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
-        input.on("line", line => { if (ready && line === "操作終了") { cleanupEnd = Math.min(deadline, performance.now() + budget.cleanup); bridge.stdin.write("操作終了\n"); ready = false; } });
-        bridge.on("error", () => reject(fail())); bridge.on("exit", () => { if (!received) reject(fail()); });
+        input.on("line", line => { if (!progress && ready && line === "操作終了") { cleanupEnd = Math.min(deadline, performance.now() + budget.cleanup); bridge.stdin.write("操作終了\n"); ready = false; } });
+        bridge.on("error", () => reject(fail())); bridge.on(progress ? "close" : "exit", () => { if (!received) reject(fail()); });
         bridge.stdout.on("data", chunk => {
           try {
             buffer += chunk.toString("utf8"); demand(buffer.length <= 4096);
@@ -194,6 +222,20 @@ async function owner(head, gui, diagnostic = false) {
               const data = JSON.parse(line);
               if (!handshake && data.status === "started" && Object.keys(data).join(",") === "status,pid,start") {
                 demand(Number.isSafeInteger(data.pid) && data.pid > 1 && /^\d+$/.test(data.start)); handshake = data; receiveHandshake();
+              } else if (progress) {
+                demand(handshake && !received && Object.keys(data).join(",") === "status");
+                if (data.status === "diagnostic-display") {
+                  demand(!displaySeen && performance.now() < preparationEnd);
+                  displaySeen = true;
+                  clearTimeout(preparationTimer);
+                  cleanupEnd = Math.min(deadline, performance.now() + budget.cleanup);
+                } else {
+                  demand(data.status === "diagnostic-complete");
+                  received = true;
+                  clearTimeout(preparationTimer);
+                  if (!displaySeen) cleanupEnd = Math.min(deadline, preparationEnd + budget.cleanup, performance.now() + budget.cleanup);
+                  settle();
+                }
               } else if (handshake && !readySeen && !received && Object.keys(data).join(",") === "status" && data.status === "ready") {
                 demand(performance.now() < preparationEnd); ready = true; readySeen = true;
                 console.log(`${seed.month}の15日10:00（日本時間）の予約可能枠を選び、Preview→確認して確定→本人履歴を操作してください。終わったら端末に「操作終了」と入力してください（最長20分）。`);
@@ -207,24 +249,38 @@ async function owner(head, gui, diagnostic = false) {
         try {
           // Do not put the Session in argv/env/files. Only a private inherited pipe
           // receives it, after manager + kernel identity of the trusted child.
-          await bounded(() => Promise.race([started, completion.then(() => { throw fail(); })]), Math.min(15000, preparationEnd - performance.now()));
-          const startEnd = Math.min(preparationEnd, performance.now() + 15000);
-          let snapshot;
-          while (!snapshot && performance.now() < startEnd) {
-            const text = await show();
-            if (/^LoadState=not-found$/m.test(text)) await new Promise(done => setTimeout(done, 100));
-            else snapshot = parseUnit(text, { group, runtimeSeconds });
+          if (progress) {
+            await bounded(() => launched, Math.min(15000, preparationEnd - performance.now()));
+            preparationTimer = setTimeout(() => { if (!displaySeen && !received) interrupt(); }, Math.max(0, preparationEnd - performance.now()));
           }
-          demand(snapshot); invocation = snapshot.invocation; main = procIdentity(snapshot.pid, group);
-          demand(handshake.pid === main.pid && handshake.start === main.start && bridge.exitCode === null);
-          demand(realpathSync(`/proc/${main.pid}/exe`) === realpathSync(process.execPath));
-          const argv = readFileSync(`/proc/${main.pid}/cmdline`, "utf8").split("\0");
-          demand(argv.includes(join(root, "tests/evaluation/booking-operator-child.mjs")) && argv.includes(name));
-          sameProcess(main, procIdentity(main.pid, group));
-          bridge.stdin.write(JSON.stringify({ cookie: seed.sessions.self.cookie().value, month: seed.month }) + "\n");
+          await stage("child-attestation", async () => {
+            await bounded(() => Promise.race([started, completion.then(() => { throw fail(); })]), Math.min(15000, preparationEnd - performance.now()));
+            const startEnd = Math.min(preparationEnd, performance.now() + 15000);
+            let snapshot;
+            while (!snapshot && performance.now() < startEnd) {
+              const text = await show();
+              if (/^LoadState=not-found$/m.test(text)) await new Promise(done => setTimeout(done, 100));
+              else snapshot = parseUnit(text, { group, runtimeSeconds });
+            }
+            demand(snapshot); invocation = snapshot.invocation; main = procIdentity(snapshot.pid, group);
+            demand(handshake.pid === main.pid && handshake.start === main.start && bridge.exitCode === null);
+            demand(realpathSync(`/proc/${main.pid}/exe`) === realpathSync(process.execPath));
+            const argv = readFileSync(`/proc/${main.pid}/cmdline`, "utf8").split("\0");
+            demand(argv.includes(join(root, "tests/evaluation/booking-operator-child.mjs")) && argv.includes(name));
+            sameProcess(main, procIdentity(main.pid, group));
+          });
+          const send = () => JSON.stringify({ cookie: seed.sessions.self.cookie().value, month: seed.month }) + "\n";
+          if (progress) {
+            await stage("packet-send", () => bounded(() => new Promise((done, rejectWrite) => {
+              bridge.stdin.write(send(), error => error ? rejectWrite(fail()) : done());
+            }), Math.min(remaining(), preparationEnd - performance.now())));
+            await bounded(() => completion, Math.min(remaining(), cleanupEnd - performance.now(), preparationEnd - performance.now() + budget.cleanup));
+            demand(!aborted); return;
+          }
+          bridge.stdin.write(send());
           reservationId = await bounded(() => completion, Math.min(remaining() - budget.cleanup, preparationEnd - performance.now() + budget.interaction + budget.cleanup));
           finishedAt = new Date().toISOString(); demand(!aborted); return reservationId;
-        } finally { input.close(); endInteraction = undefined; }
+        } finally { clearTimeout(preparationTimer); input.close(); endInteraction = undefined; }
       },
       async terminal() {
         for (let sample = 0; sample < 2; sample++) {
@@ -251,6 +307,22 @@ async function owner(head, gui, diagnostic = false) {
       async remove() { await checkSource(); checkOwned(); remaining(); demand(performance.now() < cleanupEnd && stopAttempted); rmSync(supply.persistence, { recursive: true }); rmSync(temporary, { recursive: true }); },
       async stopUnknown() { cleanupEnd = Math.min(deadline, performance.now() + budget.cleanup); if (!stopAttempted) await stop(); },
     };
+    if (progress) {
+      try {
+        await stage("operator-preflight", ports.preflight);
+        let seed;
+        await ports.prepare(value => {
+          remaining(); demand(performance.now() < preparationEnd);
+          ports.capture(); seed = value;
+        }, stage);
+        demand(seed);
+        await ports.run(seed);
+        await stage("unit-terminal", ports.terminal);
+        await stage("unit-stop", ports.release);
+      } catch { /* Only the stage journal classifies the failure. */ }
+      progress.end();
+      return;
+    }
     if (diagnostic) {
       const directory = dirname(temporary);
       demand(temporary === join(directory, "home"));
@@ -270,40 +342,64 @@ async function owner(head, gui, diagnostic = false) {
     console.log(JSON.stringify({ issue: 1104, head, ...evidence, completedAt: finishedAt, actor: "fictional-self", reservationId,
       browser: "human-one-confirm-history", readback: "five-tables", cleanup: "owned-removed", evidence: "local-human-partial; Gate-A-D/930-401/608-release-unproved" }));
   } finally {
-    bridge?.stdin.end(); releaseInput();
+    bridge?.stdin.end(); releaseInput(); progress?.close();
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === script) {
   try {
-    if (process.argv.length === 6 && ["--private-owner", "--private-diagnostic-owner"].includes(process.argv[2])) {
-      demand(process.platform === "linux"); await owner(process.argv[3], JSON.parse(process.argv[4]), process.argv[2] === "--private-diagnostic-owner");
+    if (process.argv.length === 6 && ["--private-owner", "--private-diagnostic-owner", "--private-progress-owner"].includes(process.argv[2])) {
+      demand(process.platform === "linux"); await owner(process.argv[3], JSON.parse(process.argv[4]), process.argv[2] === "--private-diagnostic-owner",
+        process.argv[2] === "--private-progress-owner" ? dirname(process.env.TMPDIR) : undefined);
     } else {
       const diagnostic = process.argv[2] === "--diagnose-d1";
-      demand(process.argv.length === 5 && (diagnostic || process.argv[2] === "--run") && process.argv[3] === "--head" && /^[a-f0-9]{40}$/.test(process.argv[4]));
+      const progressMode = process.argv[2] === "--diagnose-operator";
+      demand(process.argv.length === 5 && (diagnostic || progressMode || process.argv[2] === "--run") && process.argv[3] === "--head" && /^[a-f0-9]{40}$/.test(process.argv[4]));
       demand(process.platform === "linux" && /^v24\./.test(process.version) && process.getuid() > 0 && process.stdin.isTTY);
       demand(!Object.keys(process.env).some(k => /TOKEN|SECRET|PASSWORD|API_KEY|PROXY|NODE_OPTIONS|PWDEBUG|^DEBUG$|SSLKEYLOG|NODE_TLS/i.test(k)));
       const gui = diagnostic ? null : guiEnvironment(Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "PULSE_SERVER"].filter(k => process.env[k]).map(k => [k, process.env[k]])));
       const directory = mkdtempSync(join(tmpdir(), "nssscdl-operator-"));
-      const temporary = diagnostic ? join(directory, "home") : directory;
+      const temporary = diagnostic || progressMode ? join(directory, "home") : directory;
       const report = diagnostic ? join(directory, "observations") : undefined;
-      if (diagnostic) {
-        mkdirSync(temporary, { mode: 0o700 });
-        writeFileSync(report, "", { flag: "wx", mode: 0o600 });
-      }
+      if (diagnostic || progressMode) mkdirSync(temporary, { mode: 0o700 });
+      if (diagnostic) writeFileSync(report, "", { flag: "wx", mode: 0o600 });
+      if (progressMode) for (const role of ["controller", "owner", "child"])
+        writeFileSync(progressPath(directory, role), "", { flag: "wx", mode: 0o600 });
       const env = cleanEnvironment(temporary), name = `nssscdl-operator-${randomBytes(16).toString("hex")}.service`;
       const manager = { PATH: env.PATH, HOME: temporary, XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
         DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
       // Outer controller has the whole-run hard cap. Browser/Worker live in a
       // separate bounded unit, permitting their empty-cgroup proof before readback.
-      const child = spawn("systemd-run", ["--user", "--pipe", "--wait", "--quiet", "--no-ask-password", `--unit=${name}`,
+      const launch = () => spawn("systemd-run", ["--user", "--pipe", "--wait", "--quiet", "--no-ask-password", `--unit=${name}`,
         `--working-directory=${root}`, "--property=Type=exec", "--property=Restart=no", "--property=RuntimeMaxSec=1800s",
         "--property=TimeoutStopSec=2s", "--property=KillMode=control-group", "--property=NoNewPrivileges=yes",
         "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
-        process.execPath, script, diagnostic ? "--private-diagnostic-owner" : "--private-owner", process.argv[4], JSON.stringify(gui), name],
-      { cwd: root, env: manager, stdio: ["pipe", diagnostic ? "ignore" : "pipe", "ignore"] });
+        process.execPath, script, diagnostic ? "--private-diagnostic-owner" : progressMode ? "--private-progress-owner" : "--private-owner", process.argv[4], JSON.stringify(gui), name],
+      { cwd: root, env: manager, stdio: ["pipe", diagnostic || progressMode ? "ignore" : "pipe", "ignore"] });
       // Private pipe EOF is observable even when a parent dies without a signal.
-      if (diagnostic) {
+      if (progressMode) {
+        const progress = openProgress(directory, "controller");
+        let exited = false;
+        try {
+          let completion;
+          await progress.stage("controller-start", () => new Promise((done, rejectStart) => {
+            const child = launch();
+            child.once("spawn", done); child.once("error", rejectStart);
+            completion = bridgeOperator(child);
+            completion.catch(() => {});
+          }));
+          progress.end();
+          await completion;
+          exited = true;
+        } catch { /* A missing owner or abnormal controller exit is UNKNOWN. */ }
+        finally { progress.close(); }
+        const result = operatorProgressReport({
+          controller: readProgress(directory, "controller"), owner: readProgress(directory, "owner"), child: readProgress(directory, "child"),
+        }, exited);
+        console.log(JSON.stringify(result));
+        if (result.result !== "NOT_REPRODUCED") process.exitCode = 1;
+      } else if (diagnostic) {
+        const child = launch();
         let exited = false, observations = "";
         try { await bridgeOperator(child); exited = true; } catch { /* UNKNOWN */ }
         try {
@@ -314,7 +410,7 @@ if (process.argv[1] && resolve(process.argv[1]) === script) {
         const result = preparationReport(observations, exited);
         console.log(JSON.stringify(result));
         if (result.result !== "NOT_REPRODUCED") process.exitCode = 1;
-      } else await bridgeOperator(child);
+      } else await bridgeOperator(launch());
     }
   } catch { console.error("BOOKING_OPERATOR_UNKNOWN; owned resources retained; do not retry"); process.exitCode = 1; }
 }

@@ -68,7 +68,7 @@ export function humanBookingObservation(month, expectedCsrf) {
     slot, token: () => token,
   });
 }
-export async function observeHumanBrowser(context, session, month, onFailure) {
+export async function observeHumanBrowser(context, session, month, onFailure, diagnostic = false) {
   const cookie = session.cookie(), expectedCsrf = createHash("sha256").update("student-csrf-v1:" + cookie.value).digest("base64url");
   demand(cookie.name === "__Host-student_session" && cookie.secure && cookie.httpOnly && cookie.sameSite === "Lax" && cookie.path === "/" && !Object.hasOwn(cookie, "domain"));
   demand((await context.cookies()).length === 0 && context.pages().length === 0);
@@ -87,7 +87,10 @@ export async function observeHumanBrowser(context, session, month, onFailure) {
       const raw = request.url(), url = new URL(raw);
       demand(raw === origin + url.pathname && url.origin === origin && request.redirectedFrom() === null && request.frame() === page.mainFrame());
       demand(!request.isNavigationRequest() || url.pathname === "/student" && navigation === 0);
-      const method = request.method(), headers = await request.allHeaders();
+      const method = request.method();
+      // Installed before the first page exists, including while the window is visible.
+      demand(!diagnostic || method === "GET");
+      const headers = await request.allHeaders();
       demand(!closed && !headers.authorization);
       const initialSchedule = observation.request(url.pathname, method, method === "POST" ? request.postDataJSON() : request.postData(), headers);
       const priorConfirm = method === "GET" && url.pathname === confirm ? confirmObservation : undefined;
@@ -126,9 +129,22 @@ export async function observeHumanBrowser(context, session, month, onFailure) {
     if (identity?.path === confirm && identity.method === "POST") confirmObservation = task;
     pending.add(task); task.finally(() => pending.delete(task));
   });
-  await bounded(async () => { const response = await page.goto(origin + "/student", { waitUntil: "load", timeout: 5000 }); demand(response?.status() === 200); }, 10000);
+  const closeAdmission = () => { closed = true; observation.close(); };
+  await bounded(async () => {
+    const response = await page.goto(origin + "/student", { waitUntil: "load", timeout: 5000 });
+    demand(response?.status() === 200);
+    if (diagnostic) {
+      await page.waitForFunction(() =>
+        document.querySelector("#schedule-status")?.textContent === "予定を取得しました。" &&
+        document.querySelector("#daily-content button.slot.bookable") &&
+        ["本人履歴を取得しました。", "履歴はありません。"].includes(document.querySelector("#history-status")?.textContent),
+      undefined, { timeout: 5000 });
+      await Promise.all([...pending]);
+      closeAdmission();
+    }
+  }, 10000).catch(error => { if (diagnostic) closeAdmission(); throw error; });
   return Object.freeze({
-    closeAdmission() { closed = true; observation.close(); },
+    closeAdmission,
     async finish() {
       demand(closed); await bounded(() => Promise.all([...pending]), 10000);
       const id = observation.result();

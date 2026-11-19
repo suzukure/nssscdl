@@ -109,6 +109,31 @@ Chrome、予約Worker、予約POSTの経路には入らない。
 既存の有限fixtureで回帰確認する。実機の単発診断はmain反映後に新しい隔離checkoutで
 別途明示Goを得て実施し、結果と #1108 の統合評価との関係を記録する。
 
+### #1164 Browser／Worker起動から初期表示までの単発診断
+
+正式CI・Traceability・独立レビュー後、対象HEADと新規隔離checkoutを照合し、
+#1104のWSLg・User unit・固定依存・build、#1160の空の保存先の前提を満たす場合に限り、
+別途の人間の明示Goで以下を一回実行する。
+
+```sh
+node tests/evaluation/booking-operator.mjs --diagnose-operator --head <確認済みの40桁HEAD>
+```
+
+controllerと別のBrowser／Worker User unit、および隔離D1のseed／引渡しを共用する。
+新規run専用ディレクトリの `controller.progress`、`owner.progress`、`child.progress` に、
+工程ごとの開始と結果を固定値で追記する。診断の標準出力は各記録の最終完了工程・
+開始後に結果未確認の工程、最初の主処理失敗、最初の終了処理失敗、および総合判定のみ。
+正常な観測終端と全工程確認が揃えば `NOT_REPRODUCED`、工程失敗が確定すれば
+`FAILED`、欠測・破損・異常中断は `UNKNOWN` とする。有効な記録の範囲で停止工程を示し、
+生ログ・例外・Cookie等は出力しない。
+
+操作用Chromeは初回ナビゲーション前からGETのみ許可し、予定と本人履歴の初期表示を
+観測した時点で通信受付を閉じる。予約用Preview／Confirm POST、操作への引渡し、
+予約readbackは行わない。既存の所有照合で単発終了し、同一Invocationの正常終端・
+cgroup空・両port閉鎖を確認した場合にだけ診断用子unitを停止する。記録、D1、HOME等は
+保持する。準備・終了の時間予算は既存の範囲内とし、自動再試行や保持済み資産・failed unitの
+操作は行わない。`NOT_REPRODUCED` はこの診断条件での結果として #1108 に引き継ぐ。
+
 自動Unit / Integration / End-to-End Testを格納する。
 
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。
