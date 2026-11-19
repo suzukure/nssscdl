@@ -7,6 +7,7 @@ import { root } from "./trusted-evaluation-seed.mjs";
 import { bookingWranglerEntry, origin, persistence, proxyOptions } from "./trusted-booking-seed.mjs";
 import { bookingWorkerPreflight, bookingListenerRows } from "./trusted-booking-worker.mjs";
 import { demand, fail, procIdentity, sameProcess, userGroup } from "./booking-operator-unit.mjs";
+import { directStage } from "./booking-operator-progress.mjs";
 const exec = promisify(execFile);
 const runtime = {
   setup: bookingWorkerPreflight, spawn, read: readFileSync, stat: lstatSync, uid: process.getuid?.(),
@@ -15,17 +16,20 @@ const runtime = {
   alive(pid) { try { process.kill(-pid, 0); return true; } catch (e) { if (e.code === "ESRCH") return false; throw fail(); } },
   stop(pid) { process.kill(-pid, "SIGINT"); },
 };
-export function createOperatorWorker(input, unitName, effects = runtime) {
+export function createOperatorWorker(input, unitName, effects = runtime, stage = directStage) {
   const group = userGroup(effects.uid, unitName);
   let setup, child, identity, attempted = false, stopAttempted = false, ready = false, starting = false;
   const member = pid => procIdentity(pid, group, effects);
   const self = () => demand(effects.read("/proc/self/cgroup", "utf8") === `0::${group}\n`);
   const command = (file, args, end) => { demand(effects.now() < end); return effects.command(file, args, setup.env, Math.min(5000, end - effects.now())); };
   const closed = async end => demand(bookingListenerRows(await command("ss", ["-H", "-ltn", "sport = :8789"], end)).length === 0);
-  const owns = async end => {
+  const processGroup = async end => {
     self(); sameProcess(identity, member(child.pid));
     demand(effects.alive(child.pid));
     demand((await command("ps", ["-o", "pgid=", "-p", String(child.pid)], end)).trim() === String(child.pid));
+  };
+  const owns = async (end, checkProcess = true) => {
+    if (checkProcess) await processGroup(end);
     const rows = bookingListenerRows(await command("ss", ["-H", "-ltnp", "sport = :8789"], end));
     demand(rows.length <= 1); if (!rows.length) return false;
     demand(rows[0].address === "127.0.0.1:8789" && rows[0].pids.length > 0);
@@ -43,20 +47,36 @@ export function createOperatorWorker(input, unitName, effects = runtime) {
     async start() {
       demand(!attempted && !stopAttempted); attempted = true; starting = true;
       try {
-        setup = effects.setup(input); self(); const end = effects.now() + 30000;
-        await closed(end); setup.confirm();
-        child = effects.spawn(process.execPath, [bookingWranglerEntry, "dev", "--config", relative(root, proxyOptions.configPath),
-          "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https", "--persist-to", relative(root, persistence),
-          "--https-key-path", input.certificate.key, "--https-cert-path", input.certificate.cert],
-        { cwd: root, env: setup.env, detached: true, stdio: "ignore" });
-        child.on("error", () => { ready = false; }); child.on("exit", () => { ready = false; });
-        identity = member(child.pid);
-        while (effects.now() < end) {
+        const end = await stage("worker-preflight", async () => {
+          setup = effects.setup(input); self(); const end = effects.now() + 30000;
+          await closed(end); setup.confirm();
+          return end;
+        });
+        stage("worker-spawn", () => {
+          child = effects.spawn(process.execPath, [bookingWranglerEntry, "dev", "--config", relative(root, proxyOptions.configPath),
+            "--ip", "127.0.0.1", "--port", "8789", "--local-protocol", "https", "--persist-to", relative(root, persistence),
+            "--https-key-path", input.certificate.key, "--https-cert-path", input.certificate.cert],
+          { cwd: root, env: setup.env, detached: true, stdio: "ignore" });
+          child.on("error", () => { ready = false; }); child.on("exit", () => { ready = false; });
+        });
+        const diagnostic = stage !== directStage;
+        const identify = () => { identity = member(child.pid); };
+        if (diagnostic) await stage("worker-process", async () => {
+          identify();
           demand(child.exitCode === null && child.signalCode === null);
-          if (await owns(end)) { setup.confirm(); ready = true; return origin; }
-          await effects.sleep();
-        }
-        throw fail();
+          await processGroup(end);
+        });
+        else identify();
+        return await stage("worker-listener", async () => {
+          let recheck = !diagnostic;
+          while (effects.now() < end) {
+            demand(child.exitCode === null && child.signalCode === null);
+            if (await owns(end, recheck)) { setup.confirm(); ready = true; return origin; }
+            recheck = true;
+            await effects.sleep();
+          }
+          throw fail();
+        });
       } finally { starting = false; }
     },
     async stop() {
@@ -71,6 +91,7 @@ export function createOperatorWorker(input, unitName, effects = runtime) {
       demand(!effects.alive(child.pid) && (Number.isInteger(child.exitCode) || typeof child.signalCode === "string"));
       self(); await closed(end); self(); return Object.freeze({ stopped: true, portClosed: true });
     },
+    hasChild: () => child !== undefined,
     isReady: () => ready && !stopAttempted && child.exitCode === null && child.signalCode === null,
   });
 }

@@ -1,18 +1,20 @@
 // Finite, secretless effects only. No GUI/WSLg/systemd/Worker/D1 startup.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { intervalLabel } from "../../src/web/model.ts";
 import { errorResponse } from "../../src/http/application-error.ts";
-import { readFileSync, mkdtempSync, readdirSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, readdirSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { spawnSync, spawn, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { runInNewContext } from "node:vm";
-import { useOperator, cleanEnvironment, verifyOperatorBuild } from "./booking-operator.mjs";
+import { useOperator, cleanEnvironment, verifyOperatorBuild, listenOperatorInput } from "./booking-operator.mjs";
+import { openProgress, operatorProgressReport, parseProgress, progressPath, progressRecorder, readProgress } from "./booking-operator-progress.mjs";
 import { diagnosePreparation, preparationReport } from "./booking-operator-diagnostic.mjs";
 import { humanBookingObservation, observeHumanBrowser } from "./booking-operator-browser.mjs";
 import { createOperatorWorker } from "./booking-operator-worker.mjs";
@@ -137,7 +139,7 @@ test("#1104 GUI allowlist matches supplied WSLg sockets; never joins credential-
     assert.throws(() => guiEnvironment({ ...gui, ...change }, io));
   assert.throws(() => guiEnvironment(gui, { ...io, stat: () => ({ isSocket: () => false }) }));
 });
-function workerFixture(options = {}) {
+function workerFixture(options = {}, stage) {
   let time = 0, started = false, live = false, stops = 0, owner = group;
   const launches = [], pgidQueries = [];
   const certificate = { key: "/owned/browser-home/server.key", cert: "/owned/browser-home/server.pem" };
@@ -157,7 +159,7 @@ function workerFixture(options = {}) {
       return listener;
     },
   };
-  return { port: createOperatorWorker({ certificate }, name, effects), launches, pgidQueries, drift: () => { owner = group + "/other"; }, stops: () => stops };
+  return { port: createOperatorWorker({ certificate }, name, effects, stage), launches, pgidQueries, drift: () => { owner = group + "/other"; }, stops: () => stops };
 }
 test("#1104 new Worker Port: normal owned start/stop once; occupied/drift/filter/unknown retain and never retry", async () => {
   const good = workerFixture(); assert.equal(await good.port.start(), origin); assert.equal(good.port.isReady(), true);
@@ -187,7 +189,7 @@ test("#1104 cgroup empty requires kernel events plus all descendants, not absenc
   assert.throws(() => emptyGroup(group, { ...io, read: () => "populated 1\n" }));
   assert.ok(path.startsWith("/sys/fs/cgroup/user.slice/"));
 });
-function browserFixture(fixtureMonth = month) {
+function browserFixture(fixtureMonth = month, onNavigate) {
   const context = new EventEmitter(), page = new EventEmitter(), frame = {};
   let routeHandler, jar = [], forwarded = 0, denied = 0, failed = 0, navigations = 0;
   const value = "a".repeat(42) + "A", observation = humanBookingObservation(fixtureMonth, csrf);
@@ -209,7 +211,15 @@ function browserFixture(fixtureMonth = month) {
   frame.url = () => origin + "/student";
   page.mainFrame = () => frame;
   page.addInitScript = async fn => { assert.match(fn.toString(), /event.isTrusted/); };
-  page.goto = async url => { assert.equal(url, origin + "/student"); navigations++; return network("/student"); };
+  page.goto = async url => { assert.equal(url, origin + "/student"); navigations++; const response = await network("/student"); await onNavigate?.(network); return response; };
+  page.waitForFunction = async (fn, arg, { timeout }) => {
+    assert.equal(arg, undefined); assert.equal(timeout, 5000);
+    assert.equal(runInNewContext(`(${fn})()`, { document: { querySelector: selector => ({
+      "#schedule-status": { textContent: "予定を取得しました。" },
+      "#daily-content button.slot.bookable": {},
+      "#history-status": { textContent: "本人履歴を取得しました。" },
+    })[selector] } }), true);
+  };
   page.evaluate = async (_fn, values) => { assert.ok(values.includes(value)); return true; }; // DOM effects only, not a real trusted-click proof.
   page.locator = selector => ({
     textContent: async () => { assert.equal(selector, "#operation-status"); return "予約済みです。メールの配送完了を表すものではありません。"; },
@@ -282,7 +292,7 @@ test("#1104 actual Browser adapter blocks remote/Production before connection; u
 test("#1104 all imports/non-opt-in CLI are inert, internal owner cannot run outside its attested unit", () => {
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", "await import('./tests/evaluation/booking-operator.mjs'); await import('./tests/evaluation/booking-operator-child.mjs')"], { encoding: "utf8", timeout: 5000 });
   assert.equal(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
-  for (const args of [[], ["--run"], ["--run", "--head", "bad"], ["--diagnose-d1", "--head", "bad"], ["--private-diagnostic-owner", "a".repeat(40), "null", name], ["--private-owner", "a".repeat(40), "{}", name]]) {
+  for (const args of [[], ["--run"], ["--run", "--head", "bad"], ["--diagnose-d1", "--head", "bad"], ["--diagnose-operator", "--head", "bad"], ["--private-diagnostic-owner", "a".repeat(40), "null", name], ["--private-owner", "a".repeat(40), "{}", name]]) {
     const denied = spawnSync(process.execPath, ["tests/evaluation/booking-operator.mjs", ...args], { encoding: "utf8", timeout: 5000 });
     assert.equal(denied.status, 1); assert.equal(denied.stdout, ""); assert.match(denied.stderr, /BOOKING_OPERATOR_UNKNOWN/);
   }
@@ -378,7 +388,7 @@ async function finiteOwner(diagnostic) {
     const versions = { wrangler: '4.146.0', 'playwright-core': '1.64.0', typescript: '6.0.3' };
     const fixtureProcess = new Proxy(process, { get: (p, key) => key === 'platform' ? 'linux' : key === 'getuid' ? () => 1000 : key === 'env' ? env : Reflect.get(p, key) });
     const owner = runInNewContext('(' + source + ')', { process: fixtureProcess, performance, console, randomBytes, join, useOperator, listenOperatorInput,
-      root: '/finite', dirname, diagnosePreparation, appendFileSync: (_file, line) => { observations += line; },
+      root: '/finite', dirname, diagnosePreparation, directStage: (_name, action) => action(), appendFileSync: (_file, line) => { observations += line; },
       mkdirSync: path => { if (path !== '/finite/home/browser-home') throw Error('unexpected-mkdir'); captures++; },
       verifyStudentAssets() {}, migrations() {}, verifyOperatorBuild: async () => ({}), budget: { total: 1800000, prepare: 300000 }, demand: ok => { if (!ok) throw Error('finite-private-failure'); },
       fail: () => Error('finite-private-failure'), userGroup: () => '/finite/group', guiEnvironment: g => g,
@@ -426,22 +436,27 @@ function bridgeCliFixture(mode) {
     import { spawn } from 'node:child_process'; import { runInNewContext } from 'node:vm';
     import { cleanEnvironment, bridgeOperator } from ${JSON.stringify(operatorUrl)};
     const script = resolve('tests/evaluation/booking-operator.mjs'), all = readFileSync(script, 'utf8'); let starts = 0;
-    const mode = ${JSON.stringify(mode)}, diagnostic = mode === 'diagnostic';
+    const mode = ${JSON.stringify(mode)}, diagnostic = mode === 'diagnostic', progressMode = mode === 'progress';
+    const { progressRecorder, operatorProgressReport, progressPath } = await import(new URL('./booking-operator-progress.mjs', ${JSON.stringify(operatorUrl)}));
+    let controllerTrace = '';
     const { preparationReport } = await import(new URL('./booking-operator-diagnostic.mjs', ${JSON.stringify(operatorUrl)}));
     const report = 'completed operator-preflight\\ncompleted storage-owner\\nfailed migration-cli\\n';
     const fixtureProcess = new Proxy(process, { get: (p, key) => key === 'platform' ? 'linux' : key === 'getuid' ? () => 1000 :
-      key === 'stdin' ? { isTTY: true } : key === 'env' ? {} : key === 'argv' ? ['node', script, diagnostic ? '--diagnose-d1' : '--run', '--head', 'a'.repeat(40)] : Reflect.get(p, key) });
+      key === 'stdin' ? { isTTY: true } : key === 'env' ? {} : key === 'argv' ? ['node', script, diagnostic ? '--diagnose-d1' : progressMode ? '--diagnose-operator' : '--run', '--head', 'a'.repeat(40)] : Reflect.get(p, key) });
     const cli = runInNewContext('(async () => {' + all.slice(all.indexOf('if (process.argv[1]')) + '})', {
       process: fixtureProcess, console, script, resolve, join, randomBytes, root: process.cwd(), cleanEnvironment, bridgeOperator,
       demand: ok => { if (!ok) throw Error('finite-private-failure'); },
       guiEnvironment: () => { if (diagnostic) throw Error('unexpected-gui'); return {}; },
-      mkdirSync() {}, writeFileSync() {}, preparationReport,
+      mkdirSync() {}, writeFileSync() {}, preparationReport, operatorProgressReport, progressPath,
+      openProgress: (_directory, role) => ({ ...progressRecorder(role, line => { controllerTrace += line; }), close() {} }),
+      readProgress: (_directory, role) => role === 'controller' ? controllerTrace : role === 'owner' ?
+        'start controller-entry\\n' : 'FINITE_SECRET_CORRUPTION\\n',
       readFileSync: () => report, lstatSync: () => ({ size: report.length, isFile: () => true, uid: 1000, nlink: 1 }),
       tmpdir: () => '/finite', mkdtempSync: () => '/finite/home',
       spawn: (file, args, options) => {
-        if (++starts !== 1 || file !== 'systemd-run' || options.stdio.join(',') !== (diagnostic ? 'pipe,ignore,ignore' : 'pipe,pipe,ignore') ||
-            !args.includes(diagnostic ? '--private-diagnostic-owner' : '--private-owner')) throw Error('unexpected-start');
-        const code = diagnostic ? 'process.stdout.write("FINITE_SECRET_STDOUT"); process.stderr.write("FINITE_SECRET_STDERR"); process.kill(process.pid,"SIGTERM")' :
+        if (++starts !== 1 || file !== 'systemd-run' || options.stdio.join(',') !== (diagnostic || progressMode ? 'pipe,ignore,ignore' : 'pipe,pipe,ignore') ||
+            !args.includes(diagnostic ? '--private-diagnostic-owner' : progressMode ? '--private-progress-owner' : '--private-owner')) throw Error('unexpected-start');
+        const code = diagnostic || progressMode ? 'process.stdout.write("FINITE_SECRET_STDOUT"); process.stderr.write("FINITE_SECRET_STDERR"); process.kill(process.pid,"SIGTERM")' :
           mode === 'success' ? ${JSON.stringify(success)} :
           mode === 'signal' ? 'process.stdin.resume()' : mode === 'eof' ? 'process.stdin.resume(); process.stdin.on("end",()=>{process.exitCode=1})' :
           mode === 'signal-exit' ? 'process.kill(process.pid,"SIGTERM")' :
@@ -539,4 +554,368 @@ test("#1160 shared preparation identifies each failing stage and disposes an acq
     assert.equal(new Set(attempts).size, attempts.length, fault);
     assert.equal(preparationReport(observations, false).result, "UNKNOWN", fault);
   }
+});
+
+const ownerPhases = ["controller-entry", "operator-preflight", "storage-owner", "migration-cli", "repreflight-owner",
+  "wrangler-import", "proxy-start", "binding", "history", "seed", "baseline", "dispose", "handoff-capture",
+  "child-admission", "child-start", "child-attestation", "packet-send", "unit-terminal", "unit-stop"];
+const childPhases = ["child-entry", "packet-accept", "certificate", "nss", "listen-8788", "playwright-import",
+  "headless-launch", "headless-owner", "headless-context", "trusted-tls", "trusted-page-close",
+  "san-tls", "san-page-close", "untrusted-tls", "untrusted-page-close", "headless-recheck", "headless-close",
+  "headless-generated", "proof-close", "release-8788", "worker-preflight", "worker-spawn", "worker-process",
+  "worker-listener", "headful-launch", "headful-owner", "headful-context", "initial-display", "worker-stop",
+  "headful-recheck", "headful-close", "headful-generated", "ports-closed"];
+const fixtureJournal = (role, phases) => {
+  let text = "";
+  const record = progressRecorder(role, line => { text += line; });
+  for (const name of phases) record.stage(name, () => {});
+  record.end();
+  return text;
+};
+const completedRun = () => ({
+  controller: fixtureJournal("controller", ["controller-start"]),
+  owner: fixtureJournal("owner", ownerPhases),
+  child: fixtureJournal("child", childPhases),
+});
+
+test("#1164 diagnostic POST is denied before navigation finishes and after display admission closes", async () => {
+  const injected = async network => {
+    await network(previewPath, "POST", { slotId: "seed-slot-bookable" });
+    await network(confirmPath, "POST", { slotId: "seed-slot-bookable", expectedStateToken: token });
+  };
+  const during = browserFixture(month, injected);
+  await observeHumanBrowser(during.context, during.session, month, during.bad, true);
+  assert.deepEqual(during.counts(), { forwarded: 1, denied: 2, failed: 2, navigations: 1 });
+  const normalDisplay = browserFixture();
+  const view = await observeHumanBrowser(normalDisplay.context, normalDisplay.session, month, normalDisplay.bad, true);
+  assert.deepEqual(normalDisplay.counts(), { forwarded: 1, denied: 0, failed: 0, navigations: 1 });
+  await injected(normalDisplay.network);
+  await normalDisplay.network(confirmPath);
+  assert.deepEqual(normalDisplay.counts(), { forwarded: 1, denied: 3, failed: 3, navigations: 1 });
+  await assert.rejects(view.finish()); // Display never satisfies the normal one-booking proof.
+});
+
+test("#1164 process vs listener ownership and absent/unknown stop remain distinct", async () => {
+  for (const [options, phase, stopCalls] of [
+    [{ occupied: true }, "worker-preflight", 0],
+    [{ wrongPgid: true }, "worker-process", 0],
+    [{ foreignListener: true }, "worker-listener", 0],
+    [{ unknownStop: true }, "worker-stop", 1],
+  ]) {
+    let trace = "";
+    const record = progressRecorder("child", line => { trace += line; });
+    for (const earlier of childPhases.slice(0, childPhases.indexOf("worker-preflight"))) record.stage(earlier, () => {});
+    const f = workerFixture(options, record.stage);
+    if (phase === "worker-stop") {
+      assert.equal(await f.port.start(), origin);
+      for (const phase of ["headful-launch", "headful-owner", "headful-context", "initial-display"]) record.stage(phase, () => {});
+    }
+    else await assert.rejects(f.port.start());
+    if (f.port.hasChild()) await assert.rejects(record.stage("worker-stop", () => f.port.stop()));
+    record.end();
+    const outcome = parseProgress("child", trace);
+    assert.equal(outcome.ended, true);
+    assert.equal(phase === "worker-stop" ? outcome.firstCleanupFailure : outcome.firstFailure, phase);
+    assert.equal(f.stops(), stopCalls);
+  }
+});
+
+test("#1164 every fixed phase records the previous completion and distinct cleanup failures", async () => {
+  for (const [role, phases] of [["owner", ownerPhases], ["child", childPhases]]) {
+    for (const [position, failing] of phases.entries()) {
+      let text = "";
+      const record = progressRecorder(role, line => { text += line; });
+      for (const earlier of phases.slice(0, position)) record.stage(earlier, () => {});
+      await assert.rejects(record.stage(failing, async () => { throw Error("FINITE_SECRET_EXCEPTION"); }));
+      record.end();
+      const outcome = parseProgress(role, text);
+      const cleanup = /^(dispose|unit-terminal|unit-stop|worker-stop|proof-close|release-8788|ports-closed)$|-(page-close|recheck|close|generated)$/.test(failing);
+      assert.equal(outcome[cleanup ? "firstCleanupFailure" : "firstFailure"], failing);
+      assert.equal(outcome.lastCompleted, phases[position - 1] ?? "none");
+      assert.equal(outcome.ended, true);
+      assert.equal(outcome.complete, false);
+      assert.doesNotMatch(text, /FINITE_SECRET/);
+    }
+  }
+  const run = completedRun();
+  assert.equal(operatorProgressReport(run, true).result, "NOT_REPRODUCED");
+  run.child = fixtureJournal("child", childPhases.slice(0, childPhases.indexOf("san-tls"))).slice(0, -4) +
+    "start san-tls\nfail san-tls\nstart san-page-close\nfail san-page-close\nstart headless-recheck\nok headless-recheck\nend\n";
+  const failure = operatorProgressReport(run, true);
+  assert.equal(failure.result, "FAILED");
+  assert.equal(failure.firstFailure, "san-tls");
+  assert.equal(failure.firstCleanupFailure, "san-page-close");
+  assert.equal(failure.child.lastCompleted, "headless-recheck");
+});
+
+test("#1164 absent, malformed, early and abnormal evidence remains UNKNOWN with its valid prefix", () => {
+  const run = completedRun();
+  assert.equal(operatorProgressReport(run, false).result, "UNKNOWN");
+  for (const child of ["", "end\n", "start child-entry\nok child-entry\nend\n",
+    "start child-entry\nok child-entry\nstart packet-accept\nFINITE_SECRET_CORRUPTION\nend\n",
+    run.child + "FINITE_SECRET_TRAILER", run.child + " ".repeat(4096)]) {
+    const result = operatorProgressReport({ ...run, child }, true);
+    assert.equal(result.result, "UNKNOWN");
+    assert.doesNotMatch(JSON.stringify(result), /FINITE_SECRET/);
+  }
+  let text = "";
+  const lost = progressRecorder("child", line => {
+    if (line.startsWith("ok ")) throw Error("FINITE_SECRET_DISK");
+    text += line;
+  });
+  lost.stage("child-entry", () => {});
+  assert.throws(() => lost.stage("packet-accept", () => assert.fail("must stop before next operation")));
+  lost.end();
+  assert.equal(text, "start child-entry\n");
+});
+
+test("#1164 killed finite Node writer leaves run-private phase evidence and rejects symlink evidence", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "operator-progress-finite-"));
+  t.after(() => rmSync(directory, { recursive: true }));
+  const progressUrl = new URL("./booking-operator-progress.mjs", import.meta.url).href;
+  writeFileSync(progressPath(directory, "child"), "", { mode: 0o600, flag: "wx" });
+  const result = await finiteNode(`
+    import { openProgress } from ${JSON.stringify(progressUrl)};
+    const progress = openProgress(${JSON.stringify(directory)}, "child");
+    progress.stage("child-entry", () => {});
+    progress.stage("packet-accept", () => {});
+    progress.stage("certificate", () => process.kill(process.pid, "SIGKILL"));
+  `);
+  assert.equal(result.signal, "SIGKILL");
+  const run = completedRun();
+  run.child = readProgress(directory, "child");
+  const report = operatorProgressReport(run, true);
+  assert.equal(report.result, "UNKNOWN");
+  assert.deepEqual(report.child, { lastCompleted: "packet-accept", active: "certificate" });
+  symlinkSync(progressPath(directory, "child"), progressPath(directory, "owner"));
+  assert.equal(readProgress(directory, "owner"), "");
+  assert.throws(() => openProgress(directory, "owner"));
+});
+
+async function finiteDiagnosticChild(failures = [], early = false) {
+  const source = readFileSync("tests/evaluation/booking-operator-child.mjs", "utf8");
+  const body = source.slice(source.indexOf("export async function runOperatorChild"), source.indexOf("\nif (process.argv[1]"))
+    .replace("export async function", "async function").replace('import("playwright-core")', "loadPlaywright()");
+  const lines = new EventEmitter(), processPort = new EventEmitter();
+  const messages = [], calls = [];
+  let text = "", serverRequest, stopped = false;
+  const record = progressRecorder("child", line => { text += line; });
+  const progress = {
+    ...record,
+    stage(name, action) {
+      return record.stage(name, () => {
+        if (failures.includes(name) && name !== "san-tls") throw Error("FINITE_SECRET_STAGE");
+        return action();
+      });
+    },
+  };
+  lines.close = () => lines.emit("close");
+  Object.assign(processPort, { env: { TMPDIR: "/finite/home" }, umask() {}, getuid: () => 1000, pid: 42,
+    stdout: { write: line => messages.push(JSON.parse(line).status) } });
+  const child = runInNewContext(`(${body})`, {
+    process: processPort, join, userGroup: () => group, root: "/finite", tlsOrigin: "https://127.0.0.1:8788", body: "expected",
+    budget, setTimeout, clearTimeout,
+    demand(ok) { assert.ok(ok); }, fail: () => Error("FINITE_SECRET_FAILURE"),
+    bounded: action => Promise.resolve().then(action),
+    readFileSync: path => path.endsWith("/cgroup") ? `0::${group}\n` : path.endsWith("/status") ? "NoNewPrivs: 1" : "{}",
+    checkBookingEnvironment() {}, proxyOptions: { configPath: "/finite/config" }, checkOwnedDirectory() {}, directoryIdentity: () => ({}),
+    guiEnvironment: value => value, procIdentity: () => ({ pid: 42, start: "7", group }), sameProcess: assert.deepEqual,
+    createInterface() {
+      queueMicrotask(() => {
+        if (early) lines.emit("close");
+        else lines.emit("line", JSON.stringify({ cookie: "a".repeat(42) + "A", month }));
+        if (early) lines.emit("line", "{}");
+      });
+      return lines;
+    },
+    exec: async () => ({ stdout: "" }), createCertificate: async () => ({ key: "fixture", cert: "fixture", ca: "fixture" }),
+    mkdirSync() {}, realpathSync: path => path, nssPath: () => "/finite/nss", checkTrustListing() {},
+    X509Certificate: class { fingerprint256 = "finite"; }, constants: {},
+    createServer: (_options, receive) => {
+      serverRequest = () => receive({}, { writeHead() {}, end() {} });
+      return Object.assign(new EventEmitter(), {
+        listen(port, host, done) { assert.equal(port, 8788); assert.equal(host, "127.0.0.1"); done(); },
+        close(done) { calls.push("proof-close"); done(); }, closeAllConnections() {},
+        setSecureContext() { calls.push("alternate-certificate"); },
+      });
+    },
+    launchOptions: () => ({ env: {} }), loadPlaywright: async () => ({ chromium: {
+      async launch({ headless = true }) {
+        calls.push(headless ? "headless-launch" : "headful-launch");
+        return { async close() { calls.push(headless ? "headless-close" : "headful-close"); }, async newContext() {
+          return { async newPage() {
+            return { async goto(url) {
+              if (url.endsWith("/san-mismatch")) throw Error("ERR_CERT_COMMON_NAME_INVALID");
+              if (url.endsWith("/untrusted")) throw Error("ERR_CERT_AUTHORITY_INVALID");
+              serverRequest();
+              return { status: () => 200, text: async () => "expected" };
+            }, async close() { calls.push("page-close"); } };
+          } };
+        } };
+      },
+    } }),
+    generatedBrowserFiles: () => ["/finite/playwright_chromiumdev_profile-fixture"],
+    ownedProcesses: () => [{ main: true, pid: 42 }],
+    checkGeneratedBrowserCleanup() {},
+    checkTlsFailure(error, code) {
+      assert.equal(error?.message, code);
+      if (code === "ERR_CERT_COMMON_NAME_INVALID" && failures.includes("san-tls")) throw Error("FINITE_SECRET_TLS_RESULT");
+    },
+    createOperatorWorker(_input, _name, _effects, stage) {
+      return {
+        async start() { for (const phase of ["worker-preflight", "worker-spawn", "worker-process", "worker-listener"]) stage(phase, () => {}); },
+        hasChild: () => true, isReady: () => !stopped,
+        async stop() { calls.push("worker-stop"); stopped = true; return { stopped: true, portClosed: true }; },
+      };
+    },
+    async observeHumanBrowser(_context, _session, _month, _bad, diagnostic) {
+      assert.equal(diagnostic, true);
+      calls.push("display");
+      return { closeAdmission: () => calls.push("close-admission"), finish: () => assert.fail("human operation must be unreachable") };
+    },
+  });
+  try { await child(name, {}, progress); record.end(); } catch (error) { if (!early) throw error; }
+  assert.equal(lines.listenerCount("close"), 0);
+  assert.equal(processPort.listenerCount("SIGINT"), 0);
+  return { text, calls, messages };
+}
+
+test("#1164 shared child completes TLS and display, stops admission first and never hands off to human operation", async () => {
+  const f = await finiteDiagnosticChild();
+  assert.equal(f.text, fixtureJournal("child", childPhases));
+  assert.deepEqual(f.messages, ["started", "diagnostic-display"]);
+  assert.deepEqual(f.calls, ["headless-launch", "page-close", "page-close", "alternate-certificate", "page-close",
+    "headless-close", "proof-close", "headful-launch", "display", "close-admission", "worker-stop", "headful-close"]);
+  const early = await finiteDiagnosticChild([], true);
+  assert.equal(parseProgress("child", early.text).ended, false);
+  assert.deepEqual(early.calls, []);
+});
+
+test("#1164 shared child separately retains TLS, page-close and browser-close failures without retry", async () => {
+  // Inject at TLS checking after the page has opened so teardown has a page to close.
+  const f = await finiteDiagnosticChild(["san-tls", "san-page-close", "headless-close"]);
+  const report = parseProgress("child", f.text);
+  assert.equal(report.firstFailure, "san-tls");
+  assert.equal(report.firstCleanupFailure, "san-page-close");
+  assert.equal(report.lastCompleted, "release-8788");
+  assert.deepEqual(f.calls, ["headless-launch", "page-close", "proof-close"]);
+  assert.deepEqual(f.messages, ["started"]);
+  const closeFault = await finiteDiagnosticChild(["headless-close"]);
+  assert.equal(parseProgress("child", closeFault.text).firstCleanupFailure, "headless-close");
+  assert.deepEqual(closeFault.calls, ["headless-launch", "page-close", "page-close", "alternate-certificate", "page-close", "proof-close"]);
+});
+
+async function finiteProgressOwner(outcome) {
+  const source = readFileSync("tests/evaluation/booking-operator.mjs", "utf8");
+  const body = source.slice(source.indexOf("async function owner("), source.indexOf("\nif (process.argv[1]"));
+  const processPort = new EventEmitter(), bridge = new EventEmitter(), calls = [];
+  let trace = "", captures = 0, sent = 0, terminal = false, stopped = false;
+  Object.assign(processPort, { umask() {}, env: { TMPDIR: "/finite/home" }, getuid: () => 1000, platform: "linux",
+    version: "v24.0.0", argv: [null, null, null, null, null, name], stdin: new PassThrough() });
+  bridge.stdout = new EventEmitter(); bridge.exitCode = null;
+  bridge.stdin = Object.assign(new EventEmitter(), {
+    write(line, done) {
+      assert.deepEqual(JSON.parse(line), { cookie: "FINITE_SECRET_SESSION", month });
+      assert.deepEqual(calls, ["spawn", "attest"]); sent++;
+      done();
+      queueMicrotask(() => {
+        if (outcome === "lost") bridge.emit("close", 1);
+        else {
+          terminal = true;
+          bridge.stdout.emit("data", Buffer.from('{"status":"diagnostic-display"}\n{"status":"diagnostic-complete"}\n'));
+        }
+      });
+    },
+    end() {},
+  });
+  const operatorPath = "/finite/tests/evaluation/booking-operator-child.mjs";
+  const versions = { wrangler: "4.146.0", "playwright-core": "1.64.0", typescript: "6.0.3" };
+  const owner = runInNewContext(`(${body})`, {
+    process: processPort, join, performance: { now: () => 0 }, budget, setTimeout, clearTimeout,
+    randomBytes: () => Buffer.from("a".repeat(32), "hex"), root: "/finite", console,
+    demand: assert.ok, fail: () => Error("FINITE_SECRET_ERROR"), listenOperatorInput, userGroup, parseUnit, unitProperties,
+    guiEnvironment: value => value, procIdentity: pid => ({ pid, start: "7", group }), sameProcess: assert.deepEqual,
+    openProgress: () => ({ ...progressRecorder("owner", line => { trace += line; }), close() {} }),
+    present: () => false, readdirSync: () => [], realpathSync: value => value === "/proc/42/exe" ? processPort.execPath : value,
+    lstatSync: () => ({ mode: 0o700, isFile: () => true }),
+    readFileSync: path => path.endsWith("/cgroup") ? `0::${group}\n` : path === "/proc/1/comm" ? "systemd" :
+      path.endsWith("cgroup.controllers") ? "cpu" : path.endsWith("/cmdline") ? [operatorPath, name].join("\0") :
+      path.includes("package") ? JSON.stringify({ version: versions[path.split("/").at(-2)], devDependencies: versions,
+        packages: Object.fromEntries(Object.entries(versions).map(([key, version]) => ["node_modules/" + key, { version }])) }) : "{}",
+    verifyStudentAssets() {}, migrations() {}, verifyOperatorBuild: async () => undefined, bounded: action => Promise.resolve().then(action),
+    mkdirSync() { captures++; }, rmSync: () => assert.fail("retention is mandatory"),
+    supply: { checkBookingEnvironment() {}, checkDirectoryIdentity() {}, checkOwnedTree() {}, directoryIdentity: () => ({}),
+      proxyOptions: { configPath: "/finite/config" }, persistence: "/finite/persist",
+      async prepareTrustedBooking(consume, _entered, stage) {
+        for (const phase of ownerPhases.slice(2, 12)) await stage(phase, () => {});
+        await stage("handoff-capture", () => consume({ month, sessions: { self: { cookie: () => ({ value: "FINITE_SECRET_SESSION" }) } } }, {}));
+      },
+      inspectTrustedBooking: () => assert.fail("reservation readback must be unreachable"),
+    },
+    createInterface: () => Object.assign(new EventEmitter(), { close() {} }),
+    emptyGroup: () => { calls.push("empty"); },
+    spawn(file, args) {
+      assert.equal(file, "systemd-run"); assert.ok(args.includes("--unit-diagnostic-child")); assert.ok(args.includes("--property=RuntimeMaxSec=1798s"));
+      assert.ok(!args.join(" ").includes("FINITE_SECRET_SESSION"));
+      calls.push("spawn");
+      queueMicrotask(() => {
+        bridge.emit("spawn");
+        bridge.stdout.emit("data", Buffer.from('{"status":"started","pid":42,"start":"7"}\n'));
+      });
+      return bridge;
+    },
+    async exec(file, args) {
+      if (file === "git") return { stdout: args[0] === "rev-parse" ? "a".repeat(40) : "" };
+      if (file === "ss") return { stdout: "" };
+      assert.equal(file, "systemctl");
+      if (args[1] === "stop") {
+        calls.push("stop"); assert.equal(terminal, true); stopped = true;
+        return { stdout: "" };
+      }
+      if (stopped) return { stdout: "LoadState=not-found\nActiveState=inactive\nSubState=dead\nInvocationID=\n" };
+      if (!calls.includes("spawn")) return { stdout: "LoadState=not-found\n" };
+      const duration = { RuntimeMaxUSec: "29min 58s" };
+      if (!terminal) {
+        calls.push("attest");
+        return { stdout: unitText({ ...duration, MainPID: outcome === "identity" ? "43" : "42" }) };
+      }
+      return { stdout: unitText({ ...duration, SubState: outcome === "failed-unit" ? "failed" : "exited",
+        ActiveState: outcome === "failed-unit" ? "failed" : "active", MainPID: "0", ExecMainCode: "1", ExecMainStatus: "0" }) };
+    },
+  });
+  processPort.execPath = "/node";
+  await owner("a".repeat(40), {}, false, "/finite");
+  return { trace, captures, sent, calls };
+}
+
+test("#1164 owner uses the attested pipe once, never stops a failed or unknown unit and retains assets", async () => {
+  const good = await finiteProgressOwner("complete");
+  assert.equal(good.trace, fixtureJournal("owner", ownerPhases));
+  assert.equal(good.captures, 1);
+  assert.equal(good.sent, 1);
+  assert.deepEqual(good.calls, ["spawn", "attest", "empty", "empty", "stop", "empty"]);
+  const lost = await finiteProgressOwner("lost");
+  assert.equal(lost.sent, 1);
+  assert.deepEqual(lost.calls, ["spawn", "attest"]);
+  assert.equal(parseProgress("owner", lost.trace).lastCompleted, "packet-send");
+  const failed = await finiteProgressOwner("failed-unit");
+  assert.equal(failed.sent, 1);
+  assert.deepEqual(failed.calls, ["spawn", "attest"]);
+  assert.equal(parseProgress("owner", failed.trace).firstCleanupFailure, "unit-terminal");
+  const identity = await finiteProgressOwner("identity");
+  assert.equal(identity.sent, 0);
+  assert.deepEqual(identity.calls, ["spawn", "attest"]);
+  assert.equal(parseProgress("owner", identity.trace).firstFailure, "child-attestation");
+  for (const value of [good, lost, failed, identity]) assert.doesNotMatch(value.trace, /FINITE_SECRET/);
+});
+
+test("#1164 outer opt-in ignores private subprocess streams and reports the active stage on sudden exit", async () => {
+  const result = await finiteNode(bridgeCliFixture("progress"));
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /FINITE_SECRET/);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.result, "UNKNOWN");
+  assert.deepEqual(report.controller, { lastCompleted: "controller-start", active: "none" });
+  assert.deepEqual(report.owner, { lastCompleted: "none", active: "controller-entry" });
 });
