@@ -117,14 +117,14 @@ async function owner(head, gui, diagnostic = false, progressDirectory) {
   const name = `nssscdl-operator-${randomBytes(16).toString("hex")}.service`, group = userGroup(process.getuid(), name);
   const managerEnv = { PATH: env.PATH, HOME: temporary, XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
     DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
-  let invocation, main, unitStarted = false, stopAttempted = false, bridge, browserHome, persistIdentity, parentIdentity, runtimeSeconds;
+  let invocation, main, unitStarted = false, stopAttempted = false, bridge, bridgeExit, browserHome, persistIdentity, parentIdentity, runtimeSeconds;
   let endInteraction, reservationId, finishedAt, cleanupEnd = deadline;
   const interrupt = () => { aborted = true; bridge?.stdin.end(); endInteraction?.(); };
   const releaseInput = listenOperatorInput(interrupt);
   const remaining = () => { demand(!aborted && performance.now() < deadline); return deadline - performance.now(); };
-  const command = async (file, args, manager = false) => (await exec(file, args, { cwd: root, env: manager ? managerEnv : env,
-    timeout: Math.max(1, Math.min(5000, manager ? cleanupEnd - performance.now() : remaining())), maxBuffer: 65536 })).stdout;
-  const show = () => command("systemctl", ["--user", "show", name, ...unitProperties.split(",").map(k => `--property=${k}`)], true);
+  const command = async (file, args, manager = false, end = cleanupEnd) => (await exec(file, args, { cwd: root, env: manager ? managerEnv : env,
+    timeout: Math.max(1, Math.min(5000, manager ? end - performance.now() : remaining())), maxBuffer: 65536 })).stdout;
+  const show = end => command("systemctl", ["--user", "show", name, ...unitProperties.split(",").map(k => `--property=${k}`)], true, end);
   const closed = async () => { for (const port of [8788, 8789]) demand((await command("ss", ["-H", "-ltn", `sport = :${port}`])).trim() === ""); };
   const expected = () => ({ group, invocation, runtimeSeconds });
   const checkOwned = () => {
@@ -148,6 +148,24 @@ async function owner(head, gui, diagnostic = false, progressDirectory) {
     demand(Object.keys(data).length === 4 && (data.LoadState === "not-found" && data.ActiveState === "inactive" ||
       data.InvocationID === invocation && data.ActiveState === "inactive" && data.SubState === "dead"));
     emptyGroup(group);
+  };
+  const finishBridge = async () => {
+    const client = bridge;
+    if (!client) return;
+    bridge = undefined;
+    try {
+      client.stdin.end();
+      if (!client.pid || client.exitCode !== null || client.signalCode !== null) return;
+      const waitForExit = () => bounded(() => bridgeExit, Math.min(1000, deadline - performance.now()));
+      try { await waitForExit(); }
+      catch {
+        // Signal only the spawned systemd-run client. The unit and its resources remain under manager ownership.
+        if (client.exitCode === null && client.signalCode === null) client.kill("SIGTERM");
+        await waitForExit();
+      }
+    } finally {
+      client.stdin.destroy(); client.stdout.destroy(); client.unref();
+    }
   };
   let outputId, evidence;
   const checkSource = async () => {
@@ -202,6 +220,7 @@ async function owner(head, gui, diagnostic = false, progressDirectory) {
           progress ? "--unit-diagnostic-child" : "--unit-child", name, JSON.stringify([name, gui])];
         const launched = stage("child-start", () => {
           unitStarted = true; bridge = spawn("systemd-run", args, { cwd: root, env: managerEnv, stdio: ["pipe", "pipe", "ignore"] });
+          bridgeExit = new Promise(done => bridge.once("exit", done));
           if (progress) return new Promise((done, bad) => { bridge.once("spawn", done); bridge.once("error", bad); });
         });
         launched?.catch(() => {});
@@ -286,15 +305,22 @@ async function owner(head, gui, diagnostic = false, progressDirectory) {
         for (let sample = 0; sample < 2; sample++) {
           const end = Math.min(cleanupEnd, performance.now() + 10000); let terminal = false;
           while (!terminal && performance.now() < end) {
-            const text = await show();
-            if (/^SubState=running$/m.test(text)) {
-              const snapshot = parseUnit(text, expected()); sameProcess(main, procIdentity(snapshot.pid, group));
-              await new Promise(done => setTimeout(done, 100));
-            } else { parseUnit(text, expected(), true); terminal = true; }
+            remaining();
+            const snapshot = parseUnit(await show(end), expected(), "poll");
+            if (snapshot.pid) {
+              demand(snapshot.pid === main.pid);
+              try { sameProcess(main, procIdentity(snapshot.pid, group)); }
+              catch (error) {
+                // A process that exits between manager and kernel reads requires a fresh manager sample.
+                if (error?.code !== "ENOENT" && error?.code !== "ESRCH") throw error;
+              }
+            }
+            terminal = !snapshot.pending;
+            if (!terminal) await new Promise(done => setTimeout(done, Math.max(0, Math.min(100, end - performance.now()))));
           }
-          demand(terminal); emptyGroup(group); await closed();
+          remaining(); demand(terminal && performance.now() < end); emptyGroup(group); await closed();
         }
-        checkOwned(); remaining();
+        checkOwned(); remaining(); demand(performance.now() < cleanupEnd);
       },
       async readback(handle, id) { await bounded(() => supply.inspectTrustedBooking(handle, id), Math.min(cleanupEnd - performance.now(), remaining())); },
       scan(seed) {
@@ -338,11 +364,14 @@ async function owner(head, gui, diagnostic = false, progressDirectory) {
       return;
     }
     await useOperator(ports);
+    await finishBridge();
     demand(outputId === reservationId);
     console.log(JSON.stringify({ issue: 1104, head, ...evidence, completedAt: finishedAt, actor: "fictional-self", reservationId,
       browser: "human-one-confirm-history", readback: "five-tables", cleanup: "owned-removed", evidence: "local-human-partial; Gate-A-D/930-401/608-release-unproved" }));
   } finally {
-    bridge?.stdin.end(); releaseInput(); progress?.close();
+    releaseInput();
+    try { await finishBridge(); }
+    finally { progress?.close(); }
   }
 }
 

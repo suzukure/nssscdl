@@ -134,6 +134,12 @@ cgroup空・両port閉鎖を確認した場合にだけ診断用子unitを停止
 保持する。準備・終了の時間予算は既存の範囲内とし、自動再試行や保持済み資産・failed unitの
 操作は行わない。`NOT_REPRODUCED` はこの診断条件での結果として #1108 に引き継ぐ。
 
+#1166 では終了照合時、同一Invocation・固定設定の終了遷移や PID 消失を既存の確認予算内で
+再照会する。2回の正常終端、空cgroup、ポート閉鎖、所有照合は停止前の必須条件とする。
+通常終了または保持経路で起動クライアントの終了を短時間待ち、必要な場合に限り controller が
+直接起動した `systemd-run` クライアントへ一度だけ SIGTERM を送る。クライアントの終了は
+unit 停止の証拠に使わず、照合不能時の診断資産と既存の判定を保持する。
+
 自動Unit / Integration / End-to-End Testを格納する。
 
 要求ベースのSystem / Acceptance Test Specificationとトレーサビリティは `docs/40_test/` を正本とする。

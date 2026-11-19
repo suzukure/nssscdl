@@ -52,6 +52,19 @@ export function parseUnit(text, expected, terminal = false) {
   demand(unitDuration(data.RuntimeMaxUSec) === lifetime * 1000000 && unitDuration(data.TimeoutStopUSec) === 2000000 && data.KillMode === "control-group" &&
     data.Restart === "no" && data.RemainAfterExit === "yes" && data.NoNewPrivileges === "yes");
   demand(data.ControlPID === "0");
+  if (terminal === "poll") {
+    if (data.ActiveState === "active" && data.SubState === "running") {
+      demand(data.Result === "success" && /^[1-9]\d*$/.test(data.MainPID) && data.ControlGroup === expected.group);
+      return Object.freeze({ pid: Number(data.MainPID), pending: true });
+    }
+    if (data.ActiveState === "deactivating") {
+      demand(["stop", "stop-sigterm", "stop-post"].includes(data.SubState) && data.Result === "success" &&
+        data.MainPID === "0" && data.ExecMainCode === "1" && data.ExecMainStatus === "0" &&
+        ["", expected.group].includes(data.ControlGroup));
+      return Object.freeze({ pid: 0, pending: true });
+    }
+    terminal = true;
+  }
   if (terminal === "stop") demand(["", expected.group].includes(data.ControlGroup) && /^\d+$/.test(data.MainPID));
   else if (terminal) demand(data.ActiveState === "active" && data.SubState === "exited" && data.Result === "success" && data.MainPID === "0" && data.ExecMainCode === "1" && data.ExecMainStatus === "0" &&
     ["", expected.group].includes(data.ControlGroup));
