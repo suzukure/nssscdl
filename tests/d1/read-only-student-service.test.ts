@@ -75,7 +75,7 @@ async function error(response: Response, status: number, code: string) {
   expect(JSON.stringify(body)).not.toMatch(/private|fixture|SQL|seed-|token|hash|account/);
 }
 beforeAll(async () => {
-  await applyD1Migrations(db, env.RESERVATION_MIGRATIONS);
+  await applyD1Migrations(db, [...env.RESERVATION_MIGRATIONS, ...env.PROVIDER_MIGRATIONS]);
   seed = await seedTrustedStudents(db, validation);
   // Isolated saved-history fixture on a free Slot; no occupancy or new Command.
   await db.prepare(`INSERT INTO student_reservations VALUES ('history-cancelled','seed-self','seed-slot-bookable',

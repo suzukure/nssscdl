@@ -22,7 +22,7 @@ function fixture() {
   return db;
 }
 
-test("#904 local migration fixture: 12 authoritative DDLs and all existing scans; no mutation", () => {
+test("#904 local migration fixture: 13 authoritative DDLs and all existing scans; no mutation", () => {
   const db = fixture();
   try {
     const first = checkDatabase(db, names);
@@ -37,6 +37,8 @@ test("#904 refuses nonempty data, unknown schema, changed constraints and incomp
     "CREATE TABLE unexpected (id TEXT)",
     "DROP TABLE command_guards; CREATE TABLE command_guards (id TEXT PRIMARY KEY, captured_at INTEGER NOT NULL, expected_read_set TEXT NOT NULL, ok INTEGER NOT NULL)",
     "DELETE FROM d1_migrations WHERE name='0012_reservation_indexes.sql'",
+    "DELETE FROM d1_migrations WHERE name='0013_student_provider_identity.sql'",
+    "INSERT INTO student_registration_settings VALUES (1, 'open')",
   ]) {
     const db = fixture();
     try { db.exec(query); assert.throws(() => checkDatabase(db, names)); }

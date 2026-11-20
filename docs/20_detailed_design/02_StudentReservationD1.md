@@ -523,7 +523,7 @@ ProductionおよびProduction相当の共有環境では、予約migrationの前
 
 ### 9.1 正本・最小保存面
 
-HTTP / Cookie / CSRF / Provider validationは`01_StudentReservationApplication.md` §10を正とする。以下は同じ業務D1に保存する認証flowのDDL契約であり、Production migrationではない。§8のTable / View / predicateを変更せず、Profile変更・Invitation管理・削除Command全体の実装を追加しない。§8のAccountへ接続するbinding／所有確認／登録許可を定義する。
+HTTP / Cookie / CSRF / Provider validationは`01_StudentReservationApplication.md` §10を正とする。以下は同じ業務D1に保存する認証flowのDDL契約である。#1173は最初の3表を[Production migration 0013](../../migrations/README.md)として追加し、残るDDLは後続実装とする。§8のTable / View / predicateを変更せず、Profile変更・Invitation管理・削除Command全体の実装を追加しない。§8のAccountへ接続するbinding／所有確認／登録許可を定義する。
 
 ```sql
 CREATE TABLE student_contacts (
@@ -651,5 +651,6 @@ ID / 時刻は§1、hashは§8.2と同じ64文字lowercase hexとする。Invita
 flow／proof／pre-auth／Rate Limit一時行は有効期限／最大時間窓を超えて利用せず、Cleanupで参照順に除去する。hashをAuditへ複製しない。Student削除ではcontacts、Google binding、当該AccountのMagic Challengeと該当identityを含む登録proof／短期flowも直接・間接識別子として24時間以内削除・匿名化対象にする。具体削除Command全体／Recovery Purgeは#843で既存要求に従い合成し、本節だけでは有効化しない。未完了・結果不明flowも個人情報削除を理由に保持延長しない。
 
 §8 migration後、contacts / binding / 登録mode、pre-auth / Invitation、Google / Magic flow、proof、Rate Limitの順で必要なschemaを追加する。#841の§8 Guard migrationだけでは本節のProvider flowを有効化しない。適用済みmigrationや`student_session_access_v1`の意味を変えず、flow実装前に各追加保存面のmigration・一意性・FK・CHECK assertを揃える。対象環境の原子性・Server時刻・先行Commit可視性は引き続き§8.6のGateとする。
+#1173の`0013`は初期mode行を作らず、既存認証・予約行を変えない。連絡先・binding・modeのDDL制約と既存Integrityのlocal D1部分検証のみを[tests/README.md](../../tests/README.md)に記録し、明示的なmode provisioning・Provider flow実装・有効化とは区別する。
 
 検証はApplication §10.9の既存AC / TCへ対応付ける。追加確認はclaim replay／old claimed callback、Magic同宛先並行再要求とconsume、登録mode／招待再発行race、同identity／同email並行登録、メール変更後旧Challenge、停止・削除／Loginの両Commit順、最終期限到達と全Rollbackである。local SQLiteのDDL／fixture検証はこの契約の局所検証であり、実D1／Provider／Browser試験の証明にはしない。

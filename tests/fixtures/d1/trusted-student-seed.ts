@@ -1,5 +1,5 @@
 // #898: operator/test-owned, dedicated local DB only. Never import from src.
-// Caller applies unchanged Production 0001–0012 once and supplies the existing
+// Caller applies Production 0001–0013 once and supplies the existing
 // validation SQL. No migration, reset, remote selection, logging or retry here.
 interface SeedStatement {
   bind(...values: unknown[]): SeedStatement;
@@ -27,14 +27,15 @@ const tables = [
   "admin_holds", "business_audit_logs", "command_guards", "group_lessons", "lesson_slots",
   "notification_intents", "notification_outbox", "reservation_absences",
   "reservation_classification_overrides", "reservation_monthly_count_overrides", "schedule_months",
-  "slot_occupancies", "student_accounts", "student_monthly_lesson_configs", "student_reservations",
+  "slot_occupancies", "student_accounts", "student_contacts", "student_google_bindings",
+  "student_monthly_lesson_configs", "student_registration_settings", "student_reservations",
   "student_security_access", "student_sessions", "students",
 ];
 const now = "CAST(strftime('%s','now') AS INTEGER)";
-// Fingerprint of type/name/table/SQL (sorted by name), from Production 0001–0012.
+// Fingerprint of type/name/table/SQL (sorted by name), from Production 0001–0013.
 // Whitespace outside SQL string literals is ignored; CHECK/FK/Index/Trigger/View
 // definitions and unknown objects must match, not merely the table names.
-const schemaFingerprint = "2d2c32ce918d47444e3c344eaf6180fd62532e6f9b7bb686b3d4f0ded1f5dd5a";
+const schemaFingerprint = "915cd4e1135f08defd2fcdf5eb17af1900931f82762e7bd74b3887cc3dc6f22e";
 const normalize = (sql: string) => sql.replace(/'[^']*(?:''[^']*)*'|\s+/g,
   (part) => part.startsWith("'") ? part : "").replace(/;$/, "");
 const hexHash = async (value: string) => Array.from(new Uint8Array(

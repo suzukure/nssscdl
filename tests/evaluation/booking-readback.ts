@@ -9,7 +9,8 @@ type Snapshot = { time: number; tables: Record<string, Row[]>; schema: Row[] };
 const tables = ["admin_holds", "business_audit_logs", "command_guards", "d1_migrations", "group_lessons", "lesson_slots",
   "notification_intents", "notification_outbox", "reservation_absences", "reservation_classification_overrides",
   "reservation_monthly_count_overrides", "schedule_months", "slot_occupancies", "student_accounts",
-  "student_monthly_lesson_configs", "student_reservations", "student_security_access", "student_sessions", "students"];
+  "student_contacts", "student_google_bindings", "student_monthly_lesson_configs", "student_registration_settings",
+  "student_reservations", "student_security_access", "student_sessions", "students"];
 const changed = new Set(["student_reservations", "slot_occupancies", "business_audit_logs", "notification_intents", "notification_outbox"]);
 const fail = () => new Error("BOOKING_EVALUATION_READBACK_FAILED");
 const check = (ok: unknown) => { if (!ok) throw fail(); };
@@ -30,7 +31,7 @@ async function capture(db: BookingReadPort, validation: SeedValidation): Promise
     bind() { throw fail(); }, all: () => db.prepare(query).all(),
   }), batch: async () => { throw fail(); } };
   await checkTrustedSeedIntegrity(integrity, validation);
-  // Closed table inventory comes from Production 0001–0012. Column names are
+  // Closed table inventory comes from Production 0001–0013. Column names are
   // discovered only after schema admission by seedTrustedStudents; quote them.
   const columns: Record<string, string[]> = {};
   for (const table of tables) {

@@ -18,7 +18,7 @@ function fixture() {
     all: async () => ({ success: true, results: sqlite.prepare(query).all(...values) }),
     run: () => sqlite.prepare(query).run(...values),
   });
-  const db = { prepare, async batch(statements) {
+  const db = { prepare, withSession: (constraint) => { assert.equal(constraint, "first-primary"); return db; }, async batch(statements) {
     batches++; sqlite.exec("BEGIN");
     try {
       for (const statement of statements) statement.run();
@@ -27,7 +27,7 @@ function fixture() {
   } };
   const factory = async (options) => {
     assert.equal(options, proxyOptions);
-    return { env: { EVALUATION_READ_DB: db }, dispose: async () => { disposed++; } };
+    return { env: { ASSETS: { fetch() {} }, EVALUATION_READ_DB: db }, dispose: async () => { disposed++; } };
   };
   return { sqlite, db, factory, batches: () => batches, disposed: () => disposed };
 }
@@ -103,7 +103,7 @@ test("#906: schema/nonempty/wrong binding failures stop before batch and still d
 test("#906: failed dispose suppresses callback without retrying seed or dispose", async () => {
   const f = fixture(); let closes = 0, called = 0;
   try {
-    await assert.rejects(useSeedProxy(async () => ({ env: { EVALUATION_READ_DB: f.db },
+    await assert.rejects(useSeedProxy(async (options) => ({ ...await f.factory(options),
       dispose: async () => { closes++; throw new Error("fixture-private-close"); } }), () => { called++; }), fixed);
     assert.equal(closes, 1); assert.equal(called, 0); assert.equal(f.batches(), 1);
   } finally { f.sqlite.close(); }
