@@ -78,7 +78,8 @@ gh() {
             [{id:301,body:$other,performed_via_github_app:{id:99}}]
           elif $mode == "round_pause" then
             [{id:301,body:$round,performed_via_github_app:{id:99}}]
-          else [] end)' ;;
+          else [] end)
+        | map(. + {created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"})' ;;
     'api /repos/owner/repo/actions/runs/500')
       jq -cn --arg mode "$RUN_MODE" '
         {id:500,run_attempt:2,name:(if $mode == "wrong" then "Other" else "AI Resume Validate Consumer" end),

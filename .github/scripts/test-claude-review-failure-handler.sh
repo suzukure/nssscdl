@@ -33,7 +33,7 @@ gh() {
       for arg in "$@"; do case "$arg" in body=*) body="${arg#body=}" ;; esac; done
       id="$(jq 'length + 101' "$TEST_DIR/comments.json")"
       jq --arg body "$body" --argjson id "$id" \
-        '. + [{id:$id,body:$body,performed_via_github_app:{id:99}}]' \
+        '. + [{id:$id,body:$body,performed_via_github_app:{id:99},created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"}]' \
         "$TEST_DIR/comments.json" > "$TEST_DIR/next.json"
       mv "$TEST_DIR/next.json" "$TEST_DIR/comments.json"
       echo record >> "$TEST_DIR/events"

@@ -24,12 +24,12 @@ gh() {
       local id
       id="$(jq 'length + 101' "$TEST_DIR/comments.json")"
       jq --arg body "$body" --argjson id "$id" \
-        '. + [{id:$id, body:$body, performed_via_github_app:{id:99}}]' \
+        '. + [{id:$id, body:$body, performed_via_github_app:{id:99},created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"}]' \
         "$TEST_DIR/comments.json" > "$TEST_DIR/next.json"
       mv "$TEST_DIR/next.json" "$TEST_DIR/comments.json"
       if [ "${MOCK_CONCURRENT_PAUSE:-false}" = true ]; then
         jq --arg body "$body" --argjson id "$((id + 1))" \
-          '. + [{id:$id, body:$body, performed_via_github_app:{id:99}}]' \
+          '. + [{id:$id, body:$body, performed_via_github_app:{id:99},created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"}]' \
           "$TEST_DIR/comments.json" > "$TEST_DIR/next.json"
         mv "$TEST_DIR/next.json" "$TEST_DIR/comments.json"
       fi
@@ -111,7 +111,7 @@ fi
 consumed="$(bash "$script_dir/human-pause-record.sh" create \
   '{"version":1,"kind":"ai-resume-accepted","reason":"requirements_change","target":"pr:37","source_pause_id":"101"}')"
 jq --arg body "$consumed" \
-  '. + [{id:102, body:$body, performed_via_github_app:{id:99}}]' \
+  '. + [{id:102, body:$body, performed_via_github_app:{id:99},created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"}]' \
   "$test_dir/comments.json" > "$test_dir/next.json"
 mv "$test_dir/next.json" "$test_dir/comments.json"
 jq -e '.result == "already_consumed" and .pause_id == "101"' \
