@@ -1,10 +1,12 @@
-# ChatGPT Workのコンテキスト・コスト管理
+# ChatGPT（Chat／Work）のコンテキスト・コスト管理
 
 ## 目的
 
-ChatGPT WorkをGitHub作業の対話窓口として使いながら、長大な会話、Actionsログ全文の反復取得、過剰なモデル選択、同一証跡の再調査によるコンテキスト消費を抑える。
+ChatをGitHub作業の主な対話窓口とし、Workを利用する場合も、長大な会話、Actionsログ全文の反復取得、過剰なモデル選択、同一証跡の再調査によるコンテキスト消費を抑える。
 
-GitHub main上の正本文書を確定仕様、GitHub Issueを未決事項・検討状態の正本とする。Pull Request、review、Actionsは実行結果とレビュー対話の正本とする。本書はChatGPT Work側の会話構成と調査方法を定め、[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md)を補完する。
+GitHub main上の正本文書を確定仕様、GitHub Issueを未決事項・検討状態の正本とする。Pull Request、review、Actionsは実行結果とレビュー対話の正本とする。本書はChat／Work側の会話構成と調査方法を定め、[AI開発・ClaudeレビューのGitHub運用](ai-development-workflow.md)を補完する。
+
+Chatは調整・状態確認・許可されたGitHub操作を担当し、実装・検証は適格な案件ではCodex Cloudを第一候補とする。具体的な適用範囲、代替経路、実行許可、停止条件、役割境界は[通常フロー](ai-development-workflow.md#通常フロー)を正本とし、本書では別の権限や実行条件を定義しない。
 
 ## ChatGPT Projectの設定
 
@@ -17,7 +19,7 @@ Project Sourcesは次の最小構成とする。
 - AI開発・レビュー基盤の概要資料
 - 必要な場合だけ、100行程度を目安とする最新状態の要約1件
 
-GitHubの最新状態は、接続済みGitHubツールから都度取得する。利用中のChatGPT Work環境でGitHubリポジトリを継続的に参照できるProject Sourceとして追加可能であることを実際に確認できた場合は、`suzukure/nssscdl`をSourcesに加えてよい。追加可否を確認できない場合は必須構成に含めない。
+GitHubの最新状態は、接続済みGitHubツールから都度取得する。利用中のChat／Work環境でGitHubリポジトリを継続的に参照できるProject Sourceとして追加可能であることを実際に確認できた場合は、`suzukure/nssscdl`をSourcesに加えてよい。追加可否を確認できない場合は必須構成に含めない。
 
 アップロードしたリポジトリファイルや状態要約は、その時点のsnapshotであり、最新Issue、PR、Actions、SHA確認の代替にしない。過去IssueごとのActionsログ、レビュー全文、チャット間引き継ぎをSourcesへ累積しない。確定事項はGitHub main上の正本文書へ、未決事項と検討状態はIssueへ記録する。
 
@@ -28,6 +30,11 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 ```text
 ## GitHub作業のコンテキスト・コスト管理
 
+### 開発経路と役割
+
+- Chatを調整の主な窓口とし、実装・検証は適格な案件ではCodex Cloudを第一候補とする。経路の選択、事前確認、代替、GitHubへの提出、停止・復旧と権限境界はlatest mainのai-development-workflow.md「通常フロー」および関連節に従う。Workを利用する場合も同じ境界を守る。
+- 人間の判断・承認と、許可されたGitHub操作の代理実行を区別する。代理操作を本人の独立承認として扱わない。
+
 ### チャットの単位
 
 - 原則として、1つのGitHub Issueを1つのチャットで開始する。これは上限ではない。
@@ -36,7 +43,7 @@ Project instructionsへ次を設定する。リポジトリの運用正本と矛
 - 親Issueと複数の実施Issueを同じチャットで並行実装しない。
 - チャット名は「Issue #番号 - 短い目的」とする。
 - 同じ確定判断に伴う参照・用語・追跡表・図の修正はIssue確定時に洗い出し、同じDraft PRへ集約する。無関係な判断や別Issueを無断でまとめない。
-- 新規の自動開発PRはDraftで作成される。人間が関連修正と現在headの検証結果を確認してReady for reviewへ変更する。準備確認と承認後の非Blocking改善の延期条件はai-development-workflow.mdの「関連修正の集約とレビュー準備」に従う。
+- 新規開発PRはDraftで作成する。人間が関連修正と現在headの検証結果を確認してReady for reviewを承認する。実行操作、準備確認と承認後の非Blocking改善の延期条件はai-development-workflow.mdの「通常フロー」「関連修正の集約とレビュー準備」に従う。
 
 ### 同一Issue内のチャット分割とGitHub状態の取得
 
@@ -120,7 +127,7 @@ Project instructionsは会話上の方針であり、GitHubのRuleset、App権�
 
 親Issueを扱うチャットは、[Issueの分割単位](ai-development-workflow.md#issueの分割単位)に定める実施Issueの進捗集計と親Issueの完了判断に使用する。
 
-Issueの境界は[Issueの分割単位](ai-development-workflow.md#issueの分割単位)を正本とする。実装中は同じDraft PRで差分と検証を揃え、人間がReady化する。[関連修正の集約とレビュー準備](ai-development-workflow.md#関連修正の集約とレビュー準備)に従い、停止ラベルをDraftで代替しない。
+Issueの境界は[Issueの分割単位](ai-development-workflow.md#issueの分割単位)を正本とする。実装中は同じDraft PRで差分と検証を揃え、人間の承認に基づき[通常フロー](ai-development-workflow.md#通常フロー)と[関連修正の集約とレビュー準備](ai-development-workflow.md#関連修正の集約とレビュー準備)に従ってReady化する。停止ラベルをDraftで代替しない。
 
 ### 新しいチャットへ分ける条件
 
@@ -139,7 +146,7 @@ Issueの境界は[Issueの分割単位](ai-development-workflow.md#issueの分�
 
 ## モデルの選択
 
-モデルはProject instructionsだけでは自動的に切り替わらないため、チャット開始時または作業内容が変わった時に人間が選択する。利用可能なモデル名はChatGPT Workのmodel selectorを正本とする。
+モデルはProject instructionsだけでは自動的に切り替わらないため、チャット開始時または作業内容が変わった時に人間が選択する。利用可能なモデル名は利用中のChat／Workのmodel selectorを正本とする。
 
 | 作業 | モデルの区分 | reasoning effort |
 |---|---|---|
@@ -216,6 +223,15 @@ GitHubリポジトリ suzukure/nssscdl のIssue #<番号>を読み取りで確�
 同じSHA・runについて既存のJob Summary、Claude review usage step log、PR本文に証跡があれば再利用してください。
 現在地点、問題、次の1手を簡潔に報告してください。
 書き込みは行わないでください。
+```
+
+### 実装開始
+
+```text
+GitHubリポジトリ suzukure/nssscdl のIssue #<番号>の実装を進めてください。
+
+latest main、Issue本文・確定判断、関連PR・branch・停止状態を確認し、ai-development-workflow.mdの「通常フロー」に従って適格な経路・実行先・権限・writerを確認してください。
+承認されたscopeと検証範囲でCodexによる実装・検証を進め、条件が成立すれば許可された提出経路でDraft PRを作成してください。条件不足や停止状態があれば原因と未確認範囲を記録して停止してください。Ready化・最終mergeは別の人間判断に従ってください。
 ```
 
 ### 設計・レビュー指摘の検証

@@ -8,8 +8,25 @@ GitHub上に新規投稿・表示する人間向けのIssue / PR本文・コメ�
 
 ## 通常フロー
 
+### Chat＋Codex Cloudによる通常開発（#1171）
+
+#1171 / PR #1174 の自然な実装・検証・提出・独立review・人間mergeの完走に基づき、PC固有の実機・秘密情報・外部Provider接続・本番環境操作を必要としない通常の未停止・適格な製品実装では、Chat＋Codex Cloud直接経路を第一候補とする。これは限定採用であり、Work Cloud起動の成功、全案件の互換性、費用・実行時間の優越、既存の実環境Proofの成立を意味しない。同じ安全条件を満たす文書変更にも利用できる。
+
+限定採用は保護対象外の変更を前提とする。独立Code Owner承認を要する変更は既存の個別経路に従う。人間管理PRの具体的な適格条件は[Claude Reviewへ渡すtrusted conversationの選択](#claude-reviewへ渡すtrusted-conversationの選択)を正本とする。
+
+1. **Chat（調整）**：latest main、対象Issue本文・受入条件・確定判断、関連PR/branch、停止状態・writer競合、対象環境と認証主体・権限を確認し、人間の着手承認を得る。実行先が要求に合うLinuxであること、repository access、必要なruntime/locked依存・隔離検証、許可された提出経路が利用できることを有限に事前確認する。表示上のクラウド指定だけを実行先の証拠にしない。独立作業ツリーを用意し、trusted base由来の既存context builder・`AGENTS.md`・diff guardから `.ai-context/request.md`、`.ai-context/AGENTS.base.md`、`.ai-context/diff-guard-contract.json` を準備する。依存準備やGitHub読取りはこの調整の責務で行う。
+2. **Codex（実装・検証）**：承認されたIssueの範囲内で差分を作成し、`AGENTS.md` に従って影響に応じた有限検証・結果報告を行う。Codex自身のGitHub/APIアクセス、外部サービス接続、branch/commit/push/PR/Issue操作は禁止のままとする。実装環境での検証（通常の製品変更では必要な標準検証、隔離local D1等）と正式GitHub Actionsの証拠を区別する。
+3. **Chat（提出・レビュー調整）**：同じIssueの差分を一つのPRに集約し、base、検証対象差分/tree、trusted diff guard、停止・writer競合をfresh照合する。明示許可、実際の認証主体・PR作者、branch所有と既存権限を確認した場合に限り、許可されたGitHub操作で同一repositoryの `human/issue-N-*` branchへ提出し、`Closes #N` を含むDraft PRを作成する。人間管理PRの適格性は実際のidentityで判定し、枝名や代理実行によって本人の独立承認を得たものとしない。提出treeと検証済みtree、current HEADを照合し、[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)に従う。Ready化は人間のレビュー開始判断に基づき、人間自身または明示許可された開発補助が行う。
+4. **正式CI・独立review・人間判断**：current HEADの正式Product CI、AI Workflow Regression（各適用範囲）、PR Traceability、独立Claude Review、必要なCode Owner/Ruleset条件を維持する。追加修正は停止・writer・HEADを確認して同一Draftに集約し、旧AI Developerの自動修正を起動しない。人間管理PRは自動mergeせず、人間が最終判断して手動mergeする。main反映とclosing IssueのCloseを確認する。レビュー開始承認・最終承認をAIが代行せず、mainへの直接書込み・force push・安全条件の迂回を行わない。
+
+事前確認で必要な条件を満たせない場合は編集・提出を開始せず、原因と未証明範囲をIssueに記録して別の経路を人間判断で選ぶ。実装途中の切替えは既存writer停止・差分引渡し・停止契約を確認してから行い、二重writerや同条件の無条件再試行を避ける。PC/WSL固有の検証やCloudでは必要保証を満たせない場合はWSL上のCodex Local等の既存安全経路を利用する。WindowsはWindows固有の対象、Work Localは必要なローカル操作・調整に限定し、WorkからWSLへの接続を前提にしない。Work Cloudは実Linux起動・許可された条件の成立を確認できるまで保留する。通常のLinuxクラウドで完結する検証をWindows/WSLで重複実施することは標準としない。既存の実機・実Provider・本番・正式Proofの個別承認と必要保証は変更しない。
+
+### 旧AI Developer経路の現行契約
+
+旧AI Developerの新規routine利用は凍結を継続する。以下は既存経路の入口・停止/復旧・review連動の契約であり、通常の新規開発をこの経路で開始する指示ではない。既存停止案件等の例外処理は個別の人間判断と現行の停止/復旧契約に従う。既存workflowや権限を本方針だけで退役・無効化しない。
+
 1. 人間が実装対象Issueを作成し、対象、受入条件、上流・下流影響を記録する。
-2. 通常のIssue起点開発では、Open Issueに `/codex develop` だけを単独コメントとして投稿する。前後の説明文、引用、Markdown code block、字下げ、前後空白を付けたコメントは実行要求として扱わず、Closed Issueへのコメントでも起動しない。timeout後の例外として `/codex develop extended` も正規commandとするが、利用条件と固定35分上限は「human-approved extended-run」を正本とする。入口はこれら2つのcommandとの等値比較だけを使用し、GitHub公式仕様どおり文字列の等値比較は大文字小文字を区別しないため、運用上の正規形は小文字とする。形式やIssue stateが一致しない場合は入口job自体が起動せず自動ガイダンスも返らないため、反応がない場合はIssueがOpenか、コメントがcommand単独になっているかを確認する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
+2. 旧AI DeveloperのIssue起点開発を例外的に明示許可した場合は、Open Issueに `/codex develop` だけを単独コメントとして投稿する。前後の説明文、引用、Markdown code block、字下げ、前後空白を付けたコメントは実行要求として扱わず、Closed Issueへのコメントでも起動しない。timeout後の例外として `/codex develop extended` も正規commandとするが、利用条件と固定35分上限は「human-approved extended-run」を正本とする。入口はこれら2つのcommandとの等値比較だけを使用し、GitHub公式仕様どおり文字列の等値比較は大文字小文字を区別しないため、運用上の正規形は小文字とする。形式やIssue stateが一致しない場合は入口job自体が起動せず自動ガイダンスも返らないため、反応がない場合はIssueがOpenか、コメントがcommand単独になっているかを確認する。developer App tokenやOpenAI APIを使う前に、Issue自身と対応するopen PRの停止ラベルを事前ゲートで確認する。
 
 3. developer Appが `ai/issue-<Issue番号>` ブランチを作成・更新し、`Closes #<Issue番号>` を含むDraft PRを作成する。同じIssueの追加修正は既存PRへ集約し、自動Ready化しない。人間が下記の準備確認を終えてReady for reviewへ変更すると、Claude reviewが起動する。
 4. `PR Traceability / Linked Issue` が実在するclosing Issueを確認する。
@@ -87,7 +104,7 @@ Q2 / Q3の影響を、後継Issueの存在やIdeaという名称で回避して�
 
 ### current implementation contractとDoDの維持
 
-`/codex develop` 投入時点の[current implementation contract](#issue本文におけるcurrent-implementation-contract)を作業scopeの基準とする。AIは実装中に発見した改善候補を理由として、新しいAcceptance Criteria / Done条件 / 検証義務を自律的に追加しない。既存契約を満たすために必要な修正・検証と、新しい完了条件の追加を区別する。
+人間が着手を承認した時点（旧AI Developerでは `/codex develop` 投入時点）の[current implementation contract](#issue本文におけるcurrent-implementation-contract)を作業scopeの基準とする。AIは実装中に発見した改善候補を理由として、新しいAcceptance Criteria / Done条件 / 検証義務を自律的に追加しない。既存契約を満たすために必要な修正・検証と、新しい完了条件の追加を区別する。
 
 原因調査だけをadmissionした場合は判断材料と調査証拠の記録をDoneとし、恒久的な実装・正式受入のDoneと区別する。調査コードのmain反映を一律に要求しない。経路の選択と切替えは[原因未特定デバッグの同一Draft PR反復](#原因未特定デバッグの同一draft-pr反復1027)に従う。既に実装や正式実証をDoneに含む現在契約は無断で変更しない。
 
@@ -276,6 +293,8 @@ Issueを確定する際は、対象ファイル・節・IDに加え、同じ判�
 
 [Work Admission Control](#work-admission-control)に従い、投入後のDoD拡張と新規findingの着手を制御する。
 
+Chat＋Codex Cloudでも着手承認前に同じ実装契約をcurrent Issue本文へ同期し、trusted baseの既存context builderで実装に必要なtask dataを渡す。以下の旧AI Developer固有のcommand・workflow契約は変更しない。
+
 Open Issueへ `/codex develop` を投稿する前に、Issue本文がその時点で有効な実装契約、すなわちscope、責務境界、入出力interface、完了条件および検証範囲を表していることを確認する。trusted conversationでこれらの実装判断が更新され、本文の記述が古くなった場合は、実行前にcurrent contractをIssue本文へ同期する。
 
 本文と矛盾する過去のtrusted commentの技術契約は履歴として残してよいが、削除ではなく、Issue本文からcurrent contractが一意に判断でき、過去契約が置き換えられたことが分かる状態にする。本文と矛盾しない補足説明や進捗コメントまで機械的に複製する必要はない。
@@ -294,7 +313,7 @@ AI Developerが掲載する`Codexの報告`内のvalidation記述はCodexの自�
 
 AI Developerの投稿またはjob successだけでは、別のmachine-generated evidenceが明示的に証明しない限り、少なくとも`Codexの報告`に記載されたcommand・条件での実行、その報告が最後の変更後かつ表示SHAと同一内容に対する実行、各validationのexit statusまたは出力の独立確認、GitHub Actions/checksの開始・完了・status/result、job successが報告内の各validation成功を意味することを保証しない。
 
-人間は次を確認してからPR画面の **Ready for review** を実行する。
+人間は次を確認してから **Ready for review** を承認する。実行操作は人間自身、または認証・権限・明示許可・対象HEAD・停止状態を確認した開発補助が行える。代理操作を人間本人の独立承認と扱わない。
 
 - 同じ判断に伴う関連修正がIssueの許可範囲内で揃っている。
 - 影響するPOL / BR / REQ / AC / TC / CON / OOS、関連文書・図との整合を確認している。
@@ -360,7 +379,7 @@ PR #900のD1内部表除外とPR #895の固定microtask待機からbounded条件
 
 ## ChatGPT Workのコンテキスト・コスト管理
 
-ChatGPT WorkをGitHub作業の対話窓口として使う場合は、Issue単位でチャットを分け、Actionsログを失敗stepから段階的に取得し、作業内容に応じてモデルを選択する。同一head SHA・run IDのPR本文、review、Actions Job Summaryを再利用し、状態が変わっていない証跡を繰り返し調査しない。
+ChatをGitHub作業の主な対話窓口とし、Workを利用する場合も同様に、Issue単位でチャットを分け、Actionsログを失敗stepから段階的に取得し、作業内容に応じてモデルを選択する。同一head SHA・run IDのPR本文、review、Actions Job Summaryを再利用し、状態が変わっていない証跡を繰り返し調査しない。実装の経路選択と権限境界は[通常フロー](#通常フロー)を正本とする。
 
 Project Sources、Project instructions、チャット分割条件、モデル選択基準、開始テンプレート、チャット終了時と再開の正本は [`chatgpt-work-context-cost-operation.md`](chatgpt-work-context-cost-operation.md) とする。確定仕様はGitHub main上の正本文書、未決事項・検討状態はIssueを正本とし、チャットだけに決定を残さない。
 
@@ -955,7 +974,7 @@ AI DeveloperのIssue起点Codex実行は、**systemd service cgroup内のinner t
 
 #### 原因未特定デバッグの同一Draft PR反復（#1027）
 
-原因がまだ特定されておらず、同じ失敗領域の観測・切り分けを繰り返す間は、**診断を1回追加するごとに独立PRをreviewしてmainへmergeすることを標準としない**。#1027の判断をWork＋Codex Localにも適用し、コード共有、実行前の安全性確認、正式採用を別々に判断する。先に[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)で既存証拠を使い、必要な診断は関連Issueを判断・経緯の正本として、仮説→最小の固定非機密観測→有限検証→結果の解釈を反復する。通常の製品実装・独立したmain-safeな契約変更・原因確定済み修正は[Issueの分割単位](#issueの分割単位)および[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)に従う。
+原因がまだ特定されておらず、同じ失敗領域の観測・切り分けを繰り返す間は、**診断を1回追加するごとに独立PRをreviewしてmainへmergeすることを標準としない**。#1027の判断をChat＋Codex CloudやWork＋Codex Localにも適用し、コード共有、実行前の安全性確認、正式採用を別々に判断する。先に[変更前の証拠照合と診断変更の集約](#変更前の証拠照合と診断変更の集約)で既存証拠を使い、必要な診断は関連Issueを判断・経緯の正本として、仮説→最小の固定非機密観測→有限検証→結果の解釈を反復する。通常の製品実装・独立したmain-safeな契約変更・原因確定済み修正は[Issueの分割単位](#issueの分割単位)および[関連修正の集約とレビュー準備](#関連修正の集約とレビュー準備)に従う。
 
 1. **入口・経路・書込者を固定**：最新main、対象Issue、既存PR/branch、失敗runのHEAD/attempt、稼働中のCodex writer・review follow-up・human pause/停止ラベルを必要な範囲で照合する。既存の非機密log/artifactと差分不要な静的調査を先に使う。単一環境で完結する調査はローカル、WorkとCodex Local等でコード共有が必要なら同一の許可された調査branchを利用し、通常ActionsによるCIやPR上のレビューが必要な場合にIssueに紐づくDraft PRを利用する。既存の適格なレビュー前Draftがあればそのbranchへ集約する。共有だけのためにPR作成・Ready化・独立review・main mergeを要求しない。通常の `ai/issue-<番号>` はdeveloper Appの所有境界を維持し、他の調査branchでその名前・resume契約を偽装しない。書込権限・owner・実行許可・停止状態が明確でwriter競合がない場合だけ操作する。Codex自身のcommit/push/GitHub操作禁止を維持し、許可された開発補助の代理操作または必要な人間操作を用いる。branch/PRの作成・更新前にはtriggerと実行許可を確認し、副作用のあるworkflowを無断で発火させない。
 2. **同一調査で切り分ける**：追加観測が必要な場合は次回判別したい複数の関連状態を一括設計し、同一のローカル作業・共有branchまたはレビュー前Draftで必要な有限fixture・検証を反復する。GitHubの通常Product CIが必要なら `pull_request` のPR HEADをcheckoutする既存CIを利用でき、CIのためだけにmainへmergeしない。Draftの `synchronize` はClaude Review開始条件ではなく、調査の反復ごとにReady化・有料独立reviewを要求しない。通常のCIとレビューを実行する場合はそれぞれ既存手順に従う。他のActions/AI Develop/CIの費用はゼロとはみなさず、根拠のないpush・追加paid call・同条件replayを避ける。対象SHA（未commitの場合は差分と基準SHA）、実行条件、必要なrun ID/attempt、「何が判明したか／未証明か」を既存Issueへ非機密のcheckpointとして残し、観測ごとに子IssueやPRを量産しない。
