@@ -16,7 +16,8 @@ mkdir -p "$(dirname "$output")"
 metadata="$(mktemp)"
 diff_file="$(mktemp)"
 issue_dir="$(mktemp -d)"
-trap 'rm -f "$metadata" "$diff_file"; rm -rf "$issue_dir"' EXIT
+staged_output=
+trap 'rm -f -- "$metadata" "$diff_file" "$staged_output"; rm -rf -- "$issue_dir"' EXIT
 
 gh pr view "$pr_number" \
   --repo "$repo" \
@@ -73,11 +74,289 @@ if [ -n "$verified_bot_ids" ]; then
   done
 fi
 
-gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
-# The API file inventory and hunk counts must cover the entire raw response.
-# Keep the implementation embedded: callers materialize only this trusted base
-# script, so no code is loaded from the PR worktree.
-python3 -I -B - "$metadata" "$diff_file" <<'PYTHON'
+select_d2() {
+  local d2_kind
+  if ! d2_kind="$(python3 -I -B - "$repo" "$pr_number" "$SOURCE_BASE_SHA" "$ci_head" \
+    "$metadata" "$diff_file" "$issue_dir/d2.git" 2>/dev/null <<'PYTHON'
+import codecs
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import subprocess
+import sys
+import time
+
+repo, number, base, head, metadata_file, evidence_file, scratch_dir = sys.argv[1:]
+scratch = Path(scratch_dir).resolve()
+deadline = float(os.environ["D2_DEADLINE"])
+mib = 1024 * 1024
+patch_limit = 2 * mib
+sha = re.compile(r"[0-9a-f]{40}")
+regular = {b"100644", b"100755"}
+zero = b"0" * 40
+
+# Read the source repository with replace refs and lazy fetching disabled.
+# Subsequent Git commands run in a bare repository with no source config,
+# index, info/attributes, worktree, hooks or writable source object store.
+env = {
+    "PATH": os.environ["PATH"], "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
+    "GIT_PROTOCOL_FROM_USER": "0", "GIT_ALLOW_PROTOCOL": "",
+    "GIT_OPTIONAL_LOCKS": "0", "GIT_LITERAL_PATHSPECS": "1",
+}
+cwd = None
+
+
+def require(condition):
+    if not condition:
+        raise ValueError("invalid_d2_evidence")
+
+
+def git(*args, limit=8192, reject_stderr=False, probe_text=False):
+    def remaining():
+        wait = deadline - time.monotonic()
+        if wait <= 0:
+            raise TimeoutError
+        return wait
+
+    remaining()
+    with subprocess.Popen(
+        ["git", "-c", "core.attributesfile=/dev/null", *args],
+        cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if reject_stderr else subprocess.DEVNULL,
+    ) as process:
+        try:
+            result = bytearray()
+            received = 0
+            decoder = codecs.getincrementaldecoder("utf-8")() if probe_text else None
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    if not selector.select(remaining()):
+                        raise TimeoutError
+                    chunk = os.read(process.stdout.fileno(), min(65536, limit + 1 - received))
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    require(received <= limit)
+                    if decoder is None:
+                        result.extend(chunk)
+                    elif b"\0" in chunk:
+                        return False
+                    else:
+                        try:
+                            decoder.decode(chunk)
+                        except UnicodeDecodeError:
+                            return False
+            require(process.wait(timeout=remaining()) == 0)
+            if decoder is None:
+                return bytes(result)
+            require(received == limit)
+            try:
+                decoder.decode(b"", final=True)
+            except UnicodeDecodeError:
+                return False
+            return True
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+
+def nul_fields(data):
+    fields = data.split(b"\0")
+    require(fields.pop() == b"")
+    return fields
+
+
+def inventory(left, right, *options):
+    fields = nul_fields(git("diff", "--raw", "-z", "--no-abbrev", "--no-renames",
+                            "--no-ext-diff", "--no-textconv", *options,
+                            left, right, "--", limit=patch_limit))
+    require(len(fields) % 2 == 0)
+    entries = {}
+    for header, path in zip(fields[::2], fields[1::2]):
+        require(header.startswith(b":"))
+        old_mode, new_mode, old, new, status = header[1:].split()
+        require(path and path not in entries)
+        entries[path] = (old_mode, new_mode, old, new, status)
+    return entries
+
+
+def blob_size(oid):
+    require(sha.fullmatch(oid.decode("ascii")) and git("cat-file", "-t", oid) == b"blob\n")
+    return int(git("cat-file", "-s", oid))
+
+
+def is_text(content):
+    if b"\0" in content:
+        return False
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def safe_path(path):
+    return (re.fullmatch(rb"[\x20-\x7e]+", path) and b"\\" not in path
+            and all(part.lower() not in (b"", b".", b"..", b".git", b".gitattributes")
+                    for part in path.split(b"/")))
+
+
+def d2():
+    global cwd
+    require(sha.fullmatch(base) and sha.fullmatch(head))
+    require(git("rev-parse", "--is-shallow-repository") == b"false\n")
+    checkout = git("rev-parse", "--verify", "HEAD").strip()
+    objects = git("rev-parse", "--path-format=absolute", "--git-path", "objects")
+    objects = Path(os.fsdecode(objects.removesuffix(b"\n")))
+    require(objects.is_dir())
+    git("init", "--quiet", "--bare", "--template=", "--object-format=sha1", str(scratch))
+    (scratch / "objects/info/alternates").write_bytes(os.fsencode(objects) + b"\n")
+    cwd = scratch
+
+    for commit in (base, head):
+        require(git("cat-file", "-t", commit) == b"commit\n")
+    merge_bases = git("merge-base", "--all", base, head).decode("ascii").splitlines()
+    require(len(merge_bases) == 1 and sha.fullmatch(merge_bases[0]))
+    merge_base = merge_bases[0]
+
+    # Size metadata can prove ineligibility without opening any blob. If
+    # content is needed, check the entire probe budget before opening blobs.
+    deleted = inventory(merge_base, head, "--diff-filter=D")
+    candidates = [oid for mode, _, oid, _, _ in deleted.values() if mode in regular]
+    if not candidates:
+        return False
+    require(len(deleted) <= 100)
+    sizes = [(oid, blob_size(oid)) for oid in candidates]
+    possible_bytes = sum(size for _, size in sizes)
+    if possible_bytes <= 400000:
+        return False
+    require(possible_bytes <= mib and all(size <= 128 * 1024 for _, size in sizes))
+    deleted_bytes = 0
+    for oid, size in sizes:
+        if git("cat-file", "blob", oid, limit=size, probe_text=True):
+            deleted_bytes += size
+        if deleted_bytes > 400000:
+            break
+    if deleted_bytes <= 400000:
+        return False
+
+    require(merge_base == base and checkout == head.encode("ascii"))
+    changes = inventory(base, head)
+    require(0 < len(changes) <= 100 and all(safe_path(path) for path in changes))
+    metadata = json.loads(Path(metadata_file).read_bytes())
+    require(type(metadata["number"]) is int and metadata["number"] == int(number)
+            and metadata["url"] == f"https://github.com/{repo}/pull/{number}"
+            and metadata["baseRefOid"] == base and metadata["headRefOid"] == head)
+    files = metadata["files"]
+    count = metadata["changedFiles"]
+    require(type(count) is int and count == len(changes) and type(files) is list and len(files) == count)
+    stats = {}
+    for item in files:
+        path = item["path"].encode("ascii")
+        added, removed = item["additions"], item["deletions"]
+        require(path in changes and path not in stats and
+                all(type(value) is int and value >= 0 for value in (added, removed)))
+        stats[path] = (added, removed)
+
+    deletions = {}
+    total_blob_bytes = total_deleted_bytes = 0
+    for path, (old_mode, new_mode, old, new, status) in changes.items():
+        require(old_mode in regular and (
+            (status == b"D" and new_mode == b"000000" and new == zero)
+            or (status == b"M" and new_mode == old_mode)))
+        old_size = blob_size(old)
+        if status == b"D":
+            total_deleted_bytes += old_size
+            require(old_size <= 128 * 1024 and total_deleted_bytes <= mib)
+        sizes = [(old, old_size)] if status == b"D" else [(old, old_size), (new, blob_size(new))]
+        total_blob_bytes += sum(size for _, size in sizes)
+        require(total_blob_bytes <= 4 * mib)
+        for oid, size in sizes:
+            content = git("cat-file", "blob", oid, limit=size)
+            require(len(content) == size and is_text(content))
+
+        if status == b"D":
+            added, removed = stats[path]
+            require(added == 0 and removed == content.count(b"\n") + int(bool(content) and not content.endswith(b"\n")))
+            require(git("ls-tree", "-z", "--full-tree", base, "--", path)
+                    == old_mode + b" blob " + old + b"\t" + path + b"\0")
+            require(git("ls-tree", "-z", "--full-tree", head, "--", path) == b"")
+            deletions[path] = dict(path=path.decode("ascii"), old_blob=old.decode("ascii"),
+                                   old_mode=old_mode.decode("ascii"), bytes=old_size, deletions=removed)
+
+    for commit in (base, head):
+        # --all omits truly unspecified attributes. A named driver with
+        # the literal name "unspecified" must still be rejected.
+        attributes = nul_fields(git("check-attr", f"--source={commit}", "--all", "-z", "--",
+                                    *changes, limit=patch_limit, reject_stderr=True))
+        require(len(attributes) % 3 == 0)
+        for path, name in zip(attributes[::3], attributes[1::3]):
+            require(path in changes and name != b"diff")
+
+    patch = git("diff", "--patch", "--no-ext-diff", "--no-textconv", "--no-renames",
+                "--full-index", "--no-color", "--src-prefix=a/", "--dst-prefix=b/",
+                "--diff-algorithm=myers", "--no-indent-heuristic", base, head, "--",
+                limit=patch_limit)
+    require(patch.startswith(b"diff --git ") and patch.endswith(b"\n"))
+    patch_path = scratch / "change.patch"
+    patch_path.write_bytes(patch)
+    git("read-tree", base)
+    for options, expected in (((), head), (("--reverse",), base)):
+        git("apply", "--cached", "--whitespace=nowarn", *options, "--", patch_path)
+        require(git("write-tree") == git("rev-parse", f"{expected}^{{tree}}"))
+
+    # Use Git's own patch reader for block paths and counts. Apply the complete
+    # patch in both directions above to verify the bytes independently of counts.
+    seen = set()
+    retained = []
+    for block in re.split(rb"(?m)(?=^diff --git )", patch)[1:]:
+        patch_path.write_bytes(block)
+        fields = nul_fields(git("apply", "--numstat", "-z", "--", patch_path))
+        require(len(fields) == 1)
+        added, removed, path = fields[0].split(b"\t", 2)
+        require(path in stats and path not in seen and added.isdigit() and removed.isdigit()
+                and (int(added), int(removed)) == stats[path])
+        seen.add(path)
+        if path not in deletions:
+            retained.append(block)
+    require(seen == set(changes))
+    manifest = {
+        "version": 1, "base": base, "merge_base": merge_base, "head": head,
+        "changed_files": count, "files": [
+            {"path": path.decode("ascii"), "status": changes[path][-1].decode("ascii"),
+             "additions": stats[path][0], "deletions": stats[path][1]} for path in changes
+        ],
+        "deleted_files": list(deletions.values()),
+    }
+    evidence = json.dumps(manifest, ensure_ascii=True, indent=2).encode("ascii") + b"\n" + b"".join(retained)
+    require(len(evidence) <= 400000 and time.monotonic() < deadline)
+    Path(evidence_file).write_bytes(evidence)
+    return True
+
+
+try:
+    if d2():
+        print("d2")
+except (AttributeError, KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+    sys.exit(1)
+PYTHON
+)"; then
+    echo '固定Git objectの削除証跡を検証できないため、レビュー文脈を生成しません。' >&2
+    exit 1
+  fi
+  [ "$d2_kind" = d2 ] || return 3
+}
+
+verify_raw() {
+  gh pr diff "$pr_number" --repo "$repo" > "$diff_file"
+  # The API file inventory and hunk counts must cover the entire raw response.
+  # Callers materialize only this trusted base script.
+  python3 -I -B - "$metadata" "$diff_file" <<'PYTHON'
 import json
 from pathlib import Path
 import re
@@ -146,7 +425,9 @@ try:
 except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
     sys.exit("raw PR diffの完全性を確認できないため、レビュー文脈を生成しません。")
 PYTHON
+}
 
+finish_context() {
 diff_bytes="$(wc -c < "$diff_file")"
 if [ "$diff_bytes" -gt 400000 ]; then
   echo "PR差分は${diff_bytes} bytesです。自動AIレビューの上限は400000 bytesです。" >&2
@@ -244,9 +525,10 @@ if [ -n "$ci_head" ]; then
   # No polling, retries, logs or artifacts. API failure stays on the existing
   # context-generation error path, before any paid review is reachable.
   gh api "repos/${repo}/pulls/${pr_number}" > "$issue_dir/ci-before.json"
-  jq -e --arg repo "$repo" --arg head "$ci_head" --argjson number "$pr_number" '
+  jq -e --arg repo "$repo" --arg head "$ci_head" --arg base "$d2_base" --argjson number "$pr_number" '
     .number == $number and .head.sha == $head and
-    .head.repo.full_name == $repo and .base.repo.full_name == $repo
+    .head.repo.full_name == $repo and .base.repo.full_name == $repo and
+    ($base == "" or .base.sha == $base)
   ' "$issue_dir/ci-before.json" > /dev/null || {
     echo 'CI取得前のPR head / repositoryが一致しません。' >&2; exit 1;
   }
@@ -254,13 +536,13 @@ if [ -n "$ci_head" ]; then
   gh api --paginate --slurp "repos/${repo}/actions/runs?head_sha=${ci_head}&per_page=100" > "$issue_dir/ci-pages.json"
   gh api "repos/${repo}/pulls/${pr_number}" > "$issue_dir/ci-after.json"
   ci_fetched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  python3 -I -B - "$repo" "$pr_number" "$ci_head" "$ci_started_at" "$ci_fetched_at" "$issue_dir" <<'PYTHON' > "$issue_dir/ci.md"
+  python3 -I -B - "$repo" "$pr_number" "$ci_head" "$ci_started_at" "$ci_fetched_at" "$issue_dir" "$d2_base" <<'PYTHON' > "$issue_dir/ci.md"
 from collections import Counter
 import json
 from pathlib import Path
 import sys
 
-repo, number, head, started, fetched, directory = sys.argv[1:]
+repo, number, head, started, fetched, directory, base = sys.argv[1:]
 directory = Path(directory)
 workflows = {
     ".github/workflows/product-ci.yml": "Product CI",
@@ -280,7 +562,8 @@ try:
         pr = json.loads((directory / name).read_bytes())
         require(pr["number"] == int(number) and pr["head"]["sha"] == head
                 and pr["head"]["repo"]["full_name"] == repo
-                and pr["base"]["repo"]["full_name"] == repo)
+                and pr["base"]["repo"]["full_name"] == repo
+                and (not base or (type(pr["number"]) is int and pr["base"]["sha"] == base)))
     pages = json.loads((directory / "ci-pages.json").read_bytes())
     require(type(pages) is list and len(pages) > 0)
     total = pages[0]["total_count"]
@@ -336,6 +619,7 @@ print("\n".join(lines[:3] + ["DATA| " + line for line in lines[3:]]
                 + ["--- END CI SNAPSHOT DATA ---", ""]))
 PYTHON
 fi
+
 
 {
   echo '# Pull request review context'
@@ -481,21 +765,102 @@ fi
   fi
   echo '## Pull request diff'
   echo
+  if [ "$diff_kind" = d2 ]; then
+    echo 'Diff evidence: D2 whole-file deletion manifest v1 and complete non-deletion patch'
+    echo
+  fi
   echo '--- BEGIN DIFF DATA ---'
   sed 's/^/DATA| /' "$diff_file"
   echo '--- END DIFF DATA ---'
-} > "$output"
+} > "$render_output"
+
+if [ "$diff_kind" = d2 ]; then
+  if [ "$(git rev-parse --verify HEAD)" != "$ci_head" ]; then
+    echo '削除証跡の出力時にcheckoutの条件を確認できません。' >&2
+    exit 1
+  fi
+fi
+}
+
+diff_kind=raw
+d2_base=
+render_output="$output"
+if [ -n "$ci_head" ] && [ -n "${SOURCE_BASE_SHA:-}" ]; then
+  staged_output="$(mktemp -- "$(dirname -- "$output")/.review-context.XXXXXXXX")"
+  # The parent owns cleanup and publication. One timeout supervises selection
+  # and every command through rendering and the final checkout check.
+  if (
+    export repo pr_number output trusted_logins_csv reviewer_logins_csv ci_head
+    export metadata diff_file issue_dir follow_up_issue_limit SOURCE_BASE_SHA
+    export diff_kind=d2 d2_base="$SOURCE_BASE_SHA" render_output="$staged_output"
+    export -f select_d2 finish_context
+    exec python3 -I -B - d2-deadline '
+      status=0
+      select_d2 || status=$?
+      if [ "$status" -ne 0 ]; then exit "$status"; fi
+      trap "exit 1" ERR
+      finish_context
+    ' <<'PYTHON'
+import ctypes
+import os
+import signal
+import subprocess
+import sys
+import time
+
+# Linux Actions runner: adopt and reap any worker descendants orphaned by
+# killing the process group. The outer Bash still owns files and publication.
+if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+    sys.exit(1)
+deadline = time.monotonic() + 90
+os.environ["D2_DEADLINE"] = str(deadline)
+with subprocess.Popen(
+    ["bash", "-Eeuo", "pipefail", "-c", sys.argv[2]],
+    stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+) as worker:
+    try:
+        status = worker.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(worker.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        worker.wait()
+        while True:
+            try:
+                os.waitpid(-1, 0)
+            except ChildProcessError:
+                break
+        status = 124
+sys.exit(status if status >= 0 else 1)
+PYTHON
+  ); then
+    diff_kind=d2
+    mv -T -- "$staged_output" "$output"
+  else
+    status=$?
+    if [ "$status" -ne 3 ]; then
+      echo '固定Git objectの削除証跡またはレビュー文脈の検証に失敗しました。' >&2
+      exit 1
+    fi
+  fi
+fi
+if [ "$diff_kind" = raw ]; then
+  verify_raw
+  finish_context
+fi
 
 # Observe only successfully emitted context. Recording is non-fatal and never
 # feeds gates, verdicts, budgets, truncation or retry decisions. Keep this local
 # to the trusted single-file builder, including when staged outside the repo.
 if [ -n "$summary_path" ]; then
-  if ! python3 -I -B - "$output" "$summary_path" 2> /dev/null <<'PYTHON'
+  if ! python3 -I -B - "$output" "$summary_path" "$diff_kind" 2> /dev/null <<'PYTHON'
 from pathlib import Path
 import re
 import sys
 
-context_path, summary_path = map(Path, sys.argv[1:])
+context_path, summary_path = map(Path, sys.argv[1:3])
+diff_label = "レビューへ渡す削除証跡と非削除差分" if sys.argv[3] == "d2" else "レビューへ渡すraw diff"
 raw = context_path.read_bytes()
 raw.decode("utf-8", errors="strict")
 sections = [
@@ -506,7 +871,7 @@ sections = [
     (b"Linked Issue snapshots", "closing Issue snapshots"),
     (b"Follow-up Issue snapshots", "follow-up Issue snapshots"),
     (b"Same-head CI snapshot", "同一head CI証拠"),
-    (b"Pull request diff", "レビューへ渡すraw diff"),
+    (b"Pull request diff", diff_label),
 ]
 boundaries = list(re.finditer(rb"(?m)^## ([^\n]+)\n", raw))
 names = [match[1] for match in boundaries]

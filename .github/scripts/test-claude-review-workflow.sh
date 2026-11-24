@@ -121,7 +121,8 @@ gh() {
         printf '%s\n' '{"state":"DRAFT","labels":[],"closingIssuesReferences":[]}'
         ;;
       *)
-        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"changedFiles":1,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}'
+        printf '%s\n' '{"number":37,"title":"Test","body":"Closes #36","url":"https://github.com/owner/repo/pull/37","author":{"login":"dev[bot]"},"baseRefName":"main","headRefName":"ai/issue-36","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","isDraft":false,"changedFiles":1,"files":[{"path":"x","additions":1,"deletions":0}],"commits":[],"closingIssuesReferences":[{"number":36,"url":"https://github.com/owner/repo/issues/36"}],"comments":[],"reviews":[],"labels":[]}' |
+          jq --arg head "$expected_head" '.headRefOid = $head'
         ;;
     esac
   elif [ "$1" = api ]; then
@@ -693,11 +694,21 @@ unset -f git
 build_context_step_script="$test_dir/build-review-context.sh"
 extract_step_run 'Build review context' "$build_context_step_script"
 stale_event_base_sha='1111111111111111111111111111111111111111'
-current_base_tip_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 workflow_bootstrap_dir="$test_dir/workflow-bootstrap"
 mkdir "$workflow_bootstrap_dir"
 workflow_step_cwd="$test_dir/workflow-step-cwd"
 mkdir "$workflow_step_cwd"
+# The builder reads fixed Git objects even when ordinary raw evidence is
+# selected. Give the extracted caller a real, small comparison.
+git -C "$workflow_step_cwd" init -q --template=
+bootstrap_git() {
+  git -C "$workflow_step_cwd" -c user.name=Fixture -c user.email=fixture@example.invalid "$@"
+}
+current_base_tip_sha="$(bootstrap_git commit-tree "$(bootstrap_git mktree < /dev/null)" -m base)"
+printf 'changed\n' > "$workflow_step_cwd/x"
+bootstrap_git add -- x
+workflow_head="$(bootstrap_git commit-tree "$(bootstrap_git write-tree)" -p "$current_base_tip_sha" -m head)"
+bootstrap_git update-ref --no-deref HEAD "$workflow_head"
 workflow_git_show_log="$test_dir/workflow-git-show.log"
 workflow_base_ref_log="$test_dir/workflow-base-ref.log"
 git() {
@@ -727,7 +738,7 @@ export -f git
 export repo_root
 (
   cd "$workflow_step_cwd"
-  MOCK_FULL_DIFF=true \
+  expected_head="$workflow_head" MOCK_FULL_DIFF=true \
   MOCK_BASE_TIP_SHA="$current_base_tip_sha" \
   MOCK_GIT_SHOW_LOG="$workflow_git_show_log" \
   MOCK_BASE_REF_LOG="$workflow_base_ref_log" \
@@ -737,7 +748,7 @@ export repo_root
   RUNNER_TEMP="$workflow_bootstrap_dir" \
   BASE_REF=main \
   SOURCE_BASE_SHA="$current_base_tip_sha" \
-  REVIEWED_HEAD_SHA="$expected_head" \
+  REVIEWED_HEAD_SHA="$workflow_head" \
   EVENT_BASE_SHA="$stale_event_base_sha" \
   PR_NUMBER=37 \
   TRUSTED_LOGINS='dev,dev[bot],app/dev,reviewer,reviewer[bot],app/reviewer' \
@@ -745,7 +756,7 @@ export repo_root
   VERIFIED_REVIEW_BOT_IDS='323046280,99' \
   bash "$build_context_step_script"
 )
-grep -Fqx 'base_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$test_dir/build-context.outputs"
+grep -Fqx "base_sha=$current_base_tip_sha" "$test_dir/build-context.outputs"
 grep -Fq '### Claudeレビューcontextサイズ（UTF-8 bytes）' "$test_dir/context-size-summary.md"
 grep -Fq "| 最終review.md総bytes | $(wc -c < "$workflow_step_cwd/.ai-context/review.md" | tr -d ' ') |" "$test_dir/context-size-summary.md"
 ! grep -Eq 'DATA[|]|Closes #36|requirements' "$test_dir/context-size-summary.md"
@@ -756,7 +767,7 @@ grep -Fq '| 同一head CI証拠 |' "$test_dir/context-size-summary.md"
 grep -Fq '"${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA"' "$workflow"
 grep -Fq 'REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}' "$workflow"
 grep -Fqx main "$workflow_base_ref_log"
-grep -Fqx 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:.github/scripts/classify-claude-review-execution.sh' "$workflow_git_show_log"
+grep -Fqx "$current_base_tip_sha:.github/scripts/classify-claude-review-execution.sh" "$workflow_git_show_log"
 if grep -Fq "$stale_event_base_sha" "$workflow_git_show_log"; then
   echo 'Workflow bootstrap used the stale event base SHA.' >&2
   exit 1
