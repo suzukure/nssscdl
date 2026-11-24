@@ -28,6 +28,9 @@ gh() {
           elif $failure == "type" then .data.nodes[0].author.__typename = "User"
           elif $failure == "login" then .data.nodes[0].author.login = "imposter"
           elif $failure == "missing" then .data.nodes[0] = null
+          elif $failure == "count" then .data.nodes |= .[1:]
+          elif $failure == "kind" then .data.nodes[0].__typename = "IssueComment"
+          elif $failure == "shape" then .data.nodes = false
           elif $failure == "errors" then .errors = [{message:"mock"}]
           else . end'
       return
@@ -282,6 +285,11 @@ build_verified_conversation() {
 }
 build_verified_conversation "$verified_metadata" "$test_dir/selected-verified.md"
 cmp "$test_dir/selected.md" "$test_dir/selected-verified.md"
+# A re-review may encounter just one prior formal Reviewer App verdict.
+# The node index must be bound to the object, not the preceding boolean test.
+single_review="$(jq -c '.comments = [] | .reviews = [.reviews[3]]' <<< "$verified_metadata")"
+build_verified_conversation "$single_review" "$test_dir/verified-single-review.md"
+grep -Fq 'latest formal review' "$test_dir/verified-single-review.md"
 human_comments="$(jq -c '
   .comments += (["OWNER", "MEMBER", "COLLABORATOR"] | map(. as $role |
     {author:{login:($role | ascii_downcase)},authorAssociation:$role,
@@ -296,13 +304,18 @@ build_verified_conversation "$timestamp_fault" "$test_dir/verified-time-fallback
 grep -Fq 'Conversation selection fallback: relevant conversation timestamps are missing or invalid' "$test_dir/verified-time-fallback.md"
 no_bots="$(jq -c '.comments = [] | .reviews = []' <<< "$verified_metadata")"
 MOCK_BOT_IDENTITY_FAILURE=api build_verified_conversation "$no_bots" "$test_dir/verified-initial.md"
-for fault in id type login missing errors api; do
+for fault in id type login missing count shape errors api; do
   if MOCK_BOT_IDENTITY_FAILURE="$fault" build_verified_conversation "$verified_metadata" "$test_dir/verified-invalid.md"; then
     echo "Unverified Bot conversation reached the context for $fault." >&2
     exit 1
   fi
   [ ! -e "$test_dir/verified-invalid.md" ]
 done
+if MOCK_BOT_IDENTITY_FAILURE=kind build_verified_conversation "$single_review" "$test_dir/verified-invalid.md"; then
+  echo 'Bot conversation with the wrong node kind reached the context.' >&2
+  exit 1
+fi
+[ ! -e "$test_dir/verified-invalid.md" ]
 missing_post_id="$(jq -c 'del(.reviews[0].id)' <<< "$verified_metadata")"
 if build_verified_conversation "$missing_post_id" "$test_dir/verified-invalid.md"; then
   echo 'Bot conversation without a node ID reached the context.' >&2

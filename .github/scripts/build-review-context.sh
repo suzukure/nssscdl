@@ -62,10 +62,10 @@ if [ -n "$verified_bot_ids" ]; then
       | jq -es --argjson batch "$batch" '
         length == 1 and (.[0] | (has("errors") | not) and
           (.data.nodes | type == "array" and length == ($batch | length) and
-            INDEX(.[]; .id) as $nodes | all($batch[]; . as $post |
+            (INDEX(.[]; .id) as $nodes | all($batch[]; . as $post |
               $nodes[$post.id] as $node | $node.__typename == $post.kind and
               $node.author.__typename == "Bot" and $node.author.login == $post.login and
-              $node.author.databaseId == $post.bot_id)))
+              $node.author.databaseId == $post.bot_id))))
       ' > /dev/null; then
       echo '会話のDeveloper / Reviewer Bot投稿者を照合できないため、レビューを停止します。' >&2
       exit 1
