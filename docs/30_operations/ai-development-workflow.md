@@ -44,17 +44,23 @@ formal Claude reviewがまだない初回reviewでは、trusted conversation全�
 
 ## Claude Reviewの読込順序とcontextサイズ記録
 
-#853の読込順序は `CLAUDE.md` のreview sourcesを正本とする。収録済み差分・Issue snapshotを再利用し、関連文書は検索から必要な節・依存契約へ進み、矛盾・証拠不足・境界をまたぐ影響があれば範囲を拡大する。全差分、closing / 明示follow-up Issue、scope-out、traceability、security、fail-closed、Blocking基準を維持する。
+#853の読込順序は `CLAUDE.md` のreview sourcesを正本とする。収録済み差分・Issue snapshotを再利用し、関連文書は検索から必要な節・依存契約へ進み、矛盾・証拠不足・境界をまたぐ影響があれば範囲を拡大する。全差分証拠、closing / 明示follow-up Issue、scope-out、traceability、security、fail-closed、Blocking基準を維持する。
 
-サイズ記録の機械正本は `build-review-context.sh` とし、通常 `claude-review.yml` だけが任意の第6引数に既存Job Summary出力先を渡して有効化する。引数未指定のauto-rereview / AI Developer follow-upの生成contextと計測policyは維持する。生成成功後の実ファイルからPR本文、採用した既存会話、closing Issue snapshots、follow-up Issue snapshots、同一head CI証拠、レビューへ渡すraw diff、最終 `review.md` のUTF-8 bytesを計測する。各sectionは見出し・DATA prefix・境界marker・次の見出し直前までの空行を含め、冒頭書式・PR metadata・変更ファイル一覧は「その他」へ計上する。未出力のfollow-up / CI sectionは0とし、内訳合計と最終ファイルbytesを照合する。Summaryへ本文・credentials・生ログを出さず、bytesをtoken数・費用推定や制御判断・verdict・budget・切捨て条件に使用しない。記録だけの失敗は非致命としpaid reviewの再実行を要求せず、既存context完全性のfail-closedと400,000-byte diff gateを維持する。
+サイズ記録の機械正本は `build-review-context.sh` とし、通常 `claude-review.yml` だけが任意の第6引数に既存Job Summary出力先を渡して有効化する。引数未指定のauto-rereview / AI Developer follow-upの生成contextと計測policyは維持する。生成成功後の実ファイルからPR本文、採用した既存会話、closing Issue snapshots、follow-up Issue snapshots、同一head CI証拠、レビューへ渡す差分証拠（通常はraw diff、D2では削除証跡と非削除差分）、最終 `review.md` のUTF-8 bytesを計測する。各sectionは見出し・DATA prefix・境界marker・次の見出し直前までの空行を含め、冒頭書式・PR metadata・変更ファイル一覧は「その他」へ計上する。未出力のfollow-up / CI sectionは0とし、内訳合計と最終ファイルbytesを照合する。Summaryへ本文・credentials・生ログを出さず、bytesをtoken数・費用推定や制御判断・verdict・budget・切捨て条件に使用しない。記録だけの失敗は非致命としpaid reviewの再実行を要求せず、既存context完全性のfail-closedと400,000-byte diff gateを維持する。
 
 費用効果は実装Done・計測可能性と分け、十分な自然runが集まるまでは未検証とする。追加のpaid A/Bを行わず、同一model / risk classかつ近い変更規模・類型で、既存usageのcost、turns、duration、input/output、cache creation/readと併せて評価する。同じ変更目的の全子PRと失敗・再レビューを含め、有効なverdictと必要な承認へ至る総費用を見る。bytes減少だけで成功とせず、不要なBlocking、根拠不足、見逃しを示す後続修正、再実行増加も確認し、品質・総費用悪化時には読込指示を再評価する。main反映後の通常runで内訳とusageの取得を確認する。Product POL / BR / REQ / AC / TC / CON / OOSの意味とtraceabilityに変更はない。
 
 ## Claude ReviewのPR差分
 
-PlantUMLの正本はPUMLとし、SVGの生成・閲覧は[レンダリング手順](../diagrams/README.md#レンダリング)に従う。レビューにはGitHub raw PR diffの全文を渡す。#1130の移行で削除するSVGのXMLも差分に含め、Draftの時点でGitHub raw diffを取得して400,000 bytes以下であることを確認する。
+PlantUMLの正本はPUMLとし、SVGの生成・閲覧は[レンダリング手順](../diagrams/README.md#レンダリング)に従う。通常はレビューにGitHub raw PR diffの全文を渡す。#1130の移行で削除するSVGのXMLも差分に含め、Draftの時点でGitHub raw diffを取得して400,000 bytes以下であることを確認する。
 
 `build-review-context.sh` はraw diffの完全性をAPIのchanged-file総数・全pathの一覧・hunk件数で照合する。不足・不正・取得失敗または400,000-byte上限の超過時はreview context生成を停止する。callerのtrusted base取得とcurrent head照合に従い、builderはbaseから取得する単一scriptとして実行する。回帰fixtureはSVG削除とPUML変更の全文保持、差分不足・重複・hunk件数不一致の拒否、上限ちょうどの受理と1 byte超過時の停止を確認する。
+
+#1181のD2は、通常の `claude-review.yml` が渡すtrusted base SHAと第7引数のreview対象head SHAがあり、固定Git objectから独立に確認した全削除の旧regular UTF-8 text blobの合計が400,000 bytesを超える場合に適用する。未指定のauto-rereviewとAI Developer follow-upはraw経路を維持する。D2の選択はraw取得前に行い、取得・照合・上限の失敗後にraw、要約、別SHAへ切り替えない。
+
+D2は認証済みPR metadata、取得前後のCI snapshotのPR応答、checkout、固定commitを照合し、merge-baseが一意でtrusted baseと一致する場合に限る。APIの総数・path・追加削除行数と固定Git objectのinventoryとpatchを突き合わせる。対象は安全なASCII相対path上のregular textの全削除とmode不変の変更とする。追加、rename/copy、型・mode変更、binary、.gitattributes変更、影響する特殊diff属性は拒否する。完全patchを隔離indexとobject storeで順逆適用し、両固定treeの一致まで確認する。その後、全削除だけをbase・merge-base・head、全変更一覧、旧blob・mode・bytes・削除行数を持つv1 manifestに置き換え、非削除patchを全hunk保持して同じDATA境界内に渡す。
+
+D2の上限は変更100 path、削除旧blob合計1 MiBかつ各128 KiB、変更対象old/new blob合計4 MiB、検証用patch 2 MiB、D2処理90秒、DATA prefix前の差分証拠全体400,000 bytesとする。適用判定でも削除path数と旧blobのsizeを内容読込前に検査する。容量内で適用対象外と確認できた場合は通常raw経路を使い、容量内で判定できない場合は停止する。90秒の単一deadlineは適用判定からcontext生成・最終checkout照合までを対象とし、成功後にのみ完成contextを公開する。取得不能・不整合・上限超過時はcontext生成を停止する。reviewerによる旧blobの実質審査は `CLAUDE.md` を正本とする。導入PR自体には採用前のtrusted baseの通常raw契約と正式Regression・独立レビューを適用する。#1180の実差分、旧blob閲覧、予算内完走、全残存fixtureの結果は採用後の自然runで確認する。
 
 ## Work Admission Control
 

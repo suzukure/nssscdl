@@ -49,8 +49,12 @@ gh() {
         { [ "${MOCK_CI_HEAD_UPDATE:-false}" = true ] && [ "$(wc -l < "$MOCK_CI_READS")" -gt 1 ]; }; then
         head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       fi
-      jq -cn --arg head "$head" '
-        {number:37,head:{sha:$head,repo:{full_name:"owner/repo"}},base:{repo:{full_name:"owner/repo"}}}'
+      local base="${MOCK_CI_BASE:-}"
+      if [ "${MOCK_D2_BASE_DRIFT_AT:-0}" = "$(wc -l < "$MOCK_CI_READS")" ]; then
+        base=cccccccccccccccccccccccccccccccccccccccc
+      fi
+      jq -cn --arg head "$head" --arg base "$base" '
+        {number:37,head:{sha:$head,repo:{full_name:"owner/repo"}},base:{sha:$base,repo:{full_name:"owner/repo"}}}'
       return
     fi
     if [ "${MOCK_API_FAIL:-false}" = 'true' ]; then
@@ -82,6 +86,10 @@ gh() {
       --arg body "$issue_body" \
       '{number: $number, title: $title, state: $state, body: $body, labels: []}'
   elif [ "$1 $2" = 'pr diff' ]; then
+    if [ "${MOCK_D2_NO_RAW:-}" = 1 ]; then
+      touch "$MOCK_D2_RAW_CALLED"
+      return 2
+    fi
     if [ "$#" -ne 5 ] || [ "$3" != 37 ] || [ "$4" != '--repo' ] || [ "$5" != 'owner/repo' ]; then
       echo "Unexpected PR diff invocation: $*" >&2
       return 2
@@ -683,5 +691,534 @@ start = ci_bytes.index(b"## Same-head CI snapshot\n")
 end = ci_bytes.index(b"## Pull request diff\n")
 print(f"CI snapshot fixture increment: {end - start} UTF-8 bytes.")
 SIZES
+
+# D2 uses real Git objects, with all external API calls replaced by gh above.
+d2_fixture() (
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+  export GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
+  export GIT_COMMITTER_NAME=Fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+  export GIT_AUTHOR_DATE=2000-01-01T00:00:00Z GIT_COMMITTER_DATE=2000-01-01T00:00:00Z
+  export TMPDIR="$test_dir/d2-tmp"
+  mkdir "$TMPDIR" "$test_dir/d2-repo"
+  cd "$test_dir/d2-repo"
+  git init -q --template=
+  python3 - <<'PY'
+from pathlib import Path
+for index in range(4):
+    Path(f"gone{index}.txt").write_bytes(bytes([97 + index]) * 100000 + b"\n")
+Path("empty.txt").touch()
+Path("no newline.txt").write_bytes(b"no newline")
+Path("kept.txt").write_text("before\n")
+PY
+  git add -- .
+  base_tree="$(git write-tree)"
+  export SOURCE_BASE_SHA="$(git commit-tree "$base_tree" -m base)"
+  rm -- gone*.txt empty.txt 'no newline.txt'
+  git add -u
+  pure_tree="$(git write-tree)"
+  export MOCK_CI_HEAD="$(git commit-tree "$pure_tree" -p "$SOURCE_BASE_SHA" -m pure)"
+  printf 'after\n' > kept.txt
+  git add -u
+  mixed_tree="$(git write-tree)"
+  mixed_head="$(git commit-tree "$mixed_tree" -p "$SOURCE_BASE_SHA" -m mixed)"
+  git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+
+  export MOCK_CASE=conversation
+  export MOCK_CI_BASE="$SOURCE_BASE_SHA" MOCK_D2_NO_RAW=1 MOCK_D2_RAW_CALLED="$test_dir/d2-raw-called"
+  export MOCK_CI_READS="$test_dir/d2-reads" MOCK_CI_PAGES="$test_dir/d2-pages.json"
+  printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' > "$MOCK_CI_PAGES"
+  metadata="$(jq -c --arg base "$SOURCE_BASE_SHA" --arg head "$MOCK_CI_HEAD" '
+    .baseRefOid = $base | .headRefOid = $head | .changedFiles = 6
+    | .files = ([range(4) | {path:"gone\(.).txt",additions:0,deletions:1}]
+      + [{path:"empty.txt",additions:0,deletions:0},{path:"no newline.txt",additions:0,deletions:1}])
+  ' <<< "$valid_metadata")"
+  export MOCK_METADATA="$metadata"
+  builder="$repo_root/.github/scripts/build-review-context.sh"
+  output="$test_dir/d2.md"
+  summary="$test_dir/d2-summary.md"
+  snapshot() {
+    find . -type f -print0 | sort -z | xargs -0 sha256sum
+  }
+  d2_run() {
+    : > "$MOCK_CI_READS"
+    bash "$builder" owner/repo 37 "$output" \
+      'dev,dev[bot],app/dev,review,review[bot],app/review' 'review,review[bot],app/review' \
+      "$summary" "${1-$MOCK_CI_HEAD}" "${MOCK_D2_BOT_IDS:-}"
+  }
+  d2_verify() {
+    local mode="$1"
+    snapshot > "$test_dir/d2-before"
+    rm -f "$summary"
+    d2_run
+    [ "$(wc -l < "$MOCK_CI_READS")" -eq 2 ]
+    [ -z "$(ls -A "$TMPDIR")" ]
+    [ ! -e "$MOCK_D2_RAW_CALLED" ]
+    snapshot | cmp "$test_dir/d2-before"
+    grep -Fq 'Diff evidence: D2 whole-file deletion manifest v1' "$output"
+    grep -Fq '| レビューへ渡す削除証跡と非削除差分 |' "$summary"
+    python3 - "$output" "$mode" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+base = os.environ["SOURCE_BASE_SHA"]
+head = os.environ["MOCK_CI_HEAD"]
+def git(*args):
+    return subprocess.check_output(["git", *args])
+
+data = Path(sys.argv[1]).read_bytes().split(b"--- BEGIN DIFF DATA ---\n")[1]
+lines = data.split(b"--- END DIFF DATA ---\n")[0].splitlines(keepends=True)
+assert all(line.startswith(b"DATA| ") for line in lines)
+evidence = b"".join(line[6:] for line in lines).decode("utf-8")
+manifest, manifest_end = json.JSONDecoder().raw_decode(evidence)
+assert evidence[manifest_end] == "\n"
+assert manifest["version"] == 1 and (manifest["base"], manifest["merge_base"], manifest["head"]) == (base, base, head)
+paths = {*(f"gone{index}.txt" for index in range(4)), "empty.txt", "no newline.txt"}
+expected = {"empty.txt": b"", "no newline.txt": b"no newline"}
+expected.update({f"gone{i}.txt": bytes([97+i])*100000 + b"\n" for i in range(4)})
+assert paths == {entry["path"] for entry in manifest["deleted_files"]}
+for entry in manifest["deleted_files"]:
+    path = entry["path"]
+    content = expected[path]
+    assert git("show", entry["old_blob"]) == content == git("show", f"{base}:{path}")
+    assert entry["old_blob"] == git("rev-parse", f"{base}:{path}").strip().decode()
+    assert entry["bytes"] == len(content) and entry["old_mode"] == "100644"
+    assert entry["deletions"] == int(bool(content))
+    assert git("ls-tree", head, "--", path) == b""
+retained = evidence[manifest_end + 1:].encode("utf-8")
+if sys.argv[2] == "mixed":
+    paths.add("kept.txt")
+    assert retained == git("diff", "--full-index", "--no-indent-heuristic", base, head, "--", "kept.txt")
+    assert b"-before\n+after\n" in retained
+else:
+    assert retained == b""
+assert manifest["changed_files"] == len(paths)
+assert {entry["path"] for entry in manifest["files"]} == paths
+PY
+  }
+  d2_reject() {
+    rm -f "$output" "$summary"
+    if d2_run > "$test_dir/d2-stdout" 2> "$test_dir/d2-stderr"; then
+      echo 'Expected invalid D2 fixture to stop context generation.' >&2
+      exit 1
+    fi
+    [ ! -e "$output" ]
+    [ ! -e "$summary" ]
+    [ ! -e "$MOCK_D2_RAW_CALLED" ]
+    [ ! -s "$test_dir/d2-stdout" ]
+    [ -s "$test_dir/d2-stderr" ]
+    [ -z "$(ls -A "$TMPDIR")" ]
+  }
+  d2_verify pure
+  MOCK_METADATA="$(jq -c --argjson identity "$single_review" '
+    .comments = $identity.comments | .reviews = $identity.reviews
+  ' <<< "$metadata")" MOCK_D2_BOT_IDS=91,92 d2_verify pure
+  grep -Fq 'Trusted review metadata: app/review' "$output"
+  MOCK_CI_HEAD="$mixed_head"
+  git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+  MOCK_METADATA="$(jq -c --arg head "$MOCK_CI_HEAD" '
+    .headRefOid = $head | .changedFiles += 1
+    | .files += [{path:"kept.txt",additions:1,deletions:1}]
+  ' <<< "$metadata")"
+  d2_verify mixed
+  mixed_metadata="$MOCK_METADATA"
+  for mutation in '.number = true' '.url |= sub("owner"; "other")' '.headRefOid = .baseRefOid' \
+    '.baseRefOid = .headRefOid' '.changedFiles = "7"' '.files[0].deletions = true' \
+    '.files[0].deletions = 0' '.files[0].path = "../gone0.txt"' '.files[0] = .files[1]' \
+    '.files |= .[1:]'; do
+    MOCK_METADATA="$(jq -c "$mutation" <<< "$mixed_metadata")" d2_reject
+  done
+  MOCK_D2_BASE_DRIFT_AT=1 d2_reject
+  MOCK_D2_BASE_DRIFT_AT=2 d2_reject
+  MOCK_CI_HEAD_UPDATE=before d2_reject
+  MOCK_CI_HEAD_UPDATE=true d2_reject
+  MOCK_CI_PR_FAIL_AT=2 d2_reject
+
+  # Changing only the checkout, or giving a valid but divergent trusted base,
+  # must not allow a witness for a different comparison.
+  git update-ref --no-deref HEAD "$SOURCE_BASE_SHA"
+  d2_reject
+  git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+  SOURCE_BASE_SHA="$(git commit-tree "$base_tree" -p "$SOURCE_BASE_SHA" -m divergent)" d2_reject
+  SOURCE_BASE_SHA=cccccccccccccccccccccccccccccccccccccccc d2_reject
+
+  # Rename and copy introduce a new path, which D2 cannot represent. No patch
+  # from the mock API should be fetched after D2 eligibility is established.
+  git read-tree "$mixed_tree"
+  for mutation in add rename copy mode symlink gitlink binary attributes unsafe; do
+    git read-tree "$mixed_tree"
+    case "$mutation" in
+      add) printf 'added\n' > added; git add -- added ;;
+      rename) git update-index --add --cacheinfo "100644,$(git rev-parse "$SOURCE_BASE_SHA:gone0.txt"),renamed" ;;
+      copy) git update-index --add --cacheinfo "100644,$(git rev-parse "$SOURCE_BASE_SHA:kept.txt"),copied" ;;
+      mode) git update-index --chmod=+x kept.txt ;;
+      symlink) git update-index --cacheinfo "120000,$(git rev-parse "$mixed_tree:kept.txt"),kept.txt" ;;
+      gitlink) git update-index --cacheinfo "160000,$SOURCE_BASE_SHA,kept.txt" ;;
+      binary) printf 'no\000text\n' > kept.txt; git add -- kept.txt ;;
+      attributes) printf 'kept.txt diff=untrusted\n' > .gitattributes; git add -- .gitattributes ;;
+      unsafe) git update-index --add --cacheinfo "100644,$(git rev-parse "$mixed_tree:kept.txt"),"$'new\tpath' ;;
+    esac
+    export MOCK_CI_HEAD="$(git commit-tree "$(git write-tree)" -p "$SOURCE_BASE_SHA" -m "$mutation")"
+    git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+    # Construct the candidate API inventory independently from Git's public
+    # numstat only for these negative cases so validation reaches the mutation.
+    MOCK_METADATA="$(git diff --numstat --no-renames "$SOURCE_BASE_SHA" "$MOCK_CI_HEAD" |
+      jq -Rsc --argjson meta "$mixed_metadata" --arg head "$MOCK_CI_HEAD" '
+        split("\n") | map(select(length > 0) | split("\t")
+          | {path:.[2], additions:(.[0] | tonumber? // 0), deletions:(.[1] | tonumber? // 0)}) as $files
+        | $meta | .files = $files | .changedFiles = ($files | length) | .headRefOid = $head')"
+    d2_reject
+  done
+  # A tracked diff attribute may affect a path even when .gitattributes itself
+  # is unchanged. The driver name is intentionally ambiguous in check-attr
+  # output unless truly unspecified attributes are omitted.
+  attr_blob="$(printf 'kept.txt diff=unspecified\n' | git hash-object -w --stdin)"
+  git read-tree "$base_tree"
+  git update-index --add --cacheinfo "100644,$attr_blob,.gitattributes"
+  attr_base="$(git commit-tree "$(git write-tree)" -p "$SOURCE_BASE_SHA" -m attr-base)"
+  git read-tree "$mixed_tree"
+  git update-index --add --cacheinfo "100644,$attr_blob,.gitattributes"
+  attr_head="$(git commit-tree "$(git write-tree)" -p "$attr_base" -m attr-head)"
+  git update-ref --no-deref HEAD "$attr_head"
+  SOURCE_BASE_SHA="$attr_base" MOCK_CI_HEAD="$attr_head" MOCK_METADATA="$(jq -c \
+    --arg base "$attr_base" --arg head "$attr_head" '.baseRefOid=$base | .headRefOid=$head' \
+    <<< "$mixed_metadata")" d2_reject
+
+  MOCK_CI_HEAD="$mixed_head"
+  MOCK_METADATA="$mixed_metadata"
+  git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+  printf '%s\n' "$MOCK_CI_HEAD" > .git/shallow
+  d2_reject
+  rm .git/shallow
+  parent_left="$(git commit-tree "$base_tree" -p "$SOURCE_BASE_SHA" -m left)"
+  parent_right="$(git commit-tree "$base_tree" -p "$SOURCE_BASE_SHA" -m right)"
+  ambiguous_base="$(git commit-tree "$base_tree" -p "$parent_left" -p "$parent_right" -m base)"
+  ambiguous_head="$(git commit-tree "$mixed_tree" -p "$parent_right" -p "$parent_left" -m head)"
+  [ "$(git merge-base --all "$ambiguous_base" "$ambiguous_head" | wc -l)" -eq 2 ]
+  SOURCE_BASE_SHA="$ambiguous_base" MOCK_CI_HEAD="$ambiguous_head" d2_reject
+
+  missing_blob="$(git rev-parse "$SOURCE_BASE_SHA:gone0.txt")"
+  loose_blob=".git/objects/${missing_blob:0:2}/${missing_blob:2}"
+  mv "$loose_blob" "$test_dir/missing-blob"
+  d2_reject
+  mv "$test_dir/missing-blob" "$loose_blob"
+
+  # These Git-output faults preserve caller inputs. A same-count substitution,
+  # an omitted block, and a partial deletion must fail the tree round-trip.
+  git diff --no-renames --full-index "$SOURCE_BASE_SHA" "$MOCK_CI_HEAD" > "$test_dir/complete.patch"
+  mkdir "$test_dir/d2-bin"
+  ln -s "$(command -v git)" "$test_dir/d2-bin/real-git"
+  cat > "$test_dir/d2-bin/git" <<'GIT'
+#!/usr/bin/env bash
+case "$3 ${4:-}" in
+  'diff --patch') cat "$(dirname "$0")/fault.patch"; exit "$(cat "$(dirname "$0")/fault.status")" ;;
+esac
+exec "$(dirname "$0")/real-git" "$@"
+GIT
+  chmod +x "$test_dir/d2-bin/git"
+  printf '0\n' > "$test_dir/d2-bin/fault.status"
+  sed '/^-[a][a]*$/s/a/b/' "$test_dir/complete.patch" > "$test_dir/d2-bin/fault.patch"
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+  git diff --no-renames --full-index "$SOURCE_BASE_SHA" "$MOCK_CI_HEAD" -- kept.txt > "$test_dir/d2-bin/fault.patch"
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+  git read-tree "$mixed_tree"
+  partial_blob="$(printf 'still here\n' | git hash-object -w --stdin)"
+  git update-index --add --cacheinfo "100644,$partial_blob,gone0.txt"
+  partial_head="$(git commit-tree "$(git write-tree)" -p "$SOURCE_BASE_SHA" -m partial)"
+  git diff --no-renames --full-index "$SOURCE_BASE_SHA" "$partial_head" > "$test_dir/d2-bin/fault.patch"
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+  printf '2\n' > "$test_dir/d2-bin/fault.status"
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+
+  # Exercise the production select/kill/cleanup path with an accelerated
+  # selector in the fixture only. The child never writes or terminates itself.
+  cat > "$test_dir/d2-bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [ "$3" = rev-parse ]; then
+  printf '%s\n' "$$" > "$(dirname "$0")/hung.pid"
+  exec sleep 120
+fi
+exec "$(dirname "$0")/real-git" "$@"
+GIT
+  ln -s "$(command -v python3)" "$test_dir/d2-bin/real-python"
+  cat > "$test_dir/d2-bin/python3" <<'PYTHON'
+#!/usr/bin/env bash
+case "${*: -1}" in
+  */d2.git)
+    script="$(dirname "$0")/d2-timeout.py"
+    exec "$(dirname "$0")/real-python" -I -B "$script" "${@:4}" ;;
+esac
+exec "$(dirname "$0")/real-python" "$@"
+PYTHON
+  cat > "$test_dir/d2-bin/d2-timeout.py" <<'PY'
+import selectors
+import sys
+
+select = selectors.DefaultSelector.select
+selectors.DefaultSelector.select = lambda self, timeout: select(self, min(timeout, 0.5))
+exec(compile(sys.stdin.read(), "<builder>", "exec"))
+PY
+  chmod +x "$test_dir/d2-bin/python3"
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+  [ -s "$test_dir/d2-bin/hung.pid" ]
+  if kill -0 "$(cat "$test_dir/d2-bin/hung.pid")" 2>/dev/null; then
+    echo 'Timed-out Git process was not reaped.' >&2
+    exit 1
+  fi
+
+  # Shorten only the test supervisor's deadline, then hang the final Git
+  # check after rendering. Both its shell and child must be reaped.
+  cat > "$test_dir/d2-bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [ "$*" = 'rev-parse --verify HEAD' ]; then
+  sleep 120 &
+  printf '%s\n' "$$" "$!" > "$(dirname "$0")/late.pids"
+  wait
+fi
+exec "$(dirname "$0")/real-git" "$@"
+GIT
+  cat > "$test_dir/d2-bin/python3" <<'PYTHON'
+#!/usr/bin/env bash
+if [ "${4:-}" = d2-deadline ]; then
+  sed 's/time.monotonic() + 90/time.monotonic() + 3/' |
+    "$(dirname "$0")/real-python" "$@"
+else
+  exec "$(dirname "$0")/real-python" "$@"
+fi
+PYTHON
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+  [ "$(wc -l < "$test_dir/d2-bin/late.pids")" -eq 2 ]
+  while read -r pid; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo 'Timed-out rendering descendant was not reaped.' >&2
+      exit 1
+    fi
+  done < "$test_dir/d2-bin/late.pids"
+  [ -z "$(find "$test_dir" -maxdepth 1 -name '.review-context.*' -print)" ]
+
+  # A legacy caller without argument 7, and a call without the trusted base
+  # environment, use the raw path even with this same large deletion inventory.
+  for missing in head base; do
+    rm -f "$MOCK_D2_RAW_CALLED" "$output" "$summary"
+    if [ "$missing" = head ]; then
+      if d2_run ''; then exit 1; fi
+    else
+      if SOURCE_BASE_SHA= d2_run; then exit 1; fi
+    fi
+    [ -e "$MOCK_D2_RAW_CALLED" ]
+    [ ! -s "$MOCK_CI_READS" ]
+    [ ! -e "$output" ]
+  done
+  rm -f "$MOCK_D2_RAW_CALLED"
+
+  # Generate boundary trees independently. Each nonempty removal is one line.
+  for boundary in activate individual total paths; do
+    for extra in 0 1; do
+      git read-tree --empty
+      case "$boundary" in
+        activate) count=4; size=100000 ;;
+        individual) count=4; size=131072 ;;
+        total) count=9; size=131072 ;;
+        paths) count=$((100 + extra)); size=100001 ;;
+      esac
+      files="$(
+        for ((i=0; i<count; i++)); do
+          bytes=$size
+          case "$boundary:$i" in
+            activate:0|individual:0) bytes=$((size + extra)) ;;
+            total:8) bytes=$extra ;;
+            paths:0|paths:1|paths:2|paths:3) ;;
+            paths:*) bytes=0 ;;
+          esac
+          oid="$(head -c "$bytes" /dev/zero | tr '\0' a | git hash-object -w --stdin)"
+          git update-index --add --cacheinfo "100644,$oid,removed-$i"
+          jq -cn --arg path "removed-$i" --argjson bytes "$bytes" \
+            '{path:$path,additions:0,deletions:(if $bytes > 0 then 1 else 0 end)}'
+        done | jq -cs .
+      )"
+      # The pipeline ran with its own shell but wrote the fixture index.
+      SOURCE_BASE_SHA="$(git commit-tree "$(git write-tree)" -m "$boundary-base-$extra")"
+      empty_tree="$(git mktree < /dev/null)"
+      MOCK_CI_HEAD="$(git commit-tree "$empty_tree" -p "$SOURCE_BASE_SHA" -m "$boundary-head-$extra")"
+      git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+      MOCK_CI_BASE="$SOURCE_BASE_SHA"
+      MOCK_METADATA="$(jq -c --arg base "$SOURCE_BASE_SHA" --arg head "$MOCK_CI_HEAD" --argjson files "$files" '
+        .baseRefOid = $base | .headRefOid = $head | .changedFiles = ($files | length) | .files = $files
+      ' <<< "$metadata")"
+      rm -f "$output" "$summary"
+      case "$boundary:$extra" in
+        activate:0)
+          if d2_run; then exit 1; fi
+          [ -e "$MOCK_D2_RAW_CALLED" ]
+          rm "$MOCK_D2_RAW_CALLED"
+          ;;
+        activate:1|*:0)
+          d2_run
+          grep -Fq 'Diff evidence: D2 whole-file deletion manifest v1' "$output"
+          [ ! -e "$MOCK_D2_RAW_CALLED" ]
+          ;;
+        *)
+          d2_reject
+          ;;
+      esac
+    done
+  done
+  set_d2_comparison() {
+    SOURCE_BASE_SHA="$(git commit-tree "$1" -m boundary-base)"
+    MOCK_CI_HEAD="$(git commit-tree "$2" -p "$SOURCE_BASE_SHA" -m boundary-head)"
+    git update-ref --no-deref HEAD "$MOCK_CI_HEAD"
+    MOCK_CI_BASE="$SOURCE_BASE_SHA"
+    MOCK_METADATA="$(jq -c --arg base "$SOURCE_BASE_SHA" --arg head "$MOCK_CI_HEAD" --argjson files "$3" '
+      .baseRefOid = $base | .headRefOid = $head | .changedFiles = ($files | length) | .files = $files
+    ' <<< "$metadata")"
+    rm -f "$output" "$summary"
+  }
+
+  # Derive the witness size from the fixture inventory and Git's full patch
+  # for kept.txt. Only the new line grows, so every added byte grows the
+  # rendered evidence by one byte without changing any line counts.
+  evidence_delta="$(python3 - "$base_tree" "$mixed_tree" <<'PY'
+import json
+import subprocess
+import sys
+def git(*args):
+    return subprocess.check_output(["git", *args])
+base, mixed = sys.argv[1:]
+files, deleted = [], []
+for path in sorted(["empty.txt", *(f"gone{i}.txt" for i in range(4)), "kept.txt", "no newline.txt"]):
+    changed = path == "kept.txt"
+    old = git("show", f"{base}:{path}")
+    files.append(dict(path=path, status="M" if changed else "D",
+                      additions=int(changed), deletions=int(bool(old))))
+    if not changed:
+        deleted.append(dict(path=path, old_blob=git("rev-parse", f"{base}:{path}").strip().decode(),
+                            old_mode="100644", bytes=len(old), deletions=int(bool(old))))
+dummy = "0" * 40
+manifest = dict(version=1, base=dummy, merge_base=dummy, head=dummy,
+                changed_files=len(files), files=files, deleted_files=deleted)
+patch = git("diff", "--full-index", base, mixed, "--", "kept.txt")
+print(400000 - len(json.dumps(manifest, indent=2).encode("ascii")) - 1 - len(patch))
+PY
+)"
+  mixed_files="$(jq -c .files <<< "$mixed_metadata")"
+  for extra in 0 1; do
+    git read-tree "$mixed_tree"
+    oid="$( { printf 'after'; head -c "$((evidence_delta + extra))" /dev/zero | tr '\0' a; printf '\n'; } |
+      git hash-object -w --stdin)"
+    git update-index --cacheinfo "100644,$oid,kept.txt"
+    set_d2_comparison "$base_tree" "$(git write-tree)" "$mixed_files"
+    if [ "$extra" -eq 0 ]; then
+      d2_run
+      [ "$(sed -n '/^--- BEGIN DIFF DATA ---$/,/^--- END DIFF DATA ---$/s/^DATA| //p' "$output" | wc -c)" -eq 400000 ]
+    else
+      d2_reject
+    fi
+  done
+
+  # For an exact 4 MiB blob total, grow unchanged lines around the one-line
+  # modification. The retained hunk and total patch stay small.
+  deleted_size=400014
+  old_size=$(((4 * 1024 * 1024 - deleted_size) / 2))
+  for extra in 0 1; do
+    for side in old new; do
+      size=$old_size
+      if [ "$side" = new ]; then size=$((size + extra)); fi
+      python3 - "$side" "$size" <<'PY'
+from pathlib import Path
+import sys
+side, size = sys.argv[1], int(sys.argv[2])
+prefix = (side + "\n").encode()
+lines, left = divmod(size-len(prefix), 5)
+Path("kept.txt").write_bytes(prefix + b"same\n" * lines + b"a" * left)
+PY
+      if [ "$side" = old ]; then
+        git read-tree "$base_tree"
+      else
+        git read-tree "$mixed_tree"
+      fi
+      git add -- kept.txt
+      if [ "$side" = old ]; then
+        old_tree="$(git write-tree)"
+      else
+        new_tree="$(git write-tree)"
+      fi
+    done
+    # The extra byte also changes the last line (an independent second hunk).
+    files="$(jq -c --argjson count "$((1 + extra))" '
+      (.[] | select(.path == "kept.txt")) |= (.additions=$count | .deletions=$count)
+    ' <<< "$mixed_files")"
+    set_d2_comparison "$old_tree" "$new_tree" "$files"
+    if [ "$extra" -eq 0 ]; then d2_run; else d2_reject; fi
+  done
+
+  # Eight 128 KiB deletions comprised of newlines already exceed 2 MiB after
+  # patch framing. Replacing leading newlines with text removes one prefix
+  # byte per replacement while preserving all blob limits.
+  git read-tree --empty
+  newline_blob="$(head -c 131072 /dev/zero | tr '\0' '\n' | git hash-object -w --stdin)"
+  for i in {0..7}; do git update-index --add --cacheinfo "100644,$newline_blob,dense-$i"; done
+  dense_tree="$(git write-tree)"
+  empty_tree="$(git mktree < /dev/null)"
+  overhead="$(git diff --full-index "$dense_tree" "$empty_tree" | wc -c)"
+  overhead=$((overhead - 2 * 1024 * 1024))
+  for extra in 0 1; do
+    replacements=$((overhead - extra))
+    adjusted_blob="$( { head -c "$replacements" /dev/zero | tr '\0' a
+      head -c "$((131072 - replacements))" /dev/zero | tr '\0' '\n'; } | git hash-object -w --stdin)"
+    git read-tree "$dense_tree"
+    git update-index --cacheinfo "100644,$adjusted_blob,dense-0"
+    old_tree="$(git write-tree)"
+    [ "$(git diff --full-index "$old_tree" "$empty_tree" | wc -c)" -eq "$((2 * 1024 * 1024 + extra))" ]
+    files="$(jq -cn --argjson replacements "$replacements" '
+      [range(8) as $i | {path:"dense-\($i)",additions:0,
+        deletions:(131072 - if $i == 0 then $replacements else 0 end)}]')"
+    set_d2_comparison "$old_tree" "$empty_tree" "$files"
+    if [ "$extra" -eq 0 ]; then d2_run; else d2_reject; fi
+  done
+
+  # An oversized text blob and an oversized late-NUL blob cannot be
+  # classified within the probe limits. Neither starts a content read.
+  cat > "$test_dir/d2-bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [ "$3 ${4:-}" = 'cat-file blob' ]; then
+  printf '%s\n' "$5" >> "$(dirname "$0")/blob-reads"
+fi
+exec "$(dirname "$0")/real-git" "$@"
+GIT
+  for suffix in text nul; do
+    git read-tree --empty
+    oid="$( { head -c "$((4 * 1024 * 1024))" /dev/zero | tr '\0' a
+      if [ "$suffix" = nul ]; then printf '\0'; fi; } | git hash-object -w --stdin)"
+    git update-index --add --cacheinfo "100644,$oid,oversized"
+    set_d2_comparison "$(git write-tree)" "$empty_tree" '[{"path":"oversized","additions":0,"deletions":1}]'
+    PATH="$test_dir/d2-bin:$PATH" d2_reject
+    [ ! -e "$test_dir/d2-bin/blob-reads" ]
+  done
+  git read-tree --empty
+  for i in {0..100}; do git update-index --add --cacheinfo "100644,$oid,many-$i"; done
+  set_d2_comparison "$(git write-tree)" "$empty_tree" '[]'
+  PATH="$test_dir/d2-bin:$PATH" d2_reject
+  [ ! -e "$test_dir/d2-bin/blob-reads" ]
+
+  # Four in-budget late-NUL blobs make probing necessary and still use raw.
+  git read-tree --empty
+  binary_attr="$(printf 'binary-* -diff\n' | git hash-object -w --stdin)"
+  printf 'binary-* -diff\n' > .gitattributes
+  git update-index --add --cacheinfo "100644,$binary_attr,.gitattributes"
+  binary_head_tree="$(git write-tree)"
+  oid="$( { head -c 100000 /dev/zero | tr '\0' a; printf '\0'; } | git hash-object -w --stdin)"
+  for i in {0..3}; do git update-index --add --cacheinfo "100644,$oid,binary-$i"; done
+  files="$(jq -cn '[range(4) | {path:"binary-\(.)",additions:0,deletions:0}]')"
+  set_d2_comparison "$(git write-tree)" "$binary_head_tree" "$files"
+  export MOCK_DIFF_FILE="$test_dir/large-binary.patch"
+  git diff --full-index "$SOURCE_BASE_SHA" "$MOCK_CI_HEAD" > "$MOCK_DIFF_FILE"
+  PATH="$test_dir/d2-bin:$PATH" MOCK_D2_NO_RAW=0 d2_run
+  [ "$(wc -l < "$test_dir/d2-bin/blob-reads")" -eq 4 ]
+  grep -Fq 'DATA| Binary files' "$output"
+  grep -Fq '| レビューへ渡すraw diff |' "$summary"
+)
+d2_fixture
 
 echo 'Build review context fixture tests passed.'
