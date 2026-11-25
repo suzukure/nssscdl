@@ -62,8 +62,8 @@ gh() {
             esac
           elif [[ "${MOCK_CASE:-}" == retirement_preflight_* ]]; then
             jq -cn --arg status "${MOCK_CASE#retirement_preflight_}" '
-              [{jobs:[{name:"Authorize retirement-1180",conclusion:($status | sub("_missing$"; ""))}]
-                + (if ($status | endswith("_missing")) then [] else [{name:"Review",conclusion:"skipped",steps:[]}] end)}]'
+              [{jobs:([{name:"Authorize retirement-1180",conclusion:($status | sub("_missing$"; ""))}]
+                + (if ($status | endswith("_missing")) then [] else [{name:"Review",conclusion:"skipped",steps:[]}] end))}]'
           elif [[ "${MOCK_CASE:-}" == success || "${MOCK_CASE:-}" == skipped ]]; then
             echo '[{"jobs":[]}]'
           else
