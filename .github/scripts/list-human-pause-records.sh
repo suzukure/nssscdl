@@ -73,6 +73,14 @@ jq -e '
   type == "array" and all(.[]; type == "array" and all(.[]; type == "object"))
 ' "$comments_json" > /dev/null || fail_closed 'コメントAPIの応答形式が不正です'
 
+# Every REST comment must have inspectable timestamps. Missing/non-string
+# fields make the API response unusable; do not silently discard such pages.
+jq -e '
+  all(.[]; all(.[];
+    (.created_at | type == "string") and (.updated_at | type == "string")
+  ))
+' "$comments_json" > /dev/null || fail_closed 'コメントAPIのtimestamp形式が不正です'
+
 # The REST fixture/API fields establish both required boundary facts: .id is
 # the REST comment identifier, and performed_via_github_app.id is provenance.
 # Names, bot flags, and comment prose never participate in the trust decision.
@@ -99,6 +107,7 @@ done < <(
         and (.performed_via_github_app | type == "object")
         and (.performed_via_github_app.id | type == "number" and . >= 1 and floor == .)
         and ((.performed_via_github_app.id | tostring) == $app_id)
+        and (.created_at == .updated_at)
       )
   ' "$comments_json"
 )
