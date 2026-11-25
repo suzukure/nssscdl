@@ -70,12 +70,23 @@ gh api --paginate --slurp "/repos/$repo/actions/runs/$run_id/attempts/$event_att
   > "$tmp/jobs.json" || fail '起点jobを取得できません'
 jq -e 'type == "array" and all(.[]; .jobs | type == "array")' "$tmp/jobs.json" > /dev/null \
   || fail '起点jobの形式が不正です'
+retirement=false
+[ "$source_branch" != submission/issue-1180-retirement ] || retirement=true
 jq -c '[.[] .jobs[] | select(.name == "Review")]' "$tmp/jobs.json" > "$tmp/review.json"
-[ "$(jq 'length' "$tmp/review.json")" -eq 1 ] || fail 'Review jobが存在しないか重複しています'
-conclusion="$(jq -r '.[0].conclusion // empty' "$tmp/review.json")"
+case "$(jq 'length' "$tmp/review.json")" in
+  0) [ "$retirement" = true ] || fail 'Review jobが存在しません'
+     conclusion=missing ;;
+  1) conclusion="$(jq -r '.[0].conclusion // empty' "$tmp/review.json")" ;;
+  *) fail 'Review jobが重複しています' ;;
+esac
 case "$conclusion" in
-  success|skipped) echo '{"result":"ignored"}'; exit 0 ;;
-  failure|cancelled|timed_out|stale) ;;
+  skipped)
+    if [ "$retirement" = false ]; then
+      echo '{"result":"ignored"}'; exit 0
+    fi
+    ;;
+  success) echo '{"result":"ignored"}'; exit 0 ;;
+  failure|cancelled|timed_out|stale|missing) ;;
   *) fail '不明なReviewの終了結果です' ;;
 esac
 
@@ -98,6 +109,41 @@ gh api "/repos/$repo/contents/.github/workflows/claude-review.yml?ref=$source_he
   > "$tmp/workflow-content.json" || fail '起点workflowを取得できません'
 jq -er '.content | select(type == "string")' "$tmp/workflow-content.json" | base64 -d \
   > "$tmp/source-workflow.yml" || fail '起点workflowが不正です'
+# These diagnostics do not produce a paid-failure pause. Require terminal
+# evidence, since a missing or interrupted paid step cannot establish non-use.
+if [ "$retirement" = true ] &&
+   grep -Fqx '    name: Authorize retirement-1180' "$tmp/source-workflow.yml" &&
+   grep -Fqx '    needs: retirement-preflight' "$tmp/source-workflow.yml"; then
+  if [[ "$conclusion" = skipped || "$conclusion" = missing ]]; then
+    preflight="$(jq -er '
+      [.[] .jobs[] | select(.name == "Authorize retirement-1180")]
+      | if length == 1 then .[0].conclusion else empty end
+    ' "$tmp/jobs.json")" || fail '限定preflightの終端証拠が不明です'
+    case "$conclusion:$preflight" in
+      skipped:failure|skipped:cancelled|skipped:timed_out|skipped:skipped|skipped:success|missing:failure|missing:cancelled|missing:timed_out)
+        jq -cn --arg status "$preflight" '{result:"retirement_paid_not_started",preflight:$status}'
+        exit 0 ;;
+      *) fail '限定preflight後の有料実行有無を確定できません' ;;
+    esac
+  fi
+  paid="$(jq -r '
+    [.[0].steps[]? | select(.name == "Run Claude review")]
+    | if length == 1 then .[0].conclusion // "unknown" else "unknown" end
+  ' "$tmp/review.json")"
+  if [ "$paid" = skipped ]; then
+    echo '{"result":"retirement_paid_not_started","review":"paid_step_skipped"}'
+    exit 0
+  fi
+  case "$paid" in
+    success|failure) echo 'retirement-1180: paid action reached; checking existing failure classification' >&2 ;;
+    *) echo 'retirement-1180: paid execution unknown; preserving existing failure classification' >&2 ;;
+  esac
+elif [ "$conclusion" = skipped ]; then
+  echo '{"result":"ignored"}'; exit 0
+elif [ "$conclusion" = missing ]; then
+  fail 'Review jobが存在せず有料実行有無を確定できません'
+fi
+
 explicit_count=0
 for reason in RUN_BUDGET_LIMIT_REACHED ACCOUNT_SPEND_LIMIT_REACHED; do
   grep -Fqx "      - name: Signal $reason" "$tmp/source-workflow.yml" \
@@ -140,7 +186,8 @@ case "$validation:$complete" in
 esac
 
 # Scan every run page. Any later same-HEAD Review that was eligible to run
-# supersedes this failure, including an in-progress run. An unknown newer job
+# supersedes this failure, including an in-progress run. For the retirement
+# route require evidence the newer run reached the paid step. Unknown newer
 # state is an inconsistency, never evidence to create a pause.
 gh api --paginate --slurp "/repos/$repo/actions/workflows/$workflow_id/runs?event=pull_request&per_page=100" \
   > "$tmp/runs.json" || fail 'review run履歴を取得できません'
@@ -148,12 +195,15 @@ jq -e 'type == "array" and all(.[]; .workflow_runs | type == "array")' "$tmp/run
   || fail 'review run履歴が不正です'
 jq -r --argjson id "$run_id" --argjson attempt "$event_attempt" \
   --argjson pr "$pr_number" --arg head "$source_head" --arg branch "$source_branch" \
-  --arg repo "$repo" '
+  --arg repo "$repo" --argjson retirement "$retirement" '
   .[].workflow_runs[]
   | select(.id > $id or (.id == $id and .run_attempt > $attempt))
   | select(any(.pull_requests[]?; .number == $pr and .head.sha == $head)
       or (.head_branch == $branch and .head_repository.full_name == $repo))
   | if any(.pull_requests[]?; .number == $pr and .head.sha == $head) then .
+    elif $retirement and .head_branch == $branch and .head_repository.full_name == $repo
+        and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+        and ((.pull_requests // []) | length == 0) then select(.head_sha == $head)
     else error("newer same-branch run has no matching PR and HEAD") end
   | [.id, .run_attempt] | @tsv
 ' "$tmp/runs.json" > "$tmp/newer.tsv"
@@ -162,9 +212,27 @@ while IFS=$'\t' read -r newer_id newer_attempt; do
   positive "$newer_id" && positive "$newer_attempt" || fail '後続runの識別情報が不正です'
   gh api --paginate --slurp "/repos/$repo/actions/runs/$newer_id/attempts/$newer_attempt/jobs?per_page=100" \
     > "$tmp/newer-jobs.json" || fail '後続jobを取得できません'
-  newer="$(jq -r '[.[] .jobs[] | select(.name == "Review")] |
-    if length == 1 then .[0].conclusion // "pending" else "ambiguous" end' "$tmp/newer-jobs.json")" \
-    || fail '後続jobが不正です'
+  newer="$(jq -r --argjson retirement "$retirement" '
+    [.[] .jobs[]] as $jobs
+    | [$jobs[] | select(.name == "Review")] as $review
+    | if ($review | length) == 1 then
+        $review[0] as $job
+        | if $retirement and $job.conclusion != "skipped" then
+            [$job.steps[]? | select(.name == "Run Claude review")] as $paid
+            | if ($paid | length) > 1 then "ambiguous"
+              elif ($paid | length) == 1 and $paid[0].conclusion == "skipped" then "skipped"
+              elif ($paid | length) == 1 and ($paid[0].started_at | type) == "string" then "pending"
+              elif $job.status == "queued" or $job.status == "in_progress" then "skipped"
+              else "ambiguous" end
+          else $job.conclusion // "pending" end
+      elif $retirement and ($review | length) == 0 then
+        [$jobs[] | select(.name == "Authorize retirement-1180")] as $preflight
+        | if ($preflight | length) == 1 and
+             ($preflight[0] | .conclusion == "failure" or .conclusion == "cancelled" or
+              .conclusion == "timed_out" or .conclusion == "skipped" or .status == "queued" or
+              .status == "in_progress") then "skipped" else "ambiguous" end
+      else "ambiguous" end
+  ' "$tmp/newer-jobs.json")" || fail '後続jobが不正です'
   case "$newer" in
     skipped) ;;
     success|failure|cancelled|timed_out|stale|pending)

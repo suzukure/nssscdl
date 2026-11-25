@@ -743,7 +743,7 @@ PY
     : > "$MOCK_CI_READS"
     bash "$builder" owner/repo 37 "$output" \
       'dev,dev[bot],app/dev,review,review[bot],app/review' 'review,review[bot],app/review' \
-      "$summary" "${1-$MOCK_CI_HEAD}" "${MOCK_D2_BOT_IDS:-}"
+      "$summary" "${1-$MOCK_CI_HEAD}" "${MOCK_D2_BOT_IDS:-}" "${MOCK_D2_PROFILE:-normal}"
   }
   d2_verify() {
     local mode="$1"
@@ -1053,6 +1053,7 @@ PYTHON
           if d2_run; then exit 1; fi
           [ -e "$MOCK_D2_RAW_CALLED" ]
           rm "$MOCK_D2_RAW_CALLED"
+          MOCK_D2_PROFILE=retirement-1180 d2_reject
           ;;
         activate:1|*:0)
           d2_run
@@ -1103,18 +1104,26 @@ print(400000 - len(json.dumps(manifest, indent=2).encode("ascii")) - 1 - len(pat
 PY
 )"
   mixed_files="$(jq -c .files <<< "$mixed_metadata")"
-  for extra in 0 1; do
-    git read-tree "$mixed_tree"
-    oid="$( { printf 'after'; head -c "$((evidence_delta + extra))" /dev/zero | tr '\0' a; printf '\n'; } |
-      git hash-object -w --stdin)"
-    git update-index --cacheinfo "100644,$oid,kept.txt"
-    set_d2_comparison "$base_tree" "$(git write-tree)" "$mixed_files"
-    if [ "$extra" -eq 0 ]; then
-      d2_run
-      [ "$(sed -n '/^--- BEGIN DIFF DATA ---$/,/^--- END DIFF DATA ---$/s/^DATA| //p' "$output" | wc -c)" -eq 400000 ]
-    else
-      d2_reject
-    fi
+  for profile in normal retirement-1180; do
+    limit=400000
+    [ "$profile" != retirement-1180 ] || limit=600000
+    for extra in 0 1; do
+      git read-tree "$mixed_tree"
+      oid="$( { printf 'after'; head -c "$((evidence_delta + limit - 400000 + extra))" /dev/zero | tr '\0' a; printf '\n'; } |
+        git hash-object -w --stdin)"
+      git update-index --cacheinfo "100644,$oid,kept.txt"
+      set_d2_comparison "$base_tree" "$(git write-tree)" "$mixed_files"
+      if [ "$extra" -eq 0 ]; then
+        MOCK_D2_PROFILE="$profile" d2_run
+        [ "$(sed -n '/^--- BEGIN DIFF DATA ---$/,/^--- END DIFF DATA ---$/s/^DATA| //p' "$output" | wc -c)" -eq "$limit" ]
+        if [ "$profile" = retirement-1180 ]; then
+          rm "$output" "$summary"
+          d2_reject
+        fi
+      else
+        MOCK_D2_PROFILE="$profile" d2_reject
+      fi
+    done
   done
 
   # For an exact 4 MiB blob total, grow unchanged lines around the one-line

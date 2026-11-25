@@ -60,7 +60,21 @@ PlantUMLの正本はPUMLとし、SVGの生成・閲覧は[レンダリング手�
 
 D2は認証済みPR metadata、取得前後のCI snapshotのPR応答、checkout、固定commitを照合し、merge-baseが一意でtrusted baseと一致する場合に限る。APIの総数・path・追加削除行数と固定Git objectのinventoryとpatchを突き合わせる。対象は安全なASCII相対path上のregular textの全削除とmode不変の変更とする。追加、rename/copy、型・mode変更、binary、.gitattributes変更、影響する特殊diff属性は拒否する。完全patchを隔離indexとobject storeで順逆適用し、両固定treeの一致まで確認する。その後、全削除だけをbase・merge-base・head、全変更一覧、旧blob・mode・bytes・削除行数を持つv1 manifestに置き換え、非削除patchを全hunk保持して同じDATA境界内に渡す。
 
-D2の上限は変更100 path、削除旧blob合計1 MiBかつ各128 KiB、変更対象old/new blob合計4 MiB、検証用patch 2 MiB、D2処理90秒、DATA prefix前の差分証拠全体400,000 bytesとする。適用判定でも削除path数と旧blobのsizeを内容読込前に検査する。容量内で適用対象外と確認できた場合は通常raw経路を使い、容量内で判定できない場合は停止する。90秒の単一deadlineは適用判定からcontext生成・最終checkout照合までを対象とし、成功後にのみ完成contextを公開する。取得不能・不整合・上限超過時はcontext生成を停止する。reviewerによる旧blobの実質審査は `CLAUDE.md` を正本とする。導入PR自体には採用前のtrusted baseの通常raw契約と正式Regression・独立レビューを適用する。#1180の実差分、旧blob閲覧、予算内完走、全残存fixtureの結果は採用後の自然runで確認する。
+D2の上限は変更100 path、削除旧blob合計1 MiBかつ各128 KiB、変更対象old/new blob合計4 MiB、検証用patch 2 MiB、D2処理90秒、通常時のDATA prefix前の差分証拠全体400,000 bytesとする。適用判定でも削除path数と旧blobのsizeを内容読込前に検査する。容量内で適用対象外と確認できた場合は通常raw経路を使い、容量内で判定できない場合は停止する。90秒の単一deadlineは適用判定からcontext生成・最終checkout照合までを対象とし、成功後にのみ完成contextを公開する。取得不能・不整合・上限超過時はcontext生成を停止する。reviewerによる旧blobの実質審査は `CLAUDE.md` を正本とする。導入PR自体には採用前のtrusted baseの通常raw契約と正式Regression・独立レビューを適用する。#1180の実差分、旧blob閲覧、予算内完走、全残存fixtureの結果は採用後の自然runで確認する。
+
+### #1180の限定D2レビュー（#1183）
+
+`retirement-1180` は同一 `suzukure/nssscdl` の `main` をbaseとし、`submission/issue-1180-retirement` をheadとするDeveloper App作成のPRに限る。closing Issueは同じrepositoryのopen #1180の1件だけとする。PRはopen・非Draftとし、PRとIssueの `human-review-required` / `ai-followup-in-progress` が存在する場合は停止する。このbranchは通常の自動merge対象外とし、PR作者のAppと承認者のrepository ownerは別々に確認する。予約名の大文字・小文字だけが異なるbranchもworkflowの候補判定に入り得るため、helperで厳密照合して拒否する。
+
+正式実行前に人間が固定base/headの差分を独立に読み取り確認する。#1183採用版のReview workflow・認可helper・builder・関連実行依存が採用済みbaseから変更されていないこと、提出branch・PR作者・closing Issue・現在のbase/head・停止状態・競合runを確認してからowner本人がReadyにする。base/headが変わった場合は確認をやり直す。現行のsame-repository PR workflow、Code Owner、OIDCの信頼境界を適用する。Code Ownerはmerge時の保護であり、任意に改変されたPR側workflowによる認可処理や予算・timeout設定の削除・迂回をproviderで阻止する保証は含まない。独立Claude Review、Code Owner・Rulesetを適用する。
+
+`ready_for_review` の初回attemptでだけ、read-onlyの `Authorize retirement-1180` jobがcurrent main由来のhelperを使って固定対象を照合する。job timeoutは7分。helperは最大5分、15秒間隔で最大20回確認し、ログとJob Summaryに出た `/ai review approve retirement-1180 pr:<PR> run:<RUN_ID> attempt:1 base:<B> head:<H>` をowner本人が対象PRのConversationに単独1行で投稿する。AIやBotによる代理投稿は禁止する。helperはownerのUser ID・login・OWNER association、対象run・PR・base/head、投稿のGraphQL node ID・本文・時刻・編集情報を照合する。Actions Readは現在のrun/attemptと競合runの確認に使う。GitHubへの書き込みとOIDCは行わない。
+
+承認の欠落・曖昧・重複、観測した編集・非表示、現在の停止や状態変化は拒否する。取り消す場合は承認コメントを削除し、開始済みまたは開始有無が不明なら人間がrunをキャンセルする。API取得間の削除・編集・状態変化や、APIで観測できない人間操作の証明、開始済み処理の費用取消は保証できない。コメント取得は最大100件の完全な集合を要求し、打ち切りは拒否する。Reviewはpreflightの成功と現在runの固定出力を要求し、builder前と有料Action直前にcurrent main由来の認可helperで再照合する。再照合は同じコメントIDを要求する。別event・別run・Re-runに承認を流用しない。候補branchで認可に失敗した場合は通常の有料経路へ移行しない。再開は停止原因確認後に既存の人間pause復旧契約に従ってDraftで行い、新しいReadyと新しいrunへの本人承認を要する。自動retryは行わない。
+
+認可済みのhigh-riskレビューだけをSDK推定停止閾値 `$4.20`、Review job timeout 30分、D2証拠上限600,000 bytesとする。通常は `$1.70` / `$2.10`、15分、400,000 bytesを維持する。D2発動条件は全削除旧blob合計400,000 bytes超のままとし、限定経路でD2不適格なら停止する。rawと他callerの上限、v1 manifest、非削除全hunk、完全性照合、D2の単一90秒deadlineとその他の資源上限、モデル・effort・merge jobのtimeoutは既存契約に従う。
+
+限定認可が不成立の場合は、同じattemptのpreflightとReviewのjob結論、必要に応じて `Run Claude review` のstep結論を確認する。preflightのfailure・cancelled・timed_outによりReviewがskipまたは未生成の場合と、Reviewで有料stepがskipされた場合は、Failure Handlerで `retirement_paid_not_started` を記録し、有料実行障害のpauseを作らない。step到達が確認された異常は既存分類で処理し、終端証拠から開始有無を確定できない場合は不明として既存失敗処理を維持する。後続runのpreflightだけを理由に先行の有料実行障害を解消済みと扱わない。キャンセル時にJob Summaryが欠けることがあるため、Actionsの同一attemptの終端結果を確認する。Cost Guardは従来どおりworkflow run metadataの保守的なburst検知を行う。preflight中のrunが検知候補に含まれても、通知やusage欠損を有料実行または費用の証拠としない。
 
 ## Work Admission Control
 
@@ -634,7 +648,7 @@ Message Batches APIは非同期処理であり、即時のreview verdictを必�
 
 Claude Reviewの`review` jobは異常stallに対するwall-clock hard boundaryとして15分でtimeoutさせる。15分はreview品質の目標時間ではない。job timeoutまたはsuccess以外の終了では構造化verdictが成立したと扱わず、`needs.review.result == 'success'`を満たさないためmerge jobへ進まない。timeout後の自動retryは行わず、人間が失敗runを調査して再実行を判断する。
 
-`Claude Review Failure Handler` は別runnerの `workflow_run.completed` から同一attemptの `Review` jobを確認する。source runの同一repositoryのbranchとHEADからPRを解決し、`pull_requests` の関連付けが空でも処理できるようにする。関連付けが存在する場合は解決したPRと照合する。Review成功・skip、古いHEADやrun、明示budget/spend分類はgeneric pauseを作らない。対象PRがreview workflowを変更した場合や分類signalを信頼できない場合もgeneric reasonを推測せず停止する。候補だけをtrusted default branchのhelperで `claude_execution_failed` としてpauseし、現在PR HEADを `paused_head` に記録する。primary Issueはbranch名から推測せず、既存のclosing Issue関係に従ってラベルを同期する。GitHub pause成立後のDiscord通知、重複抑止、競合時のfail-closed処理は `create-human-pause.sh` を正本とし、自動retryは行わない。
+`Claude Review Failure Handler` は別runnerの `workflow_run.completed` から同一attemptの `Review` jobを確認する。source runの同一repositoryのbranchとHEADからPRを解決し、`pull_requests` の関連付けが空でも処理できるようにする。関連付けが存在する場合は解決したPRと照合する。Review成功・skip、古いHEADやrun、明示budget/spend分類はgeneric pauseを作らない。限定経路のskip時の診断は[#1180の限定D2レビュー（#1183）](#1180の限定d2レビュー1183)を参照する。対象PRがreview workflowを変更した場合や分類signalを信頼できない場合もgeneric reasonを推測せず停止する。候補だけをtrusted default branchのhelperで `claude_execution_failed` としてpauseし、現在PR HEADを `paused_head` に記録する。primary Issueはbranch名から推測せず、既存のclosing Issue関係に従ってラベルを同期する。GitHub pause成立後のDiscord通知、重複抑止、競合時のfail-closed処理は `create-human-pause.sh` を正本とし、自動retryは行わない。
 
 `execution_file` は実行成否・budget/spend/rate limit分類・usage計測に維持し、review内容はActionの `structured_output` を使用する。既存classifierの自由テキスト検証結果だけではnative出力を承認・棄却しない。Action successかつ最後のresultがsuccess/is_error=falseの場合だけnative検証へ進み、Action失敗や実行情報不正はvalidなnative出力があっても承認しない。native出力をenvへ渡す前に、固定版Actionと同じJSON直列化でexecution fileのnativeフィールドをマスクする。追加recovery pass・全reviewの自動retryは行わない。
 
@@ -754,7 +768,7 @@ Issue起点のpost-Codex gateは、trusted `classify-ai-developer-decision-marke
 
 停止時は関連IssueとPRの両方へラベルを同期する。どちらかにラベルが残っている間は、追加の `/codex develop` 指示やClaudeのchange requestが届いてもCodexを再起動しない。通常のClaude change request follow-upは停止ラベルを付けずに実行し、成功時だけReady eventで再レビューへ進む。Draft復帰jobの異常終了、3回目のchange request、要求変更、diff guard stop、Codex異常、または人間エスカレーションでは停止ラベルを付ける。ラベル・PR差分・closing Issueの取得に失敗した場合も安全側に停止する。Claude Reviewの入口は二層で保護する。workflow job条件はevent payload時点でPRがopenであり停止ラベルを持たないことを確認して早期にjobを止め、trusted base由来のentry gateはClaude API呼び出し直前にGitHubからPR stateとPR / closing Issueの停止ラベルを再取得する。entry gateはopen PRだけをreview対象とし、merged / closed PRはmodel call前に正常skipする。PR stateを安全に判定できない、または未知stateである場合はfail-closedで停止する。 workflow job条件はpull_request event payloadの小文字 `open` を判定し、trusted entry gateは `gh pr view` の `OPEN` / `CLOSED` / `MERGED` を判定するため値の語彙は異なるが、いずれもopen PRだけをpaid reviewへ進める。
 
-人間が判断を記録し再開可能と確認した後、open PRの停止ラベルはclosing Issue側を先に、PR側を最後に外す。誤ってopen PR側を先に外した場合は、PRへラベルを再付与してからclosing Issue側、PR側の順に外し直す。openかつ非Draft PRではPR側の `human-review-required` が外れたeventが明示的なClaude再レビュー要求となり、Draft PRではラベル解除では起動せずReady for reviewが再レビュー要求となる。
+人間が判断を記録し再開可能と確認した後、open PRの停止ラベルはclosing Issue側を先に、PR側を最後に外す。誤ってopen PR側を先に外した場合は、PRへラベルを再付与してからclosing Issue側、PR側の順に外し直す。openかつ非Draft PRではPR側の `human-review-required` が外れたeventが明示的なClaude再レビュー要求となり、Draft PRではラベル解除では起動せずReady for reviewが再レビュー要求となる。#1180の限定経路は上記の固定run承認手順に従う。
 
 manual protected-path merge等によりmerge後もstale `human-review-required` が残った場合も、cleanup順序はclosing Issue側を先に、merged/closed PR側を最後とする。ただしmerged/closed PR側のラベル解除はClaude再レビュー要求として扱わず、paid Claude Reviewを起動しない。この停止解除・cleanup順序とreview起動条件の正本は本節であり、`evaluate-followup-gate.sh`は人間向けの停止理由を、workflowはその値を変更せずに表示する。停止中に誤った順序で起動したcheckは、Job Summaryの「Claudeレビュー未実施」で未実施理由を確認する。
 

@@ -43,6 +43,7 @@ gh() {
         */pulls\?*)
           branch=ai/issue-36
           [ "${MOCK_CASE:-}" = branch_issue_999 ] && branch=ai/issue-999
+          [[ "${MOCK_CASE:-}" != retirement_* ]] || branch=submission/issue-1180-retirement
           current_head="$HEAD_SHA"
           [ "${MOCK_CASE:-}" = old_head ] && current_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
           jq -cn --arg head "$current_head" --arg branch "$branch" --arg case "${MOCK_CASE:-}" '
@@ -52,7 +53,17 @@ gh() {
         */jobs\?*)
           echo "$endpoint" >> "$TEST_DIR/jobs-calls"
           if [[ "$endpoint" == *'/runs/11/'* ]]; then
-            echo '[{"jobs":[{"name":"Review","conclusion":"success"}]}]'
+            case "${MOCK_CASE:-}" in
+              retirement_newer_preflight)
+                echo '[{"jobs":[{"name":"Authorize retirement-1180","status":"in_progress"}]}]' ;;
+              retirement_newer_paid)
+                echo '[{"jobs":[{"name":"Review","status":"in_progress","steps":[{"name":"Run Claude review","started_at":"2026-11-25T00:00:00Z"}]}]}]' ;;
+              *) echo '[{"jobs":[{"name":"Review","conclusion":"success"}]}]' ;;
+            esac
+          elif [[ "${MOCK_CASE:-}" == retirement_preflight_* ]]; then
+            jq -cn --arg status "${MOCK_CASE#retirement_preflight_}" '
+              [{jobs:([{name:"Authorize retirement-1180",conclusion:($status | sub("_missing$"; ""))}]
+                + (if ($status | endswith("_missing")) then [] else [{name:"Review",conclusion:"skipped",steps:[]}] end))}]'
           elif [[ "${MOCK_CASE:-}" == success || "${MOCK_CASE:-}" == skipped ]]; then
             echo '[{"jobs":[]}]'
           else
@@ -66,7 +77,10 @@ gh() {
             case "${MOCK_CASE:-}" in
               budget) steps='[{"name":"Validate Claude review","conclusion":"success"},{"name":"Signal RUN_BUDGET_LIMIT_REACHED","conclusion":"success"},{"name":"Signal ACCOUNT_SPEND_LIMIT_REACHED","conclusion":"skipped"},{"name":"Signal Claude classification complete","conclusion":"success"}]' ;;
               spend) steps='[{"name":"Validate Claude review","conclusion":"success"},{"name":"Signal RUN_BUDGET_LIMIT_REACHED","conclusion":"skipped"},{"name":"Signal ACCOUNT_SPEND_LIMIT_REACHED","conclusion":"success"},{"name":"Signal Claude classification complete","conclusion":"success"}]' ;;
-              interrupted) steps='[]' ;;
+              interrupted|retirement_unknown) steps='[]' ;;
+              retirement_denied) steps='[{"name":"Run Claude review","conclusion":"skipped"}]' ;;
+              retirement_paid|retirement_newer_*) steps='[{"name":"Run Claude review","conclusion":"failure"}]' ;;
+              retirement_budget) steps='[{"name":"Run Claude review","conclusion":"success"},{"name":"Validate Claude review","conclusion":"success"},{"name":"Signal RUN_BUDGET_LIMIT_REACHED","conclusion":"success"}]' ;;
               incomplete) steps='[{"name":"Validate Claude review","conclusion":"success"}]' ;;
             esac
             case "${MOCK_CASE:-}" in
@@ -82,7 +96,9 @@ gh() {
             echo '[[{"filename":".github/workflows/claude-review.yml"}]]'
           else echo '[[{"filename":"src/example.txt"}]]'; fi ;;
         */runs\?*)
-          if [ "${MOCK_CASE:-}" = newer ]; then
+          if [[ "${MOCK_CASE:-}" == retirement_newer_* ]]; then
+            jq -cn --arg head "$HEAD_SHA" '[{workflow_runs:[{id:11,run_attempt:1,head_sha:$head,head_branch:"submission/issue-1180-retirement",head_repository:{full_name:"owner/repo"},pull_requests:[]}]}]'
+          elif [ "${MOCK_CASE:-}" = newer ]; then
             jq -cn --arg head "$HEAD_SHA" '[{workflow_runs:[{id:11,run_attempt:1,pull_requests:[{number:37,head:{sha:$head}}]}]}]'
           elif [ "${MOCK_CASE:-}" = newer_unassociated ]; then
             echo '[{"workflow_runs":[{"id":11,"run_attempt":1,"head_branch":"ai/issue-36","head_repository":{"full_name":"owner/repo"},"pull_requests":[]}]}]'
@@ -102,6 +118,7 @@ gh() {
       esac
       branch=ai/issue-36
       [ "${MOCK_CASE:-}" = branch_issue_999 ] && branch=ai/issue-999
+      [[ "${MOCK_CASE:-}" != retirement_* ]] || branch=submission/issue-1180-retirement
       jq -cn --arg head "$HEAD_SHA" --argjson attempt "$attempt" --arg conclusion "$conclusion" \
         --arg branch "$branch" --arg case "${MOCK_CASE:-}" \
         '{id:10,name:"Claude Review",path:".github/workflows/claude-review.yml@refs/pull/37/merge",event:"pull_request",head_repository:{full_name:"owner/repo"},head_branch:$branch,head_sha:$head,status:"completed",conclusion:$conclusion,run_attempt:$attempt,workflow_id:5,pull_requests:[{number:37,head:{sha:$head}}]}
@@ -116,6 +133,7 @@ gh() {
       [ "${MOCK_CASE:-}" = old_head ] && current_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       branch=ai/issue-36
       [ "${MOCK_CASE:-}" = branch_issue_999 ] && branch=ai/issue-999
+      [[ "${MOCK_CASE:-}" != retirement_* ]] || branch=submission/issue-1180-retirement
       jq -cn --arg state "$state" --argjson draft "$draft" --arg head "$current_head" --arg branch "$branch" \
         '{number:37,state:$state,draft:$draft,head:{repo:{full_name:"owner/repo"},sha:$head,ref:$branch}}' ;;
     'api /repos/owner/repo/contents/.github/workflows/claude-review.yml?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
@@ -165,6 +183,20 @@ assert_result success ignored
 assert_result skipped ignored
 assert_result budget explicit_limit
 assert_result spend explicit_limit
+for status in failure cancelled timed_out cancelled_missing timed_out_missing; do
+  assert_result "retirement_preflight_$status" retirement_paid_not_started
+done
+assert_result retirement_denied retirement_paid_not_started
+assert_result retirement_budget explicit_limit
+assert_result retirement_newer_paid superseded
+for outcome in paid unknown newer_preflight; do
+  run_case "retirement_$outcome" > "$test_dir/retirement-result" 2> "$test_dir/retirement-diagnostic"
+  grep -Fq 'claude_execution_failed' "$test_dir/comments.json"
+  grep -Fq 'retirement-1180:' "$test_dir/retirement-diagnostic"
+  printf '[]\n' > "$test_dir/comments.json"
+  : > "$test_dir/events"
+  : > "$test_dir/edits"
+done
 assert_result closed stale_pr
 assert_result empty_association_closed stale_pr
 assert_result draft stale_pr

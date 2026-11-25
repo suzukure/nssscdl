@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # verified-review-bot-ids: v1
+# retirement-1180-profile: v1
 set -euo pipefail
 
 repo="${1:?repository is required}"
@@ -10,6 +11,16 @@ reviewer_logins_csv="${5:-}"
 summary_path="${6:-}" # Explicit opt-in; other callers retain their policy.
 ci_head="${7:-}" # Opt-in snapshot, bound to the caller's reviewed head SHA.
 verified_bot_ids="${8:-}" # Developer, Reviewer. Set only for the owner-managed route.
+# Only the trusted Claude Review caller passes its revalidated profile.
+profile="${9:-normal}"
+case "$profile" in
+  normal) d2_evidence_limit=400000 ;;
+  retirement-1180)
+    [ -n "$ci_head" ] && [ -n "${SOURCE_BASE_SHA:-}" ] || exit 1
+    d2_evidence_limit=600000 ;;
+  *) exit 1 ;;
+esac
+readonly d2_evidence_limit
 follow_up_issue_limit=5
 
 mkdir -p "$(dirname "$output")"
@@ -77,7 +88,7 @@ fi
 select_d2() {
   local d2_kind
   if ! d2_kind="$(python3 -I -B - "$repo" "$pr_number" "$SOURCE_BASE_SHA" "$ci_head" \
-    "$metadata" "$diff_file" "$issue_dir/d2.git" 2>/dev/null <<'PYTHON'
+    "$metadata" "$diff_file" "$issue_dir/d2.git" "$d2_evidence_limit" 2>/dev/null <<'PYTHON'
 import codecs
 import json
 import os
@@ -88,7 +99,7 @@ import subprocess
 import sys
 import time
 
-repo, number, base, head, metadata_file, evidence_file, scratch_dir = sys.argv[1:]
+repo, number, base, head, metadata_file, evidence_file, scratch_dir, evidence_limit = sys.argv[1:]
 scratch = Path(scratch_dir).resolve()
 deadline = float(os.environ["D2_DEADLINE"])
 mib = 1024 * 1024
@@ -334,7 +345,7 @@ def d2():
         "deleted_files": list(deletions.values()),
     }
     evidence = json.dumps(manifest, ensure_ascii=True, indent=2).encode("ascii") + b"\n" + b"".join(retained)
-    require(len(evidence) <= 400000 and time.monotonic() < deadline)
+    require(len(evidence) <= int(evidence_limit) and time.monotonic() < deadline)
     Path(evidence_file).write_bytes(evidence)
     return True
 
@@ -429,8 +440,12 @@ PYTHON
 
 finish_context() {
 diff_bytes="$(wc -c < "$diff_file")"
-if [ "$diff_bytes" -gt 400000 ]; then
-  echo "PR差分は${diff_bytes} bytesです。自動AIレビューの上限は400000 bytesです。" >&2
+evidence_limit=400000
+if [ "$diff_kind" = d2 ]; then
+  evidence_limit="$d2_evidence_limit"
+fi
+if [ "$diff_bytes" -gt "$evidence_limit" ]; then
+  echo "PR差分は${diff_bytes} bytesです。自動AIレビューの上限は${evidence_limit} bytesです。" >&2
   exit 1
 fi
 
@@ -791,7 +806,7 @@ if [ -n "$ci_head" ] && [ -n "${SOURCE_BASE_SHA:-}" ]; then
   # and every command through rendering and the final checkout check.
   if (
     export repo pr_number output trusted_logins_csv reviewer_logins_csv ci_head
-    export metadata diff_file issue_dir follow_up_issue_limit SOURCE_BASE_SHA
+    export metadata diff_file issue_dir follow_up_issue_limit SOURCE_BASE_SHA d2_evidence_limit
     export diff_kind=d2 d2_base="$SOURCE_BASE_SHA" render_output="$staged_output"
     export -f select_d2 finish_context
     exec python3 -I -B - d2-deadline '
@@ -846,6 +861,10 @@ PYTHON
   fi
 fi
 if [ "$diff_kind" = raw ]; then
+  [ "$profile" = normal ] || {
+    echo 'retirement-1180にはD2証跡が必要です。' >&2
+    exit 1
+  }
   verify_raw
   finish_context
 fi
