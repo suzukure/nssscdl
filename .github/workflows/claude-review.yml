@@ -11,10 +11,76 @@ permissions:
   id-token: write
 
 jobs:
+  retirement-preflight:
+    name: Authorize retirement-1180
+    if: >-
+      github.event.pull_request.head.ref == 'submission/issue-1180-retirement' &&
+      github.event.action == 'ready_for_review' &&
+      github.run_attempt == '1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.state == 'open' &&
+      !github.event.pull_request.draft &&
+      !contains(github.event.pull_request.labels.*.name, 'human-review-required') &&
+      !contains(github.event.pull_request.labels.*.name, 'ai-followup-in-progress')
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+    outputs:
+      profile: ${{ steps.authorize.outputs.profile }}
+      base: ${{ steps.authorize.outputs.base }}
+      head: ${{ steps.authorize.outputs.head }}
+      pr: ${{ steps.authorize.outputs.pr }}
+      run: ${{ steps.authorize.outputs.run }}
+      comment: ${{ steps.authorize.outputs.comment }}
+    steps:
+      - name: Resolve current main for authorization
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(timeout 20s gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out trusted main for authorization
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          persist-credentials: false
+
+      - name: Wait for owner approval
+        id: authorize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" = "$BASE_SHA" ]]
+          git show "$BASE_SHA:.github/scripts/authorize-retirement-review.py" > "$RUNNER_TEMP/authorize-retirement-review.py"
+          python3 -IB "$RUNNER_TEMP/authorize-retirement-review.py" wait "$BASE_SHA"
+
   review:
     name: Review
-    timeout-minutes: 15
+    needs: retirement-preflight
+    timeout-minutes: ${{ needs.retirement-preflight.result == 'success' && needs.retirement-preflight.outputs.profile == 'retirement-1180' && github.run_attempt == '1' && needs.retirement-preflight.outputs.run == github.run_id && 30 || 15 }}
     if: >-
+      !cancelled() &&
+      ((github.event.pull_request.head.ref != 'submission/issue-1180-retirement' &&
+        needs.retirement-preflight.result == 'skipped') ||
+       (github.event.pull_request.head.ref == 'submission/issue-1180-retirement' &&
+        github.event.action == 'ready_for_review' &&
+        github.run_attempt == '1' &&
+        needs.retirement-preflight.result == 'success' &&
+        needs.retirement-preflight.outputs.profile == 'retirement-1180' &&
+        needs.retirement-preflight.outputs.run == github.run_id &&
+        needs.retirement-preflight.outputs.pr == github.event.pull_request.number &&
+        needs.retirement-preflight.outputs.head == github.event.pull_request.head.sha)) &&
       (github.event.action != 'unlabeled' || github.event.label.name == 'human-review-required') &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.state == 'open' &&
@@ -208,8 +274,32 @@ jobs:
           client-id: ${{ vars.DEV_APP_CLIENT_ID }}
           private-key: ${{ secrets.DEV_APP_PRIVATE_KEY }}
 
+      - name: Revalidate retirement approval before builder
+        id: retirement-builder
+        if: github.event.pull_request.head.ref == 'submission/issue-1180-retirement' &&
+          (steps.review-identity.outputs.mode == 'legacy' || steps.review-identity.outputs.mode == 'human')
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          BASE_SHA: ${{ steps.review-source.outputs.base_sha }}
+          EXPECTED_PROFILE: ${{ needs.retirement-preflight.outputs.profile }}
+          EXPECTED_BASE: ${{ needs.retirement-preflight.outputs.base }}
+          EXPECTED_PR: ${{ needs.retirement-preflight.outputs.pr }}
+          EXPECTED_HEAD: ${{ needs.retirement-preflight.outputs.head }}
+          EXPECTED_RUN: ${{ needs.retirement-preflight.outputs.run }}
+          EXPECTED_COMMENT: ${{ needs.retirement-preflight.outputs.comment }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" && "$BASE_SHA" = "$EXPECTED_BASE" ]]
+          git show "$BASE_SHA:.github/scripts/authorize-retirement-review.py" > "$RUNNER_TEMP/authorize-retirement-review.py"
+          python3 -IB "$RUNNER_TEMP/authorize-retirement-review.py" check "$BASE_SHA"
+          echo 'profile=retirement-1180' >> "$GITHUB_OUTPUT"
+
       - name: Build review context
-        if: steps.review-identity.outputs.mode == 'legacy' || steps.review-identity.outputs.mode == 'human'
+        if: >-
+          (steps.review-identity.outputs.mode == 'legacy' || steps.review-identity.outputs.mode == 'human') &&
+          (github.event.pull_request.head.ref != 'submission/issue-1180-retirement' ||
+           (steps.retirement-builder.outcome == 'success' &&
+            steps.retirement-builder.outputs.profile == 'retirement-1180'))
         id: build-review-context
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
@@ -219,6 +309,7 @@ jobs:
           REVIEWED_HEAD_SHA: ${{ steps.review-source.outputs.reviewed_head_sha }}
           TRUSTED_LOGINS: ${{ format('{0},{0}[bot],app/{0},{1},{1}[bot],app/{1}', steps.review-identity.outputs.developer_slug || steps.dev-token.outputs.app-slug, steps.review-token.outputs.app-slug) }}
           REVIEWER_LOGINS: ${{ steps.review-token.outputs.app-slug }},${{ steps.review-token.outputs.app-slug }}[bot],app/${{ steps.review-token.outputs.app-slug }}
+          REVIEW_PROFILE: ${{ steps.retirement-builder.outputs.profile }}
           VERIFIED_REVIEW_BOT_IDS: ${{ steps.review-identity.outputs.bot_ids }}
         shell: bash
         run: |
@@ -232,6 +323,9 @@ jobs:
           echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
           mkdir -p .ai-context
           git show "${BASE_SHA}:.github/scripts/build-review-context.sh" > "$RUNNER_TEMP/build-review-context.sh"
+          if [ "${REVIEW_PROFILE:-}" = retirement-1180 ]; then
+            grep -Fxq '# retirement-1180-profile: v1' "$RUNNER_TEMP/build-review-context.sh"
+          fi
           if [ -n "${VERIFIED_REVIEW_BOT_IDS:-}" ]; then
             grep -Fxq '# verified-review-bot-ids: v1' "$RUNNER_TEMP/build-review-context.sh" || {
               echo 'trusted mainのreview context builderがBot照合に対応していません。' >&2; exit 1;
@@ -534,7 +628,11 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/classify-claude-review-execution.sh" > "$RUNNER_TEMP/classify-claude-review-execution.sh"
           git show "${BASE_SHA}:CLAUDE.md" > .ai-context/CLAUDE.base.md
           git show "${BASE_SHA}:AGENTS.md" > .ai-context/AGENTS.base.md
-          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA" "${VERIFIED_REVIEW_BOT_IDS:-}"
+          profile_args=()
+          if [ "${REVIEW_PROFILE:-}" = retirement-1180 ]; then
+            profile_args+=(retirement-1180)
+          fi
+          bash "$RUNNER_TEMP/build-review-context.sh" "$GITHUB_REPOSITORY" "$PR_NUMBER" .ai-context/review.md "$TRUSTED_LOGINS" "${REVIEWER_LOGINS:-}" "${GITHUB_STEP_SUMMARY:-}" "$REVIEWED_HEAD_SHA" "${VERIFIED_REVIEW_BOT_IDS:-}" "${profile_args[@]}"
 
       - name: Gate Claude review entry
         if: steps.build-review-context.outcome == 'success'
@@ -567,6 +665,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token }}
           PR_NUMBER: ${{ steps.review-source.outputs.pr_number }}
+          REVIEW_PROFILE: ${{ steps.retirement-builder.outputs.profile }}
           STANDARD_MODEL: ${{ vars.CLAUDE_MODEL_STANDARD }}
           HIGH_RISK_MODEL: ${{ vars.CLAUDE_MODEL }}
         shell: bash
@@ -584,10 +683,18 @@ jobs:
           if [ "$risk" = 'high' ]; then
             echo "model=$HIGH_RISK_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=high' >> "$GITHUB_OUTPUT"
-            echo 'budget_arg=--max-budget-usd 2.10' >> "$GITHUB_OUTPUT"
+            if [ "${REVIEW_PROFILE:-}" = retirement-1180 ]; then
+              echo 'budget_arg=--max-budget-usd 4.20' >> "$GITHUB_OUTPUT"
+            else
+              echo 'budget_arg=--max-budget-usd 2.10' >> "$GITHUB_OUTPUT"
+            fi
             echo 'effort_arg=--effort high' >> "$GITHUB_OUTPUT"
             echo '高リスク用のレビューモデルを選択しました。'
           elif [ "$risk" = 'standard' ]; then
+            [ "${REVIEW_PROFILE:-}" != retirement-1180 ] || {
+              echo 'retirement-1180にはhigh-risk判定が必要です。' >&2
+              exit 1
+            }
             echo "model=$STANDARD_MODEL" >> "$GITHUB_OUTPUT"
             echo 'risk=standard' >> "$GITHUB_OUTPUT"
             echo 'budget_arg=--max-budget-usd 1.70' >> "$GITHUB_OUTPUT"
@@ -616,9 +723,33 @@ jobs:
           [[ "$schema" != *"'"* ]]
           echo "schema=$schema" >> "$GITHUB_OUTPUT"
 
+      - name: Revalidate retirement approval before paid review
+        id: retirement-paid
+        if: steps.review-entry.outputs.continue == 'true' &&
+          github.event.pull_request.head.ref == 'submission/issue-1180-retirement' &&
+          steps.retirement-builder.outputs.profile == 'retirement-1180'
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token }}
+          BASE_SHA: ${{ steps.review-source.outputs.base_sha }}
+          EXPECTED_PROFILE: ${{ needs.retirement-preflight.outputs.profile }}
+          EXPECTED_BASE: ${{ needs.retirement-preflight.outputs.base }}
+          EXPECTED_PR: ${{ needs.retirement-preflight.outputs.pr }}
+          EXPECTED_HEAD: ${{ needs.retirement-preflight.outputs.head }}
+          EXPECTED_RUN: ${{ needs.retirement-preflight.outputs.run }}
+          EXPECTED_COMMENT: ${{ needs.retirement-preflight.outputs.comment }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" && "$BASE_SHA" = "$EXPECTED_BASE" ]]
+          python3 -IB "$RUNNER_TEMP/authorize-retirement-review.py" check "$BASE_SHA"
+          echo 'authorized=true' >> "$GITHUB_OUTPUT"
+
       - name: Run Claude review
         id: claude-attempt-1
-        if: steps.review-entry.outputs.continue == 'true'
+        if: >-
+          steps.review-entry.outputs.continue == 'true' &&
+          (github.event.pull_request.head.ref != 'submission/issue-1180-retirement' ||
+           (steps.retirement-paid.outcome == 'success' &&
+            steps.retirement-paid.outputs.authorized == 'true'))
         continue-on-error: true
         uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # Upstream pin: Claude Code 2.1.284 / Agent SDK 0.3.284
         with:
@@ -646,7 +777,12 @@ jobs:
 
       - name: Mask native review output
         id: mask-native
-        if: always() && steps.review-entry.outputs.continue == 'true'
+        if: >-
+          always() && steps.review-entry.outputs.continue == 'true' &&
+          (github.event.pull_request.head.ref != 'submission/issue-1180-retirement' ||
+           steps.claude-attempt-1.outcome == 'success' ||
+           steps.claude-attempt-1.outcome == 'failure' ||
+           steps.claude-attempt-1.outcome == 'cancelled')
         env:
           EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
         shell: bash
@@ -775,7 +911,12 @@ jobs:
         run: ':'
 
       - name: Record Claude review usage
-        if: always() && steps.review-entry.outputs.continue == 'true'
+        if: >-
+          always() && steps.review-entry.outputs.continue == 'true' &&
+          (github.event.pull_request.head.ref != 'submission/issue-1180-retirement' ||
+           steps.claude-attempt-1.outcome == 'success' ||
+           steps.claude-attempt-1.outcome == 'failure' ||
+           steps.claude-attempt-1.outcome == 'cancelled')
         continue-on-error: true
         env:
           EXECUTION_FILE: ${{ steps.claude-attempt-1.outputs.execution_file }}
@@ -826,7 +967,12 @@ jobs:
 
       - name: Save structured review
         id: structured-review
-        if: always() && steps.review-entry.outputs.continue == 'true'
+        if: >-
+          always() && steps.review-entry.outputs.continue == 'true' &&
+          (github.event.pull_request.head.ref != 'submission/issue-1180-retirement' ||
+           steps.claude-attempt-1.outcome == 'success' ||
+           steps.claude-attempt-1.outcome == 'failure' ||
+           steps.claude-attempt-1.outcome == 'cancelled')
         env:
           CLASSIFICATION_REASON: ${{ steps.validate-attempt-1.outputs.reason }}
         shell: bash
@@ -948,6 +1094,7 @@ jobs:
     timeout-minutes: 15
     needs: review
     if: >-
+      !cancelled() &&
       needs.review.result == 'success' &&
       needs.review.outputs.verdict == 'approve' &&
       startsWith(needs.review.outputs.head_ref, 'ai/issue-')

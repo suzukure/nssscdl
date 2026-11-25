@@ -1343,9 +1343,9 @@ assert_model_selection() {
   local expected_model="${2:?expected model is required}"
   local expected_budget="${3:?expected budget is required}"
   local expected_effort="${4-}"
-  local output_path="$test_dir/model-$risk.outputs"
+  local output_path="$test_dir/model-$risk-${5:-normal}.outputs"
 
-  TEST_RISK="$risk" \
+  REVIEW_PROFILE="${5:-normal}" TEST_RISK="$risk" \
     RUNNER_TEMP="$runner_temp" \
     GITHUB_REPOSITORY=owner/repo \
     PR_NUMBER=37 \
@@ -1355,12 +1355,20 @@ assert_model_selection() {
     bash "$model_step" > "$test_dir/model-$risk.stdout"
   grep -Fqx "model=$expected_model" "$output_path"
   grep -Fqx "risk=$risk" "$output_path"
+  [ "$(grep -c '^budget_arg=' "$output_path")" -eq 1 ]
   grep -Fqx "budget_arg=$expected_budget" "$output_path"
   grep -Fqx "effort_arg=$expected_effort" "$output_path"
 }
 
 assert_model_selection high high-risk-model '--max-budget-usd 2.10' '--effort high'
 assert_model_selection standard standard-model '--max-budget-usd 1.70' ''
+assert_model_selection high high-risk-model '--max-budget-usd 4.20' '--effort high' retirement-1180
+if REVIEW_PROFILE=retirement-1180 TEST_RISK=standard RUNNER_TEMP="$runner_temp" \
+    GITHUB_REPOSITORY=suzukure/nssscdl PR_NUMBER=37 STANDARD_MODEL=standard-model \
+    HIGH_RISK_MODEL=high-risk-model GITHUB_OUTPUT="$test_dir/model-rejected" bash "$model_step"; then
+  echo 'Standard model accepted the retirement profile.' >&2
+  exit 1
+fi
 
 if TEST_RISK=unsupported \
   RUNNER_TEMP="$runner_temp" \
@@ -1662,10 +1670,8 @@ awk '
   job && /^  [[:alnum:]_-]+:$/ && $0 != "  review:" { exit }
   job { print }
 ' "$workflow" > "$review_job"
-if [ "$(grep -Fxc '    timeout-minutes: 15' "$review_job")" -ne 1 ]; then
-  echo 'Claude Review job must have exactly a 15-minute timeout.' >&2
-  exit 1
-fi
+grep -Fqx '    needs: retirement-preflight' "$review_job"
+grep -Fqx "    timeout-minutes: \${{ needs.retirement-preflight.result == 'success' && needs.retirement-preflight.outputs.profile == 'retirement-1180' && github.run_attempt == '1' && needs.retirement-preflight.outputs.run == github.run_id && 30 || 15 }}" "$review_job"
 merge_job="$test_dir/merge-job.yml"
 sed -n '/^  merge:$/,$p' "$workflow" > "$merge_job"
 grep -Fqx '    timeout-minutes: 15' "$merge_job"
@@ -1686,6 +1692,12 @@ grep -Fq "github.event.action != 'unlabeled'" "$review_job_if"
 grep -Fq "github.event.pull_request.head.repo.full_name == github.repository" "$review_job_if"
 grep -Fq "github.event.pull_request.state == 'open'" "$review_job_if"
 grep -Fq '!github.event.pull_request.draft' "$review_job_if"
+grep -Fq '!cancelled()' "$review_job_if"
+grep -Fq "needs.retirement-preflight.result == 'skipped'" "$review_job_if"
+grep -Fq "needs.retirement-preflight.result == 'success'" "$review_job_if"
+grep -Fq "github.run_attempt == '1'" "$review_job_if"
+grep -Fq 'needs.retirement-preflight.outputs.run == github.run_id' "$review_job_if"
+grep -Fq "steps.retirement-paid.outputs.authorized == 'true'" "$run_step"
 grep -Fq "!contains(github.event.pull_request.labels.*.name, 'human-review-required')" "$review_job_if"
 grep -Fq "EVENT_MACHINE_STATE: \${{ contains(github.event.pull_request.labels.*.name, 'ai-followup-in-progress') }}" "$review_job"
 grep -Fq 'EVENT_MACHINE_STATE: ${{ steps.review-source.outputs.event_machine_state }}' "$review_job"
@@ -1746,5 +1758,246 @@ for verdict in approve request_changes; do
       contains("SUMMARY| [REQUIREMENTS_CHANGE_REQUIRED]"))
   ' "$test_dir/request-$verdict.json" > /dev/null
 done
+
+
+# Evaluate the actual routing expressions over synthetic Actions contexts.
+# Scheduler and context semantics still need live evidence.
+extract_job_if retirement-preflight "$test_dir/retirement-preflight-if"
+python3 -B - "$test_dir/retirement-preflight-if" "$review_job_if" "$review_job" "$run_step" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+preflight, review, review_job, paid_job = [Path(path).read_text() for path in sys.argv[1:]]
+timeout = re.search(r"timeout-minutes: \$\{\{ (.*) \}\}", review_job)[1]
+paid = paid_job.split("if: >-\n", 1)[1].split("continue-on-error:", 1)[0]
+
+
+def select(expression, ctx):
+    # Translate only the operators and context references used by these gates.
+    logical = {"&&": "and", "||": "or", "!": "not"}
+    tokens = re.compile(r"'[^']*'|!=|&&|\|\||!|(?:github|needs|steps)\.[A-Za-z0-9_.*-]+")
+    def substitute(match):
+        token = match[0]
+        if token in logical:
+            return " " + logical[token] + " "
+        if token.startswith(("github.", "needs.", "steps.")):
+            return repr(ctx[token])
+        return token
+    code = tokens.sub(substitute, " ".join(expression.split()))
+    return eval(code.strip(), {"__builtins__": {}}, {
+        "cancelled": lambda: ctx["cancelled"],
+        "contains": lambda values, value: value in values,
+    })
+
+
+candidate = "submission/issue-1180-retirement"
+ctx = {
+    "github.event.pull_request.head.ref": candidate,
+    "github.event.action": "ready_for_review", "github.run_attempt": "1", "github.run_id": "123",
+    "github.repository": "suzukure/nssscdl", "github.event.pull_request.head.repo.full_name": "suzukure/nssscdl",
+    "github.event.pull_request.base.ref": "main", "github.event.pull_request.state": "open",
+    "github.event.pull_request.draft": False, "github.event.pull_request.labels.*.name": [],
+    "github.event.pull_request.number": 37, "github.event.pull_request.head.sha": "a" * 40,
+    "github.event.label.name": "", "cancelled": False,
+    "needs.retirement-preflight.result": "success", "needs.retirement-preflight.outputs.profile": "retirement-1180",
+    "needs.retirement-preflight.outputs.run": "123", "needs.retirement-preflight.outputs.pr": 37,
+    "needs.retirement-preflight.outputs.head": "a" * 40,
+    "steps.review-entry.outputs.continue": "true", "steps.retirement-paid.outcome": "success",
+    "steps.retirement-paid.outputs.authorized": "true",
+}
+assert select(preflight, ctx) and select(review, ctx) and select(timeout, ctx) == 30 and select(paid, ctx)
+for status in ("skipped", "failure", "cancelled"):
+    changed = ctx | {"needs.retirement-preflight.result": status}
+    assert not select(review, changed) and select(timeout, changed) == 15
+assert not select(review, ctx | {"cancelled": True})
+for key, value in (("github.run_attempt", "2"), ("github.event.action", "unlabeled"),
+                   ("needs.retirement-preflight.outputs.run", "124"),
+                   ("needs.retirement-preflight.outputs.pr", 38),
+                   ("needs.retirement-preflight.outputs.head", "b" * 40)):
+    assert not select(review, ctx | {key: value})
+assert not select(preflight, ctx | {"github.event.pull_request.base.ref": "other"})
+for key, value in (("steps.retirement-paid.outcome", "failure"),
+                   ("steps.retirement-paid.outputs.authorized", ""),
+                   ("steps.review-entry.outputs.continue", "false")):
+    assert not select(paid, ctx | {key: value})
+normal = ctx | {"github.event.pull_request.head.ref": "other",
+                "needs.retirement-preflight.result": "skipped", "steps.retirement-paid.outcome": "skipped",
+                "steps.retirement-paid.outputs.authorized": ""}
+assert not select(preflight, normal) and select(review, normal)
+assert select(timeout, normal) == 15 and select(paid, normal)
+for name in ("Mask native review output", "Record Claude review usage", "Save structured review"):
+    step = review_job.split(f"      - name: {name}\n", 1)[1].split("      - name: ", 1)[0]
+    condition = re.search(r"        if: >-\n((?: {10}.*\n)+)", step)[1].replace("always() &&", "", 1)
+    assert not select(condition, ctx | {"steps.claude-attempt-1.outcome": "skipped"})
+    for outcome in ("success", "failure", "cancelled"):
+        assert select(condition, ctx | {"steps.claude-attempt-1.outcome": outcome})
+print("Retirement workflow routing expressions passed.")
+PY
+
+# Exercise the base helper with finite API snapshots and a deterministic clock.
+python3 -B - "$repo_root/.github/scripts/authorize-retirement-review.py" "$test_dir" <<'PY'
+from copy import deepcopy
+from datetime import datetime, timezone, timedelta
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+from urllib.parse import quote
+
+spec = importlib.util.spec_from_file_location("authorization", sys.argv[1])
+auth = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(auth)
+tmp = Path(sys.argv[2])
+event_path = tmp / "retirement-event.json"
+out = tmp / "retirement-outputs"
+summary = tmp / "retirement-summary"
+repo, branch = "suzukure/nssscdl", "submission/issue-1180-retirement"
+workflow = ".github/workflows/claude-review.yml"
+paths = [workflow, ".github/scripts/authorize-retirement-review.py",
+         ".github/scripts/build-review-context.sh"]
+base, head, workflow_sha, tree_sha, blob = (letter * 40 for letter in "abcde")
+root = f"repos/{repo}"
+run_list = f"{root}/actions/workflows/50/runs?event=pull_request&branch={quote(branch, safe='')}&per_page=100"
+owner = dict(id=99, type="User", login="suzukure")
+repo_identity = dict(id=80, full_name=repo, owner=owner)
+author = dict(id=323046280, login="nssscdl-chatgpt-dev[bot]", type="Bot")
+pr = dict(number=37, state="open", draft=False, user=author, labels=[],
+          base=dict(repo=repo_identity, ref="main", sha=base),
+          head=dict(repo=repo_identity, ref=branch, sha=head))
+event = dict(action="ready_for_review", sender=owner, pull_request=pr)
+command = f"/ai review approve retirement-1180 pr:37 run:123 attempt:1 base:{base} head:{head}"
+stamp = "2026-11-25T00:00:00Z"
+comment = dict(id="IC_fixture_71", body=command, createdAt=stamp, updatedAt=stamp,
+               lastEditedAt=None, isMinimized=False, authorAssociation="OWNER",
+               author=dict(__typename="User", id="U_fixture", login="suzukure"))
+conversation = dict(number=37, state="OPEN", isDraft=False, headRefOid=head, baseRefOid=base,
+                    closingIssuesReferences=dict(pageInfo=dict(hasNextPage=False),
+                                                 nodes=[dict(number=1180, repository=dict(nameWithOwner=repo))]),
+                    comments=dict(pageInfo=dict(hasNextPage=False), nodes=[comment]))
+api = {
+    f"{root}/pulls/37": pr,
+    f"{root}/issues/1180": dict(number=1180, labels=[], state="open",
+                              repository_url=f"https://api.github.com/{root}"),
+    f"{root}/git/ref/heads/main": dict(ref="refs/heads/main", object=dict(sha=base)),
+    f"{root}/actions/runs/123": dict(id=123, run_attempt=1, event="pull_request",
+                                     name="Claude Review", path=workflow, status="in_progress",
+                                     head_sha=head, head_branch=branch, head_repository=repo_identity,
+                                     workflow_id=50, pull_requests=[], run_started_at=stamp),
+    run_list: dict(total_count=1, workflow_runs=[dict(id=123)]),
+    f"{root}/git/commits/{head}": dict(sha=head, tree=dict(sha=tree_sha)),
+    f"{root}/git/commits/{workflow_sha}": dict(sha=workflow_sha, tree=dict(sha=tree_sha)),
+    f"{root}/git/trees/{tree_sha}?recursive=1": dict(
+        sha=tree_sha, truncated=False,
+        tree=[dict(path=path, mode="100644", type="blob", sha=blob) for path in paths]),
+    "graphql": dict(data=dict(repository=dict(
+        nameWithOwner=repo, owner=dict(__typename="User", login="suzukure", id="U_fixture"),
+        pullRequest=conversation))),
+}
+environment = dict(GITHUB_REPOSITORY=repo, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
+                   GITHUB_EVENT_NAME="pull_request", GITHUB_WORKFLOW_SHA=workflow_sha,
+                   GITHUB_EVENT_PATH=str(event_path), GITHUB_OUTPUT=str(out),
+                   GITHUB_STEP_SUMMARY=str(summary), EXPECTED_PROFILE="retirement-1180",
+                   EXPECTED_BASE=base, EXPECTED_HEAD=head, EXPECTED_PR="37",
+                   EXPECTED_RUN="123", EXPECTED_COMMENT="IC_fixture_71")
+
+
+def run(mode="check", *, change=lambda data, event, env, pr: None, denied=False, polls=None):
+    data, current_event, env = deepcopy(api), deepcopy(event), dict(environment)
+    current_pr = data["graphql"]["data"]["repository"]["pullRequest"]
+    change(data, current_event, env, current_pr)
+    event_path.write_text(json.dumps(current_event))
+    out.write_text("")
+    summary.write_text("")
+    elapsed = 0
+    seen = []
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz):
+            return datetime(2026, 11, 25, tzinfo=timezone.utc) + timedelta(seconds=elapsed)
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    def read(deadline, *args, body=None):
+        assert elapsed < deadline, (args, elapsed, deadline)
+        if args[0] == "graphql":
+            assert args[1:] == ("--input", "-")
+            request = json.loads(body)
+            assert request["query"].lstrip().startswith("query(")
+            assert request["variables"] == dict(owner="suzukure", repo="nssscdl", pr=37)
+            seen.append(elapsed)
+        else:
+            assert len(args) == 1 and body is None
+        return deepcopy(data[args[0]])
+
+    def git(args, **kwargs):
+        assert args[:5] == ["git", "--no-replace-objects", "ls-tree", base, "--"]
+        assert args[-1] in paths
+        return f"100644 blob {blob}\t{args[-1]}\n"
+
+    with patch.dict(os.environ, env, clear=True), patch.object(auth, "gh", read), \
+            patch.object(auth.subprocess, "check_output", git), patch.object(auth, "datetime", Clock), \
+            patch.object(auth, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep)):
+        try:
+            auth.main(mode, base)
+        except ValueError:
+            assert denied, change
+            assert not out.read_text()
+        else:
+            assert not denied, change
+            if mode == "wait":
+                assert dict(line.split("=", 1) for line in out.read_text().splitlines()) == {
+                    "profile": "retirement-1180", "pr": "37", "base": base,
+                    "head": head, "run": "123", "comment": "IC_fixture_71",
+                }
+                assert command in summary.read_text()
+    if polls is not None:
+        assert seen == polls, seen
+
+
+run()
+run("wait", polls=[0])
+run("wait", denied=True, polls=list(range(0, 300, 15)),
+    change=lambda data, evt, env, pr: pr["comments"]["nodes"].clear())
+for field, value in (("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_REPOSITORY", "other/repo"),
+                     ("EXPECTED_PR", "38"), ("EXPECTED_RUN", "124"), ("EXPECTED_BASE", head),
+                     ("EXPECTED_HEAD", base), ("EXPECTED_COMMENT", "IC_fixture_72"), ("EXPECTED_PROFILE", "normal")):
+    run(denied=True, change=lambda data, evt, env, pr: env.update({field: value}))
+for field, value in (("body", command + "\n"), ("body", command.replace("run:123", "run:124")),
+                     ("body", command.replace("attempt:1", "attempt:2")),
+                     ("authorAssociation", "MEMBER"), ("author", dict(comment["author"], id="U_other")),
+                     ("lastEditedAt", stamp), ("updatedAt", "2026-11-25T00:00:01Z"),
+                     ("createdAt", "2026-11-24T23:59:59Z"), ("isMinimized", True)):
+    run(denied=True, change=lambda data, evt, env, pr: pr["comments"]["nodes"][0].update({field: value}))
+for change in (
+    lambda d, e, z, p: e.update(action="unlabeled"),
+    lambda d, e, z, p: e.update(sender=author),
+    lambda d, e, z, p: e["pull_request"]["head"].update(ref="ai/issue-1180"),
+    lambda d, e, z, p: d[f"{root}/pulls/37"]["user"].update(id=100),
+    lambda d, e, z, p: d[f"{root}/pulls/37"].update(draft=True),
+    lambda d, e, z, p: d[f"{root}/pulls/37"]["head"].update(sha=base),
+    lambda d, e, z, p: d[f"{root}/pulls/37"].update(labels=[dict(name="ai-followup-in-progress")]),
+    lambda d, e, z, p: d[f"{root}/issues/1180"].update(labels=[dict(name="human-review-required")]),
+    lambda d, e, z, p: d[f"{root}/issues/1180"].update(state="closed"),
+    lambda d, e, z, p: d[f"{root}/git/ref/heads/main"]["object"].update(sha=head),
+    lambda d, e, z, p: d[f"{root}/actions/runs/123"].update(run_attempt=2),
+    lambda d, e, z, p: d[run_list].update(total_count=2, workflow_runs=[dict(id=124), dict(id=123)]),
+    lambda d, e, z, p: d[f"{root}/git/trees/{tree_sha}?recursive=1"]["tree"][1].update(mode="120000"),
+    lambda d, e, z, p: p["closingIssuesReferences"]["nodes"][0].update(number=1181),
+    lambda d, e, z, p: p["closingIssuesReferences"]["pageInfo"].update(hasNextPage=True),
+    lambda d, e, z, p: p["comments"]["nodes"].clear(),
+    lambda d, e, z, p: p["comments"]["nodes"].append(dict(comment, id="IC_fixture_72")),
+    lambda d, e, z, p: p["comments"]["pageInfo"].update(hasNextPage=True),
+):
+    run(denied=True, change=change)
+
+print("Retirement authorization offline snapshots passed.")
+PY
 
 echo 'Claude Review workflow fixture tests passed.'
